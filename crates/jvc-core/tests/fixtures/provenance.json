@@ -1,0 +1,18 @@
+{
+  "disposable": true,
+  "fixture_rights": "CC0-1.0",
+  "sources": {
+    "FORMAT-SPEC.md": {
+      "path": "/home/int19h.linux/src/jbovlacku/FORMAT-SPEC.md",
+      "sha256": "b89fc3d57d9ecf353dea8dc15f0ac197f626b8528b546876c7dc8f7e5a2a2be4"
+    },
+    "PROTOTYPE-PLAN.md": {
+      "path": "/home/int19h.linux/src/jbovlacku/PROTOTYPE-PLAN.md",
+      "sha256": "7fe06c2cc6a96f5741b027a967b7753893520a3b9d788cc7bfd8bf216d294527"
+    }
+  },
+  "rfc8032_vector": "https://www.rfc-editor.org/rfc/rfc8032#section-7.1",
+  "definition_fixture": "FORMAT-SPEC.md section7 illustrative CC0-1.0 body",
+  "generated_cases": "cargo run -p jvc-core --example fixture_corpus",
+  "noncanonical_identity_r_vectors": "Opus foundation-r1 review F3; canonical point rejection vectors, including y=p+1 with either sign bit"
+}

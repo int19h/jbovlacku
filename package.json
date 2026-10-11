@@ -1,0 +1,36 @@
+{
+  "name": "jbovlacku-prototype",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build:core": "bash scripts/build-core.sh",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p apps/web/tsconfig.json",
+    "test:service": "tsx --test packages/service/test/*.test.ts",
+    "start": "tsx apps/server/src/main.ts",
+    "dev:worker": "wrangler dev --config apps/worker/wrangler.jsonc --local",
+    "types:worker": "wrangler types --config apps/worker/wrangler.jsonc apps/worker/worker-configuration.d.ts",
+    "build:web": "vite build --config apps/web/vite.config.ts && node scripts/copy-notices.mjs web",
+    "dev:web": "vite --config apps/web/vite.config.ts",
+    "test:web": "playwright test --config apps/web/playwright.config.ts",
+    "build:server": "esbuild apps/server/src/main.ts --bundle --platform=node --format=esm --target=node24 --outfile=apps/server/dist/main.js && node scripts/copy-notices.mjs server",
+    "build": "npm run build:core && npm run build:server && npm run build:web",
+    "start:built": "node apps/server/dist/main.js",
+    "test:adapters": "tsx scripts/test-adapters.ts"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261011.1",
+    "@playwright/test": "1.58.2",
+    "@types/node": "24.10.1",
+    "esbuild": "0.28.1",
+    "jose": "6.1.3",
+    "prettier": "3.7.4",
+    "tsx": "4.20.6",
+    "typescript": "5.9.3",
+    "vite": "7.3.7",
+    "wrangler": "4.149.0"
+  }
+}

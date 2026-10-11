@@ -1,0 +1,1211 @@
+import type { IndexStore } from "./index-store.ts";
+import { buildPackages, type MaterializedPackages } from "./packages.ts";
+import {
+  canonicalize,
+  contentHash,
+  prepareAdmission,
+  prepareSelection,
+  evaluateSession,
+  utf8,
+  verifyEnvelope,
+  inspectBody,
+  type Evaluation,
+} from "../../core/src/index.ts";
+import {
+  type ObjectStore,
+  type Coordinator,
+  type State,
+  type Snapshot,
+} from "./storage.ts";
+const zeroView = `jve1:${"0".repeat(64)}`;
+const idPattern = /^(sha256:|jve1:|jvw1:|ed25519:)[a-f0-9]{64}$/;
+export class ApiError extends Error {
+  constructor(
+    public status: number,
+    public code: string,
+    message: string,
+    public event: string | null = null,
+    public field: string | null = null,
+  ) {
+    super(message);
+  }
+}
+const json = (
+  value: unknown,
+  status = 200,
+  headers: HeadersInit = {},
+): Response =>
+  new Response(JSON.stringify(value), {
+    status,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+      ...headers,
+    },
+  });
+const sorted = (values: string[]) => [...values].sort();
+const compareBytes = (a: number[], b: number[]): number => {
+  for (let i = 0; i < Math.min(a.length, b.length); i++) {
+    if (a[i] !== b[i]) return a[i] - b[i];
+  }
+  return a.length - b.length;
+};
+export interface ServiceOptions {
+  serverId: string;
+  selectedView?: string;
+  policyUrl: string;
+  publicOrigin?: string;
+  corsOrigins?: string[];
+  index?: IndexStore;
+  reportError?: (error: unknown) => void;
+  allowPrototypeBatch?: boolean;
+  beforeCommit?: (state: State) => Promise<void>;
+}
+export class DictionaryService {
+  constructor(
+    public objects: ObjectStore,
+    public coordinator: Coordinator,
+    public options: ServiceOptions,
+  ) {}
+  private hashJson(value: unknown) {
+    return contentHash(utf8(canonicalize(utf8(JSON.stringify(value)))));
+  }
+  private cursor(position: number) {
+    return `${this.options.serverId}.${position}`;
+  }
+  private cursorPosition(value: string | null, state: State): number {
+    if (value === null) return 0;
+    const prefix = `${this.options.serverId}.`;
+    if (!value.startsWith(prefix) || !/^\d+$/.test(value.slice(prefix.length)))
+      throw new ApiError(
+        400,
+        "bad_cursor",
+        "Cursor does not belong to this server.",
+      );
+    const n = Number(value.slice(prefix.length));
+    if (
+      !Number.isSafeInteger(n) ||
+      n > state.position ||
+      this.cursor(n) !== value
+    )
+      throw new ApiError(400, "bad_cursor", "Cursor is invalid.");
+    return n;
+  }
+  private async buildSnapshot(state: State): Promise<Snapshot> {
+    const ids = sorted(Object.keys(state.events));
+    let lines = "";
+    for (const id of ids) {
+      const raw = await this.objects.get(state.events[id].envelope_hash);
+      if (!raw)
+        throw new ApiError(
+          503,
+          "storage_unavailable",
+          "Envelope bytes are unavailable.",
+        );
+      lines += new TextDecoder().decode(raw) + "\n";
+    }
+    const bodies = sorted([
+      ...new Set(
+        ids
+          .map((id) => state.events[id].body_hash)
+          .filter((h): h is string => h !== null),
+      ),
+    ]);
+    const selections = sorted(state.selections);
+    const manifest = {
+      version: 1 as const,
+      events: { count: ids.length, hash: contentHash(utf8(lines)) },
+      bodies: { count: bodies.length, hash: this.hashJson(bodies) },
+      import_selections: {
+        count: selections.length,
+        hash: this.hashJson(selections),
+      },
+    };
+    const snapshot = this.hashJson(manifest);
+    const value: Snapshot = {
+      snapshot,
+      logical_inventory: this.hashJson({
+        events: ids,
+        bodies,
+        import_selections: selections,
+      }),
+      manifest,
+      events: Object.fromEntries(
+        ids.map((id) => {
+          const { position, ...representation } = state.events[id];
+          return [id, representation];
+        }),
+      ),
+      bodies,
+      import_selections: selections,
+    };
+    return value;
+  }
+  private packageCache = new Map<string, Promise<MaterializedPackages>>();
+  private inFlightPackages = new Set<string>();
+  private packages(snapshot: Snapshot): Promise<MaterializedPackages> {
+    const cached = this.packageCache.get(snapshot.snapshot);
+    if (cached) return cached;
+    if (this.inFlightPackages.size >= 2)
+      return Promise.reject(
+        new ApiError(
+          503,
+          "resource_unavailable",
+          "Two snapshot package builds are already in progress.",
+        ),
+      );
+    if (this.packageCache.size >= 2) {
+      const evicted = [...this.packageCache.keys()].find(
+        (key) => !this.inFlightPackages.has(key),
+      )!;
+      this.packageCache.delete(evicted);
+    }
+    this.inFlightPackages.add(snapshot.snapshot);
+    const pending = buildPackages(snapshot, this.objects).then(
+      async (built) => {
+        if (this.options.index)
+          await this.options.index.replace(snapshot.snapshot, built.entries);
+        for (let attempt = 0; attempt < 20; attempt++) {
+          const state = await this.coordinator.load();
+          if (
+            state.snapshot !== snapshot.snapshot ||
+            state.materialized_snapshot === snapshot.snapshot
+          )
+            break;
+          const next = {
+            ...state,
+            revision: state.revision + 1,
+            materialized_position: state.position,
+            materialized_snapshot: snapshot.snapshot,
+          };
+          if (await this.coordinator.compareAndSwap(state.revision, next))
+            break;
+        }
+        return built;
+      },
+    );
+    this.packageCache.set(snapshot.snapshot, pending);
+    pending.then(
+      () => {
+        this.inFlightPackages.delete(snapshot.snapshot);
+      },
+      () => {
+        this.inFlightPackages.delete(snapshot.snapshot);
+        if (this.packageCache.get(snapshot.snapshot) === pending)
+          this.packageCache.delete(snapshot.snapshot);
+      },
+    );
+    return pending;
+  }
+  private language(value: string | null): string {
+    if (
+      value === null ||
+      value.length > 63 ||
+      !/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(value)
+    )
+      throw new ApiError(400, "language", "Definition language is invalid.");
+    return value;
+  }
+  private async current(): Promise<{ state: State; snapshot: Snapshot }> {
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const state = await this.coordinator.load();
+      if (state.snapshot) {
+        const cached = await this.coordinator.getSnapshot(state.snapshot);
+        if (cached) return { state, snapshot: cached };
+        // Another writer may expire the pointer between these two reads.
+        if ((await this.coordinator.load()).revision !== state.revision)
+          continue;
+      }
+      const snapshot = await this.buildSnapshot(state);
+      if (state.snapshot && state.snapshot !== snapshot.snapshot)
+        throw new ApiError(
+          503,
+          "storage_unavailable",
+          "Stored inventory does not match the current snapshot pointer.",
+        );
+      const next = {
+        ...state,
+        revision: state.revision + 1,
+        snapshot: snapshot.snapshot,
+        snapshots: sorted([...state.snapshots, snapshot.snapshot]),
+      };
+      if (await this.coordinator.compareAndSwap(state.revision, next, snapshot))
+        return { state: next, snapshot };
+    }
+    throw new ApiError(503, "busy", "Snapshot publication is busy.");
+  }
+  private async snapshot(value: string | null): Promise<Snapshot> {
+    if (value === null) return (await this.current()).snapshot;
+    this.identifier(value, "sha256:");
+    let cached = await this.coordinator.getSnapshot(value);
+    if (!cached && (await this.coordinator.load()).snapshot === value)
+      cached = (await this.current()).snapshot;
+    if (!cached || cached.snapshot !== value)
+      throw new ApiError(
+        410,
+        "snapshot_expired",
+        "Snapshot is not published or retained.",
+      );
+    return cached;
+  }
+  private identifier(value: string, prefix: string) {
+    if (!value.startsWith(prefix) || !idPattern.test(value))
+      throw new ApiError(400, "identifier", "Identifier is invalid.");
+  }
+  private async requireView(snapshot: Snapshot, view: string): Promise<void> {
+    const event = snapshot.events[view];
+    if (!event || event.header.action.kind !== "view.publish")
+      throw new ApiError(
+        404,
+        "view_unavailable",
+        "Requested view is not retained in this snapshot.",
+        view,
+      );
+    if (event.body_hash === null)
+      throw new ApiError(
+        422,
+        "view_unavailable",
+        "Requested view body is unavailable.",
+        view,
+      );
+    const envelope = await this.objects.get(event.envelope_hash);
+    const body = await this.objects.get(event.body_hash);
+    if (!envelope || !body)
+      throw new ApiError(
+        503,
+        "storage_unavailable",
+        "Retained view bytes are unavailable.",
+        view,
+      );
+    try {
+      if (
+        !verifyEnvelope(envelope).action_valid ||
+        inspectBody(envelope, body).availability !== "valid"
+      )
+        throw new Error("invalid view action or body");
+    } catch {
+      throw new ApiError(
+        422,
+        "view_unavailable",
+        "Requested view does not satisfy version 1 rules.",
+        view,
+      );
+    }
+  }
+  private evaluationCache = new Map<string, Promise<Evaluation>>();
+  private inFlightEvaluations = new Set<string>();
+  private sessions = new Map<string, ReturnType<typeof evaluateSession>>();
+  private evaluation(
+    snapshot: Snapshot,
+    view = this.options.selectedView ?? zeroView,
+  ): Promise<Evaluation> {
+    const key = snapshot.snapshot + "|" + view;
+    const cached = this.evaluationCache.get(key);
+    if (cached) return cached;
+    if (this.inFlightEvaluations.size >= 2)
+      return Promise.reject(
+        new ApiError(
+          503,
+          "resource_unavailable",
+          "Two snapshot evaluations are already in progress.",
+        ),
+      );
+    if (this.evaluationCache.size >= 2) {
+      const configured = this.options.selectedView ?? zeroView;
+      const protectedKey = [...this.evaluationCache.keys()]
+        .filter((candidate) => candidate.endsWith("|" + configured))
+        .at(-1);
+      const evicted = [...this.evaluationCache.keys()].find(
+        (candidate) =>
+          !this.inFlightEvaluations.has(candidate) &&
+          (view === configured || candidate !== protectedKey),
+      );
+      if (evicted === undefined)
+        return Promise.reject(
+          new ApiError(
+            503,
+            "resource_unavailable",
+            "Configured view evaluations occupy the available cache slots.",
+          ),
+        );
+      this.evaluationCache.delete(evicted);
+      this.sessions.get(evicted)?.free();
+      this.sessions.delete(evicted);
+    }
+    this.inFlightEvaluations.add(key);
+    let result: Promise<Evaluation>;
+    result = this.computeEvaluation(
+      snapshot,
+      view,
+      () => this.evaluationCache.get(key) === result,
+    );
+    this.evaluationCache.set(key, result);
+    result.then(
+      () => {
+        this.inFlightEvaluations.delete(key);
+      },
+      () => {
+        this.inFlightEvaluations.delete(key);
+        if (this.evaluationCache.get(key) === result)
+          this.evaluationCache.delete(key);
+      },
+    );
+    return result;
+  }
+  private async computeEvaluation(
+    snapshot: Snapshot,
+    view = this.options.selectedView ?? zeroView,
+    ownsEntry: () => boolean = () => true,
+  ): Promise<Evaluation> {
+    const events: string[] = [];
+    const bodies: Record<string, string> = {};
+    const selections: Record<string, string[]> = {};
+    for (const id of sorted(Object.keys(snapshot.events))) {
+      const event = snapshot.events[id];
+      const raw = await this.objects.get(event.envelope_hash);
+      if (!raw)
+        throw new ApiError(
+          503,
+          "storage_unavailable",
+          "Envelope bytes are unavailable.",
+        );
+      events.push(new TextDecoder().decode(raw));
+      if (event.body_hash) {
+        const body = await this.objects.get(event.body_hash);
+        if (body) bodies[id] = new TextDecoder().decode(body);
+      }
+    }
+    for (const hash of snapshot.import_selections) {
+      const raw = await this.objects.get(hash);
+      if (raw) selections[hash] = prepareSelection(raw).ids;
+    }
+    const session = evaluateSession({
+      events,
+      bodies,
+      selected_view: view,
+      import_selections: selections,
+    });
+    const state = session.state;
+    if (ownsEntry()) this.sessions.set(snapshot.snapshot + "|" + view, session);
+    else session.free();
+    return state;
+  }
+  private async receipt(
+    id: string,
+    admission = "accepted",
+    snapshot?: Snapshot,
+    acceptedPosition?: number,
+  ) {
+    snapshot ??= (await this.current()).snapshot;
+    const event = snapshot.events[id];
+    if (!event) throw new ApiError(404, "missing", "Event is unavailable.", id);
+    let derived: Evaluation["receipts"][string] | undefined;
+    let reasons = ["evaluation_unavailable"];
+    let bodyInvalid = false;
+    try {
+      derived = (await this.evaluation(snapshot)).receipts[id];
+    } catch (error) {
+      if (!(error instanceof ApiError) || error.code !== "resource_unavailable")
+        throw error;
+      // Acceptance is durable even when interpretation must wait for a cache slot.
+      reasons = ["evaluation_resource_unavailable"];
+      if (event.body_hash) {
+        const envelope = await this.objects.get(event.envelope_hash);
+        const body = await this.objects.get(event.body_hash);
+        if (envelope && body)
+          bodyInvalid = inspectBody(envelope, body).availability === "invalid";
+      }
+    }
+    return {
+      id,
+      admission,
+      interpretation: derived?.interpretation ?? "unavailable",
+      body_status:
+        bodyInvalid || derived?.body.startsWith("invalid:")
+          ? "invalid"
+          : event.body_hash
+            ? "present"
+            : event.header.content
+              ? "missing"
+              : "none",
+      cursor: this.cursor(
+        acceptedPosition ?? (await this.coordinator.load()).events[id].position,
+      ),
+      snapshot: snapshot.snapshot,
+      view: this.options.selectedView ?? zeroView,
+      reasons: derived?.reasons ?? reasons,
+      envelope_hash: event.envelope_hash,
+      body_hash: event.body_hash,
+    };
+  }
+  async admit(bytes: Uint8Array): Promise<Response> {
+    const result = await this.admitMany([bytes]);
+    return json(
+      result.receipts[0],
+      result.receipts[0].admission === "accepted" ? 201 : 200,
+    );
+  }
+  async admitMany(requests: Uint8Array[]) {
+    if (requests.length < 1 || requests.length > 3000)
+      throw new ApiError(
+        413,
+        "size",
+        "Batch must contain 1 through 3000 events.",
+      );
+    const prepared = requests.map(prepareAdmission);
+    for (const p of prepared) {
+      await this.objects.put(p.envelope_hash, utf8(p.envelope));
+      if (p.body !== null)
+        await this.objects.put(p.header.content!.hash, utf8(p.body));
+    }
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const state = await this.coordinator.load();
+      const next = structuredClone(state);
+      next.revision++;
+      const admissions: string[] = [];
+      let changed = false;
+      for (const p of prepared) {
+        const old = next.events[p.id];
+        if (
+          old &&
+          canonicalize(utf8(JSON.stringify(old.header))) !==
+            canonicalize(utf8(JSON.stringify(p.header)))
+        )
+          throw new ApiError(
+            409,
+            "collision",
+            "Event ID names different headers.",
+            p.id,
+          );
+        const preferred =
+          !old || compareBytes(p.signature_bytes, old.signature) < 0;
+        const descriptor = p.header.content;
+        const sharedBody =
+          descriptor &&
+          Object.values(next.events).some(
+            (e) =>
+              e.body_hash === descriptor.hash &&
+              e.header.content?.bytes === descriptor.bytes,
+          )
+            ? descriptor.hash
+            : null;
+        const bodyHash =
+          p.body !== null
+            ? p.header.content!.hash
+            : (old?.body_hash ?? sharedBody);
+        admissions.push(old ? "duplicate" : "accepted");
+        if (!old || preferred || old.body_hash !== bodyHash) {
+          changed = true;
+          if (!old) {
+            next.position++;
+            next.journal.push({ position: next.position, id: p.id });
+          }
+          next.events[p.id] = {
+            envelope_hash: preferred ? p.envelope_hash : old.envelope_hash,
+            body_hash: bodyHash,
+            header: p.header,
+            signature: preferred ? p.signature_bytes : old.signature,
+            position: old?.position ?? next.position,
+          };
+        }
+        if (p.body !== null)
+          for (const retained of Object.values(next.events))
+            if (
+              retained.header.content?.hash === p.header.content!.hash &&
+              retained.header.content.bytes === p.header.content!.bytes &&
+              retained.body_hash !== p.header.content!.hash
+            ) {
+              retained.body_hash = p.header.content!.hash;
+              changed = true;
+            }
+      }
+      if (!changed) {
+        const snapshot = (await this.current()).snapshot;
+        return {
+          snapshot: snapshot.snapshot,
+          receipts: await Promise.all(
+            prepared.map((p, i) =>
+              this.receipt(
+                p.id,
+                admissions[i],
+                snapshot,
+                state.events[p.id].position,
+              ),
+            ),
+          ),
+        };
+      }
+      const snapshot = await this.buildSnapshot(next);
+      next.snapshot = snapshot.snapshot;
+      next.snapshots = sorted([...next.snapshots, snapshot.snapshot]);
+      if (this.options.beforeCommit) await this.options.beforeCommit(next);
+      if (await this.coordinator.compareAndSwap(state.revision, next, snapshot))
+        return {
+          snapshot: snapshot.snapshot,
+          receipts: await Promise.all(
+            prepared.map((p, i) =>
+              this.receipt(
+                p.id,
+                admissions[i],
+                snapshot,
+                next.events[p.id].position,
+              ),
+            ),
+          ),
+        };
+    }
+    throw new ApiError(503, "busy", "Admission is busy.");
+  }
+  private limit(url: URL, max = 1000): number {
+    const raw = url.searchParams.get("limit");
+    if (raw === null) return Math.min(200, max);
+    if (!/^[1-9]\d*$/.test(raw))
+      throw new ApiError(400, "limit", "Limit must be a positive integer.");
+    const value = Number(raw);
+    if (value > max)
+      throw new ApiError(400, "limit", `Limit must not exceed ${max}.`);
+    return value;
+  }
+  private async requestBytes(
+    request: Request,
+    max = 1024 * 1024,
+    expectedContentType = "application/json",
+  ): Promise<Uint8Array> {
+    if (
+      request.headers.has("content-encoding") &&
+      request.headers.get("content-encoding") !== "identity"
+    )
+      throw new ApiError(
+        400,
+        "encoding",
+        "Compressed request bodies are not supported.",
+      );
+    const contentType = request.headers.get("content-type")?.split(";")[0];
+    if (contentType !== expectedContentType)
+      throw new ApiError(400, "content_type", `Use ${expectedContentType}.`);
+    if (Number(request.headers.get("content-length")) > max)
+      throw new ApiError(413, "size", "Request exceeds the byte limit.");
+    const reader = request.body?.getReader();
+    if (!reader)
+      throw new ApiError(400, "transport", "Request body is missing.");
+    const chunks: Uint8Array[] = [];
+    let length = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      length += value.length;
+      if (length > max) {
+        await reader.cancel();
+        throw new ApiError(413, "size", "Request exceeds the byte limit.");
+      }
+      chunks.push(value);
+    }
+    const result = new Uint8Array(length);
+    let offset = 0;
+    for (const chunk of chunks) {
+      result.set(chunk, offset);
+      offset += chunk.length;
+    }
+    return result;
+  }
+  async fetch(request: Request): Promise<Response> {
+    const origin = request.headers.get("origin");
+    let response: Response;
+    try {
+      if (
+        origin &&
+        origin !== new URL(request.url).origin &&
+        origin !== this.options.publicOrigin &&
+        !(this.options.corsOrigins ?? []).includes(origin)
+      ) {
+        throw new ApiError(403, "origin", "Origin is not permitted.");
+      }
+      response = await this.route(request);
+    } catch (error) {
+      if (error instanceof ApiError)
+        response = json(
+          {
+            code: error.code,
+            message: error.message,
+            event: error.event,
+            field: error.field,
+          },
+          error.status,
+        );
+      else {
+        let detail: { code?: string; message?: string } = {};
+        try {
+          detail = JSON.parse(String(error));
+        } catch {}
+        if (!detail.code) this.options.reportError?.(error);
+        const code = detail.code ?? "service_unavailable";
+        response = json(
+          {
+            code,
+            message:
+              detail.message ?? "Service could not complete this request.",
+            event: null,
+            field: null,
+          },
+          code === "size"
+            ? 413
+            : detail.code
+              ? code === "transport" ||
+                code === "number" ||
+                code.startsWith("json")
+                ? 400
+                : 422
+              : 503,
+        );
+      }
+    }
+    if (request.body && !request.bodyUsed && !request.body.locked)
+      await request.body.cancel().catch(() => {});
+    if (origin && (this.options.corsOrigins ?? []).includes(origin)) {
+      response.headers.set("access-control-allow-origin", origin);
+      response.headers.set("vary", "Origin");
+    }
+    return response;
+  }
+  private async route(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    if (request.method === "GET" && url.pathname === "/api/health/live")
+      return json({ status: "live" });
+    if (request.method === "GET" && url.pathname === "/api/health/ready") {
+      await this.current();
+      return json({ status: "ready" });
+    }
+    const path = url.pathname.replace(/^\/api\/v1/, "");
+    if (!url.pathname.startsWith("/api/v1/"))
+      throw new ApiError(404, "missing", "API route is unavailable.");
+    if (request.method === "OPTIONS")
+      return new Response(null, {
+        status: 204,
+        headers: {
+          "access-control-allow-methods": "GET, POST, OPTIONS",
+          "access-control-allow-headers": "Content-Type",
+        },
+      });
+    if (request.method === "POST" && path === "/prototype/batch") {
+      if (!this.options.allowPrototypeBatch)
+        throw new ApiError(
+          503,
+          "feature_disabled",
+          "Prototype batch admission is disabled.",
+        );
+      const bytes = await this.requestBytes(
+        request,
+        16 * 1024 * 1024,
+        "application/x-ndjson",
+      );
+      const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      const lines = text.endsWith("\n")
+        ? text.slice(0, -1).split("\n")
+        : text.split("\n");
+      if (lines.some((line) => line.length === 0))
+        throw new ApiError(400, "transport", "Batch contains a blank line.");
+      return json(await this.admitMany(lines.map(utf8)), 201);
+    }
+    if (request.method === "POST" && path === "/events")
+      return this.admit(await this.requestBytes(request));
+    if (request.method === "POST" && path === "/import-selections") {
+      const selection = prepareSelection(
+        await this.requestBytes(request, 16 * 1024 * 1024),
+      );
+      await this.objects.put(selection.hash, utf8(selection.canonical));
+      for (let attempt = 0; attempt < 20; attempt++) {
+        const state = await this.coordinator.load();
+        if (state.selections.includes(selection.hash))
+          return json({
+            hash: selection.hash,
+            bytes: selection.bytes,
+            count: selection.count,
+          });
+        const next = structuredClone(state);
+        next.revision++;
+        next.selections.push(selection.hash);
+        const snapshot = await this.buildSnapshot(next);
+        next.snapshot = snapshot.snapshot;
+        if (
+          await this.coordinator.compareAndSwap(state.revision, next, snapshot)
+        )
+          return json(
+            {
+              hash: selection.hash,
+              bytes: selection.bytes,
+              count: selection.count,
+            },
+            201,
+          );
+      }
+      throw new ApiError(503, "busy", "Selection admission is busy.");
+    }
+    if (request.method !== "GET")
+      throw new ApiError(405, "method", "Method is not supported.");
+    if (path === "/capabilities")
+      return json({
+        versions: [1],
+        max_envelope_bytes: 20480,
+        max_body_bytes: 262144,
+        max_request_bytes: 1048576,
+        server_id: this.options.serverId,
+        policy_url: this.options.policyUrl,
+        cors_origins: this.options.corsOrigins ?? [],
+        body_kinds: [
+          "definition.publish",
+          "rafsi.publish",
+          "view.publish",
+          "identity.profile",
+        ],
+        features: {
+          semantic_search: false,
+          assistance: false,
+          account_observation: false,
+          lensisku_bridge: false,
+          derived_exchange: false,
+        },
+        embedding_profiles: [],
+        assistance_profiles: [],
+        git_mirror: null,
+        account_witness_service: null,
+      });
+    if (path === "/manifest") {
+      const { snapshot } = await this.current();
+      const packages = await this.packages(snapshot);
+      const state = await this.coordinator.load();
+      return json({
+        snapshot: snapshot.snapshot,
+        logical_inventory: snapshot.logical_inventory,
+        manifest: snapshot.manifest,
+        accepted_cursor: this.cursor(state.position),
+        materialized_cursor: this.cursor(state.materialized_position),
+        packages: Object.entries(packages.packages).map(([language, p]) => ({
+          language,
+          hash: p.hash,
+          bytes: p.bytes,
+        })),
+      });
+    }
+    if (path === "/inventory") {
+      const snapshot = await this.snapshot(url.searchParams.get("snapshot"));
+      const kind = url.searchParams.get("kind");
+      if (!["events", "bodies", "import_selections"].includes(kind ?? ""))
+        throw new ApiError(400, "kind", "Inventory kind is invalid.");
+      const ids =
+        kind === "events"
+          ? sorted(Object.keys(snapshot.events))
+          : kind === "bodies"
+            ? snapshot.bodies
+            : snapshot.import_selections;
+      const prefix = kind === "events" ? "jve1:" : "sha256:";
+      const after = url.searchParams.get("after");
+      if (after !== null) this.identifier(after, prefix);
+      const remaining = ids.filter((id) => after === null || id > after);
+      const page = remaining.slice(0, this.limit(url));
+      return json({
+        snapshot: snapshot.snapshot,
+        kind,
+        ids: page,
+        next: remaining.length > page.length ? page.at(-1) : null,
+      });
+    }
+    if (path === "/changes") {
+      const { snapshot } = await this.current();
+      await this.packages(snapshot);
+      const state = await this.coordinator.load();
+      const after = this.cursorPosition(url.searchParams.get("after"), state);
+      const remaining = state.journal.filter((item) => item.position > after);
+      const page = remaining.slice(0, this.limit(url));
+      return json({
+        items: page.map((item) => ({
+          cursor: this.cursor(item.position),
+          id: item.id,
+        })),
+        next: this.cursor(page.at(-1)?.position ?? after),
+        caught_up: remaining.length === page.length,
+        materialized_cursor: this.cursor(state.materialized_position),
+      });
+    }
+    if (path.startsWith("/receipts/")) {
+      const id = decodeURIComponent(path.slice(10));
+      this.identifier(id, "jve1:");
+      return json(await this.receipt(id));
+    }
+    if (path.startsWith("/events/")) {
+      const id = decodeURIComponent(path.slice(8));
+      this.identifier(id, "jve1:");
+      const snapshot = await this.snapshot(url.searchParams.get("snapshot"));
+      const event = snapshot.events[id];
+      if (!event)
+        throw new ApiError(404, "missing", "Event is unavailable.", id);
+      return this.objectResponse(event.envelope_hash);
+    }
+    for (const prefix of ["/bodies/", "/import-selections/"])
+      if (path.startsWith(prefix)) {
+        const hash = decodeURIComponent(path.slice(prefix.length));
+        this.identifier(hash, "sha256:");
+        const snapshot = await this.snapshot(url.searchParams.get("snapshot"));
+        const inventory =
+          prefix === "/bodies/" ? snapshot.bodies : snapshot.import_selections;
+        if (!inventory.includes(hash))
+          throw new ApiError(404, "missing", "Object is unavailable.");
+        return this.objectResponse(hash);
+      }
+    if (path.startsWith("/identity-heads/")) {
+      const identity = decodeURIComponent(path.slice(16));
+      this.identifier(identity, "ed25519:");
+      const snapshot = await this.snapshot(url.searchParams.get("snapshot"));
+      const own = Object.entries(snapshot.events).filter(
+        ([, e]) => e.header.issuer === identity,
+      );
+      const parents = new Set(own.flatMap(([, e]) => e.header.previous));
+      const ids = sorted(
+        own.map(([id]) => id).filter((id) => !parents.has(id)),
+      );
+      const after = url.searchParams.get("after");
+      if (after !== null) this.identifier(after, "jve1:");
+      const remaining = ids.filter((id) => after === null || id > after);
+      const page = remaining.slice(0, this.limit(url));
+      return json({
+        snapshot: snapshot.snapshot,
+        identity,
+        heads: page,
+        next: remaining.length > page.length ? page.at(-1) : null,
+      });
+    }
+    if (path.startsWith("/packages/")) {
+      const language = this.language(decodeURIComponent(path.slice(10)));
+      const snapshot = await this.snapshot(url.searchParams.get("snapshot"));
+      const pkg = (await this.packages(snapshot)).packages[language];
+      if (!pkg)
+        throw new ApiError(404, "missing", "Language package is unavailable.");
+      return this.objectResponse(pkg.hash);
+    }
+    if (path.startsWith("/package-parts/")) {
+      const hash = decodeURIComponent(path.slice(15));
+      this.identifier(hash, "sha256:");
+      const bytes = await this.objects.get(hash);
+      if (!bytes)
+        throw new ApiError(404, "missing", "Search part is unavailable.");
+      const part = JSON.parse(canonicalize(bytes));
+      if (
+        !Array.isArray(part) ||
+        part.length > 2000 ||
+        bytes.length > 4194304 ||
+        part.some(
+          (item) =>
+            !item ||
+            typeof item.event !== "string" ||
+            typeof item.plain_text !== "string",
+        )
+      )
+        throw new ApiError(404, "missing", "Search part is unavailable.");
+      return this.objectResponse(hash);
+    }
+    if (path === "/search") {
+      const query = url.searchParams.get("q");
+      if (query === null || query.length === 0 || utf8(query).length > 16384)
+        throw new ApiError(
+          400,
+          "query",
+          "Query must contain 1 through 16384 bytes.",
+        );
+      const language = this.language(url.searchParams.get("language"));
+      const snapshot = await this.snapshot(url.searchParams.get("snapshot"));
+      const view =
+        url.searchParams.get("view") ?? this.options.selectedView ?? zeroView;
+      this.identifier(view, "jve1:");
+      await this.requireView(snapshot, view);
+      const evaluation = await this.evaluation(snapshot, view);
+      if (!evaluation.available)
+        throw new ApiError(
+          503,
+          "resource_unavailable",
+          "Selected view cannot be evaluated.",
+        );
+      const q = query.toLocaleLowerCase("en");
+      const kinds = [
+        "headword",
+        "gloss",
+        "headword-prefix",
+        "gloss-prefix",
+        "token",
+      ];
+      const hits = new Map<
+        string,
+        {
+          word: unknown;
+          word_id: string;
+          match: string;
+          definitions: string[];
+          preview: {
+            event: string;
+            word_kind: string;
+            plain_text: string;
+            status: "active";
+          };
+        }
+      >();
+      for (const entry of (await this.packages(snapshot)).entries) {
+        const publication = evaluation.publications[entry.event];
+        if (
+          entry.language !== language ||
+          !publication ||
+          publication.eligible !== "eligible" ||
+          publication.status !== "active"
+        )
+          continue;
+        const spelling = entry.word.spelling.toLocaleLowerCase("en");
+        const glosses = entry.glosses.map((g) =>
+          g.text.toLocaleLowerCase("en"),
+        );
+        const match =
+          spelling === q
+            ? "headword"
+            : glosses.includes(q)
+              ? "gloss"
+              : spelling.startsWith(q)
+                ? "headword-prefix"
+                : glosses.some((g) => g.startsWith(q))
+                  ? "gloss-prefix"
+                  : entry.plain_text.toLocaleLowerCase("en").includes(q)
+                    ? "token"
+                    : null;
+        if (!match) continue;
+        const wordId = publication.word;
+        const classification = entry.classification as {
+          kind?: unknown;
+        } | null;
+        const plainText = entry.plain_text.replace(/\s+/gu, " ").trim();
+        const characters = Array.from(plainText);
+        const preview = {
+          event: entry.event,
+          word_kind:
+            typeof classification?.kind === "string"
+              ? classification.kind
+              : "unknown",
+          plain_text:
+            characters.length > 240
+              ? characters.slice(0, 239).join("") + "…"
+              : plainText,
+          status: "active" as const,
+        };
+        const old = hits.get(wordId);
+        if (old) {
+          old.definitions.push(entry.event);
+          if (
+            kinds.indexOf(match) < kinds.indexOf(old.match) ||
+            (match === old.match && entry.event < old.preview.event)
+          ) {
+            old.match = match;
+            old.preview = preview;
+          }
+        } else
+          hits.set(wordId, {
+            word: entry.word,
+            word_id: wordId,
+            match,
+            definitions: [entry.event],
+            preview,
+          });
+      }
+      const ordered = [...hits.values()].sort(
+        (a, b) =>
+          kinds.indexOf(a.match) - kinds.indexOf(b.match) ||
+          a.word_id.localeCompare(b.word_id),
+      );
+      const cursorHash = this.hashJson({
+        query,
+        language,
+        snapshot: snapshot.snapshot,
+        view,
+      }).slice(7);
+      const after = url.searchParams.get("after");
+      let offset = 0;
+      if (after !== null) {
+        const prefix = cursorHash + ".";
+        if (
+          !after.startsWith(prefix) ||
+          !/^\d+$/.test(after.slice(prefix.length))
+        )
+          throw new ApiError(
+            400,
+            "bad_cursor",
+            "Search cursor identifies another query.",
+          );
+        offset = Number(after.slice(prefix.length));
+        if (
+          !Number.isSafeInteger(offset) ||
+          offset > ordered.length ||
+          prefix + offset !== after
+        )
+          throw new ApiError(400, "bad_cursor", "Search cursor is invalid.");
+      }
+      const page = ordered.slice(offset, offset + this.limit(url, 100));
+      return json({
+        snapshot: snapshot.snapshot,
+        view,
+        query,
+        language,
+        hits: page,
+        next:
+          offset + page.length < ordered.length
+            ? cursorHash + "." + (offset + page.length)
+            : null,
+      });
+    }
+    if (path.startsWith("/words/")) {
+      const id = decodeURIComponent(path.slice(7));
+      this.identifier(id, "jvw1:");
+      const snapshot = await this.snapshot(url.searchParams.get("snapshot"));
+      const view =
+        url.searchParams.get("view") ?? this.options.selectedView ?? zeroView;
+      this.identifier(view, "jve1:");
+      await this.requireView(snapshot, view);
+      const evaluation = await this.evaluation(snapshot, view);
+      if (!evaluation.available)
+        throw new ApiError(
+          503,
+          "resource_unavailable",
+          "Selected view cannot be evaluated.",
+        );
+      const publications = Object.values(evaluation.publications).filter(
+        (p) => p.word === id && p.eligible !== "not_selected",
+      );
+      const definitions = publications
+        .filter((p) => p.kind === "definition.publish")
+        .map((p) => p.id)
+        .sort();
+      const rafsi = publications
+        .filter((p) => p.kind === "rafsi.publish")
+        .map((p) => p.id)
+        .sort();
+      const entries = (await this.packages(snapshot)).entries;
+      const word =
+        entries.find((entry) => definitions.includes(entry.event))?.word ??
+        null;
+      const assignments = [
+        ...new Set(
+          publications.flatMap((p) => (p.assignment ? [p.assignment] : [])),
+        ),
+      ]
+        .sort()
+        .map((assignment) => {
+          const claims = publications.filter(
+            (p) => p.assignment === assignment,
+          );
+          return {
+            id: assignment,
+            claims: claims.map((p) => p.id).sort(),
+            status: claims.some((p) => p.eligible === "eligible")
+              ? "eligible"
+              : claims.every((p) => p.eligible === "inactive")
+                ? "inactive"
+                : "unknown",
+          };
+        });
+      let ranking: any = {
+        calculation: null,
+        scores: [],
+        layers: [],
+        unavailable_scores: [
+          ...definitions,
+          ...assignments
+            .filter((a) => a.status !== "inactive")
+            .map((a) => a.id),
+        ].sort(),
+      };
+      try {
+        const session = this.sessions.get(snapshot.snapshot + "|" + view);
+        if (session) ranking = session.rankWord(id);
+      } catch {}
+      return json({
+        snapshot: snapshot.snapshot,
+        view,
+        calculation:
+          ranking.calculation === null
+            ? null
+            : {
+                ...ranking.calculation,
+                inventory: snapshot.snapshot,
+                logical_inventory: snapshot.logical_inventory,
+              },
+        word,
+        definitions,
+        rafsi,
+        assignments,
+        scores: ranking.scores,
+        statuses: definitions.map(
+          (event) => evaluation.publication_statuses[event],
+        ),
+        layers: ranking.layers,
+        unavailable_scores: ranking.unavailable_scores,
+      });
+    }
+    if (path === "/account-control") {
+      const origin = url.searchParams.get("origin");
+      const accountText = url.searchParams.get("account");
+      let parsed: URL;
+      try {
+        parsed = new URL(origin ?? "");
+      } catch {
+        throw new ApiError(400, "origin", "Account origin is invalid.");
+      }
+      if (parsed.protocol !== "https:" || parsed.origin !== origin)
+        throw new ApiError(
+          400,
+          "origin",
+          "Account origin must be a canonical HTTPS origin.",
+        );
+      if (
+        accountText === null ||
+        !/^[1-9]\d*$/.test(accountText) ||
+        !Number.isSafeInteger(Number(accountText))
+      )
+        throw new ApiError(
+          400,
+          "account",
+          "Account must be a positive safe integer.",
+        );
+      const snapshot = await this.snapshot(url.searchParams.get("snapshot"));
+      const view =
+        url.searchParams.get("view") ?? this.options.selectedView ?? zeroView;
+      this.identifier(view, "jve1:");
+      await this.requireView(snapshot, view);
+      const evaluation = await this.evaluation(snapshot, view);
+      if (!evaluation.available)
+        throw new ApiError(
+          503,
+          "resource_unavailable",
+          "Selected view cannot be evaluated.",
+        );
+      const summary = evaluation.account_controls[origin + "#" + accountText];
+      if (summary) return json({ ...summary, snapshot: snapshot.snapshot });
+      return json({
+        snapshot: snapshot.snapshot,
+        view,
+        origin,
+        account: Number(accountText),
+        state: "unclaimed",
+        controller_candidates: [],
+        contributions: [],
+        certificates: [],
+        chain: [],
+        reasons: [],
+      });
+    }
+    throw new ApiError(404, "missing", "API route is unavailable.");
+  }
+  private async objectResponse(hash: string): Promise<Response> {
+    const bytes = await this.objects.get(hash);
+    if (!bytes)
+      throw new ApiError(404, "missing", "Object bytes are unavailable.");
+    return new Response(bytes as BodyInit, {
+      headers: {
+        "content-type": "application/json; charset=utf-8",
+        etag: `"${hash}"`,
+        "cache-control": "public, max-age=31536000, immutable",
+      },
+    });
+  }
+}

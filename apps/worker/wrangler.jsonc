@@ -1,0 +1,38 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "jbovlacku-local-prototype",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-11",
+  "compatibility_flags": ["nodejs_compat"],
+  "r2_buckets": [
+    {
+      "binding": "OBJECTS",
+      "bucket_name": "jbovlacku-local-objects",
+      "remote": false,
+    },
+  ],
+  "d1_databases": [
+    {
+      "binding": "INDEX",
+      "database_name": "jbovlacku-local-index",
+      "database_id": "00000000-0000-0000-0000-000000000001",
+      "remote": false,
+    },
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "COORDINATOR", "class_name": "AdmissionCoordinator" },
+    ],
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["AdmissionCoordinator"] },
+  ],
+  "observability": { "enabled": true, "head_sampling_rate": 1 },
+  "vars": {
+    "SERVER_ID": "local-worker",
+    "SELECTED_VIEW": "",
+    "PUBLIC_ORIGIN": "",
+    "PROTOTYPE_BATCH": "disabled",
+    "SNAPSHOT_LIMIT": "16",
+  },
+}

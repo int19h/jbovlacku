@@ -1,0 +1,258 @@
+@font-face {
+  font-family: "Noto Sans";
+  src: url("/fonts/noto-sans-variable.ttf") format("truetype");
+  font-weight: 100 900;
+  font-display: swap;
+}
+@font-face {
+  font-family: "STIX Two Math";
+  src: url("/fonts/stix-two-math-regular.ttf") format("truetype");
+  font-display: swap;
+}
+@font-face {
+  font-family: Crisa;
+  src: url("/fonts/crisa-regular.otf") format("opentype");
+  font-display: swap;
+}
+:root {
+  font-family: "Noto Sans", "STIX Two Math", Crisa, Verdana, sans-serif;
+  color: #242a30;
+  background: #f6f7f3;
+  line-height: 1.6;
+  --paper: #fff;
+  --line: #d7ded5;
+  --accent: #275c45;
+  --muted: #59665e;
+  --warn: #fff6dc;
+  --focus: #326cea;
+  color-scheme: light dark;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+}
+#app {
+  max-width: 56rem;
+  margin: auto;
+  padding: 1.5rem 1.25rem 4rem;
+}
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 1rem;
+}
+.brand {
+  font-size: 1.5rem;
+  font-weight: 650;
+  text-decoration: none;
+  letter-spacing: -0.05em;
+}
+nav {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+a {
+  color: var(--accent);
+  overflow-wrap: anywhere;
+}
+main {
+  max-width: 38rem;
+  margin: 3rem auto;
+}
+main.wide {
+  max-width: 52rem;
+}
+h1 {
+  font-size: clamp(1.6rem, 5vw, 2.2rem);
+  font-weight: 550;
+  line-height: 1.2;
+  letter-spacing: -0.035em;
+}
+h2 {
+  font-size: 1.2rem;
+}
+h3 {
+  font-size: 1rem;
+}
+p {
+  margin: 0.6rem 0 1rem;
+}
+form {
+  margin: 1.5rem 0;
+}
+label {
+  display: block;
+  font-size: 0.9rem;
+  margin: 0.9rem 0;
+}
+input,
+textarea,
+button {
+  font: inherit;
+  color: inherit;
+}
+input,
+textarea {
+  display: block;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  width: 100%;
+  padding: 0.6rem 0.75rem;
+  border-radius: 0.35rem;
+  margin-top: 0.25rem;
+}
+input[type="checkbox"] {
+  display: inline-block;
+  width: auto;
+  margin-left: 0.7rem;
+}
+textarea {
+  min-height: 7rem;
+  resize: vertical;
+}
+button {
+  border: 1px solid var(--line);
+  background: var(--paper);
+  padding: 0.55rem 0.85rem;
+  border-radius: 0.35rem;
+  cursor: pointer;
+  margin: 0.3rem 0.35rem 0.3rem 0;
+  min-height: 44px;
+}
+button:hover {
+  border-color: var(--accent);
+}
+button:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+summary:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 3px;
+}
+article {
+  padding: 1.4rem;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 0.6rem;
+  margin: 1rem 0;
+}
+article > a:first-child {
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+article p {
+  overflow-wrap: anywhere;
+}
+pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 0.8rem;
+  padding: 1rem;
+  background: var(--warn);
+  border-radius: 0.35rem;
+}
+summary {
+  cursor: pointer;
+}
+.muted,
+.prototype {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.prototype {
+  text-align: center;
+  margin-top: 1rem;
+}
+.warning,
+.notice:not(:empty) {
+  background: var(--warn);
+  padding: 0.75rem;
+  border-radius: 0.35rem;
+}
+.notice:empty {
+  display: none;
+}
+.fingerprint {
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+}
+.place-marker {
+  display: inline-block;
+  font-family: "STIX Two Math", "Noto Sans", sans-serif;
+  min-width: 1.4em;
+  text-align: center;
+}
+.direction-warning {
+  text-decoration: underline dotted;
+}
+.zbalermorna {
+  font-family: Crisa, "Noto Sans", "STIX Two Math", Verdana, sans-serif;
+}
+bdi {
+  unicode-bidi: isolate;
+}
+details {
+  margin-top: 1rem;
+}
+.search-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 8rem;
+  gap: 0.4rem 1rem;
+}
+.search-form label:first-child {
+  grid-column: 1/-1;
+}
+.search-form button {
+  align-self: end;
+  margin-bottom: 0.9rem;
+}
+@media (max-width: 480px) {
+  #app {
+    padding: 1rem 0.85rem 3rem;
+  }
+  header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.6rem;
+  }
+  nav {
+    gap: 1.1rem;
+  }
+  main {
+    margin: 2rem auto;
+  }
+  article {
+    padding: 1rem;
+  }
+  .search-form {
+    grid-template-columns: minmax(0, 1fr) 7rem;
+  }
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    color: #e8ede9;
+    background: #131b17;
+    --paper: #1c2720;
+    --line: #3b4c40;
+    --accent: #a3d5b3;
+    --muted: #a5b4a9;
+    --warn: #302b1d;
+    --focus: #8db7ff;
+  }
+}

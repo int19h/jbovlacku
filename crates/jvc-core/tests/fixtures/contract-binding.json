@@ -1,0 +1,11 @@
+{
+  "binding": "current repository contract; original generation provenance is unchanged",
+  "contract": "docs/format.md",
+  "language_rule": "well-formed RFC 5646 section 2.1 syntax, lowercase ASCII, at most 63 bytes; no IANA registry membership test",
+  "sha256": {
+    "docs/format.md": "sha256:4dcb19f7d70b31487ead25620e0d88c4924f8e27cb2a29a0c6b88611f750aa3e",
+    "tests/fixtures/provenance.json": "sha256:e3c5cc73cdb7d84775e94fbd43919d84556587501087ed6d5a3f29abef0ed74d",
+    "tests/fixtures/corpus.json": "sha256:f0bb55fa96b4130609d3cd3e7b45c51bb1de7b13eb524e7d298647c0643e16e8",
+    "tests/fixtures/definition.json": "sha256:db22b039c31d791c65189d872eb809ed1929fc4e9e0aaebe960ea9d856808e68"
+  }
+}

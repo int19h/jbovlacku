@@ -1,0 +1,52 @@
+Synthetic measurements. Single serial run per scenario. Timings include graph construction, exact ranking, 32 candidate scores, 496 candidate differences, and layers.
+Host: Linux-6.17.0-41-generic-aarch64-with-glibc2.42
+rustc 1.99.0 (b940084d7 2026-09-28)
+v24.21.0
+oracle: oracle passed
+oracle: oracle passed
+
+scenario=contributors actors=32 budget=1000000
+native: actors=32 edges=12 work=12 stages=3 exact=true peak_prefixes=12 bits=4 comparisons=496 strict=376 ties=120 digest=8caa8c31fbffc0f3 milliseconds=8.597 peak_rss_kib=2140 cpu_seconds=0.00
+wasm: actors=32 edges=12 work=12 stages=3 exact=1 peak_prefixes=12 bits=4 comparisons=496 strict=376 ties=120 digest=8caa8c31fbffc0f3 milliseconds=45.603 linear_memory_bytes=1179648
+
+scenario=contributors actors=512 budget=1000000
+native: actors=512 edges=192 work=192 stages=3 exact=true peak_prefixes=192 bits=4 comparisons=496 strict=321 ties=175 digest=dd876cd3da05bcdd milliseconds=84.594 peak_rss_kib=2292 cpu_seconds=0.06
+wasm: actors=512 edges=192 work=192 stages=3 exact=1 peak_prefixes=192 bits=4 comparisons=496 strict=321 ties=175 digest=dd876cd3da05bcdd milliseconds=85.317 linear_memory_bytes=1310720
+
+scenario=contributors actors=1000 budget=1
+native: actors=1000 edges=372 work=0 stages=0 exact=false peak_prefixes=31 bits=66 comparisons=496 strict=101 ties=0 digest=07b8ec455e4d2445 milliseconds=235.861 peak_rss_kib=2684 cpu_seconds=0.19
+wasm: actors=1000 edges=372 work=0 stages=0 exact=0 peak_prefixes=31 bits=66 comparisons=496 strict=101 ties=0 digest=07b8ec455e4d2445 milliseconds=243.670 linear_memory_bytes=1572864
+
+scenario=contributors actors=1000 budget=1000000
+native: actors=1000 edges=372 work=372 stages=3 exact=true peak_prefixes=372 bits=4 comparisons=496 strict=323 ties=173 digest=825965d9b6d2e691 milliseconds=141.125 peak_rss_kib=2684 cpu_seconds=0.13
+wasm: actors=1000 edges=372 work=372 stages=3 exact=1 peak_prefixes=372 bits=4 comparisons=496 strict=323 ties=173 digest=825965d9b6d2e691 milliseconds=136.954 linear_memory_bytes=1441792
+
+scenario=hostile actors=16 budget=1000
+native: actors=16 edges=240 work=240 stages=1 exact=false peak_prefixes=256 bits=68 comparisons=496 strict=120 ties=16 digest=aa11c2fccdefb90d milliseconds=49.418 peak_rss_kib=2168 cpu_seconds=0.04
+wasm: actors=16 edges=240 work=240 stages=1 exact=0 peak_prefixes=256 bits=68 comparisons=496 strict=120 ties=16 digest=aa11c2fccdefb90d milliseconds=101.238 linear_memory_bytes=1179648
+
+scenario=hostile actors=32 budget=1
+native: actors=32 edges=992 work=0 stages=0 exact=false peak_prefixes=32 bits=69 comparisons=496 strict=0 ties=0 digest=43943f1052778592 milliseconds=123.675 peak_rss_kib=2392 cpu_seconds=0.12
+wasm: actors=32 edges=992 work=0 stages=0 exact=0 peak_prefixes=32 bits=69 comparisons=496 strict=0 ties=0 digest=43943f1052778592 milliseconds=253.866 linear_memory_bytes=1310720
+
+scenario=hostile actors=32 budget=1000000
+native: actors=32 edges=992 work=493024 stages=3 exact=false peak_prefixes=158720 bits=81 comparisons=496 strict=215 ties=0 digest=4d6109bf91272cd2 milliseconds=1922.799 peak_rss_kib=46680 cpu_seconds=1.80
+wasm: actors=32 edges=992 work=493024 stages=3 exact=0 peak_prefixes=158720 bits=81 comparisons=496 strict=215 ties=0 digest=4d6109bf91272cd2 milliseconds=2797.385 linear_memory_bytes=23986176
+
+scenario=hostile actors=64 budget=1000000
+native: actors=64 edges=4032 work=258048 stages=2 exact=false peak_prefixes=129024 bits=76 comparisons=496 strict=135 ties=0 digest=6d5445694b158bb8 milliseconds=1401.127 peak_rss_kib=32380 cpu_seconds=1.32
+wasm: actors=64 edges=4032 work=258048 stages=2 exact=0 peak_prefixes=129024 bits=76 comparisons=496 strict=135 ties=0 digest=6d5445694b158bb8 milliseconds=2187.452 linear_memory_bytes=16711680
+
+scenario=hostile actors=128 budget=50000
+native: actors=128 edges=16256 work=16256 stages=1 exact=false peak_prefixes=16384 bits=72 comparisons=496 strict=135 ties=0 digest=0fe3ac847ba7961f milliseconds=1909.726 peak_rss_kib=8948 cpu_seconds=1.89
+wasm: actors=128 edges=16256 work=16256 stages=1 exact=0 peak_prefixes=16384 bits=72 comparisons=496 strict=135 ties=0 digest=0fe3ac847ba7961f milliseconds=2888.640 linear_memory_bytes=4784128
+
+scenario=weighted actors=8 budget=1
+native: actors=8 edges=56 work=0 stages=0 exact=false peak_prefixes=8 bits=1255 comparisons=496 strict=0 ties=48 digest=67a14f54ee009e90 milliseconds=437.126 peak_rss_kib=2152 cpu_seconds=0.43
+wasm: actors=8 edges=56 work=0 stages=0 exact=0 peak_prefixes=8 bits=1255 comparisons=496 strict=0 ties=48 digest=67a14f54ee009e90 milliseconds=690.421 linear_memory_bytes=1179648
+
+scenario=weighted actors=16 budget=1
+native: actors=16 edges=240 work=0 stages=0 exact=false peak_prefixes=16 bits=3572 comparisons=496 strict=0 ties=16 digest=45d1d99f1e201741 milliseconds=4597.898 peak_rss_kib=2296 cpu_seconds=4.57
+wasm: actors=16 edges=240 work=0 stages=0 exact=0 peak_prefixes=16 bits=3572 comparisons=496 strict=0 ties=16 digest=45d1d99f1e201741 milliseconds=8119.080 linear_memory_bytes=1245184
+
+resource demonstration: unavailable: ranking resource limit: edges

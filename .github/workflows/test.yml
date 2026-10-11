@@ -1,0 +1,81 @@
+name: Prototype tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prototype-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-wasm-and-browser:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_TARGET_DIR: /build/jbovlacku/target
+      JVC_TEST_ROOT: /build/jbovlacku/tests
+      JVC_STATE_PARITY_DIR: /build/jbovlacku/state-parity
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24.21.0"
+          cache: npm
+      - name: Prepare test files
+        run: |
+          sudo mkdir -p /build/jbovlacku
+          sudo chown "$(id -u):$(id -g)" /build/jbovlacku
+      - name: Install Rust tools
+        run: |
+          rustup toolchain install 1.99.0 --profile minimal --component rustfmt --component clippy --target wasm32-unknown-unknown
+          cargo install wasm-bindgen-cli --version 0.2.105 --locked --jobs 2
+      - name: Install JavaScript and browser tools
+        run: |
+          npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium
+      - name: Format Rust
+        run: cargo fmt --all --check
+      - name: Lint Rust
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Test format, causal state, and ranking
+        run: cargo test --workspace --locked --jobs 2 -- --test-threads=2
+      - name: Build shared WebAssembly
+        run: npm run build:core
+      - name: Compare native and browser format results
+        run: python3 crates/jvc-core/tests/run-browser-parity.py
+      - name: Compare native and browser causal state
+        run: node scripts/test-state-parity.mjs
+      - name: Check TypeScript
+        run: npm run typecheck
+      - name: Test storage and import
+        run: |
+          npm run test:service
+          npx tsx --test packages/importer/test/*.test.ts
+      - name: Build standalone and browser applications
+        run: |
+          npm run build:server
+          npm run build:web
+      - name: Compare standalone and local Workers adapters
+        run: npm run test:adapters
+      - name: Test browser behavior
+        run: npm run test:web
+
+  standalone-image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      JVC_CONTAINER_ENGINE: docker
+      JVC_CONTAINER_IMAGE: jbovlacku:ci
+      JVC_CONTAINER_TEST_DIR: /tmp/jbovlacku-container-tests
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Build standalone image
+        run: bash scripts/container-build.sh
+      - name: Test persistent volume and shutdown
+        run: bash scripts/container-smoke.sh
