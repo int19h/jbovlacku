@@ -182,3 +182,39 @@ fn cli_bare_outputs_and_private_policy_survive_process_reload() {
     assert_eq!(overridden.events().len(), 4);
     assert_eq!(overridden.manifest().unwrap().bodies.count, 1);
 }
+
+#[cfg(unix)]
+#[test]
+fn cli_refuses_fifo_without_waiting_for_a_writer() {
+    use std::{
+        ffi::CString,
+        os::unix::ffi::OsStrExt,
+        time::{Duration, Instant},
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("input.pipe");
+    let name = CString::new(path.as_os_str().as_bytes()).unwrap();
+    // The owned fixture is a FIFO with no writer.
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_jvc"))
+        .args(["canonicalize", path.to_str().unwrap()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if child.try_wait().unwrap().is_some() {
+            break;
+        }
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("CLI blocked while opening a FIFO");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let output = child.wait_with_output().unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("input must be a regular file"));
+}

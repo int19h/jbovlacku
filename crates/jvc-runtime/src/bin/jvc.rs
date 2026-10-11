@@ -3,19 +3,46 @@ use jvc_core::{canonical_value, canonicalize_json, export_jsonl, import_jsonl, v
 use serde_json::json;
 use std::{
     env, fs,
-    io::{self, Write},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
 };
-fn read(path: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let metadata = fs::symlink_metadata(path)?;
+const INPUT_LIMIT: u64 = 64 * 1024 * 1024;
+fn check_input(file: &fs::File, limit: u64) -> Result<(), Box<dyn std::error::Error>> {
+    let metadata = file.metadata()?;
     if !metadata.is_file() || metadata.file_type().is_symlink() {
         return Err("input must be a regular file".into());
     }
-    if metadata.len() > 64 * 1024 * 1024 {
+    if metadata.len() > limit {
         return Err("input exceeds the prototype 64 MiB limit".into());
     }
-    Ok(fs::read(path)?)
+    Ok(())
 }
+fn read_bounded(reader: impl Read, limit: u64) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let mut bytes = Vec::new();
+    reader.take(limit + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > limit {
+        return Err("input exceeds the prototype 64 MiB limit".into());
+    }
+    Ok(bytes)
+}
+fn read(path: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // Check and read the opened file. A replaced pipe must not block the command.
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    #[cfg(not(unix))]
+    if fs::symlink_metadata(path)?.file_type().is_symlink() {
+        return Err("input must be a regular file".into());
+    }
+    let file = options.open(path)?;
+    check_input(&file, INPUT_LIMIT)?;
+    read_bounded(file, INPUT_LIMIT)
+}
+
 fn write_new(path: &str, bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     let mut file = fs::OpenOptions::new()
         .write(true)
@@ -228,5 +255,74 @@ fn main() {
     if let Err(error) = run() {
         eprintln!("{error}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod input_tests {
+    use super::*;
+
+    #[test]
+    fn regular_input_and_exact_size_boundary_are_read_from_the_handle() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("input.json");
+        fs::write(&path, b"null").unwrap();
+        assert_eq!(read(path.to_str().unwrap()).unwrap(), b"null");
+        let file = fs::File::open(&path).unwrap();
+        check_input(&file, 4).unwrap();
+        assert_eq!(read_bounded(file, 4).unwrap(), b"null");
+        let file = fs::File::open(&path).unwrap();
+        assert!(check_input(&file, 3).is_err());
+    }
+
+    #[test]
+    fn growth_after_handle_metadata_check_cannot_bypass_the_read_limit() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("input.json");
+        fs::write(&path, b"null").unwrap();
+        let file = fs::File::open(&path).unwrap();
+        check_input(&file, 4).unwrap();
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b" ")
+            .unwrap();
+        assert!(
+            read_bounded(file, 4)
+                .unwrap_err()
+                .to_string()
+                .contains("64 MiB limit")
+        );
+    }
+
+    #[test]
+    fn oversized_regular_input_is_rejected_before_reading() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("oversized.json");
+        fs::File::create(&path)
+            .unwrap()
+            .set_len(INPUT_LIMIT + 1)
+            .unwrap();
+        assert!(
+            read(path.to_str().unwrap())
+                .unwrap_err()
+                .to_string()
+                .contains("64 MiB limit")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinks_are_refused_and_regular_executable_json_is_allowed() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("input.json");
+        fs::write(&path, b"null").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(read(path.to_str().unwrap()).unwrap(), b"null");
+        let link = temp.path().join("link.json");
+        symlink(&path, &link).unwrap();
+        assert!(read(link.to_str().unwrap()).is_err());
     }
 }

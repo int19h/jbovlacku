@@ -491,6 +491,7 @@ dependencies = [
  "jvc-core",
  "jvc-rank",
  "jvc-state",
+ "libc",
  "serde",
  "serde_json",
  "serde_json_canonicalizer",
