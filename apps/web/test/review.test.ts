@@ -144,6 +144,7 @@ test("SPA routes update the title, focus the heading, and identify dictionary la
   await expect(page.locator("main h1")).toBeFocused();
   const fixture = await page.evaluate(async (corePath) => {
     const core = await import(corePath);
+    await core.initializeCore();
     const word = { language: "jbo", spelling: "klama" };
     const record = core.createEvent(
       new Uint8Array(32).fill(95),
@@ -494,6 +495,7 @@ test("hash-correct packages reject malformed descriptors and every entry field b
   await page.goto("/");
   const results = await page.evaluate(async (corePath) => {
     const core = await import(corePath);
+    await core.initializeCore();
     const { downloadPackage } = await import(String("/src/api.ts"));
     const snapshot = "sha256:" + "a".repeat(64);
     const entry = {
@@ -621,6 +623,7 @@ test("invalid downloaded and cached packages leave server search usable", async 
   await page.goto("/");
   const fixture = await page.evaluate(async (corePath) => {
     const core = await import(corePath);
+    await core.initializeCore();
     const { LocalStore } = await import(String("/src/storage.ts"));
     const snapshot = "sha256:" + "a".repeat(64);
     await new LocalStore().put("packages", "en", {
@@ -833,6 +836,7 @@ test("local search keeps the strongest definition match and exposes unavailable 
     await page.goto("/");
     const expected = await page.evaluate(async (corePath) => {
       const core = await import(corePath);
+      await core.initializeCore();
       const { LocalStore } = await import(String("/src/storage.ts"));
       const entry = (
         event: number,
@@ -970,6 +974,7 @@ test("a native IndexedDB open failure keeps a warning and allows anonymous onlin
   ).toBeDisabled();
   const fixture = await page.evaluate(async (corePath) => {
     const core = await import(corePath);
+    await core.initializeCore();
     const word = { language: "jbo", spelling: "broda" };
     return core.createEvent(
       new Uint8Array(32).fill(97),
@@ -1067,6 +1072,7 @@ test("own-history pagination rejects loops and malformed pages while preserving 
   await page.goto("/");
   const results = await page.evaluate(async (corePath) => {
     const core = await import(corePath);
+    await core.initializeCore();
     const { ownHeads } = await import(String("/src/api.ts"));
     const seed = new Uint8Array(32).fill(103);
     const parent = core.createEvent(
@@ -1434,6 +1440,7 @@ test("local search renders fifty results per page with a literal strongest-match
   await page.goto("/");
   const expected = await page.evaluate(async (corePath) => {
     const core = await import(corePath);
+    await core.initializeCore();
     const { LocalStore } = await import(String("/src/storage.ts"));
     const entries = Array.from({ length: 121 }, (_, index) => ({
       event: "jve1:" + (index + 1).toString(16).padStart(64, "0"),

@@ -198,34 +198,39 @@ test("backup validation rejects extra headers and large files before password wo
   page,
 }) => {
   await page.goto("/");
-  const results = await page.evaluate(async () => {
-    const { createKey, parseBackup } = await import(String("/src/keys.ts"));
-    const created = await createKey("test");
-    const parts = created.backup.jwe.split(".");
-    const header = JSON.parse(
-      atob(parts[0].replaceAll("-", "+").replaceAll("_", "/")),
-    );
-    header.jku = "https://example.invalid/keys";
-    parts[0] = btoa(JSON.stringify(header))
-      .replaceAll("+", "-")
-      .replaceAll("/", "_")
-      .replaceAll("=", "");
-    const messages = [];
-    for (const value of [
-      JSON.stringify({ ...created.backup, jwe: parts.join(".") }),
-      " ".repeat(16385),
-    ]) {
-      try {
-        parseBackup(value);
-        messages.push("accepted");
-      } catch (error) {
-        messages.push(String(error));
+  const results = await page.evaluate(
+    async (corePath) => {
+      const core = await import(corePath);
+      await core.initializeCore();
+      const { createKey, parseBackup } = await import(String("/src/keys.ts"));
+      const created = await createKey("test");
+      const parts = created.backup.jwe.split(".");
+      const header = JSON.parse(
+        atob(parts[0].replaceAll("-", "+").replaceAll("_", "/")),
+      );
+      header.jku = "https://example.invalid/keys";
+      parts[0] = btoa(JSON.stringify(header))
+        .replaceAll("+", "-")
+        .replaceAll("/", "_")
+        .replaceAll("=", "");
+      const messages = [];
+      for (const value of [
+        JSON.stringify({ ...created.backup, jwe: parts.join(".") }),
+        " ".repeat(16385),
+      ]) {
+        try {
+          parseBackup(value);
+          messages.push("accepted");
+        } catch (error) {
+          messages.push(String(error));
+        }
       }
-    }
-    if (created.key.extractable)
-      throw new Error("The working key is exportable.");
-    return messages;
-  });
+      if (created.key.extractable)
+        throw new Error("The working key is exportable.");
+      return messages;
+    },
+    `/@fs${resolve("packages/core/src/index.ts")}`,
+  );
   expect(results[0]).toContain("not supported");
   expect(results[1]).toContain("exceeds 16 KiB");
 });
@@ -268,6 +273,7 @@ test("two tabs preserve concurrent signed branches in one storage transaction", 
   const fixture = await page.evaluate(
     async (corePath) => {
       const core = await import(corePath);
+      await core.initializeCore();
       const { createKey } = await import(String("/src/keys.ts"));
       const key = await createKey("concurrency-test");
       const make = async (previous: string[], n: string) => {
@@ -425,6 +431,7 @@ test("a hash-correct signed body with an invalid schema stays unavailable", asyn
   const id = await page.evaluate(
     async (corePath) => {
       const core = await import(corePath);
+      await core.initializeCore();
       const fixtureSeed = crypto.getRandomValues(new Uint8Array(32));
       const body = {
         text: [["This malformed body must not become a readable definition."]],
