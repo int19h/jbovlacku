@@ -300,6 +300,7 @@ test("word pages use server layers and separate unavailable and deprecated defin
   await page.goto("/");
   const fixture = await page.evaluate(async (corePath) => {
     const core = await import(corePath);
+    await core.initializeCore();
     const seed = new Uint8Array(32).fill(81);
     const word = { language: "jbo", spelling: "broda" };
     const records = Array.from({ length: 4 }, (_, index) =>
@@ -710,6 +711,7 @@ test("object and package waits expire and oversized streams are cancelled", asyn
   await page.goto("/");
   const result = await page.evaluate(async (corePath) => {
     const core = await import(corePath);
+    await core.initializeCore();
     const { api, getEnvelope, downloadPackage } = await import(
       String("/src/api.ts")
     );
