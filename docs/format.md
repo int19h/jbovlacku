@@ -629,15 +629,32 @@ A derivation item contains `word`, nullable `definition`, positive `place`, and 
 
 Both frame and place `constraints` fields are arrays of rich-text values. `glosses`, `type_hints`, `defaults`, and `derivation` are arrays, even when empty.
 
-`license` contains `expression`, nullable `url`, and `attribution` text. Unknown legacy rights use `expression: "unknown"`.
-A license value records the contributor's claim. Signature acceptance does not establish that claim's legal validity.
-The reference frontend proposes CC0-1.0 for new submissions and requires explicit contributor agreement.
+`license` contains `expression`, nullable `url`, and `attribution` text.
+A license value records a rights claim. Signature acceptance does not establish that claim's legal validity.
 
-An operator must settle its contribution terms before public launch. The protocol does not silently relicense imported text.
-Lensisku's audited source includes the public-domain disclaimer quoted in the finalization record.
-Preserve that source statement and its provenance. Do not replace it with a claim that the source explicitly selected CC0.
+The reference client fills new native definitions with `expression: "CC0-1.0"` and `url: "https://creativecommons.org/publicdomain/zero/1.0/"`.
+The Publish action is explicit agreement to these terms. The client shows the linked notice before that action, without a separate checkbox.
+The [frontend specification](frontend.md#5-add-a-definition) defines the publication flow and notice.
+The software license remains a separate prelaunch decision.
 
-Prototype fixtures declare their own rights. They do not establish contribution terms for the future public service.
+Imported Lensisku dictionary text uses `expression: "LicenseRef-Lensisku-Public-Domain"`.
+Its `url` is `https://github.com/lojban/lensisku/blob/d5a12821ed1e8c24ede711b63625b0782d2f6ae8/frontend/src/locales/en.json#L362`.
+This expression records the source public-domain claim. It does not mean that Lensisku selected CC0.
+The importer preserves original author attribution and the following exact statement in `license.attribution`:
+
+> All content is public domain. By submitting content, you agree to place it in the public domain to the fullest extent allowed by local law.
+
+The importer also records a source reference with that URL and locator `footer.publicDomainNotice`.
+Retain the statement and pinned source evidence in the import archive.
+This is the importer's report of the source notice, not proof of historical contributor consent or authorship.
+The notice covers imported dictionary text. It does not establish rights for third-party images or other separately sourced artifacts.
+
+Imports without established rights retain `expression: "unknown"` and their available source evidence.
+Existing signed bodies with unknown rights remain immutable. Section 11 defines how an explicit enriched extraction records newly established rights.
+A native revision uses the same CC0 fields for the contributor's own contribution.
+Its `license.attribution` and `sources` retain the imported rights claim, original attribution, and source evidence.
+That action does not relicense the imported source.
+Prototype fixtures declare their own rights and do not establish rights for real source content.
 
 ### Example of a structured definition
 
@@ -666,7 +683,7 @@ This complete body includes empty values for its unused fields. Pretty-printed e
   "notes":[],"etymology":{"text":[],"formation":null,"compound":null},"examples":[],
   "classification":{"kind":"gismu","selmaho":[]},
   "labels":[],"sources":[],
-  "license":{"expression":"CC0-1.0","url":null,"attribution":"Illustrative specification example"},
+  "license":{"expression":"CC0-1.0","url":"https://creativecommons.org/publicdomain/zero/1.0/","attribution":"Illustrative specification example"},
   "legacy":null
 }
 ```
@@ -799,7 +816,9 @@ The scorer counts each actor's effective judgment once per definition publicatio
 Support sums weights for blessings. Opposition sums weights for curses. Net support equals support minus opposition.
 A deprecated definition contributes no score and sorts after every active definition in its word and language context.
 
-A publication's author receives no automatic blessing. A new revision receives no automatic transfer of other people's judgments.
+A publication alone gives its author no automatic blessing. The reference client publishes a separate signed author blessing with each definition or rafsi claim.
+This is client behavior, not a condition for valid publication. Other clients and importers can publish without that judgment.
+A new revision receives no automatic transfer of other people's judgments.
 
 ### Bounded calculation
 
@@ -1173,6 +1192,7 @@ The complete source bytes remain separately available in the import archive when
 
 Importers publish under their own keys. They attest to extraction, not to possession of historical users' signing keys.
 A historical author name never becomes a modern key binding without a separate authenticated claim.
+An importer never becomes the original author or an organizational signer merely by importing its content.
 An importer cannot withdraw an imported publication merely because it signed the extraction. An accepted source author can control definition status under the rules below.
 Corrections create new publications with source evidence and parent links.
 
@@ -1232,6 +1252,10 @@ A poorer capture cannot erase richer historical evidence. Newly exposed fields e
 A deliberate enriched extraction can create a new imported revision, labeled enrichment rather than a historical author edit.
 
 Changing extraction software alone does not automatically republish every definition.
+A deliberate rights enrichment uses an updated extraction version and creates a new imported publication with the previous publication as its parent.
+It retains the source notice and labels the change as importer evidence, not a historical author edit.
+This applies even when the lexical digest is unchanged. It never rewrites an existing signed body.
+The view publisher explicitly selects the new publication under the existing import-selection rules.
 A changed known lexical value creates a new imported revision. Its parent is the preceding known version for the same word and language.
 If the source changes word or language, use a source reference rather than an invalid parent link across contexts.
 A source reversion can reuse a prior identical publication and its existing judgments. The ledger records the new observation separately.

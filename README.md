@@ -26,11 +26,13 @@ Signing needs localhost or HTTPS. A plain HTTP Tailscale address supports readin
 
 The importer prepares signed proposals from pinned local Lensisku JSON captures. Repeat imports reuse signed records and retain source evidence.
 It keeps definitions literal and preserves unknown fields as unknown. It does not infer places or individual votes.
+The current importer records unknown rights. The source-notice convention below remains a target change.
 The committed adapter comparison uses one signed profile event. Importer tests include a two-row fixture derived from a pinned 2,429-row API capture.
 Full-capture runs are separate development evidence, not part of these committed tests. This capture does not represent the general SQL migration.
 The [importer guide](packages/importer/README.md) describes its input, journal, signing command, and limits.
 
 The guided wizard, word builders, transfer editor, status editor, semantic search, AI, and Lensisku cross-posting remain target features.
+The [web UI design](docs/ui-design.md) also remains a target. The prototype does not implement that redesign.
 The general SQL migration, automatic rafsi publications, and structured import conversion also remain unfinished.
 The complete `jvc` command catalog in the format specification remains a target interface.
 The [development guide](docs/development.md) describes the implemented native commands.
@@ -74,6 +76,7 @@ The documentation defines the product, its records, and the development process:
 
 - [Format specification](docs/format.md): Target signed records, causal state, identities, imports, and ranking.
 - [Frontend specification](docs/frontend.md): Target browser behavior, server contracts, authoring, and optional inference.
+- [Web UI design](docs/ui-design.md): Target screens, visual rules, and publication flow.
 - [Prototype plan](docs/prototype-plan.md): Required implementation stages and demonstrations.
 - [Handover cases](docs/handover-cases.md): Required account-control outcomes.
 - [Development guide](docs/development.md): Local builds, tests, shared VM work, and review requirements.
@@ -82,8 +85,12 @@ The documentation defines the product, its records, and the development process:
 
 ## Rights and release
 
-The software license and terms for new contributions remain prelaunch decisions.
-This repository does not assign a license by implication. Imported material retains its source rights statements and attribution.
-The Lensisku disclaimer does not select CC0 for new Jbovlacku submissions.
+New native definitions use CC0 1.0 in the target contribution flow.
+The client shows the [CC0 notice](https://creativecommons.org/publicdomain/zero/1.0/) before publication. Selecting Publish is explicit agreement, without a separate checkbox.
+The [format specification](docs/format.md#remaining-body-fields) defines the fixed fields and imported source-rights convention.
+Imported Lensisku dictionary text retains its public-domain source claim, original attribution, and pinned notice evidence. It does not become a historical CC0 submission.
+Existing signed imports remain unchanged. A contributor who revises imported text releases only their own contribution under CC0 and retains the source evidence.
+Imports with unestablished rights remain explicitly unknown. Third-party images need their own rights evidence.
+The software license remains a prelaunch decision. This repository does not assign a software license by implication.
 The [third-party notices](docs/third-party-notices.md) preserve the licenses of dependencies and bundled fonts.
 A public launch must also state trust roots, account witnesses, accepted imports, retention rules, and optional inference policies.

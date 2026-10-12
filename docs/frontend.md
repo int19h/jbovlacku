@@ -4,6 +4,8 @@ This specification defines target behavior for the web app and both server adapt
 The [README](../README.md) describes the implemented scope.
 The [repository specification](format.md) defines signed events, structured content, identity continuity, and ranking.
 Its field names and authority rules take precedence over illustrative interface copy here.
+The [UI design](ui-design.md) defines the visual system and twelve screen layouts.
+These documents define target behavior, not completed frontend implementation.
 
 ## 1. Product boundary
 
@@ -86,8 +88,9 @@ The release tests exchange snapshots and vector artifacts between both adapters 
 
 ## 3. Interface structure and appearance
 
-The primary surface is a centered search column, about 38rem wide.
-Definition pages can expand to 52rem for a place table or a revision comparison.
+The search column has a maximum width of 40rem. Word pages use 44rem, and the wizard uses 64rem.
+The header and footer use a centered 64rem container.
+A comparison can use the wider wizard container when its content needs it.
 A desktop comparison can use two columns. A narrow screen stacks those columns without horizontal page scrolling.
 At 360 CSS pixels, ordinary controls and prose must fit the viewport.
 
@@ -97,7 +100,9 @@ Dedicated mathematical symbols put STIX Two Math first. This prevents a prose fo
 
 Zbalermorna text puts Crisa first, followed by Noto Sans and the math fallback. Ordinary interface text keeps Noto Sans first.
 An orthography preference changes rendering, not signed word spellings. Preserve accessible Latin text and an explicit copy-format choice.
-Bundle the required script subsets and symbol glyphs. Include each font's license with its files.
+Self-host the required font files, script subsets, and symbol glyphs. Include each font's license with its files.
+The gismu generator includes Noto Sans Devanagari, Noto Sans Arabic, and Noto Sans SC for native source words.
+Do not fetch fonts from a third party during ordinary page use.
 
 Use 16px body text, 1.5 line spacing, and a restrained size scale.
 Use neutral surfaces, thin separators, and one accent color. Support light and dark themes from the system preference.
@@ -106,6 +111,15 @@ Do not rely on color to distinguish support, opposition, withdrawal, or conflict
 Search stays prominent. Metadata remains secondary. Notes, source details, and history use named disclosure buttons.
 Advanced fields appear on demand. They remain reachable by keyboard and visible in the full publication preview.
 No modal dialog is required for ordinary reading, expanding notes, or switching definition language.
+
+Every page includes the wordmark, labeled search field, “Add a word,” delivery marker when needed, and local identity link.
+The identity link shows the lock state with an accessible label.
+The delivery marker counts distinct unfinished failed events, never attempts or network requests.
+One event with failures at several peers counts once. Its per-peer outcomes remain separately visible.
+The footer links to the active trust view, Settings, About, and Source.
+The search page starts with results for the current query, without an introduction.
+There is no general activity feed, chat, discussion control, or icon-only navigation.
+Short explanations appear where the user takes the relevant action. Critical state, conflicts, and errors remain visible.
 
 The app provides these addressable routes:
 
@@ -120,7 +134,7 @@ The app provides these addressable routes:
 | `/review` | Optional review queue. |
 | `/trust` | Public decisions and private view controls. |
 | `/identity` | Local key, backup, transfer, and loss controls. |
-| `/outbox` | Signed submissions and delivery outcomes. |
+| `/outbox` | “Not delivered,” with unfinished delivery failures and an empty state. |
 | `/preferences` | Languages, peers, storage, data export, and appearance. |
 
 Every route preserves browser back and forward behavior. Query changes use replace-state while typing, then a stable navigation state when selected.
@@ -128,7 +142,8 @@ Links to a publication always retain its exact event ID. A default word link doe
 
 ## 4. Search and reading
 
-The initial page shows a labeled search field, definition-language selector, active view name, and a short description.
+The header provides search on every page. The initial page shows the current results and a quiet definition-language selector above them.
+The initial definition language is English. The active view link appears in the footer.
 The interface language and definition language are separate preferences.
 A user can read English definitions through a Russian interface, for example.
 Search begins without identity generation, cookie consent for optional tracking, or a key prompt.
@@ -136,7 +151,8 @@ The baseline includes no third-party analytics.
 
 The browser downloads a compact search package for the selected language from a stated snapshot.
 It performs ordinary headword, gloss, and text searches locally after that download.
-A remote search mode remains available for large languages or limited devices. Its label states that queries reach the server.
+A remote search mode remains available for large languages or limited devices. Settings contains the local or remote mode choice.
+Before its first remote query, the app states that queries reach the named server.
 A change of mode does not silently upload previously local query history.
 
 Search normalization affects lookup only. It never rewrites signed spellings or definition text.
@@ -148,14 +164,35 @@ Within a class, use lexical relevance and stable word-ID order. Search ordering 
 The word page uses the format's definition layers and attributed score calculations. Show alternative definitions instead of collapsing them into one word-level score.
 Typo suggestions and rafsi decomposition are labeled suggestions, not silent spelling corrections.
 
-The default result card shows the headword, word kind, brief definition, and compact editorial state.
-It offers “Other definitions” when alternatives exist. Language filters never erase that fact.
+Each result uses a dense row with three content lines and a thin separator.
+The first line contains the linked headword, italic rafsi, type, and selma'o when applicable.
+The second line contains definition prose, place markers, and highlighted matches.
+The third line contains linked author attribution, a known date, and the judgment arrows with net score.
+Signed headers contain no creation timestamp. Source dates require provenance.
+A receipt date reads “Seen …” and identifies the receiving server in its details.
+It never implies the original creation date. Unknown dates remain omitted.
+Identity activity can use receipt chronology for navigation, never causal conflict resolution.
+A text link labeled “notes” opens existing notes. An “also:” link exposes another matching definition of the same word.
+Language filters never erase the existence of alternatives. Search classes have no visible group headings.
+
+The list offers “show all” with the remaining count, “Missing a word for this? Add it,” and a retired-results filter.
+A rafsi lookup identifies the related word, for example “cku ← cukta,” and exposes competing assignments when present.
+Rafsi lookup does not silently pick an unresolved assignment.
 A single unreviewed definition remains visible. A lack of endorsements is not a negative judgment.
 A rejected or deprecated result remains available through an explicit filter and its permanent publication link.
 
 A word page groups definitions by language. Each publication retains its own frame and attribution.
 Ranking selects a presentation layer, not one universal meaning. The UI does not call a lower-ranked sense false because another sense exists.
-The full card shows notes, etymology, glosses, places, examples, sources, parent revisions, and history.
+The full definition block shows notes, etymology, glosses, places, examples, sources, parent revisions, and history.
+Language tabs show counts. Each block includes a permanent revision link, reviewer disclosure, place strip, and “Revise” action.
+A proposed revision includes a notice and “Compare.” A place strip without descriptions offers “Add descriptions.”
+After the definitions, offer “Add a definition,” “Add a translation,” and related word links.
+Source disclosures retain original text, Lensisku attribution, numeric account evidence when known, and the importer signer.
+No “official” badge appears. Organizations use ordinary identities and endorsements.
+The intended baseline curator uses an ordinary key and actual signed endorsements of baseline publications.
+Its inclusion in the initial site view requires an approved roster, allocation, and identity name.
+A placeholder such as “LLG” never establishes authorship, endorsements, or an approved trust root.
+An importer never signs an endorsement as that curator or changes original source-author attribution.
 
 The client renders all imported text as inert content. It never evaluates HTML, remote scripts, or executable TeX.
 
@@ -173,6 +210,10 @@ Switching modes preserves every field. It never flattens structured values into 
 An optional JSON inspector remains read-only until the user deliberately enters a raw-edit mode.
 
 A reader can draft before generating an identity. Only publication requires the signing key.
+The step bar reads Meaning, Type, Form, Places, Publish.
+“Skip to the full editor” opens step 4 with every field section open.
+That editor also permits manual headword and type entry. Skipping a builder never skips publication validation.
+Each step saves the draft in this browser and exposes its save state.
 
 ### Step 1: meaning and nearby definitions
 
@@ -181,12 +222,16 @@ The author can use `___` for argument placeholders, but ordinary prose also work
 Underscores are an editor convention. The draft retains their spans without assigning final place numbers automatically.
 The app preserves this original meaning draft separately from the current editable definition.
 
-Before suggesting a new word, the app searches existing definitions for similar meanings.
-It uses the selected semantic-search profile when available, and shows exact words, definitions, and languages beside each result.
+The nearby-definition panel uses its local lexical package by default. It does not inherit remote upload from the ordinary search setting.
+If the package is missing, offer a download or continue manually. No private draft uploads passively.
+An explicit remote lexical request requires disclosure and consent for the text sent.
+A “by meaning” choice enables the selected semantic-search profile after consent.
+The panel shows exact words, definitions, and languages beside each result.
+Its best match offers “Add a definition” and “Revise this one.” Other matches offer “Use this word.”
 Similarity is a suggestion, not proof that the meaning already exists. The author can choose an existing word or continue with a new word.
 Choosing an existing word offers adding a sense or revising a particular definition. It never silently overwrites that definition.
 
-The confirmation reads “Continue with a new word” and remains available even when similar entries exist.
+The primary button reads “New word” and remains available even when similar entries exist.
 
 A remote semantic query sends draft text outside the browser. Before the first request, disclose the selected server and embedding provider.
 The author can use lexical search instead. An unavailable semantic service never blocks the wizard.
@@ -289,6 +334,15 @@ The wizard does not pretend that all word types use the gismu or lujvo algorithm
 ### Step 4: places, glosses, and supporting fields
 
 The author edits the current definition alongside a place table. All structured fields remain available without AI.
+Each place row provides Description, Gloss, Kind of thing, and From.
+Kind of thing edits the complete type_hints format, including alternatives, custom tags, abstractors, relation arity, and notes.
+The example choices object, event, property, number, and unspecified are shortcuts, not a closed schema.
+From edits derivation entries with a source word, optional exact source definition, source place, and explanation.
+The frame controls support fixed, variadic, context-dependent, and unspecified structure.
+Defaults and constraints, Notes, Examples, Etymology, and Sources use named disclosures.
+The full editor also exposes grammatical operands, classification, labels, and every other publication field.
+Fixed license values, derived identifiers, and generated provenance remain read-only.
+Showing every field does not permit changing import origin or claiming another author's evidence.
 The app offers numbered place insertion, descriptions, glosses, expected values, defaults, constraints, examples, notes, and etymology.
 The wizard can suggest placeholder mappings, but the author approves numbering before publication.
 Repeated references can name the same place. Textual order does not determine final place order.
@@ -309,11 +363,26 @@ Accepted suggestions remain ordinary author-controlled draft data. The app does 
 Show the complete spelling, definition, place table, formation evidence, sources, license, selected identity, and any conflict acknowledgments.
 Signing requires valid structured references and schema fields. Linguistic disagreement alone does not make the record structurally invalid.
 The author can correct a typed reference or convert it to literal text after a preview.
-The proposed contribution license remains CC0-1.0, with explicit contributor agreement and preserved imported-source rights.
+New native definitions use fixed `license.expression: "CC0-1.0"` and the official CC0 URL.
+The notice reads: “New definitions use CC0 1.0. By publishing, you release your contribution under CC0 1.0.”
+Link “CC0 1.0” to https://creativecommons.org/publicdomain/zero/1.0/. The Publish action expresses agreement, without a separate checkbox.
+Imported text retains its source rights statement and provenance. This notice does not claim that legacy authors selected CC0.
 
-Publish signs locally and queues the exact definition. An unchecked endorsement control creates a separate judgment.
-Selected rafsi claims are separate publications, with their own optional endorsements and delivery receipts.
-A partial upload never becomes one misleading success message. The outbox preserves every signed record for retry or export.
+The preview uses the word page layout and names the selected signing identity and delivery recipients.
+It says “Signed with your key, with your endorsement.” There is no endorsement checkbox.
+An untested backup warning appears above Publish until the local backup test passes.
+
+Publish signs the definition and a separate author judgment with `value: "bless"`.
+Each selected rafsi creates a separate claim and a separate blessing of its word and rafsi pair.
+The app persists the whole intended group, complete immutable envelopes, bodies, IDs, and recipient choices before any dispatch.
+It then sends those records in dependency order. Every record and peer has an independent receipt.
+This group does not form an atomic network transaction. Retry reuses the stored records, never replacement signatures.
+
+After the definition receives durable acceptance, navigate to its word page and report unfinished outcomes separately.
+Accepted records with pending dependencies or index lag never appear as fully interpreted, published results.
+Index lag alone never triggers redelivery.
+On delivery failure, show a clearly labeled local pending preview and the “Not delivered” marker.
+The retained group remains available for retry or export. Section 10 defines delivery handling.
 
 Optional Lensisku publication is another explicit action with its own result. It cannot roll back an accepted jvc publication.
 
@@ -337,7 +406,8 @@ Anyone can propose a revision. The resulting card identifies its signer and whet
 The UI never says that a proposal replaced its parent merely because it has a later timestamp.
 It shows branching revisions and lets readers compare text, places, defaults, sources, and other changed fields.
 
-A revision starts with no endorsements. If its body is unavailable, the parent still shows that a proposed revision exists.
+Publishing a revision creates its own author endorsement. It inherits no judgments from its parent.
+If its body is unavailable, the parent still shows that a proposed revision exists.
 An unavailable child never makes its parent the silently declared latest revision. The first release offers “Watch for revisions” as a local notification preference only.
 For imports, the view's current choice reads “selected source revision.” Other versions read “other imported revisions of this source record.”
 Parent links never establish which imported state is current after a source reversion.
@@ -358,7 +428,8 @@ A controller dispute disables new author commands. Equal complete status results
 A new status action follows every known own branch for its target. The client never attempts cross-period replacement of stale former-key records.
 A successor's claim fixes the adopted history. Later records outside that boundary cannot reopen its status.
 
-Imported bytes, attribution, and importer signatures remain unchanged. Restoration reactivates existing judgments, while a native revision starts without inherited endorsements.
+Imported bytes, attribution, and importer signatures remain unchanged. Restoration reactivates existing judgments.
+Publishing a native revision adds its author endorsement but inherits no other endorsements.
 
 For other authors, offer “Oppose” and “Propose a revision.” Neither action pretends to change another author's status.
 A word with only known deprecated definitions reads “No active definitions in this snapshot.”
@@ -368,6 +439,7 @@ Rafsi claims appear in a separate section on the word page.
 “Assign a rafsi” asks for the spelling, rationale, and optional source references.
 It shows current claims for that spelling across words before signing.
 A conflict is permitted and prominently labeled.
+Publishing a rafsi claim also signs a separate author blessing of the pair. Both records persist before dispatch.
 An inactive pair shows whether its claims or its word definitions caused inactivity, with links to the relevant status events.
 Each pair card groups its claim publications and offers Endorse, Oppose, and Clear my judgment.
 
@@ -381,7 +453,22 @@ Their help text maps them to bless, curse, and clear. Definition judgments apply
 A reason is optional. The UI does not demand prose for every curator action.
 A changed judgment follows the contributor's known event frontier and replaces their earlier causally ordered judgment.
 
-A card shows support, opposition, and direct reviewer count separately.
+A card shows one net score between Endorse and Oppose arrows.
+The title and accessible name expose support, opposition, and direct reviewer count.
+A keyboard- and tap-accessible disclosure exposes the same breakdown without hover.
+The word page also provides an “N reviewers” disclosure with identities, their routes, and influence units.
+The interface uses “score,” not “votes.” Display rounding changes presentation only, never ranking or the calculation profile.
+Exact details retain the underlying values. A bounded score shows an honest range or “Order unresolved.”
+An unavailable score reads “Unavailable,” never an invented zero.
+
+Selecting an unpressed arrow sets that judgment. Selecting the pressed arrow clears it.
+The controls expose accessible names and `aria-pressed` for an unambiguous known judgment.
+A known clear or absent judgment leaves both arrows unpressed. Unknown evidence is not a known absence.
+Conflicted judgments show conflict without arbitrarily pressing either arrow.
+A pending local action remains distinct from known accepted state.
+With an unlocked key, an arrow takes one action from the result row.
+The first action creates or unlocks a key, then resumes the exact revision or pair that the user selected.
+The client never substitutes a newer revision while that flow runs.
 “One reviewer, 20 influence units” is valid. “20 people agree” is not an acceptable substitution.
 Numbers are not percentages, probabilities, or proof that a definition is correct.
 Every card also shows the current user's own judgment separately. A personal “My judgments first” toggle applies an explicit local presentation preference.
@@ -393,7 +480,12 @@ If a layer contains more than five candidates, show its size and a shared banner
 An identity page shows its name claim, fingerprint, known successor state, and its dictionary actions.
 “Edit public profile” opens name, biography, and HTTPS link fields for the current identity.
 Its preview states that this is a public signed claim with retained history.
-The fingerprint remains accessible wherever a name appears. Display-name equality never merges identities.
+The full fingerprint appears on the local and public identity pages.
+Elsewhere, each identity name links to its public page, and the link title contains its fingerprint.
+Authority previews provide that fingerprint link so that a display name alone never establishes authority.
+Wrap names in `<bdi>`. Display-name equality never merges identities.
+An imported author without a proven key binding links to source-account evidence rather than an invented signing identity or fingerprint.
+The importer signer remains separately inspectable.
 
 Recent contributions can help discovery. They do not become an automatic reputation score.
 The app offers no global popularity leaderboard.
@@ -401,7 +493,7 @@ The app offers no global popularity leaderboard.
 “Trust reviews from this identity” opens a short choice between a private preference and a public heed.
 The explanation states that this also follows the people that identity trusts, within matching scopes.
 The default scope is all dictionary judgments. Advanced controls narrow it by definition language, word, or definition versus rafsi claims.
-The user sees the subject's fingerprint and selected scope before publishing.
+Before publishing, the user sees the subject identity link with its fingerprint and the selected scope.
 A public decision states that its history is public even after a later clear.
 
 “Ignore influence from this identity” creates a local shun by default.
@@ -416,6 +508,12 @@ Reports do not automatically ban identities in the first release. A view publish
 
 A storage operator can separately refuse content under its published admission policy.
 
+The trust page provides “Mine: site view + my choices” and “Site view only” modes.
+It lists “People I trust” and “People I ignore,” with explicit public or private labels and their scopes.
+“Make public” opens a deliberate signed preview. Undo of a public choice signs clear and retains its history.
+Clearing a public choice does not clear a separate private block.
+Removing a root removes its starting allocation, but independent incoming routes can still supply influence.
+Ignore blocks the identity and routes through it in the personal view.
 The trust page distinguishes public records, private overrides, and the active public view.
 Private preferences remain local unless the user explicitly exports them. A public publish button never appears as an automatic save for private changes.
 The view detail shows roots, allocations, rafsi_threshold, H, alpha, exclusions, accepted import selections, and the calculation budget.
@@ -425,6 +523,7 @@ A witness update needs certificates from its new witness set. The preview shows 
 The inherited policy history supplies an availability guard, not a substitute current controller. A parentless reset previews discarded history and changed status.
 Each import entry exposes its source, importer, and exact publication selection. Each publication exposes its original snapshot and extraction version.
 
+It labels H as “Outward allowance,” not reach or a depth limit.
 It labels H=3 and alpha=1/2 as initial values for real-use tuning.
 Users can pin an older view, import another view, or create a personal overlay.
 Results always name an exact view event. If a known newer view body is unavailable, label the older selection explicitly.
@@ -575,14 +674,30 @@ A key backup does not contain drafts or outbox events. Each has a separate expor
 A signed outbox event is immutable. Retry sends the identical bytes and ID.
 Editing a signed publication creates a new draft or revision. It never mutates a queued signed body.
 The outbox records independent receipts for each peer.
-Its visible states are: local draft, signed and queued, accepted, accepted pending dependencies, refused by this server, and delivery unknown.
+Internal delivery states distinguish signed and queued, accepted, accepted pending dependencies, refused by this server, and delivery unknown.
+Unsigned drafts remain separate local draft state.
+The page title is “Not delivered,” and its path remains `/outbox`.
+It shows only unfinished records after offline delivery, failure, refusal, or an unknown outcome.
+An ordinary transient send does not create a header warning. Each visible row states the last attempt and next retry.
+“Try now” follows the same receipt lookup and immutable retry rules.
+Accepted dependency waits and index lag remain visible where they affect publication, without being mislabeled delivery failures.
+When no unfinished failed rows remain, remove the header marker and show a sensible empty state at the direct route.
+Keep stored records and receipts after the page empties. “Save them as a file” exports unfinished records and their bodies.
 
 A timeout means delivery unknown. The client queries by ID before retrying and can safely resend identical bytes.
+
+The app persists bounded retry state and backoff with each event and peer.
+While the app is active, connectivity return or reload resumes eligible retries automatically.
+The client respects Retry-After and avoids an automatic refusal loop. A refusal needs its stated corrective action or explicit retry.
+The page reports the next attempt accurately. A closed browser does not guarantee background delivery.
 
 The client overlays its queued events only in a clearly labeled personal preview.
 It never presents that preview as the selected server's current public state.
 Sending a signed event to another peer is publication to that peer. Do not describe it as a private backup or promise delayed disclosure.
-The app asks which configured peers receive public submissions and sends no unsigned drafts automatically.
+Settings holds the choice of delivery peers. The publish preview names every selected recipient.
+With one configured recipient, publication needs no peer picker.
+Changing stored peer settings never silently republishes old records to another peer.
+Explicit redelivery shows the affected records and recipient before sending. No unsigned drafts upload automatically.
 
 Two devices can create concurrent branches with the same key. This is not automatically evidence of theft.
 After synchronization, a neutral merge event can combine heads without resolving contradictory judgments.
@@ -591,8 +706,8 @@ Do not select a winner from timestamps, device names, upload order, or event IDs
 
 For independent publications, preserve both. For agreeing judgments, show one effective opinion with two historical branches.
 
-A browser crash after signing but before storing the outbox is a possible loss window.
-The signer must persist the complete envelope and body before reporting “Ready to send.”
+A browser crash after signing but before local persistence is a possible loss window.
+The signer must persist the complete intended group before any send or successful preparation message.
 A failed local write leaves the draft visible and offers file export. It never shows a successful queue state.
 After every session with undelivered events, expose a one-click outbox export.
 An export is a portable package of signed events and retained bodies, not a promise that another server accepted them.
@@ -904,7 +1019,7 @@ The implementer must demonstrate these end-to-end cases before public release:
 4. A cmavo has both a grammatical operand and a constructed-predicate frame without confusing their indices.
 5. A malformed place reference blocks signing and offers a lossless literal-text escape.
 6. Two devices change one judgment offline, then resolve their conflict without a timestamp tie-break.
-7. A revision receives no inherited blessing and displays the exact changes to places and defaults.
+7. A published revision receives its author blessing, inherits no parent judgments, and displays exact changes to places and defaults.
 8. A local shun blocks routes while an unrelated public report remains an allegation.
 9. Root changes appear as a view change, with no claim that scores are comparable universal units.
 10. Broad score intervals remain visible when most candidates form one unresolved layer, including a long list of alternatives.
@@ -912,6 +1027,17 @@ The implementer must demonstrate these end-to-end cases before public release:
 12. Partial transfer delivery remains recoverable through the saved acceptance event and new key.
 13. A missing predecessor, withheld body, late compromise notice, and server omission produce distinct warnings.
 14. Keyboard and screen-reader users can search, publish, review places, manage keys, and resolve an opinion conflict.
+15. Judgment arrows create or unlock a key, resume the exact target, and clear a selected judgment on repeated activation.
+16. Every public publish group persists before dispatch, including definition and rafsi blessings, and survives partial delivery or reload.
+17. A timeout queries the receipt by ID before immutable retry. Normal sends and index lag never create false failure markers.
+18. “Not delivered” clears finished rows while retaining records and receipts. Its direct route shows an empty state.
+19. Net scores expose support, opposition, reviewer count, exact values, ranges, and unavailable state through keyboard and touch.
+20. Search rows expose rafsi, notes, matching alternatives, more results, retired results, and immediate judgment actions.
+21. New native definitions contain the fixed CC0 expression and URL. Imported records retain source rights and attribution.
+22. The default local lexical nearby search sends no private draft. Explicit remote search and new providers obtain consent for their declared scope.
+23. Private blocks survive a public clear. Root removal never claims to block every incoming route.
+24. The full editor preserves every structured field and supports manual headword and type entry without bypassing validation.
+25. Every page exposes search and footer navigation, including all twelve layouts in [UI design](ui-design.md).
 
 The app must also measure cold package load, local search latency, signature latency, backup unlock time, and ranking cost on representative mobile devices.
 No target in this design constitutes a completed browser compatibility or accessibility audit.
@@ -981,8 +1107,12 @@ The browser receives capability names and disclosure metadata, never the operato
 Localhost means the machine that makes the request. A container's local provider address is not the browser's localhost.
 Public clients cannot turn an inference request into an arbitrary outbound URL fetch. Only configured provider and source adapters make network requests.
 
-Before sending a private draft, show the provider and the fields included. The user triggers each suggestion request explicitly.
-A remembered consent applies only to the same declared provider and data scope. A provider change requires a new disclosure.
+The first AI request shows one consent dialog for the selected provider and its declared tasks and data scope.
+The dialog names the server, provider, and fields sent. A broad scope is permitted only when the dialog declares it explicitly.
+Remembered consent applies only to that provider and scope. A new provider or expanded scope requires a new disclosure.
+Every suggestion request requires an explicit action. Enabling a provider never uploads private drafts passively.
+After consent, buttons use a small “AI” tag without repeated provider text.
+Suggestions appear in a quiet panel with “Use this” and “Dismiss.” Accepted text becomes ordinary draft text with undo.
 The service does not retain draft prompts or outputs in ordinary logs or peer sync.
 
 Queued inference jobs have an exposed expiry policy. Private outputs remain local draft data unless the author publishes selected content.

@@ -35,7 +35,8 @@ The publication restriction covers live dictionary contributions and public depl
 
 Keep all prototype tests local to this VM. Use disposable keys, synthetic account evidence, and mocked inference providers.
 Do not change real Lensisku accounts or use production bindings during local tests.
-Do not invent a software license or terms for new contributions. Both remain prelaunch choices.
+Do not invent a software license. It remains a prelaunch choice.
+Follow the [contribution rights](docs/format.md#remaining-body-fields) for new definitions and imported source content.
 Keep third-party notices with redistributed artifacts. Use the [dependency guide](docs/dependencies.md) for notice locations.
 
 ## VM access and Herdr
