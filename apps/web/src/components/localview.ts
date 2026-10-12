@@ -74,6 +74,8 @@ export function statusText(status: PersonalStatus): string {
         return "Downloading the snapshot inventory…";
       if (pr.phase === "records")
         return `Downloading records: ${pr.loaded} of ${pr.total} verified…`;
+      if (pr.phase === "bodies")
+        return `Fetching bodies that became available: ${pr.loaded} of ${pr.total}…`;
       if (pr.phase === "selections")
         return `Downloading import selections: ${pr.loaded} of ${pr.total}…`;
       return "Download complete.";
@@ -122,7 +124,10 @@ export function calculationPanel(
     () => {
       void app.personal
         .ensure({ mode: options.mode, refresh: true })
-        .then(() => options.onRefresh?.());
+        .then((status) => {
+          // A failed refresh keeps its message. Only a ready calculation re-renders the page.
+          if (status.state === "ready") options.onRefresh?.();
+        });
     },
     { class: "btn btn-quiet", style: "min-height:36px" },
   );

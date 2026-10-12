@@ -417,6 +417,20 @@ test("version 1 browser data migrates without losing bytes, branches, or body ev
       { kind: "identity.merge" },
       null,
     );
+    const d = core.createEvent(
+      seed,
+      [b.envelope.id],
+      "4".repeat(32),
+      { kind: "identity.merge" },
+      null,
+    );
+    const e = core.createEvent(
+      seed,
+      [d.envelope.id],
+      "5".repeat(32),
+      { kind: "identity.profile" },
+      { name: "migrated", bio: [], links: [] },
+    );
     const identity = a.envelope.header.issuer;
     const name = `migration-${Date.now()}`;
     await new Promise<void>((resolve, reject) => {
@@ -435,23 +449,47 @@ test("version 1 browser data migrates without losing bytes, branches, or body ev
           state,
           receipt,
         });
+        const receipt = (record: any, patch: Record<string, unknown>) => ({
+          id: record.envelope.id,
+          admission: "accepted",
+          interpretation: "effective",
+          body_status: "none",
+          cursor: "1",
+          snapshot: null,
+          view: "jve1:" + "0".repeat(64),
+          reasons: [],
+          envelope_hash: core.contentHash(
+            core.utf8(
+              core.canonicalize(core.utf8(JSON.stringify(record.envelope))),
+            ),
+          ),
+          ...patch,
+        });
+        // a: full evidence. b: no receipt. c: unknown. d: contradictory envelope hash. e: body without its hash.
         tx.objectStore("outbox").put(
-          old(a, "stored", {
-            id: a.envelope.id,
-            admission: "accepted",
-            interpretation: "effective",
-            body_status: "none",
-            cursor: "1",
-            snapshot: null,
-            view: "jve1:" + "0".repeat(64),
-            reasons: [],
-          }),
+          old(a, "stored", receipt(a, {})),
           a.envelope.id,
         );
         tx.objectStore("outbox").put(old(b, "stored"), b.envelope.id);
         tx.objectStore("outbox").put(old(c, "unknown"), c.envelope.id);
+        tx.objectStore("outbox").put(
+          old(
+            d,
+            "stored",
+            receipt(d, { envelope_hash: "sha256:" + "1".repeat(64) }),
+          ),
+          d.envelope.id,
+        );
+        tx.objectStore("outbox").put(
+          old(
+            e,
+            "stored",
+            receipt(e, { body_status: "present", body_hash: null }),
+          ),
+          e.envelope.id,
+        );
         tx.objectStore("heads").put(
-          [b.envelope.id, c.envelope.id].sort(),
+          [e.envelope.id, c.envelope.id].sort(),
           identity,
         );
         tx.objectStore("drafts").put({ text: "old draft" }, "current");
@@ -465,7 +503,19 @@ test("version 1 browser data migrates without losing bytes, branches, or body ev
     });
     const { LocalStore } = await import(String("/src/data/store.ts"));
     const { ownHeads } = await import(String("/src/data/history.ts"));
+    const { classifyReceipt } = await import(String("/src/data/delivery.ts"));
     const store = new LocalStore(name);
+    const before = Object.fromEntries(
+      (await store.list("outbox")).map((item: any) => [
+        item.id,
+        item.peers.self.state,
+      ]),
+    );
+    await store.reconcileMigrated((item: any, receipt: any) =>
+      classifyReceipt(item, receipt, () =>
+        Promise.reject(new Error("no variant lookup")),
+      ),
+    );
     const items = await store.list("outbox");
     const frontier = await ownHeads(store, identity, true);
     return {
@@ -473,17 +523,35 @@ test("version 1 browser data migrates without losing bytes, branches, or body ev
         items.map((item: any) => [item.id, item.peers.self.state]),
       ),
       transports: items.map((item: any) => item.transport),
-      expectedTransports: [a, b, c].map((r) => JSON.stringify(r)).sort(),
+      expectedTransports: [a, b, c, d, e].map((r) => JSON.stringify(r)).sort(),
       frontier,
-      expectedFrontier: [b.envelope.id, c.envelope.id].sort(),
+      expectedFrontier: [e.envelope.id, c.envelope.id].sort(),
       draft: await store.get("drafts", "current"),
-      ids: { a: a.envelope.id, b: b.envelope.id, c: c.envelope.id },
+      ids: {
+        a: a.envelope.id,
+        b: b.envelope.id,
+        c: c.envelope.id,
+        d: d.envelope.id,
+        e: e.envelope.id,
+      },
+      before,
+      migratedFlags: items.map((item: any) => item.migrated ?? null),
     };
   }, corePath);
+  // Before the receipt rules run, every stored row is unknown. Nothing is accepted by its old mark alone.
+  expect(result.before[result.ids.a]).toBe("unknown");
+  expect(result.before[result.ids.d]).toBe("unknown");
+  // Full evidence: the receipt names the stored envelope hash and the required body status.
   expect(result.states[result.ids.a]).toBe("accepted");
   // A stored mark without receipt evidence does not prove delivery. The bytes stay and a receipt is requested.
   expect(result.states[result.ids.b]).toBe("unknown");
   expect(result.states[result.ids.c]).toBe("unknown");
+  // A contradictory envelope hash and a body receipt without its hash stay unknown.
+  expect(result.states[result.ids.d]).toBe("unknown");
+  expect(result.states[result.ids.e]).toBe("unknown");
+  expect(result.migratedFlags.every((flag: unknown) => flag === null)).toBe(
+    true,
+  );
   expect([...result.transports].sort()).toEqual(result.expectedTransports);
   expect(result.frontier).toEqual(result.expectedFrontier);
   expect(result.draft).toEqual({ text: "old draft" });

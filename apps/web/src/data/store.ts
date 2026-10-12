@@ -52,6 +52,8 @@ export interface OutboxItem {
    * recipients stay unresolved.
    */
   recipients?: Record<string, SavedRecipient>;
+  /** Set by the version 1 migration until the receipt evidence is checked. */
+  migrated?: boolean;
   /** Group of records persisted together before any send. */
   group: string;
   /** Dispatch order inside the group. */
@@ -338,12 +340,28 @@ export class LocalStore {
     }
     const db = await this.database;
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(["outbox", "heads"], "readwrite");
+      const tx = db.transaction(["outbox", "heads", "keys"], "readwrite");
       const outbox = tx.objectStore("outbox");
-      for (const item of items) outbox.put(item, item.id);
       const heads = tx.objectStore("heads");
+      const keys = tx.objectStore("keys");
+      let failure: Error | undefined;
+      // A key retired or reported stolen in another tab cannot gain new ordinary records.
+      const retired = keys.get(`handover:${identity}`);
+      const compromised = keys.get(`compromised:${identity}`);
       const request = heads.get(identity);
-      request.onsuccess = () => {
+      let remaining = 3;
+      const proceed = () => {
+        if (--remaining) return;
+        if (retired.result || compromised.result) {
+          failure = new Error(
+            retired.result
+              ? "This key signed a handover and is retired. The group was not saved or sent."
+              : "This key published a compromise notice. The group was not saved or sent.",
+          );
+          tx.abort();
+          return;
+        }
+        for (const item of items) outbox.put(item, item.id);
         const current: string[] = request.result ?? [];
         heads.put(
           [
@@ -355,13 +373,55 @@ export class LocalStore {
           identity,
         );
       };
+      retired.onsuccess = proceed;
+      compromised.onsuccess = proceed;
+      request.onsuccess = proceed;
       tx.oncomplete = () => resolve();
       tx.onabort = () =>
         reject(
-          tx.error ?? new Error("Local storage did not save the signed group."),
+          failure ??
+            tx.error ??
+            new Error("Local storage did not save the signed group."),
         );
       tx.onerror = () => {};
     });
+  }
+  /**
+   * Finishes the version 1 migration once the core is available. A migrated
+   * row is accepted only when its retained receipt satisfies the same rules
+   * as a fresh delivery. Otherwise it stays unknown with its exact bytes.
+   */
+  async reconcileMigrated(
+    classify: (
+      item: OutboxItem,
+      receipt: import("../model/types.ts").Receipt,
+    ) => Promise<{ state: PeerState; error: string | null }>,
+  ): Promise<number> {
+    let changed = 0;
+    for (const item of await this.list<OutboxItem>("outbox")) {
+      if (!item.migrated) continue;
+      const peer = item.peers.self;
+      let next: PeerDelivery = { ...peer };
+      if (peer?.receipt) {
+        const result = await classify(item, peer.receipt);
+        next = {
+          ...peer,
+          state: result.state,
+          error: result.state === "accepted" ? null : result.error,
+          nextAttempt:
+            result.state === "accepted" || result.state === "refused"
+              ? null
+              : 0,
+        };
+      }
+      await this.mergeOutbox(item.id, (stored) => {
+        const { migrated, ...rest } = stored;
+        void migrated;
+        return { ...rest, peers: { ...stored.peers, self: next } };
+      });
+      changed++;
+    }
+    return changed;
   }
 }
 function migrateOutboxItem(old: {
@@ -381,23 +441,16 @@ function migrateOutboxItem(old: {
     transportBody = parsed.body;
     envelopeHash = parsed.envelope.header.content?.hash ?? null;
   } catch {}
+  void transportBody;
+  void envelopeHash;
+  // A stored mark is never accepted here. The receipt is kept, and the
+  // reconciliation after the core loads applies the full delivery rules:
+  // the receipt must name the stored envelope hash and the required body hash.
   const receipt = old.receipt ?? null;
-  const admitted =
-    receipt !== null &&
-    receipt.id === old.id &&
-    (receipt.admission === "accepted" || receipt.admission === "duplicate");
-  const bodyMatches =
-    transportBody === null
-      ? receipt?.body_status === "none"
-      : receipt?.body_status === "present" &&
-        (receipt.body_hash === undefined ||
-          receipt.body_hash === null ||
-          receipt.body_hash === envelopeHash);
-  const accepted = old.state === "stored" && admitted && bodyMatches;
+  const accepted = false;
   const peer: PeerDelivery = {
-    state: accepted
-      ? "accepted"
-      : old.state === "refused"
+    state:
+      old.state === "refused"
         ? "refused"
         : old.state === "ready"
           ? "queued"
@@ -408,7 +461,7 @@ function migrateOutboxItem(old: {
     error: accepted
       ? null
       : old.state === "stored"
-        ? "The earlier delivery record has no receipt evidence for the body. A fresh receipt is requested."
+        ? "The earlier delivery record is checked against the stored envelope and body hashes before it counts as delivered."
         : (old.error ?? null),
     failure: old.state === "refused" ? "refused" : old.error ? "server" : null,
     receipt,
@@ -432,6 +485,7 @@ function migrateOutboxItem(old: {
     peers: { self: peer },
     stopped: false,
     signedAt: 0,
+    migrated: true,
   };
 }
 /** A plain description of a signed record for lists. */

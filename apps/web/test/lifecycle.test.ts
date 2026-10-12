@@ -269,3 +269,313 @@ test("missing history blocks a confident compromise preview", async ({
     page.getByRole("button", { name: "Sign the notice" }),
   ).toHaveCount(0);
 });
+
+/** Configures a second recipient served through a routed path on this origin and unlocks again. */
+async function addMirrorPeer(page: Page) {
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    await new LocalStore().setPreferences({
+      peers: [
+        { id: "self", base: "/api/v1", label: "this server" },
+        { id: "mirror", base: "/mirror/api/v1", label: "mirror" },
+      ],
+    });
+  });
+  await page.goto("/identity");
+  await page.getByLabel("Passphrase", { exact: true }).fill(PASSPHRASE);
+  await page.getByRole("button", { name: "Unlock", exact: true }).click();
+  await expect(page.getByText("Unlocked", { exact: true })).toBeVisible();
+}
+
+test("a handover fetches a branch that only a second peer holds, includes it in the transfer, and blocks when that branch cannot be supplied", async ({
+  page,
+}) => {
+  const old = await createIdentity(page);
+  await endorseFirst(page, "cukta");
+  await acceptFirstSignature(page);
+  await expect(page.getByRole("status").last()).toHaveText(
+    "Your endorsement is published.",
+  );
+  // Sign a second record that only the mirror will hold: capture its upload and keep it away from this server.
+  let captured: {
+    envelope: { id: string; header: { previous: string[] } };
+  } | null = null;
+  await page.route("**/api/v1/events", async (route) => {
+    if (route.request().method() !== "POST" || captured)
+      return route.continue();
+    captured = JSON.parse(route.request().postData() ?? "{}");
+    await route.fulfill({
+      status: 503,
+      json: { code: "busy", message: "Later.", event: null, field: null },
+    });
+  });
+  await endorseFirst(page, "vlacku");
+  await expect(
+    page.getByRole("link", { name: "1 not delivered" }),
+  ).toBeVisible();
+  await page.unroute("**/api/v1/events");
+  expect(captured).not.toBeNull();
+  const branch = captured!.envelope;
+  const firstHead = branch.header.previous[0];
+  // Forget the branch locally. Only the mirror knows it.
+  await page.evaluate(
+    async ({ id, identity, head }) => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const store = new LocalStore();
+      await store.delete("outbox", id);
+      await store.put("heads", identity, [head]);
+    },
+    { id: branch.id, identity: old.identity, head: firstHead },
+  );
+  await addMirrorPeer(page);
+  const manifestOf = async (route: import("@playwright/test").Route) => {
+    const response = await route.fetch({
+      url: new URL("/api/v1/manifest", page.url()).href,
+    });
+    return response.json();
+  };
+  let supplyBranch = true;
+  await page.route("**/mirror/api/v1/**", async (route) => {
+    const url = new URL(route.request().url());
+    const path = decodeURIComponent(url.pathname).replace(
+      /^\/mirror\/api\/v1/,
+      "",
+    );
+    if (path === "/manifest")
+      return route.fulfill({ json: await manifestOf(route) });
+    const manifest = await manifestOf(route);
+    if (path.startsWith("/identity-heads/"))
+      return route.fulfill({
+        json: {
+          snapshot: manifest.snapshot,
+          identity: old.identity,
+          heads: [branch.id],
+          next: null,
+        },
+      });
+    if (path.endsWith("/activity"))
+      return route.fulfill({
+        json: {
+          snapshot: manifest.snapshot,
+          view: "jve1:" + "0".repeat(64),
+          identity: old.identity,
+          items: [],
+          next: null,
+        },
+      });
+    if (path === `/events/${branch.id}`)
+      return supplyBranch
+        ? route.fulfill({ json: branch })
+        : route.fulfill({
+            status: 404,
+            json: {
+              code: "missing",
+              message: "Event is unavailable.",
+              event: null,
+              field: null,
+            },
+          });
+    if (path === "/events" && route.request().method() === "POST")
+      return route.fulfill({
+        status: 503,
+        json: { code: "busy", message: "Later.", event: null, field: null },
+      });
+    return route.fulfill({
+      status: 404,
+      json: { code: "missing", message: "No route.", event: null, field: null },
+    });
+  });
+  await page.getByRole("link", { name: /key (unlocked|locked)/ }).click();
+  await page.getByRole("link", { name: "Start" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Move to a new key" }),
+  ).toBeVisible();
+  const history = page.getByRole("region", {
+    name: "Known history",
+    exact: true,
+  });
+  await expect(history).toContainText(
+    "One known head over 2 verified records, 1 fetched from other peers",
+  );
+  await expect(history).toContainText("mirror: one head, scan complete.");
+  await createSuccessor(page);
+  for (const box of await page.getByRole("checkbox").all()) await box.check();
+  // The branch disappears from the mirror before signing. The refresh blocks the handover instead of dropping the branch.
+  supplyBranch = false;
+  await page.getByRole("button", { name: "Sign the handover" }).click();
+  await expect(page.getByRole("status").last()).toContainText(
+    "The known history changed",
+  );
+  await expect(history).toContainText(
+    /could not supply it as a valid signed record/,
+  );
+  await expect(page.getByText(/blocks the handover/)).toBeVisible();
+  expect(
+    (await outboxItems(page)).some(
+      (i: any) => i.label.action === "key handover",
+    ),
+  ).toBe(false);
+  // The branch is available again. The preview needs renewed approval, then the transfer follows the fetched branch.
+  supplyBranch = true;
+  // A full page load locks the key. The signing step then opens the unlock dialog.
+  await page.goto("/identity/transfer");
+  await expect(history).toContainText("1 fetched from other peers");
+  await createSuccessor(page);
+  for (const box of await page.getByRole("checkbox").all()) await box.check();
+  await page.getByRole("button", { name: "Sign the handover" }).click();
+  const unlock = page.getByRole("dialog", { name: "Unlock your key" });
+  await unlock.getByLabel("Passphrase").fill(PASSPHRASE);
+  await unlock.getByRole("button", { name: "Unlock" }).click();
+  await expect(page.getByRole("status").last()).toContainText(
+    "Old key retired",
+  );
+  const transfer = (await outboxItems(page)).find(
+    (i: any) => i.label.action === "key handover",
+  );
+  expect(JSON.parse(transfer.transport).envelope.header.previous).toEqual([
+    branch.id,
+  ]);
+});
+
+test("a handover is refused without saving or sending when another tab retired the key, and a double click signs once", async ({
+  page,
+}) => {
+  const old = await createIdentity(page);
+  await endorseFirst(page, "cukta");
+  await acceptFirstSignature(page);
+  await expect(page.getByRole("status").last()).toHaveText(
+    "Your endorsement is published.",
+  );
+  await page.getByRole("link", { name: /key (unlocked|locked)/ }).click();
+  await page.getByRole("link", { name: "Start" }).click();
+  await createSuccessor(page);
+  await expect(page.getByText(/One known head/)).toBeVisible();
+  for (const box of await page.getByRole("checkbox").all()) await box.check();
+  // Another tab retires the key between the preview and the click.
+  await page.evaluate(async (identity) => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore();
+    await store.put("keys", `handover:${identity}`, {
+      old: identity,
+      successor: "ed25519:" + "9".repeat(64),
+      transfer: "jve1:" + "9".repeat(64),
+      accept: "jve1:" + "8".repeat(64),
+      signedAt: 1,
+    });
+  }, old.identity);
+  await page.getByRole("button", { name: "Sign the handover" }).click();
+  await expect(page.getByRole("status").last()).toContainText(
+    "retired or reported stolen meanwhile. Nothing was saved or sent",
+  );
+  let items = await outboxItems(page);
+  expect(
+    items.filter((i: any) => i.label.action === "key handover"),
+  ).toHaveLength(0);
+  expect(
+    items.filter((i: any) => i.label.action === "handover acceptance"),
+  ).toHaveLength(0);
+  const selected = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    return (await new LocalStore().get("keys", "selected")).identity;
+  });
+  expect(selected).toBe(old.identity);
+  // Ordinary group persistence is refused for the retired key too.
+  const refused = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore();
+    const [item] = await store.list("outbox");
+    try {
+      await store.queueGroup([{ ...item, id: item.id }]);
+      return null;
+    } catch (error) {
+      return String(error);
+    }
+  });
+  expect(refused).toContain("retired");
+  // Remove the simulated record. A delayed history check keeps a second click from signing twice.
+  await page.evaluate(async (identity) => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    await new LocalStore().delete("keys", `handover:${identity}`);
+  }, old.identity);
+  await page.route("**/api/v1/identity-heads/**", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    await route.continue();
+  });
+  for (const box of await page.getByRole("checkbox").all()) await box.check();
+  const sign = page.getByRole("button", { name: "Sign the handover" });
+  await sign.click();
+  await expect(
+    page.getByRole("button", { name: "Checking the known history…" }),
+  ).toBeDisabled();
+  await page
+    .getByRole("button", { name: "Checking the known history…" })
+    .click({ force: true });
+  await expect(page.getByRole("status").last()).toContainText(
+    "Old key retired",
+  );
+  items = await outboxItems(page);
+  expect(
+    items.filter((i: any) => i.label.action === "key handover"),
+  ).toHaveLength(1);
+  expect(
+    items.filter((i: any) => i.label.action === "handover acceptance"),
+  ).toHaveLength(1);
+});
+
+test("a retired key signs a compromise notice through a masked passphrase field", async ({
+  page,
+}) => {
+  const old = await createIdentity(page);
+  await endorseFirst(page, "cukta");
+  await acceptFirstSignature(page);
+  await expect(page.getByRole("status").last()).toHaveText(
+    "Your endorsement is published.",
+  );
+  await page.getByRole("link", { name: /key (unlocked|locked)/ }).click();
+  await page.getByRole("link", { name: "Start" }).click();
+  await createSuccessor(page);
+  await expect(page.getByText(/One known head/)).toBeVisible();
+  for (const box of await page.getByRole("checkbox").all()) await box.check();
+  await page.getByRole("button", { name: "Sign the handover" }).click();
+  await expect(page.getByRole("status").last()).toContainText(
+    "Old key retired",
+  );
+  await expect
+    .poll(async () =>
+      (await outboxItems(page)).every(
+        (i: any) => i.peers.self.state === "accepted",
+      ),
+    )
+    .toBe(true);
+  // The retired key is offered on the notice page. Its passphrase is entered in a password field.
+  await page.goto("/identity/compromise");
+  await page.getByLabel("Which key").selectOption(old.identity);
+  const records = page.getByRole("list", {
+    name: "Own records in causal order",
+  });
+  await expect(records.getByRole("checkbox")).toHaveCount(2);
+  await records.getByRole("checkbox").first().check();
+  await page
+    .getByRole("checkbox", { name: /cannot prove which holder/ })
+    .check();
+  await page.getByRole("button", { name: "Sign the notice" }).click();
+  const dialog = page.getByRole("dialog", { name: /Unlock the retired key/ });
+  await expect(dialog).toBeVisible();
+  const pass = dialog.getByLabel("Passphrase of the retired key");
+  await expect(pass).toHaveAttribute("type", "password");
+  await pass.fill("wrong passphrase here");
+  await dialog.getByRole("button", { name: "Unlock" }).click();
+  await expect(dialog.getByRole("alert")).toBeVisible();
+  await pass.fill(PASSPHRASE);
+  await dialog.getByRole("button", { name: "Unlock" }).click();
+  await expect(page.getByRole("status").last()).toContainText(
+    "compromise notice is saved",
+  );
+  const notice = (await outboxItems(page)).find(
+    (i: any) => i.label.action === "compromise notice",
+  );
+  expect(notice.identity).toBe(old.identity);
+  expect(JSON.parse(notice.transport).envelope.header.action.safe).toHaveLength(
+    1,
+  );
+});

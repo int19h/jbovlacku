@@ -1,8 +1,10 @@
 /**
  * Planned handover: a fresh successor key, its backup and backup test, the
- * old key's heads from every configured peer, a preview of the consequences,
- * approval of the successor fingerprint, and both signatures persisted in one
- * transaction before upload. Retries use the stored events.
+ * old key's complete known history from every configured peer, a preview of
+ * the consequences, approval of the successor fingerprint, and both
+ * signatures persisted in one transaction before upload. The frontier is
+ * refreshed before signing, and a changed preview needs renewed approval.
+ * Retries use the stored events.
  */
 import {
   el,
@@ -19,9 +21,11 @@ import { fingerprintText, shortIdentity } from "../lib/format.ts";
 import { navigate, type RenderContext, type Route } from "../app/router.ts";
 import type { App } from "../app/context.ts";
 import { createKey, parseBackup, unlockKey } from "../data/keys.ts";
-import { loadOwnHistory } from "../data/history.ts";
+import { loadOwnHistory, type OwnHistory } from "../data/history.ts";
 import {
   askPeers,
+  fetchBranches,
+  LifecycleConflictError,
   outboxItem,
   queueHandover,
   signWith,
@@ -77,6 +81,28 @@ export async function handoverState(
     acceptDone: done(accept),
   };
 }
+/** Everything the preview depends on. A changed digest needs renewed approval. */
+interface Gathered {
+  history: OwnHistory;
+  knowledge: PeerKnowledge[];
+  heads: string[];
+  fetched: number;
+  /** The heads stored in this browser when the preview was made. The write compares them again. */
+  storedHeads: string[];
+  existingTransfer: { id: string; successor: string; peer: string } | null;
+  compromised: string | null;
+  /** Why the ordinary handover is blocked, or null. */
+  blocked: string | null;
+  digest: string;
+}
+/** A peer whose scan ended early or listed claims it could not prove. */
+function scanIncomplete(k: PeerKnowledge): boolean {
+  return !k.complete && k.status.startsWith("incomplete");
+}
+/** A peer that could not be reached at all. */
+function unanswered(k: PeerKnowledge): boolean {
+  return !k.complete && !scanIncomplete(k);
+}
 export async function handoverPage(
   _route: Route,
   context: RenderContext,
@@ -113,11 +139,24 @@ export async function handoverPage(
     renderExisting(main, app, existing);
     return;
   }
+  const compromisedMark = await app.store.get<string>(
+    "keys",
+    `compromised:${old.identity}`,
+  );
   const retiredElsewhere = await app.store.get<HandoverRecord>(
     "keys",
     `handover-of:${old.identity}`,
   );
   if (!context.live()) return;
+  if (compromisedMark) {
+    main.append(
+      p(
+        "This key published a compromise notice. A transfer after a compromise never restores inherited continuity, so this page offers no handover.",
+        "notice",
+      ),
+    );
+    return;
+  }
   if (retiredElsewhere)
     main.append(
       p(
@@ -133,7 +172,7 @@ export async function handoverPage(
         "The old key signs a transfer naming the new key and then retires. Ordinary actions from the old key stop. The new key signs an acceptance as its first and only first event.",
       ),
       p(
-        "Conflicting transfers suspend automatic continuity. Old-key actions that this browser and the configured peers have not seen lose ordinary authority after the transfer. There is no grace period and no undo.",
+        "Every branch that this browser or a configured peer reports is fetched, verified, and included, so known work keeps its authority. Conflicting transfers suspend automatic continuity. Old-key actions that nobody here has seen lose ordinary authority after the transfer. There is no grace period and no undo.",
       ),
     ),
   );
@@ -160,7 +199,11 @@ export async function handoverPage(
       text: "2. Known history of the old key",
     }),
   );
-  const historyBox = el("div", { "aria-live": "polite" });
+  const historyBox = el("div", {
+    "aria-live": "polite",
+    role: "region",
+    "aria-label": "Known history",
+  });
   step2.append(historyBox);
   main.append(step2);
   // Step 3: approval and signatures.
@@ -171,12 +214,9 @@ export async function handoverPage(
   const approveBox = el("div");
   step3.append(approveBox);
   main.append(step3);
-  let knowledge: PeerKnowledge[] = [];
-  let heads: string[] = [];
-  let historyComplete = false;
-  let historyFailure: string | null = null;
-  let existingTransfer: { id: string; successor: string; peer: string } | null =
-    null;
+  let gathered: Gathered | null = null;
+  let gatherFailure: string | null = null;
+  let signing = false;
   const renderKey = () => {
     keyBox.replaceChildren();
     if (!successor) {
@@ -307,44 +347,116 @@ export async function handoverPage(
     card.append(test);
     keyBox.append(card);
   };
+  /** Loads the old key's history, asks every peer, fetches reported branches, and computes the frontier. */
+  const gather = async (): Promise<Gathered> => {
+    const storedHeads = [
+      ...((await app.store.get<string[]>("heads", old.identity)) ?? []),
+    ].sort();
+    const history = await loadOwnHistory(app.store, old.identity, {
+      offline: app.offlineSigning.value,
+      signal: context.signal,
+    });
+    let existingTransfer: Gathered["existingTransfer"] = null;
+    let compromised: string | null = null;
+    for (const envelope of history.events.values()) {
+      if (envelope.header.action.kind === "identity.transfer")
+        existingTransfer = {
+          id: envelope.id,
+          successor: String(envelope.header.action.successor),
+          peer: "this browser",
+        };
+      if (envelope.header.action.kind === "identity.compromise")
+        compromised = "this browser";
+    }
+    const { peers } = configuredPeers(app);
+    const knowledge = await askPeers(peers, old.identity, null, context.signal);
+    for (const k of knowledge) {
+      for (const t of k.transfers)
+        existingTransfer ??= {
+          id: t.id,
+          successor: t.successor,
+          peer: k.peer.label,
+        };
+      if (k.compromises.length) compromised ??= k.peer.label;
+    }
+    let blocked: string | null = null;
+    let fetched = 0;
+    if (!history.complete)
+      blocked =
+        "Part of this key's history is missing from this browser and its server. The ordinary handover needs the complete known history.";
+    for (const k of knowledge)
+      if (scanIncomplete(k) || k.unverified.length)
+        blocked ??= `${k.peer.label}: ${k.status}. The ordinary handover needs a complete scan of every configured peer.`;
+    if (!blocked) {
+      try {
+        fetched = (
+          await fetchBranches(app.store, history, knowledge, context.signal)
+        ).fetched;
+      } catch (error) {
+        blocked = describe(error);
+      }
+    }
+    const heads = [...history.frontier].sort();
+    const digest = JSON.stringify({
+      heads,
+      existingTransfer,
+      compromised,
+      blocked,
+      peers: knowledge.map((k) => [k.peer.id, k.status, k.complete, k.heads]),
+    });
+    return {
+      history,
+      knowledge,
+      heads,
+      fetched,
+      storedHeads,
+      existingTransfer,
+      compromised,
+      blocked,
+      digest,
+    };
+  };
   const renderHistory = () => {
     historyBox.replaceChildren();
-    if (historyFailure) {
+    if (gatherFailure) {
       historyBox.append(
         p(
-          `This browser could not establish the old key's history: ${historyFailure}`,
+          `This browser could not establish the old key's history: ${gatherFailure}`,
           "notice",
         ),
       );
       return;
     }
+    if (!gathered) {
+      historyBox.append(
+        p(
+          "Searching this browser and every configured peer for the old key's heads and lifecycle events…",
+          "small",
+        ),
+      );
+      return;
+    }
+    const g = gathered;
     historyBox.append(
       p(
-        `${heads.length === 1 ? "One known head" : `${heads.length} known heads`}${historyComplete ? "" : ", with missing predecessors"}. The transfer follows every known head, so all of this work keeps its authority.`,
+        `${g.heads.length === 1 ? "One known head" : `${g.heads.length} known heads`} over ${g.history.events.size} verified record${g.history.events.size === 1 ? "" : "s"}${g.fetched ? `, ${g.fetched} fetched from other peers` : ""}. The transfer follows every known head, so all of this work keeps its authority.`,
         "small",
       ),
     );
-    if (heads.length > 1)
+    if (g.heads.length > 1)
       historyBox.append(
         p(
-          "More than one head means separate device branches. Both are included. Opposite judgments in different branches stay conflicted until a later event resolves them.",
+          "More than one head means separate device branches. Every branch is included. Opposite judgments in different branches stay conflicted until a later event resolves them.",
           "small",
         ),
       );
     const list = el("ul", { class: "small" });
-    for (const k of knowledge) {
+    for (const k of g.knowledge) {
       const item = el("li");
-      if (k.status !== "answered") {
+      if (k.complete) {
         item.append(
           text(
-            `${k.peer.label}: did not answer (${k.status}). Its unseen old-key actions, if any, lose ordinary authority after the transfer.`,
-          ),
-        );
-      } else {
-        const unseen = k.heads.filter((h) => !heads.includes(h));
-        item.append(
-          text(
-            `${k.peer.label}: ${k.heads.length === 0 ? "no own events" : `${k.heads.length === 1 ? "one head" : `${k.heads.length} heads`}`}${unseen.length ? `, ${unseen.length} not known to this browser` : ""}.`,
+            `${k.peer.label}: ${k.heads.length === 0 ? "no own events" : k.heads.length === 1 ? "one head" : `${k.heads.length} heads`}, scan complete.`,
           ),
         );
         if (k.transfers.length)
@@ -358,19 +470,36 @@ export async function handoverPage(
           item.append(
             text(" It holds a compromise notice by this key.", "warn"),
           );
+      } else if (scanIncomplete(k) || k.unverified.length) {
+        item.append(text(`${k.peer.label}: ${k.status}.`, "warn"));
+      } else {
+        item.append(
+          text(
+            `${k.peer.label}: did not answer (${k.status}). Its unseen old-key actions, if any, lose ordinary authority after the transfer.`,
+          ),
+        );
       }
       list.append(item);
     }
     historyBox.append(list);
-    if (existingTransfer)
+    if (g.blocked) historyBox.append(p(g.blocked, "notice"));
+    if (g.compromised)
       historyBox.append(
         p(
-          `A transfer by this key already exists on ${existingTransfer.peer} (${existingTransfer.id.slice(0, 20)}…, to ${shortIdentity(existingTransfer.successor)}). A second transfer would freeze continuity. This page offers no new transfer. If you hold that successor key, restore it in this browser and search for its acceptance.`,
+          `A compromise notice by this key exists on ${g.compromised}. A transfer after a compromise never restores inherited continuity. This page offers no handover.`,
+          "notice",
+        ),
+      );
+    if (g.existingTransfer)
+      historyBox.append(
+        p(
+          `A transfer by this key already exists on ${g.existingTransfer.peer} (${g.existingTransfer.id.slice(0, 20)}…, to ${shortIdentity(g.existingTransfer.successor)}). A second transfer would freeze continuity. This page offers no new transfer. If you hold that successor key, restore it in this browser and search for its acceptance.`,
           "notice",
         ),
       );
   };
   const acknowledgments = { fingerprint: false, retire: false, unseen: false };
+  let approvedDigest: string | null = null;
   const renderApprove = () => {
     approveBox.replaceChildren();
     if (!successor) {
@@ -381,16 +510,24 @@ export async function handoverPage(
       approveBox.append(p("Test the new key's backup first.", "meta"));
       return;
     }
-    if (historyFailure || existingTransfer) {
+    if (!gathered || gatherFailure) {
+      approveBox.append(
+        p("The old key's history is not established yet.", "meta"),
+      );
+      return;
+    }
+    const g = gathered;
+    if (g.blocked || g.existingTransfer || g.compromised) {
       approveBox.append(
         p(
-          "The old key's history or an existing transfer blocks the handover. See above.",
+          "The old key's state blocks the handover. See above. Nothing is signed.",
           "meta",
         ),
       );
       return;
     }
-    const unanswered = knowledge.filter((k) => k.status !== "answered");
+    const down = g.knowledge.filter(unanswered);
+    approvedDigest = g.digest;
     approveBox.append(
       checkbox(
         `I checked the new key fingerprint ${fingerprintText(successor.backup.identity)}.`,
@@ -409,7 +546,7 @@ export async function handoverPage(
         },
       ),
       checkbox(
-        `I understand that old-key actions unseen by this browser${unanswered.length ? ` and by ${unanswered.map((k) => k.peer.label).join(", ")}` : ""} lose ordinary authority, and that a conflicting transfer suspends continuity.`,
+        `I understand that old-key actions unseen by this browser and the answering peers${down.length ? `, and anything held only by ${down.map((k) => k.peer.label).join(", ")}, which did not answer,` : ""} lose ordinary authority, and that a conflicting transfer suspends continuity.`,
         acknowledgments.unseen,
         (v) => {
           acknowledgments.unseen = v;
@@ -417,17 +554,19 @@ export async function handoverPage(
         },
       ),
     );
-    const sign = button("Sign the handover", () => void signHandover(), {
+    const sign = button("Sign the handover", () => void signHandover(sign), {
       class: "btn btn-primary",
       style: "margin-top:12px",
     });
     sign.disabled = true;
     const refresh = () => {
-      sign.disabled = !(
-        acknowledgments.fingerprint &&
-        acknowledgments.retire &&
-        acknowledgments.unseen
-      );
+      sign.disabled =
+        signing ||
+        !(
+          acknowledgments.fingerprint &&
+          acknowledgments.retire &&
+          acknowledgments.unseen
+        );
     };
     approveBox.append(
       el(
@@ -439,86 +578,115 @@ export async function handoverPage(
     );
     approveBox.append(
       p(
-        "Both events are saved in this browser together with the new key before anything is sent. Upload can be partial. The key page then shows “Old key retired, acceptance waiting” until both events arrive.",
+        "The known history is checked again right before signing. If it changed, the preview updates and needs your approval again. Both events are saved in this browser together with the new key before anything is sent. Upload can be partial. The key page then shows “Old key retired, acceptance waiting” until both events arrive.",
         "meta",
       ),
     );
   };
-  const signHandover = async () => {
-    if (!successor || !successorTested) return;
-    await session.requireUnlocked("The handover", async () => {
-      const oldKey = session.workingKey!;
-      if (session.backup?.identity !== old.identity)
-        throw new Error("The selected key changed. Reload and start again.");
-      const { recipients } = configuredPeers(app);
-      const transfer = await signWith(oldKey, old.identity, heads, {
-        kind: "identity.transfer",
-        successor: successor!.backup.identity,
+  const resetApproval = () => {
+    acknowledgments.fingerprint = false;
+    acknowledgments.retire = false;
+    acknowledgments.unseen = false;
+  };
+  const signHandover = async (sign: HTMLButtonElement) => {
+    if (!successor || !successorTested || signing) return;
+    signing = true;
+    sign.disabled = true;
+    sign.textContent = "Checking the known history…";
+    try {
+      // Refresh the frontier. A changed preview needs renewed approval.
+      let fresh: Gathered;
+      try {
+        fresh = await gather();
+      } catch (error) {
+        gatherFailure = describe(error);
+        gathered = null;
+        renderHistory();
+        renderApprove();
+        return;
+      }
+      if (!context.live()) return;
+      if (fresh.digest !== approvedDigest) {
+        gathered = fresh;
+        gatherFailure = null;
+        resetApproval();
+        renderHistory();
+        renderApprove();
+        app.announce(
+          "The known history changed. Review the updated preview and approve again.",
+        );
+        return;
+      }
+      gathered = fresh;
+      sign.textContent = "Signing…";
+      await session.requireUnlocked("The handover", async () => {
+        const oldKey = session.workingKey!;
+        if (session.backup?.identity !== old.identity)
+          throw new Error("The selected key changed. Reload and start again.");
+        const { recipients } = configuredPeers(app);
+        const transfer = await signWith(oldKey, old.identity, fresh.heads, {
+          kind: "identity.transfer",
+          successor: successor!.backup.identity,
+        });
+        const accept = await signWith(
+          successor!.key,
+          successor!.backup.identity,
+          [],
+          { kind: "identity.accept", transfer: transfer.envelope.id },
+        );
+        const group = crypto.randomUUID();
+        const record = await queueHandover(app.store, {
+          transfer: outboxItem(transfer, group, 0, recipients),
+          accept: outboxItem(accept, group, 1, recipients),
+          successor: successor!.backup,
+          old,
+          successorTested,
+          expectedHeads: fresh.storedHeads,
+        });
+        session.adoptSuccessor(successor!.backup, successor!.key);
+        app.own.invalidate();
+        await app.delivery.invalidate();
+        void app.delivery
+          .deliver(record.transfer, true)
+          .then(() => app.delivery.deliver(record.accept, true));
+        navigate("/identity");
+        app.announce("Old key retired. The handover is saved and uploading.");
       });
-      const accept = await signWith(
-        successor!.key,
-        successor!.backup.identity,
-        [],
-        { kind: "identity.accept", transfer: transfer.envelope.id },
-      );
-      const group = crypto.randomUUID();
-      const record = await queueHandover(app.store, {
-        transfer: outboxItem(transfer, group, 0, recipients),
-        accept: outboxItem(accept, group, 1, recipients),
-        successor: successor!.backup,
-        old,
-        successorTested,
-      });
-      session.adoptSuccessor(successor!.backup, successor!.key);
-      app.own.invalidate();
-      await app.delivery.invalidate();
-      void app.delivery
-        .deliver(record.transfer, true)
-        .then(() => app.delivery.deliver(record.accept, true));
-      navigate("/identity");
-      app.announce("Old key retired. The handover is saved and uploading.");
-    });
+    } catch (error) {
+      app.announce(describe(error));
+      if (error instanceof LifecycleConflictError) {
+        resetApproval();
+        try {
+          gathered = await gather();
+          gatherFailure = null;
+        } catch (failure) {
+          gatherFailure = describe(failure);
+          gathered = null;
+        }
+        if (!context.live()) return;
+        renderHistory();
+        renderApprove();
+      }
+    } finally {
+      signing = false;
+      if (sign.isConnected) {
+        sign.textContent = "Sign the handover";
+        sign.disabled =
+          !(
+            acknowledgments.fingerprint &&
+            acknowledgments.retire &&
+            acknowledgments.unseen
+          ) || !gathered;
+      }
+    }
   };
   renderKey();
+  renderHistory();
   renderApprove();
-  historyBox.append(
-    p(
-      "Searching this browser and every configured peer for the old key's heads and lifecycle events…",
-      "small",
-    ),
-  );
   try {
-    const history = await loadOwnHistory(app.store, old.identity, {
-      offline: app.offlineSigning.value,
-      signal: context.signal,
-    });
-    heads = history.frontier;
-    historyComplete = history.complete;
-    for (const envelope of history.events.values()) {
-      if (envelope.header.action.kind === "identity.transfer")
-        existingTransfer = {
-          id: envelope.id,
-          successor: String(envelope.header.action.successor),
-          peer: "this browser",
-        };
-    }
-    const { peers } = configuredPeers(app);
-    knowledge = await askPeers(peers, old.identity, null, context.signal);
-    if (!context.live()) return;
-    for (const k of knowledge) {
-      for (const t of k.transfers)
-        existingTransfer ??= {
-          id: t.id,
-          successor: t.successor,
-          peer: k.peer.label,
-        };
-      // Include peer heads that this browser did not know. Their envelopes were verified by the history loader for the default peer only.
-      for (const head of k.heads)
-        if (!heads.includes(head) && history.events.has(head)) heads.push(head);
-    }
-    heads.sort();
+    gathered = await gather();
   } catch (error) {
-    historyFailure = describe(error);
+    gatherFailure = describe(error);
   }
   if (!context.live()) return;
   renderHistory();

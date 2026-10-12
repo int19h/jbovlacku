@@ -218,3 +218,95 @@ test("the personal view adds the signing identity as a root so its own endorseme
   await details.locator("summary").click();
   await expect(details).toContainText("root of the view (q=1)");
 });
+
+test("a body that became available is fetched for a cached record, and malformed transports are refused", async ({
+  page,
+}) => {
+  await page.goto("/trust");
+  await page
+    .getByRole("radio", { name: "Mine: site view + my choices" })
+    .check();
+  await openWord(page, "cukta");
+  const panel = page.getByRole("region", { name: "Personal view" });
+  await expect(panel).toContainText(/Personal view calculated in this browser/);
+  // Forget the body of one cached definition. The inventory still lists it as retained.
+  const target = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore();
+    const inventory = await store.get("inventory", "latest");
+    for (const id of inventory.events) {
+      const record = await store.get("records", id);
+      if (
+        record.body &&
+        JSON.parse(record.envelope).header.action.kind === "definition.publish"
+      ) {
+        await store.put("records", id, {
+          ...record,
+          body: null,
+          bodyStatus: "missing",
+        });
+        return { id, hash: record.bodyHash };
+      }
+    }
+    return null;
+  });
+  expect(target).not.toBeNull();
+  let bodyFetches = 0;
+  page.on("request", (request) => {
+    if (
+      decodeURIComponent(request.url()).includes(
+        `/api/v1/bodies/${target!.hash}`,
+      )
+    )
+      bodyFetches++;
+  });
+  // The cached inventory alone cannot serve a calculation: the retained body is not cached.
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    void new LocalStore();
+  });
+  await page.reload();
+  await page.goto("/word/cukta");
+  await expect(panel).toContainText(/retained by the snapshot but not cached/);
+  // Recompute fetches exactly that body and the calculation completes.
+  await panel.getByRole("button", { name: "Recompute from records" }).click();
+  await expect(panel).toContainText(/Personal view calculated in this browser/);
+  expect(bodyFetches).toBeGreaterThanOrEqual(1);
+  const restored = await page.evaluate(async (id) => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    return (await new LocalStore().get("records", id)).bodyStatus;
+  }, target!.id);
+  expect(restored).toBe("present");
+  // A records page that does not advance is refused.
+  await page.route("**/api/v1/records?*", async (route) => {
+    const url = new URL(route.request().url());
+    url.searchParams.delete("after");
+    const response = await route.fetch({ url: url.href });
+    const json = await response.json();
+    json.next = json.items.at(-1).id;
+    await route.fulfill({ response, json });
+  });
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore();
+    const inventory = await store.get("inventory", "latest");
+    await store.delete("records", inventory.events.at(-1));
+  });
+  await panel.getByRole("button", { name: "Recompute from records" }).click();
+  await expect(panel).toContainText(
+    /did not advance|traversal did not advance|needed more pages/,
+  );
+  await page.unroute("**/api/v1/records?*");
+  // A manifest whose digests do not match its inventory is refused before any record counts.
+  await page.route("**/api/v1/manifest", async (route) => {
+    const response = await route.fetch();
+    const json = await response.json();
+    json.manifest.events.hash = "sha256:" + "0".repeat(64);
+    await route.fulfill({ response, json });
+  });
+  await panel.getByRole("button", { name: "Recompute from records" }).click();
+  await expect(panel).toContainText(/does not match the manifest digests/);
+  await page.unroute("**/api/v1/manifest");
+  await panel.getByRole("button", { name: "Recompute from records" }).click();
+  await expect(panel).toContainText(/Personal view calculated in this browser/);
+});

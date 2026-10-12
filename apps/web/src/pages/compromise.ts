@@ -22,6 +22,7 @@ import { loadOwnHistory, type OwnHistory } from "../data/history.ts";
 import {
   causalOrder,
   cutoffPreview,
+  LifecycleConflictError,
   outboxItem,
   queueCompromise,
   signWith,
@@ -298,32 +299,93 @@ export async function compromisePage(
     renderPreview();
   };
   keyField.input.addEventListener("change", () => void load());
+  let signing = false;
+  /** Opens a retired key through a masked passphrase field. Never a visible prompt. */
+  const unlockRetired = (backup: KeyBackup): Promise<CryptoKey | null> =>
+    new Promise((resolve) => {
+      const opener = document.activeElement as HTMLElement | null;
+      const dialog = el("dialog", {
+        class: "sheet",
+        "aria-labelledby": "retired-unlock-title",
+      });
+      const pass = field("Passphrase of the retired key", {
+        type: "password",
+        autocomplete: "current-password",
+        required: true,
+      });
+      const error = el("p", { class: "notice", role: "alert" });
+      error.hidden = true;
+      const form = el("form", { method: "dialog" });
+      const submit = el("button", {
+        type: "submit",
+        class: "btn btn-primary",
+        text: "Unlock",
+      });
+      const cancel = button("Cancel", () => dialog.close("cancel"), {
+        class: "btn btn-quiet",
+      });
+      let key: CryptoKey | null = null;
+      form.append(
+        el("h2", {
+          id: "retired-unlock-title",
+          text: `Unlock the retired key ${shortIdentity(backup.identity)}`,
+        }),
+        p(
+          "The notice needs that key's signature. The passphrase stays in this dialog and is not stored.",
+          "small",
+        ),
+        pass.wrapper,
+        error,
+        el("div", { class: "actions" }, submit, cancel),
+      );
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        submit.disabled = true;
+        try {
+          key = await unlockKey(backup, pass.input.value);
+          pass.input.value = "";
+          dialog.close("unlocked");
+        } catch (failure) {
+          error.textContent = describe(failure);
+          error.hidden = false;
+          submit.disabled = false;
+          pass.input.focus();
+        }
+      });
+      dialog.addEventListener("close", () => {
+        pass.input.value = "";
+        resolve(dialog.returnValue === "unlocked" ? key : null);
+        dialog.remove();
+        opener?.focus();
+      });
+      dialog.append(form);
+      document.body.append(dialog);
+      dialog.showModal();
+      pass.input.focus();
+    });
   const signNotice = async () => {
-    if (!history) return;
-    const identity = keyField.input.value;
-    const backup = candidates.find((c) => c.identity === identity)!;
-    let key: CryptoKey | undefined;
-    if (session.backup?.identity === identity && session.unlocked)
-      key = session.workingKey;
-    if (!key) {
-      const passphrase = prompt(`Passphrase of key ${shortIdentity(identity)}`);
-      if (passphrase === null) return;
-      try {
-        key = await unlockKey(backup, passphrase);
-      } catch (error) {
-        app.announce(describe(error));
-        return;
-      }
-    }
+    if (!history || signing) return;
+    signing = true;
+    const buttons = actionBox.querySelectorAll("button");
+    for (const b of buttons) b.disabled = true;
     try {
+      const identity = keyField.input.value;
+      const backup = candidates.find((c) => c.identity === identity)!;
+      let key: CryptoKey | undefined;
+      if (session.backup?.identity === identity && session.unlocked)
+        key = session.workingKey;
+      if (!key) key = (await unlockRetired(backup)) ?? undefined;
+      if (!key) return;
+      const frontier = history.frontier;
       const { recipients } = configuredPeers(app);
-      const transport = await signWith(key, identity, history.frontier, {
+      const transport = await signWith(key, identity, frontier, {
         kind: "identity.compromise",
         safe: [...safe].sort(),
       });
       await queueCompromise(
         app.store,
         outboxItem(transport, crypto.randomUUID(), 0, recipients),
+        frontier,
       );
       app.own.invalidate();
       await app.delivery.invalidate();
@@ -334,6 +396,10 @@ export async function compromisePage(
       );
     } catch (error) {
       app.announce(describe(error));
+      if (error instanceof LifecycleConflictError) await load();
+    } finally {
+      signing = false;
+      renderActions();
     }
   };
   await load();

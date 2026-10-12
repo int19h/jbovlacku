@@ -39,6 +39,7 @@ import { publishPage } from "./pages/wizard/publish.ts";
 import { claimPage, rafsiPage } from "./pages/rafsi.ts";
 import { flushPendingDraft } from "./pages/wizard/common.ts";
 import { PersonalCalculator } from "./data/personal.ts";
+import { classifyReceipt } from "./data/delivery.ts";
 import type { TrustScope } from "./model/types.ts";
 
 const root = document.querySelector<HTMLDivElement>("#app")!;
@@ -69,6 +70,18 @@ async function start() {
   } catch (error) {
     coreError = describe(error);
   }
+  // Migrated rows count as delivered only under the full receipt rules, which need the core.
+  if (!coreError)
+    void (async () => {
+      try {
+        const changed = await store.reconcileMigrated((item, receipt) =>
+          classifyReceipt(item, receipt, () =>
+            Promise.reject(new Error("No variant lookup during migration.")),
+          ),
+        );
+        if (changed) await delivery.invalidate();
+      } catch {}
+    })();
   await session.load();
   applyTheme(session.preferences.theme);
   const shell = buildShell(root, session, delivery);

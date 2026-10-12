@@ -57,6 +57,10 @@ export async function loadOwnHistory(
   for (const item of await store.list<OutboxItem>("outbox"))
     if (item.identity === identity)
       local.set(item.id, (JSON.parse(item.transport) as Transport).envelope);
+  // Branches fetched and verified from other peers during a handover.
+  for (const envelope of await store.list<Envelope>("ownhistory"))
+    if (envelope?.header?.issuer === identity && !local.has(envelope.id))
+      local.set(envelope.id, envelope);
   const manifest = options.offline ? null : await getManifest({ signal, peer });
   const verified = new Map<string, Envelope>();
   let complete = true;
