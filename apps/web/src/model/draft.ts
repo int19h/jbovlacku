@@ -1540,8 +1540,15 @@ function keepOriginal(draft: Draft, body: DefinitionBody) {
     body.examples = structuredClone(parent.examples);
   if (same("labels", draft.labels))
     body.labels = structuredClone(parent.labels);
-  if (same("sources", draft.sources))
-    body.sources = structuredClone(parent.sources);
+  // A revision adds its own references, such as the imported publication
+  // and the rights reference. Each entry copied from the parent stays exact.
+  const kept = draft.sources.filter((s) => s.label.trim());
+  body.sources = body.sources.map((built, i) => {
+    const exact = parent.sources.find(
+      (p) => JSON.stringify(p) === JSON.stringify(kept[i]),
+    );
+    return exact ? structuredClone(exact) : built;
+  });
   if (same("etymologyText", draft.etymologyText) && !draft.formNotes.trim())
     body.etymology.text = structuredClone(parent.etymology.text);
   if (same("selmaho", draft.selmaho))
