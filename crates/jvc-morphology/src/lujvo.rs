@@ -1,6 +1,6 @@
 //! Lujvo bonding, scoring, segmentation, and the component builder.
 //! Bonding, tosmabru, and scoring are ported from jbotci. Segmentation
-//! enumerates rafsi splits and keeps those that bonding reproduces exactly.
+//! uses the pinned recognizer and compares parsed parts with intended parts.
 use crate::phonotactics::{PairClass, is_consonant, is_initial_pair, is_vowel, pair_class};
 use crate::rafsi::{
     RafsiShape, gismu_shape, is_short_rafsi_form, rafsi_shape, universal_gismu_forms,
@@ -26,7 +26,7 @@ pub const CLL_SCORING_ID: &str =
     "https://github.com/int19h/jbovlacku/blob/main/docs/morphology.md#cll-lujvo-scoring";
 pub const EXTENDED_SCORING_ID: &str =
     "https://github.com/int19h/jbovlacku/blob/main/docs/morphology.md#extended-lujvo-scoring";
-pub const MORPHOLOGY_VERSION: &str = "1";
+pub const MORPHOLOGY_VERSION: &str = "2";
 pub const SCORING_VERSION: &str = "1";
 impl Profile {
     pub fn morphology_id(self) -> &'static str {
@@ -152,7 +152,11 @@ pub fn tosmabru(tokens: &[String]) -> bool {
 /// Joins parts with the required hyphens. The result lists parts and hyphens
 /// as separate tokens. Returns None for fewer than two parts or an empty part.
 pub fn bond(parts: &[Part]) -> Option<Vec<String>> {
-    if parts.len() < 2 || parts.iter().any(|p| p.text.is_empty()) {
+    if !(2..=64).contains(&parts.len())
+        || parts
+            .iter()
+            .any(|p| p.text.is_empty() || p.text.len() > 128)
+    {
         return None;
     }
     let first = &parts[0];
@@ -181,9 +185,24 @@ pub fn bond(parts: &[Part]) -> Option<Vec<String>> {
 }
 /// The CLL 4.12 score: `1000 L - 500 A + 100 H - 10 R - V`. Under the
 /// extended profile a shape outside the table has rank zero.
-pub fn score(tokens: &[String]) -> i32 {
+pub fn score(tokens: &[String]) -> Result<i32, BuilderError> {
+    require_limit("score tokens", tokens.len() as u64, 128)?;
+    let length: usize = tokens
+        .iter()
+        .try_fold(0usize, |sum, t| sum.checked_add(t.len()))
+        .ok_or_else(|| {
+            resource(
+                "score bytes",
+                u64::MAX,
+                crate::recognize::MAX_WORD_BYTES as u64,
+            )
+        })?;
+    require_limit(
+        "score bytes",
+        length as u64,
+        crate::recognize::MAX_WORD_BYTES as u64,
+    )?;
     let text: String = tokens.concat();
-    let length = text.chars().count() as i32;
     let apostrophes = text.chars().filter(|c| *c == '\'').count() as i32;
     let hyphens = tokens.iter().filter(|t| is_hyphen(t)).count() as i32;
     let ranks: i32 = tokens
@@ -192,12 +211,39 @@ pub fn score(tokens: &[String]) -> i32 {
         .map(|t| rafsi_shape(t).score())
         .sum();
     let vowels = text.chars().filter(|c| is_vowel(*c)).count() as i32;
-    1000 * length - 500 * apostrophes + 100 * hyphens - 10 * ranks - vowels
+    Ok(
+        1000 * text.chars().count() as i32 - 500 * apostrophes + 100 * hyphens
+            - 10 * ranks
+            - vowels,
+    )
+}
+fn resource(measure: &str, value: u64, limit: u64) -> BuilderError {
+    BuilderError::ResourceLimit {
+        measure: measure.into(),
+        value,
+        limit,
+    }
+}
+fn require_limit(measure: &str, value: u64, limit: u64) -> Result<(), BuilderError> {
+    if value > limit {
+        Err(resource(measure, value, limit))
+    } else {
+        Ok(())
+    }
 }
 fn rafsi_token_ok(token: &str, last: bool) -> bool {
     match rafsi_shape(token) {
         RafsiShape::Cvc => !last,
-        RafsiShape::Cvcc | RafsiShape::Ccvc => !last,
+        RafsiShape::Cvcc => {
+            !last
+                && crate::phonotactics::is_permissible_pair(
+                    token.as_bytes()[2] as char,
+                    token.as_bytes()[3] as char,
+                )
+        }
+        RafsiShape::Ccvc => {
+            !last && is_initial_pair(token.as_bytes()[0] as char, token.as_bytes()[1] as char)
+        }
         RafsiShape::Ccv => {
             is_initial_pair(token.chars().next().unwrap(), token.chars().nth(1).unwrap())
         }
@@ -207,87 +253,36 @@ fn rafsi_token_ok(token: &str, last: bool) -> bool {
         RafsiShape::Other => false,
     }
 }
-/// Every reading of `word` as rafsi and hyphens under CLL 4.11. A reading is
-/// kept only when bonding its rafsi reproduces its tokens exactly, so a
-/// needless or missing hyphen rejects it. Most lujvo have exactly one reading.
-pub fn segment_cll(word: &str) -> Vec<Vec<String>> {
-    let chars: Vec<char> = word.chars().collect();
-    if chars.len() < 5 || chars.len() > 200 {
-        return Vec::new();
+/// Parses a classic lujvo, including legal optional hyphens.
+/// A resource failure remains an error instead of an empty reading.
+pub fn segment_cll(word: &str) -> Result<Vec<Vec<String>>, BuilderError> {
+    let reading = crate::recognize::parse(word)?;
+    if reading.kind == crate::recognize::Kind::Lujvo && classic_tokens(&reading.tokens) {
+        Ok(vec![reading.tokens])
+    } else {
+        Ok(vec![])
     }
-    let mut readings = Vec::new();
-    let mut current: Vec<String> = Vec::new();
-    fn walk(chars: &[char], at: usize, current: &mut Vec<String>, readings: &mut Vec<Vec<String>>) {
-        if readings.len() > 64 {
-            return;
-        }
-        if at == chars.len() {
-            let rafsi: Vec<Part> = current
-                .iter()
-                .filter(|t| !is_hyphen(t))
-                .map(|t| Part::rafsi(t))
-                .collect();
-            if rafsi.len() >= 2 && bond(&rafsi).as_deref() == Some(current.as_slice()) {
-                readings.push(current.clone());
-            }
-            return;
-        }
-        // Hyphen tokens, never first and never after another hyphen.
-        if !current.is_empty() && !is_hyphen(current.last().unwrap()) {
-            for hyphen in ["y", "r", "n", "y'"] {
-                let h: Vec<char> = hyphen.chars().collect();
-                if chars[at..].starts_with(&h) && at + h.len() < chars.len() {
-                    current.push(hyphen.to_owned());
-                    walk(chars, at + h.len(), current, readings);
-                    current.pop();
-                }
-            }
-        }
-        for len in 3..=5 {
-            if at + len > chars.len() {
-                break;
-            }
-            let token: String = chars[at..at + len].iter().collect();
-            let last = at + len == chars.len();
-            if rafsi_token_ok(&token, last) {
-                current.push(token);
-                walk(chars, at + len, current, readings);
-                current.pop();
-            }
-        }
-    }
-    walk(&chars, 0, &mut current, &mut readings);
-    readings
 }
-/// Whether a spelling can serve as a brivla core under the extended profile:
-/// it ends with a vowel, has a consonant pair among its first five letters,
-/// and uses Lojban letters without `y`.
-pub fn is_brivla_core(text: &str) -> bool {
-    let chars: Vec<char> = text.chars().collect();
-    if chars.len() < 4
-        || !chars
+fn classic_tokens(tokens: &[String]) -> bool {
+    let parts: Vec<&String> = tokens.iter().filter(|t| !is_hyphen(t)).collect();
+    parts.len() >= 2
+        && parts
             .iter()
-            .all(|c| is_vowel(*c) || is_consonant(*c) || *c == '\'')
-    {
-        return false;
-    }
-    if !chars.last().is_some_and(|c| is_vowel(*c)) {
-        return false;
-    }
-    let head: Vec<char> = chars
-        .iter()
-        .filter(|c| **c != '\'')
-        .take(5)
-        .copied()
-        .collect();
-    head.windows(2).any(|p| {
-        is_consonant(p[0])
-            && is_consonant(p[1])
-            && pair_class(p[0], p[1]).is_some_and(PairClass::is_permissible)
-    }) && chars.windows(2).all(|p| {
-        !(is_consonant(p[0]) && is_consonant(p[1]))
-            || pair_class(p[0], p[1]).is_some_and(PairClass::is_permissible)
-    })
+            .enumerate()
+            .all(|(i, t)| rafsi_token_ok(t, i + 1 == parts.len()))
+        && tokens.iter().all(|t| t != "'y" && t != "y'")
+}
+/// Uses pinned word recognition before offering a whole-word component.
+pub fn is_brivla_core(text: &str) -> bool {
+    !text.contains('y')
+        && crate::recognize::parse(text).is_ok_and(|r| {
+            matches!(
+                r.kind,
+                crate::recognize::Kind::Gismu
+                    | crate::recognize::Kind::Lujvo
+                    | crate::recognize::Kind::Fuivla
+            )
+        })
 }
 /// A recovered part of a candidate: the component text and the hyphen before it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -316,70 +311,93 @@ fn recovered(tokens: &[String], parts: &[Part]) -> Vec<RecoveredPart> {
     }
     out
 }
-/// Validates one bonded candidate under the profile and returns its recovered
-/// parts, or a diagnostic. The classic profile needs a CLL reading that equals
-/// the bonded tokens. The extended profile needs each core to be a brivla core
-/// and the bonded tokens to reproduce the spelling, and it reports a classic
-/// reading that disagrees.
+/// Parses a bonded candidate as one lujvo and recovers its exact parts.
+/// Construction also requires the minimal joins from the selected profile.
 pub fn validate(
     profile: Profile,
     parts: &[Part],
     tokens: &[String],
 ) -> Result<Vec<RecoveredPart>, String> {
-    let word: String = tokens.concat();
-    if !word.chars().last().is_some_and(is_vowel) {
-        return Err("The form ends with a consonant, so it is a name shape, not a lujvo.".into());
+    validate_checked(profile, parts, tokens, &mut 0).map_err(|e| e.to_string())
+}
+fn validate_checked(
+    profile: Profile,
+    parts: &[Part],
+    tokens: &[String],
+    work: &mut usize,
+) -> Result<Vec<RecoveredPart>, BuilderError> {
+    require_limit("validation parts", parts.len() as u64, 64)?;
+    require_limit("validation tokens", tokens.len() as u64, 128)?;
+    for part in parts {
+        require_limit("component bytes", part.text.len() as u64, 128)?;
     }
-    if parts.iter().any(|p| p.kind == PartKind::Core) && profile == Profile::Cll {
-        return Err("A whole-word component needs the extended profile.".into());
+    for token in tokens {
+        require_limit("token bytes", token.len() as u64, 128)?;
     }
-    match profile {
-        Profile::Cll => {
-            let readings = segment_cll(&word);
-            if readings.iter().any(|r| r.as_slice() == tokens) {
-                Ok(recovered(tokens, parts))
-            } else if readings.is_empty() {
-                Err("CLL rules do not read this form as one lujvo.".into())
-            } else {
-                Err(format!(
-                    "CLL rules read this form as {}, not as the intended parts.",
-                    readings[0].join(" + ")
-                ))
-            }
-        }
-        Profile::Extended => {
-            for part in parts {
-                if part.kind == PartKind::Core && !is_brivla_core(&part.text) {
-                    return Err(format!(
-                        "\"{}\" is not usable as a whole-word component.",
-                        part.text
-                    ));
-                }
-                if part.kind == PartKind::Rafsi
-                    && !part
-                        .text
-                        .chars()
-                        .all(|c| is_vowel(c) || is_consonant(c) || c == '\'')
-                {
-                    return Err(format!(
-                        "\"{}\" is not a Lojban letter sequence.",
-                        part.text
-                    ));
-                }
-            }
-            if parts.iter().all(|p| p.kind == PartKind::Rafsi) {
-                return validate(Profile::Cll, parts, tokens);
-            }
-            let readings = segment_cll(&word);
-            if let Some(reading) = readings.first() {
-                return Err(format!(
-                    "CLL rules read this form as {}, so the whole-word components are not recoverable.",
-                    reading.join(" + ")
-                ));
-            }
-            Ok(recovered(tokens, parts))
+    let invalid = |message: &str| BuilderError::Invalid {
+        message: message.into(),
+    };
+    if bond(parts).as_deref() != Some(tokens) {
+        return Err(invalid(
+            "The tokens do not use the required construction joins.",
+        ));
+    }
+    if profile == Profile::Cll && parts.iter().any(|p| p.kind == PartKind::Core) {
+        return Err(invalid(
+            "A whole-word component needs the extended profile.",
+        ));
+    }
+    for part in parts.iter().filter(|p| p.kind == PartKind::Core) {
+        let core = crate::recognize::parse(&part.text)?;
+        *work += core.spent;
+        require_limit("build recognition work", *work as u64, 2_000_000)?;
+        if part.text.contains('y')
+            || !matches!(
+                core.kind,
+                crate::recognize::Kind::Gismu
+                    | crate::recognize::Kind::Lujvo
+                    | crate::recognize::Kind::Fuivla
+            )
+        {
+            return Err(invalid("A whole-word component must parse as one brivla."));
         }
     }
+    let length = tokens.iter().map(|t| t.len()).sum::<usize>();
+    require_limit(
+        "word bytes",
+        length as u64,
+        crate::recognize::MAX_WORD_BYTES as u64,
+    )?;
+    let reading = crate::recognize::parse(&tokens.concat())?;
+    *work += reading.spent;
+    require_limit("build recognition work", *work as u64, 2_000_000)?;
+    if reading.kind != crate::recognize::Kind::Lujvo {
+        return Err(invalid(
+            "The selected profile does not read this form as one lujvo.",
+        ));
+    }
+    if profile == Profile::Cll && !classic_tokens(&reading.tokens) {
+        return Err(invalid("CLL rules do not read this form as one lujvo."));
+    }
+    if reading.tokens != tokens {
+        return Err(invalid("The parsed parts differ from the intended parts."));
+    }
+    let parsed_parts: Vec<&str> = reading
+        .tokens
+        .iter()
+        .filter(|t| !is_hyphen(t))
+        .map(String::as_str)
+        .collect();
+    if !parsed_parts
+        .iter()
+        .copied()
+        .eq(parts.iter().map(|p| p.text.as_str()))
+    {
+        return Err(invalid(
+            "The parsed components differ from the intended components.",
+        ));
+    }
+    Ok(recovered(&reading.tokens, parts))
 }
 /// A component row as the builder receives it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -443,6 +461,18 @@ pub struct RowAnalysis {
 /// The choices of one component under the profile.
 pub fn row_choices(profile: Profile, component: &Component) -> RowAnalysis {
     let mut diagnostics = Vec::new();
+    if component.spelling.len() > crate::recognize::MAX_WORD_BYTES
+        || component.claims.len() > 64
+        || component.claims.iter().any(|c| c.rafsi.len() > 128)
+    {
+        return RowAnalysis {
+            id: component.id.clone(),
+            normalized: String::new(),
+            choices: vec![],
+            lock_valid: false,
+            diagnostics: vec!["The component exceeds the limit of 128 bytes or 64 claims.".into()],
+        };
+    }
     let mut choices: Vec<Choice> = Vec::new();
     let Some(normalized) = crate::phonotactics::normalize_word(&component.spelling) else {
         return RowAnalysis {
@@ -693,6 +723,21 @@ pub fn build_lujvo(request: &LujvoRequest) -> Result<LujvoResult, BuilderError> 
             message: "A lujvo needs 2 through 64 components.".into(),
         });
     }
+    require_limit(
+        "inventory claims",
+        request.inventory.claims.len() as u64,
+        20_000,
+    )?;
+    for component in &request.components {
+        require_limit("component bytes", component.spelling.len() as u64, 128)?;
+        require_limit("component claims", component.claims.len() as u64, 64)?;
+        if let Some(normalized) = crate::phonotactics::normalize_word(&component.spelling) {
+            crate::recognize::parse(&normalized)?;
+        }
+        for claim in &component.claims {
+            require_limit("rafsi bytes", claim.rafsi.len() as u64, 128)?;
+        }
+    }
     let rows: Vec<RowAnalysis> = request
         .components
         .iter()
@@ -738,11 +783,11 @@ pub fn build_lujvo(request: &LujvoRequest) -> Result<LujvoResult, BuilderError> 
         .iter()
         .try_fold(1u64, |acc, r| acc.checked_mul(r.len() as u64))
         .unwrap_or(u64::MAX);
-    if product > request.limits.choice_product {
+    if product > request.limits.choice_product.min(20_000) {
         return Err(BuilderError::ResourceLimit {
             measure: "choice combinations".into(),
             value: product,
-            limit: request.limits.choice_product,
+            limit: request.limits.choice_product.min(20_000),
         });
     }
     let claims_by_rafsi: BTreeMap<&str, Vec<&InventoryClaim>> = request
@@ -756,6 +801,8 @@ pub fn build_lujvo(request: &LujvoRequest) -> Result<LujvoResult, BuilderError> 
     let mut candidates: Vec<Candidate> = Vec::new();
     let mut rejected = Vec::new();
     let mut considered = 0u64;
+    let mut recognition_work = 0usize;
+    let mut failure = None;
     if per_row.iter().all(|r| !r.is_empty()) {
         let mut selected: Vec<&Choice> = Vec::new();
         fn walk<'a>(
@@ -774,6 +821,9 @@ pub fn build_lujvo(request: &LujvoRequest) -> Result<LujvoResult, BuilderError> 
             }
         }
         walk(&per_row, &mut selected, &mut |chosen| {
+            if failure.is_some() {
+                return;
+            }
             considered += 1;
             let parts: Vec<Part> = chosen
                 .iter()
@@ -787,7 +837,7 @@ pub fn build_lujvo(request: &LujvoRequest) -> Result<LujvoResult, BuilderError> 
                 .collect();
             let Some(tokens) = bond(&parts) else { return };
             let spelling: String = tokens.concat();
-            match validate(request.profile, &parts, &tokens) {
+            match validate_checked(request.profile, &parts, &tokens, &mut recognition_work) {
                 Ok(recovered_parts) => {
                     let mut conflicts = Vec::new();
                     let mut unlisted = Vec::new();
@@ -827,24 +877,30 @@ pub fn build_lujvo(request: &LujvoRequest) -> Result<LujvoResult, BuilderError> 
                                 pair: c.pair.clone(),
                             })
                             .collect(),
-                        score: score(&tokens),
+                        score: score(&tokens).expect("validated word length bounds its score"),
                         tokens,
                         recovered: recovered_parts,
                         conflicts,
                         unlisted,
                     });
                 }
-                Err(reason) => {
+                Err(error @ BuilderError::ResourceLimit { .. }) => {
+                    failure = Some(error);
+                }
+                Err(error) => {
                     if rejected.len() < 64 {
                         rejected.push(Rejected {
                             spelling,
                             parts: chosen.iter().map(|c| c.form.clone()).collect(),
-                            reason,
+                            reason: error.to_string(),
                         });
                     }
                 }
             }
         });
+    }
+    if let Some(error) = failure {
+        return Err(error);
     }
     candidates.sort_by(|a, b| {
         a.score
@@ -857,7 +913,7 @@ pub fn build_lujvo(request: &LujvoRequest) -> Result<LujvoResult, BuilderError> 
                     .cmp(b.parts.iter().map(|p| &p.form))
             })
     });
-    candidates.truncate(request.limits.results);
+    candidates.truncate(request.limits.results.min(512));
     Ok(LujvoResult {
         rows,
         candidates,
@@ -896,96 +952,72 @@ pub struct Analysis {
     pub diagnostics: Vec<String>,
     pub morphology: Versioned,
 }
-fn is_cmavo_shape(text: &str) -> bool {
-    let chars: Vec<char> = text.chars().collect();
-    let rest = if chars.first().is_some_and(|c| is_consonant(*c)) {
-        &chars[1..]
-    } else {
-        &chars[..]
-    };
-    if rest.is_empty() {
-        return false;
-    }
-    let mut groups = 0;
-    for group in rest.split(|c| *c == '\'') {
-        groups += 1;
-        match group.len() {
-            1 => {
-                if !is_vowel(group[0]) {
-                    return false;
-                }
-            }
-            2 => {
-                if !(is_vowel(group[0]) && is_vowel(group[1])) {
-                    return false;
-                }
-            }
-            _ => return false,
-        }
-    }
-    groups >= 1
-}
-/// Classifies a spelling and recovers lujvo parts under the profile.
+/// Classifies one complete word under the selected profile.
 pub fn analyze_word(profile: Profile, spelling: &str) -> Analysis {
-    let morphology = Versioned {
-        id: profile.morphology_id().into(),
-        version: MORPHOLOGY_VERSION.into(),
+    let mut analysis = Analysis {
+        original: spelling.into(),
+        normalized: None,
+        kind: WordKind::Unknown,
+        readings: vec![],
+        diagnostics: vec![],
+        morphology: Versioned {
+            id: profile.morphology_id().into(),
+            version: MORPHOLOGY_VERSION.into(),
+        },
     };
+    if spelling.len() > crate::recognize::MAX_WORD_BYTES {
+        analysis
+            .diagnostics
+            .push(resource("word bytes", spelling.len() as u64, 128).to_string());
+        return analysis;
+    }
     let Some(normalized) = crate::phonotactics::normalize_word(spelling) else {
-        return Analysis {
-            original: spelling.into(),
-            normalized: None,
-            kind: WordKind::Unknown,
-            readings: vec![],
-            diagnostics: vec![
-                "The spelling uses characters outside Lojban letters, apostrophes, and commas."
-                    .into(),
-            ],
-            morphology,
-        };
+        analysis.diagnostics.push(
+            "The spelling uses characters outside Lojban letters, apostrophes, and commas.".into(),
+        );
+        return analysis;
     };
-    let mut diagnostics = Vec::new();
-    let kind;
-    let mut readings = Vec::new();
-    if gismu_shape(&normalized).is_some() {
-        kind = WordKind::Gismu;
-    } else if is_cmevla(&normalized) {
-        kind = WordKind::Cmevla;
-    } else if is_cmavo_shape(&normalized) {
-        kind = WordKind::Cmavo;
-    } else {
-        let found = segment_cll(&normalized);
-        if found.is_empty() {
-            if is_brivla_core(&normalized) {
-                kind = WordKind::Fuivla;
-                diagnostics.push("The form is a brivla that CLL rules do not read as a lujvo. It is treated as a fu'ivla shape.".into());
-            } else {
-                kind = WordKind::Unknown;
-                diagnostics.push("The form is not a gismu, lujvo, cmavo, or name shape under the selected profile.".into());
-            }
-        } else {
-            kind = WordKind::Lujvo;
-            if found.len() > 1 {
-                diagnostics.push(format!("The form has {} rafsi readings.", found.len()));
-            }
-            for tokens in found {
-                let parts: Vec<Part> = tokens
+    match crate::recognize::parse(&normalized) {
+        Err(error) => analysis.diagnostics.push(error.to_string()),
+        Ok(reading) => {
+            use crate::recognize::Kind;
+            analysis.kind = match reading.kind {
+                Kind::Gismu => WordKind::Gismu,
+                Kind::Cmavo => WordKind::Cmavo,
+                Kind::Cmevla => WordKind::Cmevla,
+                Kind::Fuivla => WordKind::Fuivla,
+                Kind::Lujvo if profile == Profile::Extended || classic_tokens(&reading.tokens) => {
+                    WordKind::Lujvo
+                }
+                _ => WordKind::Unknown,
+            };
+            if analysis.kind == WordKind::Lujvo {
+                let parts: Vec<Part> = reading
+                    .tokens
                     .iter()
                     .filter(|t| !is_hyphen(t))
-                    .map(|t| Part::rafsi(t))
+                    .map(|t| {
+                        if t.chars().last().is_some_and(is_consonant)
+                            || rafsi_token_ok(t, true)
+                            || rafsi_token_ok(t, false)
+                        {
+                            Part::rafsi(t)
+                        } else {
+                            Part::core(t)
+                        }
+                    })
                     .collect();
-                readings.push(recovered(&tokens, &parts));
+                analysis.readings.push(recovered(&reading.tokens, &parts));
+            }
+            if analysis.kind == WordKind::Unknown {
+                analysis
+                    .diagnostics
+                    .push("The form is not one word under the selected profile.".into());
             }
         }
     }
-    Analysis {
-        original: spelling.into(),
-        normalized: Some(normalized),
-        kind,
-        readings,
-        diagnostics,
-        morphology,
-    }
+    analysis.normalized = Some(normalized);
+    analysis
 }
 
 #[cfg(test)]
@@ -1034,15 +1066,19 @@ mod tests {
     }
     #[test]
     fn scores_follow_cll_examples() {
-        // CLL 4.12 scores zbasai 5847, zbacai 5847, jbogri 5858? Use the formula directly.
-        assert_eq!(score(&s(&["cku", "sni"])), 6000 - 10 * (7 + 7) - 2);
-        assert_eq!(score(&s(&["cukt", "y", "sni"])), 8008);
-        assert_eq!(score(&s(&["cku", "sinxa"])), 8000 - 10 * (7 + 1) - 3);
+        // CLL 4.12 examples 12.1 through 12.4.
+        assert_eq!(score(&s(&["zba", "sai"])).unwrap(), 5847);
+        assert_eq!(score(&s(&["nun", "y", "nau"])).unwrap(), 6967);
+        assert_eq!(score(&s(&["sai", "r", "zba", "ta'u"])).unwrap(), 10385);
+        assert_eq!(score(&s(&["zba", "zbas", "y", "sarji"])).unwrap(), 12976);
     }
     #[test]
     fn classic_segmentation_accepts_lujvo_and_rejects_non_lujvo() {
         for word in [
             "jbogri",
+            "rokyre'o",
+            "basykla",
+            "saircli",
             "soirsai",
             "ro'inre'o",
             "ckusni",
@@ -1053,7 +1089,10 @@ mod tests {
             "bangyjbari",
             "vlaste",
         ] {
-            assert!(!segment_cll(word).is_empty(), "{word} should be a lujvo");
+            assert!(
+                !segment_cll(word).unwrap().is_empty(),
+                "{word} should be a lujvo"
+            );
         }
         for word in [
             "babau",
@@ -1061,22 +1100,28 @@ mod tests {
             "xlamkai",
             "xlaglymlu",
             "kerlyu'ukerlo",
-            "rokyre'o",
-            "basykla",
-            "saircli",
             "tosmabru",
             "sakli",
             "cukta",
         ] {
-            assert!(segment_cll(word).is_empty(), "{word} should not be a lujvo");
+            assert!(
+                segment_cll(word).unwrap().is_empty(),
+                "{word} should not be a lujvo"
+            );
         }
     }
     #[test]
     fn segmentation_recovers_the_intended_parts() {
-        assert_eq!(segment_cll("cuktysni"), vec![s(&["cukt", "y", "sni"])]);
-        assert_eq!(segment_cll("ckusni"), vec![s(&["cku", "sni"])]);
-        assert_eq!(segment_cll("bauryo'a").len(), 0);
-        assert_eq!(segment_cll("ro'inre'o"), vec![s(&["ro'i", "n", "re'o"])]);
+        assert_eq!(
+            segment_cll("cuktysni").unwrap(),
+            vec![s(&["cukt", "y", "sni"])]
+        );
+        assert_eq!(segment_cll("ckusni").unwrap(), vec![s(&["cku", "sni"])]);
+        assert_eq!(segment_cll("bauryo'a").unwrap().len(), 0);
+        assert_eq!(
+            segment_cll("ro'inre'o").unwrap(),
+            vec![s(&["ro'i", "n", "re'o"])]
+        );
     }
     #[test]
     fn extended_profile_joins_cores_and_classic_rejects_them() {
@@ -1087,7 +1132,7 @@ mod tests {
         assert!(validate(Profile::Cll, &parts, &tokens).is_err());
         let parts = vec![Part::core("fulta"), Part::core("ismu")];
         let tokens = bond(&parts).unwrap();
-        assert_eq!(tokens.concat(), "fulta'yismu");
+        assert!(validate(Profile::Extended, &parts, &tokens).is_err());
         let parts = vec![Part::rafsi("ful"), Part::core("ismu")];
         let tokens = bond(&parts).unwrap();
         assert_eq!(tokens.concat(), "fuly'ismu");
@@ -1339,5 +1384,197 @@ mod tests {
         );
         let a = analyze_word(Profile::Cll, "cuktysni");
         assert_eq!(a.readings[0][1].join_before.as_deref(), Some("y"));
+    }
+    #[test]
+    fn extended_outputs_require_real_parse_back() {
+        for parts in [
+            vec![Part::rafsi("bau"), Part::core("ismu")],
+            vec![Part::rafsi("gim"), Part::core("spageti")],
+            vec![Part::core("leksiko"), Part::core("ismu")],
+            vec![Part::core("fulta"), Part::core("ismu")],
+        ] {
+            let tokens = bond(&parts).unwrap();
+            assert!(
+                validate(Profile::Extended, &parts, &tokens).is_err(),
+                "{}",
+                tokens.concat()
+            );
+        }
+        for parts in [
+            vec![Part::rafsi("akt"), Part::core("iismu")],
+            vec![Part::rafsi("ful"), Part::core("ismu")],
+            vec![Part::rafsi("gim"), Part::core("iismu")],
+            vec![Part::rafsi("tce"), Part::rafsi("nel"), Part::core("iismu")],
+            vec![Part::core("jenjigu"), Part::rafsi("di'e")],
+        ] {
+            let tokens = bond(&parts).unwrap();
+            let recovered = validate(Profile::Extended, &parts, &tokens).unwrap();
+            assert!(
+                recovered
+                    .iter()
+                    .map(|p| &p.text)
+                    .eq(parts.iter().map(|p| &p.text))
+            );
+            let analysis = analyze_word(Profile::Extended, &tokens.concat());
+            assert_eq!(analysis.kind, WordKind::Lujvo, "{}", tokens.concat());
+            assert_eq!(analysis.readings[0], recovered);
+            assert_ne!(
+                analyze_word(Profile::Cll, &tokens.concat()).kind,
+                WordKind::Lujvo
+            );
+        }
+    }
+    #[test]
+    fn malformed_clusters_are_not_words_or_cores() {
+        assert_eq!(
+            analyze_word(Profile::Cll, "sakrsakysakli").kind,
+            WordKind::Unknown
+        );
+        assert_eq!(
+            analyze_word(Profile::Extended, "sakrsakysakli").readings[0][0].text,
+            "sakrsak"
+        );
+        for text in [
+            "sabkysakli",
+            "rsakli",
+            "ntadi",
+            "leksiko'yismu",
+            "fulta'yismu",
+        ] {
+            for profile in [Profile::Cll, Profile::Extended] {
+                assert_eq!(
+                    analyze_word(profile, text).kind,
+                    WordKind::Unknown,
+                    "{text}"
+                );
+            }
+            assert!(!is_brivla_core(text), "{text}");
+        }
+        assert_eq!(
+            analyze_word(Profile::Extended, "gimspageti").kind,
+            WordKind::Fuivla
+        );
+        assert_eq!(
+            analyze_word(Profile::Extended, "baurismu").kind,
+            WordKind::Unknown
+        );
+    }
+    #[test]
+    fn optional_hyphens_are_analysis_only() {
+        assert_eq!(
+            segment_cll("sairzba").unwrap(),
+            vec![s(&["sai", "r", "zba"])]
+        );
+        assert_eq!(analyze_word(Profile::Cll, "sairzba").kind, WordKind::Lujvo);
+        let parts = rafsi(&["sai", "zba"]);
+        assert!(validate(Profile::Cll, &parts, &s(&["sai", "r", "zba"])).is_err());
+        assert!(validate(Profile::Cll, &parts, &bond(&parts).unwrap()).is_ok());
+    }
+    #[test]
+    fn adversarial_recognition_and_score_have_input_bounds() {
+        for count in [8, 12, 16, 24, 30] {
+            let text = format!("{}sakli", "sakr".repeat(count));
+            let analysis = analyze_word(Profile::Cll, &text);
+            assert_eq!(analysis.kind, WordKind::Fuivla, "{text}");
+            assert!(analysis.readings.is_empty());
+        }
+        let text = "sakr".repeat(40);
+        assert!(matches!(
+            segment_cll(&text),
+            Err(BuilderError::ResourceLimit { .. })
+        ));
+        let text = "a".repeat(2_200_000);
+        assert!(matches!(
+            score(&[text]),
+            Err(BuilderError::ResourceLimit { .. })
+        ));
+    }
+
+    #[test]
+    fn retained_reference_parses_match_profile_results() {
+        let evidence: serde_json::Value =
+            serde_json::from_str(include_str!("../evidence/word-parses.json")).unwrap();
+        for case in evidence["cases"].as_array().unwrap() {
+            let word = case["word"].as_str().unwrap();
+            for (name, profile) in [("cll-ebnf", Profile::Cll), ("bpfk", Profile::Extended)] {
+                let expected = if case["jbotci_kind"] == "lujvo" && case[name]["ok"] == false {
+                    "unknown"
+                } else {
+                    case["jbotci_kind"].as_str().unwrap()
+                };
+                let analysis = analyze_word(profile, word);
+                assert_eq!(
+                    serde_json::to_value(analysis.kind).unwrap(),
+                    expected,
+                    "{name} {word}"
+                );
+                if analysis.kind == WordKind::Lujvo {
+                    let mut tokens = vec![];
+                    for part in &analysis.readings[0] {
+                        if let Some(join) = &part.join_before {
+                            tokens.push(join.clone());
+                        }
+                        tokens.push(part.text.clone());
+                    }
+                    assert_eq!(
+                        serde_json::to_value(tokens).unwrap(),
+                        case["jbotci_tokens"],
+                        "{name} {word}"
+                    );
+                }
+            }
+        }
+    }
+    #[test]
+    fn builder_rejects_false_extended_winners() {
+        let component = |id: &str, word: &str, kind: &str, claims: &[&str]| Component {
+            id: id.into(),
+            spelling: word.into(),
+            kind: kind.into(),
+            definition: None,
+            locked: None,
+            claims: claims
+                .iter()
+                .map(|r| Claim {
+                    rafsi: r.to_string(),
+                    pair: format!("pair-{r}"),
+                })
+                .collect(),
+        };
+        let request = LujvoRequest {
+            profile: Profile::Extended,
+            components: vec![
+                component("a", "bangu", "gismu", &["bau", "ban"]),
+                component("b", "ismu", "fuivla", &[]),
+            ],
+            inventory: Inventory::default(),
+            limits: Limits::default(),
+        };
+        let result = build_lujvo(&request).unwrap();
+        assert!(result.candidates.iter().any(|c| c.spelling == "bany'ismu"));
+        assert!(!result.candidates.iter().any(|c| c.spelling == "baurismu"));
+        assert!(result.rejected.iter().any(|c| c.spelling == "baurismu"));
+        for candidate in result.candidates {
+            assert!(
+                candidate
+                    .recovered
+                    .iter()
+                    .map(|p| &p.text)
+                    .eq(candidate.parts.iter().map(|p| &p.form))
+            );
+        }
+    }
+    #[test]
+    fn failed_candidate_recognition_counts_toward_total_work() {
+        let parts = vec![Part::rafsi("bau"), Part::core("ismu")];
+        let tokens = bond(&parts).unwrap();
+        let mut work = 0;
+        assert!(validate_checked(Profile::Extended, &parts, &tokens, &mut work).is_err());
+        assert!(work > 0);
+        work = 2_000_000;
+        assert!(matches!(
+            validate_checked(Profile::Extended, &parts, &tokens, &mut work),
+            Err(BuilderError::ResourceLimit { .. })
+        ));
     }
 }

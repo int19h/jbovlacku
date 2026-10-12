@@ -1,0 +1,373 @@
+{
+  "jbotci_revision": "3d9fd41d9ed32de26311ee27ec86b6b165985aa1",
+  "gencmu_revision": "6d705c316797b02983220780ecebb17636d1c5b7",
+  "phoneme_normalization": "Remove stress accents and convert marked i/u glides to spelling letters. Preserve part and hyphen boundaries.",
+  "cases": [
+    {
+      "word": "aktyiismu",
+      "jbotci_kind": "lujvo",
+      "jbotci_tokens": [
+        "akt",
+        "y",
+        "iismu"
+      ],
+      "cll-ebnf": {
+        "ok": false,
+        "brackets": ""
+      },
+      "bpfk": {
+        "ok": true,
+        "brackets": "aktyiismu"
+      }
+    },
+    {
+      "word": "fuly'ismu",
+      "jbotci_kind": "lujvo",
+      "jbotci_tokens": [
+        "ful",
+        "y'",
+        "ismu"
+      ],
+      "cll-ebnf": {
+        "ok": false,
+        "brackets": ""
+      },
+      "bpfk": {
+        "ok": true,
+        "brackets": "fuly'ismu"
+      }
+    },
+    {
+      "word": "fulta'yismu",
+      "jbotci_kind": "unknown",
+      "jbotci_tokens": [],
+      "cll-ebnf": {
+        "ok": false,
+        "brackets": ""
+      },
+      "bpfk": {
+        "ok": false,
+        "brackets": ""
+      }
+    },
+    {
+      "word": "tcenelyiismu",
+      "jbotci_kind": "lujvo",
+      "jbotci_tokens": [
+        "tce",
+        "nel",
+        "y",
+        "iismu"
+      ],
+      "cll-ebnf": {
+        "ok": false,
+        "brackets": ""
+      },
+      "bpfk": {
+        "ok": true,
+        "brackets": "tcenelyiismu"
+      }
+    },
+    {
+      "word": "gimyiismu",
+      "jbotci_kind": "lujvo",
+      "jbotci_tokens": [
+        "gim",
+        "y",
+        "iismu"
+      ],
+      "cll-ebnf": {
+        "ok": false,
+        "brackets": ""
+      },
+      "bpfk": {
+        "ok": true,
+        "brackets": "gimyiismu"
+      }
+    },
+    {
+      "word": "jenjigu'ydi'e",
+      "jbotci_kind": "lujvo",
+      "jbotci_tokens": [
+        "jenjigu",
+        "'y",
+        "di'e"
+      ],
+      "cll-ebnf": {
+        "ok": false,
+        "brackets": ""
+      },
+      "bpfk": {
+        "ok": true,
+        "brackets": "jenjigu'ydi'e"
+      }
+    },
+    {
+      "word": "gimspageti",
+      "jbotci_kind": "fuivla",
+      "jbotci_tokens": [],
+      "cll-ebnf": {
+        "ok": true,
+        "brackets": "gimspageti"
+      },
+      "bpfk": {
+        "ok": true,
+        "brackets": "gimspageti"
+      }
+    },
+    {
+      "word": "baurismu",
+      "jbotci_kind": "unknown",
+      "jbotci_tokens": [],
+      "cll-ebnf": {
+        "ok": true,
+        "brackets": "(bau rismu)"
+      },
+      "bpfk": {
+        "ok": true,
+        "brackets": "(bau rismu)"
+      }
+    },
+    {
+      "word": "leksiko'yismu",
+      "jbotci_kind": "unknown",
+      "jbotci_tokens": [],
+      "cll-ebnf": {
+        "ok": false,
+        "brackets": ""
+      },
+      "bpfk": {
+        "ok": false,
+        "brackets": ""
+      }
+    },
+    {
+      "word": "fulty'ismu",
+      "jbotci_kind": "lujvo",
+      "jbotci_tokens": [
+        "fult",
+        "y'",
+        "ismu"
+      ],
+      "cll-ebnf": {
+        "ok": false,
+        "brackets": ""
+      },
+      "bpfk": {
+        "ok": true,
+        "brackets": "fulty'ismu"
+      }
+    },
+    {
+      "word": "sairzba",
+      "jbotci_kind": "lujvo",
+      "jbotci_tokens": [
+        "sai",
+        "r",
+        "zba"
+      ],
+      "cll-ebnf": {
+        "ok": true,
+        "brackets": "sairzba"
+      },
+      "bpfk": {
+        "ok": true,
+        "brackets": "sairzba"
+      }
+    },
+    {
+      "word": "sakrsakysakli",
+      "jbotci_kind": "lujvo",
+      "jbotci_tokens": [
+        "sakrsak",
+        "y",
+        "sakli"
+      ],
+      "cll-ebnf": {
+        "ok": false,
+        "brackets": ""
+      },
+      "bpfk": {
+        "ok": true,
+        "brackets": "sakrsakysakli"
+      }
+    },
+    {
+      "word": "sabkysakli",
+      "jbotci_kind": "unknown",
+      "jbotci_tokens": [],
+      "cll-ebnf": {
+        "ok": false,
+        "brackets": ""
+      },
+      "bpfk": {
+        "ok": false,
+        "brackets": ""
+      }
+    },
+    {
+      "word": "rsakli",
+      "jbotci_kind": "unknown",
+      "jbotci_tokens": [],
+      "cll-ebnf": {
+        "ok": false,
+        "brackets": ""
+      },
+      "bpfk": {
+        "ok": false,
+        "brackets": ""
+      }
+    },
+    {
+      "word": "ntadi",
+      "jbotci_kind": "unknown",
+      "jbotci_tokens": [],
+      "cll-ebnf": {
+        "ok": false,
+        "brackets": ""
+      },
+      "bpfk": {
+        "ok": false,
+        "brackets": ""
+      }
+    },
+    {
+      "word": "ismu",
+      "jbotci_kind": "fuivla",
+      "jbotci_tokens": [],
+      "cll-ebnf": {
+        "ok": false,
+        "brackets": ""
+      },
+      "bpfk": {
+        "ok": true,
+        "brackets": "ismu"
+      }
+    },
+    {
+      "word": "zbasai",
+      "jbotci_kind": "lujvo",
+      "jbotci_tokens": [
+        "zba",
+        "sai"
+      ],
+      "cll-ebnf": {
+        "ok": true,
+        "brackets": "zbasai"
+      },
+      "bpfk": {
+        "ok": true,
+        "brackets": "zbasai"
+      }
+    },
+    {
+      "word": "tosymabru",
+      "jbotci_kind": "lujvo",
+      "jbotci_tokens": [
+        "tos",
+        "y",
+        "mabru"
+      ],
+      "cll-ebnf": {
+        "ok": true,
+        "brackets": "tosymabru"
+      },
+      "bpfk": {
+        "ok": true,
+        "brackets": "tosymabru"
+      }
+    },
+    {
+      "word": "tosmabru",
+      "jbotci_kind": "unknown",
+      "jbotci_tokens": [],
+      "cll-ebnf": {
+        "ok": true,
+        "brackets": "(to smabru)"
+      },
+      "bpfk": {
+        "ok": true,
+        "brackets": "(to smabru)"
+      }
+    },
+    {
+      "word": "ckusni",
+      "jbotci_kind": "lujvo",
+      "jbotci_tokens": [
+        "cku",
+        "sni"
+      ],
+      "cll-ebnf": {
+        "ok": true,
+        "brackets": "ckusni"
+      },
+      "bpfk": {
+        "ok": true,
+        "brackets": "ckusni"
+      }
+    },
+    {
+      "word": "cuktysni",
+      "jbotci_kind": "lujvo",
+      "jbotci_tokens": [
+        "cukt",
+        "y",
+        "sni"
+      ],
+      "cll-ebnf": {
+        "ok": true,
+        "brackets": "cuktysni"
+      },
+      "bpfk": {
+        "ok": true,
+        "brackets": "cuktysni"
+      }
+    },
+    {
+      "word": "ro'inre'o",
+      "jbotci_kind": "lujvo",
+      "jbotci_tokens": [
+        "ro'i",
+        "n",
+        "re'o"
+      ],
+      "cll-ebnf": {
+        "ok": true,
+        "brackets": "ro'inre'o"
+      },
+      "bpfk": {
+        "ok": true,
+        "brackets": "ro'inre'o"
+      }
+    },
+    {
+      "word": "saizba",
+      "jbotci_kind": "lujvo",
+      "jbotci_tokens": [
+        "sai",
+        "zba"
+      ],
+      "cll-ebnf": {
+        "ok": true,
+        "brackets": "saizba"
+      },
+      "bpfk": {
+        "ok": true,
+        "brackets": "saizba"
+      }
+    },
+    {
+      "word": "sakrsakrsakrsakrsakrsakrsakrsakrsakli",
+      "jbotci_kind": "fuivla",
+      "jbotci_tokens": [],
+      "cll-ebnf": {
+        "ok": true,
+        "brackets": "sakrsakrsakrsakrsakrsakrsakrsakrsakli"
+      },
+      "bpfk": {
+        "ok": true,
+        "brackets": "sakrsakrsakrsakrsakrsakrsakrsakrsakli"
+      }
+    }
+  ]
+}

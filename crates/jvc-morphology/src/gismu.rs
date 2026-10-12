@@ -44,7 +44,7 @@ fn parse_rational(value: &Value) -> Option<Ratio<BigUint>> {
             Value::Number(n) => n.as_u64().map(BigUint::from),
             Value::String(s)
                 if !s.is_empty()
-                    && s.len() <= 4096
+                    && s.len() <= 64
                     && s.bytes().all(|b| b.is_ascii_digit())
                     && (s.len() == 1 || !s.starts_with('0')) =>
             {
@@ -74,7 +74,7 @@ pub struct SourceRow {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum CandidateRecipe {
-    /// Letters that appear in the scoring inputs, as CLL 4.14 describes.
+    /// Use only letters that appear in the scoring inputs.
     SourceLetters,
     /// Every Lojban consonant and vowel.
     AllLetters,
@@ -335,6 +335,13 @@ struct Language {
     inputs: Vec<Vec<char>>,
 }
 fn normalize_input(text: &str) -> Result<Vec<char>, BuilderError> {
+    if text.len() > 256 {
+        return Err(BuilderError::ResourceLimit {
+            measure: "scoring input bytes".into(),
+            value: text.len() as u64,
+            limit: 256,
+        });
+    }
     let chars: Vec<char> = text
         .trim()
         .chars()
@@ -370,6 +377,31 @@ fn resolve_languages(sources: &[SourceRow]) -> Result<Vec<Language>, BuilderErro
     let mut order: Vec<String> = Vec::new();
     let mut by_language: BTreeMap<String, Language> = BTreeMap::new();
     for row in sources {
+        for (measure, text, limit) in [
+            ("language bytes", row.language.as_str(), 64),
+            ("source word bytes", row.word.as_str(), 256),
+        ] {
+            if text.len() > limit {
+                return Err(BuilderError::ResourceLimit {
+                    measure: measure.into(),
+                    value: text.len() as u64,
+                    limit: limit as u64,
+                });
+            }
+        }
+        if let Some(weight) = &row.weight {
+            for field in ["numerator", "denominator"] {
+                if let Some(text) = weight.get(field).and_then(Value::as_str) {
+                    if text.len() > 64 {
+                        return Err(BuilderError::ResourceLimit {
+                            measure: "weight digits".into(),
+                            value: text.len() as u64,
+                            limit: 64,
+                        });
+                    }
+                }
+            }
+        }
         let language = row.language.trim().to_owned();
         if language.is_empty() {
             return Err(BuilderError::Invalid {
@@ -557,6 +589,17 @@ type Scored<'a> = (BigUint, &'a str, Vec<(usize, usize)>);
 /// Runs the generator. The search is complete or refused; a window only limits the output.
 pub fn generate_gismu(request: &GismuRequest) -> Result<GismuResult, BuilderError> {
     let languages = resolve_languages(&request.sources)?;
+    let mut denominator_lcm = BigUint::one();
+    for language in &languages {
+        denominator_lcm = denominator_lcm.lcm(language.weight.denom());
+        if denominator_lcm.bits() > 4096 {
+            return Err(BuilderError::ResourceLimit {
+                measure: "weight arithmetic bits".into(),
+                value: denominator_lcm.bits(),
+                limit: 4096,
+            });
+        }
+    }
     let total: Ratio<BigUint> = languages
         .iter()
         .map(|l| l.weight.clone())
@@ -566,6 +609,26 @@ pub fn generate_gismu(request: &GismuRequest) -> Result<GismuResult, BuilderErro
             message: "At least one language weight must be positive.".into(),
         });
     }
+    for size in [total.numer().bits(), total.denom().bits()] {
+        if size > 4096 {
+            return Err(BuilderError::ResourceLimit {
+                measure: "weight arithmetic bits".into(),
+                value: size,
+                limit: 4096,
+            });
+        }
+    }
+    if request.inventory.gismu.len() > 20_000 || request.inventory.claims.len() > 20_000 {
+        return Err(BuilderError::ResourceLimit {
+            measure: "inventory rows".into(),
+            value: request
+                .inventory
+                .gismu
+                .len()
+                .max(request.inventory.claims.len()) as u64,
+            limit: 20_000,
+        });
+    }
     let window = request.window.min(512);
     let inventory = generate_inventory(request.candidates, &languages);
     let letters: u64 = languages
@@ -573,11 +636,11 @@ pub fn generate_gismu(request: &GismuRequest) -> Result<GismuResult, BuilderErro
         .flat_map(|l| l.inputs.iter().map(|i| i.len() as u64))
         .sum();
     let work = inventory.len() as u64 * letters.max(1);
-    if work > request.limits.work {
+    if work > request.limits.work.min(60_000_000) {
         return Err(BuilderError::ResourceLimit {
             measure: "candidates times input letters".into(),
             value: work,
-            limit: request.limits.work,
+            limit: request.limits.work.min(60_000_000),
         });
     }
     let scorer = Scorer::new(&languages);
@@ -994,5 +1057,26 @@ mod tests {
             generate_gismu(&request),
             Err(BuilderError::ResourceLimit { .. })
         ));
+    }
+    #[test]
+    fn resource_bounds_precede_normalization_and_exact_arithmetic() {
+        assert!(matches!(
+            normalize_input(&"a".repeat(257)),
+            Err(BuilderError::ResourceLimit { .. })
+        ));
+        let row = SourceRow {
+            language: "eng".into(),
+            word: "test".into(),
+            input: Some("test".into()),
+            weight: Some(serde_json::json!({"numerator":"1".repeat(65),"denominator":1})),
+        };
+        assert!(matches!(
+            resolve_languages(&[row]),
+            Err(BuilderError::ResourceLimit { .. })
+        ));
+        assert!(
+            parse_rational(&serde_json::json!({"numerator":"1".repeat(65),"denominator":1}))
+                .is_none()
+        );
     }
 }

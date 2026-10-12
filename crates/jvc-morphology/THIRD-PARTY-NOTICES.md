@@ -5,6 +5,8 @@ short rafsi derivation, gismu recognition scoring, and similar-consonant
 conflict rules in this crate are ported from jbotci, revision
 `3d9fd41d9ed32de26311ee27ec86b6b165985aa1`, files
 `crates/jbotci-morphology/src/lujvo.rs`,
+`crates/jbotci-morphology/src/segment.rs`,
+`crates/jbotci-morphology/src/cmavo.rs`,
 `crates/jbotci-morphology/src/segment/phonotactics.rs`, and
 `crates/jbotci-gimfihi/src/lib.rs`. Their regression fixtures are kept in the
 tests of this crate.
@@ -36,4 +38,4 @@ SOFTWARE.
 The language weight tables of the CLL 1987 and CLL 1995 profiles are facts
 cited from the Lojban language-statistics archive and CLL chapter 4.14. The
 Ilmen profiles cite lynn's gimyzba page. These citations record numbers and
-URLs only.
+URLs, pinned source digests, and factual table excerpts.

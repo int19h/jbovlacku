@@ -7,6 +7,7 @@ pub mod lujvo;
 pub mod phonotactics;
 pub mod presets;
 pub mod rafsi;
+mod recognize;
 
 pub use gismu::{GismuRequest, GismuResult, generate_gismu};
 pub use lujvo::{

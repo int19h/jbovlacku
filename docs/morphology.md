@@ -2,18 +2,19 @@
 
 This document names the word-form rules that the shared core implements in `crates/jvc-morphology`. Formation and compound metadata cite these identifiers and versions. A version changes when a rule changes.
 
-The crate ports its phonotactic tables, rafsi shapes, lujvo bonding and scoring, short rafsi derivation, recognition counting, and similar-consonant rules from jbotci revision `3d9fd41d9ed32de26311ee27ec86b6b165985aa1`. The notices are in `crates/jvc-morphology/THIRD-PARTY-NOTICES.md`.
+The crate ports pure primitives from jbotci revision `3d9fd41d9ed32de26311ee27ec86b6b165985aa1`. They cover word recognition, consonant pairs, rafsi shapes, lujvo construction, gismu scoring, and conflicts. The notices are in [THIRD-PARTY-NOTICES.md](../crates/jvc-morphology/THIRD-PARTY-NOTICES.md).
 
 ## CLL lujvo
 
-Identifier: `https://github.com/int19h/jbovlacku/blob/main/docs/morphology.md#cll-lujvo`. Version `1`.
+Identifier: `https://github.com/int19h/jbovlacku/blob/main/docs/morphology.md#cll-lujvo`. Version `2`.
 
 The profile follows [CLL chapter 4](https://lojban.github.io/cll/4/1/):
 
 - Consonant pairs and initial pairs follow CLL 3.6 and 3.7.
 - A component form is a short rafsi (CVC, CCV, CVV, CV'V), a four-letter gismu stem (CVCC, CCVC) before another part, or a whole gismu in the last position. A CVC rafsi never ends a lujvo.
 - Joins follow CLL 4.11. A `y` follows a four-letter stem, separates a forbidden consonant pair, and separates `n` from `tc`, `ts`, `dj`, or `dz`. An `r` follows a first CVV rafsi, or `n` when the next part begins with `r`, unless the lujvo has two parts and the second is CCV. The tosmabru test adds one `y` after a leading CVC run that would read as cmavo before a gismu.
-- A candidate is valid only when the whole spelling reads as one lujvo under these rules and that reading gives back the intended parts and joins. A needless or missing hyphen rejects the form.
+- A constructed candidate must parse as one lujvo and recover the intended parts and joins. Construction uses the required joins from CLL 4.11.
+- Analysis accepts legal optional hyphens, such as the `r` in `sairzba`, under the pinned recognizer. These analysis rules follow CLL 4.6. An analyzed spelling does not become a construction result unless its joins satisfy the construction rules.
 
 ## CLL lujvo scoring
 
@@ -23,14 +24,29 @@ The score follows [CLL 4.12](https://lojban.github.io/cll/4/12/): `1000 L - 500 
 
 ## Extended lujvo
 
-Identifier: `https://github.com/int19h/jbovlacku/blob/main/docs/morphology.md#extended-lujvo`. Version `1`.
+Identifier: `https://github.com/int19h/jbovlacku/blob/main/docs/morphology.md#extended-lujvo`. Version `2`.
 
 The extended profile adds the audited jbotci behavior for whole-word parts. It is not CLL text:
 
-- A whole brivla can serve as a part. A brivla core ends with a vowel, has a permissible consonant pair among its first five letters, and uses no `y`.
+- A whole brivla can serve as a part. The pinned recognizer must read each core as one gismu, lujvo, or fu'ivla. A core uses no `y`.
 - A core that ends with a vowel is followed by `'y`. A rafsi that ends with a consonant is followed by `y` before a consonant that it cannot pair with, or by `y'` before a vowel nucleus, as in `fuly'ismu`. Before `i` or `u` plus a vowel, the join is `y`, as in `aktyiismu`.
 - A rafsi part can have a shape outside the CLL table. The extended scorer gives that shape rank zero.
-- A candidate with whole-word parts is valid when its joins reproduce the spelling, every core is a brivla core, and the CLL rules do not read the spelling as a different lujvo. The classic reading, when it exists, wins.
+- Every candidate must parse as one lujvo under the pinned recognizer. Its parsed components and joins must equal the intended sequence. Token reconstruction supplies no parse evidence.
+- A join can produce an invalid spelling. For example, bonding `leksiko` and `ismu` produces `leksiko'yismu`. The builder refuses that result after parsing it.
+
+The word recognizer ports the pure recognition functions from jbotci's `segment.rs` and the indicator table from `cmavo.rs`. Contract macros and source diagnostic types do not enter the port. The crate adds work limits around the same parsing rules. It returns spelling spans without jbotci's stress and glide marks.
+
+The CLL profile restricts lujvo components and construction joins. General word recognition uses the pinned jbotci lineage for both profiles. This is not full equivalence with gencmu's `cll-ebnf` grammar. For example, jbotci and gencmu `bpfk` recognize `ismu`, while gencmu `cll-ebnf` rejects it. The retained [reference results](../crates/jvc-morphology/evidence/word-parses.json) record this difference. Fu'ivla classification is advisory under the CLL profile.
+
+The extended parser recognizes `sakrsakysakli` as `sakrsak + y + sakli`. The CLL profile rejects it. Neither profile returns the invalid classic split `sak + rsak + y + sakli`.
+
+## Work limits
+
+The recognizer accepts at most 128 input bytes. It permits at most 50,000 calls to recursive recognition functions that share its cache. This counts failed paths and cached calls. Exhaustion invalidates the whole analysis, including any earlier successful branch. Analysis returns `unknown` with a resource diagnostic. Builders return `BuilderError::ResourceLimit` and no partial result.
+
+A lujvo request accepts 2 through 64 components, 64 claims per component, and 20,000 inventory claims. A component or claimed rafsi accepts at most 128 bytes. A build permits at most 20,000 choice combinations and 2,000,000 recognition calls across candidate checks. Failed candidate parses count toward that total. A result window permits at most 512 candidates. Caller limits can reduce these ceilings. The public Rust score function returns an error above 128 bytes, before arithmetic.
+
+A gismu request accepts 1 through 64 source rows. Each raw scoring input and native source word accepts at most 256 bytes. A normalized scoring input accepts at most 64 letters. A language identifier accepts at most 64 bytes. Each weight part accepts at most 64 decimal digits. Exact weight arithmetic permits at most 4096 bits in its shared denominator and total weight. The search permits at most 60,000,000 candidate-input-letter operations. Each inventory list permits at most 20,000 rows. Caller limits can reduce these ceilings.
 
 ## Extended lujvo scoring
 
@@ -62,8 +78,12 @@ Conflicts come from the inventory the caller supplies. The rules are `identical`
 | -------- | -------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
 | CLL 1995 | cmn 347, hin 196, eng 160, spa 123, rus 89, ara 85                                                 | [CLL 4.14](https://lojban.github.io/cll/4/14/), dated by the [language-statistics archive](https://lojban.org/files/etymology/langstat99.htm) |
 | CLL 1987 | cmn 360, hin 156, eng 208, spa 116, rus 87, ara 73                                                 | [Language-statistics archive](https://lojban.org/files/etymology/langstat99.htm), the original gismu-remaking table                           |
-| Ilmen 6  | eng 339, cmn 255, hin 136, spa 126, ara 74, fra 70                                                 | [gimyzba](https://github.com/lynn/lynn.github.io/blob/master/gimyzba/index.html)                                                              |
-| Ilmen 8  | cmn 271, eng 170, spa 130, hin 125, ara 104, ben 76, rus 64, por 60                                | [gimyzba](https://github.com/lynn/lynn.github.io/blob/master/gimyzba/index.html)                                                              |
-| Ilmen 12 | cmn 238, eng 160, spa 113, hin 108, ara 90, ben 66, rus 55, por 52, msa 32, jpn 30, deu 29, fra 26 | [gimyzba](https://github.com/lynn/lynn.github.io/blob/master/gimyzba/index.html)                                                              |
+| Ilmen 6  | eng 339, cmn 255, hin 136, spa 126, ara 74, fra 70                                                 | [gimyzba](https://github.com/lynn/lynn.github.io/blob/567f4ada91/gimyzba/index.html)                                                              |
+| Ilmen 8  | cmn 271, eng 170, spa 130, hin 125, ara 104, ben 76, rus 64, por 60                                | [gimyzba](https://github.com/lynn/lynn.github.io/blob/567f4ada91/gimyzba/index.html)                                                              |
+| Ilmen 12 | cmn 238, eng 160, spa 113, hin 108, ara 90, ben 66, rus 55, por 52, msa 32, jpn 30, deu 29, fra 26 | [gimyzba](https://github.com/lynn/lynn.github.io/blob/567f4ada91/gimyzba/index.html)                                                              |
 
-The gimyzba page names no population source and no license for its tables. The profiles record its numbers and URL as a citation of facts. Ilmen 8 is Ilmen's 2016 twelve-language table, published as the etymology of the experimental gismu stima on 2016-01-28, cut to eight languages and rescaled, as the lynn/gimyzba README credited in commit b413e2b of 2020-11-12. Ilmen 6 and Ilmen 12 first appear in the first commit of the gimyzba page, 567f4ada91 of 2026-06-16, with no citation. Their attribution to Ilmen is by name only, and Ilmen 12 differs from the 2016 table. The origin of those two tables is unconfirmed. The CLL 1987 table is not the rounded 1985 table of CLL. New runs normalize the numerators by their positive sum, so the Ilmen 12 sum of 999 does not change candidate order against a run that divides by 1000, but the two runs have different scores and are never labeled the same.
+The gimyzba page names no population source and no license for its tables. The profiles record its numbers and URL as a citation of facts. The lynn/gimyzba README at commit `b413e2b` credits the eight-language configuration to Ilmen. It states no population data or method for deriving the weights. Ilmen 6 and Ilmen 12 first appear in the first commit of the gimyzba page, 567f4ada91 of 2026-06-16, with no citation. Their attribution to Ilmen is by name only, and Ilmen 12 differs from the 2016 table. The origin of those two tables is unconfirmed. The CLL 1987 table is not the rounded 1985 table of CLL. New runs normalize the numerators by their positive sum, so the Ilmen 12 sum of 999 does not change candidate order against a run that divides by 1000, but the two runs have different scores and are never labeled the same.
+
+Every preset returns `source_digest`, the SHA-256 digest of its cited source bytes. The [retained factual tables](../crates/jvc-morphology/evidence/presets.json) record those digests and source references. The Ilmen tables cite the fixed gimyzba page revision `567f4ada91`. The evidence stores the factual weight rows rather than the page's unlicensed program code.
+
+The identifier URLs name stable metadata identities. They do not prove that a branch already contains this document. The source-letter recipe retains `cll-gismu-forms-v1` for existing formation records. It searches letters from the inputs. The all-letter recipe searches every Lojban consonant and vowel. These names do not change the candidate alphabet that each run records.
