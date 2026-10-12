@@ -360,7 +360,7 @@ export async function fetchBranches(
       if (history.events.has(id) || learned.has(id)) continue;
       if (fetched + learned.size >= 4096)
         throw new Error(
-          `${k.peer.label} reports more than 4096 unknown records. Export and merge history with the CLI.`,
+          `${k.peer.label} reports more than 4096 unknown records. This browser client cannot follow a history that large. Export the outbox from Not delivered to keep your signed records.`,
         );
       let envelope: Envelope;
       try {

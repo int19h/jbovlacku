@@ -95,11 +95,10 @@ export async function formPage(route: Route, context: RenderContext, app: App) {
     multiline: true,
     rows: 3,
     value: draft.formNotes,
-    hint: "Optional. Why this form, which parts it comes from, or an experimental classification. Saved as etymology text under your name.",
+    hint: "Optional. Why this form, which parts it comes from, or an experimental classification. Saved as etymology text under your name, after any etymology kept from a revised parent.",
   });
   notes.input.addEventListener("input", () => {
     draft.formNotes = notes.input.value;
-    draft.etymologyText = notes.input.value;
     saver.touch();
   });
   section.append(notes.wrapper);
@@ -121,7 +120,7 @@ export async function formPage(route: Route, context: RenderContext, app: App) {
       "p",
       { class: "meta" },
       text(
-        "Changing the form later marks formation-dependent annotations for review. It never rewrites your prose. ",
+        "Formation evidence from a builder describes one exact form. If the spelling changes, publishing is blocked until the form is built again or the evidence is removed. Changing the form never rewrites your prose. ",
       ),
       link("Change the type", "/new/type"),
     ),

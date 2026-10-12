@@ -728,6 +728,25 @@ test("a full snapshot hash fits a narrow screen and the wizard works in both the
         () => document.documentElement.scrollWidth <= innerWidth,
       ),
     ).toBe(true);
+    // The full hash sits inside the viewport, and no ancestor clips it.
+    const box = await page
+      .getByText(/^Snapshot: sha256:[0-9a-f]{64}$/)
+      .evaluate((node) => {
+        const rect = node.getBoundingClientRect();
+        let clipped = false;
+        for (let e: Element | null = node; e; e = e.parentElement) {
+          const style = getComputedStyle(e);
+          if (
+            (style.overflowX === "hidden" || style.overflowX === "clip") &&
+            e.scrollWidth > e.clientWidth
+          )
+            clipped = true;
+        }
+        return { left: rect.left, right: rect.right, clipped };
+      });
+    expect(box.left).toBeGreaterThanOrEqual(0);
+    expect(box.right).toBeLessThanOrEqual(360);
+    expect(box.clipped).toBe(false);
     for (const path of [
       "/new/meaning",
       "/new/type",

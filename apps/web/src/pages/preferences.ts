@@ -112,7 +112,11 @@ export async function preferencesPage(
           text(languageName(key)),
           el("small", {
             text: cached
-              ? `${plural(cached.entries.length, "definition")} · snapshot ${cached.snapshot.slice(7, 19)}…`
+              ? `${plural(cached.entries.length, "definition")} · snapshot ${cached.snapshot.slice(7, 19)}… · version ${cached.version ?? 1}${
+                  cached.downgrade
+                    ? `. Version 1 was saved instead of version 2: ${cached.downgrade}`
+                    : ""
+                }`
               : "unreadable",
           }),
         ),
@@ -143,7 +147,9 @@ export async function preferencesPage(
             const pkg = await downloadPackage(pick.input.value);
             await app.store.put("packages", pick.input.value, pkg);
             app.announce(
-              `The ${languageName(pick.input.value)} search package is saved in this browser.`,
+              pkg.downgrade
+                ? `The ${languageName(pick.input.value)} search package is saved in this browser as version 1. ${pkg.downgrade}`
+                : `The ${languageName(pick.input.value)} search package is saved in this browser.`,
             );
             await renderPackages();
           } catch (error) {

@@ -221,7 +221,13 @@ export async function publishPage(
   if (claims.length) {
     const coverage = inventory.snapshot
       ? inventory.hasClaims
-        ? `Competing claims come from the local package of snapshot ${inventory.snapshot.slice(7, 19)}…. They cover retained claims in that package only.`
+        ? `Competing claims come from the local package of snapshot ${inventory.snapshot.slice(7, 19)}…. They cover retained claims in that package only.${
+            inventory.complete
+              ? ""
+              : ` The package lists at most 64 claims per word, so coverage is incomplete for ${inventory.incompleteWords
+                  .map((w) => w.spelling)
+                  .join(", ")}. The word page of each lists every claim.`
+          }`
         : "The local package carries no rafsi claims, so conflict coverage is unknown."
       : "No local package is downloaded, so conflict coverage is unknown.";
     conflicts.append(

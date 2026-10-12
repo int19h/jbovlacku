@@ -25,7 +25,9 @@ import {
   literalize,
   newDraft,
   newPlace,
+  normalizeDraft,
   numberPlaceholders,
+  remapPlaces,
   richTextToEditor,
   LENSISKU_RIGHTS_REFERENCE,
 } from "../../src/model/draft.ts";
@@ -96,7 +98,35 @@ test("structured text keeps declared place order and literal mode keeps circled 
     richTextToEditor(structured),
     "③ runs before ① and [[cukta|the book]] {place 21}",
   );
-  assert.equal(literalize("see {place 21} and ①"), "see (21) and ①");
+  assert.equal(literalize("see {place 21} and ①"), "see \\{place 21} and \\①");
+  // Every node kind has a text form, and literal characters stay literal.
+  const every = [
+    [
+      "see ① and `ko'a` with {operand x} at ",
+      { url: "https://example.org/a?b=[1]", label: "the source" },
+      " ",
+      { code: "ba`ck" },
+    ],
+  ] as const;
+  const text = richTextToEditor(every as never);
+  assert.deepEqual(editorToRichText(text, true), [
+    [
+      "see ① and `ko'a` with {operand x} at ",
+      { url: "https://example.org/a?b=[1]", label: "the source" },
+      " ",
+      { code: "ba`ck" },
+    ],
+  ]);
+  assert.equal(
+    richTextToEditor([
+      [
+        "①",
+        { operand: "x" },
+        { word: { language: "jbo", spelling: "cukta" }, label: "cukta" },
+      ],
+    ]),
+    "\\①{operand x}[[cukta]]",
+  );
 });
 
 test("a short literal definition publishes without advanced fields under the fixed CC0 terms", () => {
@@ -140,7 +170,6 @@ test("a reference to an undeclared place blocks signing and the literal escape p
   const escaped = newDraft({
     ...draft,
     text: literalize(draft.text),
-    structured: false,
   });
   const { body, problems: after } = draftToBody(escaped);
   assert.deepEqual(
@@ -188,7 +217,11 @@ test("variadic and context frames and type hints round-trip through the body", (
     frameMode: "variadic",
     variadicMinimum: 2,
     places: [
-      { ...newPlace(1), gloss: "first", kind: "property" },
+      {
+        ...newPlace(1),
+        glosses: [{ language: "en", text: "first", sense: "" }],
+        kind: "property",
+      },
       {
         ...newPlace(2),
         kind: "custom",
@@ -408,5 +441,396 @@ test("builder metadata for a chosen lujvo and a generated gismu satisfies the bo
         }),
       ).body,
     ),
+  );
+});
+
+/** An independent body that uses every field the format offers, not one the draft serializer made. */
+function richParent() {
+  const id = (c: string) => "jve1:" + c.repeat(64);
+  return {
+    word: { language: "jbo", spelling: "banli" },
+    language: "en",
+    text: [
+      [
+        "See ",
+        { url: "https://example.org/source", label: "the source" },
+        " and ",
+        { code: "ko'a" },
+        " and ",
+        { operand: "x" },
+        " with literal ① at ",
+        1,
+        ".",
+      ],
+      ["Second paragraph with [[brackets]] and `ticks` and a \\ slash."],
+    ],
+    frame: {
+      role: "constructed-predicate",
+      arity: { mode: "variadic", minimum: 1 },
+      places: [
+        {
+          index: 1,
+          glosses: [
+            { language: "en", text: "one", sense: "a" },
+            { language: "fr", text: "deux", sense: null },
+          ],
+          description: [
+            [
+              "thing ",
+              { word: { language: "jbo", spelling: "cukta" }, label: "book" },
+            ],
+          ],
+          type_hints: [
+            {
+              alternatives: [
+                { tags: ["entity"], abstractor: null, relation_arity: null },
+                { tags: ["event"], abstractor: "nu", relation_arity: null },
+              ],
+              note: [["note with ", 1]],
+            },
+          ],
+          defaults: [
+            {
+              kind: "suggested",
+              value: { format: "prose", language: "de", text: "etwas" },
+              condition: [["when ", 1, " is ", { code: "zo'e" }]],
+              explanation: [
+                ["see ", { url: "https://example.org/x", label: "x" }],
+              ],
+            },
+          ],
+          constraints: [[["only ", 1]]],
+          derivation: [
+            {
+              word: { language: "jbo", spelling: "banro" },
+              definition: null,
+              place: 1,
+              explanation: [["first"]],
+            },
+            {
+              word: { language: "jbo", spelling: "barda" },
+              definition: id("d"),
+              place: 2,
+              explanation: [["second ", { code: "x" }]],
+            },
+          ],
+        },
+      ],
+      tail: {
+        from: 2,
+        description: [["more ", 1]],
+        type_hints: [
+          {
+            alternatives: [
+              { tags: ["set"], abstractor: null, relation_arity: null },
+            ],
+            note: [],
+          },
+        ],
+      },
+      constraints: [[["frame ", 1]]],
+    },
+    operands: [
+      {
+        id: "x",
+        category: "sumti",
+        description: [["the ", 1]],
+        cardinality: { minimum: 0, maximum: null },
+      },
+    ],
+    glosses: [
+      { language: "en", text: "great", sense: "in size" },
+      { language: "jbo", text: "barda", sense: null },
+    ],
+    notes: [
+      [
+        "notes ",
+        { word: { language: "jbo", spelling: "cukta" }, label: "cukta" },
+      ],
+    ],
+    etymology: {
+      text: [["from ", { url: "https://example.org/e", label: "e" }]],
+      formation: null,
+      compound: null,
+    },
+    examples: [
+      {
+        language: "jbo",
+        text: "mi banli",
+        translation: [["I am great ", { code: "mi" }]],
+        notes: [["literal ①"]],
+      },
+    ],
+    classification: { kind: "gismu", selmaho: [] },
+    labels: ["a", "b"],
+    sources: [
+      {
+        label: "src",
+        url: "https://example.org/s",
+        event: null,
+        locator: "p1",
+      },
+    ],
+    license: {
+      expression: "CC0-1.0",
+      url: "https://creativecommons.org/publicdomain/zero/1.0/",
+      attribution: "",
+    },
+    legacy: null,
+  };
+}
+
+test("Revise keeps every node, gloss, hint, derivation, role, and literal character of an independent body", () => {
+  const parent = richParent();
+  assert.ok(admissible(parent), "the independent parent must be admissible");
+  const parentId = "jve1:" + "a".repeat(64);
+  const draft = draftFromBody(parent as never, parentId, "native");
+  assert.equal(draft.frameRole, "constructed-predicate");
+  assert.equal(draft.places[0].glosses.length, 2);
+  assert.equal(draft.places[0].derivations.length, 2);
+  const { body, problems } = draftToBody(draft);
+  assert.deepEqual(
+    problems.filter((pr) => pr.blocking),
+    [],
+  );
+  assert.deepEqual(body, parent);
+  assert.ok(admissible(body, [parentId]));
+});
+
+test("an old draft of this prototype loads with its single gloss and derivation kept", () => {
+  const { glosses, derivations, ...oldPlace } = newPlace(1);
+  void glosses;
+  void derivations;
+  const old = {
+    ...newDraft({ spelling: "broda", kind: "gismu", language: "en" }),
+    places: [
+      {
+        ...oldPlace,
+        gloss: "first",
+        from: { word: "sinxa", definition: null, place: 2, explanation: "" },
+      },
+    ],
+  } as never as Parameters<typeof normalizeDraft>[0];
+  delete (old as { frameRole?: string }).frameRole;
+  const draft = normalizeDraft(old);
+  assert.deepEqual(draft.places[0].glosses, [
+    { language: "en", text: "first", sense: "" },
+  ]);
+  assert.deepEqual(draft.places[0].derivations, [
+    { word: "sinxa", definition: null, place: 2, explanation: "" },
+  ]);
+  assert.equal(draft.frameRole, "predicate");
+  assert.equal("gloss" in draft.places[0], false);
+});
+
+test("removing a place keeps every reference's referent", () => {
+  const text = "① gives ② to ③ and \\② stays";
+  assert.equal(
+    remapPlaces(text, (n) => (n === 2 ? "literal" : n > 2 ? n - 1 : n)),
+    "① gives \\② to ② and \\② stays",
+  );
+});
+
+test("the editor and the core agree on every reviewed invalid draft", () => {
+  const blocking = (draft: ReturnType<typeof newDraft>) =>
+    draftToBody(draft)
+      .problems.filter((pr) => pr.blocking)
+      .map((pr) => pr.message);
+  const base = {
+    spelling: "broda",
+    kind: "gismu" as const,
+    text: "fine",
+    numberingApproved: true,
+  };
+  // P1 and P2: a reference in a constraint or the tail.
+  assert.match(
+    blocking(
+      newDraft({
+        ...base,
+        frameMode: "fixed",
+        places: [{ ...newPlace(1), constraints: ["only ②"] }],
+      }),
+    ).join("\n"),
+    /Place 2 is referenced in place 1's constraint 1/,
+  );
+  assert.match(
+    blocking(
+      newDraft({
+        ...base,
+        frameMode: "variadic",
+        places: [newPlace(1)],
+        tail: { description: "more ③", kind: "object", hint: null },
+      }),
+    ).join("\n"),
+    /Place 3 is referenced in the repeated places' description/,
+  );
+  // P3: a variadic frame needs a contiguous prefix.
+  assert.match(
+    blocking(
+      newDraft({
+        ...base,
+        frameMode: "variadic",
+        places: [newPlace(1), newPlace(3)],
+        tail: { description: "more", kind: "object", hint: null },
+      }),
+    ).join("\n"),
+    /out of sequence/,
+  );
+  // P4: a derivation needs a source place from 1.
+  assert.match(
+    blocking(
+      newDraft({
+        ...base,
+        frameMode: "fixed",
+        places: [
+          {
+            ...newPlace(1),
+            derivations: [
+              { word: "sinxa", definition: null, place: 0, explanation: "" },
+            ],
+          },
+        ],
+      }),
+    ).join("\n"),
+    /needs the source place number/,
+  );
+  assert.match(
+    blocking(
+      newDraft({
+        ...base,
+        frameMode: "fixed",
+        places: [
+          {
+            ...newPlace(1),
+            derivations: [
+              { word: "sinxa", definition: null, place: null, explanation: "" },
+            ],
+          },
+        ],
+      }),
+    ).join("\n"),
+    /needs the source place number/,
+  );
+  // P5: custom tags are named kinds or HTTPS URLs, and alternatives are distinct.
+  const custom = (alternatives: unknown[]) =>
+    newDraft({
+      ...base,
+      frameMode: "fixed",
+      places: [
+        {
+          ...newPlace(1),
+          kind: "custom",
+          hint: { alternatives: alternatives as never, note: [] },
+        },
+      ],
+    });
+  assert.match(
+    blocking(
+      custom([{ tags: ["thing"], abstractor: null, relation_arity: null }]),
+    ).join("\n"),
+    /uses the tag "thing"/,
+  );
+  assert.match(
+    blocking(
+      custom([
+        { tags: ["entity"], abstractor: null, relation_arity: null },
+        { tags: ["entity"], abstractor: null, relation_arity: null },
+      ]),
+    ).join("\n"),
+    /same alternative twice/,
+  );
+  // P6: an empty word link.
+  assert.match(
+    blocking(newDraft({ ...base, text: "see [[ ]]" })).join("\n"),
+    /word link without a spelling/,
+  );
+  // P7: formation rows need a BCP 47 language and bounded weights.
+  const formation = draftToBody(
+    newDraft({
+      ...base,
+      formation: {
+        method: "non-algorithmic",
+        algorithm: null,
+        sources: [
+          {
+            language: "English",
+            word: "big",
+            input: null,
+            weight: { numerator: 1e12, denominator: 1 } as never,
+            notes: [],
+          },
+        ],
+        weights_profile: null,
+        generated: null,
+        selected_score: null,
+        selected_rank: null,
+        selection_reason: [],
+        candidates: [],
+        conflicts: [],
+      },
+      evidenceForm: "broda",
+    }),
+  )
+    .problems.filter((pr) => pr.blocking)
+    .map((pr) => pr.message)
+    .join("\n");
+  assert.match(formation, /language "English"/);
+  assert.match(formation, /weight outside/);
+  // P11: the node budget covers every field.
+  const long = Array.from({ length: 3000 }, () => "[[cukta]]").join(" ");
+  assert.match(
+    blocking(
+      newDraft({
+        ...base,
+        frameMode: "fixed",
+        places: [
+          { ...newPlace(1), description: long },
+          { ...newPlace(2), description: long },
+          { ...newPlace(3), description: long },
+        ],
+      }),
+    ).join("\n"),
+    /rich text nodes across every field/,
+  );
+  // P12: a fixed frame with zero places is not a guessed structure.
+  assert.match(
+    blocking(newDraft({ ...base, frameMode: "fixed", places: [] })).join("\n"),
+    /needs at least one place/,
+  );
+  // Evidence for another form blocks publication.
+  assert.match(
+    blocking(
+      newDraft({
+        ...base,
+        spelling: "brode",
+        compound: {
+          components: [],
+          morphology: { id: "x", version: "1" },
+          scoring: { id: "x", version: "1" },
+          score: null,
+          notes: [],
+        },
+        evidenceForm: "broda",
+      }),
+    ).join("\n"),
+    /describes "broda", not "brode"/,
+  );
+  // The core has the final word on a body the editor checks pass.
+  const operandRef = newDraft({
+    ...base,
+    text: "see {operand y}",
+    operands: [
+      {
+        id: "x",
+        category: "sumti",
+        description: "",
+        minimum: 0,
+        maximum: null,
+      },
+    ],
+  });
+  assert.match(
+    blocking(operandRef).join("\n"),
+    /operand "y", which is not declared/,
   );
 });

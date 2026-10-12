@@ -461,7 +461,8 @@ export function validateHits(hits: unknown, pageLimit: number): SearchHit[] {
             typeof hit.preview.word_kind === "string" &&
             typeof hit.preview.plain_text === "string" &&
             Array.from(hit.preview.plain_text).length <= 240 &&
-            hit.preview.status === "active")),
+            typeof hit.preview.status === "string" &&
+            hit.preview.status.length > 0)),
     )
   )
     throw new Error(
@@ -475,13 +476,15 @@ export async function remoteSearch(
   pageLimit: number,
   context: { snapshot: string; view: string } | null,
   after: string | null,
-  options: RequestOptions = {},
+  options: RequestOptions & { retired?: boolean } = {},
 ): Promise<SearchResponse> {
   const params = new URLSearchParams({
     q: query,
     language,
     limit: String(pageLimit),
   });
+  // Retired results are excluded unless the reader asks for them.
+  if (options.retired) params.set("retired", "1");
   if (context) {
     params.set("snapshot", context.snapshot);
     params.set("view", context.view);

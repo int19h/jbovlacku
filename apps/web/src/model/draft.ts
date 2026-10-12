@@ -3,7 +3,16 @@
  * draft. Nothing here signs or sends. The draft keeps the original meaning
  * apart from the editable definition prose and preserves every structured field.
  */
-import { wordId } from "../../../../packages/core/src/index.ts";
+import {
+  canonicalize,
+  contentHash,
+  identityFromSeed,
+  inspectBody,
+  signHeader,
+  utf8,
+  validateAction,
+  wordId,
+} from "../../../../packages/core/src/index.ts";
 import {
   countNodes,
   referencedPlaces,
@@ -18,6 +27,7 @@ import {
   type DefinitionBody,
   type Example,
   type Formation,
+  type Gloss,
   type LexicalKind,
   type Operand,
   type Place,
@@ -104,8 +114,15 @@ export function choiceForHint(hint: TypeHint | null): KindChoice {
 export interface DraftDerivation {
   word: string;
   definition: string | null;
-  place: number;
+  /** The source place number. Null until the author enters one. */
+  place: number | null;
+  /** Editor text. */
   explanation: string;
+}
+export interface DraftGloss {
+  language: string;
+  text: string;
+  sense: string;
 }
 export interface DraftDefault {
   kind: "conventional" | "suggested";
@@ -117,13 +134,17 @@ export interface DraftDefault {
 }
 export interface DraftPlace {
   index: number;
+  /** Editor text. */
   description: string;
-  gloss: string;
+  /** Every gloss keeps its own language and sense. */
+  glosses: DraftGloss[];
   kind: KindChoice;
-  /** Full type hint when kind is custom. */
+  /** Full type hint when kind is custom. The format allows one hint per place. */
   hint: TypeHint | null;
-  from: DraftDerivation | null;
+  /** Every derivation of this place, in order. */
+  derivations: DraftDerivation[];
   defaults: DraftDefault[];
+  /** Editor text. */
   constraints: string[];
 }
 export interface DraftExample {
@@ -165,6 +186,8 @@ export interface Draft {
   text: string;
   structured: boolean;
   frameMode: FrameMode;
+  /** The frame role of the format. Revise keeps the parent's role. */
+  frameRole: "predicate" | "constructed-predicate";
   variadicMinimum: number;
   places: DraftPlace[];
   tail: { description: string; kind: KindChoice; hint: TypeHint | null } | null;
@@ -175,6 +198,8 @@ export interface Draft {
   etymologyText: string;
   formation: Formation | null;
   compound: Compound | null;
+  /** The spelling that the formation or compound evidence describes. */
+  evidenceForm: string | null;
   sources: SourceReference[];
   labels: string[];
   operands: DraftOperand[];
@@ -209,6 +234,7 @@ export function newDraft(patch: Partial<Draft> = {}): Draft {
     text: "",
     structured: true,
     frameMode: "none",
+    frameRole: "predicate",
     variadicMinimum: 0,
     places: [],
     tail: null,
@@ -219,6 +245,7 @@ export function newDraft(patch: Partial<Draft> = {}): Draft {
     etymologyText: "",
     formation: null,
     compound: null,
+    evidenceForm: null,
     sources: [],
     labels: [],
     operands: [],
@@ -236,12 +263,48 @@ export function newPlace(index: number): DraftPlace {
   return {
     index,
     description: "",
-    gloss: "",
+    glosses: [],
     kind: "unspecified",
     hint: null,
-    from: null,
+    derivations: [],
     defaults: [],
     constraints: [],
+  };
+}
+/**
+ * Fills fields that an older draft of this prototype lacks. Nothing is
+ * dropped: the old single gloss and the old single derivation become
+ * one-item lists.
+ */
+export function normalizeDraft(stored: Draft): Draft {
+  const old = stored as Draft & {
+    places: (DraftPlace & { gloss?: string; from?: DraftDerivation | null })[];
+  };
+  const places: DraftPlace[] = old.places.map((place) => {
+    const { gloss, from, ...rest } = place as DraftPlace & {
+      gloss?: string;
+      from?: DraftDerivation | null;
+    };
+    return {
+      ...rest,
+      glosses:
+        place.glosses ??
+        (gloss?.trim()
+          ? [{ language: stored.language, text: gloss.trim(), sense: "" }]
+          : []),
+      derivations: place.derivations ?? (from ? [from] : []),
+      defaults: place.defaults ?? [],
+      constraints: place.constraints ?? [],
+    };
+  });
+  return {
+    ...newDraft(),
+    ...stored,
+    places,
+    frameRole: stored.frameRole ?? "predicate",
+    evidenceForm:
+      stored.evidenceForm ??
+      (stored.formation || stored.compound ? stored.spelling : null),
   };
 }
 /** Renumbers places 1 through N in their current order. */
@@ -273,141 +336,479 @@ export interface DraftProblem {
   blocking: boolean;
 }
 const lojbanWord = /^[a-z',.]+(?: [a-z',.]+)*$/u;
-/** Editor text to rich text, with explicit `{place N}` and `[[word|label]]` tokens in structured mode. */
+/**
+ * The editor's token syntax in structured mode. Every rich text node has a
+ * text form, so a published body converts to editor text and back without
+ * loss.
+ *
+ * - `①` through `⑳` or `{place N}`: a place reference.
+ * - `{operand ID}`: an operand reference.
+ * - `[[spelling]]` or `[[spelling|label]]`: a word link.
+ * - `[[https://host/path]]` or `[[https://host/path|label]]`: a web link.
+ * - `` `text` ``: code.
+ * - A backslash before `\`, `[`, `{`, `` ` ``, or a circled numeral keeps
+ *   that character as literal text.
+ */
+const TOKEN =
+  /\\([\s\S])|([①-⑳])|\{place (\d{1,5})\}|\{operand ([a-z][a-z0-9_-]{0,31})\}|`((?:\\.|[^`])*)`|\[\[((?:\\.|[^\]|])+)(?:\|((?:\\.|[^\]])+))?\]\]/gu;
+const unescape = (value: string) => value.replace(/\\([\s\S])/gu, "$1");
+/** Editor text to rich text. Structured mode reads the token syntax. */
 export function editorToRichText(
   source: string,
   structured: boolean,
 ): RichText {
   if (!structured) return textToRichText(source, false);
-  const paragraphs = textToRichText(source, true);
-  return paragraphs.map((paragraph) =>
-    paragraph.flatMap((node): RichNode[] => {
-      if (typeof node !== "string") return [node];
-      const out: RichNode[] = [];
-      const pattern = /\{place (\d{1,5})\}|\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/gu;
-      let index = 0;
-      for (const match of node.matchAll(pattern)) {
-        if (match.index! > index) out.push(node.slice(index, match.index));
-        if (match[1]) out.push(Number(match[1]));
-        else {
-          const spelling = match[2].trim().normalize("NFC");
-          out.push({
-            word: { language: "jbo", spelling },
-            label: (match[3] ?? spelling).trim(),
-          });
-        }
-        index = match.index! + match[0].length;
+  const paragraphs = source
+    .split(/\n\s*\n/)
+    .map((paragraph) => paragraph.replace(/\s+$/u, ""))
+    .filter((paragraph) => paragraph.length);
+  return paragraphs.map((paragraph) => {
+    const nodes: RichNode[] = [];
+    let pending = "";
+    const flush = () => {
+      if (pending) nodes.push(pending);
+      pending = "";
+    };
+    let index = 0;
+    for (const match of paragraph.matchAll(TOKEN)) {
+      pending += paragraph.slice(index, match.index);
+      index = match.index! + match[0].length;
+      const [, escaped, circled, placeNumber, operand, code, target, label] =
+        match;
+      if (escaped !== undefined) {
+        pending += escaped;
+        continue;
       }
-      if (index < node.length) out.push(node.slice(index));
-      return out;
-    }),
-  );
+      flush();
+      if (circled) nodes.push(circled.codePointAt(0)! - 0x245f);
+      else if (placeNumber) nodes.push(Number(placeNumber));
+      else if (operand) nodes.push({ operand });
+      else if (code !== undefined) nodes.push({ code: unescape(code) });
+      else {
+        const spelling = unescape(target).trim().normalize("NFC");
+        const shown = label === undefined ? spelling : unescape(label).trim();
+        if (/^https?:\/\//iu.test(spelling))
+          nodes.push({ url: spelling, label: shown });
+        else nodes.push({ word: { language: "jbo", spelling }, label: shown });
+      }
+    }
+    pending += paragraph.slice(index);
+    flush();
+    return nodes;
+  });
 }
-/** Rich text to editor text for structured mode. */
+/** Escapes characters that the token syntax reads, so text stays literal. */
+function escapeLiteral(value: string): string {
+  return value.replace(/[\\`[{①-⑳]/gu, (c) => `\\${c}`);
+}
+const escapeInside = (value: string) => value.replace(/[\\\]|`]/gu, "\\$&");
+/** Rich text to editor text in the token syntax. Lossless. */
 export function richTextToEditor(value: RichText): string {
   return value
     .map((paragraph) =>
       paragraph
         .map((node) => {
-          if (typeof node === "string") return node;
+          if (typeof node === "string") return escapeLiteral(node);
           if (typeof node === "number")
             return node <= 20
               ? String.fromCodePoint(0x245f + node)
               : `{place ${node}}`;
           if ("word" in node)
             return node.label === node.word.spelling
-              ? `[[${node.word.spelling}]]`
-              : `[[${node.word.spelling}|${node.label}]]`;
-          if ("code" in node) return node.code;
-          if ("operand" in node) return `[${node.operand}]`;
-          if ("url" in node) return node.label;
+              ? `[[${escapeInside(node.word.spelling)}]]`
+              : `[[${escapeInside(node.word.spelling)}|${escapeInside(node.label)}]]`;
+          if ("url" in node)
+            return node.label === node.url
+              ? `[[${escapeInside(node.url)}]]`
+              : `[[${escapeInside(node.url)}|${escapeInside(node.label)}]]`;
+          if ("code" in node)
+            return `\`${node.code.replace(/[\\`]/gu, "\\$&")}\``;
+          if ("operand" in node) return `{operand ${node.operand}}`;
           return "";
         })
         .join(""),
     )
     .join("\n\n");
 }
-/** Replaces every place reference in the text with literal circled characters. Lossless escape. */
+/**
+ * Turns every place reference in editor text into a literal circled
+ * character. The visible text stays the same, and nothing refers to a place.
+ */
 export function literalize(text: string): string {
-  return text.replace(/\{place (\d{1,5})\}/gu, (_, n) => `(${n})`);
+  return text.replace(
+    /(?<!\\)(?:\\\\)*(?:([①-⑳])|\{place (\d{1,5})\})/gu,
+    (whole, circled: string | undefined, n: string | undefined) => {
+      const prefix = whole.slice(
+        0,
+        whole.length - (circled ? 1 : n!.length + 8),
+      );
+      if (circled) return `${prefix}\\${circled}`;
+      const number = Number(n);
+      return number <= 20
+        ? `${prefix}\\${String.fromCodePoint(0x245f + number)}`
+        : `${prefix}\\{place ${number}}`;
+    },
+  );
+}
+/** Maps place numbers in editor text, for removal and reordering. References keep their referent. */
+export function remapPlaces(
+  text: string,
+  map: (index: number) => number | "literal",
+): string {
+  return text.replace(
+    /(?<!\\)(?:\\\\)*(?:([①-⑳])|\{place (\d{1,5})\})/gu,
+    (whole, circled: string | undefined, n: string | undefined) => {
+      const prefix = whole.slice(
+        0,
+        whole.length - (circled ? 1 : n!.length + 8),
+      );
+      const index = circled ? circled.codePointAt(0)! - 0x245f : Number(n);
+      const target = map(index);
+      if (target === "literal")
+        return `${prefix}\\${index <= 20 ? String.fromCodePoint(0x245f + index) : `{place ${index}}`}`;
+      return target <= 20
+        ? `${prefix}${String.fromCodePoint(0x245f + target)}`
+        : `${prefix}{place ${target}}`;
+    },
+  );
 }
 function plainRich(text: string): RichText {
   return textToRichText(text, false);
 }
-function buildFrame(draft: Draft, problems: DraftProblem[]) {
+/** Every rich text field of the body, with its field name and whether place references are allowed. */
+interface RichField {
+  field: string;
+  label: string;
+  value: RichText;
+  local: boolean;
+}
+/** Checks the nodes of one rich text field against the format rules. */
+function richProblems(
+  entry: RichField,
+  operands: Set<string>,
+  problems: DraftProblem[],
+) {
+  const seen = new Set<string>();
+  const report = (message: string) => {
+    const key = `${entry.field}:${message}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    problems.push({ field: entry.field, message, blocking: true });
+  };
+  for (const paragraph of entry.value)
+    for (const node of paragraph) {
+      if (typeof node === "string") continue;
+      if (typeof node === "number") {
+        if (!entry.local)
+          report(
+            `${entry.label} cannot refer to a place. Convert the reference to literal text.`,
+          );
+        continue;
+      }
+      if ("operand" in node) {
+        if (!entry.local) report(`${entry.label} cannot refer to an operand.`);
+        else if (!operands.has(node.operand))
+          report(
+            `${entry.label} refers to the operand "${node.operand}", which is not declared.`,
+          );
+      } else if ("word" in node) {
+        if (!node.word.spelling)
+          report(`${entry.label} has a word link without a spelling.`);
+        else if (!lojbanWord.test(node.word.spelling))
+          report(
+            `${entry.label} links the word "${node.word.spelling}", which is not a Lojban spelling.`,
+          );
+        if (!node.label) report(`${entry.label} has a word link without text.`);
+      } else if ("url" in node) {
+        if (!/^https:\/\/[^\s/]+/u.test(node.url))
+          report(
+            `${entry.label} links "${node.url}", which is not an HTTPS URL.`,
+          );
+        if (!node.label) report(`${entry.label} has a link without text.`);
+      } else if ("code" in node && !node.code)
+        report(`${entry.label} has empty code.`);
+    }
+}
+const KNOWN_TAGS = new Set([
+  "entity",
+  "agent",
+  "event",
+  "state",
+  "process",
+  "relation",
+  "proposition",
+  "number",
+  "text",
+  "set",
+  "mass",
+  "sequence",
+  "tuple",
+]);
+const ABSTRACTORS = new Set([
+  "nu",
+  "du'u",
+  "ka",
+  "ni",
+  "jei",
+  "li'i",
+  "si'o",
+  "su'u",
+  "mu'e",
+  "pu'u",
+  "za'i",
+  "zu'o",
+]);
+/** Checks a custom type hint against the format rules and returns the cleaned hint. */
+function hintProblems(
+  hint: TypeHint,
+  field: string,
+  label: string,
+  problems: DraftProblem[],
+): TypeHint {
+  const alternatives = hint.alternatives.map((a) => ({
+    tags: [...new Set(a.tags.map((t) => t.trim()).filter(Boolean))].sort(),
+    abstractor: a.abstractor?.trim() || null,
+    relation_arity: a.relation_arity,
+  }));
+  if (!alternatives.length)
+    problems.push({
+      field,
+      message: `${label} needs at least one alternative.`,
+      blocking: true,
+    });
+  const seen = new Set<string>();
+  for (const a of alternatives) {
+    const key = JSON.stringify(a);
+    if (seen.has(key))
+      problems.push({
+        field,
+        message: `${label} lists the same alternative twice.`,
+        blocking: true,
+      });
+    seen.add(key);
+    if (!a.tags.length && !a.abstractor && !a.relation_arity)
+      problems.push({
+        field,
+        message: `${label} has an alternative with no tag, abstractor, or arity.`,
+        blocking: true,
+      });
+    for (const tag of a.tags)
+      if (!KNOWN_TAGS.has(tag) && !/^https:\/\/[^\s/]+/u.test(tag))
+        problems.push({
+          field,
+          message: `${label} uses the tag "${tag}". A tag is one of the named kinds or an HTTPS URL.`,
+          blocking: true,
+        });
+    if (a.abstractor && !ABSTRACTORS.has(a.abstractor))
+      problems.push({
+        field,
+        message: `${label} uses the abstractor "${a.abstractor}", which the format does not list.`,
+        blocking: true,
+      });
+  }
+  return { alternatives, note: hint.note };
+}
+const language = (tag: string) => /^[a-z]{1,8}(?:-[a-z0-9]{1,8})*$/.test(tag);
+function buildFrame(draft: Draft, problems: DraftProblem[], rich: RichField[]) {
   if (draft.frameMode === "none") return null;
   const seen = new Set<number>();
+  if (draft.places.length > 256)
+    problems.push({
+      field: "places",
+      message: "A frame declares at most 256 places.",
+      blocking: true,
+    });
   const places: Place[] = draft.places.map((place) => {
+    const field = `places.${place.index}`;
+    const label = `Place ${place.index}`;
     if (seen.has(place.index))
       problems.push({
-        field: `places.${place.index}`,
+        field,
         message: `Place ${place.index} is declared twice.`,
         blocking: true,
       });
     seen.add(place.index);
     const hint =
-      place.kind === "custom" ? place.hint : hintForChoice(place.kind);
+      place.kind === "custom"
+        ? place.hint
+          ? hintProblems(
+              place.hint,
+              field,
+              `${label}'s kind of thing`,
+              problems,
+            )
+          : null
+        : hintForChoice(place.kind);
+    const description = editorToRichText(place.description, draft.structured);
+    rich.push({
+      field,
+      label: `${label}'s description`,
+      value: description,
+      local: true,
+    });
+    const hintNote = hint?.note ?? [];
+    if (hint)
+      rich.push({
+        field,
+        label: `${label}'s type note`,
+        value: hintNote,
+        local: true,
+      });
+    const glosses: Gloss[] = place.glosses
+      .filter((g) => g.text.trim())
+      .map((g) => {
+        const tag = g.language.trim() || draft.language;
+        if (!language(tag))
+          problems.push({
+            field,
+            message: `${label}'s gloss "${g.text.trim()}" has the language "${tag}", which is not a lowercase BCP 47 tag.`,
+            blocking: true,
+          });
+        return {
+          language: tag,
+          text: g.text.trim(),
+          sense: g.sense.trim() || null,
+        };
+      });
+    const defaults = place.defaults
+      .filter((d) => d.text.trim())
+      .map((d, i): Default => {
+        const condition = editorToRichText(d.condition, draft.structured);
+        const explanation = editorToRichText(d.explanation, draft.structured);
+        rich.push(
+          {
+            field,
+            label: `${label}'s default ${i + 1} condition`,
+            value: condition,
+            local: true,
+          },
+          {
+            field,
+            label: `${label}'s default ${i + 1} explanation`,
+            value: explanation,
+            local: true,
+          },
+        );
+        const prose = d.language.trim() || draft.language;
+        if (d.format === "prose" && !language(prose))
+          problems.push({
+            field,
+            message: `${label}'s default ${i + 1} has the language "${prose}", which is not a lowercase BCP 47 tag.`,
+            blocking: true,
+          });
+        return {
+          kind: d.kind,
+          value:
+            d.format === "lojban"
+              ? { format: "lojban", text: d.text.trim() }
+              : { format: "prose", language: prose, text: d.text.trim() },
+          condition,
+          explanation,
+        };
+      });
+    const constraints = place.constraints
+      .filter((c) => c.trim())
+      .map((c, i) => {
+        const value = editorToRichText(c, draft.structured);
+        rich.push({
+          field,
+          label: `${label}'s constraint ${i + 1}`,
+          value,
+          local: true,
+        });
+        return value;
+      });
+    const derivation = place.derivations
+      .filter((d) => d.word.trim() || d.definition || d.explanation.trim())
+      .map((d, i) => {
+        const word = d.word.trim().normalize("NFC");
+        const which = `${label}'s derivation ${i + 1}`;
+        if (!word)
+          problems.push({
+            field,
+            message: `${which} needs a source word.`,
+            blocking: true,
+          });
+        else if (!lojbanWord.test(word))
+          problems.push({
+            field,
+            message: `${which} names "${word}", which is not a Lojban spelling.`,
+            blocking: true,
+          });
+        if (
+          d.place === null ||
+          !Number.isInteger(d.place) ||
+          d.place < 1 ||
+          d.place > 65535
+        )
+          problems.push({
+            field,
+            message: `${which} needs the source place number, from 1 to 65,535. A word alone does not name a place.`,
+            blocking: true,
+          });
+        const definition = d.definition?.trim() || null;
+        if (definition && !/^jve1:[0-9a-f]{64}$/.test(definition))
+          problems.push({
+            field,
+            message: `${which} names the definition "${definition}", which is not an event ID.`,
+            blocking: true,
+          });
+        const explanation = editorToRichText(d.explanation, draft.structured);
+        rich.push({
+          field,
+          label: `${which}'s explanation`,
+          value: explanation,
+          local: false,
+        });
+        return {
+          word: { language: "jbo" as const, spelling: word },
+          definition,
+          place: d.place ?? 1,
+          explanation,
+        };
+      });
     return {
       index: place.index,
-      glosses: place.gloss.trim()
-        ? [{ language: draft.language, text: place.gloss.trim(), sense: null }]
-        : [],
-      description: editorToRichText(place.description, draft.structured),
+      glosses,
+      description,
       type_hints: hint ? [hint] : [],
-      defaults: place.defaults
-        .filter((d) => d.text.trim())
-        .map(
-          (d): Default => ({
-            kind: d.kind,
-            value:
-              d.format === "lojban"
-                ? { format: "lojban", text: d.text.trim() }
-                : {
-                    format: "prose",
-                    language: d.language || draft.language,
-                    text: d.text.trim(),
-                  },
-            condition: plainRich(d.condition),
-            explanation: plainRich(d.explanation),
-          }),
-        ),
-      constraints: place.constraints
-        .filter((c) => c.trim())
-        .map((c) => editorToRichText(c, draft.structured)),
-      derivation:
-        place.from && place.from.word.trim()
-          ? [
-              {
-                word: {
-                  language: "jbo" as const,
-                  spelling: place.from.word.trim().normalize("NFC"),
-                },
-                definition: place.from.definition || null,
-                place: place.from.place,
-                explanation: plainRich(place.from.explanation),
-              },
-            ]
-          : [],
+      defaults,
+      constraints,
+      derivation,
     };
   });
   places.sort((a, b) => a.index - b.index);
+  // Every frame mode declares places 1 through N in order.
+  places.forEach((place, i) => {
+    if (place.index !== i + 1)
+      problems.push({
+        field: "places",
+        message: `A frame declares places 1 through ${places.length} in order. Place ${place.index} is out of sequence.`,
+        blocking: true,
+      });
+  });
   let arity: Arity;
   if (draft.frameMode === "fixed") {
     arity = { mode: "fixed", count: places.length };
-    places.forEach((place, i) => {
-      if (place.index !== i + 1)
-        problems.push({
-          field: "places",
-          message: `A fixed frame declares places 1 through ${places.length} in order. Place ${place.index} is out of sequence.`,
-          blocking: true,
-        });
-    });
+    if (!places.length)
+      problems.push({
+        field: "places",
+        message:
+          "A fixed structure needs at least one place. Add a place, or choose no structure.",
+        blocking: true,
+      });
   } else if (draft.frameMode === "variadic") {
     arity = { mode: "variadic", minimum: draft.variadicMinimum };
     if (!draft.tail)
       problems.push({
         field: "tail",
         message: "A variable frame needs a description of the repeated places.",
+        blocking: true,
+      });
+    if (draft.variadicMinimum > 256)
+      problems.push({
+        field: "places",
+        message: "The minimum number of places is at most 256.",
         blocking: true,
       });
     if (draft.variadicMinimum > places.length)
@@ -420,27 +821,115 @@ function buildFrame(draft: Draft, problems: DraftProblem[]) {
   const tailHint = draft.tail
     ? draft.tail.kind === "custom"
       ? draft.tail.hint
+        ? hintProblems(
+            draft.tail.hint,
+            "tail",
+            "The repeated places' kind of thing",
+            problems,
+          )
+        : null
       : hintForChoice(draft.tail.kind)
     : null;
+  const tailDescription =
+    draft.frameMode === "variadic" && draft.tail
+      ? editorToRichText(draft.tail.description, draft.structured)
+      : null;
+  if (tailDescription)
+    rich.push({
+      field: "tail",
+      label: "The repeated places' description",
+      value: tailDescription,
+      local: true,
+    });
+  if (tailHint && draft.frameMode === "variadic")
+    rich.push({
+      field: "tail",
+      label: "The repeated places' type note",
+      value: tailHint.note,
+      local: true,
+    });
+  const constraints = draft.frameConstraints
+    .filter((c) => c.trim())
+    .map((c, i) => {
+      const value = editorToRichText(c, draft.structured);
+      rich.push({
+        field: "frame",
+        label: `Frame constraint ${i + 1}`,
+        value,
+        local: true,
+      });
+      return value;
+    });
   return {
-    role: "predicate" as const,
+    role: draft.frameRole,
     arity,
     places,
     tail:
-      draft.frameMode === "variadic" && draft.tail
+      tailDescription !== null
         ? {
             from: places.length + 1,
-            description: editorToRichText(
-              draft.tail.description,
-              draft.structured,
-            ),
+            description: tailDescription,
             type_hints: tailHint ? [tailHint] : [],
           }
         : null,
-    constraints: draft.frameConstraints
-      .filter((c) => c.trim())
-      .map((c) => editorToRichText(c, draft.structured)),
+    constraints,
   };
+}
+/** The labels of the kinds of change that a type or form change needs reviewed. */
+export const FORMATION_EVIDENCE = "formation evidence";
+/**
+ * Checks the finished body with the shared core, exactly as admission will.
+ * A disposable key signs a throwaway header, so no real key or history is
+ * involved. The core's reason names the rule, not the field.
+ */
+export function coreProblems(
+  body: DefinitionBody,
+  id: string,
+  parents: string[],
+  origin: "native" | "import",
+): DraftProblem[] {
+  try {
+    const canonical = utf8(canonicalize(utf8(JSON.stringify(body))));
+    const seed = crypto.getRandomValues(new Uint8Array(32));
+    const header = {
+      version: 1 as const,
+      issuer: identityFromSeed(seed),
+      previous: [],
+      nonce: "0".repeat(32),
+      action: {
+        kind: "definition.publish",
+        word: id,
+        language: body.language,
+        parents: [...parents].sort(),
+        origin,
+      },
+      content: { hash: contentHash(canonical), bytes: canonical.length },
+    };
+    const envelope = utf8(JSON.stringify(signHeader(seed, header)));
+    const problems: DraftProblem[] = [];
+    if (!validateAction(envelope))
+      problems.push({
+        field: "body",
+        message: "The format rules reject the action header for this word.",
+        blocking: true,
+      });
+    const result = inspectBody(envelope, canonical);
+    if (result.availability !== "valid")
+      problems.push({
+        field: "body",
+        message: `The format rules reject the body: ${result.reason ?? result.availability}.`,
+        blocking: true,
+      });
+    return problems;
+  } catch (error) {
+    return [
+      {
+        field: "body",
+        message: `The shared core could not check the body: ${error instanceof Error ? error.message : String(error)}.`,
+        blocking: true,
+      },
+    ];
+  }
 }
 /** Builds the signed body from the draft and lists every problem. */
 export function draftToBody(draft: Draft): {
@@ -449,6 +938,7 @@ export function draftToBody(draft: Draft): {
   wordId: string | null;
 } {
   const problems: DraftProblem[] = [];
+  const rich: RichField[] = [];
   const spelling = draft.spelling.trim().normalize("NFC");
   if (!spelling)
     problems.push({
@@ -475,7 +965,7 @@ export function draftToBody(draft: Draft): {
       message: "The word type is not a permitted lexical kind.",
       blocking: true,
     });
-  if (!/^[a-z]{1,8}(?:-[a-z0-9]{1,8})*$/.test(draft.language))
+  if (!language(draft.language))
     problems.push({
       field: "language",
       message:
@@ -483,49 +973,16 @@ export function draftToBody(draft: Draft): {
       blocking: true,
     });
   const text = editorToRichText(draft.text, draft.structured);
+  rich.push({
+    field: "text",
+    label: "The definition",
+    value: text,
+    local: true,
+  });
   if (!draft.text.trim())
     problems.push({
       field: "text",
       message: "Write the definition.",
-      blocking: true,
-    });
-  const frame = buildFrame(draft, problems);
-  const declared = new Set(frame?.places.map((p) => p.index) ?? []);
-  const referenced = new Set<number>();
-  for (const n of referencedPlaces(text)) referenced.add(n);
-  for (const place of frame?.places ?? []) {
-    for (const n of referencedPlaces(place.description)) referenced.add(n);
-    for (const c of place.constraints)
-      for (const n of referencedPlaces(c)) referenced.add(n);
-  }
-  const notes = editorToRichText(draft.notes, draft.structured);
-  for (const n of referencedPlaces(notes)) referenced.add(n);
-  for (const n of [...referenced].sort((a, b) => a - b)) {
-    if (!declared.has(n))
-      problems.push({
-        field: "text",
-        message: frame
-          ? `Place ${n} is referenced but not declared. Add the place, change the number, or convert it to literal text.`
-          : `Place ${n} is referenced but the definition declares no places. Choose a place structure or convert the reference to literal text.`,
-        blocking: true,
-      });
-    if (n > 65535)
-      problems.push({
-        field: "text",
-        message: `Place ${n} exceeds the limit of 65,535.`,
-        blocking: true,
-      });
-  }
-  if (frame && draft.structured && referenced.size && !draft.numberingApproved)
-    problems.push({
-      field: "numbering",
-      message: "Approve the place numbering before publishing.",
-      blocking: true,
-    });
-  if (countNodes(text) + countNodes(notes) > 8192)
-    problems.push({
-      field: "text",
-      message: "The definition exceeds 8,192 rich text nodes.",
       blocking: true,
     });
   const operandIds = new Set<string>();
@@ -552,21 +1009,117 @@ export function draftToBody(draft: Draft): {
           message: `Operand "${id}" has a maximum below its minimum.`,
           blocking: true,
         });
+      if (
+        o.minimum < 0 ||
+        o.minimum > 65535 ||
+        (o.maximum !== null && o.maximum > 65535)
+      )
+        problems.push({
+          field: "operands",
+          message: `Operand "${id}" needs a cardinality from 0 to 65,535.`,
+          blocking: true,
+        });
+      const description = editorToRichText(o.description, draft.structured);
+      rich.push({
+        field: "operands",
+        label: `Operand "${id}"'s description`,
+        value: description,
+        local: true,
+      });
       return {
         id,
         category: o.category.trim() || "sumti",
-        description: plainRich(o.description),
+        description,
         cardinality: { minimum: o.minimum, maximum: o.maximum },
       };
     });
+  const frame = buildFrame(draft, problems, rich);
+  const notes = editorToRichText(draft.notes, draft.structured);
+  rich.push({ field: "notes", label: "The notes", value: notes, local: true });
+  const etymologyText = [
+    ...editorToRichText(draft.etymologyText, draft.structured),
+    ...plainRich(draft.formNotes),
+  ];
+  rich.push({
+    field: "etymology",
+    label: "The etymology",
+    value: etymologyText,
+    local: false,
+  });
   const examples: Example[] = draft.examples
     .filter((e) => e.text.trim())
-    .map((e) => ({
-      language: e.language || "jbo",
-      text: e.text.trim(),
-      translation: plainRich(e.translation),
-      notes: plainRich(e.notes),
-    }));
+    .map((e, i) => {
+      const translation = editorToRichText(e.translation, draft.structured);
+      const exampleNotes = editorToRichText(e.notes, draft.structured);
+      rich.push(
+        {
+          field: "examples",
+          label: `Example ${i + 1}'s translation`,
+          value: translation,
+          local: false,
+        },
+        {
+          field: "examples",
+          label: `Example ${i + 1}'s notes`,
+          value: exampleNotes,
+          local: false,
+        },
+      );
+      const tag = e.language.trim() || "jbo";
+      if (!language(tag))
+        problems.push({
+          field: "examples",
+          message: `Example ${i + 1} has the language "${tag}", which is not a lowercase BCP 47 tag.`,
+          blocking: true,
+        });
+      return {
+        language: tag,
+        text: e.text.trim(),
+        translation,
+        notes: exampleNotes,
+      };
+    });
+  // References in every local field need a declared place.
+  const declared = new Set(frame?.places.map((p) => p.index) ?? []);
+  const referenced = new Map<number, string>();
+  for (const entry of rich) {
+    richProblems(entry, operandIds, problems);
+    if (entry.local)
+      for (const n of referencedPlaces(entry.value))
+        if (!referenced.has(n)) referenced.set(n, entry.label);
+  }
+  for (const [n, label] of [...referenced].sort((a, b) => a[0] - b[0])) {
+    if (!declared.has(n))
+      problems.push({
+        field: "text",
+        message: frame
+          ? `Place ${n} is referenced in ${label.toLowerCase()} but not declared. Add the place, change the number, or convert it to literal text.`
+          : `Place ${n} is referenced in ${label.toLowerCase()} but the definition declares no places. Choose a place structure or convert the reference to literal text.`,
+        blocking: true,
+      });
+    if (n > 65535)
+      problems.push({
+        field: "text",
+        message: `Place ${n} exceeds the limit of 65,535.`,
+        blocking: true,
+      });
+  }
+  if (frame && draft.structured && referenced.size && !draft.numberingApproved)
+    problems.push({
+      field: "numbering",
+      message: "Approve the place numbering before publishing.",
+      blocking: true,
+    });
+  const nodeCount = rich.reduce(
+    (sum, entry) => sum + countNodes(entry.value),
+    0,
+  );
+  if (nodeCount > 8192)
+    problems.push({
+      field: "text",
+      message: `The body has ${nodeCount.toLocaleString("en")} rich text nodes across every field. The limit is 8,192.`,
+      blocking: true,
+    });
   const sources: SourceReference[] = draft.sources
     .filter((s) => s.label.trim())
     .map((s) => ({
@@ -576,7 +1129,7 @@ export function draftToBody(draft: Draft): {
       locator: s.locator?.trim() || null,
     }));
   for (const source of sources) {
-    if (source.url && !/^https:\/\//.test(source.url))
+    if (source.url && !/^https:\/\/[^\s/]+/u.test(source.url))
       problems.push({
         field: "sources",
         message: `Source link "${source.url}" must use HTTPS.`,
@@ -605,7 +1158,7 @@ export function draftToBody(draft: Draft): {
       });
   if (
     draft.frameMode === "none" &&
-    draft.places.some((p) => p.description.trim() || p.gloss.trim())
+    draft.places.some((p) => p.description.trim() || p.glosses.length)
   )
     problems.push({
       field: "places",
@@ -620,23 +1173,63 @@ export function draftToBody(draft: Draft): {
         message: "A rafsi claim needs a spelling.",
         blocking: true,
       });
+  // Formation evidence describes one exact form. Another spelling needs new evidence.
+  if (
+    (draft.formation || draft.compound) &&
+    draft.evidenceForm !== null &&
+    draft.evidenceForm !== spelling
+  )
+    problems.push({
+      field: "spelling",
+      message: `The ${draft.compound ? "compound" : "generation"} evidence describes "${draft.evidenceForm}", not "${spelling}". Build the form again, or remove the evidence.`,
+      blocking: true,
+    });
+  if (draft.formation)
+    draft.formation.sources.forEach((row, i) => {
+      if (!language(row.language))
+        problems.push({
+          field: "formation",
+          message: `Source row ${i + 1} has the language "${row.language}", which is not a lowercase BCP 47 tag.`,
+          blocking: true,
+        });
+      if (row.weight) {
+        const n = Number(row.weight.numerator);
+        const d = Number(row.weight.denominator);
+        if (!(n >= 0 && n <= 1_000_000_000 && d >= 1 && d <= 1_000_000_000))
+          problems.push({
+            field: "formation",
+            message: `Source row ${i + 1} has a weight outside 0 to 1,000,000,000 over 1 to 1,000,000,000.`,
+            blocking: true,
+          });
+      }
+    });
   if (!draft.kind || !spelling) return { body: null, problems, wordId: null };
+  const glosses: Gloss[] = draft.glosses
+    .filter((g) => g.text.trim())
+    .map((g) => {
+      const tag = g.language.trim() || draft.language;
+      if (!language(tag))
+        problems.push({
+          field: "glosses",
+          message: `The gloss "${g.text.trim()}" has the language "${tag}", which is not a lowercase BCP 47 tag.`,
+          blocking: true,
+        });
+      return {
+        language: tag,
+        text: g.text.trim(),
+        sense: g.sense.trim() || null,
+      };
+    });
   const body: DefinitionBody = {
     word: { language: "jbo", spelling },
     language: draft.language,
     text,
     frame,
     operands,
-    glosses: draft.glosses
-      .filter((g) => g.text.trim())
-      .map((g) => ({
-        language: g.language || draft.language,
-        text: g.text.trim(),
-        sense: g.sense.trim() || null,
-      })),
+    glosses,
     notes,
     etymology: {
-      text: plainRich(draft.etymologyText),
+      text: etymologyText,
       formation: draft.formation,
       compound: draft.compound,
     },
@@ -663,9 +1256,17 @@ export function draftToBody(draft: Draft): {
       blocking: true,
     });
   }
+  // The shared core has the final word, exactly as admission will.
+  if (id && !problems.some((pr) => pr.blocking))
+    problems.push(...coreProblems(body, id, draft.parents, "native"));
   return { body, problems, wordId: id };
 }
-/** Fills a draft from a published body, for Revise. */
+/**
+ * Fills a draft from a published body, for Revise. Every field of the body
+ * has an editor form, so nothing is dropped. The draft changes only what a
+ * native revision must change: the parent link, the CC0 license, the native
+ * origin, and the imported attribution.
+ */
 export function draftFromBody(
   body: DefinitionBody,
   parentId: string,
@@ -674,28 +1275,29 @@ export function draftFromBody(
   const placeText = (place: Place): DraftPlace => {
     const hint = place.type_hints[0] ?? null;
     const choice = choiceForHint(hint);
-    const derivation = place.derivation[0];
     return {
       index: place.index,
       description: richTextToEditor(place.description),
-      gloss: place.glosses.map((g) => g.text).join(", "),
+      glosses: place.glosses.map((g) => ({
+        language: g.language,
+        text: g.text,
+        sense: g.sense ?? "",
+      })),
       kind: choice,
       hint: choice === "custom" ? hint : null,
-      from: derivation
-        ? {
-            word: derivation.word.spelling,
-            definition: derivation.definition,
-            place: derivation.place,
-            explanation: richTextToText(derivation.explanation),
-          }
-        : null,
+      derivations: place.derivation.map((d) => ({
+        word: d.word.spelling,
+        definition: d.definition,
+        place: d.place,
+        explanation: richTextToEditor(d.explanation),
+      })),
       defaults: place.defaults.map((d) => ({
         kind: d.kind,
         format: d.value.format,
         language: d.value.format === "prose" ? d.value.language : "",
         text: d.value.text,
-        condition: richTextToText(d.condition),
-        explanation: richTextToText(d.explanation),
+        condition: richTextToEditor(d.condition),
+        explanation: richTextToEditor(d.explanation),
       })),
       constraints: place.constraints.map((c) => richTextToEditor(c)),
     };
@@ -706,7 +1308,7 @@ export function draftFromBody(
   let revisedImport: Draft["revisedImport"] = null;
   if (origin === "import") {
     // The parent link keeps the imported attribution. The revision cites the exact
-    // imported publication and copies the source-rights reference.
+    // imported publication and copies the source-rights reference once.
     revisedImport = { event: parentId, source: legacy?.source ?? "import" };
     sources.unshift({
       label: `Imported publication revised by this definition`,
@@ -714,20 +1316,26 @@ export function draftFromBody(
       event: parentId,
       locator: null,
     });
-    if (legacy?.source?.includes("lensisku"))
-      sources.push({ ...LENSISKU_RIGHTS_REFERENCE });
+    const rights = LENSISKU_RIGHTS_REFERENCE;
+    if (
+      legacy?.source?.includes("lensisku") &&
+      !sources.some((s) => s.url === rights.url && s.locator === rights.locator)
+    )
+      sources.push({ ...rights });
   }
   const tailHint = frame?.tail?.type_hints[0] ?? null;
+  const spelling = body.word.spelling;
   return newDraft({
     step: 4,
     meaning: richTextToText(body.text),
     language: body.language,
-    spelling: body.word.spelling,
+    spelling,
     kind: body.classification.kind,
     selmaho: [...body.classification.selmaho],
     text: richTextToEditor(body.text),
     structured: true,
     frameMode: frame ? frame.arity.mode : "none",
+    frameRole: frame?.role ?? "predicate",
     variadicMinimum: frame?.arity.mode === "variadic" ? frame.arity.minimum : 0,
     places: frame ? frame.places.map(placeText) : [],
     tail: frame?.tail
@@ -747,18 +1355,21 @@ export function draftFromBody(
     examples: body.examples.map((e) => ({
       language: e.language,
       text: e.text,
-      translation: richTextToText(e.translation),
-      notes: richTextToText(e.notes),
+      translation: richTextToEditor(e.translation),
+      notes: richTextToEditor(e.notes),
     })),
-    etymologyText: richTextToText(body.etymology.text),
+    etymologyText: richTextToEditor(body.etymology.text),
+    formNotes: "",
     formation: body.etymology.formation,
     compound: body.etymology.compound,
+    evidenceForm:
+      body.etymology.formation || body.etymology.compound ? spelling : null,
     sources,
     labels: [...body.labels],
     operands: body.operands.map((o) => ({
       id: o.id,
       category: o.category,
-      description: richTextToText(o.description),
+      description: richTextToEditor(o.description),
       minimum: o.cardinality.minimum,
       maximum: o.cardinality.maximum,
     })),
@@ -766,6 +1377,29 @@ export function draftFromBody(
     revisedImport,
     numberingApproved: true,
   });
+}
+/** What a native revision changes in a parent body. Everything else is copied. */
+export function revisionChanges(
+  body: DefinitionBody,
+  origin: "native" | "import",
+): string[] {
+  const changes: string[] = [];
+  if (
+    body.license.expression !== CC0_LICENSE.expression ||
+    body.license.attribution
+  )
+    changes.push(
+      `the license, from ${body.license.expression || "none"} to CC0 1.0 without attribution text`,
+    );
+  if (body.legacy)
+    changes.push(
+      "the imported legacy record, which a native revision does not carry",
+    );
+  if (origin === "import")
+    changes.push(
+      "the origin, from imported to native, with a source reference to the imported publication",
+    );
+  return changes;
 }
 /** Fields that no longer apply after a type change, for review before removal. */
 export function formationFieldsFor(

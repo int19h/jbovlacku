@@ -24,10 +24,15 @@ import type { App } from "../../app/context.ts";
 import {
   draftFromBody,
   draftToBody,
+  revisionChanges,
   hintForChoice,
   kindChoices,
+  editorToRichText,
   literalize,
   newPlace,
+  remapPlaces,
+  richTextToEditor,
+  type DraftGloss,
   numberPlaceholders,
   renumber,
   type Draft,
@@ -43,9 +48,14 @@ import {
   type TypeHint,
 } from "../../model/types.ts";
 import { loadDefinition } from "../../data/api.ts";
-import { placeMarker, renderRichText } from "../../model/richtext.ts";
+import {
+  placeMarker,
+  referencedPlaces,
+  renderRichText,
+} from "../../model/richtext.ts";
 import {
   actionBar,
+  confirmKindChange,
   DraftSaver,
   loadDraft,
   startDraft,
@@ -100,10 +110,7 @@ function hintEditor(
     ...a,
     tags: [...a.tags],
   })) ?? [{ tags: [], abstractor: null, relation_arity: null }];
-  const noteText =
-    current?.note
-      .map((pg) => pg.map((n) => (typeof n === "string" ? n : "")).join(""))
-      .join("\n") ?? "";
+  let noteText = current ? richTextToEditor(current.note) : "";
   const emit = () => {
     const cleaned = alternatives
       .map((a) => ({
@@ -116,7 +123,7 @@ function hintEditor(
       cleaned.length
         ? {
             alternatives: cleaned,
-            note: noteText.trim() ? [[noteText.trim()]] : [],
+            note: editorToRichText(noteText, true),
           }
         : null,
     );
@@ -221,10 +228,12 @@ function hintEditor(
       placeholder: "optional",
     });
     note.input.addEventListener("input", () => {
-      (noteText as string) && void 0;
+      noteText = note.input.value;
       emit();
     });
+    // The note field is part of the editor. It was built and never shown before.
     box.append(
+      note.wrapper,
       el(
         "div",
         { class: "actions", style: "margin-top:8px" },
@@ -247,6 +256,8 @@ function hintEditor(
   render();
   return box;
 }
+/** What the next render of the page says about a Revise copy. */
+let reviseNotice: string[] | null = null;
 export async function placesPage(
   route: Route,
   context: RenderContext,
@@ -292,6 +303,7 @@ export async function placesPage(
         record.envelope.header.action.origin === "import" ? "import" : "native";
       const replaced = draft;
       draft = draftFromBody(record.body, reviseId, origin);
+      reviseNotice = revisionChanges(record.body, origin);
       await app.store.saveDraft(
         DRAFT_KEY,
         draft,
@@ -323,6 +335,18 @@ export async function placesPage(
   }
   const saver = new DraftSaver(app, draft);
   main.append(stepBar(draft, 4));
+  if (reviseNotice) {
+    const changes = reviseNotice;
+    reviseNotice = null;
+    main.append(
+      p(
+        changes.length
+          ? `This draft copies every field of the parent definition. A native revision changes ${changes.join("; ")}. Everything else stays as signed until you edit it.`
+          : "This draft copies every field of the parent definition. It changes only the parent link. Everything else stays as signed until you edit it.",
+        "notice",
+      ),
+    );
+  }
   const headline = el("div", {
     style: "display:flex;flex-wrap:wrap;align-items:baseline;gap:8px 20px",
   });
@@ -397,9 +421,14 @@ export async function placesPage(
       wrapperClass: "",
     });
     kind.input.addEventListener("change", () => {
-      draft.kind = (kind.input.value || null) as LexicalKind | null;
+      const next = (kind.input.value || null) as LexicalKind | null;
+      if (!confirmKindChange(draft, next)) {
+        kind.input.value = draft.kind ?? "";
+        return;
+      }
       kindTag.textContent = `${draft.kind ?? "type not chosen"} · ${draft.language}`;
       saver.touch();
+      refreshPreview();
     });
     const language = field("Definition language", {
       value: draft.language,
@@ -453,6 +482,11 @@ export async function placesPage(
     style:
       "display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px;align-items:center",
   });
+  /** Inputs that mirror draft fields a reference rewrite can change. */
+  const mirrors = new Set<() => void>();
+  const syncMirrors = () => {
+    for (const sync of mirrors) sync();
+  };
   const editor = field("Definition text", {
     multiline: true,
     rows: 4,
@@ -535,8 +569,9 @@ export async function placesPage(
           className: "small",
         }),
       );
+    // Every blocking problem is explained here, before the review step.
     const textProblems = problems.filter(
-      (pr) => pr.field === "text" || pr.field === "numbering",
+      (pr) => pr.blocking || pr.field === "text" || pr.field === "numbering",
     );
     for (const problem of textProblems) {
       const note = el(
@@ -549,11 +584,9 @@ export async function placesPage(
           button(
             "Convert references to literal text",
             () => {
-              draft.text = literalize(draft.text).replace(
-                /[①-⑳]/gu,
-                (c) => `(${c.codePointAt(0)! - 0x245f})`,
-              );
-              editor.input.value = draft.text;
+              rewriteReferences(draft, () => "literal");
+              syncMirrors();
+              renderPlaces();
               saver.touch();
               refreshPreview();
             },
@@ -563,6 +596,27 @@ export async function placesPage(
       preview.append(note);
     }
   };
+  // Pasted text is inert text. In structured mode, circled numerals in it
+  // stay literal unless the author chooses to read them as references.
+  editor.input.addEventListener("paste", (event) => {
+    if (!draft.structured) return;
+    const pasted = event.clipboardData?.getData("text/plain") ?? "";
+    if (!/[①-⑳]|\{place \d/u.test(pasted)) return;
+    event.preventDefault();
+    const asReferences = confirm(
+      "The pasted text contains circled numbers. OK reads them as place references. Cancel keeps them as literal text.",
+    );
+    const insert = asReferences ? pasted : literalize(pasted);
+    const { selectionStart, selectionEnd, value } = editor.input;
+    editor.input.value =
+      value.slice(0, selectionStart) + insert + value.slice(selectionEnd);
+    const caret = selectionStart + insert.length;
+    editor.input.setSelectionRange(caret, caret);
+    editor.input.dispatchEvent(new Event("input"));
+  });
+  mirrors.add(() => {
+    editor.input.value = draft.text;
+  });
   editor.input.addEventListener("input", () => {
     draft.text = editor.input.value;
     draft.numberingApproved = false;
@@ -604,68 +658,8 @@ export async function placesPage(
     );
     defSection.append(suggest);
   }
-  // Glosses.
-  const glossRow = el("div", {
-    style:
-      "margin-top:10px;display:flex;flex-wrap:wrap;align-items:center;gap:8px",
-  });
-  const renderGlosses = () => {
-    glossRow.replaceChildren(text("Glosses", "meta"));
-    draft.glosses.forEach((gloss, index) => {
-      const chip = el("span", { class: "gloss-chip" });
-      chip.append(
-        el("bdi", {
-          text: gloss.sense ? `${gloss.text} (${gloss.sense})` : gloss.text,
-          lang: gloss.language,
-        }),
-      );
-      chip.append(
-        button(
-          "×",
-          () => {
-            draft.glosses.splice(index, 1);
-            saver.touch();
-            renderGlosses();
-          },
-          {
-            class: "btn btn-quiet btn-icon",
-            "aria-label": `Remove gloss ${gloss.text}`,
-            style: "min-height:44px;width:44px;padding:0;text-decoration:none",
-          },
-        ),
-      );
-      glossRow.append(chip);
-    });
-    const add = el("input", {
-      class: "field",
-      "aria-label": "Add a gloss",
-      placeholder: "add a gloss, Enter to add",
-      style: "width:14rem;min-height:44px",
-    });
-    add.addEventListener("keydown", (event) => {
-      if (event.key !== "Enter") return;
-      event.preventDefault();
-      const value = add.value.trim();
-      if (!value) return;
-      const [textPart, sense] = value.split(/\s*\(([^)]*)\)\s*$/);
-      draft.glosses.push({
-        language: draft.language,
-        text: textPart.trim(),
-        sense: sense?.trim() ?? "",
-      });
-      saver.touch();
-      renderGlosses();
-      glossRow.querySelector<HTMLInputElement>("input")?.focus();
-    });
-    glossRow.append(
-      add,
-      text(
-        "A sense in parentheses, such as great (in a property), is optional.",
-        "meta",
-      ),
-    );
-  };
-  renderGlosses();
+  // Glosses. Each gloss keeps its own language and sense.
+  const glossRow = glossChips(draft.glosses, "", () => saver.touch());
   defSection.append(glossRow);
   main.append(defSection);
   // Places.
@@ -720,6 +714,28 @@ export async function placesPage(
     refreshPreview();
   });
   placesHead.append(arity);
+  const role = el("select", {
+    class: "inline-select",
+    "aria-label": "Frame role",
+    style: "min-height:40px",
+  });
+  for (const option of [
+    { value: "predicate", label: "predicate" },
+    { value: "constructed-predicate", label: "constructed predicate" },
+  ])
+    role.append(
+      el("option", {
+        value: option.value,
+        text: option.label,
+        selected: option.value === draft.frameRole,
+      }),
+    );
+  role.addEventListener("change", () => {
+    draft.frameRole = role.value as Draft["frameRole"];
+    saver.touch();
+    refreshPreview();
+  });
+  placesHead.append(role);
   placesSection.append(
     placesHead,
     p(
@@ -732,6 +748,10 @@ export async function placesPage(
   const numbering = el("div");
   placesSection.append(list, tailBox, numbering);
   const addPlace = () => {
+    if (draft.places.length >= 256) {
+      app.announce("A frame declares at most 256 places.");
+      return;
+    }
     draft.places.push(newPlace(nextPlaceNumber()));
     if (draft.frameMode === "none") draft.frameMode = "fixed";
     draft.numberingApproved = false;
@@ -783,18 +803,16 @@ export async function placesPage(
       place.description = description.input.value;
       saver.touch();
     });
-    const gloss = field(`Gloss for place ${place.index}`, {
-      value: place.gloss,
-      wrapperClass: "",
-    });
-    gloss.label.textContent = "Gloss";
-    gloss.label.append(
-      el("span", { class: "sr", text: ` for place ${place.index}` }),
-    );
-    gloss.input.addEventListener("input", () => {
-      place.gloss = gloss.input.value;
-      saver.touch();
-    });
+    const gloss = {
+      wrapper: el(
+        "div",
+        { class: "span-3" },
+        glossChips(place.glosses, ` for place ${place.index}`, () => {
+          saver.touch();
+          refreshPreview();
+        }),
+      ),
+    };
     const kind = field(`Kind of thing for place ${place.index}`, {
       options: kindChoices,
       value: place.kind,
@@ -821,35 +839,16 @@ export async function placesPage(
       saver.touch();
       renderCustom();
     });
-    const from = field(`From for place ${place.index}`, {
-      value: place.from ? `${place.from.word} ${place.from.place}` : "",
-      placeholder: "sinxa 1",
-      wrapperClass: "",
-      hint: "Source word and its place number. Optional.",
-    });
-    from.label.textContent = "From";
-    from.label.append(
-      el("span", { class: "sr", text: ` for place ${place.index}` }),
-    );
-    from.input.addEventListener("input", () => {
-      const match = from.input.value.trim().match(/^([a-z',.]+)\s+(\d{1,5})$/u);
-      place.from = match
-        ? {
-            word: match[1],
-            definition: place.from?.definition ?? null,
-            place: Number(match[2]),
-            explanation: place.from?.explanation ?? "",
-          }
-        : from.input.value.trim()
-          ? {
-              word: from.input.value.trim(),
-              definition: null,
-              place: 1,
-              explanation: "",
-            }
-          : null;
-      saver.touch();
-    });
+    const from = {
+      wrapper: el(
+        "div",
+        { class: "span-3" },
+        derivationEditor(place, () => {
+          saver.touch();
+          refreshPreview();
+        }),
+      ),
+    };
     grid.append(
       description.wrapper,
       gloss.wrapper,
@@ -909,22 +908,26 @@ export async function placesPage(
       button(
         "×",
         () => {
-          const referenced = new RegExp(
-            place.index <= 20
-              ? String.fromCodePoint(0x245f + place.index)
-              : `\\{place ${place.index}\\}`,
-            "u",
-          ).test(draft.text);
+          const removed = place.index;
+          const mentions = fieldsReferencing(draft, removed);
           if (
-            referenced &&
+            mentions.length &&
             !confirm(
-              `Place ${place.index} is referenced in the definition. Remove it anyway? The reference then needs removal, a new number, or literal text.`,
+              `Place ${removed} is referenced in ${mentions.join(", ")}. Remove it anyway? Each reference to it becomes literal text, and references to higher places keep their meaning.`,
             )
           )
             return;
           draft.places.splice(index, 1);
-          if (draft.frameMode === "fixed")
+          if (draft.frameMode === "fixed") {
+            // Every reference keeps its referent: the removed place becomes
+            // literal text, and higher places move down with their references.
+            rewriteReferences(draft, (n) =>
+              n === removed ? "literal" : n > removed ? n - 1 : n,
+            );
             draft.places = renumber(draft.places);
+          } else
+            rewriteReferences(draft, (n) => (n === removed ? "literal" : n));
+          syncMirrors();
           draft.numberingApproved = false;
           saver.touch();
           renderPlaces();
@@ -998,7 +1001,10 @@ export async function placesPage(
       });
       minimum.input.min = "0";
       minimum.input.addEventListener("input", () => {
-        draft.variadicMinimum = Math.max(0, Number(minimum.input.value) || 0);
+        draft.variadicMinimum = Math.min(
+          256,
+          Math.max(0, Number(minimum.input.value) || 0),
+        );
         saver.touch();
         refreshArity();
       });
@@ -1207,6 +1213,9 @@ export async function placesPage(
       wrapperClass: "",
       hint: "One per line.",
     });
+    mirrors.add(() => {
+      frameConstraints.input.value = draft.frameConstraints.join("\n");
+    });
     frameConstraints.input.addEventListener("input", () => {
       draft.frameConstraints = frameConstraints.input.value
         .split("\n")
@@ -1239,6 +1248,9 @@ export async function placesPage(
       value: draft.notes,
       labelClass: "sr",
       wrapperClass: "",
+    });
+    mirrors.add(() => {
+      notes.input.value = draft.notes;
     });
     notes.input.addEventListener("input", () => {
       draft.notes = notes.input.value;
@@ -1338,11 +1350,10 @@ export async function placesPage(
         value: draft.etymologyText,
         labelClass: "sr",
         wrapperClass: "",
-        hint: "Descriptive text without place references.",
+        hint: "Descriptive text without place references. Morphology notes from the Form step are added after it.",
       });
       etym.input.addEventListener("input", () => {
         draft.etymologyText = etym.input.value;
-        draft.formNotes = etym.input.value;
         saver.touch();
       });
       const nodes: Node[] = [etym.wrapper];
@@ -1500,6 +1511,9 @@ export async function placesPage(
           const description = field(`Operand ${i + 1} description`, {
             value: operand.description,
             wrapperClass: "",
+          });
+          mirrors.add(() => {
+            description.input.value = operand.description;
           });
           description.input.addEventListener("input", () => {
             operand.description = description.input.value;
@@ -1699,4 +1713,306 @@ export async function placesPage(
         : [link("Full editor", "/new/editor", { class: "btn btn-quiet" })],
     }),
   );
+}
+
+/** A chip list of glosses. Each gloss keeps its language and sense. */
+function glossChips(
+  glosses: DraftGloss[],
+  suffix: string,
+  changed: () => void,
+): HTMLElement {
+  const row = el("div", {
+    style:
+      "margin-top:10px;display:flex;flex-wrap:wrap;align-items:center;gap:8px",
+  });
+  const render = () => {
+    row.replaceChildren(text("Glosses", "meta"));
+    glosses.forEach((gloss, index) => {
+      const chip = el("span", { class: "gloss-chip" });
+      chip.append(
+        el("bdi", {
+          text: gloss.sense ? `${gloss.text} (${gloss.sense})` : gloss.text,
+          lang: gloss.language,
+        }),
+      );
+      if (gloss.language) chip.append(text(` ${gloss.language}`, "meta"));
+      chip.append(
+        button(
+          "×",
+          () => {
+            glosses.splice(index, 1);
+            changed();
+            render();
+          },
+          {
+            class: "btn btn-quiet btn-icon",
+            "aria-label": `Remove gloss ${gloss.text}${suffix}`,
+            style: "min-height:44px;width:44px;padding:0;text-decoration:none",
+          },
+        ),
+      );
+      row.append(chip);
+    });
+    const add = el("input", {
+      class: "field",
+      "aria-label": `Add a gloss${suffix}`,
+      placeholder: "add a gloss, Enter to add",
+      style: "width:14rem;min-height:44px",
+    });
+    add.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      const value = add.value.trim();
+      if (!value) return;
+      const languageMatch = value.match(
+        /^([a-z]{2,8}(?:-[a-z0-9]{1,8})*):\s*(.+)$/u,
+      );
+      const language = languageMatch ? languageMatch[1] : "";
+      const rest = languageMatch ? languageMatch[2] : value;
+      const [textPart, sense] = rest.split(/\s*\(([^)]*)\)\s*$/);
+      glosses.push({
+        language,
+        text: textPart.trim(),
+        sense: sense?.trim() ?? "",
+      });
+      changed();
+      render();
+      row.querySelector<HTMLInputElement>("input")?.focus();
+    });
+    row.append(
+      add,
+      text(
+        "A sense in parentheses, such as great (in a property), is optional. A language prefix, such as fr: grand, sets the gloss language. Without one the definition language applies.",
+        "meta",
+      ),
+    );
+  };
+  render();
+  return row;
+}
+/** The derivations of one place: source word, source place, exact definition, and explanation. */
+function derivationEditor(place: DraftPlace, changed: () => void): HTMLElement {
+  const box = el("div");
+  const render = () => {
+    box.replaceChildren(text(`Derivations of place ${place.index}`, "meta"));
+    place.derivations.forEach((derivation, index) => {
+      const n = index + 1;
+      const row = el("div", {
+        class: "place-grid",
+        style: "margin-top:6px",
+      });
+      const word = field(
+        `Source word of derivation ${n} for place ${place.index}`,
+        {
+          value: derivation.word,
+          placeholder: "sinxa",
+          wrapperClass: "",
+          spellcheck: false,
+          lang: "jbo",
+        },
+      );
+      word.label.textContent = "Source word";
+      word.label.append(
+        el("span", {
+          class: "sr",
+          text: ` of derivation ${n} for place ${place.index}`,
+        }),
+      );
+      word.input.addEventListener("input", () => {
+        derivation.word = word.input.value;
+        changed();
+      });
+      const number = field(
+        `Source place of derivation ${n} for place ${place.index}`,
+        {
+          value: derivation.place === null ? "" : String(derivation.place),
+          type: "number",
+          placeholder: "1",
+          wrapperClass: "",
+          hint: "Required. A word alone does not name a place.",
+        },
+      );
+      number.label.textContent = "Source place";
+      number.label.append(
+        el("span", {
+          class: "sr",
+          text: ` of derivation ${n} for place ${place.index}`,
+        }),
+      );
+      number.input.min = "1";
+      number.input.max = "65535";
+      number.input.addEventListener("input", () => {
+        const value = number.input.value.trim();
+        derivation.place = /^\d{1,5}$/.test(value) ? Number(value) : null;
+        changed();
+      });
+      const definition = field(
+        `Source definition of derivation ${n} for place ${place.index}`,
+        {
+          value: derivation.definition ?? "",
+          placeholder: "jve1:… (optional)",
+          wrapperClass: "",
+          spellcheck: false,
+        },
+      );
+      definition.label.textContent = "Exact definition";
+      definition.label.append(
+        el("span", {
+          class: "sr",
+          text: ` of derivation ${n} for place ${place.index}`,
+        }),
+      );
+      definition.input.addEventListener("input", () => {
+        derivation.definition = definition.input.value.trim() || null;
+        changed();
+      });
+      const explanation = field(
+        `Explanation of derivation ${n} for place ${place.index}`,
+        {
+          value: derivation.explanation,
+          wrapperClass: "span-3",
+          placeholder: "optional, without place references",
+        },
+      );
+      explanation.label.textContent = "Explanation";
+      explanation.label.append(
+        el("span", {
+          class: "sr",
+          text: ` of derivation ${n} for place ${place.index}`,
+        }),
+      );
+      explanation.input.addEventListener("input", () => {
+        derivation.explanation = explanation.input.value;
+        changed();
+      });
+      row.append(
+        word.wrapper,
+        number.wrapper,
+        definition.wrapper,
+        explanation.wrapper,
+        button(
+          "Remove",
+          () => {
+            place.derivations.splice(index, 1);
+            changed();
+            render();
+          },
+          {
+            class: "btn btn-quiet",
+            "aria-label": `Remove derivation ${n} for place ${place.index}`,
+            style: "min-height:36px",
+          },
+        ),
+      );
+      box.append(row);
+    });
+    box.append(
+      button(
+        "Add a derivation",
+        () => {
+          place.derivations.push({
+            word: "",
+            definition: null,
+            place: null,
+            explanation: "",
+          });
+          changed();
+          render();
+          box.querySelector<HTMLInputElement>("input:last-of-type")?.focus();
+        },
+        {
+          class: "btn btn-quiet",
+          "aria-label": `Add a derivation for place ${place.index}`,
+          style: "margin-top:6px;min-height:36px",
+        },
+      ),
+    );
+  };
+  render();
+  return box;
+}
+/** Every editor text field that can hold a place reference, with a label. */
+function referenceFields(
+  draft: Draft,
+): { label: string; get: () => string; set: (v: string) => void }[] {
+  const fields: {
+    label: string;
+    get: () => string;
+    set: (v: string) => void;
+  }[] = [
+    {
+      label: "the definition",
+      get: () => draft.text,
+      set: (v) => (draft.text = v),
+    },
+    {
+      label: "the notes",
+      get: () => draft.notes,
+      set: (v) => (draft.notes = v),
+    },
+  ];
+  for (const place of draft.places) {
+    fields.push({
+      label: `the description of place ${place.index}`,
+      get: () => place.description,
+      set: (v) => (place.description = v),
+    });
+    place.constraints.forEach((_, i) =>
+      fields.push({
+        label: `constraint ${i + 1} of place ${place.index}`,
+        get: () => place.constraints[i],
+        set: (v) => (place.constraints[i] = v),
+      }),
+    );
+    place.defaults.forEach((d, i) =>
+      fields.push(
+        {
+          label: `the condition of default ${i + 1} of place ${place.index}`,
+          get: () => d.condition,
+          set: (v) => (d.condition = v),
+        },
+        {
+          label: `the explanation of default ${i + 1} of place ${place.index}`,
+          get: () => d.explanation,
+          set: (v) => (d.explanation = v),
+        },
+      ),
+    );
+  }
+  if (draft.tail)
+    fields.push({
+      label: "the description of the repeated places",
+      get: () => draft.tail!.description,
+      set: (v) => (draft.tail!.description = v),
+    });
+  draft.frameConstraints.forEach((_, i) =>
+    fields.push({
+      label: `frame constraint ${i + 1}`,
+      get: () => draft.frameConstraints[i],
+      set: (v) => (draft.frameConstraints[i] = v),
+    }),
+  );
+  draft.operands.forEach((o) =>
+    fields.push({
+      label: `the description of operand ${o.id || "without ID"}`,
+      get: () => o.description,
+      set: (v) => (o.description = v),
+    }),
+  );
+  return fields;
+}
+/** The fields that refer to a place, by label. */
+function fieldsReferencing(draft: Draft, index: number): string[] {
+  if (!draft.structured) return [];
+  return referenceFields(draft)
+    .filter((f) => referencedPlaces(editorToRichText(f.get(), true)).has(index))
+    .map((f) => f.label);
+}
+/** Rewrites every place reference in every field. Literal text never changes. */
+function rewriteReferences(
+  draft: Draft,
+  map: (index: number) => number | "literal",
+) {
+  if (!draft.structured) return;
+  for (const f of referenceFields(draft)) f.set(remapPlaces(f.get(), map));
 }

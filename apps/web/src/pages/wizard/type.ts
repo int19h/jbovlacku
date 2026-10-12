@@ -2,9 +2,10 @@
 import { el, p, text, link, button } from "../../lib/dom.ts";
 import { navigate, type RenderContext, type Route } from "../../app/router.ts";
 import type { App } from "../../app/context.ts";
-import { formationFieldsFor, type Draft } from "../../model/draft.ts";
+import type { Draft } from "../../model/draft.ts";
 import type { LexicalKind } from "../../model/types.ts";
 import {
+  confirmKindChange,
   actionBar,
   DraftSaver,
   formPath,
@@ -136,23 +137,13 @@ export async function typePage(
     );
   };
   const choose = async (kind: LexicalKind) => {
-    const dropping = formationFieldsFor(kind, draft);
-    if (dropping.length && draft.kind !== kind) {
-      const ok = confirm(
-        `Changing the type to ${kind} no longer uses: ${dropping.join(", ")}. Remove those fields? The prose and annotations stay.`,
-      );
-      if (!ok) {
-        for (const l of labels)
-          l.querySelector("input")!.checked =
-            l.dataset.kind === draft.kind ||
-            (isOther(draft.kind) && l.dataset.kind === "other");
-        return;
-      }
-      if (kind !== "lujvo") draft.compound = null;
-      if (kind !== "gismu") draft.formation = null;
-      if (kind !== "cmavo") draft.selmaho = [];
+    if (!confirmKindChange(draft, kind)) {
+      for (const l of labels)
+        l.querySelector("input")!.checked =
+          l.dataset.kind === draft.kind ||
+          (isOther(draft.kind) && l.dataset.kind === "other");
+      return;
     }
-    draft.kind = kind;
     for (const l of labels)
       l.classList.toggle("on", l.querySelector("input")!.checked);
     renderOther();

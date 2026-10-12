@@ -962,6 +962,11 @@ export class DictionaryService {
           "resource_unavailable",
           "Selected view cannot be evaluated.",
         );
+      // Retired results are excluded unless the caller asks for them with retired=1.
+      const retiredFlag = url.searchParams.get("retired");
+      if (retiredFlag !== null && retiredFlag !== "1")
+        throw new ApiError(400, "retired", "retired must be 1 when present.");
+      const includeRetired = retiredFlag === "1";
       const q = query.toLocaleLowerCase("en");
       const kinds = [
         "headword",
@@ -981,7 +986,7 @@ export class DictionaryService {
             event: string;
             word_kind: string;
             plain_text: string;
-            status: "active";
+            status: string;
           };
         }
       >();
@@ -991,7 +996,7 @@ export class DictionaryService {
           entry.language !== language ||
           !publication ||
           publication.eligible !== "eligible" ||
-          publication.status !== "active"
+          (publication.status !== "active" && !includeRetired)
         )
           continue;
         const spelling = entry.word.spelling.toLocaleLowerCase("en");
@@ -1027,7 +1032,7 @@ export class DictionaryService {
             characters.length > 240
               ? characters.slice(0, 239).join("") + "…"
               : plainText,
-          status: "active" as const,
+          status: publication.status,
         };
         const old = hits.get(wordId);
         if (old) {

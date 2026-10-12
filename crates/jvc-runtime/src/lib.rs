@@ -647,8 +647,32 @@ impl EvaluationSession {
 fn builder_fail(e: jvc_morphology::BuilderError) -> JsValue {
     JsValue::from_str(&serde_json::to_string(&e).unwrap())
 }
+/// The serialized byte ceiling of one builder request.
+///
+/// A search package holds at most 200,000 entries. An inventory built from
+/// such a package lists each gismu with its word ID and each rafsi claim
+/// with its pair ID, about 150 bytes per row, so a full inventory needs
+/// about 30 MiB. The ceiling leaves room above that. Bytes beyond it are
+/// refused before any allocation, including bytes in fields the request
+/// shape ignores. The typed limits of the morphology crate apply after
+/// parsing.
+pub const BUILDER_INPUT_LIMIT: usize = 64 * 1024 * 1024;
+fn builder_input_checked<T: serde::de::DeserializeOwned>(
+    bytes: &[u8],
+) -> std::result::Result<T, jvc_morphology::BuilderError> {
+    if bytes.len() > BUILDER_INPUT_LIMIT {
+        return Err(jvc_morphology::BuilderError::ResourceLimit {
+            measure: "request bytes".into(),
+            value: bytes.len() as u64,
+            limit: BUILDER_INPUT_LIMIT as u64,
+        });
+    }
+    serde_json::from_slice(bytes).map_err(|e| jvc_morphology::BuilderError::Invalid {
+        message: format!("The request is malformed: {e}"),
+    })
+}
 fn builder_input<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> std::result::Result<T, JsValue> {
-    serde_json::from_slice(bytes).map_err(|e| builder_fail(jvc_morphology::BuilderError::Invalid { message: format!("The request is malformed: {e}") }))
+    builder_input_checked(bytes).map_err(builder_fail)
 }
 #[wasm_bindgen]
 pub fn builder_presets() -> std::result::Result<String, JsValue> {
@@ -680,6 +704,40 @@ fn assignment_status(current: Option<&str>, eligibility: &jvc_state::Eligibility
         "unavailable"
     } else {
         "inactive"
+    }
+}
+#[cfg(test)]
+mod builder_input_tests {
+    use super::{builder_input_checked, BUILDER_INPUT_LIMIT};
+    use jvc_morphology::{BuilderError, LujvoRequest};
+    #[test]
+    fn a_request_over_the_byte_ceiling_is_refused_before_parsing() {
+        // An ignored field carries the bulk. Nothing is parsed or allocated for it.
+        let mut bytes = br#"{"profile":"cll","components":[],"ignored":""#.to_vec();
+        bytes.resize(BUILDER_INPUT_LIMIT + 1, b'x');
+        let result: Result<LujvoRequest, BuilderError> = builder_input_checked(&bytes);
+        match result {
+            Err(BuilderError::ResourceLimit { measure, value, limit }) => {
+                assert_eq!(measure, "request bytes");
+                assert_eq!(value, (BUILDER_INPUT_LIMIT + 1) as u64);
+                assert_eq!(limit, BUILDER_INPUT_LIMIT as u64);
+            }
+            other => panic!("expected a resource limit, got {other:?}"),
+        }
+    }
+    #[test]
+    fn a_request_at_the_ceiling_is_parsed() {
+        let mut bytes = br#"{"profile":"cll","components":[],"ignored":""#.to_vec();
+        bytes.resize(BUILDER_INPUT_LIMIT - 2, b'x');
+        bytes.extend_from_slice(br#""}"#);
+        assert_eq!(bytes.len(), BUILDER_INPUT_LIMIT);
+        let result: Result<LujvoRequest, BuilderError> = builder_input_checked(&bytes);
+        assert!(result.is_ok(), "{result:?}");
+    }
+    #[test]
+    fn a_malformed_request_under_the_ceiling_is_invalid() {
+        let result: Result<LujvoRequest, BuilderError> = builder_input_checked(b"{");
+        assert!(matches!(result, Err(BuilderError::Invalid { .. })));
     }
 }
 #[cfg(test)]

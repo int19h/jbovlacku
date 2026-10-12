@@ -861,6 +861,22 @@ test("search preview uses strongest lexical entry with stable ties and active-vi
   );
   assert.equal(later.hits[0].preview.status, "active");
   assert.equal(later.hits[0].definitions.includes(expected), false);
+  // The retired-results filter includes the deprecated definition with its status.
+  const withRetired: any = await (
+    await service.fetch(request("/search?q=movement&language=en&retired=1"))
+  ).json();
+  assert.equal(withRetired.hits[0].definitions.includes(expected), true);
+  assert.ok(withRetired.hits[0].definitions.length >= 2);
+  assert.ok(
+    withRetired.hits.every((hit: any) =>
+      ["active", "deprecated"].includes(hit.preview.status),
+    ),
+  );
+  const bad = await service.fetch(
+    request("/search?q=movement&language=en&retired=2"),
+  );
+  assert.equal(bad.status, 400);
+  assert.equal((await bad.json()).code, "retired");
   coordinator.close();
 });
 test("search text preserves place markers and readable rich nodes without metadata", async () => {

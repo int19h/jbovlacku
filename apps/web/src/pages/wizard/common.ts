@@ -10,7 +10,14 @@ import {
 } from "../../lib/dom.ts";
 import { navigate, routes, type Route } from "../../app/router.ts";
 import type { App } from "../../app/context.ts";
-import { newDraft, type Draft } from "../../model/draft.ts";
+import {
+  formationFieldsFor,
+  newDraft,
+  newPlace,
+  normalizeDraft,
+  type Draft,
+} from "../../model/draft.ts";
+import { lexicalKinds, type LexicalKind } from "../../model/types.ts";
 import { DraftConflictError, type ExpectedDraft } from "../../data/store.ts";
 export { DraftConflictError };
 
@@ -31,10 +38,65 @@ export function formPath(draft: Draft): string {
 export function stepPath(step: number): string {
   return steps.find((s) => s.number === step)?.path ?? "/new/meaning";
 }
+/**
+ * A draft that an older build of this client saved. It is kept as it is
+ * until the author exports, converts, or discards it.
+ */
+export interface LegacyDraft {
+  stored: Record<string, unknown>;
+}
+let legacyDraft: LegacyDraft | null = null;
+/** The old draft found by the last load, when the wizard has none to show. */
+export function pendingLegacyDraft(): LegacyDraft | null {
+  return legacyDraft;
+}
+/** Converts an old prototype draft into the current shape. Nothing is dropped from the export. */
+export function convertLegacyDraft(stored: Record<string, unknown>): Draft {
+  const str = (key: string) =>
+    typeof stored[key] === "string" ? (stored[key] as string) : "";
+  const kind = str("kind");
+  const places = str("places")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const draft = newDraft({
+    spelling: str("word"),
+    language: str("language") || "en",
+    meaning: str("text"),
+    text: str("text"),
+    structured: stored.structured === true,
+    notes: str("notes"),
+    kind: (lexicalKinds as readonly string[]).includes(kind)
+      ? (kind as LexicalKind)
+      : null,
+    glosses: str("gloss").trim()
+      ? [
+          {
+            language: str("language") || "en",
+            text: str("gloss").trim(),
+            sense: "",
+          },
+        ]
+      : [],
+    places: places.map((description, i) => ({
+      ...newPlace(i + 1),
+      description,
+    })),
+    frameMode: places.length ? "fixed" : "none",
+    step: 1,
+  });
+  return draft;
+}
 export async function loadDraft(app: App): Promise<Draft | null> {
   if (!app.session.storageAvailable) return null;
+  legacyDraft = null;
   try {
     const stored = await app.store.get<Draft>("drafts", DRAFT_KEY);
+    if (stored && stored.version !== 2) {
+      // An old draft stays untouched. The meaning page offers export, conversion, or discard.
+      legacyDraft = { stored: stored as unknown as Record<string, unknown> };
+      return null;
+    }
     if (stored && stored.version === 2) {
       stored.lujvo ??= null;
       stored.gismu ??= null;
@@ -48,9 +110,9 @@ export async function loadDraft(app: App): Promise<Draft | null> {
           if (!(error instanceof DraftConflictError)) throw error;
           return loadDraft(app);
         }
-        return revised;
+        return normalizeDraft(revised);
       }
-      return stored;
+      return normalizeDraft(stored);
     }
     return null;
   } catch {
@@ -298,10 +360,10 @@ export class DraftSaver {
     return !this.detached && contentKey(this.draft) !== this.savedContent;
   }
 }
-export function exportDraft(draft: Draft) {
+export function exportDraft(draft: Draft, legacy?: Record<string, unknown>) {
   download(
     `jbovlacku-draft-${draft.spelling || "new"}-${Date.now()}.json`,
-    JSON.stringify(draft, null, 2),
+    JSON.stringify(legacy ? { ...draft, legacy } : draft, null, 2),
   );
 }
 /** The step bar with numbered circles, completion state, and the full editor link. */
@@ -400,3 +462,25 @@ export function wizardTitle(route: Route): string {
   return step ? `Add a word: ${step.label}` : "Add a word";
 }
 export { p, navigate, routes };
+/**
+ * Changes the word type after an explicit choice when formation fields no
+ * longer apply. Returns false when the author keeps the current type.
+ */
+export function confirmKindChange(
+  draft: Draft,
+  kind: LexicalKind | null,
+): boolean {
+  const dropping = formationFieldsFor(kind, draft);
+  if (dropping.length && draft.kind !== kind) {
+    const ok = confirm(
+      `Changing the type to ${kind ?? "none"} no longer uses: ${dropping.join(", ")}. Remove those fields? The prose and annotations stay.`,
+    );
+    if (!ok) return false;
+    if (kind !== "lujvo") draft.compound = null;
+    if (kind !== "gismu") draft.formation = null;
+    if (kind !== "cmavo") draft.selmaho = [];
+    if (!draft.compound && !draft.formation) draft.evidenceForm = null;
+  }
+  draft.kind = kind;
+  return true;
+}

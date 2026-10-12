@@ -70,14 +70,19 @@ export async function gismuPage(
     navigate("/new/meaning", { replace: true });
     return;
   }
-  if (draft.kind !== "gismu") draft.kind = "gismu";
+  const saver = new DraftSaver(app, draft);
+  // Changes made while opening the generator are saved like any other edit.
+  if (draft.kind !== "gismu") {
+    draft.kind = "gismu";
+    saver.touch();
+  }
   const state = (draft.gismu ??= newGismuState());
   const presets = builderPresets();
   if (state.preset === null && !state.rows.length) {
     state.preset = presets[0].id;
     state.rows = presetRows(presets[0], []);
+    saver.touch();
   }
-  const saver = new DraftSaver(app, draft);
   const cached = await cachedPackage(app.store);
   if (!context.live()) return;
   const inventory: PackageInventory = inventoryFromPackage(cached);
@@ -202,7 +207,8 @@ export async function gismuPage(
     saver.touch();
     schedule();
   });
-  section.append(manualField.wrapper);
+  const manualNote = el("p", { class: "meta", role: "status" });
+  section.append(manualField.wrapper, manualNote);
   // Right column: the selected form.
   const aside = el("aside", { class: "side-col", style: "flex-basis:280px" });
   const selectedCard = el("div", {
@@ -775,19 +781,39 @@ export async function gismuPage(
     candidate.conflicts.filter(
       (c) => !state.acknowledged.includes(conflictKey(c)),
     );
+  /**
+   * The form to use: the chosen candidate, or the manual form as the run
+   * scored it. A manual form that no run checked has unknown conflicts and
+   * cannot be used from here.
+   */
+  const usable = (): {
+    candidate: GismuCandidate | null;
+    reason: string;
+  } => {
+    const candidate = chosen();
+    if (candidate) return { candidate, reason: "" };
+    const manual = state.manual.trim();
+    if (!manual) return { candidate: null, reason: "" };
+    if (result?.manual?.form === manual)
+      return { candidate: result.manual, reason: "" };
+    return {
+      candidate: null,
+      reason:
+        "The manual form is checked for conflicts under the run. Complete the source rows so the run can score it, or use Enter without generation.",
+    };
+  };
   const refreshPrimary = () => {
     const primary = bar?.querySelector<HTMLButtonElement>(".btn-primary");
     if (!primary) return;
-    const candidate = chosen();
-    const manualOnly = !candidate && state.manual.trim();
-    primary.textContent = `Use ${candidate?.form ?? (manualOnly ? state.manual.trim() : "this form")}`;
-    primary.disabled =
-      !(candidate || manualOnly) ||
-      (candidate !== null && unacknowledged(candidate).length > 0);
-    primary.title =
-      candidate && unacknowledged(candidate).length
+    const { candidate, reason } = usable();
+    primary.textContent = `Use ${candidate?.form ?? (state.manual.trim() || "this form")}`;
+    primary.disabled = !candidate || unacknowledged(candidate).length > 0;
+    primary.title = candidate
+      ? unacknowledged(candidate).length
         ? "Acknowledge every known conflict first, or choose another form."
-        : "";
+        : ""
+      : reason;
+    manualNote.textContent = reason;
   };
   bar = actionBar(saver, {
     back: { label: "Back", href: "/new/type" },
@@ -800,10 +826,11 @@ export async function gismuPage(
       label: "Use this form",
       disabled: true,
       action: async () => {
-        const candidate = chosen();
+        const { candidate } = usable();
         if (candidate && result) {
           if (unacknowledged(candidate).length) return;
           draft.spelling = candidate.form;
+          draft.evidenceForm = candidate.form;
           const preset = presets.find((pr) => pr.id === state.preset) ?? null;
           draft.formation = formationMetadata({
             result,
@@ -823,9 +850,6 @@ export async function gismuPage(
               .filter((c) => c.snapshot),
             reason: state.reason,
           });
-        } else if (state.manual.trim()) {
-          draft.spelling = state.manual.trim();
-          draft.formation = manualFormation(state.rows, state.reason);
         } else return;
         draft.step = Math.max(draft.step, 4) as Draft["step"];
         if (!(await saver.flush())) return;

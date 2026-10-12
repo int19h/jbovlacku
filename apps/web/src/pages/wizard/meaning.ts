@@ -20,6 +20,10 @@ import {
   stepBar,
   discardDraft,
   DraftConflictError,
+  convertLegacyDraft,
+  exportDraft,
+  pendingLegacyDraft,
+  DRAFT_KEY,
 } from "./common.ts";
 import type { SearchHit } from "../../model/types.ts";
 
@@ -58,6 +62,12 @@ export async function meaningPage(
     return;
   }
   let draft = await loadDraft(app);
+  if (!context.live()) return;
+  const legacy = draft ? null : pendingLegacyDraft();
+  if (legacy) {
+    renderLegacyDraft(app, main, route, legacy);
+    return;
+  }
   const params = route.params;
   const requestedWord = params.get("word")?.normalize("NFC") ?? null;
   const requestedMeaning = params.get("meaning") ?? null;
@@ -92,10 +102,9 @@ export async function meaningPage(
       );
     } catch (error) {
       if (!(error instanceof DraftConflictError)) throw error;
-      // Another tab started or changed the draft first. Show that draft.
-      navigate(`${route.path}${route.params.size ? `?${route.params}` : ""}`, {
-        replace: true,
-      });
+      // Another tab started or changed the draft first. Show that draft once.
+      // A storage row that never loads as a draft must not reload without end.
+      reloadOnce(main, route);
       return;
     }
   } else if (conflict) {
@@ -131,12 +140,7 @@ export async function meaningPage(
             } catch (error) {
               if (!(error instanceof DraftConflictError)) throw error;
               // The saved draft changed in another tab. Ask again with the current draft.
-              navigate(
-                `${route.path}${route.params.size ? `?${route.params}` : ""}`,
-                {
-                  replace: true,
-                },
-              );
+              reloadOnce(main, route);
               return;
             }
             navigate("/new/meaning");
@@ -148,6 +152,7 @@ export async function meaningPage(
     return;
   }
   if (!context.live()) return;
+  conflictReloads = 0;
   const saver = new DraftSaver(app, draft);
   main.append(stepBar(draft, 1));
   const columns = el("div", { class: "two-col", style: "gap:32px 48px" });
@@ -470,4 +475,103 @@ export async function meaningPage(
     }),
   );
   void highlightPlaceholders;
+}
+
+let conflictReloads = 0;
+/**
+ * Shows the page again after a storage conflict, at most twice in a row.
+ * A row that never loads as a draft gets an explanation instead of a loop.
+ */
+function reloadOnce(main: HTMLElement, route: Route) {
+  if (conflictReloads++ >= 2) {
+    main.replaceChildren(
+      el("h1", { class: "page", text: "Add a word" }),
+      p(
+        "The saved draft keeps changing while this page loads. Close other tabs of this site, then reload this page.",
+        "notice",
+      ),
+    );
+    return;
+  }
+  navigate(`${route.path}${route.params.size ? `?${route.params}` : ""}`, {
+    replace: true,
+  });
+}
+/** The choice for a draft saved by an older build: export, convert, or discard. */
+function renderLegacyDraft(
+  app: App,
+  main: HTMLElement,
+  route: Route,
+  legacy: { stored: Record<string, unknown> },
+) {
+  const stored = legacy.stored;
+  const word = typeof stored.word === "string" ? stored.word : "";
+  const preview = convertLegacyDraft(stored);
+  main.append(
+    el("h1", { class: "page", text: "An older draft is saved" }),
+    p(
+      `This browser holds a draft${word ? ` for "${word}"` : ""} from an earlier version of this site. That version saved a license and an attribution of its own. New definitions now publish under CC0 1.0 without attribution text, so those two fields are not converted. Export the old draft to keep every field, convert it into a draft for this wizard, or discard it.`,
+      "small",
+    ),
+  );
+  const details = el("dl", { class: "small" });
+  for (const [label, key] of [
+    ["Word", "word"],
+    ["Language", "language"],
+    ["Definition", "text"],
+    ["Places", "places"],
+    ["Gloss", "gloss"],
+    ["Notes", "notes"],
+    ["License", "license"],
+    ["Attribution", "attribution"],
+    ["Type", "kind"],
+  ] as const) {
+    const value = stored[key];
+    if (typeof value !== "string" || !value.trim()) continue;
+    details.append(
+      el("dt", { text: label }),
+      el("dd", {
+        text: value.length > 400 ? `${value.slice(0, 400)}…` : value,
+      }),
+    );
+  }
+  main.append(details);
+  const reload = () =>
+    navigate(`${route.path}${route.params.size ? `?${route.params}` : ""}`, {
+      replace: true,
+    });
+  main.append(
+    el(
+      "div",
+      { class: "actions", style: "margin-top:14px" },
+      button("Export the old draft", () => exportDraft(preview, stored), {
+        class: "btn btn-quiet",
+      }),
+      button(
+        "Convert it into a new draft",
+        async () => {
+          try {
+            await app.store.saveDraft(
+              DRAFT_KEY,
+              convertLegacyDraft(stored),
+              "unversioned",
+            );
+          } catch (error) {
+            if (!(error instanceof DraftConflictError)) throw error;
+          }
+          reload();
+        },
+        { class: "btn btn-primary" },
+      ),
+      button(
+        "Discard the old draft",
+        async () => {
+          if (!confirm("Discard the old draft? This cannot be undone.")) return;
+          await app.store.delete("drafts", DRAFT_KEY);
+          reload();
+        },
+        { class: "btn btn-quiet" },
+      ),
+    ),
+  );
 }

@@ -7,7 +7,13 @@ import {
   contentHash,
   wordId,
 } from "../../../../packages/core/src/index.ts";
-import { getManifest, objectBytes, type RequestOptions } from "./api.ts";
+import {
+  getManifest,
+  objectBytes,
+  RequestError,
+  TransportError,
+  type RequestOptions,
+} from "./api.ts";
 import {
   eventId,
   hashId,
@@ -154,12 +160,22 @@ export function validateCachedPackage(
   if (
     !(
       fields(value, ["snapshot", "entries"]) ||
-      fields(value, ["snapshot", "version", "entries"])
+      fields(value, ["snapshot", "version", "entries"]) ||
+      fields(value, ["snapshot", "version", "entries", "downgrade"])
     ) ||
     !hashId(value.snapshot) ||
     !Array.isArray(value.entries) ||
     value.entries.length > PACKAGE_LIMITS.entries ||
-    !(value.version === undefined || value.version === 1 || value.version === 2)
+    !(
+      value.version === undefined ||
+      value.version === 1 ||
+      value.version === 2
+    ) ||
+    !(
+      value.downgrade === undefined ||
+      value.downgrade === null ||
+      typeof value.downgrade === "string"
+    )
   )
     throw invalidPackage();
   const version = value.version === 2 ? 2 : 1;
@@ -250,7 +266,15 @@ async function downloadVersion(
     );
     return { snapshot: manifest.snapshot, version, entries, downgrade };
   } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") throw error;
+    // Only a package that fails its checks names a version. A transport
+    // failure, a server error, or a cancel is reported as it is, and no
+    // other version is requested in its place.
+    if (
+      error instanceof TransportError ||
+      error instanceof RequestError ||
+      (error instanceof Error && error.name === "AbortError")
+    )
+      throw error;
     throw new PackageVersionError(
       version,
       error instanceof Error ? error.message : String(error),

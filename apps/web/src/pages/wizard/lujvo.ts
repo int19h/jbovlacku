@@ -25,6 +25,7 @@ import {
 } from "../../lib/dom.ts";
 import { navigate, type RenderContext, type Route } from "../../app/router.ts";
 import type { App } from "../../app/context.ts";
+import { getWord, RequestError } from "../../data/api.ts";
 import type { Draft } from "../../model/draft.ts";
 import { localSearch, type CachedPackage } from "../../data/search.ts";
 import { isV2 } from "../../data/search.ts";
@@ -65,9 +66,13 @@ export async function lujvoPage(
     navigate("/new/meaning", { replace: true });
     return;
   }
-  if (draft.kind !== "lujvo") draft.kind = "lujvo";
-  const state = (draft.lujvo ??= newLujvoState());
   const saver = new DraftSaver(app, draft);
+  // Changes made while opening the builder are saved like any other edit.
+  if (draft.kind !== "lujvo") {
+    draft.kind = "lujvo";
+    saver.touch();
+  }
+  const state = (draft.lujvo ??= newLujvoState());
   const cached = await cachedPackage(app.store);
   if (!context.live()) return;
   const inventory: PackageInventory = inventoryFromPackage(cached);
@@ -236,7 +241,14 @@ export async function lujvoPage(
               id: componentId(),
               spelling: hit.word.spelling,
               kind,
-              definition: entry.event,
+              // A specific definition is recorded only when the author chooses one below.
+              definition: null,
+              definitions: hit.entries.map((e) => ({
+                event: e.event,
+                summary:
+                  e.glosses.map((g) => g.text).join(", ") ||
+                  Array.from(e.plain_text).slice(0, 60).join(""),
+              })),
               gloss: entry.glosses[0]?.text ?? "",
               claims: [...new Set(rafsi)].map((r) => ({
                 rafsi: r,
@@ -381,7 +393,35 @@ export async function lujvoPage(
         text(` ${component.kind}`, "meta"),
       );
       if (component.gloss) name.append(text(` ${component.gloss}`, "meta"));
-      if (component.definition)
+      if (component.definitions?.length) {
+        // The exact source definition is the author's choice, never the package order.
+        const pick = el("select", {
+          class: "inline-select",
+          "aria-label": `Exact definition of ${component.spelling}`,
+          style: "min-height:32px;max-width:100%",
+        });
+        pick.append(
+          el("option", {
+            value: "",
+            text: "no specific definition",
+            selected: !component.definition,
+          }),
+        );
+        for (const definition of component.definitions)
+          pick.append(
+            el("option", {
+              value: definition.event,
+              text: `${definition.event.slice(5, 13)}… ${definition.summary}`,
+              selected: component.definition === definition.event,
+            }),
+          );
+        pick.addEventListener("change", () => {
+          component.definition = pick.value || null;
+          saver.touch();
+          rebuild();
+        });
+        name.append(el("br"), pick);
+      } else if (component.definition)
         name.append(text(" · exact definition chosen", "meta"));
       const chips = el("fieldset", {
         style:
@@ -552,6 +592,33 @@ export async function lujvoPage(
         "small",
       ),
     );
+    // Whether the spelling is taken is separate from rafsi conflicts. The
+    // local package answers for its snapshot, and the server for the current one.
+    const availability = el("p", { class: "small", role: "status" });
+    const taken = cached?.entries.some(
+      (e) => e.word.spelling === candidate.spelling,
+    );
+    availability.textContent = cached
+      ? taken
+        ? `Taken: ${candidate.spelling} is defined in the local package of snapshot ${cached.snapshot.slice(7, 19)}….`
+        : `Not in the local package of snapshot ${cached.snapshot.slice(7, 19)}…. The package covers retained definitions in its language only.`
+      : "Availability in the local package is unknown: no package is downloaded.";
+    resultCard.append(availability);
+    const checked = candidate.spelling;
+    void getWord(wordId({ language: "jbo", spelling: checked }), {
+      signal: context.signal,
+    })
+      .then((word) => {
+        if (!context.live() || chosenCandidate()?.spelling !== checked) return;
+        availability.textContent += ` The server defines ${checked} in snapshot ${word.snapshot.slice(7, 19)}….`;
+      })
+      .catch((error: unknown) => {
+        if (!context.live() || chosenCandidate()?.spelling !== checked) return;
+        availability.textContent +=
+          error instanceof RequestError && error.status === 404
+            ? ` The server has no definition of ${checked} now.`
+            : ` The server could not be asked: ${describe(error)}.`;
+      });
     if (candidate.unlisted.length)
       resultCard.append(
         p(
@@ -744,6 +811,7 @@ export async function lujvoPage(
         const candidate = chosenCandidate();
         if (!candidate || !result || unacknowledged(candidate).length) return;
         draft.spelling = candidate.spelling;
+        draft.evidenceForm = candidate.spelling;
         draft.compound = compoundMetadata(
           result,
           candidate,

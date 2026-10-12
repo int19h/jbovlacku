@@ -67,14 +67,15 @@ test("a first-time contributor writes a short literal definition and publishes i
   await expect(page.getByRole("status")).toContainText(
     "Published brodu with your endorsement.",
   );
-  const first = page.locator("article.definition").first();
+  // The definition is found by its text, so other publications of the word do not matter.
+  const first = page.locator("article.definition", {
+    hasText: "A disposable test meaning without places.",
+  });
+  await expect(first).toHaveCount(1);
   await expect(first.getByRole("button", { name: "Endorse" })).toHaveAttribute(
     "aria-pressed",
     "true",
   );
-  await expect(
-    first.getByText("A disposable test meaning without places."),
-  ).toBeVisible();
   const actions = await outboxActions(page);
   expect(
     actions.map((a: any) => [a.transport.envelope.header.action.kind, a.state]),
@@ -125,14 +126,20 @@ test("structured places keep declared order when prose mentions place 3 first, a
   await page.getByLabel("Description for place 2").fill("the reader");
   await page.getByLabel("Description for place 3").fill("the medium");
   await page.getByLabel("Kind of thing for place 2").selectOption("object");
-  await page.getByLabel("From for place 3").fill("cukta 5");
+  await page
+    .getByRole("button", { name: "Add a derivation for place 3" })
+    .click();
+  await page
+    .getByLabel("Source word of derivation 1 for place 3")
+    .fill("cukta");
+  await page.getByLabel("Source place of derivation 1 for place 3").fill("5");
   await page.getByRole("button", { name: "Approve the numbering" }).click();
   await expect(page.getByText("Place numbering approved.")).toBeVisible();
   // A reference to an undeclared place blocks signing.
   await editor.fill("③ holds ① read by ② at ④.");
   await expect(
     page.getByRole("region", { name: "Rendered definition" }),
-  ).toContainText("Place 4 is referenced but not declared.");
+  ).toContainText("Place 4 is referenced in the definition but not declared.");
   await page.getByRole("button", { name: "Review" }).click();
   await expect(page.getByText(/\d+ problems? block signing\./)).toBeVisible();
   await expect(
@@ -142,7 +149,11 @@ test("structured places keep declared order when prose mentions place 3 first, a
   await page
     .getByRole("button", { name: "Convert references to literal text" })
     .click();
-  await expect(editor).toHaveValue("(3) holds (1) read by (2) at (4).");
+  // Each reference becomes an escaped literal circled character. The visible text stays.
+  await expect(editor).toHaveValue("\\③ holds \\① read by \\② at \\④.");
+  await expect(
+    page.getByRole("region", { name: "Rendered definition" }),
+  ).not.toContainText("referenced but not declared");
   // Restore the structured text and publish.
   await editor.fill("③ holds ① read by ②.");
   await page.getByRole("button", { name: "Approve the numbering" }).click();
@@ -247,7 +258,7 @@ test("the full editor preserves every structured field and supports manual headw
   await page.getByRole("link", { name: "Skip to the full editor" }).click();
   await expect(page).toHaveTitle("Full editor · jbovlacku");
   await page.getByLabel("Headword").fill("brodi");
-  await page.getByLabel("Type").selectOption("cmavo");
+  await page.getByLabel("Type", { exact: true }).selectOption("cmavo");
   await page.getByLabel("selma'o").fill("BAI");
   await page
     .getByRole("textbox", { name: "Definition text" })
@@ -262,8 +273,8 @@ test("the full editor preserves every structured field and supports manual headw
     .fill("agent, https://example.invalid/tags/custom");
   await page.getByLabel("Abstractor for alternative 1").selectOption("ka");
   await page.getByRole("button", { name: "Approve the numbering" }).click();
-  await page.getByLabel("Add a gloss").fill("gloss (sense)");
-  await page.getByLabel("Add a gloss").press("Enter");
+  await page.getByLabel("Add a gloss", { exact: true }).fill("gloss (sense)");
+  await page.getByLabel("Add a gloss", { exact: true }).press("Enter");
   await page.getByRole("button", { name: "Add a default for place 1" }).click();
   await page.getByLabel("Default value 1 for place 1").fill("li pa");
   await page.getByLabel("Condition 1 for place 1").fill("when unspecified");
@@ -374,13 +385,13 @@ test("the full editor preserves every structured field and supports manual headw
   await expect(page.getByText("bod", { exact: true }).first()).toBeVisible();
   // Revise round-trips every field back into the editor.
   await page
-    .locator("article.definition")
+    .locator("article.definition", { hasText: "is the operand" })
     .first()
     .getByRole("link", { name: "Revise" })
     .click();
   await expect(page).toHaveTitle("Full editor · jbovlacku");
   await expect(page.getByLabel("Headword")).toHaveValue("brodi");
-  await expect(page.getByLabel("Type")).toHaveValue("cmavo");
+  await expect(page.getByLabel("Type", { exact: true })).toHaveValue("cmavo");
   await expect(
     page.getByRole("textbox", { name: "Definition text" }),
   ).toHaveValue("① is the operand ② of [[brodi]].");
@@ -856,7 +867,7 @@ test("a fully disconnected author signs a complete definition into storage and l
         }),
       );
     },
-    { spelling: "brodu", rafsi: "rod" },
+    { spelling: "brodvi", rafsi: "rod" },
   );
   await page.route("**/api/v1/**", (route) => route.abort("connectionreset"));
   await spaGoto(page, "/new/publish");
@@ -883,7 +894,7 @@ test("a fully disconnected author signs a complete definition into storage and l
   expect(after.map((r: any) => [r.id, r.transport])).toEqual(
     before.map((r: any) => [r.id, r.transport]),
   );
-  await page.goto("/word/brodu");
+  await page.goto("/word/brodvi");
   await expect(
     page
       .getByText(
@@ -940,7 +951,7 @@ test("a failure right after the group commits still recovers the same group afte
   await page.getByLabel("Sign from history saved in this browser only").check();
   await page.route("**/api/v1/**", (route) => route.abort("connectionreset"));
   // Before the commit: a failing group transaction keeps the draft and writes nothing.
-  const revision = await writeReviewedDraft(page, "brodu");
+  const revision = await writeReviewedDraft(page, "brodza");
   await page.evaluate(async () => {
     const { LocalStore } = await import(String("/src/data/store.ts"));
     const original = LocalStore.prototype.queueGroup;
@@ -1550,4 +1561,209 @@ test("edits made while a navigation waits for a slow save reach storage before t
   );
   await page.goBack();
   await expect(box).toHaveValue("Later edit while the navigation is saving.");
+});
+
+test("a draft from the old prototype's version 1 database opens a choice instead of a loop", async ({
+  page,
+  context,
+}) => {
+  await context.addInitScript(() => {
+    (window as any).__replaceState = 0;
+    const original = history.replaceState.bind(history);
+    history.replaceState = (...args: [any, string, string?]) => {
+      (window as any).__replaceState += 1;
+      return original(...args);
+    };
+  });
+  // Seed the real version 1 database shape before the app opens it.
+  await page.route("**/src/main.ts*", (route) => route.abort());
+  await page.goto("/");
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve, reject) => {
+        const del = indexedDB.deleteDatabase("jbovlacku-browser-v1");
+        del.onerror = () => reject(String(del.error));
+        del.onsuccess = () => {
+          const open = indexedDB.open("jbovlacku-browser-v1", 1);
+          open.onupgradeneeded = () => {
+            for (const name of [
+              "keys",
+              "drafts",
+              "outbox",
+              "heads",
+              "packages",
+            ])
+              open.result.createObjectStore(name);
+          };
+          open.onerror = () => reject(String(open.error));
+          open.onsuccess = () => {
+            const tx = open.result.transaction("drafts", "readwrite");
+            tx.objectStore("drafts").put(
+              {
+                id: "current",
+                word: "brodyka",
+                language: "en",
+                text: "Old prototype text with ① and ②.",
+                places: "the first thing\nthe second thing",
+                gloss: "old gloss",
+                notes: "old notes",
+                license: "CC-BY-4.0",
+                attribution: "An old attribution",
+                kind: "gismu",
+                structured: true,
+              },
+              "current",
+            );
+            tx.oncomplete = () => {
+              open.result.close();
+              resolve();
+            };
+            tx.onerror = () => reject(String(tx.error));
+          };
+        };
+      }),
+  );
+  await page.unroute("**/src/main.ts*");
+  await page.goto("/new/meaning");
+  await expect(
+    page.getByRole("heading", { name: "An older draft is saved" }),
+  ).toBeVisible();
+  await expect(page.locator("main")).toContainText("CC-BY-4.0");
+  await expect(page.locator("main")).toContainText("An old attribution");
+  await page.waitForTimeout(1500);
+  expect(
+    await page.evaluate(() => (window as any).__replaceState),
+  ).toBeLessThan(5);
+  // The old row is untouched until a choice is made. The export keeps every old field.
+  const exported = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export the old draft" }).click();
+  const content = JSON.parse(
+    await (
+      await import("node:fs/promises")
+    ).readFile((await (await exported).path())!, "utf8"),
+  );
+  expect(content.legacy.license).toBe("CC-BY-4.0");
+  expect(content.legacy.attribution).toBe("An old attribution");
+  expect(content.spelling).toBe("brodyka");
+  await page
+    .getByRole("button", { name: "Convert it into a new draft" })
+    .click();
+  await expect(
+    page.getByRole("textbox", { name: "Meaning", exact: true }),
+  ).toHaveValue("Old prototype text with ① and ②.");
+  const stored = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    return new LocalStore().get("drafts", "current");
+  });
+  expect(stored.version).toBe(2);
+  expect(stored.spelling).toBe("brodyka");
+  expect(stored.places.map((p: any) => p.description)).toEqual([
+    "the first thing",
+    "the second thing",
+  ]);
+  expect(stored.glosses).toEqual([
+    { language: "en", text: "old gloss", sense: "" },
+  ]);
+  expect(stored.notes).toBe("old notes");
+});
+
+test("the full editor keeps referents on removal, saves type notes and derivations, confirms a type change, and offers a paste choice", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await page.getByRole("link", { name: "Add a word" }).click();
+  await page.getByRole("link", { name: "Skip to the full editor" }).click();
+  await page.getByLabel("Headword").fill("brodfa");
+  await page.getByLabel("Type", { exact: true }).selectOption("cmavo");
+  await page.getByLabel("selma'o").fill("UI");
+  const editor = page.getByRole("textbox", { name: "Definition text" });
+  const stored = () =>
+    page.evaluate(async () => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      return new LocalStore().get("drafts", "current");
+    });
+  const status = page.getByRole("status").last();
+  // A type change that drops fields asks first. Cancel keeps the selma'o.
+  page.once("dialog", (dialog) => void dialog.dismiss());
+  await page.getByLabel("Type", { exact: true }).selectOption("gismu");
+  await expect(page.getByLabel("Type", { exact: true })).toHaveValue("cmavo");
+  await expect(page.getByLabel("selma'o")).toHaveValue("UI");
+  page.once("dialog", (dialog) => void dialog.accept());
+  await page.getByLabel("Type", { exact: true }).selectOption("gismu");
+  await expect(page.getByLabel("Type", { exact: true })).toHaveValue("gismu");
+  await expect.poll(async () => (await stored()).selmaho).toEqual([]);
+  // Three places, references to all of them, then removal of the second.
+  for (let i = 0; i < 3; i++)
+    await page.getByRole("button", { name: "+ Add a place" }).click();
+  await page.getByLabel("Description for place 2").fill("the second one");
+  await page.getByLabel("Description for place 3").fill("after ②");
+  await editor.fill("① gives ② to ③.");
+  await page.getByRole("button", { name: "Approve the numbering" }).click();
+  await expect(status).toHaveText("Saved in this browser");
+  let removal = "";
+  page.once("dialog", (dialog) => {
+    removal = dialog.message();
+    void dialog.accept();
+  });
+  await page.getByRole("button", { name: "Remove place 2" }).click();
+  await expect
+    .poll(() => removal)
+    .toContain(
+      "Place 2 is referenced in the definition, the description of place 3",
+    );
+  // The reference to the removed place is literal. The reference to the old place 3 now names place 2.
+  await expect(editor).toHaveValue("① gives \\② to ②.");
+  await expect(page.getByLabel("Description for place 2")).toHaveValue(
+    "after \\②",
+  );
+  await expect.poll(async () => (await stored()).places.length).toBe(2);
+  const rendered = page.getByRole("region", { name: "Rendered definition" });
+  await expect(rendered).not.toContainText("referenced but not declared");
+  await expect(rendered.getByRole("img", { name: "place 2" })).toHaveCount(1);
+  // A custom kind of thing keeps its typed note.
+  await page.getByLabel("Kind of thing for place 1").selectOption("custom");
+  await page.getByLabel("Type note").fill("a typed note");
+  await expect
+    .poll(async () => (await stored()).places[0].hint?.note)
+    .toEqual([["a typed note"]]);
+  // A derivation needs an explicit source place.
+  await page
+    .getByRole("button", { name: "Add a derivation for place 1" })
+    .click();
+  await page
+    .getByLabel("Source word of derivation 1 for place 1")
+    .fill("sinxa");
+  await expect(rendered).toContainText("needs the source place number");
+  await page.getByLabel("Source place of derivation 1 for place 1").fill("2");
+  await expect(rendered).not.toContainText("needs the source place number");
+  await expect
+    .poll(async () => (await stored()).places[0].derivations)
+    .toEqual([{ word: "sinxa", definition: null, place: 2, explanation: "" }]);
+  // Pasted circled numbers stay literal unless the author chooses references.
+  const paste = (value: string) =>
+    page
+      .getByRole("textbox", { name: "Definition text" })
+      .evaluate((node, value) => {
+        const data = new DataTransfer();
+        data.setData("text/plain", value);
+        (node as HTMLTextAreaElement).setSelectionRange(
+          (node as HTMLTextAreaElement).value.length,
+          (node as HTMLTextAreaElement).value.length,
+        );
+        node.dispatchEvent(
+          new ClipboardEvent("paste", {
+            clipboardData: data,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      }, value);
+  page.once("dialog", (dialog) => void dialog.dismiss());
+  await paste(" See ① here.");
+  await expect(editor).toHaveValue("① gives \\② to ②. See \\① here.");
+  page.once("dialog", (dialog) => void dialog.accept());
+  await paste(" And ②.");
+  await expect(editor).toHaveValue("① gives \\② to ②. See \\① here. And ②.");
+  await expect(rendered.getByRole("img", { name: "place 1" })).toHaveCount(1);
+  await expect(rendered.getByRole("img", { name: "place 2" })).toHaveCount(2);
 });

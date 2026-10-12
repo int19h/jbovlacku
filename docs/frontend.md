@@ -354,6 +354,7 @@ The wizard can suggest placeholder mappings, but the author approves numbering b
 Repeated references can name the same place. Textual order does not determine final place order.
 
 In structured editing, typed circled numerals insert integer place references. Pasting offers literal text or explicit token conversion.
+Every rich text node has a text form in structured editing, so a published body converts to editor text and back without loss: `①` or `{place N}` is a place reference, `{operand ID}` an operand reference, `[[spelling|label]]` a word link, `[[https://host/path|label]]` a web link, and `` `text` `` code. A backslash before `\`, `[`, `{`, `` ` ``, or a circled numeral keeps that character as literal text.
 Literal mode preserves circled characters and underscores as text. Both modes produce the same compact rich-text schema.
 Removing a declared place requires removal, replacement, or literalization of every reference to it.
 
@@ -764,7 +765,7 @@ Public reads need no account. Public event admission follows published quotas an
 | `GET /receipts/ID` | This server's receipt and interpretation outcome for that event. |
 | `GET /package-parts/HASH` | Canonical derived search-part bytes, with a 4 MiB uncompressed limit. |
 | `GET /packages/LANGUAGE?snapshot=S&version=N` | Search package manifest and content hashes. Version 1 is the default. Version 2 adds row metadata. |
-| `GET /search?q=Q&language=L&view=V&snapshot=S` | Optional remote results with view and snapshot metadata. |
+| `GET /search?q=Q&language=L&view=V&snapshot=S&retired=1` | Optional remote results with view and snapshot metadata. Without `retired=1` the results hold active publications only. With it, each preview carries the publication status. Any other `retired` value is HTTP 400. |
 | `GET /words/WORD_ID?view=V&snapshot=S&reviewers=1` | Candidate IDs, rafsi claims, and attributed ranking summary. `reviewers=1` adds bounded reviewer details to each score. Any other `reviewers` value is HTTP 400. |
 | `GET /identities/KEY?view=V&snapshot=S` | Effective profile claims, continuity state, and activity counts for one signing key. |
 | `GET /identities/KEY/activity?view=V&snapshot=S&after=ID&limit=N` | Events signed by that key in event-ID order, with their interpretation and local receipt position. |

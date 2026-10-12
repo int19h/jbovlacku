@@ -24,6 +24,8 @@ export interface LujvoComponentState {
   kind: string;
   /** The exact source definition, when the author chose one. */
   definition: string | null;
+  /** The definitions the package lists for the word, for that choice. */
+  definitions?: { event: string; summary: string }[];
   gloss: string;
   /** Known rafsi claims of the word, from the package or entered by hand. */
   claims: { rafsi: string; pair: string }[];

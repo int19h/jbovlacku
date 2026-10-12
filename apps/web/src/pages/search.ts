@@ -2,7 +2,16 @@
  * Search results. The header holds the query. The page shows a count line,
  * the definition-language select, and compact three-line rows.
  */
-import { el, link, p, text, button, describe, append } from "../lib/dom.ts";
+import {
+  el,
+  link,
+  p,
+  text,
+  button,
+  checkbox,
+  describe,
+  append,
+} from "../lib/dom.ts";
 import { languageName, placeGlyph, plural } from "../lib/format.ts";
 import {
   navigate,
@@ -115,6 +124,7 @@ export async function searchPage(
     route.params.get("lang") ??
     route.params.get("language") ??
     app.session.preferences.definitionLanguage;
+  const includeRetired = route.params.get("retired") === "1";
   context.title(query ? `Search: ${query}` : "Search");
   main.className = "surface-search";
   main.append(
@@ -247,7 +257,18 @@ export async function searchPage(
     };
     rememberState({ dictionarySearch: state });
   };
+  // The retired-results filter. Remote search excludes retired publications
+  // unless asked. Local results carry no status, so the filter is remote only.
   const retired = el("span", { class: "meta" });
+  if (!cached)
+    retired.append(
+      checkbox("Include retired results", includeRetired, (checked) => {
+        const params = new URLSearchParams(route.params);
+        if (checked) params.set("retired", "1");
+        else params.delete("retired");
+        navigate(`/search?${params}`);
+      }),
+    );
   // The exact snapshot and view behind these results, in full, for narrow screens too.
   const provenance = el("details", {
     class: "disclosure small",
@@ -351,7 +372,7 @@ export async function searchPage(
         PAGE_SIZE,
         snapshot ? { snapshot, view: view! } : null,
         next,
-        { signal: context.signal },
+        { signal: context.signal, retired: includeRetired },
       );
       if (!context.live()) return;
       if (
@@ -467,6 +488,15 @@ function hitRow(
   line1.append(rafsiSpan);
   if (kind && kind !== "unknown")
     line1.append(text(kind === "fuivla" ? "fu'ivla" : kind, "meta"));
+  if (hit.preview && hit.preview.status !== "active")
+    line1.append(
+      el("span", {
+        class: "meta",
+        text: `status: ${hit.preview.status}`,
+        title:
+          "The status of this publication in the selected snapshot and view.",
+      }),
+    );
   const selmaho = el("span", { class: "meta", lang: "jbo" });
   selmaho.hidden = true;
   line1.append(selmaho);

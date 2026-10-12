@@ -164,20 +164,29 @@ test("the gismu generator scores exactly, shares ranks, lists conflicts, and rec
   ).toBeVisible();
   const candidates = page.getByRole("region", { name: "Candidates" });
   await expect(candidates).toContainText("mokru");
-  // Equal scores share a rank.
-  const ranks = await candidates
-    .locator("tbody tr")
-    .evaluateAll((rows) =>
-      rows.map(
-        (r) => `${r.children[0].textContent}:${r.children[2].textContent}`,
-      ),
-    );
-  const byScore = new Map<string, Set<string>>();
-  for (const entry of ranks) {
-    const [rank, score] = entry.split(":");
-    byScore.set(score, (byScore.get(score) ?? new Set()).add(rank));
-  }
-  for (const set of byScore.values()) expect(set.size).toBe(1);
+  // Equal exact scores share a rank, and the next lower score follows the tied group.
+  const rows = await candidates.locator("tbody tr").evaluateAll((rows) =>
+    rows.map((r) => ({
+      rank: Number(r.children[0].textContent),
+      score: (r.children[2] as HTMLElement).title,
+    })),
+  );
+  const byScore = new Map<string, number[]>();
+  for (const { rank, score } of rows)
+    byScore.set(score, [...(byScore.get(score) ?? []), rank]);
+  const tied = [...byScore.entries()].find(([, ranks]) => ranks.length > 1);
+  expect(tied, "a tied pair of distinct forms").toBeDefined();
+  expect(new Set(tied![1]).size).toBe(1);
+  for (const ranks of byScore.values()) expect(new Set(ranks).size).toBe(1);
+  const fraction = (value: string) => {
+    const [n, d] = value.split("/").map(Number);
+    return n / d;
+  };
+  const after = rows.find(
+    (r) => fraction(r.score) < fraction(tied![0]) && r.rank > tied![1][0],
+  );
+  expect(after, "a lower score after the tied group").toBeDefined();
+  expect(after!.rank).toBe(tied![1][0] + tied![1].length);
   await page.getByRole("button", { name: "Choose monku" }).click();
   const selected = page.getByRole("region", { name: "Selected form" });
   await expect(selected).toContainText("exactly 4477/10000");

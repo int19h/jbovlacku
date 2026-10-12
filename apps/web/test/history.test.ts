@@ -746,7 +746,9 @@ test("own records fetched from the server are kept locally, so later signatures 
     )
       envelopeFetches++;
   });
-  await openWord(page, "cukta");
+  // These signatures judge words that no exact-count assertion reads, so
+  // the seeded cukta scores stay as the fixture contract states them.
+  await openWord(page, "vlacku");
   const articles = page.locator("article.definition");
   await articles.nth(0).getByRole("button", { name: "Endorse" }).click();
   await acceptFirstSignature(page);
@@ -768,8 +770,8 @@ test("own records fetched from the server are kept locally, so later signatures 
     .fill("test passphrase with spaces");
   await page.getByRole("button", { name: "Unlock", exact: true }).click();
   await expect(page.getByText("Unlocked", { exact: true })).toBeVisible();
-  await openWord(page, "cukta");
-  await articles.nth(1).getByRole("button", { name: "Endorse" }).click();
+  await openWord(page, "ckusro");
+  await articles.nth(0).getByRole("button", { name: "Endorse" }).click();
   await expect(page.getByRole("status")).toContainText(/ndorse/);
   await expect.poll(async () => (await outboxItems(page)).length).toBe(1);
   // The first signature after the restore fetched the one unknown record and kept it.
@@ -781,8 +783,9 @@ test("own records fetched from the server are kept locally, so later signatures 
   expect(kept).toHaveLength(1);
   expect(kept[0].id).toBe(firstId);
   // The next signature reads that record here. Nothing is fetched again.
-  await articles.nth(2).getByRole("button", { name: "Endorse" }).click();
-  await expect(page.getByRole("status")).toContainText(/ndorse/);
+  await openWord(page, "vlacku");
+  await articles.nth(0).getByRole("button", { name: "Oppose" }).click();
+  await expect(page.getByRole("status")).toContainText(/ppos/);
   await expect.poll(async () => (await outboxItems(page)).length).toBe(2);
   expect(envelopeFetches).toBe(1);
   // The restored history is the chain: the third record follows the second, which follows the first.

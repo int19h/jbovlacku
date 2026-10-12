@@ -674,3 +674,38 @@ test("a failed package download through Settings keeps the cache and leaves serv
     page.getByRole("link", { name: "cukta", exact: true }),
   ).toBeVisible();
 });
+
+test("the retired-results filter asks the server for retired publications and shows their status", async ({
+  page,
+}) => {
+  const requests: string[] = [];
+  await page.route("**/api/v1/search?**", async (route) => {
+    const url = new URL(route.request().url());
+    requests.push(url.search);
+    const response = await route.fetch();
+    const body = await response.json();
+    if (url.searchParams.get("retired") === "1" && body.hits[0])
+      body.hits[0].preview.status = "deprecated";
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto("/search?q=book&lang=en");
+  await expect(
+    page
+      .getByRole("region", { name: "Search results" })
+      .locator("article.hit")
+      .first(),
+  ).toBeVisible();
+  expect(requests.at(-1)).not.toContain("retired=");
+  await expect(
+    page.locator("article.hit").getByText("status: deprecated"),
+  ).toHaveCount(0);
+  await page.getByLabel("Include retired results").check();
+  await expect(page).toHaveURL(/retired=1/);
+  await expect(
+    page.locator("article.hit").getByText("status: deprecated").first(),
+  ).toBeVisible();
+  expect(requests.at(-1)).toContain("retired=1");
+  await page.getByLabel("Include retired results").uncheck();
+  await expect(page).not.toHaveURL(/retired=1/);
+  expect(requests.at(-1)).not.toContain("retired=");
+});
