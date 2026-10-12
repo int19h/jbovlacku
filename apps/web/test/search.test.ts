@@ -883,7 +883,9 @@ test("the client asks for an advertised version 2 package, binds it to the manif
         brokenV1: { ...v1, hash: "sha256:" + "d".repeat(64) },
         good: build.build(2, snapshot, entries),
         // Hash-correct bytes that say version 1 while the descriptor says 2.
-        wrongVersion: build.build(1, snapshot, [build.v1("cukta", "1")]),
+        // Their entries are valid version 2 entries, so only the version
+        // rule can reject them.
+        wrongVersion: build.build(1, snapshot, entries),
         // Hash-correct bytes bound to another snapshot.
         wrongSnapshot: build.build(2, "sha256:" + "b".repeat(64), entries),
       };
@@ -907,24 +909,41 @@ test("the client asks for an advertised version 2 package, binds it to the manif
   expect(cached.snapshot).toBe(snapshot);
   expect(cached.downgrade).toBeNull();
   expect(cached.entries).toEqual(fixture.entries);
-  // Wrong version inside hash-correct bytes. The version 1 package is also
-  // unusable here, so nothing replaces the cache.
+  // The same download as a direct call, so the test awaits its real end
+  // and reads its rejection. The version 1 package is unusable in these
+  // legs, so nothing can replace the cache.
+  const attempt = () =>
+    page.evaluate(async () => {
+      const { downloadPackage } = await import(String("/src/data/search.ts"));
+      try {
+        await downloadPackage("en");
+        return "resolved";
+      } catch (error) {
+        return (error as Error).message;
+      }
+    });
+  // Wrong version inside hash-correct bytes with valid version 2 entries.
   state.v2 = fixture.wrongVersion;
   state.v1 = fixture.brokenV1;
+  expect(await attempt()).toContain("hash did not match");
+  expect(urls).toHaveLength(3);
+  // The Settings control runs the same download. A fresh page has an empty
+  // status, so the announced failure marks this attempt's end.
+  await page.goto("/preferences");
   await page.getByRole("button", { name: "Refresh English" }).click();
   await expect(page.getByRole("status")).toContainText("hash did not match");
-  await expect.poll(() => urls.length).toBe(3);
   expect(await cachedPackage(page)).toEqual(cached);
-  // Another snapshot inside hash-correct bytes. The status text is the same,
-  // so the request count shows that this attempt finished.
+  // Another snapshot inside hash-correct bytes.
   state.v2 = fixture.wrongSnapshot;
+  expect(await attempt()).toContain("hash did not match");
+  expect(urls).toHaveLength(7);
+  await page.goto("/preferences");
   await page.getByRole("button", { name: "Refresh English" }).click();
-  await expect.poll(() => urls.length).toBe(5);
   await expect(page.getByRole("status")).toContainText("hash did not match");
   expect(await cachedPackage(page)).toEqual(cached);
   // Each attempt asked for version 2 first and never activated its bytes.
   const versions = urls.map((url) => new URL(url).searchParams.get("version"));
-  expect(versions).toEqual(["2", "2", null, "2", null]);
+  expect(versions).toEqual(["2", "2", null, "2", null, "2", null, "2", null]);
   const final = await cachedPackage(page);
   expect(final.version).toBe(2);
   expect(final.snapshot).toBe(snapshot);

@@ -1665,6 +1665,32 @@ test("a draft from the old prototype's version 1 database opens a choice instead
     page.getByRole("heading", { name: "An older draft is saved" }),
   ).toBeVisible();
   expect(await rawRow()).toEqual(oldRow);
+  // Another tab changes the old row itself, still without a version. The
+  // exact old value this page loaded no longer matches, so nothing changes.
+  const changedOld = {
+    ...oldRow,
+    text: "Changed in another tab.",
+    unknownField: { kept: false },
+  };
+  await page.evaluate(async (row) => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    await new LocalStore().put("drafts", "current", row);
+  }, changedOld);
+  await page
+    .getByRole("button", { name: "Convert it into a new draft" })
+    .click();
+  await expect(page.getByRole("status").last()).toContainText(
+    "Nothing was converted or discarded",
+  );
+  expect(await rawRow()).toEqual(changedOld);
+  page.once("dialog", (dialog) => void dialog.accept());
+  await page.getByRole("button", { name: "Discard the old draft" }).click();
+  await expect(page.getByRole("status").last()).toContainText(
+    "Nothing was converted or discarded",
+  );
+  expect(await rawRow()).toEqual(changedOld);
+  await page.getByRole("button", { name: "Show the current draft" }).click();
+  await expect(page.locator("main")).toContainText("Changed in another tab.");
   // A newer draft from another tab is never replaced by a stale conversion or discard.
   const newer = await page.evaluate(async () => {
     const { LocalStore } = await import(String("/src/data/store.ts"));
@@ -1694,7 +1720,8 @@ test("a draft from the old prototype's version 1 database opens a choice instead
   // The old copy stays exportable from the conflict notice.
   const again = page.waitForEvent("download");
   await page.getByRole("button", { name: "Export the old copy" }).click();
-  expect((await readDownload(again)).legacy).toEqual(oldRow);
+  // The page now shows the row that the other tab changed, so that is the old copy it exports.
+  expect((await readDownload(again)).legacy).toEqual(changedOld);
   await page.getByRole("button", { name: "Show the current draft" }).click();
   await expect(
     page.getByRole("textbox", { name: "Meaning", exact: true }),
@@ -1725,13 +1752,13 @@ test("a draft from the old prototype's version 1 database opens a choice instead
   expect(stored.version).toBe(2);
   expect(stored.spelling).toBe("brodyka");
   expect(stored.places.map((p: any) => p.description)).toEqual([
-    "the first thing",
-    "the second thing",
+    [["the first thing"]],
+    [["the second thing"]],
   ]);
   expect(stored.glosses).toEqual([
     { language: "en", text: "old gloss", sense: "" },
   ]);
-  expect(stored.notes).toBe("old notes");
+  expect(stored.notes).toEqual([["old notes"]]);
 });
 
 test("the full editor keeps referents on removal, saves type notes and derivations, confirms a type change, and offers a paste choice", async ({
@@ -1805,7 +1832,7 @@ test("the full editor keeps referents on removal, saves type notes and derivatio
   await expect(rendered).not.toContainText("needs the source place number");
   await expect
     .poll(async () => (await stored()).places[0].derivations)
-    .toEqual([{ word: "sinxa", definition: null, place: 2, explanation: "" }]);
+    .toEqual([{ word: "sinxa", definition: null, place: 2, explanation: [] }]);
   // Pasted circled numbers stay literal unless the author chooses references.
   const paste = (value: string) =>
     page
@@ -2059,7 +2086,9 @@ test("moving a place keeps every referent, and a language change keeps each plac
   await page.getByLabel("Description for place 2").fill("second, after ①");
   await page.getByLabel("Description for place 3").fill("third");
   await editor.fill("① gives ② to ③.");
-  await page.getByLabel("Add a gloss for place 1").fill("fr: premier");
+  await page
+    .getByLabel("Add a gloss for place 1")
+    .fill("fr: premier (ordinal)");
   await page.getByLabel("Add a gloss for place 1").press("Enter");
   await page.getByRole("button", { name: "Approve the numbering" }).click();
   const stored = () =>
@@ -2079,16 +2108,26 @@ test("moving a place keeps every referent, and a language change keeps each plac
   // The automatic save runs after the edits settle.
   await expect
     .poll(async () => (await stored()).places.map((p: any) => p.description))
-    .toEqual(["second, after ③", "third", "first"]);
+    .toEqual([[["second, after ", 3]], [["third"]], [["first"]]]);
   const draft = await stored();
   expect(draft.places[1].glosses).toEqual([]);
   expect(draft.places[2].glosses).toEqual([
-    { language: "fr", text: "premier", sense: "" },
+    { language: "fr", text: "premier", sense: "ordinal" },
   ]);
+  // Move down: the first place (second) goes under third, and references follow.
+  await page.getByRole("button", { name: "Move place 1 down" }).click();
+  await expect(editor).toHaveValue("③ gives ② to ①.");
+  await expect
+    .poll(async () => (await stored()).places.map((p: any) => p.description))
+    .toEqual([[["third"]], [["second, after ", 3]], [["first"]]]);
   // A definition language change does not relabel place glosses.
   await page.getByLabel("Definition language").fill("de");
   await expect.poll(async () => (await stored()).language).toBe("de");
-  expect((await stored()).places[2].glosses[0].language).toBe("fr");
+  expect((await stored()).places[2].glosses[0]).toEqual({
+    language: "fr",
+    text: "premier",
+    sense: "ordinal",
+  });
 });
 
 test("root conflicts of a gismu are checked again against the current package before publication", async ({
@@ -2158,4 +2197,157 @@ test("root conflicts of a gismu are checked again against the current package be
     )
     .check();
   await expect(publish).toBeEnabled();
+});
+
+test("an explicit place number edit refreshes the visible text, and the next edit keeps the remapped reference", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { newDraft, newPlace } = await import(String("/src/model/draft.ts"));
+    await new LocalStore().put(
+      "drafts",
+      "current",
+      newDraft({
+        spelling: "brodka",
+        kind: "gismu",
+        text: "① is something.",
+        frameMode: "context",
+        places: [newPlace(1)],
+        numberingApproved: true,
+      }),
+    );
+  });
+  await page.goto("/new/places");
+  const editor = page.getByRole("textbox", { name: "Definition text" });
+  await expect(editor).toHaveValue("① is something.");
+  const number = page.getByRole("spinbutton", {
+    name: "Place number 1",
+    exact: true,
+  });
+  await number.fill("2");
+  await number.press("Tab");
+  await expect(
+    page.getByRole("spinbutton", { name: "Place number 2", exact: true }),
+  ).toBeVisible();
+  await expect(editor).toHaveValue("② is something.");
+  const stored = () =>
+    page.evaluate(async () => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      return new LocalStore().get("drafts", "current");
+    });
+  await expect
+    .poll(async () => (await stored()).text)
+    .toEqual([[2, " is something."]]);
+  // A later edit builds on the refreshed text, never on the stale one.
+  await editor.fill("② is something more.");
+  await expect
+    .poll(async () => (await stored()).text)
+    .toEqual([[2, " is something more."]]);
+});
+
+test("switching off the reference reading asks first, turns references into literal characters, and switching back reads them again", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await page.getByRole("link", { name: "Add a word" }).click();
+  await page.getByRole("link", { name: "Skip to the full editor" }).click();
+  await page.getByLabel("Headword").fill("brodke");
+  await page.getByLabel("Type", { exact: true }).selectOption("gismu");
+  await page.getByRole("button", { name: "+ Add a place" }).click();
+  await page
+    .getByLabel("Description for place 1")
+    .fill("the thing, see [[cukta]]");
+  const editor = page.getByRole("textbox", { name: "Definition text" });
+  await editor.fill("① is a thing with `code`.");
+  await page.getByRole("button", { name: "Approve the numbering" }).click();
+  const rendered = page.getByRole("region", { name: "Rendered definition" });
+  await expect(rendered.getByRole("img", { name: "place 1" })).toHaveCount(1);
+  const stored = () =>
+    page.evaluate(async () => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      return new LocalStore().get("drafts", "current");
+    });
+  // Cancel keeps the mode. Accept turns each reference into the circled character as text.
+  let message = "";
+  page.once("dialog", (dialog) => {
+    message = dialog.message();
+    void dialog.dismiss();
+  });
+  // A plain click: a cancelled switch puts the box back at once.
+  await page.getByLabel("Read circled numbers as place references").click();
+  await expect.poll(() => message).toContain("the definition");
+  await expect(
+    page.getByLabel("Read circled numbers as place references"),
+  ).toBeChecked();
+  page.once("dialog", (dialog) => void dialog.accept());
+  await page.getByLabel("Read circled numbers as place references").uncheck();
+  await expect(rendered.getByRole("img", { name: "place 1" })).toHaveCount(0);
+  await expect(rendered).toContainText("① is a thing with");
+  await expect
+    .poll(async () => (await stored()).text)
+    .toEqual([["① is a thing with ", { code: "code" }, "."]]);
+  // The link in the description stays a link.
+  expect((await stored()).places[0].description).toEqual([
+    [
+      "the thing, see ",
+      { word: { language: "jbo", spelling: "cukta" }, label: "cukta" },
+    ],
+  ]);
+  await page.getByLabel("Read circled numbers as place references").check();
+  await expect(rendered.getByRole("img", { name: "place 1" })).toHaveCount(1);
+  await expect
+    .poll(async () => (await stored()).text)
+    .toEqual([[1, " is a thing with ", { code: "code" }, "."]]);
+});
+
+test("a core-only rule shows its exact reason on the publish page and keeps Publish disabled before any unlock", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { newDraft } = await import(String("/src/model/draft.ts"));
+    await new LocalStore().put(
+      "drafts",
+      "current",
+      newDraft({
+        spelling: "brodko",
+        kind: "gismu",
+        text: "fine",
+        structured: false,
+        step: 5,
+        evidenceForm: "brodko",
+        formation: {
+          method: "non-algorithmic",
+          algorithm: null,
+          sources: [
+            {
+              language: "en",
+              word: "big",
+              input: null,
+              weight: { numerator: 2, denominator: 4 },
+              notes: [],
+            },
+          ],
+          weights_profile: null,
+          generated: null,
+          selected_score: null,
+          selected_rank: null,
+          selection_reason: [],
+          candidates: [],
+          conflicts: [],
+        },
+      }),
+    );
+  });
+  await page.goto("/new/publish");
+  await expect(page.locator("main")).toContainText(
+    "The format rules reject the body: schema: rational must use lowest terms.",
+  );
+  await expect(
+    page.locator("aside").getByRole("button", { name: "Publish", exact: true }),
+  ).toBeDisabled();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
 });

@@ -39,6 +39,7 @@ import {
   type PackageInventory,
 } from "../../model/builders.ts";
 import { actionBar, DraftSaver, loadDraft, stepBar } from "./common.ts";
+import { editorText, editorToRichText } from "../../model/draft.ts";
 
 function originLabel(origin: string): string | null {
   switch (origin) {
@@ -175,11 +176,14 @@ export async function lujvoPage(
   const definitionField = field("Current definition", {
     multiline: true,
     rows: 4,
-    value: draft.text,
+    value: editorText(draft.text, draft.structured),
     lang: draft.language,
   });
   definitionField.input.addEventListener("input", () => {
-    draft.text = definitionField.input.value;
+    draft.text = editorToRichText(
+      definitionField.input.value,
+      draft.structured,
+    );
     saver.touch();
   });
   aside.append(

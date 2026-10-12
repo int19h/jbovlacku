@@ -11,7 +11,7 @@ import type { App } from "../../app/context.ts";
 import { localSearch, type CachedPackage } from "../../data/search.ts";
 import { remoteSearch } from "../../data/api.ts";
 import { placeholderCount, type Draft } from "../../model/draft.ts";
-import { placeMarker } from "../../model/richtext.ts";
+import { countNodes, placeMarker } from "../../model/richtext.ts";
 import {
   actionBar,
   DraftSaver,
@@ -79,13 +79,13 @@ export async function meaningPage(
     requestedWord &&
     draft.spelling &&
     draft.spelling !== requestedWord &&
-    (draft.text.trim() || draft.meaning.trim());
+    (countNodes(draft.text) || draft.meaning.trim());
   if (
     !draft ||
     (!conflict &&
       requestedWord &&
       !draft.spelling &&
-      !draft.text.trim() &&
+      !countNodes(draft.text) &&
       !draft.meaning.trim())
   ) {
     try {
@@ -236,7 +236,7 @@ export async function meaningPage(
   const syncLanguage = () => {
     const tag = custom.input.value.trim() || language.input.value;
     if (tag !== draft.language) {
-      if (draft.glosses.length || draft.text.trim())
+      if (draft.glosses.length || countNodes(draft.text))
         draft.review = [...new Set([...draft.review, "language"])];
       draft.language = tag;
     }

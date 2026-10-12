@@ -3,6 +3,7 @@ import {
   acceptFirstSignature,
   corePath,
   createIdentity,
+  fingerprintText,
   fixture,
   openWord,
   PASSPHRASE,
@@ -1404,6 +1405,26 @@ test("the breakdown follows both root routes to one reviewer, and a privately bl
   ).toBeVisible();
   await expect(curatorRow).toContainText("several routes contribute");
   await expect(curatorRow).toContainText("endorses");
+  // Each root link leads to that root's identity page.
+  const rootLink = (identity: string) =>
+    curatorRow.getByRole("link", { name: short(identity) });
+  await expect(rootLink(f.identities.rootA)).toHaveAttribute(
+    "href",
+    `/identity/${encodeURIComponent(f.identities.rootA)}`,
+  );
+  await expect(rootLink(f.identities.rootB)).toHaveAttribute(
+    "href",
+    `/identity/${encodeURIComponent(f.identities.rootB)}`,
+  );
+  await rootLink(f.identities.rootB).click();
+  await expect(page).toHaveURL(
+    new RegExp(`/identity/${f.identities.rootB.replace(":", "%3A")}$`),
+  );
+  await expect(
+    page.getByText(fingerprintText(f.identities.rootB), { exact: true }),
+  ).toBeVisible();
+  await page.goBack();
+  await expect(page).toHaveTitle("cukta · jbovlacku");
   // A private Ignore in the personal view labels the same reviewer as blocked by that choice.
   await choosePersonal(page);
   await ignorePrivately(page, f.identities.curator);

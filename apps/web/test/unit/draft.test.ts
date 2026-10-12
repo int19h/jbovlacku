@@ -21,6 +21,7 @@ import {
 import {
   draftFromBody,
   draftToBody,
+  editorText,
   editorToRichText,
   literalize,
   newDraft,
@@ -30,6 +31,7 @@ import {
   remapPlaces,
   rewriteReferences,
   richTextToEditor,
+  switchMode,
   LENSISKU_RIGHTS_REFERENCE,
 } from "../../src/model/draft.ts";
 import { textToRichText, richTextToText } from "../../src/model/richtext.ts";
@@ -170,7 +172,7 @@ test("a reference to an undeclared place blocks signing and the literal escape p
   );
   const escaped = newDraft({
     ...draft,
-    text: literalize(draft.text),
+    text: literalize(editorText(draft.text, true)),
   });
   const { body, problems: after } = draftToBody(escaped);
   assert.deepEqual(
@@ -621,7 +623,7 @@ test("an old draft of this prototype loads with its single gloss and derivation 
     { language: "en", text: "first", sense: "" },
   ]);
   assert.deepEqual(draft.places[0].derivations, [
-    { word: "sinxa", definition: null, place: 2, explanation: "" },
+    { word: "sinxa", definition: null, place: 2, explanation: [] },
   ]);
   assert.equal(draft.frameRole, "predicate");
   assert.equal("gloss" in draft.places[0], false);
@@ -893,7 +895,7 @@ test("Revise keeps every core-valid parent value exactly when the field is not e
     );
     assert.ok(admissible(body, [parentId]), c.name);
     // An edited field goes through the editor. The others still keep the parent's values.
-    draft.notes = "edited";
+    draft.notes = editorToRichText("edited", true);
     const edited = draftToBody(draft).body!;
     assert.deepEqual(edited.text, c.text, c.name);
     assert.deepEqual(edited.notes, [["edited"]]);
@@ -953,12 +955,12 @@ test("place rewrites touch only place nodes and cover type notes, and a frame co
   rewriteReferences(draft, (n) => (n === 2 ? "literal" : n > 2 ? n - 1 : n));
   draft.places = draft.places.map((pl, i) => ({ ...pl, index: i + 1 }));
   assert.equal(
-    draft.text,
+    editorText(draft.text, true),
     "① then \\② then ② with `code ②` and [[https://e.org/②|label ②]] and \\② kept",
   );
-  assert.equal(draft.notes, "notes ②");
-  assert.equal(draft.frameConstraints[0], "frame ②");
-  assert.equal(draft.operands[0].description, "operand ②");
+  assert.equal(editorText(draft.notes, true), "notes ②");
+  assert.equal(editorText(draft.frameConstraints[0], true), "frame ②");
+  assert.equal(editorText(draft.operands[0].description, true), "operand ②");
   assert.deepEqual(draft.places[1].hint!.note, [["note ", 2]]);
   const { body, problems } = draftToBody(draft);
   assert.deepEqual(
@@ -1073,4 +1075,265 @@ test("the place and minimum bounds hold at 256 and fail at 257, and morphology n
     ["from ", { url: "https://e.org", label: "e" }],
     ["my note"],
   ]);
+});
+
+test("validation reads the final values, an edit changes only its own control, and the mode governs references", () => {
+  const base = draftToBody(
+    newDraft({
+      spelling: "broda",
+      kind: "gismu",
+      text: "x",
+      structured: false,
+    }),
+  ).body!;
+  const parentId = "jve1:" + "e".repeat(64);
+  // R30: a code node holding a circled number is not a reference.
+  const code = { ...base, text: [[{ code: "first\n\n①" }]] } as never;
+  assert.ok(admissible(code));
+  const d1 = draftFromBody(code, parentId, "native");
+  d1.labels.push("changed");
+  const r1 = draftToBody(d1);
+  assert.deepEqual(
+    r1.problems.filter((pr) => pr.blocking),
+    [],
+  );
+  assert.deepEqual(r1.body!.text, [[{ code: "first\n\n①" }]]);
+  // R31: a gloss edit keeps the place description, and a form note follows the exact etymology.
+  const richPlace = {
+    ...base,
+    text: [[1, " is something."]],
+    frame: {
+      role: "predicate",
+      arity: { mode: "fixed", count: 1 },
+      places: [
+        {
+          index: 1,
+          description: [[{ code: "first\n\nsecond" }]],
+          glosses: [],
+          type_hints: [],
+          derivation: [],
+          defaults: [
+            {
+              kind: "suggested",
+              value: { format: "lojban", text: "x" },
+              condition: [[{ code: "c\n\nd" }]],
+              explanation: [],
+            },
+          ],
+          constraints: [[[{ code: "k\n\nl" }]]],
+        },
+      ],
+      tail: null,
+      constraints: [],
+    },
+    etymology: {
+      text: [[{ code: "e\n\nf" }]],
+      formation: null,
+      compound: null,
+    },
+  } as never;
+  assert.ok(admissible(richPlace));
+  const d2 = draftFromBody(richPlace, parentId, "native");
+  d2.places[0].glosses.push({ language: "en", text: "something", sense: "" });
+  d2.formNotes = "Added note";
+  const r2 = draftToBody(d2).body!;
+  assert.deepEqual(r2.frame!.places[0].description, [
+    [{ code: "first\n\nsecond" }],
+  ]);
+  assert.deepEqual(r2.frame!.places[0].defaults[0].condition, [
+    [{ code: "c\n\nd" }],
+  ]);
+  assert.deepEqual(r2.frame!.places[0].constraints, [[[{ code: "k\n\nl" }]]]);
+  assert.deepEqual(r2.frame!.places[0].glosses, [
+    { language: "en", text: "something", sense: null },
+  ]);
+  assert.deepEqual(r2.etymology.text, [[{ code: "e\n\nf" }], ["Added note"]]);
+  // R32: the mode governs references, through the switch and through the flag.
+  const d3 = draftFromBody(
+    {
+      ...richPlace,
+      frame: {
+        ...(richPlace as unknown as { frame: Record<string, unknown> }).frame,
+        places: [
+          {
+            index: 1,
+            description: [["something"]],
+            glosses: [],
+            type_hints: [],
+            derivation: [],
+            defaults: [],
+            constraints: [],
+          },
+        ],
+      },
+    } as never,
+    parentId,
+    "native",
+  );
+  switchMode(d3, false);
+  assert.deepEqual(d3.text, [["① is something."]]);
+  assert.deepEqual(draftToBody(d3).body!.text, [["① is something."]]);
+  switchMode(d3, true);
+  assert.deepEqual(d3.text, [[1, " is something."]]);
+  d3.structured = false;
+  assert.deepEqual(draftToBody(d3).body!.text, [["① is something."]]);
+  // R33: an identity remap leaves rich type notes exact, for a place and the repeated places.
+  const d4 = newDraft({
+    spelling: "broda",
+    kind: "gismu",
+    text: "①",
+    frameMode: "variadic",
+    variadicMinimum: 1,
+    places: [
+      {
+        ...newPlace(1),
+        kind: "custom",
+        hint: {
+          alternatives: [
+            { tags: ["entity"], abstractor: null, relation_arity: null },
+          ],
+          note: [[{ code: "first\n\nsecond" }]],
+        },
+      },
+    ],
+    tail: {
+      description: "more",
+      kind: "custom",
+      hint: {
+        alternatives: [
+          { tags: ["set"], abstractor: null, relation_arity: null },
+        ],
+        note: [["tail ", { code: "t\n\nu" }]],
+      },
+    },
+    numberingApproved: true,
+  });
+  const before = JSON.stringify(draftToBody(d4).body);
+  rewriteReferences(d4, (n) => n);
+  assert.equal(JSON.stringify(draftToBody(d4).body), before);
+  assert.deepEqual(d4.places[0].hint!.note, [[{ code: "first\n\nsecond" }]]);
+  assert.deepEqual(d4.tail!.hint!.note, [["tail ", { code: "t\n\nu" }]]);
+});
+
+test("a rewrite covers defaults, the repeated places' note, and leaves examples and derivation explanations untouched", () => {
+  const draft = newDraft({
+    spelling: "broda",
+    kind: "gismu",
+    text: "① then ② then ③",
+    frameMode: "variadic",
+    variadicMinimum: 1,
+    places: [
+      {
+        ...newPlace(1),
+        constraints: ["only ③"],
+        defaults: [
+          {
+            kind: "suggested",
+            format: "lojban",
+            language: "",
+            text: "x",
+            condition: "when ③",
+            explanation: "see ③ and `③`",
+          },
+        ],
+        derivations: [
+          {
+            word: "sinxa",
+            definition: null,
+            place: 1,
+            explanation: [["literal ③ stays"]],
+          },
+        ],
+      },
+      newPlace(2),
+      newPlace(3),
+    ],
+    tail: {
+      description: "more ③",
+      kind: "custom",
+      hint: {
+        alternatives: [
+          { tags: ["set"], abstractor: null, relation_arity: null },
+        ],
+        note: [["note ", 3, " and `③`"]],
+      },
+    },
+    examples: [
+      {
+        language: "jbo",
+        text: "mi broda",
+        translation: [["literal ③"]],
+        notes: "",
+      },
+    ],
+    numberingApproved: true,
+  });
+  draft.places.splice(1, 1);
+  rewriteReferences(draft, (n) => (n === 2 ? "literal" : n > 2 ? n - 1 : n));
+  draft.places = draft.places.map((pl, i) => ({ ...pl, index: i + 1 }));
+  assert.deepEqual(draft.text, [[1, " then ② then ", 2]]);
+  assert.deepEqual(draft.places[0].constraints, [[["only ", 2]]]);
+  assert.deepEqual(draft.places[0].defaults[0].condition, [["when ", 2]]);
+  assert.deepEqual(draft.places[0].defaults[0].explanation, [
+    ["see ", 2, " and ", { code: "③" }],
+  ]);
+  assert.deepEqual(draft.places[0].derivations[0].explanation, [
+    ["literal ③ stays"],
+  ]);
+  assert.deepEqual(draft.tail!.description, [["more ", 2]]);
+  assert.deepEqual(draft.tail!.hint!.note, [["note ", 2, " and `③`"]]);
+  assert.deepEqual(draft.examples[0].translation, [["literal ③"]]);
+  assert.deepEqual(
+    draftToBody(draft).problems.filter((pr) => pr.blocking),
+    [],
+  );
+});
+
+test("a revision of an imported parent that already carries the rights reference keeps it once and every other source exact", () => {
+  const base = draftToBody(
+    newDraft({
+      spelling: "ckusro",
+      kind: "lujvo",
+      text: "x",
+      structured: false,
+    }),
+  ).body!;
+  const parent = {
+    ...base,
+    sources: [
+      {
+        label: " other ",
+        url: "https://example.org/o",
+        event: null,
+        locator: " p ",
+      },
+      { ...LENSISKU_RIGHTS_REFERENCE },
+    ],
+    license: {
+      expression: "unknown",
+      url: null,
+      attribution: "Lensisku source author unknown",
+    },
+    legacy: { source: "https://lensisku.invalid" },
+  } as never;
+  const parentId = "jve1:" + "f".repeat(64);
+  const draft = draftFromBody(parent, parentId, "import");
+  const { body } = draftToBody(draft);
+  assert.equal(
+    body!.sources.filter((s) => s.url === LENSISKU_RIGHTS_REFERENCE.url).length,
+    1,
+  );
+  assert.deepEqual(body!.sources[0], {
+    label: "Imported publication revised by this definition",
+    url: null,
+    event: parentId,
+    locator: null,
+  });
+  assert.deepEqual(body!.sources[1], {
+    label: " other ",
+    url: "https://example.org/o",
+    event: null,
+    locator: " p ",
+  });
+  assert.deepEqual(body!.sources[2], LENSISKU_RIGHTS_REFERENCE);
 });

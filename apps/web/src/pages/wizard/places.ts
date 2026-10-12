@@ -27,12 +27,15 @@ import {
   revisionChanges,
   hintForChoice,
   kindChoices,
+  editorText,
   editorToRichText,
   fieldsReferencing,
+  literalLoss,
   literalize,
   newPlace,
   rewriteReferences,
   richTextToEditor,
+  switchMode,
   type DraftGloss,
   numberPlaceholders,
   renumber,
@@ -50,10 +53,11 @@ import {
 } from "../../model/types.ts";
 import { loadDefinition } from "../../data/api.ts";
 import {
+  countNodes,
   placeMarker,
-  referencedPlaces,
   renderRichText,
 } from "../../model/richtext.ts";
+import type { RichText } from "../../model/types.ts";
 import {
   actionBar,
   confirmKindChange,
@@ -111,7 +115,8 @@ function hintEditor(
     ...a,
     tags: [...a.tags],
   })) ?? [{ tags: [], abstractor: null, relation_arity: null }];
-  let noteText = current ? richTextToEditor(current.note) : "";
+  // The note keeps its exact rich value. Only an edit of the note field parses text.
+  let note: RichText = current ? current.note : [];
   const emit = () => {
     const cleaned = alternatives
       .map((a) => ({
@@ -124,7 +129,7 @@ function hintEditor(
       cleaned.length
         ? {
             alternatives: cleaned,
-            note: editorToRichText(noteText, true),
+            note,
           }
         : null,
     );
@@ -223,18 +228,17 @@ function hintEditor(
         );
       box.append(row);
     });
-    const note = field("Type note", {
-      value: noteText,
+    const noteField = field("Type note", {
+      value: richTextToEditor(note),
       wrapperClass: "",
       placeholder: "optional",
     });
-    note.input.addEventListener("input", () => {
-      noteText = note.input.value;
+    noteField.input.addEventListener("input", () => {
+      note = editorToRichText(noteField.input.value, true);
       emit();
     });
-    // The note field is part of the editor. It was built and never shown before.
     box.append(
-      note.wrapper,
+      noteField.wrapper,
       el(
         "div",
         { class: "actions", style: "margin-top:8px" },
@@ -284,7 +288,7 @@ export async function placesPage(
     // Revise copies the publication into a new draft with its exact parent ID.
     if (
       draft &&
-      (draft.text.trim() || draft.meaning.trim()) &&
+      (countNodes(draft.text) || draft.meaning.trim()) &&
       !confirm(
         `Revising replaces the saved draft for "${draft.spelling || "a new word"}". Continue?`,
       )
@@ -439,7 +443,7 @@ export async function placesPage(
     language.input.addEventListener("input", () => {
       if (
         language.input.value !== draft.language &&
-        (draft.glosses.length || draft.text.trim())
+        (draft.glosses.length || countNodes(draft.text))
       )
         draft.review = [...new Set([...draft.review, "language"])];
       draft.language = language.input.value.trim();
@@ -491,7 +495,7 @@ export async function placesPage(
   const editor = field("Definition text", {
     multiline: true,
     rows: 4,
-    value: draft.text,
+    value: editorText(draft.text, draft.structured),
     labelClass: "sr",
   });
   editor.input.style.fontSize = "19px";
@@ -538,7 +542,21 @@ export async function placesPage(
     "Read circled numbers as place references",
     draft.structured,
     (value) => {
-      draft.structured = value;
+      // Literal mode turns links, code, operands, and references into their
+      // visible text in every field. The author sees that list first.
+      const lost = value ? [] : literalLoss(draft);
+      if (
+        lost.length &&
+        !confirm(
+          `Literal mode turns the links, code, operands, and place references in ${lost.join(", ")} into plain text. Continue?`,
+        )
+      ) {
+        structured.querySelector("input")!.checked = true;
+        return;
+      }
+      switchMode(draft, value);
+      syncMirrors();
+      renderPlaces();
       saver.touch();
       refreshPreview();
     },
@@ -616,17 +634,17 @@ export async function placesPage(
     editor.input.dispatchEvent(new Event("input"));
   });
   mirrors.add(() => {
-    editor.input.value = draft.text;
+    editor.input.value = editorText(draft.text, draft.structured);
   });
   editor.input.addEventListener("input", () => {
-    draft.text = editor.input.value;
+    draft.text = editorToRichText(editor.input.value, draft.structured);
     draft.numberingApproved = false;
     saver.touch();
     refreshPreview();
     refreshNumbering();
   });
   // Placeholders from the meaning.
-  if (!draft.text.trim() && draft.meaning.trim()) {
+  if (!countNodes(draft.text) && draft.meaning.trim()) {
     const proposal = numberPlaceholders(draft.meaning);
     const suggest = el("div", { class: "notice", style: "margin-top:8px" });
     suggest.append(
@@ -640,8 +658,8 @@ export async function placesPage(
           ? "Use the meaning with numbered places"
           : "Use the meaning as the definition",
         () => {
-          draft.text = proposal.text;
-          editor.input.value = draft.text;
+          draft.text = editorToRichText(proposal.text, draft.structured);
+          editor.input.value = editorText(draft.text, draft.structured);
           if (proposal.count && !draft.places.length) {
             draft.places = Array.from({ length: proposal.count }, (_, i) =>
               newPlace(i + 1),
@@ -708,7 +726,7 @@ export async function placesPage(
     draft.frameMode = arity.value as FrameMode;
     if (draft.frameMode === "variadic") {
       draft.variadicMinimum = draft.variadicMinimum || draft.places.length;
-      draft.tail ??= { description: "", kind: "unspecified", hint: null };
+      draft.tail ??= { description: [], kind: "unspecified", hint: null };
     }
     saver.touch();
     renderPlaces();
@@ -784,8 +802,10 @@ export async function placesPage(
           Math.min(65535, Number(idx.value) || place.index),
         );
         // References to this place follow its new number.
-        if (place.index !== previous)
+        if (place.index !== previous) {
           rewriteReferences(draft, (n) => (n === previous ? place.index : n));
+          syncMirrors();
+        }
         draft.places.sort((a, b) => a.index - b.index);
         draft.numberingApproved = false;
         saver.touch();
@@ -796,7 +816,7 @@ export async function placesPage(
     }
     const grid = el("div", { class: "place-grid" });
     const description = field(`Description for place ${place.index}`, {
-      value: place.description,
+      value: editorText(place.description, draft.structured),
       wrapperClass: "span-3",
       labelClass: "field-label",
     });
@@ -805,7 +825,10 @@ export async function placesPage(
       el("span", { class: "sr", text: ` for place ${place.index}` }),
     );
     description.input.addEventListener("input", () => {
-      place.description = description.input.value;
+      place.description = editorToRichText(
+        description.input.value,
+        draft.structured,
+      );
       saver.touch();
     });
     const gloss = {
@@ -848,7 +871,7 @@ export async function placesPage(
       wrapper: el(
         "div",
         { class: "span-3" },
-        derivationEditor(place, () => {
+        derivationEditor(place, draft.structured, () => {
           saver.touch();
           refreshPreview();
         }),
@@ -1028,14 +1051,17 @@ export async function placesPage(
       const tailDescription = field(
         `Places ${draft.places.length + 1} and on`,
         {
-          value: draft.tail?.description ?? "",
+          value: editorText(draft.tail?.description ?? [], draft.structured),
           placeholder: "what the repeated places are",
           wrapperClass: "",
         },
       );
       tailDescription.input.addEventListener("input", () => {
         draft.tail = {
-          description: tailDescription.input.value,
+          description: editorToRichText(
+            tailDescription.input.value,
+            draft.structured,
+          ),
           kind: draft.tail?.kind ?? "unspecified",
           hint: draft.tail?.hint ?? null,
         };
@@ -1048,7 +1074,7 @@ export async function placesPage(
       });
       tailKind.input.addEventListener("change", () => {
         draft.tail = {
-          description: draft.tail?.description ?? "",
+          description: draft.tail?.description ?? [],
           kind: tailKind.input.value as KindChoice,
           hint: null,
         };
@@ -1159,10 +1185,17 @@ export async function placesPage(
           });
           const condition = field(
             `Condition ${i + 1} for place ${place.index}`,
-            { value: d.condition, wrapperClass: "", placeholder: "when…" },
+            {
+              value: editorText(d.condition, draft.structured),
+              wrapperClass: "",
+              placeholder: "when…",
+            },
           );
           condition.input.addEventListener("input", () => {
-            d.condition = condition.input.value;
+            d.condition = editorToRichText(
+              condition.input.value,
+              draft.structured,
+            );
             saver.touch();
           });
           for (const f of [kind, format, value, condition]) {
@@ -1188,14 +1221,17 @@ export async function placesPage(
       const constraints = field(`Constraints for place ${place.index}`, {
         multiline: true,
         rows: 2,
-        value: place.constraints.join("\n"),
+        value: place.constraints
+          .map((c) => editorText(c, draft.structured))
+          .join("\n"),
         wrapperClass: "",
         hint: "One per line. Descriptions, not executable rules.",
       });
       constraints.input.addEventListener("input", () => {
         place.constraints = constraints.input.value
           .split("\n")
-          .filter((c) => c.trim());
+          .filter((c) => c.trim())
+          .map((c) => editorToRichText(c, draft.structured));
         saver.touch();
       });
       block.append(
@@ -1210,8 +1246,8 @@ export async function placesPage(
                 format: "lojban",
                 language: draft.language,
                 text: "",
-                condition: "",
-                explanation: "",
+                condition: [],
+                explanation: [],
               });
               saver.touch();
               renderDefaults();
@@ -1226,17 +1262,22 @@ export async function placesPage(
     const frameConstraints = field("Constraints between places", {
       multiline: true,
       rows: 2,
-      value: draft.frameConstraints.join("\n"),
+      value: draft.frameConstraints
+        .map((c) => editorText(c, draft.structured))
+        .join("\n"),
       wrapperClass: "",
       hint: "One per line.",
     });
     mirrors.add(() => {
-      frameConstraints.input.value = draft.frameConstraints.join("\n");
+      frameConstraints.input.value = draft.frameConstraints
+        .map((c) => editorText(c, draft.structured))
+        .join("\n");
     });
     frameConstraints.input.addEventListener("input", () => {
       draft.frameConstraints = frameConstraints.input.value
         .split("\n")
-        .filter((c) => c.trim());
+        .filter((c) => c.trim())
+        .map((c) => editorToRichText(c, draft.structured));
       saver.touch();
     });
     box.append(
@@ -1262,15 +1303,15 @@ export async function placesPage(
     const notes = field("Notes", {
       multiline: true,
       rows: 3,
-      value: draft.notes,
+      value: editorText(draft.notes, draft.structured),
       labelClass: "sr",
       wrapperClass: "",
     });
     mirrors.add(() => {
-      notes.input.value = draft.notes;
+      notes.input.value = editorText(draft.notes, draft.structured);
     });
     notes.input.addEventListener("input", () => {
-      draft.notes = notes.input.value;
+      draft.notes = editorToRichText(notes.input.value, draft.structured);
       saver.touch();
       refreshPreview();
     });
@@ -1302,19 +1343,25 @@ export async function placesPage(
           saver.touch();
         });
         const translation = field(`Translation of example ${i + 1}`, {
-          value: example.translation,
+          value: editorText(example.translation, draft.structured),
           wrapperClass: "",
         });
         translation.input.addEventListener("input", () => {
-          example.translation = translation.input.value;
+          example.translation = editorToRichText(
+            translation.input.value,
+            draft.structured,
+          );
           saver.touch();
         });
         const notesField = field(`Notes for example ${i + 1}`, {
-          value: example.notes,
+          value: editorText(example.notes, draft.structured),
           wrapperClass: "",
         });
         notesField.input.addEventListener("input", () => {
-          example.notes = notesField.input.value;
+          example.notes = editorToRichText(
+            notesField.input.value,
+            draft.structured,
+          );
           saver.touch();
         });
         for (const f of [textField, translation, notesField]) {
@@ -1344,8 +1391,8 @@ export async function placesPage(
               draft.examples.push({
                 language: "jbo",
                 text: "",
-                translation: "",
-                notes: "",
+                translation: [],
+                notes: [],
               });
               saver.touch();
               render();
@@ -1364,13 +1411,16 @@ export async function placesPage(
       const etym = field("Etymology", {
         multiline: true,
         rows: 3,
-        value: draft.etymologyText,
+        value: editorText(draft.etymologyText, draft.structured),
         labelClass: "sr",
         wrapperClass: "",
         hint: "Descriptive text without place references. Morphology notes from the Form step are added after it.",
       });
       etym.input.addEventListener("input", () => {
-        draft.etymologyText = etym.input.value;
+        draft.etymologyText = editorToRichText(
+          etym.input.value,
+          draft.structured,
+        );
         saver.touch();
       });
       const nodes: Node[] = [etym.wrapper];
@@ -1415,7 +1465,7 @@ export async function placesPage(
           wrapperClass: "",
         });
         label.input.addEventListener("input", () => {
-          source.label = label.input.value;
+          source.label = label.input.value.trim();
           saver.touch();
         });
         const url = field(`Source ${i + 1} link`, {
@@ -1424,7 +1474,7 @@ export async function placesPage(
           placeholder: "https://",
         });
         url.input.addEventListener("input", () => {
-          source.url = url.input.value || null;
+          source.url = url.input.value.trim() || null;
           saver.touch();
         });
         const event = field(`Source ${i + 1} record`, {
@@ -1433,7 +1483,7 @@ export async function placesPage(
           placeholder: "jve1:…",
         });
         event.input.addEventListener("input", () => {
-          source.event = event.input.value || null;
+          source.event = event.input.value.trim() || null;
           saver.touch();
         });
         const locator = field(`Source ${i + 1} position`, {
@@ -1441,7 +1491,7 @@ export async function placesPage(
           wrapperClass: "",
         });
         locator.input.addEventListener("input", () => {
-          source.locator = locator.input.value || null;
+          source.locator = locator.input.value.trim() || null;
           saver.touch();
         });
         for (const f of [label, url, event, locator]) {
@@ -1526,14 +1576,20 @@ export async function placesPage(
             saver.touch();
           });
           const description = field(`Operand ${i + 1} description`, {
-            value: operand.description,
+            value: editorText(operand.description, draft.structured),
             wrapperClass: "",
           });
           mirrors.add(() => {
-            description.input.value = operand.description;
+            description.input.value = editorText(
+              operand.description,
+              draft.structured,
+            );
           });
           description.input.addEventListener("input", () => {
-            operand.description = description.input.value;
+            operand.description = editorToRichText(
+              description.input.value,
+              draft.structured,
+            );
             saver.touch();
           });
           const minimum = field(`Operand ${i + 1} minimum`, {
@@ -1584,7 +1640,7 @@ export async function placesPage(
                 draft.operands.push({
                   id: "",
                   category: "",
-                  description: "",
+                  description: [],
                   minimum: 1,
                   maximum: 1,
                 });
@@ -1808,7 +1864,11 @@ function glossChips(
   return row;
 }
 /** The derivations of one place: source word, source place, exact definition, and explanation. */
-function derivationEditor(place: DraftPlace, changed: () => void): HTMLElement {
+function derivationEditor(
+  place: DraftPlace,
+  structured: boolean,
+  changed: () => void,
+): HTMLElement {
   const box = el("div");
   const render = () => {
     box.replaceChildren(text(`Derivations of place ${place.index}`, "meta"));
@@ -1886,7 +1946,7 @@ function derivationEditor(place: DraftPlace, changed: () => void): HTMLElement {
       const explanation = field(
         `Explanation of derivation ${n} for place ${place.index}`,
         {
-          value: derivation.explanation,
+          value: editorText(derivation.explanation, structured),
           wrapperClass: "span-3",
           placeholder: "optional, without place references",
         },
@@ -1899,7 +1959,10 @@ function derivationEditor(place: DraftPlace, changed: () => void): HTMLElement {
         }),
       );
       explanation.input.addEventListener("input", () => {
-        derivation.explanation = explanation.input.value;
+        derivation.explanation = editorToRichText(
+          explanation.input.value,
+          structured,
+        );
         changed();
       });
       row.append(
@@ -1931,7 +1994,7 @@ function derivationEditor(place: DraftPlace, changed: () => void): HTMLElement {
             word: "",
             definition: null,
             place: null,
-            explanation: "",
+            explanation: [],
           });
           changed();
           render();
