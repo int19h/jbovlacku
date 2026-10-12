@@ -50,7 +50,7 @@ export interface RecordsProgress {
 export class RecordsError extends Error {
   constructor(
     message: string,
-    public kind: "missing" | "invalid" | "limit" | "network",
+    public kind: "missing" | "invalid" | "limit" | "network" | "unavailable",
   ) {
     super(message);
   }
@@ -225,6 +225,10 @@ export async function syncRecords(
       byteLength(normalized.envelope) + byteLength(normalized.body ?? "");
   }
   const missing = new Set(events.filter((id) => !cached.has(id)));
+  // Position lookups by map and set. The inventory is in order, so the first
+  // missing record is found by moving a cursor forward, never by sorting.
+  const eventIndex = new Map(events.map((id, index) => [id, index]));
+  let cursor = 0;
   const missingBodies = events.filter((id) => {
     const record = cached.get(id);
     return (
@@ -253,8 +257,8 @@ export async function syncRecords(
         "The records transport needed more pages than the inventory has records.",
         "invalid",
       );
-    const first = [...missing].sort()[0];
-    const index = events.indexOf(first);
+    while (cursor < events.length && !missing.has(events[cursor])) cursor++;
+    const index = cursor;
     const after = index > 0 ? events[index - 1] : null;
     const query = new URLSearchParams({ snapshot, limit: String(PAGE_LIMIT) });
     if (after) query.set("after", after);
@@ -288,12 +292,24 @@ export async function syncRecords(
           "invalid",
         );
       previous = item.id;
-      if (!events.includes(item.id))
+      if (!eventIndex.has(item.id))
         throw new RecordsError(
           "The server returned a record outside the inventory.",
           "invalid",
         );
       if (!missing.has(item.id)) continue;
+      // A retained body that the server could not read is a server-side
+      // failure, not an inventory error. The status names the difference.
+      const bodyStatus = (item as { body_status?: unknown }).body_status;
+      if (
+        item.body == null &&
+        typeof bodyStatus === "string" &&
+        !["present", "missing", "none"].includes(bodyStatus)
+      )
+        throw new RecordsError(
+          `The server could not read the retained body of ${item.id} (status "${bodyStatus}"). The inventory is not at fault. Try the download again later.`,
+          "unavailable",
+        );
       const record = storedRecord(item.id, item.envelope, item.body);
       if (record.bodyHash && !bodySet.has(record.bodyHash) && record.body)
         throw new RecordsError(
@@ -362,7 +378,7 @@ export async function syncRecords(
       bodySet.has(record.bodyHash)
     )
       throw new RecordsError(
-        `The body of ${id} is listed as retained but was not supplied.`,
+        `The body of ${id} is listed as retained in the inventory but the records transport reports it as not retained.`,
         "missing",
       );
   }
@@ -428,6 +444,7 @@ export async function syncRecords(
 export async function loadRecords(
   store: LocalStore,
   inventory: SnapshotInventory,
+  options: { signal?: AbortSignal } = {},
 ): Promise<{
   events: string[];
   bodies: Record<string, string>;
@@ -443,6 +460,8 @@ export async function loadRecords(
   // Only bodies that this snapshot retains take part. Other cached bodies stay cached for other snapshots.
   const bodySet = new Set(inventory.bodies);
   for (const id of inventory.events) {
+    // A cancelled calculation stops here too, before every cached read.
+    options.signal?.throwIfAborted();
     const stored = await store.get<StoredRecord>("records", id);
     if (!stored)
       throw new RecordsError(
@@ -461,6 +480,7 @@ export async function loadRecords(
   }
   const selections: Record<string, string[]> = {};
   for (const hash of inventory.selections) {
+    options.signal?.throwIfAborted();
     const canonical = await store.get<string>("selections", hash);
     if (!canonical)
       throw new RecordsError(

@@ -3,7 +3,7 @@
  * and the identity link; the footer; and the status region.
  */
 import { el, link, icon, sr, text, append } from "../lib/dom.ts";
-import { navigate, replaceQuery, routes, type Route } from "./router.ts";
+import { navigate, routes, type Route } from "./router.ts";
 import type { Session } from "./session.ts";
 import type { DeliveryEngine } from "../data/delivery.ts";
 import { isActive } from "../data/delivery.ts";
@@ -17,7 +17,6 @@ export interface Shell {
   searchInput: HTMLInputElement;
   setViewLabel: (label: string) => void;
   /** Called when the search query changes while typing. */
-  onQuery: (handler: ((query: string) => void) | null) => void;
 }
 export function buildShell(
   root: HTMLElement,
@@ -58,24 +57,12 @@ export function buildShell(
     searchInput,
     clear,
   );
-  let queryHandler: ((query: string) => void) | null = null;
-  let typingTimer: ReturnType<typeof setTimeout> | undefined;
+  // Typing changes nothing but the field. The address and the results change on submit.
   searchInput.addEventListener("input", () => {
     clear.hidden = !searchInput.value;
-    clearTimeout(typingTimer);
-    typingTimer = setTimeout(() => {
-      if (location.pathname === "/search" || location.pathname === "/") {
-        const params = new URLSearchParams(location.search);
-        if (searchInput.value) params.set("q", searchInput.value);
-        else params.delete("q");
-        replaceQuery(params);
-        queryHandler?.(searchInput.value);
-      }
-    }, 250);
   });
   form.addEventListener("submit", (event) => {
     event.preventDefault();
-    clearTimeout(typingTimer);
     navigate(
       routes.search(searchInput.value, session.preferences.definitionLanguage),
     );
@@ -162,9 +149,6 @@ export function buildShell(
     },
     setViewLabel(label: string) {
       viewLink.textContent = label;
-    },
-    onQuery(handler) {
-      queryHandler = handler;
     },
   };
 }

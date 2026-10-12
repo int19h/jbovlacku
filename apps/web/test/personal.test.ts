@@ -665,3 +665,171 @@ test("an authenticated record that the schema cannot interpret stays inert and n
   expect(result.blessed[1]).not.toEqual(result.cleared[1]);
   expect(result.malformed).toEqual(result.cleared);
 });
+
+test("the personal view refuses a calculation from another snapshot and offers a recompute for this snapshot", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await choosePersonal(page);
+  await openWord(page, "cukta");
+  const panel = page.getByRole("region", { name: "Personal view" });
+  await expect(panel).toContainText(/Personal view calculated in this browser/);
+  await expect(firstScore(page)).toHaveAttribute(
+    "aria-label",
+    /in your personal view$/,
+  );
+  // A new signed judgment moves the server to a newer snapshot.
+  const third = page.locator("article.definition", {
+    hasText: "Third meaning",
+  });
+  await third.getByRole("button", { name: "Endorse" }).click();
+  await acceptFirstSignature(page);
+  await expect(page.getByRole("status")).toHaveText(
+    "Your endorsement is published.",
+  );
+  // The next word page shows the newer snapshot. The old calculation is not shown beside it.
+  await openWord(page, "cukta");
+  await expect(
+    page.getByText(
+      /Personal scores are unavailable: The local calculation is for snapshot .* but this content is from snapshot/,
+    ),
+  ).toBeVisible();
+  await expect(firstScore(page)).toHaveAttribute(
+    "aria-label",
+    "Score unavailable in the personal view",
+  );
+  await expect(
+    page.getByText(
+      "personal scores unavailable: the local calculation is for another snapshot",
+    ),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Recompute for this snapshot" })
+    .click();
+  await expect(firstScore(page)).toHaveAttribute(
+    "aria-label",
+    /in your personal view$/,
+  );
+  // The own endorsement now counts. Other tests sign on this server too, so only the change is asserted.
+  await expect(
+    page
+      .locator("article.definition", { hasText: "Third meaning" })
+      .getByRole("img"),
+  ).toHaveAttribute("aria-label", /: 1 for, .*in your personal view$/);
+  // Search rows follow the same rule. Another judgment makes the calculation stale again.
+  await third.getByRole("button", { name: "Endorse" }).click();
+  await expect(page.getByRole("status")).toHaveText(
+    "Your judgment is cleared.",
+  );
+  await page.getByLabel("Search words and meanings").fill("book");
+  await page.getByLabel("Search words and meanings").press("Enter");
+  const results = page.getByRole("region", { name: "Search results" });
+  const row = results.locator("article").first();
+  const unavailable = row.getByRole("img", {
+    name: "Score unavailable in the personal view",
+  });
+  await expect(unavailable).toBeVisible();
+  await expect(unavailable).toHaveAttribute(
+    "title",
+    /The local calculation is for snapshot .* but this content is from snapshot/,
+  );
+  const searchPanel = page.getByRole("region", { name: "Personal view" });
+  await searchPanel
+    .getByRole("button", { name: "Recompute from records" })
+    .click();
+  await expect(
+    results
+      .locator("article")
+      .first()
+      .getByRole("img", { name: /in your personal view$/ }),
+  ).toBeVisible();
+});
+
+test("cancel during record loading never lets the old run touch the new calculation, and a failed shared load does not answer another mode", async ({
+  page,
+}) => {
+  await page.goto("/");
+  // Deterministic through the module. Records reads of the first run wait on a gate.
+  const outcome = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { PersonalCalculator } = await import(
+      String("/src/data/personal.ts")
+    );
+    const store = new LocalStore();
+    const original = store.get.bind(store);
+    let holds = 1;
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    store.get = async (name: string, id: string) => {
+      if (name === "records" && holds > 0) {
+        holds--;
+        await gate;
+      }
+      return original(name, id);
+    };
+    const calc = new PersonalCalculator(store, async () => ({
+      identity: null,
+      shuns: [],
+    }));
+    const states: string[] = [];
+    calc.subscribe((status: any) => states.push(status.state));
+    const first = calc.ensure({ mode: "personal" });
+    // Wait until the first run is inside record loading.
+    while (holds > 0) await new Promise((r) => setTimeout(r, 20));
+    calc.cancel();
+    const afterCancel = calc.status.state;
+    const automatic = await calc.ensure({ mode: "personal" });
+    const second = await calc.ensure({ mode: "personal", refresh: true });
+    const marker = states.length;
+    release();
+    const firstResult = await first;
+    await new Promise((r) => setTimeout(r, 300));
+    const ranking = await calc.rankWord("jvw1:" + "0".repeat(64), {
+      mode: "personal",
+    });
+    return {
+      afterCancel,
+      automatic: automatic.state + ":" + (automatic as any).kind,
+      second: second.state,
+      firstResult: firstResult.state + ":" + (firstResult as any).kind,
+      statesAfterRelease: states.slice(marker),
+      finalState: calc.status.state,
+      finalSnapshot: (calc.status as any).snapshot,
+      rankingSnapshot: ranking.snapshot,
+    };
+  });
+  expect(outcome.afterCancel).toBe("failed");
+  expect(outcome.automatic).toBe("failed:cancelled");
+  expect(outcome.second).toBe("ready");
+  expect(outcome.firstResult).toBe("failed:cancelled");
+  expect(outcome.statesAfterRelease).toEqual([]);
+  expect(outcome.finalState).toBe("ready");
+  expect(outcome.rankingSnapshot).toBe(outcome.finalSnapshot);
+  // A shared load that fails answers only its own request. A waiting request for another mode runs its own load.
+  let failures = 1;
+  await page.route("**/api/v1/inventory?*", (route) => {
+    if (failures > 0) {
+      failures--;
+      return route.fulfill({ status: 500, body: "broken" });
+    }
+    return route.continue();
+  });
+  const shared = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { PersonalCalculator } = await import(
+      String("/src/data/personal.ts")
+    );
+    const store = new LocalStore();
+    await store.delete("inventory", "latest");
+    const calc = new PersonalCalculator(store, async () => ({
+      identity: null,
+      shuns: [],
+    }));
+    const personal = calc.ensure({ mode: "personal", refresh: true });
+    const site = calc.ensure({ mode: "site" });
+    const [a, b] = await Promise.all([personal, site]);
+    return { a: a.state, b: b.state + ":" + (b as any).mode };
+  });
+  expect(shared.a).toBe("failed");
+  expect(shared.b).toBe("ready:site");
+});

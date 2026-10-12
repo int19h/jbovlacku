@@ -27,8 +27,12 @@ import {
   remoteSearch,
   TransportError,
 } from "../data/api.ts";
-import type { SearchHit, WordResponse } from "../model/types.ts";
-import { viewScores } from "../components/localview.ts";
+import type {
+  DefinitionBody,
+  SearchHit,
+  WordResponse,
+} from "../model/types.ts";
+import { calculationPanel, viewScores } from "../components/localview.ts";
 import { judgmentControl } from "../components/judgment.ts";
 import {
   attribution,
@@ -49,18 +53,15 @@ interface SearchState {
   next: string | null;
   cursors: string[];
 }
-/** Renders plain text with circled numerals as place markers for list rows. */
-function previewText(value: string, query: string): HTMLElement {
-  const node = el("p", { class: "text" });
-  const parts = value.split(/([①-⑳])/u);
+/**
+ * Appends plain text with the query highlighted. Every character stays
+ * literal. A circled numeral in plain text is text, because plain text cannot
+ * say whether it was a place reference. Markers come from the signed body.
+ */
+function appendHighlighted(node: HTMLElement, value: string, query: string) {
   const q = query.toLocaleLowerCase("en");
-  for (const part of parts) {
+  for (const part of [value]) {
     if (!part) continue;
-    const code = part.codePointAt(0)! - 0x245f;
-    if (part.length === 1 && code >= 1 && code <= 20) {
-      node.append(placeMarker(code, null));
-      continue;
-    }
     const lower = part.toLocaleLowerCase("en");
     let index = 0;
     for (;;) {
@@ -74,7 +75,34 @@ function previewText(value: string, query: string): HTMLElement {
     if (index < part.length)
       node.append(el("bdi", { text: part.slice(index) }));
   }
+}
+/** A preview from plain text. Literal, with the query highlighted. */
+function previewText(value: string, query: string): HTMLElement {
+  const node = el("p", { class: "text" });
+  appendHighlighted(node, value, query);
   return node;
+}
+/**
+ * A preview from the signed rich text. Only a structured place node becomes
+ * a marker. Links, code, and operands show their text without markup.
+ */
+function previewRich(
+  node: HTMLElement,
+  paragraphs: DefinitionBody["text"],
+  query: string,
+) {
+  node.replaceChildren();
+  paragraphs.forEach((paragraph, index) => {
+    if (index) node.append(text(" "));
+    for (const item of paragraph) {
+      if (typeof item === "string") appendHighlighted(node, item, query);
+      else if (typeof item === "number") node.append(placeMarker(item, null));
+      else if ("label" in item) appendHighlighted(node, item.label, query);
+      else if ("code" in item) node.append(el("code", { text: item.code }));
+      else if ("operand" in item)
+        node.append(el("span", { class: "operand", text: item.operand }));
+    }
+  });
 }
 export async function searchPage(
   route: Route,
@@ -111,7 +139,19 @@ export async function searchPage(
   const endLine = el("p", { class: "end-line" });
   endLine.hidden = true;
   const missing = el("div", { class: "missing-line" });
-  main.append(countLine, results, endLine, missing);
+  main.append(countLine);
+  // In the personal view the rows score from the local calculation. Its
+  // state and its refresh action stay visible beside the results.
+  if (app.session.preferences.viewMode === "personal")
+    main.append(
+      calculationPanel(app, {
+        mode: "personal",
+        label: "Personal view",
+        onRefresh: () =>
+          navigate(location.pathname + location.search, { replace: true }),
+      }),
+    );
+  main.append(results, endLine, missing);
   // Language options come from the manifest and the cached packages.
   const languages = new Set<string>([language, "en"]);
   const packageKeys = app.session.storageAvailable
@@ -500,6 +540,7 @@ function hitRow(
       try {
         const record = await loadDefinition(previewId, remote.snapshot);
         if (!context.live()) return;
+        if (record.body) previewRich(textNode, record.body.text, query);
         const attributed = attribution(record.envelope, record.body);
         meta.replaceChildren(attributed.node);
         if (attributed.date) meta.append(text(` · ${attributed.date}`));

@@ -20,6 +20,7 @@ import type { OutboxItem } from "../data/store.ts";
 import { isActive } from "../data/delivery.ts";
 import { getWord } from "../data/api.ts";
 import { identityLink } from "./attribution.ts";
+import { onDisconnect } from "../lib/lifetime.ts";
 
 export interface JudgmentTarget {
   /** Definition event ID or rafsi pair ID. */
@@ -70,17 +71,21 @@ function ownValue(
       )
       .map(({ item }) => item)
       .at(-1) ?? null;
-  return app.own.registers().then((registers) => ({
-    state: registers
-      ? (registers.judgments.get(id) ?? {
-          known: true,
-          value: null,
-          conflicted: false,
-          events: [],
-        })
-      : { known: false },
-    pending: pendingItem,
-  }));
+  return app.own.registers().then((registers) => {
+    // A register that the authenticated history does not name is a known
+    // absence only when that history is complete. History saved in this
+    // browser alone never proves completeness against the server.
+    const found = registers?.judgments.get(id);
+    const complete = Boolean(registers?.complete) && !app.offlineSigning.value;
+    return {
+      state: found
+        ? found
+        : registers && complete
+          ? { known: true, value: null, conflicted: false, events: [] }
+          : { known: false },
+      pending: pendingItem,
+    };
+  });
 }
 export function judgmentControl(
   app: App,
@@ -180,8 +185,11 @@ export function judgmentControl(
     }
   };
   void applyOwn();
-  const unsubscribe = app.own.subscribe(() => void applyOwn());
-  wrapper.addEventListener("disconnect", unsubscribe as EventListener);
+  // The subscription lasts while the control is in the document.
+  onDisconnect(
+    wrapper,
+    app.own.subscribe(() => void applyOwn()),
+  );
   const act = (arrow: "bless" | "curse") => async () => {
     const pressed =
       (arrow === "bless" ? endorse : oppose).getAttribute("aria-pressed") ===

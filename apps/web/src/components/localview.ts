@@ -9,12 +9,15 @@ import type { App } from "../app/context.ts";
 import { navigate } from "../app/router.ts";
 import type { PersonalStatus } from "../data/personal.ts";
 import { RECORD_LIMITS } from "../data/records.ts";
+import { onDisconnect } from "../lib/lifetime.ts";
 import type { Calculation, ScoreRecord, WordResponse } from "../model/types.ts";
 
 export interface ViewScores {
   personal: boolean;
-  /** Why the personal calculation has no scores, when it failed. */
+  /** Why the personal calculation has no scores, when it failed or does not match this snapshot. */
   reason: string | null;
+  /** True when a personal calculation exists but is for another snapshot or view than the shown content. */
+  stale: boolean;
   snapshot: string;
   view: string;
   calculation: Calculation | null;
@@ -32,6 +35,7 @@ export async function viewScores(
     return {
       personal: false,
       reason: null,
+      stale: false,
       snapshot: word.snapshot,
       view: word.view,
       calculation: word.calculation,
@@ -41,9 +45,24 @@ export async function viewScores(
     };
   try {
     const ranking = await app.personal.rankWord(wordId, { mode: "personal" });
+    if (ranking.snapshot !== word.snapshot || ranking.view !== word.view)
+      // One snapshot and view for content, statuses, layers, and scores. A
+      // calculation for another snapshot is not shown beside this content.
+      return {
+        personal: true,
+        reason: `The local calculation is for snapshot ${ranking.snapshot.slice(7, 19)}… and view ${ranking.view.slice(5, 17)}…, but this content is from snapshot ${word.snapshot.slice(7, 19)}… and view ${word.view.slice(5, 17)}…. Recompute from records to calculate this snapshot.`,
+        stale: true,
+        snapshot: word.snapshot,
+        view: word.view,
+        calculation: null,
+        scores: [],
+        layers: [],
+        unavailable_scores: [],
+      };
     return {
       personal: true,
       reason: null,
+      stale: false,
       snapshot: ranking.snapshot,
       view: ranking.view,
       calculation: ranking.calculation,
@@ -55,6 +74,7 @@ export async function viewScores(
     return {
       personal: true,
       reason: error instanceof Error ? error.message : String(error),
+      stale: false,
       snapshot: word.snapshot,
       view: word.view,
       calculation: null,
@@ -154,18 +174,7 @@ export function calculationPanel(
       status.state === "failed" && status.kind !== "cancelled",
     );
   };
-  const unsubscribe = app.personal.subscribe(update);
-  region.addEventListener("disconnect", unsubscribe);
-  // Unsubscribe when the region leaves the document.
-  const observer = new MutationObserver(() => {
-    if (!region.isConnected) {
-      unsubscribe();
-      observer.disconnect();
-    }
-  });
-  queueMicrotask(() =>
-    observer.observe(document.body, { childList: true, subtree: true }),
-  );
+  onDisconnect(region, app.personal.subscribe(update));
   return region;
 }
 /** A short line that states where the shown scores come from. */
@@ -183,7 +192,14 @@ export function provenanceLine(view: ViewScores): HTMLElement {
       ),
     );
   if (view.personal && view.reason)
-    line.append(text(" · personal scores unavailable", "meta"));
+    line.append(
+      text(
+        view.stale
+          ? " · personal scores unavailable: the local calculation is for another snapshot"
+          : " · personal scores unavailable",
+        "meta",
+      ),
+    );
   if (!view.personal && view.calculation === null)
     line.append(
       text(

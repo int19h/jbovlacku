@@ -746,3 +746,104 @@ test("a full snapshot hash fits a narrow screen and the wizard works in both the
     }
   }
 });
+
+test("judgment controls stop listening after their page is gone", async ({
+  page,
+}) => {
+  await page.goto("/word/cukta");
+  await expect(
+    page
+      .locator("article.definition")
+      .first()
+      .getByRole("button", { name: "Endorse" }),
+  ).toBeVisible();
+  await page.getByLabel("Search words and meanings").fill("vlacku");
+  await page.getByLabel("Search words and meanings").press("Enter");
+  await page
+    .getByRole("region", { name: "Search results" })
+    .getByRole("link", { name: "vlacku", exact: true })
+    .first()
+    .click();
+  await expect(page).toHaveTitle("vlacku · jbovlacku");
+  await page.getByRole("link", { name: /^Trust:/ }).click();
+  await expect(
+    page.getByRole("radio", { name: "Site view only" }),
+  ).toBeVisible();
+  // Every control of the earlier pages is gone. A session change reaches none of them.
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const original = LocalStore.prototype.list;
+    (window as any).__outboxReads = 0;
+    LocalStore.prototype.list = function (name: string) {
+      if (name === "outbox") (window as any).__outboxReads++;
+      return original.call(this, name);
+    };
+  });
+  await page
+    .getByRole("radio", { name: "Mine: site view + my choices" })
+    .check();
+  await expect(
+    page.getByRole("link", { name: "Trust: personal view" }),
+  ).toBeVisible();
+  await page.waitForTimeout(500);
+  expect(await page.evaluate(() => (window as any).__outboxReads)).toBe(0);
+});
+
+test("a literal circled character in a search preview stays literal text", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const [record] = await page.evaluate(
+    async ({ corePath, make }) => {
+      const core = await import(corePath);
+      await core.initializeCore();
+      const build = new Function("core", "return " + make)(core);
+      const word = { language: "jbo", spelling: "brodatest" };
+      return [build(83, 0, word, "en", { text: [["see ① literally"]] })];
+    },
+    { corePath, make: definitionRecord },
+  );
+  const id = record.envelope.id;
+  await serveWord(page, [record], {
+    word: { language: "jbo", spelling: "brodatest" },
+    definitions: [id],
+    scores: [],
+    statuses: [{ event: id, state: "active" }],
+    layers: [[id]],
+    unavailable_scores: [],
+  });
+  await page.route("**/api/v1/search?**", async (route) => {
+    const real = await (await route.fetch()).json();
+    await route.fulfill({
+      json: {
+        ...real,
+        hits: [
+          {
+            word: { language: "jbo", spelling: "brodatest" },
+            word_id: record.envelope.header.action.word,
+            match: "headword",
+            definitions: [id],
+            preview: {
+              event: id,
+              word_kind: "other",
+              plain_text: "see ① literally",
+              status: "active",
+            },
+          },
+        ],
+        next: null,
+      },
+    });
+  });
+  await page.goto("/search?q=brodatest&lang=en");
+  const row = page
+    .getByRole("region", { name: "Search results" })
+    .locator("article")
+    .first();
+  await expect(row).toContainText("see ① literally");
+  await expect(row.getByRole("img", { name: "place 1" })).toHaveCount(0);
+  // The attribution loads from the signed record. The preview stays literal after that too.
+  await expect(row.locator(".attribution-line")).not.toBeEmpty();
+  await expect(row).toContainText("see ① literally");
+  await expect(row.getByRole("img", { name: "place 1" })).toHaveCount(0);
+});

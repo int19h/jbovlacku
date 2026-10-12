@@ -260,8 +260,13 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
   tabs.append(allTab);
   main.append(tabs);
   const personal = app.session.preferences.viewMode === "personal";
-  const rerender = () =>
-    navigate(location.pathname + location.search, { replace: true });
+  // A refreshed calculation names the latest snapshot. The page then
+  // fetches the word again, so content and scores come from one snapshot.
+  const rerender = () => {
+    const url = new URL(location.href);
+    url.searchParams.set("fresh", "1");
+    navigate(url.pathname + url.search, { replace: true });
+  };
   if (personal)
     main.append(
       calculationPanel(app, {
@@ -273,13 +278,28 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
   // Scores under the selected view. The personal view waits for the local calculation.
   const view = await viewScores(app, id, word);
   if (!context.live()) return;
-  if (view.personal && view.reason)
-    main.append(
-      p(
-        `Personal scores are unavailable: ${view.reason} Definitions appear in event order. No numeric score is assumed.`,
-        "small",
-      ),
+  if (view.personal && view.reason) {
+    const note = p(
+      `Personal scores are unavailable: ${view.reason} Definitions appear in event order. No numeric score is assumed.`,
+      "small",
     );
+    if (view.stale)
+      note.append(
+        text(" "),
+        button(
+          "Recompute for this snapshot",
+          () => {
+            void app.personal
+              .ensure({ mode: "personal", refresh: true })
+              .then((status) => {
+                if (status.state === "ready") rerender();
+              });
+          },
+          { class: "btn btn-quiet", style: "min-height:36px" },
+        ),
+      );
+    main.append(note);
+  }
   main.append(provenanceLine(view));
   if (!personal) main.append(recomputePanel(app, id, word));
   // Definition order follows layers. Unranked definitions follow.
