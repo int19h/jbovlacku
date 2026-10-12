@@ -143,8 +143,11 @@ test("a wrong body hash on a record with a body stays unknown until the real rec
   await expect(
     page.getByRole("link", { name: "1 not delivered" }),
   ).toBeVisible();
+  // The marker counts queued records too. Wait for the attempt to settle.
+  await expect
+    .poll(async () => (await outboxItems(page))[0].peers.self.state)
+    .toBe("unknown");
   let items = await outboxItems(page);
-  expect(items[0].peers.self.state).toBe("unknown");
   expect(items[0].peers.self.error).toContain("submitted body hash");
   await page.unroute("**/api/v1/events");
   await page.getByRole("link", { name: "1 not delivered" }).click();
@@ -232,9 +235,11 @@ test("automatic delivery follows each peer's own schedule while an explicit retr
   await expect(
     page.getByRole("link", { name: "1 not delivered" }),
   ).toBeVisible();
+  await expect
+    .poll(async () => (await outboxItems(page))[0].peers.mirror.state)
+    .toBe("unknown");
   let items = await outboxItems(page);
   expect(items[0].peers.self.state).toBe("accepted");
-  expect(items[0].peers.mirror.state).toBe("unknown");
   expect(items[0].peers.mirror.nextAttempt - Date.now()).toBeGreaterThan(
     500000,
   );
@@ -406,6 +411,10 @@ test("retries use the address saved with the record after the peer preference ch
   await expect(
     page.getByRole("link", { name: "1 not delivered" }),
   ).toBeVisible();
+  // The marker counts queued records too. Wait for the mirror attempt to settle.
+  await expect
+    .poll(async () => (await outboxItems(page))[0].peers.mirror.state)
+    .toBe("unknown");
   let items = await outboxItems(page);
   expect(items[0].recipients.mirror).toEqual({
     origin: new URL(page.url()).origin,

@@ -82,6 +82,35 @@ export class Session {
       await this.store.get<boolean>("keys", `tested:${this.backup.identity}`),
     );
   }
+  /** Switches to the successor key after a persisted handover. The old key stays stored as retired. */
+  adoptSuccessor(backup: KeyBackup, key: CryptoKey) {
+    this.backup = backup;
+    this.workingKey = key;
+    this.touch();
+    this.changed();
+  }
+  /** Retired keys kept for archive access and compromise notices. */
+  async retiredBackups(): Promise<KeyBackup[]> {
+    if (!this.storageAvailable) return [];
+    const ids = (await this.store.keys("keys")).filter((k) =>
+      k.startsWith("retired:"),
+    );
+    const backups: KeyBackup[] = [];
+    for (const id of ids) {
+      const backup = await this.store.get<KeyBackup>("keys", id);
+      if (backup && backup.identity !== this.backup?.identity)
+        backups.push(backup);
+    }
+    return backups;
+  }
+  /** Why ordinary signing is disabled for an identity, or null. */
+  async signingDisabled(identity: string): Promise<string | null> {
+    if (await this.store.get("keys", `compromised:${identity}`))
+      return "This key published a compromise notice. Ordinary actions from it are disabled.";
+    if (await this.store.get("keys", `handover:${identity}`))
+      return "This key signed a handover and is retired. Ordinary actions from it are disabled.";
+    return null;
+  }
   async markBackupTested() {
     if (!this.backup) return;
     await this.store.put("keys", `tested:${this.backup.identity}`, true);

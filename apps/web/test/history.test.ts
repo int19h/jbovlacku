@@ -33,11 +33,19 @@ test("a failed local write never reports a saved group and sends nothing", async
       workingKey: created.key,
       store,
       touch() {},
+      signingDisabled: async () => null,
     };
     const signer = new Signer(session as any, {} as any, () => true);
     try {
       await signer.publish([
-        { action: { kind: "identity.merge" }, body: null },
+        {
+          action: {
+            kind: "judgment.set",
+            target: "jve1:" + "a".repeat(64),
+            value: "bless",
+          },
+          body: null,
+        },
       ]);
       return { calls, failed: false };
     } catch (error) {

@@ -21,6 +21,8 @@ import {
   type Route,
 } from "../app/router.ts";
 import type { App } from "../app/context.ts";
+import { renderExisting } from "./handover.ts";
+import type { HandoverRecord } from "../data/lifecycle.ts";
 
 export async function identityPage(
   route: Route,
@@ -99,6 +101,32 @@ export async function identityPage(
     else resume.append(text("Unlock below to continue."));
     main.append(resume);
   }
+  // Lifecycle state: a handover that produced or retired this key, and retired keys kept here.
+  const handoverOf = await app.store.get<HandoverRecord>(
+    "keys",
+    `handover-of:${backup.identity}`,
+  );
+  const handoverFrom = await app.store.get<HandoverRecord>(
+    "keys",
+    `handover:${backup.identity}`,
+  );
+  const disabled = await session.signingDisabled(backup.identity);
+  const retiredKeys = await session.retiredBackups();
+  if (!context.live()) return;
+  if (disabled) main.append(p(disabled, "notice"));
+  if (handoverOf) renderExisting(main, app, handoverOf);
+  else if (handoverFrom) renderExisting(main, app, handoverFrom);
+  for (const retired of retiredKeys)
+    main.append(
+      el(
+        "p",
+        { class: "small" },
+        text(
+          `Retired key ${shortIdentity(retired.identity)} stays in this browser for archive access and compromise notices. Ordinary actions from it are disabled. `,
+        ),
+        link("Report it stolen", "/identity/compromise"),
+      ),
+    );
   const tested = await session.backupTested();
   if (!context.live()) return;
   if (!tested) {
@@ -283,10 +311,12 @@ export async function identityPage(
           text: "The old key signs the handover and then retires.",
         }),
       ),
-      link("Start", "/identity/transfer", {
-        class: "btn",
-        style: "min-height:40px",
-      }),
+      disabled || handoverFrom
+        ? el("span", { class: "meta", text: "Unavailable for this key" })
+        : link("Start", "/identity/transfer", {
+            class: "btn",
+            style: "min-height:40px",
+          }),
     ),
     el(
       "div",
@@ -371,6 +401,12 @@ function renderCreate(main: HTMLElement, app: App, rerender: () => void) {
         "notice",
       ),
     );
+  main.append(
+    p(
+      "Lost your key? Import its backup below, or create a new identity. Nothing can recover a key without its backup, and no successor exists unless the old key signed a handover. Contacts can trust the new identity. That does not rewrite old signatures or hide the loss.",
+      "small",
+    ),
+  );
   if (!isSecureContext)
     main.append(
       p(

@@ -144,7 +144,8 @@ const stores = [
   "selections",
 ];
 export class LocalStore {
-  private database: Promise<IDBDatabase>;
+  /** The open database. Lifecycle transactions span several stores. */
+  readonly database: Promise<IDBDatabase>;
   constructor(name = "jbovlacku-browser-v1") {
     this.database = new Promise((resolve, reject) => {
       const request = indexedDB.open(name, 3);
@@ -482,6 +483,24 @@ export function describeTransport(transport: Transport): OutboxLabel {
               : "cleared trust",
         subject: String(action.subject),
         href: `/identity/${encodeURIComponent(String(action.subject))}`,
+      };
+    case "identity.transfer":
+      return {
+        action: "key handover",
+        subject: String(action.successor),
+        href: `/identity/${encodeURIComponent(String(action.successor))}`,
+      };
+    case "identity.accept":
+      return {
+        action: "handover acceptance",
+        subject: transport.envelope.header.issuer,
+        href: `/identity/${encodeURIComponent(transport.envelope.header.issuer)}`,
+      };
+    case "identity.compromise":
+      return {
+        action: "compromise notice",
+        subject: transport.envelope.header.issuer,
+        href: `/identity/${encodeURIComponent(transport.envelope.header.issuer)}`,
       };
     case "identity.profile":
       return {

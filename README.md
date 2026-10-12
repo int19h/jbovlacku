@@ -46,7 +46,8 @@ The status editor, transfer editor, semantic search, AI, and Lensisku cross-post
 The personal view downloads the snapshot records, verifies each envelope and body in a Web Worker, and ranks words locally with the private overlay.
 It adds the current identity as a root with allocation 1 when the view names no allocation for it, and it applies private blocks and public shuns as local blocks.
 A cancelled or incomplete local calculation keeps personal scores unavailable and offers the site view. "Recompute from records" compares a local site-view calculation with the server scores.
-Planned handover and compromise notices remain target features.
+A planned handover creates and tests a successor key, shows the old key's heads from every configured peer, searches for an existing transfer, and saves the transfer, the acceptance, and the encrypted successor key in one transaction before upload. Partial upload reads "Old key retired, acceptance waiting", and retries reuse the stored events.
+A compromise notice previews the retained and excluded records of a chosen causal frontier, blocks on missing history, and needs explicit approval for an empty frontier. Ordinary signing from a retired or compromised key is refused.
 The [web UI design](docs/ui-design.md) defines the layouts. The reading, identity, trust, delivery, authoring, and builder screens follow it.
 The general SQL migration, automatic rafsi publications, and structured import conversion also remain unfinished.
 The complete `jvc` command catalog in the format specification remains a target interface.

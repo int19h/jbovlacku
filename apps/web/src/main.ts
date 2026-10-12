@@ -32,6 +32,8 @@ import { typePage } from "./pages/wizard/type.ts";
 import { formPage } from "./pages/wizard/form.ts";
 import { lujvoPage } from "./pages/wizard/lujvo.ts";
 import { gismuPage } from "./pages/wizard/gismu.ts";
+import { handoverPage } from "./pages/handover.ts";
+import { compromisePage } from "./pages/compromise.ts";
 import { placesPage } from "./pages/wizard/places.ts";
 import { publishPage } from "./pages/wizard/publish.ts";
 import { claimPage, rafsiPage } from "./pages/rafsi.ts";
@@ -186,15 +188,11 @@ async function start() {
       if (head === "identity")
         page =
           route.segments.length > 1
-            ? route.segments[1] === "transfer" ||
-              route.segments[1] === "compromise"
-              ? unavailable(
-                  route.segments[1] === "transfer"
-                    ? "Move to a new key"
-                    : "Report a stolen key",
-                  "This lifecycle flow is being implemented in a later stage of this build. No handover or notice can be signed here yet.",
-                )
-              : personPage
+            ? route.segments[1] === "transfer"
+              ? handoverPage
+              : route.segments[1] === "compromise"
+                ? compromisePage
+                : personPage
             : identityPage;
       if (!page)
         page = unavailable(

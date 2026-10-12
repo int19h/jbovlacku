@@ -11,6 +11,7 @@ import {
 import { forgetWord } from "../data/api.ts";
 import { ownHeads } from "../data/history.ts";
 import { freshPeer, type DeliveryEngine } from "../data/delivery.ts";
+import { LIFECYCLE_KINDS } from "../data/lifecycle.ts";
 import {
   describeTransport,
   type OutboxItem,
@@ -52,6 +53,13 @@ export class Signer {
       throw new Error("Unlock your key before signing.");
     const identity = session.backup.identity;
     const signingKey = session.workingKey;
+    for (const item of items)
+      if (LIFECYCLE_KINDS.includes(String(item.action.kind)))
+        throw new Error(
+          "Lifecycle events are signed only through the handover or compromise flow.",
+        );
+    const disabled = await session.signingDisabled(identity);
+    if (disabled) throw new Error(disabled);
     // Resolve every recipient address now. Retries never consult later preferences.
     const recipients: Record<string, SavedRecipient> = {};
     for (const peerId of peerIds) {
