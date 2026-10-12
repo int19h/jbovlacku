@@ -542,13 +542,14 @@ export async function placesPage(
     "Read circled numbers as place references",
     draft.structured,
     (value) => {
-      // Literal mode turns links, code, operands, and references into their
-      // visible text in every field. The author sees that list first.
+      // Literal mode turns the place references of every field into circled
+      // characters as text. Links, code, and operands stay. The author sees
+      // the list of fields with references first.
       const lost = value ? [] : literalLoss(draft);
       if (
         lost.length &&
         !confirm(
-          `Literal mode turns the links, code, operands, and place references in ${lost.join(", ")} into plain text. Continue?`,
+          `Literal mode turns the place references in ${lost.join(", ")} into circled characters as text. Links and code stay. Continue?`,
         )
       ) {
         structured.querySelector("input")!.checked = true;

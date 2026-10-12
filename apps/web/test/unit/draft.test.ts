@@ -1151,7 +1151,7 @@ test("validation reads the final values, an edit changes only its own control, a
   // R32: the mode governs references, through the switch and through the flag.
   const d3 = draftFromBody(
     {
-      ...richPlace,
+      ...(richPlace as object),
       frame: {
         ...(richPlace as unknown as { frame: Record<string, unknown> }).frame,
         places: [
