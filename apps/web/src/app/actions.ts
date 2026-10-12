@@ -40,7 +40,7 @@ export class Signer {
   /** Signs and persists a group. Does not send. */
   async sign(
     items: GroupItem[],
-    peerIds: string[] = ["self"],
+    peerIds: string[] = this.session.preferences.peers.map((peer) => peer.id),
   ): Promise<SignedGroup> {
     const session = this.session;
     if (!session.storageAvailable)
@@ -116,7 +116,7 @@ export class Signer {
   /** Signs, persists, then dispatches the group in order. Returns the stored items after the first attempt. */
   async publish(
     items: GroupItem[],
-    peerIds: string[] = ["self"],
+    peerIds: string[] = this.session.preferences.peers.map((peer) => peer.id),
   ): Promise<OutboxItem[]> {
     const signed = await this.sign(items, peerIds);
     const results: OutboxItem[] = [];

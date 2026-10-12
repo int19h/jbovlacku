@@ -25,6 +25,9 @@ test("a failed local write never reports a saved group and sends nothing", async
       },
     };
     const session = {
+      preferences: {
+        peers: [{ id: "self", base: "/api/v1", label: "this server" }],
+      },
       storageAvailable: true,
       backup: created.backup,
       workingKey: created.key,

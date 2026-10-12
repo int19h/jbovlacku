@@ -14,7 +14,12 @@ import {
   disclosure,
 } from "../lib/dom.ts";
 import { languageName, plural } from "../lib/format.ts";
-import { routes, type RenderContext, type Route } from "../app/router.ts";
+import {
+  navigate,
+  routes,
+  type RenderContext,
+  type Route,
+} from "../app/router.ts";
 import type { App } from "../app/context.ts";
 import {
   getWord,
@@ -248,6 +253,30 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
   allTab.append(text("All"), text(String(records.size), "meta"));
   tabs.append(allTab);
   main.append(tabs);
+  const personal = app.session.preferences.viewMode === "personal";
+  if (personal) {
+    const notice = el("div", {
+      class: "notice",
+      style: "margin-top:12px",
+      role: "region",
+      "aria-label": "Personal view",
+    });
+    notice.append(
+      text(
+        "Your personal view is selected. This build cannot compute personal scores yet, so scores and ranking are unavailable here. Definitions appear in event order. ",
+      ),
+      button(
+        "Use the site view",
+        async () => {
+          await app.session.setPreferences({ viewMode: "site" });
+          app.shell.setViewLabel("Trust: site view");
+          navigate(location.pathname + location.search, { replace: true });
+        },
+        { class: "btn", style: "min-height:36px" },
+      ),
+    );
+    main.append(notice);
+  }
   const snapshotNote = el("p", { class: "meta", style: "margin-top:8px" });
   snapshotNote.append(
     text(
@@ -268,7 +297,7 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
   );
   const shown = new Set<string>();
   const ordered: { id: string; layer: number | null }[] = [];
-  for (const [index, layer] of word.layers.entries())
+  for (const [index, layer] of (personal ? [] : word.layers).entries())
     for (const definition of layer)
       if (visible.has(definition) && !shown.has(definition)) {
         shown.add(definition);
@@ -297,6 +326,7 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
     const record = records.get(definition)!;
     const score = word.scores.find((s) => s.target === definition) ?? null;
     const unavailable =
+      personal ||
       word.calculation === null ||
       word.unavailable_scores.includes(definition) ||
       !score;
@@ -318,6 +348,7 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
       definitionBlock(app, record, {
         score,
         unavailable,
+        reason: personal ? "personal" : undefined,
         status: statusOf(definition),
         calculation: word.calculation,
         secondary: layer !== null && layer > 0,
@@ -326,7 +357,7 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
         onChange: refresh,
       }),
     );
-    if (layer === null)
+    if (layer === null && !personal)
       main.lastElementChild!.append(
         p(
           "No ranking position is available for this definition in the server layers.",
@@ -382,6 +413,7 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
       const score =
         word.scores.find((s) => s.target === entry.assignment) ?? null;
       const unavailable =
+        personal ||
         entry.status !== "eligible" ||
         word.unavailable_scores.includes(entry.assignment) ||
         !score;
@@ -402,6 +434,7 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
       const judgmentOptions = {
         score,
         unavailable,
+        reason: personal ? ("personal" as const) : undefined,
         calculation: word.calculation,
         large: true,
         onChange: refresh,

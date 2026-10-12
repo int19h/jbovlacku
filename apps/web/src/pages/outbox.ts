@@ -12,14 +12,13 @@ import {
 import { clockTime, dayMonth, inDuration, plural } from "../lib/format.ts";
 import type { RenderContext, Route } from "../app/router.ts";
 import type { App } from "../app/context.ts";
-import {
-  describePeer,
-  isActive,
-  isFinished,
-  peerFor,
-} from "../data/delivery.ts";
+import { describePeer, isActive, isFinished } from "../data/delivery.ts";
 import type { OutboxItem } from "../data/store.ts";
 
+function peerLabel(app: App, peerId: string): string {
+  const peer = app.delivery.resolvePeer(peerId);
+  return peer ? peer.label : `unconfigured recipient "${peerId}"`;
+}
 export async function outboxPage(
   _route: Route,
   context: RenderContext,
@@ -116,7 +115,7 @@ export async function outboxPage(
                     text: Object.entries(item.peers)
                       .map(
                         ([peerId, peer]) =>
-                          `${peerFor(peerId).label}: delivered${peer.receipt ? `, interpretation ${peer.receipt.interpretation}` : ""}`,
+                          `${peerLabel(app, peerId)}: delivered${peer.receipt ? `, interpretation ${peer.receipt.interpretation}` : ""}`,
                       )
                       .join(" · "),
                   }),
@@ -179,7 +178,7 @@ function row(app: App, item: OutboxItem, stoppedView = false): HTMLElement {
       continue;
     const parts: string[] = [];
     if (Object.keys(item.peers).length > 1)
-      parts.push(`${peerFor(peerId).label}:`);
+      parts.push(`${peerLabel(app, peerId)}:`);
     if (peer.lastAttempt)
       parts.push(`Last try ${clockTime(new Date(peer.lastAttempt))}.`);
     parts.push(describePeer(peer));

@@ -22,6 +22,7 @@ import type { LoadedRecord } from "../data/api.ts";
 export interface DefinitionBlockOptions {
   score: ScoreRecord | null;
   unavailable: boolean;
+  reason?: "personal";
   status?: string;
   calculation?: Calculation | null;
   secondary?: boolean;
@@ -316,6 +317,7 @@ export function definitionBlock(
     const judgmentOptions = {
       score: options.score,
       unavailable: options.unavailable,
+      reason: options.reason,
       status: options.status,
       calculation: options.calculation,
       large: true,

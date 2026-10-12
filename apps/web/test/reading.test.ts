@@ -49,7 +49,7 @@ test("search rows show headword, rafsi, type, highlighted text, attribution, and
     /\/new\?meaning=book/,
   );
   await expect(
-    page.getByRole("link", { name: "Trust: personal view" }),
+    page.getByRole("link", { name: "Trust: site view" }),
   ).toBeVisible();
   await expect(page.getByRole("link", { name: "Settings" })).toBeVisible();
 });
@@ -115,7 +115,9 @@ test("the word page orders definitions by the two-root view and exposes the scor
   const scores = await articles.locator(".judgment .score").allTextContents();
   expect(scores).toEqual(["6", "3", "0", "−3"]);
   const first = articles.first();
-  const headline = first.getByRole("img", { name: /^Score 6: 6 for, 0 against, \d+ reviewers?$/ });
+  const headline = first.getByRole("img", {
+    name: /^Score 6: 6 for, 0 against, \d+ reviewers?$/,
+  });
   await expect(headline).toBeVisible();
   await expect(headline).toHaveAttribute("title", /Exact value 6\./);
   await first.getByText(/^\d+ reviewers?$/).click();
@@ -138,7 +140,9 @@ test("the word page orders definitions by the two-root view and exposes the scor
     first.getByRole("link", { name: "place 3", exact: true }),
   ).toHaveAttribute("href", /#place-[0-9a-f]+-3$/);
   // Revision notice from the delegate.
-  await expect(first.locator(".revision-notice")).toContainText("not the author.");
+  await expect(first.locator(".revision-notice")).toContainText(
+    "not the author.",
+  );
   await first.getByRole("link", { name: "Compare" }).click();
   await expect(page).toHaveURL(
     new RegExp(
@@ -156,11 +160,9 @@ test("the word page orders definitions by the two-root view and exposes the scor
   ).toBeVisible();
   // The third definition is opposed by the delegate and endorsed by an untrusted author.
   await expect(
-    articles
-      .nth(3)
-      .getByRole("img", {
-        name: /^Score minus 3: 0 for, 3 against, \d+ reviewers/,
-      }),
+    articles.nth(3).getByRole("img", {
+      name: /^Score minus 3: 0 for, 3 against, \d+ reviewers/,
+    }),
   ).toBeVisible();
   // Rafsi pair card.
   await expect(
@@ -240,7 +242,7 @@ test("the trust page names both roots and the site view settings", async ({
   const f = fixture();
   await page.goto("/trust");
   await expect(
-    page.getByRole("radio", { name: "Mine: site view + my choices" }),
+    page.getByRole("radio", { name: "Site view only" }),
   ).toBeChecked();
   await expect(
     page.getByText("Web UI test view. Published by this server."),
@@ -258,13 +260,15 @@ test("the trust page names both roots and the site view settings", async ({
   ).toBeVisible();
   await expect(page.getByText("Passed on (alpha)")).toBeVisible();
   await expect(page.getByRole("link", { name: f.view })).toBeVisible();
-  await page.getByRole("radio", { name: "Site view only" }).check();
+  await page
+    .getByRole("radio", { name: "Mine: site view + my choices" })
+    .check();
   await expect(
-    page.getByRole("link", { name: "Trust: site view" }),
+    page.getByRole("link", { name: "Trust: personal view" }),
   ).toBeVisible();
   await page.reload();
   await expect(
-    page.getByRole("radio", { name: "Site view only" }),
+    page.getByRole("radio", { name: "Mine: site view + my choices" }),
   ).toBeChecked();
 });
 

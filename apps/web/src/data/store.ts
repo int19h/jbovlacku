@@ -23,7 +23,7 @@ export interface PeerDelivery {
   nextAttempt: number | null;
   error: string | null;
   /** The failure class of the last attempt. */
-  failure: "offline" | "timeout" | "server" | "refused" | null;
+  failure: "offline" | "timeout" | "server" | "refused" | "unresolved" | null;
   receipt: import("../model/types.ts").Receipt | null;
 }
 export interface OutboxLabel {
@@ -58,8 +58,15 @@ export type Preferences = {
   myJudgmentsFirst: boolean;
   viewMode: "personal" | "site";
   orthography: "latin" | "zbalermorna";
-  peers: string[];
+  /** Configured delivery recipients. "self" is the serving origin. */
+  peers: PeerConfig[];
 };
+export interface PeerConfig {
+  id: string;
+  /** API base. A relative base means the serving origin. */
+  base: string;
+  label: string;
+}
 export const defaultPreferences: Preferences = {
   definitionLanguage: "en",
   searchMode: "local",
@@ -68,9 +75,9 @@ export const defaultPreferences: Preferences = {
   firstSignatureAcknowledged: false,
   keepUnlocked: false,
   myJudgmentsFirst: false,
-  viewMode: "personal",
+  viewMode: "site",
   orthography: "latin",
-  peers: ["self"],
+  peers: [{ id: "self", base: "/api/v1", label: "this server" }],
 };
 export interface BlockedEntry {
   identity: string;
@@ -193,6 +200,35 @@ export class LocalStore {
       tx.onabort = () =>
         reject(
           tx.error ?? new Error("Local storage did not save this change."),
+        );
+      tx.onerror = () => {};
+    });
+  }
+  /**
+   * Reads one outbox record and writes the mutated copy in one transaction, so
+   * a concurrent write from a request result or another tab is not overwritten.
+   */
+  async mergeOutbox(
+    id: string,
+    mutate: (current: OutboxItem) => OutboxItem,
+  ): Promise<OutboxItem | undefined> {
+    const db = await this.database;
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction("outbox", "readwrite");
+      const outbox = tx.objectStore("outbox");
+      const request = outbox.get(id);
+      let result: OutboxItem | undefined;
+      request.onsuccess = () => {
+        const current = request.result as OutboxItem | undefined;
+        if (!current) return;
+        result = mutate(current);
+        outbox.put(result, id);
+      };
+      tx.oncomplete = () => resolve(result);
+      tx.onabort = () =>
+        reject(
+          tx.error ??
+            new Error("Local storage did not save the delivery outcome."),
         );
       tx.onerror = () => {};
     });

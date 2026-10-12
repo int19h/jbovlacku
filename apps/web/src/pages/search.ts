@@ -443,12 +443,17 @@ function hitRow(
       } catch {}
       if (!context.live()) return;
       const score = word?.scores.find((s) => s.target === previewId) ?? null;
+      const personal = app.session.preferences.viewMode === "personal";
       const unavailable =
-        !word || word.unavailable_scores.includes(previewId) || !score;
+        personal ||
+        !word ||
+        word.unavailable_scores.includes(previewId) ||
+        !score;
       controlSlot.replaceChildren(
         judgmentControl(app, target, {
           score,
           unavailable,
+          reason: personal ? "personal" : undefined,
           calculation: word?.calculation,
         }),
       );

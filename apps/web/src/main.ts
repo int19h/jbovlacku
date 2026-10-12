@@ -46,7 +46,18 @@ function unavailable(title: string, message: string): Page {
 async function start() {
   const store = new LocalStore();
   const session = new Session(store);
-  const delivery = new DeliveryEngine(store);
+  const delivery = new DeliveryEngine(store, (id) => {
+    const configured = session.preferences?.peers.find(
+      (peer) => peer.id === id,
+    );
+    if (!configured) return null;
+    return {
+      id: configured.id,
+      base: configured.base,
+      label:
+        configured.label === "this server" ? location.host : configured.label,
+    };
+  });
   const offlineSigning = { value: false };
   const signer = new Signer(session, delivery, () => offlineSigning.value);
   let coreError: string | null = null;
@@ -118,6 +129,7 @@ async function start() {
     const signal = controller.signal;
     shell.announce("");
     syncSearchField(shell, route);
+    if (session.storageAvailable) void delivery.invalidate();
     const main = shell.main;
     main.replaceChildren();
     main.className = "";

@@ -86,7 +86,7 @@ export async function trustPage(
   );
   main.append(
     p(
-      "Scores on word pages come from this server's site view. The personal view applies your private choices in this browser. Personal recalculation is not available in this build, so personal-view scores are unavailable rather than substituted.",
+      "The site view shows this server's scores. The personal view applies your private choices in this browser. This build cannot compute personal scores yet, so word and search pages show unavailable scores in the personal view instead of substituting site scores. Your private choices are still saved here.",
       "meta",
     ),
   );

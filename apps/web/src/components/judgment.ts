@@ -33,6 +33,8 @@ export interface JudgmentOptions {
   score: ScoreRecord | null | undefined;
   /** Unavailable means the server could not compute the score. */
   unavailable: boolean;
+  /** Why no score is shown, when the reason is not the server. */
+  reason?: "personal";
   /** Deprecated or other status, when known. */
   status?: string;
   calculation?: Calculation | null;
@@ -110,6 +112,11 @@ export function judgmentControl(
     role: "img",
     text: headline.text,
   });
+  if (options.reason === "personal") {
+    score.title =
+      "Personal view score unavailable in this build. Switch to the site view on the Trust page.";
+    score.setAttribute("aria-label", "Score unavailable in the personal view");
+  }
   if (options.status === "deprecated") {
     score.title = "Deprecated. Its judgments are inactive.";
     score.setAttribute(
@@ -225,6 +232,20 @@ export function scoreDetails(
   details.addEventListener("toggle", async () => {
     if (!details.open) return;
     body.replaceChildren();
+    if (options.reason === "personal") {
+      body.append(
+        p(
+          "Your personal view applies private choices from this browser. This build cannot compute personal scores yet, so no score is shown. The site view scores are available after switching the view on the Trust page.",
+          "small",
+        ),
+        el(
+          "p",
+          { class: "meta" },
+          el("a", { href: "/trust", text: "Open the Trust page" }),
+        ),
+      );
+      return;
+    }
     if (!score) {
       body.append(
         p(
