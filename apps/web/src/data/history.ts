@@ -48,18 +48,29 @@ export async function loadOwnHistory(
     ? AbortSignal.any([options.signal, historyTimeout])
     : historyTimeout;
   const check = () => signal.throwIfAborted();
-  const remembered = (await store.get<string[]>("heads", identity)) ?? [];
+  // A browser storage read that never finishes still ends at the deadline or on cancellation.
+  const timed = <T>(read: Promise<T>): Promise<T> =>
+    new Promise<T>((resolve, reject) => {
+      const stop = () => reject(signal.reason);
+      if (signal.aborted) return stop();
+      signal.addEventListener("abort", stop, { once: true });
+      read
+        .then(resolve, reject)
+        .finally(() => signal.removeEventListener("abort", stop));
+    });
+  const remembered =
+    (await timed(store.get<string[]>("heads", identity))) ?? [];
   if (!Array.isArray(remembered) || remembered.some((id) => !eventId(id)))
     throw new Error("Saved own-history head IDs are invalid.");
   if (remembered.length > WORK_LIMIT) throw workLimit();
   const known = new Set(remembered);
   const local = new Map<string, Envelope>();
-  for (const item of await store.list<OutboxItem>("outbox"))
+  for (const item of await timed(store.list<OutboxItem>("outbox")))
     if (item.identity === identity)
       local.set(item.id, (JSON.parse(item.transport) as Transport).envelope);
   // Branches fetched and verified from other peers during a handover. They
   // are known history, so traversal starts from them as well as from the heads.
-  for (const envelope of await store.list<Envelope>("ownhistory"))
+  for (const envelope of await timed(store.list<Envelope>("ownhistory")))
     if (envelope?.header?.issuer === identity && !local.has(envelope.id)) {
       local.set(envelope.id, envelope);
       known.add(envelope.id);

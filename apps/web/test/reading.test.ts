@@ -1,5 +1,5 @@
-import { test, expect } from "@playwright/test";
-import { fixture, fingerprintText } from "./helpers.ts";
+import { test, expect, type Page } from "@playwright/test";
+import { corePath, fixture, fingerprintText } from "./helpers.ts";
 
 test("search rows show headword, rafsi, type, highlighted text, attribution, and a net score", async ({
   page,
@@ -320,4 +320,429 @@ test("a hash-correct signed body with an invalid schema stays unavailable", asyn
       { exact: true },
     ),
   ).toHaveCount(0);
+});
+
+/** A synthetic definition record signed with a disposable seed. */
+const definitionRecord = `(seed, index, word, language, patch) => {
+  return core.createEvent(
+    new Uint8Array(32).fill(seed),
+    [],
+    String(index).repeat(32),
+    { kind: "definition.publish", word: core.wordId(word), language, parents: [], origin: patch.legacy ? "import" : "native" },
+    {
+      word, language, text: patch.text ?? [["Definition " + index]], frame: null, operands: [], glosses: patch.glosses ?? [], notes: [],
+      etymology: { text: [], formation: null, compound: null }, examples: patch.examples ?? [],
+      classification: { kind: "other", selmaho: [] }, labels: [], sources: [],
+      license: { expression: "CC0-1.0", url: null, attribution: "Disposable fixture" }, legacy: patch.legacy ?? null,
+    },
+  );
+}`;
+/** Serves a synthetic word with routes, based on the server's real response shape. */
+async function serveWord(
+  page: Page,
+  records: any[],
+  patch: Record<string, unknown>,
+) {
+  await page.route("**/api/v1/words/**", async (route) => {
+    const real = await (
+      await route.fetch({
+        url: new URL(
+          `/api/v1/words/${encodeURIComponent(fixture().words.cukta)}`,
+          page.url(),
+        ).href,
+      })
+    ).json();
+    await route.fulfill({ json: { ...real, ...patch } });
+  });
+  await page.route("**/api/v1/events/**", (route) => {
+    const record = records.find((r) =>
+      decodeURIComponent(route.request().url()).includes(r.envelope.id),
+    );
+    return record ? route.fulfill({ json: record.envelope }) : route.continue();
+  });
+  await page.route("**/api/v1/bodies/**", (route) => {
+    const record = records.find((r) =>
+      decodeURIComponent(route.request().url()).includes(
+        r.envelope.header.content.hash,
+      ),
+    );
+    return record ? route.fulfill({ json: record.body }) : route.continue();
+  });
+}
+
+test("word pages show tied layers, deprecated and unavailable definitions, and no ranking without a calculation", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const records = await page.evaluate(
+    async ({ corePath, make }) => {
+      const core = await import(corePath);
+      await core.initializeCore();
+      const build = new Function("core", "return " + make)(core);
+      const word = { language: "jbo", spelling: "brodatest" };
+      return Array.from({ length: 4 }, (_, index) =>
+        build(81, index, word, "en", {}),
+      ).sort((a: any, b: any) => (a.envelope.id < b.envelope.id ? -1 : 1));
+    },
+    { corePath, make: definitionRecord },
+  );
+  const ids = records.map((r: any) => r.envelope.id);
+  const zero = { numerator: "0", denominator: "1" };
+  const score = (target: string) => ({
+    target,
+    support: [zero, zero],
+    opposition: [zero, zero],
+    net: [zero, zero],
+    direct_reviewers: 0,
+    status: "active",
+  });
+  const patch = {
+    word: { language: "jbo", spelling: "brodatest" },
+    definitions: ids,
+    rafsi: [],
+    assignments: [],
+    layers: [[ids[2], ids[1]], [ids[0]]],
+    statuses: ids.map((event: string, index: number) => ({
+      event,
+      state:
+        index === 0 ? "deprecated" : index === 3 ? "unavailable" : "active",
+    })),
+    unavailable_scores: [ids[3]],
+    scores: ids.slice(0, 3).map(score),
+  };
+  await serveWord(page, records, patch);
+  await page.goto("/word/brodatest");
+  const articles = page.locator("article.definition");
+  await expect(articles).toHaveCount(4);
+  // The tied layer keeps the server's order and says that the order is unresolved.
+  await expect(
+    page.getByText(
+      "2 alternatives with unresolved order. Presentation order follows event IDs.",
+    ),
+  ).toBeVisible();
+  expect(
+    await articles
+      .locator(".byline a[href^='/definition/']")
+      .evaluateAll((links) =>
+        links.slice(0, 2).map((l) => l.getAttribute("href")),
+      ),
+  ).toEqual(
+    [ids[2], ids[1]].map(
+      (id: string) => `/definition/${encodeURIComponent(id)}`,
+    ),
+  );
+  // The deprecated definition says so, and the unavailable one assumes no number.
+  await expect(
+    page.getByRole("img", {
+      name: "Deprecated definition. Judgments are inactive.",
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("img", { name: "Score unavailable" }),
+  ).toBeVisible();
+  await expect(
+    page.getByText(
+      "No ranking position is available for this definition in the server layers.",
+    ),
+  ).toBeVisible();
+  await expect(page.locator("main")).not.toContainText("NaN");
+  // Without a calculation the page makes no ranking claim at all.
+  await serveWord(page, records, { ...patch, calculation: null });
+  await page.reload();
+  await expect(
+    page.getByText(/ranking unavailable for this word. No score is assumed./),
+  ).toBeVisible();
+  await expect(articles).toHaveCount(4);
+  await expect(
+    page.getByText(/alternatives with unresolved order/),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("img", { name: "Score unavailable" }),
+  ).toHaveCount(3);
+  await expect(page.getByRole("img", { name: /^Score \d/ })).toHaveCount(0);
+});
+
+test("hostile imported attribution and text stay literal, and the source details keep the editor, evidence kind, and raw numbers", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const [record] = await page.evaluate(
+    async ({ corePath, make }) => {
+      const core = await import(corePath);
+      await core.initializeCore();
+      const build = new Function("core", "return " + make)(core);
+      const word = { language: "jbo", spelling: "brodatest" };
+      return [
+        build(82, 0, word, "en", {
+          text: [
+            [
+              "Imported <b>bold</b> text with <script>window.bad=true</script>.",
+            ],
+          ],
+          legacy: {
+            source: "https://example.invalid",
+            snapshot: "sha256:" + "d".repeat(64),
+            extraction: "fixture-v1",
+            record: { kind: "definition", id: 1 },
+            locator: "definitions/1",
+            original: {
+              author: "<b>Fixture author</b>",
+              value: { $source_number: "123456789012345678901.25" },
+            },
+            attribution: {
+              author: "<b>Fixture author</b>",
+              editor: "<i>Fixture editor</i>",
+              dates: { created: "2026-10-11" },
+              author_account: {
+                origin: "https://example.invalid",
+                account: 7,
+                username: "Fixture author",
+                evidence: {
+                  kind: "source-id",
+                  source: {
+                    label: "Fixture",
+                    url: null,
+                    event: null,
+                    locator: null,
+                  },
+                },
+              },
+            },
+            conversion: {
+              method: "literal",
+              tool: "fixture",
+              version: "1",
+              model: null,
+              review: "unreviewed",
+              mappings: [],
+              warnings: [],
+            },
+            limitations: [],
+          },
+        }),
+      ];
+    },
+    { corePath, make: definitionRecord },
+  );
+  const id = record.envelope.id;
+  const zero = { numerator: "0", denominator: "1" };
+  await serveWord(page, [record], {
+    word: { language: "jbo", spelling: "brodatest" },
+    definitions: [id],
+    rafsi: [],
+    assignments: [],
+    layers: [[id]],
+    statuses: [{ event: id, state: "active" }],
+    unavailable_scores: [],
+    scores: [
+      {
+        target: id,
+        support: [zero, zero],
+        opposition: [zero, zero],
+        net: [zero, zero],
+        direct_reviewers: 0,
+        status: "active",
+      },
+    ],
+  });
+  await page.goto(`/definition/${encodeURIComponent(id)}`);
+  await expect(
+    page.getByText(
+      "Imported <b>bold</b> text with <script>window.bad=true</script>.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await expect(
+    page.getByText("<b>Fixture author</b>", { exact: true }).first(),
+  ).toBeVisible();
+  expect(await page.locator("main b, main i, main script").count()).toBe(0);
+  expect(await page.evaluate(() => Boolean((window as any).bad))).toBe(false);
+  await page
+    .getByRole("button", { name: "Source" })
+    .or(page.getByText("Source", { exact: true }))
+    .first()
+    .click();
+  await expect(
+    page.getByText("Source author: <b>Fixture author</b>.", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Source editor: <i>Fixture editor</i>.", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Account evidence: source-id.", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText(/Imported from https:\/\/example.invalid, account 7/),
+  ).toBeVisible();
+  await expect(page.locator("main")).not.toContainText("[object Object]");
+  await page
+    .getByText("Original source author, account, and import evidence", {
+      exact: true,
+    })
+    .click();
+  await expect(page.locator("details[open] pre")).toContainText(
+    '"$source_number": "123456789012345678901.25"',
+  );
+});
+
+test("mixed-language definitions keep their language attributes, and navigation restores heading focus", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const [record] = await page.evaluate(
+    async ({ corePath, make }) => {
+      const core = await import(corePath);
+      await core.initializeCore();
+      const build = new Function("core", "return " + make)(core);
+      const word = { language: "jbo", spelling: "klamatest" };
+      return [
+        build(95, 8, word, "es", {
+          text: [
+            [
+              "ir a algún lugar ",
+              { word: { language: "jbo", spelling: "cadzu" }, label: "cadzu" },
+            ],
+          ],
+          glosses: [{ language: "es", text: "ir", sense: null }],
+          examples: [
+            {
+              language: "jbo",
+              text: "mi klama",
+              translation: [["voy"]],
+              notes: [],
+            },
+          ],
+        }),
+      ];
+    },
+    { corePath, make: definitionRecord },
+  );
+  const id = record.envelope.id;
+  const zero = { numerator: "0", denominator: "1" };
+  await serveWord(page, [record], {
+    word: { language: "jbo", spelling: "klamatest" },
+    definitions: [id],
+    rafsi: [],
+    assignments: [],
+    layers: [[id]],
+    statuses: [{ event: id, state: "active" }],
+    unavailable_scores: [],
+    scores: [
+      {
+        target: id,
+        support: [zero, zero],
+        opposition: [zero, zero],
+        net: [zero, zero],
+        direct_reviewers: 0,
+        status: "active",
+      },
+    ],
+  });
+  await page.route("**/api/v1/search?**", async (route) => {
+    const real = await (await route.fetch()).json();
+    await route.fulfill({
+      json: {
+        ...real,
+        next: null,
+        hits: [
+          {
+            word: record.body.word,
+            word_id: record.envelope.header.action.word,
+            definitions: [id],
+            match: "headword",
+            preview: {
+              event: id,
+              word_kind: "other",
+              plain_text: "ir a algún lugar cadzu",
+              status: "active",
+            },
+          },
+        ],
+      },
+    });
+  });
+  await page.goto("/search?q=ir&lang=es");
+  const results = page.getByRole("region", { name: "Search results" });
+  await expect(
+    results.getByRole("link", { name: "klamatest", exact: true }),
+  ).toHaveAttribute("lang", "jbo");
+  await expect(
+    results.getByText("ir a algún lugar cadzu", { exact: true }),
+  ).toHaveAttribute("lang", "es");
+  await results.getByRole("link", { name: "klamatest", exact: true }).click();
+  await expect(page).toHaveTitle("klamatest · jbovlacku");
+  await expect(page.locator("main h1")).toBeFocused();
+  await expect(page.locator("main h1")).toHaveAttribute("lang", "jbo");
+  const article = page.locator("article.definition").first();
+  await expect(
+    article
+      .locator("[lang='es']")
+      .filter({ hasText: "ir a algún lugar" })
+      .first(),
+  ).toBeVisible();
+  await expect(
+    article.getByRole("link", { name: "cadzu", exact: true }),
+  ).toHaveAttribute("lang", "jbo");
+  await expect(article.getByText("ir", { exact: true })).toHaveAttribute(
+    "lang",
+    "es",
+  );
+  await article.getByText("1 example").click();
+  await expect(article.getByText("mi klama", { exact: true })).toHaveAttribute(
+    "lang",
+    "jbo",
+  );
+  await expect(
+    article
+      .getByText("voy", { exact: true })
+      .locator("xpath=ancestor-or-self::*[@lang][1]"),
+  ).toHaveAttribute("lang", "es");
+  await page.goBack();
+  await expect(page).toHaveTitle("Search: ir · jbovlacku");
+  await expect(page.locator("main h1")).toBeFocused();
+  await page.goForward();
+  await article
+    .getByRole("link", { name: "record", exact: true })
+    .or(article.getByRole("link", { name: "link", exact: true }))
+    .first()
+    .click();
+  await expect(page).toHaveTitle("Definition: klamatest · jbovlacku");
+  await expect(page.locator("main h1")).toBeFocused();
+});
+
+test("a full snapshot hash fits a narrow screen and the wizard works in both themes", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 360, height: 780 });
+  for (const colorScheme of ["light", "dark"] as const) {
+    await page.emulateMedia({ colorScheme });
+    await page.goto("/search?q=book&lang=en");
+    await page.getByText("Search source and snapshot", { exact: true }).click();
+    const snapshot = await page
+      .getByText(/^Snapshot: sha256:[0-9a-f]{64}$/)
+      .innerText();
+    expect(snapshot).toMatch(/^Snapshot: sha256:[0-9a-f]{64}$/);
+    await expect(page.getByText(/^View: jve1:[0-9a-f]{64}$/)).toBeVisible();
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
+    for (const path of [
+      "/new/meaning",
+      "/new/type",
+      "/new/form",
+      "/new/places",
+      "/new/publish",
+    ]) {
+      await page.goto(path);
+      await expect(page.locator("main h1").first()).toBeVisible();
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+        `${path} ${colorScheme}`,
+      ).toBe(true);
+    }
+  }
 });

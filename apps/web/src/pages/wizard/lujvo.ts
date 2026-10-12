@@ -29,6 +29,7 @@ import type { Draft } from "../../model/draft.ts";
 import { localSearch, type CachedPackage } from "../../data/search.ts";
 import { isV2 } from "../../data/search.ts";
 import {
+  cachedPackage,
   componentId,
   compoundMetadata,
   inventoryFromPackage,
@@ -38,21 +39,6 @@ import {
 } from "../../model/builders.ts";
 import { actionBar, DraftSaver, loadDraft, stepBar } from "./common.ts";
 
-/** The cached package with the most entries, for component search and the claim inventory. */
-async function bestPackage(app: App): Promise<CachedPackage | null> {
-  try {
-    const all = await app.store.list<CachedPackage>("packages");
-    return (
-      all.sort(
-        (a, b) =>
-          (b.version ?? 1) - (a.version ?? 1) ||
-          b.entries.length - a.entries.length,
-      )[0] ?? null
-    );
-  } catch {
-    return null;
-  }
-}
 function originLabel(origin: string): string | null {
   switch (origin) {
     case "stem":
@@ -82,7 +68,7 @@ export async function lujvoPage(
   if (draft.kind !== "lujvo") draft.kind = "lujvo";
   const state = (draft.lujvo ??= newLujvoState());
   const saver = new DraftSaver(app, draft);
-  const cached = await bestPackage(app);
+  const cached = await cachedPackage(app.store);
   if (!context.live()) return;
   const inventory: PackageInventory = inventoryFromPackage(cached);
   main.append(stepBar(draft, 3));

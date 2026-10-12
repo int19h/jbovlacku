@@ -27,6 +27,7 @@ import type { App } from "../../app/context.ts";
 import type { Draft } from "../../model/draft.ts";
 import type { CachedPackage } from "../../data/search.ts";
 import {
+  cachedPackage,
   decimal,
   formationMetadata,
   inventoryFromPackage,
@@ -37,20 +38,6 @@ import {
 } from "../../model/builders.ts";
 import { actionBar, DraftSaver, loadDraft, stepBar } from "./common.ts";
 
-async function bestPackage(app: App): Promise<CachedPackage | null> {
-  try {
-    const all = await app.store.list<CachedPackage>("packages");
-    return (
-      all.sort(
-        (a, b) =>
-          (b.version ?? 1) - (a.version ?? 1) ||
-          b.entries.length - a.entries.length,
-      )[0] ?? null
-    );
-  } catch {
-    return null;
-  }
-}
 function presetRows(
   preset: BuilderPreset,
   previous: GismuRowState[],
@@ -91,7 +78,7 @@ export async function gismuPage(
     state.rows = presetRows(presets[0], []);
   }
   const saver = new DraftSaver(app, draft);
-  const cached = await bestPackage(app);
+  const cached = await cachedPackage(app.store);
   if (!context.live()) return;
   const inventory: PackageInventory = inventoryFromPackage(cached);
   main.append(stepBar(draft, 3));

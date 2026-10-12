@@ -563,3 +563,310 @@ test("the wizard fits a 360 pixel screen and keeps every control reachable", asy
   ).toBe(true);
   void PASSPHRASE;
 });
+
+/** Saves a reviewed draft with one rafsi claim and opens the publish step through the app router. */
+async function openPublishWithClaim(
+  page: Page,
+  spelling: string,
+  rafsi: string,
+) {
+  await page.evaluate(
+    async ({ spelling, rafsi }) => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const { newDraft } = await import(String("/src/model/draft.ts"));
+      await new LocalStore().put(
+        "drafts",
+        "current",
+        newDraft({
+          spelling,
+          kind: "gismu",
+          meaning: "A disposable test meaning.",
+          text: "A disposable test meaning with <script>window.bad=true</script>.",
+          structured: false,
+          frameMode: "none",
+          step: 5,
+          rafsiClaims: [{ rafsi, rationale: "Disposable claim." }],
+        }),
+      );
+    },
+    { spelling, rafsi },
+  );
+  // A full page load locks the key. Signing then opens the unlock dialog.
+  await page.goto("/new/publish");
+}
+/** Navigates inside the app, keeping the in-memory key and session choices. */
+async function spaGoto(page: Page, path: string) {
+  await page.evaluate((target) => {
+    const anchor = document.createElement("a");
+    anchor.href = target;
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+  }, path);
+}
+async function outboxRecords(page: Page) {
+  return page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    return (await new LocalStore().list("outbox")).map((item: any) => ({
+      id: item.id,
+      group: item.group,
+      kind: JSON.parse(item.transport).envelope.header.action.kind,
+      transport: item.transport,
+      state: item.peers.self.state,
+    }));
+  });
+}
+
+test("a requested rafsi claim is signed even when every lookup fails, and a known collision needs acknowledgment", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await page.getByText("Offline signing", { exact: true }).click();
+  await page.getByLabel("Sign from history saved in this browser only").check();
+  // Every API request fails. The reviewed draft still decides the group.
+  await page.route("**/api/v1/**", (route) => route.abort("connectionreset"));
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { newDraft } = await import(String("/src/model/draft.ts"));
+    await new LocalStore().put(
+      "drafts",
+      "current",
+      newDraft({
+        spelling: "brodu",
+        kind: "gismu",
+        meaning: "A disposable test meaning.",
+        text: "A disposable test meaning with <script>window.bad=true</script>.",
+        structured: false,
+        frameMode: "none",
+        step: 5,
+        rafsiClaims: [{ rafsi: "rod", rationale: "Disposable claim." }],
+      }),
+    );
+  });
+  await spaGoto(page, "/new/publish");
+  const conflicts = page.getByRole("region", { name: "Known conflicts" });
+  await expect(conflicts).toContainText("Rafsi claims: rod.");
+  await expect(conflicts).toContainText("conflict coverage is unknown");
+  await expect(conflicts).toContainText(
+    "Existing-definition coverage is unknown",
+  );
+  await expect(page.locator("aside")).toContainText("4 signed records");
+  await page
+    .locator("aside")
+    .getByRole("button", { name: "Publish", exact: true })
+    .click();
+  await acceptFirstSignature(page);
+  const saved = page.getByRole("region", { name: "Saved publication" });
+  await expect(saved).toContainText("Saved. Not delivered yet.");
+  const records = await outboxRecords(page);
+  expect(records.map((r: any) => r.kind).sort()).toEqual(
+    [
+      "definition.publish",
+      "judgment.set",
+      "judgment.set",
+      "rafsi.publish",
+    ].sort(),
+  );
+  expect(new Set(records.map((r: any) => r.group)).size).toBe(1);
+  const claim = records.find((r: any) => r.kind === "rafsi.publish");
+  expect(JSON.parse(claim.transport).body.rafsi).toBe("rod");
+  await page.unroute("**/api/v1/**");
+  // A claim that the local package already lists for another word: the full editor's claim collides with cukta's cku.
+  await page.goto("/preferences");
+  await page.getByRole("button", { name: "Download", exact: true }).click();
+  await expect(page.getByRole("status")).toHaveText(
+    "The English search package is saved in this browser.",
+  );
+  await openPublishWithClaim(page, "brodi", "cku");
+  await expect(conflicts).toContainText("cku is also claimed by cukta");
+  await expect(conflicts).toContainText(
+    /Competing claims come from the local package of snapshot/,
+  );
+  const publish = page
+    .locator("aside")
+    .getByRole("button", { name: "Publish", exact: true });
+  await expect(publish).toBeDisabled();
+  await page.getByRole("checkbox", { name: /I keep the claim cku/ }).check();
+  await expect(publish).toBeEnabled();
+});
+
+test("after the group is saved, a lost delivery response offers delivery of the same records and never a second publication", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await openPublishWithClaim(page, "brode", "rod");
+  let posts = 0;
+  await page.route("**/api/v1/events", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    posts++;
+    // The server stores the record, but the browser gets a receipt it cannot match.
+    const response = await route.fetch();
+    const receipt = await response.json();
+    try {
+      await route.fulfill({
+        status: 200,
+        json: { ...receipt, envelope_hash: "sha256:" + "0".repeat(64) },
+      });
+    } catch {
+      // A request that the page no longer awaits cannot be answered. It stays unknown either way.
+    }
+  });
+  const aside = page.locator("aside");
+  await aside.getByRole("button", { name: "Publish", exact: true }).click();
+  const unlock = page.getByRole("dialog", { name: "Unlock your key" });
+  await unlock.getByLabel("Passphrase").fill(PASSPHRASE);
+  await unlock.getByRole("button", { name: "Unlock" }).click();
+  await acceptFirstSignature(page);
+  const saved = page.getByRole("region", { name: "Saved publication" });
+  await expect(saved).toContainText("Saved. Not delivered yet.");
+  await expect(saved).toContainText(
+    "Publishing again would create a second definition",
+  );
+  // The page is bound to the saved group. No Publish control remains.
+  await expect(
+    aside.getByRole("button", { name: "Publish", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Publish", exact: true }),
+  ).toHaveCount(0);
+  const first = await outboxRecords(page);
+  expect(first).toHaveLength(4);
+  expect(posts).toBeGreaterThanOrEqual(1);
+  const postsBefore = posts;
+  // A second action on the page delivers the saved bytes. The receipt lookup finds the stored record without a new POST.
+  await page.unroute("**/api/v1/events");
+  await saved.getByRole("button", { name: "Try now" }).click();
+  await expect(saved).toContainText("Published.");
+  expect(posts).toBe(postsBefore);
+  const after = await outboxRecords(page);
+  expect(after.map((r: any) => [r.id, r.group, r.transport])).toEqual(
+    first.map((r: any) => [r.id, r.group, r.transport]),
+  );
+  expect(after.every((r: any) => r.state === "accepted")).toBe(true);
+  // Reload and browser back do not bring the draft back as a new publication.
+  await page.reload();
+  await expect(page).toHaveURL(/\/new\/meaning$/);
+  await expect(page.getByRole("textbox", { name: "Meaning" })).toHaveValue("");
+  await page.goto("/word/brode");
+  await page.goBack();
+  await expect(page).toHaveURL(/\/new\/meaning$/);
+  expect((await outboxRecords(page)).length).toBe(4);
+  // The published text with hostile markup renders literally after recovery.
+  await page.goto(
+    `/definition/${encodeURIComponent(first.find((r: any) => r.kind === "definition.publish").id)}`,
+  );
+  await expect(
+    page.getByText(
+      "A disposable test meaning with <script>window.bad=true</script>.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  expect(await page.evaluate(() => Boolean((window as any).bad))).toBe(false);
+});
+
+test("a failed local group write keeps the real draft, reports the failure, and sends nothing", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await openPublishWithClaim(page, "brodo", "rod");
+  let posts = 0;
+  await page.route("**/api/v1/events", (route) => {
+    if (route.request().method() === "POST") posts++;
+    return route.continue();
+  });
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    LocalStore.prototype.queueGroup = async () => {
+      throw new Error("Storage failed");
+    };
+  });
+  await page
+    .locator("aside")
+    .getByRole("button", { name: "Publish", exact: true })
+    .click();
+  const unlock = page.getByRole("dialog", { name: "Unlock your key" });
+  await unlock.getByLabel("Passphrase").fill(PASSPHRASE);
+  await unlock.getByRole("button", { name: "Unlock" }).click();
+  await acceptFirstSignature(page);
+  await expect(page.getByRole("status").last()).toContainText("Storage failed");
+  await expect(
+    page.getByRole("region", { name: "Saved publication" }),
+  ).toHaveCount(0);
+  await expect(
+    page.locator("aside").getByRole("button", { name: "Publish", exact: true }),
+  ).toBeEnabled();
+  expect(posts).toBe(0);
+  expect(await outboxRecords(page)).toHaveLength(0);
+  const draft = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    return new LocalStore().get("drafts", "current");
+  });
+  expect(draft.spelling).toBe("brodo");
+  expect(draft.rafsiClaims).toEqual([
+    { rafsi: "rod", rationale: "Disposable claim." },
+  ]);
+});
+
+test("a fully disconnected author signs a complete definition into storage and later delivers the exact saved records", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await page.getByText("Offline signing", { exact: true }).click();
+  await page.getByLabel("Sign from history saved in this browser only").check();
+  await page.evaluate(
+    async ({ spelling, rafsi }) => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const { newDraft } = await import(String("/src/model/draft.ts"));
+      await new LocalStore().put(
+        "drafts",
+        "current",
+        newDraft({
+          spelling,
+          kind: "gismu",
+          meaning: "A disposable test meaning.",
+          text: "A disposable test meaning with <script>window.bad=true</script>.",
+          structured: false,
+          frameMode: "none",
+          step: 5,
+          rafsiClaims: [{ rafsi, rationale: "Disposable claim." }],
+        }),
+      );
+    },
+    { spelling: "brodu", rafsi: "rod" },
+  );
+  await page.route("**/api/v1/**", (route) => route.abort("connectionreset"));
+  await spaGoto(page, "/new/publish");
+  await page
+    .locator("aside")
+    .getByRole("button", { name: "Publish", exact: true })
+    .click();
+  await acceptFirstSignature(page);
+  const saved = page.getByRole("region", { name: "Saved publication" });
+  await expect(saved).toContainText("Saved. Not delivered yet.");
+  const before = await outboxRecords(page);
+  expect(before).toHaveLength(4);
+  expect(before.map((r: any) => r.state)).not.toContain("accepted");
+  await page.unroute("**/api/v1/**");
+  // The saved panel delivers every unfinished record with its exact bytes.
+  await saved.getByRole("button", { name: "Try now" }).click();
+  await expect(saved).toContainText("Published.");
+  await expect
+    .poll(async () =>
+      (await outboxRecords(page)).every((r: any) => r.state === "accepted"),
+    )
+    .toBe(true);
+  const after = await outboxRecords(page);
+  expect(after.map((r: any) => [r.id, r.transport])).toEqual(
+    before.map((r: any) => [r.id, r.transport]),
+  );
+  await page.goto("/word/brodu");
+  await expect(
+    page.getByText(
+      "A disposable test meaning with <script>window.bad=true</script>.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "rod", exact: true }),
+  ).toBeVisible();
+});

@@ -288,7 +288,9 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
   );
   const shown = new Set<string>();
   const ordered: { id: string; layer: number | null }[] = [];
-  for (const [index, layer] of view.layers.entries())
+  // Without a calculation the server makes no ranking claim. Definitions follow event order.
+  const rankedLayers = view.calculation === null ? [] : view.layers;
+  for (const [index, layer] of rankedLayers.entries())
     for (const definition of layer)
       if (visible.has(definition) && !shown.has(definition)) {
         shown.add(definition);
@@ -323,9 +325,9 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
     if (
       layer !== null &&
       layer !== lastLayer &&
-      view.layers[layer].filter((d) => visible.has(d)).length > 1
+      rankedLayers[layer].filter((d) => visible.has(d)).length > 1
     ) {
-      const size = view.layers[layer].filter((d) => visible.has(d)).length;
+      const size = rankedLayers[layer].filter((d) => visible.has(d)).length;
       main.append(
         p(
           `${plural(size, "alternative")} with unresolved order. Presentation order follows event IDs.`,

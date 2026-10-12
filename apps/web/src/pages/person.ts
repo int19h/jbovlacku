@@ -251,6 +251,12 @@ export async function personPage(
       class: "btn btn-quiet",
       style: "margin-left:auto",
     });
+    if (!app.session.storageAvailable)
+      for (const control of [trustButton, ignoreButton, report]) {
+        control.disabled = true;
+        control.title =
+          "Browser storage is unavailable, so trust choices and reports cannot be signed or kept.";
+      }
     actions.append(trustButton, ignoreButton, report);
     main.append(actions, slot);
   }

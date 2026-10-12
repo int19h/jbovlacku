@@ -507,3 +507,170 @@ test("remote search pages pin snapshot and view, survive browser back, and rejec
     await expect(results.locator("article")).toHaveCount(1);
   }
 });
+
+test("local search pages through many results in stable order, keeps equal-class previews, and renders HTML-like text literally", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const expected = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const entries = Array.from({ length: 121 }, (_, index) => ({
+      event: "jve1:" + (index + 1).toString(16).padStart(64, "0"),
+      word: { language: "jbo", spelling: `broda${index}` },
+      language: "en",
+      glosses: [],
+      plain_text: `needle token ${index}`,
+      classification: { kind: "other", selmaho: [] },
+      body: null,
+    }));
+    // Two more definitions of the first word. Both match by gloss, the strongest class. The earlier event wins the tie.
+    for (const [offset, text] of [
+      "Chosen <img src=x onerror=window.bad=true> literal preview",
+      "Later equal-class preview",
+    ].entries())
+      entries.push({
+        ...entries[0],
+        event: "jve1:" + (122 + offset).toString(16).padStart(64, "0"),
+        glosses: [{ language: "en", text: "needle", sense: null }] as any,
+        plain_text: text,
+        classification: { kind: "lujvo", selmaho: [] },
+      });
+    await new LocalStore().put("packages", "en", {
+      snapshot: "sha256:" + "d".repeat(64),
+      entries,
+    });
+    return [
+      "broda0",
+      ...entries
+        .slice(1, 121)
+        .sort((a, b) =>
+          core.wordId(a.word).localeCompare(core.wordId(b.word), "en"),
+        )
+        .map((entry) => entry.word.spelling),
+    ];
+  }, corePath);
+  let apiRequests = 0;
+  await page.route("**/api/v1/**", (route) => {
+    apiRequests++;
+    return route.abort();
+  });
+  await page.goto("/search?q=needle&lang=en");
+  const results = page.getByRole("region", { name: "Search results" });
+  await expect(results.locator("article")).toHaveCount(20);
+  await expect(
+    results.getByText(
+      "Chosen <img src=x onerror=window.bad=true> literal preview",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await expect(
+    results.getByText("Later equal-class preview", { exact: true }),
+  ).toHaveCount(0);
+  await expect(results.getByText("lujvo", { exact: true })).toBeVisible();
+  await expect(
+    results.getByRole("link", { name: "also: 2 other matching definitions" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "show all" }).click();
+  await expect(results.locator("article")).toHaveCount(40);
+  // Browser back restores the loaded pages.
+  await page.getByRole("link", { name: "Add a word" }).click();
+  await page.goBack();
+  await expect(results.locator("article")).toHaveCount(40);
+  while ((await results.locator("article").count()) < 121)
+    await page.getByRole("button", { name: "show all" }).click();
+  await expect(results.locator("article")).toHaveCount(121);
+  expect(await results.locator("article .hw").allTextContents()).toEqual(
+    expected,
+  );
+  await expect(page.getByRole("button", { name: "show all" })).toHaveCount(0);
+  await expect(
+    page.getByText("Local results include every retained publication."),
+  ).toBeVisible();
+  expect(apiRequests).toBe(0);
+  expect(await results.locator("img").count()).toBe(0);
+  expect(await page.evaluate(() => Boolean((window as any).bad))).toBe(false);
+});
+
+test("a failed package download through Settings keeps the cache and leaves server search usable", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const fixture = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const snapshot = "sha256:" + "a".repeat(64);
+    await new LocalStore().put("packages", "en", {
+      snapshot,
+      entries: [{ word: null }],
+    });
+    // A hash-correct package whose part is malformed.
+    const part = core.utf8(core.canonicalize(core.utf8(JSON.stringify([{}]))));
+    const pkg = core.utf8(
+      core.canonicalize(
+        core.utf8(
+          JSON.stringify({
+            version: 1,
+            language: "en",
+            snapshot,
+            parts: [
+              { hash: core.contentHash(part), bytes: part.length, count: 1 },
+            ],
+          }),
+        ),
+      ),
+    );
+    return {
+      snapshot,
+      part: new TextDecoder().decode(part),
+      pkg: new TextDecoder().decode(pkg),
+      hash: core.contentHash(pkg),
+      bytes: pkg.length,
+    };
+  }, corePath);
+  await page.route("**/api/v1/manifest", async (route) => {
+    const real = await (await route.fetch()).json();
+    await route.fulfill({
+      json: {
+        ...real,
+        packages: [
+          { language: "en", hash: fixture.hash, bytes: fixture.bytes },
+        ],
+        package_versions: [],
+      },
+    });
+  });
+  await page.route("**/api/v1/packages/**", (route) =>
+    route.fulfill({ body: fixture.pkg }),
+  );
+  await page.route("**/api/v1/package-parts/**", (route) =>
+    route.fulfill({ body: fixture.part }),
+  );
+  await page.goto("/search?q=book&lang=en");
+  await expect(page.getByRole("status")).toContainText(
+    "The search package is invalid",
+  );
+  await expect(
+    page.getByRole("link", { name: "cukta", exact: true }),
+  ).toBeVisible();
+  await page.goto("/preferences");
+  await page
+    .getByRole("button", { name: "Refresh" })
+    .first()
+    .click()
+    .catch(() => {});
+  await expect(page.getByRole("status")).toContainText(
+    /invalid|malformed|rejected/,
+  );
+  const cached = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    return (await new LocalStore().get("packages", "en")).entries;
+  });
+  expect(cached).toEqual([{ word: null }]);
+  await page.goto("/search?q=book&lang=en");
+  await expect(
+    page.getByRole("link", { name: "cukta", exact: true }),
+  ).toBeVisible();
+});

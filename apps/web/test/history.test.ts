@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { corePath } from "./helpers.ts";
+import { corePath, fixture } from "./helpers.ts";
 
 test("a failed local write never reports a saved group and sends nothing", async ({
   page,
@@ -374,13 +374,41 @@ test("own-history has an overall deadline and respects caller cancellation", asy
       } catch (error) {
         errors.push((error as Error).name);
       }
+      // A browser storage read that never finishes still ends at the deadline, without any request.
+      const stalledStore = {
+        get: () => new Promise<never>(() => {}),
+        list: async () => [],
+      };
+      try {
+        await ownHeads(stalledStore as any, "ed25519:" + "1".repeat(64), true);
+      } catch (error) {
+        errors.push((error as Error).name);
+      }
+      // Caller cancellation also stops a stalled local read.
+      const cancel = new AbortController();
+      setTimeout(() => cancel.abort(), 10);
+      try {
+        await ownHeads(
+          stalledStore as any,
+          "ed25519:" + "1".repeat(64),
+          true,
+          cancel.signal,
+        );
+      } catch (error) {
+        errors.push((error as Error).name);
+      }
       return { errors, requests, requestsAfterTimeout, timeouts };
     } finally {
       window.fetch = oldFetch;
       AbortSignal.timeout = oldTimeout;
     }
   });
-  expect(results.errors).toEqual(["Error:timeout", "AbortError"]);
+  expect(results.errors).toEqual([
+    "Error:timeout",
+    "AbortError",
+    "TimeoutError",
+    "AbortError",
+  ]);
   // A caller signal that is already aborted never reaches the network.
   expect(results.requests).toBe(results.requestsAfterTimeout);
   expect(results.timeouts).toContain(120000);
@@ -586,6 +614,11 @@ test("a native IndexedDB open failure keeps a warning and allows anonymous onlin
       request.onerror = () => reject(request.error);
     });
   });
+  // A slow core load must not raise errors or rejections while storage is unavailable.
+  await page.route("**/*.wasm", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    await route.continue();
+  });
   await page.goto("/search?q=book&lang=en");
   const warning = page.getByRole("alert");
   await expect(warning).toHaveText(
@@ -594,6 +627,57 @@ test("a native IndexedDB open failure keeps a warning and allows anonymous onlin
   await expect(
     page.getByRole("link", { name: "cukta", exact: true }),
   ).toBeVisible();
+  // Reading works, but every writing control is disabled with an explanation.
+  await page.getByRole("link", { name: "cukta", exact: true }).first().click();
+  await expect(page).toHaveTitle("cukta · jbovlacku");
+  const endorse = page
+    .locator("article.definition")
+    .first()
+    .getByRole("button", { name: "Endorse" });
+  await expect(endorse).toBeDisabled();
+  await expect(endorse).toHaveAttribute(
+    "title",
+    /Browser storage is unavailable/,
+  );
+  await expect(warning).toBeVisible();
+  await page.goto(
+    `/identity/${encodeURIComponent(fixture().identities.curator)}`,
+  );
+  for (const name of [
+    "Trust their judgments",
+    "Ignore their judgments",
+    "Report abuse",
+  ])
+    await expect(page.getByRole("button", { name })).toBeDisabled();
+  await expect(warning).toBeVisible();
+  for (const [path, heading, explanation] of [
+    ["/new/meaning", "Add a word", "drafts cannot be saved"],
+    [
+      "/identity",
+      "Browser storage unavailable",
+      "Restore browser storage access",
+    ],
+    [
+      "/outbox",
+      "Browser storage unavailable",
+      "Restore browser storage access",
+    ],
+    ["/preferences", "Settings", "Packages cannot be saved"],
+  ] as const) {
+    await page.goto(path);
+    await expect(
+      page.getByRole("heading", { name: heading, exact: true }),
+    ).toBeVisible();
+    await expect(page.locator("main")).toContainText(explanation);
+    await expect(warning).toBeVisible();
+    await expect(page.locator("main form")).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: /Download|Publish|Create a key/ }),
+    ).toHaveCount(0);
+  }
+  await page.goto("/search?q=book&lang=en");
+  await expect(warning).toBeVisible();
+  await expect(page.getByLabel("Search words and meanings")).toBeEnabled();
   await page.getByRole("link", { name: "cukta", exact: true }).click();
   await expect(page.locator("article.definition").first()).toBeVisible();
   await expect(warning).toBeVisible();

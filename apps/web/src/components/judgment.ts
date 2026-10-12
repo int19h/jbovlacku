@@ -132,6 +132,12 @@ export function judgmentControl(
       "Deprecated definition. Judgments are inactive.",
     );
   }
+  if (!app.session.storageAvailable) {
+    // Nothing can be signed or kept without browser storage.
+    endorse.disabled = oppose.disabled = true;
+    endorse.title = oppose.title =
+      "Browser storage is unavailable, so judgments cannot be signed or kept.";
+  }
   group.append(endorse, score, oppose);
   const ownNote = el("span", { class: "meta own-judgment" });
   wrapper.append(group, ownNote);
@@ -209,7 +215,7 @@ export function judgmentControl(
       } catch (error) {
         app.announce(describe(error));
       } finally {
-        endorse.disabled = oppose.disabled = false;
+        endorse.disabled = oppose.disabled = !app.session.storageAvailable;
         void applyOwn();
       }
     });

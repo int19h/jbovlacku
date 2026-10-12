@@ -83,6 +83,23 @@ export interface PackageInventory {
   /** Whether the package carries rafsi claims at all. */
   hasClaims: boolean;
 }
+/** The cached package with the most entries, preferring version 2, for inventories and search. */
+export async function cachedPackage(store: {
+  list<T>(name: string): Promise<T[]>;
+}): Promise<CachedPackage | null> {
+  try {
+    const all = await store.list<CachedPackage>("packages");
+    return (
+      all.sort(
+        (a, b) =>
+          (b.version ?? 1) - (a.version ?? 1) ||
+          b.entries.length - a.entries.length,
+      )[0] ?? null
+    );
+  } catch {
+    return null;
+  }
+}
 /** The conflict inventory from the local package. */
 export function inventoryFromPackage(
   cached: CachedPackage | null,

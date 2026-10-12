@@ -1,6 +1,20 @@
-/** Step 5: preview, the publication panel, and the signed group. */
+/**
+ * Step 5: preview, known conflicts, the publication panel, and the signed
+ * group. The group comes from the reviewed draft alone. Conflict lookups only
+ * inform the author and label their coverage. Once the group is saved, the
+ * page binds to that group and offers delivery controls instead of a second
+ * publication.
+ */
 import { rafsiPairId } from "../../../../../packages/core/src/index.ts";
-import { el, p, text, link, button, describe } from "../../lib/dom.ts";
+import {
+  el,
+  p,
+  text,
+  link,
+  button,
+  describe,
+  checkbox,
+} from "../../lib/dom.ts";
 import { fingerprintText, shortIdentity } from "../../lib/format.ts";
 import {
   navigate,
@@ -10,11 +24,14 @@ import {
 } from "../../app/router.ts";
 import type { App } from "../../app/context.ts";
 import { draftToBody } from "../../model/draft.ts";
+import { cachedPackage, inventoryFromPackage } from "../../model/builders.ts";
 import { definitionBlock } from "../../components/definition.ts";
 import { identityProfile, profileName } from "../../components/attribution.ts";
-import { getWord, loadRecord, selfPeer } from "../../data/api.ts";
+import { getWord, selfPeer } from "../../data/api.ts";
+import { describePeer } from "../../data/delivery.ts";
+import type { OutboxItem } from "../../data/store.ts";
 import type { GroupItem } from "../../app/actions.ts";
-import type { Envelope, RafsiBody } from "../../model/types.ts";
+import type { Envelope } from "../../model/types.ts";
 import {
   actionBar,
   DraftSaver,
@@ -23,6 +40,13 @@ import {
   stepBar,
 } from "./common.ts";
 
+/** A requested rafsi claim with its pair ID and the competing claims known locally. */
+interface RequestedClaim {
+  rafsi: string;
+  pair: string;
+  rationale: string;
+  competitors: { word: string; spelling: string }[];
+}
 export async function publishPage(
   _route: Route,
   context: RenderContext,
@@ -129,65 +153,87 @@ export async function publishPage(
     ),
   );
   left.append(problemList);
-  // Conflict line: known same-spelling words and rafsi competition from this server.
-  const conflictLine = el("p", {
+  // The requested claims come from the reviewed draft alone. No lookup can remove one.
+  const claims: RequestedClaim[] = [];
+  if (wordId)
+    for (const claim of draft.rafsiClaims) {
+      const rafsi = claim.rafsi.trim().normalize("NFC");
+      if (!rafsi || claims.some((c) => c.rafsi === rafsi)) continue;
+      claims.push({
+        rafsi,
+        pair: rafsiPairId(wordId, rafsi),
+        rationale: claim.rationale.trim(),
+        competitors: [],
+      });
+    }
+  // Known conflicts: the local package's claim inventory across every word, and this server's definitions.
+  const conflicts = el("div", {
     class: "small",
-    style:
-      "margin-top:10px;display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px",
+    style: "margin-top:10px",
+    role: "region",
+    "aria-label": "Known conflicts",
   });
-  left.append(conflictLine);
-  const claimsInfo: { rafsi: string; pair: string; competitors: string[] }[] =
-    [];
+  left.append(conflicts);
+  const inventory = inventoryFromPackage(await cachedPackage(app.store));
+  if (!context.live()) return;
+  for (const claim of claims)
+    for (const known of inventory.claims)
+      if (known.rafsi === claim.rafsi && known.word !== wordId)
+        claim.competitors.push({ word: known.word, spelling: known.spelling });
+  const collisions = claims.filter((c) => c.competitors.length);
+  if (claims.length) {
+    const coverage = inventory.snapshot
+      ? inventory.hasClaims
+        ? `Competing claims come from the local package of snapshot ${inventory.snapshot.slice(7, 19)}…. They cover retained claims in that package only.`
+        : "The local package carries no rafsi claims, so conflict coverage is unknown."
+      : "No local package is downloaded, so conflict coverage is unknown.";
+    conflicts.append(
+      p(
+        `Rafsi claims: ${claims.map((c) => c.rafsi).join(", ")}. ${coverage}`,
+        "meta",
+      ),
+    );
+    for (const claim of collisions) {
+      const line = el("p", { class: "warn" });
+      line.append(text(`${claim.rafsi} is also claimed by `));
+      claim.competitors.forEach((competitor, index) => {
+        if (index) line.append(text(", "));
+        line.append(
+          link(competitor.spelling, routes.word(competitor.spelling), {
+            lang: "jbo",
+          }),
+        );
+      });
+      line.append(text(". Readers judge each pair separately."));
+      conflicts.append(line);
+    }
+  }
+  const existingLine = el("p", { class: "meta" });
+  conflicts.append(existingLine);
   if (wordId) {
     try {
       const existing = await getWord(wordId, { signal: context.signal });
       if (!context.live()) return;
       if (existing.definitions.length && !draft.parents.length)
-        conflictLine.append(
+        existingLine.append(
           text(
             `${existing.definitions.length} definition${existing.definitions.length === 1 ? "" : "s"} of ${body?.word.spelling} already exist in the selected view. Yours is added as an alternative. `,
           ),
           link("Open the word", routes.word(body!.word.spelling)),
         );
       else if (!existing.definitions.length)
-        conflictLine.append(
+        existingLine.append(
           text("No existing definition of this word in the selected view."),
         );
-      for (const claim of draft.rafsiClaims) {
-        const rafsi = claim.rafsi.trim().normalize("NFC");
-        if (!rafsi) continue;
-        const pair = rafsiPairId(wordId, rafsi);
-        const competitors: string[] = [];
-        // Other words with the same rafsi spelling are known only through claim bodies.
-        for (const assignment of existing.assignments)
-          for (const id of assignment.claims)
-            try {
-              const record = await loadRecord<RafsiBody>(id, existing.snapshot);
-              if (
-                record.body?.rafsi === rafsi &&
-                record.body.word.spelling !== body?.word.spelling
-              )
-                competitors.push(record.body.word.spelling);
-            } catch {}
-        claimsInfo.push({ rafsi, pair, competitors });
-      }
     } catch (error) {
       if (!context.live()) return;
-      conflictLine.append(
+      existingLine.append(
         text(
-          `The server did not report existing definitions: ${describe(error)}. Publication does not depend on it.`,
-          "meta",
+          `The server did not report existing definitions: ${describe(error)}. Existing-definition coverage is unknown. Publication does not depend on it.`,
         ),
       );
     }
   }
-  if (draft.rafsiClaims.length)
-    conflictLine.append(
-      text(
-        `Rafsi claims: ${draft.rafsiClaims.map((c) => c.rafsi).join(", ")}. A complete conflict check across all words arrives with the rafsi lookup in a later stage.`,
-        "meta",
-      ),
-    );
   // Publication panel.
   const aside = el("aside", {
     "aria-labelledby": "pub-h",
@@ -256,133 +302,207 @@ export async function publishPage(
       ),
     );
   }
+  // Known collisions need an explicit acknowledgment. Unknown coverage does not block.
+  let acknowledged = collisions.length === 0;
+  if (collisions.length)
+    panel.append(
+      el(
+        "div",
+        { class: "notice", style: "margin-top:12px" },
+        checkbox(
+          `I keep the ${collisions.length === 1 ? "claim" : "claims"} ${collisions.map((c) => c.rafsi).join(", ")} although other words claim the same rafsi.`,
+          false,
+          (value) => {
+            acknowledged = value;
+            refreshPublish();
+          },
+        ),
+      ),
+    );
   const recipients = app.session.preferences.peers;
   const outcome = el("div", { "aria-live": "polite" });
+  let saved = false;
+  let bar: HTMLElement | null = null;
+  const refreshPublish = () => {
+    const disabled =
+      saved || blocking.length > 0 || !identity || !body || !acknowledged;
+    publish.disabled = disabled;
+    const primary = bar?.querySelector<HTMLButtonElement>(".btn-primary");
+    if (primary) primary.disabled = disabled;
+  };
+  /** The group from the reviewed draft: definition, endorsement, every claim, and each pair endorsement. */
+  const buildGroup = (): GroupItem[] => {
+    const group: GroupItem[] = [
+      {
+        action: {
+          kind: "definition.publish",
+          word: wordId!,
+          language: body!.language,
+          parents: [...draft.parents].sort(),
+          origin: "native",
+        },
+        body: body!,
+      },
+      {
+        action: { kind: "judgment.set", target: "", value: "bless" },
+        body: null,
+        dependsOn: (ids) => ({ target: ids[0] }),
+      },
+    ];
+    for (const claim of claims) {
+      group.push({
+        action: {
+          kind: "rafsi.publish",
+          word: wordId!,
+          assignment: claim.pair,
+          origin: "native",
+        },
+        body: {
+          word: body!.word,
+          rafsi: claim.rafsi,
+          rationale: claim.rationale ? [[claim.rationale]] : [],
+          sources: [],
+          legacy: null,
+        },
+      });
+      group.push({
+        action: { kind: "judgment.set", target: claim.pair, value: "bless" },
+        body: null,
+      });
+    }
+    return group;
+  };
+  /** Binds the page to the saved group: delivery state and controls, no second publication. */
+  const renderSaved = (items: OutboxItem[]) => {
+    outcome.replaceChildren();
+    const definition = items[0];
+    const unfinished = items.filter((item) =>
+      Object.values(item.peers).some((peer) => peer.state !== "accepted"),
+    );
+    const box = el("div", {
+      class: "notice",
+      style: "margin-top:12px",
+      role: "region",
+      "aria-label": "Saved publication",
+    });
+    box.append(
+      el(
+        "p",
+        {},
+        el("strong", {
+          text: unfinished.length
+            ? "Saved. Not delivered yet. "
+            : "Published. ",
+        }),
+        text(
+          unfinished.length
+            ? `${unfinished.length} of ${items.length} signed records did not finish delivery. They are kept in this browser with their exact bytes and sent again automatically. Publishing again would create a second definition, so this page offers delivery of the saved records instead. `
+            : `All ${items.length} signed records were accepted. `,
+        ),
+        link("See Not delivered", routes.outbox),
+      ),
+    );
+    const list = el("ul", { class: "small", style: "margin:8px 0 0" });
+    for (const item of items) {
+      const line = el("li");
+      line.append(
+        text(`${item.label.action} ${item.label.subject}: `),
+        text(
+          Object.values(item.peers)
+            .map((peer) => describePeer(peer))
+            .join(" "),
+          "meta",
+        ),
+      );
+      list.append(line);
+    }
+    box.append(list);
+    const actions = el("div", { class: "actions", style: "margin-top:8px" });
+    if (unfinished.length) {
+      const retry = button(
+        "Try now",
+        async () => {
+          retry.disabled = true;
+          try {
+            for (const item of unfinished) await app.delivery.tryNow(item.id);
+            const fresh = await app.delivery.items();
+            renderSaved(
+              items.map((i) => fresh.find((f) => f.id === i.id) ?? i),
+            );
+          } catch (error) {
+            app.announce(describe(error));
+          } finally {
+            retry.disabled = false;
+          }
+        },
+        { class: "btn", style: "min-height:40px" },
+      );
+      actions.append(retry);
+    }
+    actions.append(
+      link("Open the record", routes.definition(definition.id), {
+        class: "btn btn-quiet",
+        style: "min-height:40px",
+      }),
+    );
+    box.append(
+      actions,
+      p(
+        "This is a local preview of your signed record. It is not the server's public state until a receipt confirms it.",
+        "meta",
+      ),
+    );
+    outcome.append(box);
+  };
   const publish = button(
     "Publish",
     async () => {
-      if (!body || !wordId) return;
+      if (!body || !wordId || saved || !acknowledged) return;
       publish.disabled = true;
       try {
         await app.session.requireUnlocked(
           `Publishing ${body.word.spelling}`,
           async () => {
             if (!(await app.session.firstSignatureDisclosure())) return;
-            const group: GroupItem[] = [
-              {
-                action: {
-                  kind: "definition.publish",
-                  word: wordId,
-                  language: body.language,
-                  parents: [...draft.parents].sort(),
-                  origin: "native",
-                },
-                body,
-              },
-              {
-                action: { kind: "judgment.set", target: "", value: "bless" },
-                body: null,
-                dependsOn: (ids) => ({ target: ids[0] }),
-              },
-            ];
-            for (const claim of claimsInfo) {
-              group.push({
-                action: {
-                  kind: "rafsi.publish",
-                  word: wordId,
-                  assignment: claim.pair,
-                  origin: "native",
-                },
-                body: {
-                  word: body.word,
-                  rafsi: claim.rafsi,
-                  rationale: draft.rafsiClaims
-                    .find(
-                      (c) => c.rafsi.trim().normalize("NFC") === claim.rafsi,
-                    )
-                    ?.rationale.trim()
-                    ? [
-                        [
-                          draft.rafsiClaims
-                            .find(
-                              (c) =>
-                                c.rafsi.trim().normalize("NFC") === claim.rafsi,
-                            )!
-                            .rationale.trim(),
-                        ],
-                      ]
-                    : [],
-                  sources: [],
-                  legacy: null,
-                },
-              });
-              group.push({
-                action: {
-                  kind: "judgment.set",
-                  target: claim.pair,
-                  value: "bless",
-                },
-                body: null,
-              });
-            }
-            const results = await app.signer.publish(group);
+            // Persist the whole group first. From here on the page belongs to that group.
+            const signed = await app.signer.sign(buildGroup());
+            saved = true;
+            refreshPublish();
+            // The page now belongs to the saved group. The publish controls go away.
+            publish.remove();
+            bar?.remove();
+            await discardDraft(app);
             app.own.invalidate();
-            const definition = results[0];
-            const delivered =
-              definition &&
-              Object.values(definition.peers).every(
+            renderSaved(signed.items);
+            const results: OutboxItem[] = [];
+            for (const item of signed.items) {
+              const delivered = await app.delivery.deliver(item.id, true);
+              results.push(delivered ?? item);
+            }
+            if (!context.live()) return;
+            const complete = results.every((item) =>
+              Object.values(item.peers).every(
                 (peer) => peer.state === "accepted",
-              );
-            const unfinished = results.filter((item) =>
-              Object.values(item.peers).some(
-                (peer) => peer.state !== "accepted",
               ),
             );
-            await discardDraft(app);
-            if (delivered && !unfinished.length) {
+            if (complete) {
               navigate(
                 `${routes.word(body.word.spelling, body.language)}&fresh=1`,
               );
               app.announce(
-                `Published ${body.word.spelling} with your endorsement${claimsInfo.length ? ` and ${claimsInfo.length} rafsi claim${claimsInfo.length === 1 ? "" : "s"}` : ""}.`,
+                `Published ${body.word.spelling} with your endorsement${claims.length ? ` and ${claims.length} rafsi claim${claims.length === 1 ? "" : "s"}` : ""}.`,
               );
-
               return;
             }
-            outcome.replaceChildren(
-              el(
-                "div",
-                { class: "notice", style: "margin-top:12px" },
-                el(
-                  "p",
-                  {},
-                  el("strong", {
-                    text: delivered
-                      ? "Published, with unfinished related records. "
-                      : "Not delivered yet. ",
-                  }),
-                  text(
-                    `${unfinished.length} of ${results.length} signed records did not finish delivery. They are kept in this browser and sent again automatically. `,
-                  ),
-                  link("See Not delivered", routes.outbox),
-                ),
-                el(
-                  "p",
-                  { class: "meta", style: "margin-top:6px" },
-                  text(
-                    "This is a local preview of your signed record. It is not the server's public state until a receipt confirms it. ",
-                  ),
-                  link("Open the record", routes.definition(definition.id)),
-                ),
-              ),
-            );
+            renderSaved(results);
           },
         );
       } catch (error) {
+        // Nothing was saved. Publication stays available.
         app.announce(describe(error));
         outcome.replaceChildren(p(describe(error), "notice"));
       } finally {
-        publish.disabled = false;
+        refreshPublish();
       }
     },
     {
@@ -390,7 +510,6 @@ export async function publishPage(
       style: "margin-top:14px;width:100%;min-height:48px;font-size:17px",
     },
   );
-  publish.disabled = blocking.length > 0 || !identity || !body;
   if (blocking.length)
     panel.append(
       p(
@@ -405,27 +524,27 @@ export async function publishPage(
       "meta",
     ),
   );
-  const records = 2 + claimsInfo.length * 2;
+  const records = 2 + claims.length * 2;
   panel.append(
     p(
-      `${records} signed records: the definition, your endorsement${claimsInfo.length ? `, ${claimsInfo.length} rafsi claim${claimsInfo.length === 1 ? "" : "s"}, and their pair endorsements` : ""}. All are saved in this browser before anything is sent.`,
+      `${records} signed records: the definition, your endorsement${claims.length ? `, ${claims.length} rafsi claim${claims.length === 1 ? "" : "s"}, and their pair endorsements` : ""}. All are saved in this browser before anything is sent.`,
       "meta",
     ),
   );
   aside.append(panel);
   columns.append(left, aside);
   main.append(columns);
-  main.append(
-    actionBar(saver, {
-      back: {
-        label: "Back",
-        href: draft.parents.length ? "/new/editor" : "/new/places",
-      },
-      primary: {
-        label: "Publish",
-        disabled: publish.disabled,
-        action: () => publish.click(),
-      },
-    }),
-  );
+  bar = actionBar(saver, {
+    back: {
+      label: "Back",
+      href: draft.parents.length ? "/new/editor" : "/new/places",
+    },
+    primary: {
+      label: "Publish",
+      disabled: true,
+      action: () => publish.click(),
+    },
+  });
+  main.append(bar);
+  refreshPublish();
 }

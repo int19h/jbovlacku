@@ -208,7 +208,35 @@ export async function searchPage(
     rememberState({ dictionarySearch: state });
   };
   const retired = el("span", { class: "meta" });
+  // The exact snapshot and view behind these results, in full, for narrow screens too.
+  const provenance = el("details", {
+    class: "disclosure small",
+    style: "margin-top:6px",
+  });
+  provenance.append(
+    el("summary", { text: "Search source and snapshot" }),
+    el("div", { class: "body", style: "overflow-wrap:anywhere" }),
+  );
+  results.before(provenance);
+  const refreshProvenance = () => {
+    const body = provenance.querySelector(".body")!;
+    body.replaceChildren();
+    body.append(
+      p(
+        cached
+          ? `Source: the downloaded ${languageName(language)} package in this browser.`
+          : `Source: ${location.host || "this server"}.`,
+        "meta",
+      ),
+      el("p", { class: "meta", text: `Snapshot: ${snapshot || "unknown"}` }),
+      el("p", {
+        class: "meta",
+        text: `View: ${cached ? "not evaluated in the local index" : (view ?? "unknown")}`,
+      }),
+    );
+  };
   const refreshCount = () => {
+    refreshProvenance();
     const total = cached
       ? localHits.length
       : displayed.length + (next ? "+" : "");
