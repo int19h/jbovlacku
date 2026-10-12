@@ -1450,3 +1450,29 @@ test("discard in a stale tab keeps newer work that another tab saved, and discar
   await expect(page).toHaveURL(/\/$/);
   expect(await storedDraft(page)).toBeNull();
 });
+
+test("a failed save makes the browser ask before the page unloads, and dismissing keeps the edit", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  // A direct load has no earlier in-app entry, so Back leaves the page itself.
+  await page.goto("/new/meaning");
+  const box = page.getByRole("textbox", { name: "Meaning", exact: true });
+  await box.fill("Saved original.");
+  const status = page.getByRole("status").last();
+  await expect(status).toHaveText("Saved in this browser");
+  await failDraftSaves(page, "Injected save failure");
+  await box.fill("Unsaved valuable edit.");
+  await expect(status).toContainText("Not saved: Injected save failure.");
+  const dialogs: string[] = [];
+  page.on("dialog", (dialog) => {
+    dialogs.push(dialog.type());
+    void dialog.dismiss();
+  });
+  // history.back() returns at once. page.goBack() would wait for a navigation that the prompt cancels.
+  await page.evaluate(() => history.back());
+  await expect.poll(() => dialogs).toEqual(["beforeunload"]);
+  await expect(page).toHaveURL(/\/new\/meaning$/);
+  await expect(box).toHaveValue("Unsaved valuable edit.");
+  expect((await storedDraft(page))?.meaning).toBe("Saved original.");
+});

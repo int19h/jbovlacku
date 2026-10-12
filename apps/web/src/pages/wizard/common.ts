@@ -59,6 +59,16 @@ export async function loadDraft(app: App): Promise<Draft | null> {
 }
 let pendingSaver: DraftSaver | null = null;
 /**
+ * A page unload cannot be refused by the router. The browser asks before
+ * it leaves while the active saver holds edits that storage did not take.
+ */
+window.addEventListener("beforeunload", (event) => {
+  if (pendingSaver?.hasUnsaved) {
+    event.preventDefault();
+    event.returnValue = "";
+  }
+});
+/**
  * The router's guard. Before the page changes, the active saver writes the
  * draft. A failed or conflicting save keeps the current page, with its
  * unsaved copy, its export control, and a choice to leave anyway.
@@ -247,6 +257,14 @@ export class DraftSaver {
   }
   get hasFailed() {
     return this.failed;
+  }
+  /** Edits that storage did not take, after a failure or a conflict. */
+  get hasUnsaved() {
+    return (
+      !this.detached &&
+      this.failed &&
+      contentKey(this.draft) !== this.savedContent
+    );
   }
 }
 export function exportDraft(draft: Draft) {
