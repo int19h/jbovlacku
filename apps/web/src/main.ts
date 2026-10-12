@@ -56,18 +56,7 @@ function unavailable(title: string, message: string): Page {
 async function start() {
   const store = new LocalStore();
   const session = new Session(store);
-  const delivery = new DeliveryEngine(store, (id) => {
-    const configured = session.preferences?.peers.find(
-      (peer) => peer.id === id,
-    );
-    if (!configured) return null;
-    return {
-      id: configured.id,
-      base: configured.base,
-      label:
-        configured.label === "this server" ? location.host : configured.label,
-    };
-  });
+  const delivery = new DeliveryEngine(store);
   const offlineSigning = { value: false };
   const signer = new Signer(session, delivery, () => offlineSigning.value);
   let coreError: string | null = null;

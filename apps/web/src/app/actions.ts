@@ -15,6 +15,7 @@ import {
   describeTransport,
   type OutboxItem,
   type OutboxLabel,
+  type SavedRecipient,
 } from "../data/store.ts";
 import type { Session } from "./session.ts";
 import type { Transport } from "../model/types.ts";
@@ -51,6 +52,23 @@ export class Signer {
       throw new Error("Unlock your key before signing.");
     const identity = session.backup.identity;
     const signingKey = session.workingKey;
+    // Resolve every recipient address now. Retries never consult later preferences.
+    const recipients: Record<string, SavedRecipient> = {};
+    for (const peerId of peerIds) {
+      const configured = session.preferences.peers.find(
+        (peer) => peer.id === peerId,
+      );
+      if (!configured)
+        throw new Error(
+          `Recipient "${peerId}" is not configured in this browser.`,
+        );
+      const url = new URL(configured.base, location.origin);
+      recipients[peerId] = {
+        origin: url.origin,
+        base: url.pathname.replace(/\/$/, ""),
+        label: configured.label === "this server" ? url.host : configured.label,
+      };
+    }
     let previous = await ownHeads(
       session.store,
       identity,
@@ -101,6 +119,7 @@ export class Signer {
         group,
         order,
         label,
+        recipients,
         peers: Object.fromEntries(peerIds.map((peer) => [peer, freshPeer()])),
         stopped: false,
         signedAt: Date.now(),

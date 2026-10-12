@@ -34,10 +34,24 @@ export interface OutboxLabel {
   /** Route to open for the record. */
   href: string;
 }
+/** The address of a selected recipient, saved with the signed group before any send. */
+export interface SavedRecipient {
+  /** The resolved origin at signing time, such as "https://example.test". */
+  origin: string;
+  /** The API base path at that origin, such as "/api/v1". */
+  base: string;
+  label: string;
+}
 export interface OutboxItem {
   id: string;
   identity: string;
   transport: string;
+  /**
+   * Saved addresses by recipient ID. Retries use these, never the current
+   * preferences. Rows queued before this field exists have none, and their
+   * recipients stay unresolved.
+   */
+  recipients?: Record<string, SavedRecipient>;
   /** Group of records persisted together before any send. */
   group: string;
   /** Dispatch order inside the group. */

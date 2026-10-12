@@ -295,7 +295,7 @@ test("an unresolved recipient keeps its bytes and never falls back to this serve
   await page.getByRole("link", { name: "Settings" }).click();
   await page.getByRole("link", { name: "1 not delivered" }).click();
   await expect(
-    page.getByText(/Recipient "ghost" is not configured/),
+    page.getByText(/Recipient "ghost" is not configured in this record/),
   ).toBeVisible();
   await page.getByRole("button", { name: "Try now" }).click();
   await expect(page.getByRole("status")).toContainText("Still not delivered.");
@@ -304,4 +304,148 @@ test("an unresolved recipient keeps its bytes and never falls back to this serve
   expect(items[0].peers.ghost.failure).toBe("unresolved");
   expect(items[0].peers.ghost.attempts).toBe(0);
   expect(posts).toBe(0);
+});
+
+test("a stale failure from another engine never overwrites an acceptance recorded meanwhile", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  let release: (status: number) => void = () => {};
+  const held = new Promise<number>((resolve) => (release = resolve));
+  let posts = 0;
+  await page.route("**/api/v1/events", async (route) => {
+    posts++;
+    if (posts === 1) {
+      // The app's engine waits here. A second engine in the same browser completes first.
+      const status = await held;
+      await route
+        .fulfill({
+          status,
+          json: {
+            code: "server",
+            message: "Late failure.",
+            event: null,
+            field: null,
+          },
+        })
+        .catch(() => {});
+      return;
+    }
+    await route.continue();
+  });
+  await openWord(page, "cukta");
+  await firstEndorse(page).click();
+  await acceptFirstSignature(page);
+  await expect.poll(() => posts).toBe(1);
+  // The second engine delivers the same record and peer while the first request is pending.
+  const accepted = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { DeliveryEngine } = await import(String("/src/data/delivery.ts"));
+    const store = new LocalStore();
+    const [item] = await store.list("outbox");
+    const engine = new DeliveryEngine(store);
+    const result = await engine.deliver(item.id, true);
+    return result.peers.self;
+  });
+  expect(accepted.state).toBe("accepted");
+  expect(posts).toBe(2);
+  release(500);
+  await expect(page.getByRole("status")).toHaveText(
+    "Your endorsement is published.",
+  );
+  const items = await outboxItems(page);
+  expect(items[0].peers.self.state).toBe("accepted");
+  expect(items[0].peers.self.nextAttempt).toBeNull();
+  expect(items[0].peers.self.attempts).toBe(1);
+  expect(items[0].peers.self.receipt.admission).toMatch(/accepted|duplicate/);
+  await expect(page.getByRole("link", { name: /not delivered/ })).toBeHidden();
+});
+
+test("retries use the address saved with the record after the peer preference changes", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    await new LocalStore().setPreferences({
+      peers: [
+        { id: "self", base: "/api/v1", label: "this server" },
+        { id: "mirror", base: "/mirror/api/v1", label: "mirror" },
+      ],
+    });
+  });
+  await page.reload();
+  await page
+    .getByLabel("Passphrase", { exact: true })
+    .fill("test passphrase with spaces");
+  await page.getByRole("button", { name: "Unlock", exact: true }).click();
+  await expect(page.getByText("Unlocked", { exact: true })).toBeVisible();
+  const hits = { mirror: 0, replacement: 0 };
+  await page.route("**/mirror/api/v1/**", (route) => {
+    hits.mirror++;
+    return route.fulfill({
+      status: 503,
+      json: { code: "busy", message: "Later.", event: null, field: null },
+    });
+  });
+  await page.route("**/replacement/api/v1/**", (route) => {
+    hits.replacement++;
+    return route.fulfill({
+      status: 200,
+      json: {
+        id: "x",
+        admission: "accepted",
+        body_status: "none",
+        interpretation: "none",
+      },
+    });
+  });
+  await openWord(page, "cukta");
+  await firstEndorse(page).click();
+  await acceptFirstSignature(page);
+  await expect(
+    page.getByRole("link", { name: "1 not delivered" }),
+  ).toBeVisible();
+  let items = await outboxItems(page);
+  expect(items[0].recipients.mirror).toEqual({
+    origin: new URL(page.url()).origin,
+    base: "/mirror/api/v1",
+    label: "mirror",
+  });
+  expect(hits.mirror).toBe(1);
+  // The operator moves the "mirror" ID to another address. The pending record keeps its own.
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    await new LocalStore().setPreferences({
+      peers: [
+        { id: "self", base: "/api/v1", label: "this server" },
+        { id: "mirror", base: "/replacement/api/v1", label: "replacement" },
+      ],
+    });
+  });
+  await page.getByRole("link", { name: "1 not delivered" }).click();
+  await expect(page.getByText(/mirror:/)).toBeVisible();
+  await page.getByRole("button", { name: "Try now" }).click();
+  await expect(page.getByRole("status")).toContainText("Still not delivered.");
+  expect(hits.replacement).toBe(0);
+  expect(hits.mirror).toBeGreaterThanOrEqual(2);
+  items = await outboxItems(page);
+  expect(items[0].peers.mirror.state).toBe("unknown");
+  expect(items[0].recipients.mirror.base).toBe("/mirror/api/v1");
+  // A record without saved address evidence stays unresolved even though the ID is configured now.
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore();
+    const [item] = await store.list("outbox");
+    await store.mergeOutbox(item.id, (current: any) => {
+      const { recipients, ...rest } = current;
+      return rest;
+    });
+  });
+  await page.getByRole("button", { name: "Try now" }).click();
+  await expect(page.getByRole("status")).toContainText("Still not delivered.");
+  await expect(
+    page.getByText(/Recipient "mirror" is not configured in this record/),
+  ).toBeVisible();
+  expect(hits.replacement).toBe(0);
 });

@@ -14,7 +14,6 @@ import {
   objectBytes,
   postEvent,
   RequestError,
-  selfPeer,
   TransportError,
   type Peer,
 } from "./api.ts";
@@ -192,19 +191,52 @@ export function describePeer(peer: PeerDelivery): string {
   }
 }
 export type DeliveryListener = (items: OutboxItem[]) => void;
-/** Resolves a saved recipient ID to a configured peer, or null. */
-export type PeerResolver = (id: string) => Peer | null;
-export const defaultResolver: PeerResolver = (id) =>
-  id === selfPeer.id ? selfPeer : null;
+/** The peer saved with the record for one recipient, or null without saved address evidence. */
+export function savedPeer(item: OutboxItem, peerId: string): Peer | null {
+  const saved = item.recipients?.[peerId];
+  if (!saved) return null;
+  return {
+    id: peerId,
+    base: `${saved.origin}${saved.base}`,
+    label: saved.label,
+  };
+}
+/** The label of a recipient from the record's saved address. */
+export function recipientLabel(item: OutboxItem, peerId: string): string {
+  return (
+    item.recipients?.[peerId]?.label ??
+    `recipient "${peerId}" without a saved address`
+  );
+}
+/**
+ * Merges the outcome of one attempt with the peer state stored meanwhile. A
+ * final state recorded by another tab stays. A newer decision stays when this
+ * attempt started before it. Attempt counters never go down.
+ */
+export function mergePeer(
+  stored: PeerDelivery,
+  next: PeerDelivery,
+  started: number,
+): PeerDelivery {
+  const attempts = Math.max(stored.attempts, next.attempts);
+  const storedFinal = stored.state === "accepted" || stored.state === "refused";
+  const nextFinal = next.state === "accepted" || next.state === "refused";
+  if (stored.state === "accepted" && next.state !== "accepted") return stored;
+  if (storedFinal && !nextFinal) return { ...stored, attempts };
+  if (
+    stored.lastAttempt !== null &&
+    stored.lastAttempt > started &&
+    next.state !== "accepted"
+  )
+    return { ...stored, attempts };
+  return { ...next, attempts };
+}
 
 export class DeliveryEngine {
   private timer: ReturnType<typeof setTimeout> | undefined;
   private listeners = new Set<DeliveryListener>();
   private inFlight = new Map<string, Promise<OutboxItem | undefined>>();
-  constructor(
-    private store: LocalStore,
-    public resolvePeer: PeerResolver = defaultResolver,
-  ) {
+  constructor(private store: LocalStore) {
     window.addEventListener("online", () => void this.tick());
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible") void this.tick();
@@ -339,11 +371,18 @@ export class DeliveryEngine {
       if (!peer || peer.state === "accepted") continue;
       if (!explicit && (current.stopped || !this.automaticallyDue(peer, now)))
         continue;
+      const started = Date.now();
       const next = await this.attempt(current, peerId, peer);
-      // Merge only this peer's result. A stop or another tab's write stays.
+      // Merge only this peer's result with what is stored now. A stop, another
+      // tab's acceptance, or a newer retry decision stays.
       await this.store.mergeOutbox(id, (stored) => ({
         ...stored,
-        peers: { ...stored.peers, [peerId]: next },
+        peers: {
+          ...stored.peers,
+          [peerId]: stored.peers[peerId]
+            ? mergePeer(stored.peers[peerId], next, started)
+            : next,
+        },
       }));
       await this.notify();
     }
@@ -354,12 +393,12 @@ export class DeliveryEngine {
     peerId: string,
     peer: PeerDelivery,
   ): Promise<PeerDelivery> {
-    const target = this.resolvePeer(peerId);
+    const target = savedPeer(item, peerId);
     if (!target)
       return {
         ...peer,
         nextAttempt: null,
-        error: `Recipient "${peerId}" is not configured in this browser. Nothing was sent.`,
+        error: `Recipient "${peerId}" is not configured in this record. The record saved no address for it, and current preferences never replace a missing address. Nothing was sent.`,
         failure: "unresolved",
       };
     const started = Date.now();
