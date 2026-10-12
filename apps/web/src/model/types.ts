@@ -292,6 +292,8 @@ export interface PackageEntryV2 extends PackageEntry {
   issuer: string;
   notes: boolean;
   rafsi: string[];
+  /** False when the server cut the rafsi list at its bound. Older servers omit it. */
+  rafsi_complete?: boolean;
   attribution: {
     source: string;
     author: string | null;

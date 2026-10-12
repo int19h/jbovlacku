@@ -6,6 +6,12 @@ import {
   type Header,
 } from "../../core/src/index.ts";
 import type { ObjectStore, Snapshot } from "./storage.ts";
+/**
+ * Rafsi spellings listed per version 2 entry. The browser applies the same
+ * bound. A longer list is cut, and the entry says so. The exact claims of a
+ * word stay available through the word route and the claim bodies.
+ */
+export const PACKAGE_RAFSI_LIMIT = 64;
 export interface SearchEntry {
   event: string;
   word: { language: "jbo"; spelling: string };
@@ -21,8 +27,13 @@ export interface SearchEntryV2 extends SearchEntry {
   issuer: string;
   /** Whether the definition has notes. */
   notes: boolean;
-  /** Rafsi spellings claimed for the word in this snapshot, from retained claim bodies. */
+  /**
+   * Rafsi spellings claimed for the word in this snapshot, from retained
+   * claim bodies, sorted, at most `PACKAGE_RAFSI_LIMIT` of them.
+   */
   rafsi: string[];
+  /** False when the word has more claims than the list holds. */
+  rafsi_complete: boolean;
   /** Imported source attribution, or null for native publications. */
   attribution: {
     source: string;
@@ -137,9 +148,12 @@ export async function buildPackages(
       ...entry,
       issuer: event.header.issuer,
       notes: Array.isArray(body.notes) && body.notes.length > 0,
-      rafsi: [
-        ...(rafsiByWord.get(String(event.header.action.word)) ?? []),
-      ].sort(),
+      rafsi: [...(rafsiByWord.get(String(event.header.action.word)) ?? [])]
+        .sort()
+        .slice(0, PACKAGE_RAFSI_LIMIT),
+      rafsi_complete:
+        (rafsiByWord.get(String(event.header.action.word))?.size ?? 0) <=
+        PACKAGE_RAFSI_LIMIT,
       attribution: legacy
         ? {
             source: String(legacy.source),

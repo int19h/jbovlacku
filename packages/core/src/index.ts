@@ -178,7 +178,17 @@ export function evaluateSession(input: EvaluationRequest) {
   const session = new wasm.EvaluationSession(utf8(JSON.stringify(input)));
   return {
     state: JSON.parse(session.state()) as Evaluation,
-    rankWord: (word: string) => JSON.parse(session.rank(word)),
+    /**
+     * Ranks one word. `reviewers` asks for at most that many reviewer details
+     * per score, bounded inside the core. Without it the aggregate lookup does
+     * no reviewer-detail work and the scores carry no `reviewers` field.
+     */
+    rankWord: (word: string, reviewers?: number) =>
+      JSON.parse(
+        reviewers === undefined
+          ? session.rank(word)
+          : session.rank_with_reviewers(word, reviewers),
+      ),
     free: () => session.free(),
   };
 }

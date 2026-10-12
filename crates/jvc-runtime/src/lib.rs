@@ -243,11 +243,14 @@ const REVIEWER_INCOMING_LIMIT: usize = 16;
 /// Reviewer details for one target: every actor with an effective verdict,
 /// its influence interval, and a bounded explanation of its incoming routes
 /// from the effective graph. Shares of individual routes are not invented.
+/// At most `limit` entries are materialized, in actor order. The second
+/// value says whether the list holds every reviewer.
 fn reviewer_details(
     graph: &jvc_state::ContextGraph,
     ranking: &jvc_rank::Ranking,
     verdicts: &[jvc_rank::Verdict],
-) -> Vec<Value> {
+    limit: usize,
+) -> (Vec<Value>, bool) {
     let zero = jvc_rank::rational(0, 1);
     let mut incoming: Vec<Vec<usize>> = vec![Vec::new(); graph.actors.len()];
     for (from, row) in graph.rows.iter().enumerate() {
@@ -257,10 +260,15 @@ fn reviewer_details(
             }
         }
     }
-    verdicts
+    let total = verdicts
+        .iter()
+        .filter(|verdict| **verdict != jvc_rank::Verdict::Absent)
+        .count();
+    let listed = verdicts
         .iter()
         .enumerate()
         .filter(|(_, verdict)| **verdict != jvc_rank::Verdict::Absent)
+        .take(limit)
         .map(|(index, verdict)| {
             let root = graph.roots.get(index).filter(|q| **q > zero);
             let sources = &incoming[index];
@@ -282,7 +290,8 @@ fn reviewer_details(
                 "multiple_routes": route_count > 1,
             })
         })
-        .collect()
+        .collect();
+    (listed, total <= limit)
 }
 fn interval_value(interval: &jvc_rank::Interval) -> Value {
     json!([ratio_value(&interval.lower), ratio_value(&interval.upper)])
@@ -303,12 +312,16 @@ pub fn rank_word_bytes(bytes: &[u8], word: &str) -> Result<Value> {
     }
     let input = evaluation_input(bytes)?;
     let evaluation = jvc_state::evaluate(&input);
-    rank_word_state(&input, &evaluation, word)
+    rank_word_state(&input, &evaluation, word, None)
 }
+/// Ranks one word. `reviewers_limit` asks for bounded reviewer details per
+/// score. Without it, the aggregate lookup does no reviewer-detail work and
+/// the scores carry no `reviewers` field.
 fn rank_word_state(
     input: &jvc_state::EvaluationInput,
     evaluation: &jvc_state::Evaluation,
     word: &str,
+    reviewers_limit: Option<usize>,
 ) -> Result<Value> {
     let mut targets: BTreeMap<String, (jvc_state::Context, bool, String, bool)> = BTreeMap::new();
     for publication in evaluation
@@ -462,8 +475,14 @@ fn rank_word_state(
                     .iter()
                     .filter(|v| **v != jvc_rank::Verdict::Absent)
                     .count();
-                let details = reviewer_details(contextual, ranking, &candidate.verdicts);
-                scores.push(json!({"target":id,"support":interval_value(&score.support),"opposition":interval_value(&score.opposition),"net":interval_value(&score.net),"direct_reviewers":reviewers,"status":status,"reviewers":details}));
+                let mut entry = json!({"target":id,"support":interval_value(&score.support),"opposition":interval_value(&score.opposition),"net":interval_value(&score.net),"direct_reviewers":reviewers,"status":status});
+                if let Some(limit) = reviewers_limit {
+                    let (details, complete) =
+                        reviewer_details(contextual, ranking, &candidate.verdicts, limit);
+                    entry["reviewers"] = Value::Array(details);
+                    entry["reviewers_complete"] = Value::Bool(complete);
+                }
+                scores.push(entry);
                 scored.insert(id.clone(), (candidate, score, graph_key, *definition));
             }
             Err(_) => {
@@ -609,7 +628,17 @@ impl EvaluationSession {
         output(value)
     }
     pub fn rank(&self, word: &str) -> std::result::Result<String, JsValue> {
-        output(rank_word_state(&self.input, &self.evaluation, word).map_err(fail)?)
+        output(rank_word_state(&self.input, &self.evaluation, word, None).map_err(fail)?)
+    }
+    /// Ranks one word with at most `reviewers` reviewer details per score.
+    pub fn rank_with_reviewers(
+        &self,
+        word: &str,
+        reviewers: usize,
+    ) -> std::result::Result<String, JsValue> {
+        output(
+            rank_word_state(&self.input, &self.evaluation, word, Some(reviewers)).map_err(fail)?,
+        )
     }
 }
 

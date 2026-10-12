@@ -60,9 +60,19 @@ export interface ServiceOptions {
   reportError?: (error: unknown) => void;
   allowPrototypeBatch?: boolean;
   beforeCommit?: (state: State) => Promise<void>;
+  /**
+   * Lower response bounds, for tests of the cut states. A value above the
+   * documented bound is ignored, so the contract never widens.
+   */
+  limits?: { reviewers?: number; profileClaims?: number };
 }
 /** Reviewer details listed per score when a word request asks for them. */
 const REVIEWER_LIMIT = 64;
+/** Concurrent profile claims listed in an identity response. */
+const PROFILE_CLAIM_LIMIT = 16;
+/** Total encoded bytes of profile claim bodies in one identity response. */
+const PROFILE_CLAIM_BYTES = 1048576;
+
 /** Records transport page bounds. */
 const RECORD_PAGE_LIMIT = 200;
 const RECORD_PAGE_BYTES = 4194304;
@@ -560,6 +570,16 @@ export class DictionaryService {
         };
     }
     throw new ApiError(503, "busy", "Admission is busy.");
+  }
+  /** A configured bound, never above the documented one. */
+  private bound(
+    name: "reviewers" | "profileClaims",
+    documented: number,
+  ): number {
+    const configured = this.options.limits?.[name];
+    return Number.isSafeInteger(configured) && configured! >= 1
+      ? Math.min(configured!, documented)
+      : documented;
   }
   private limit(url: URL, max = 1000): number {
     const raw = url.searchParams.get("limit");
@@ -1134,22 +1154,24 @@ export class DictionaryService {
             .map((a) => a.id),
         ].sort(),
       };
+      const reviewersFlag = url.searchParams.get("reviewers");
+      if (reviewersFlag !== null && reviewersFlag !== "1")
+        throw new ApiError(
+          400,
+          "reviewers",
+          "The reviewers flag must be 1 when present.",
+        );
+      // The core materializes reviewer details only on request, bounded there.
+      const withReviewers = reviewersFlag === "1";
       try {
         const session = this.sessions.get(snapshot.snapshot + "|" + view);
-        if (session) ranking = session.rankWord(id);
+        if (session)
+          ranking = session.rankWord(
+            id,
+            withReviewers ? this.bound("reviewers", REVIEWER_LIMIT) : undefined,
+          );
       } catch {}
-      const withReviewers = url.searchParams.get("reviewers") === "1";
-      const scores = (ranking.scores as Record<string, unknown>[]).map(
-        ({ reviewers, ...score }) => {
-          if (!withReviewers) return score;
-          const list = Array.isArray(reviewers) ? reviewers : [];
-          return {
-            ...score,
-            reviewers: list.slice(0, REVIEWER_LIMIT),
-            reviewers_complete: list.length <= REVIEWER_LIMIT,
-          };
-        },
-      );
+      const scores = ranking.scores as Record<string, unknown>[];
       return json({
         snapshot: snapshot.snapshot,
         view,
@@ -1201,22 +1223,28 @@ export class DictionaryService {
         const body = event.body_hash
           ? await this.objects.get(event.body_hash)
           : null;
-        const size = envelope.length + (body?.length ?? 0);
-        if (items.length && bytes + size > RECORD_PAGE_BYTES) {
-          truncated = true;
-          break;
-        }
-        bytes += size;
-        items.push({
+        // "missing" means the snapshot never retained the body. "unavailable"
+        // means the snapshot retained it and storage did not return it now.
+        const item = {
           id,
           envelope: JSON.parse(new TextDecoder().decode(envelope)),
           body: body ? JSON.parse(new TextDecoder().decode(body)) : null,
           body_status: body
             ? "present"
-            : event.header.content
-              ? "missing"
-              : "none",
-        });
+            : event.body_hash
+              ? "unavailable"
+              : event.header.content
+                ? "missing"
+                : "none",
+        };
+        // The page bound counts the encoded item bytes as the response carries them.
+        const size = utf8(JSON.stringify(item)).length;
+        if (items.length && bytes + size > RECORD_PAGE_BYTES) {
+          truncated = true;
+          break;
+        }
+        bytes += size;
+        items.push(item);
       }
       return json({
         snapshot: snapshot.snapshot,
@@ -1227,9 +1255,10 @@ export class DictionaryService {
     }
     if (path.startsWith("/identities/")) {
       const rest = decodeURIComponent(path.slice(12));
-      const [identity, section] = rest.split("/");
+      const parts = rest.split("/");
+      const [identity, section] = parts;
       this.identifier(identity, "ed25519:");
-      if (section !== undefined && section !== "activity")
+      if (parts.length > 2 || (section !== undefined && section !== "activity"))
         throw new ApiError(404, "missing", "API route is unavailable.");
       const snapshot = await this.snapshot(url.searchParams.get("snapshot"));
       const view =
@@ -1264,6 +1293,13 @@ export class DictionaryService {
           next: remaining.length > page.length ? page.at(-1) : null,
         });
       }
+      // Without an evaluation, no definite profile, handover, or compromise state exists.
+      if (!evaluation.available)
+        throw new ApiError(
+          503,
+          "resource_unavailable",
+          "Selected view cannot be evaluated.",
+        );
       const lifecycle = evaluation.lifecycle as {
         key_actor: Record<string, string>;
         successor: Record<string, string>;
@@ -1282,25 +1318,42 @@ export class DictionaryService {
         }
       >;
       const register = registers[`${actor}|profile`];
+      // Concurrent claims are bounded by count and by total body bytes. A
+      // claim past the byte budget keeps its event and hash with no body.
+      const heads = sorted(register?.heads ?? []);
       const claims: unknown[] = [];
       let unavailable = false;
-      for (const head of register?.heads ?? []) {
+      let claimBytes = 0;
+      const claimLimit = this.bound("profileClaims", PROFILE_CLAIM_LIMIT);
+      for (const head of heads.slice(0, claimLimit)) {
         const event = snapshot.events[head];
         const bytes = event?.body_hash
           ? await this.objects.get(event.body_hash)
           : null;
         let body: unknown = null;
+        let bodyStatus: "present" | "unavailable" | "omitted" = "unavailable";
         if (bytes) {
           const envelope = await this.objects.get(event!.envelope_hash);
-          if (envelope && inspectBody(envelope, bytes).availability === "valid")
-            body = JSON.parse(new TextDecoder().decode(bytes));
+          if (
+            envelope &&
+            inspectBody(envelope, bytes).availability === "valid"
+          ) {
+            if (claimBytes + bytes.length > PROFILE_CLAIM_BYTES)
+              bodyStatus = "omitted";
+            else {
+              claimBytes += bytes.length;
+              body = JSON.parse(new TextDecoder().decode(bytes));
+              bodyStatus = "present";
+            }
+          }
         }
-        if (body === null) unavailable = true;
+        if (bodyStatus === "unavailable") unavailable = true;
         claims.push({
           event: head,
           issuer: event?.header.issuer ?? null,
           body_hash: event?.body_hash ?? null,
           body,
+          body_status: bodyStatus,
         });
       }
       const counts = {
@@ -1338,6 +1391,13 @@ export class DictionaryService {
                 ? "unavailable"
                 : "known",
           claims,
+          claims_count: heads.length,
+          claims_complete:
+            heads.length <= claimLimit &&
+            claims.every(
+              (claim) =>
+                (claim as { body_status: string }).body_status !== "omitted",
+            ),
         },
         counts,
       });

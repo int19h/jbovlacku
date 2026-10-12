@@ -26,7 +26,15 @@ export interface CachedPackage {
   /** 1 for the default package, 2 when the entries carry row metadata. */
   version?: 1 | 2;
   entries: PackageEntry[];
+  /**
+   * Set when the server advertised version 2 and that download failed, so
+   * the version 1 package is in use instead. The text explains the failure.
+   * Pages that describe the package show this state.
+   */
+  downgrade?: string | null;
 }
+/** Rafsi spellings per version 2 entry. The server applies the same bound. */
+export const PACKAGE_RAFSI_LIMIT = 64;
 export function isV2(entry: PackageEntry): entry is PackageEntryV2 {
   return "issuer" in entry;
 }
@@ -59,6 +67,8 @@ const V1_FIELDS = [
   "body",
 ];
 const V2_FIELDS = [...V1_FIELDS, "issuer", "notes", "rafsi", "attribution"];
+/** A server that bounds the rafsi list also says whether it is complete. */
+const V2_BOUNDED_FIELDS = [...V2_FIELDS, "rafsi_complete"];
 export function validateEntry(
   value: unknown,
   language: string,
@@ -66,12 +76,16 @@ export function validateEntry(
 ): asserts value is PackageEntry {
   if (version === 2) {
     if (
-      !fields(value, V2_FIELDS) ||
+      !(fields(value, V2_FIELDS) || fields(value, V2_BOUNDED_FIELDS)) ||
       !identityId(value.issuer) ||
       typeof value.notes !== "boolean" ||
       !Array.isArray(value.rafsi) ||
-      value.rafsi.length > 64 ||
+      value.rafsi.length > PACKAGE_RAFSI_LIMIT ||
       value.rafsi.some((r: unknown) => typeof r !== "string") ||
+      !(
+        value.rafsi_complete === undefined ||
+        typeof value.rafsi_complete === "boolean"
+      ) ||
       !(
         value.attribution === null ||
         (fields(value.attribution, ["source", "author", "account", "dates"]) &&
@@ -90,10 +104,12 @@ export function validateEntry(
       )
     )
       throw invalidPackage();
-    const { issuer, notes, rafsi, attribution, ...base } = value;
+    const { issuer, notes, rafsi, rafsi_complete, attribution, ...base } =
+      value;
     void issuer;
     void notes;
     void rafsi;
+    void rafsi_complete;
     void attribution;
     validateEntry(base, language, 1);
     return;
@@ -162,6 +178,37 @@ export async function downloadPackage(
   language: string,
   options: RequestOptions = {},
 ): Promise<CachedPackage> {
+  try {
+    return await downloadVersion(language, options, null);
+  } catch (error) {
+    // A version 2 package that the server advertised and that failed its
+    // checks does not block search. The version 1 package is used instead,
+    // and the cached package records why. A network failure or a cancel is
+    // reported as it is.
+    if (
+      !(error instanceof PackageVersionError) ||
+      error.version !== 2 ||
+      options.signal?.aborted
+    )
+      throw error;
+    const reason = error.message;
+    return downloadVersion(language, options, reason);
+  }
+}
+/** A package failure that names the version that failed. */
+export class PackageVersionError extends Error {
+  constructor(
+    public version: 1 | 2,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+async function downloadVersion(
+  language: string,
+  options: RequestOptions,
+  downgrade: string | null,
+): Promise<CachedPackage> {
   const deadline = AbortSignal.timeout(120000);
   const signal = options.signal
     ? AbortSignal.any([options.signal, deadline])
@@ -184,22 +231,48 @@ export async function downloadPackage(
       throw invalidPackage();
   const v2 = versions.filter((p) => p.language === language && p.version === 2);
   if (v2.length > 1) throw invalidPackage();
-  const advertised = v2.length
+  // After a failed version 2 download, only version 1 is requested.
+  const useV2 = v2.length > 0 && downgrade === null;
+  const advertised = useV2
     ? v2
     : manifest.packages.filter((p) => p.language === language);
-  const version: 1 | 2 = v2.length ? 2 : 1;
+  const version: 1 | 2 = useV2 ? 2 : 1;
   if (!advertised.length)
     throw new Error("This server offers no search package for that language.");
   if (advertised.length !== 1) throw invalidPackage();
+  try {
+    const entries = await downloadEntries(
+      language,
+      version,
+      manifest.snapshot,
+      advertised[0],
+      { ...options, signal },
+    );
+    return { snapshot: manifest.snapshot, version, entries, downgrade };
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") throw error;
+    throw new PackageVersionError(
+      version,
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+}
+/** Downloads and checks one advertised package and its parts. */
+async function downloadEntries(
+  language: string,
+  version: 1 | 2,
+  snapshot: string,
+  advertised: { hash: string; bytes: number },
+  options: RequestOptions,
+): Promise<PackageEntry[]> {
+  const signal = options.signal;
+  const manifest = { snapshot };
   const raw = await objectBytes(
     `/packages/${encodeURIComponent(language)}?snapshot=${encodeURIComponent(manifest.snapshot)}${version === 2 ? "&version=2" : ""}`,
     1048576,
     { ...options, signal },
   );
-  if (
-    raw.length !== advertised[0].bytes ||
-    contentHash(raw) !== advertised[0].hash
-  )
+  if (raw.length !== advertised.bytes || contentHash(raw) !== advertised.hash)
     throw new Error(
       "The search package hash did not match. Search this server or download another package.",
     );
@@ -257,7 +330,7 @@ export async function downloadPackage(
       entries.push(entry);
     }
   }
-  return { snapshot: manifest.snapshot, version, entries };
+  return entries;
 }
 /** Search normalization for lookup only. It never rewrites signed text. */
 export function normalizeQuery(value: string): string {

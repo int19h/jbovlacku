@@ -765,10 +765,10 @@ Public reads need no account. Public event admission follows published quotas an
 | `GET /package-parts/HASH` | Canonical derived search-part bytes, with a 4 MiB uncompressed limit. |
 | `GET /packages/LANGUAGE?snapshot=S&version=N` | Search package manifest and content hashes. Version 1 is the default. Version 2 adds row metadata. |
 | `GET /search?q=Q&language=L&view=V&snapshot=S` | Optional remote results with view and snapshot metadata. |
-| `GET /words/WORD_ID?view=V&snapshot=S&reviewers=1` | Candidate IDs, rafsi claims, and attributed ranking summary. `reviewers=1` adds bounded reviewer details to each score. |
+| `GET /words/WORD_ID?view=V&snapshot=S&reviewers=1` | Candidate IDs, rafsi claims, and attributed ranking summary. `reviewers=1` adds bounded reviewer details to each score. Any other `reviewers` value is HTTP 400. |
 | `GET /identities/KEY?view=V&snapshot=S` | Effective profile claims, continuity state, and activity counts for one signing key. |
 | `GET /identities/KEY/activity?view=V&snapshot=S&after=ID&limit=N` | Events signed by that key in event-ID order, with their interpretation and local receipt position. |
-| `GET /records?snapshot=S&after=ID&limit=N` | Snapshot records for local calculation: envelope, body, and body status, bounded by count and bytes. |
+| `GET /records?snapshot=S&after=ID&limit=N` | Snapshot records for local calculation: envelope, body, and body status, bounded by count and bytes. The limit ranges from 1 through 200. |
 
 The POST /events body contains exactly `envelope` and `body`. Canonicalize the enclosed body and compare its hash and byte length before acceptance.
 Transport whitespace outside canonical objects does not alter signed bytes. The server preserves canonical signed meaning and never changes a field to make a signature pass.
@@ -842,11 +842,11 @@ AssistanceProfile contains exactly id, label, provider, model, operations, and d
 
 Its ID is an opaque configuration name. Operations lists the supported assist operations from section 16. Other values are display strings.
 Public capability metadata never contains provider credentials or private endpoint URLs.
-The following objects define required response fields. Optional values use null rather than omitted fields.
+The following objects define required response fields. Optional values use null rather than omitted fields, except the fields marked with `?`, which appear only when the request asks for them or when the server supports them.
 
 An `ID` means its prefixed string from the format specification. A cursor is an opaque ASCII string of at most 256 bytes.
 Snapshot IDs, logical-inventory digests, and package hashes use the `sha256:` form. Field paths in errors use JSON Pointer syntax.
-The query limit ranges from 1 through 1,000, with default 200. Search returns at most 100 hits per page.
+The query limit ranges from 1 through 1,000, with default 200, except where a route states a lower bound. Search returns at most 100 hits per page, and records at most 200 per page.
 
 Transport requests have a 1 MiB uncompressed limit, except import-selection uploads with their separate 16 MiB limit. Object limits still apply after decoding and decompression.
 
@@ -901,7 +901,9 @@ IdentityResponse = {
   snapshot: ID, view: event-ID, identity: identity-string, actor: identity-string,
   successor: identity-string | null, retired: boolean, compromised: boolean, suspended: boolean,
   profile: {state: "none" | "known" | "conflicted" | "unavailable",
-            claims: [{event: event-ID, issuer: identity-string | null, body_hash: ID | null, body: ProfileBody | null}]},
+            claims: [{event: event-ID, issuer: identity-string | null, body_hash: ID | null,
+                      body: ProfileBody | null, body_status: "present" | "unavailable" | "omitted"}],
+            claims_count: integer, claims_complete: boolean},
   counts: {definitions: integer, rafsi: integer, judgments: integer, trust: integer, reports: integer, other: integer}
 }
 ActivityResponse = {
@@ -912,7 +914,7 @@ ActivityResponse = {
 RecordsResponse = {
   snapshot: ID, logical_inventory: ID,
   items: [{id: event-ID, envelope: envelope-object, body: canonical-object | null,
-           body_status: "present" | "missing" | "none"}],
+           body_status: "present" | "missing" | "unavailable" | "none"}],
   next: event-ID | null
 }
 PublicationStatus = {
@@ -942,14 +944,19 @@ Error = {code: string, message: string, event: event-ID | null, field: string | 
 Reviewer details appear only when the request asks for them. Each list is bounded to 64 entries, and `reviewers_complete` says whether the list is complete.
 A detail names the resolved actor, its effective verdict, and its influence interval under the same graph that produced the score.
 `root` is the actor's starting allowance when it is a root of the view. `incoming` lists the actors whose resolved heeds reach it directly, bounded to 16.
-`multiple_routes` is true when more than one route can contribute. The response never states a per-route share, because the bounded calculation does not derive one.
+`multiple_routes` is true when the actor has more than one direct source of influence in the effective graph: its direct incoming heeds plus its root allowance, when it has one. It does not count indirect routes. The response never states a per-route share, because the bounded calculation does not derive one.
+The shared core materializes the details only for a request that asks for them, bounded to 64 before serialization. A request without the flag does no reviewer-detail work.
 An older server omits the field. A client distinguishes that omission from an empty list, which means that no reviewer exists.
 
 Identity responses resolve the profile register under the effective continuity rules. Concurrent profile claims appear together with state `conflicted`.
+A response lists at most 16 claims in event-ID order with at most 1 MiB of claim bodies in total. `claims_count` is the number of concurrent heads, and `claims_complete` is false when the list or a body was cut. A cut body has `body_status` `omitted`. A retained body that storage did not return has `unavailable`, and the profile state is `unavailable` only in that case.
+If the selected view cannot be evaluated, the identity route returns HTTP 503 with code `resource_unavailable`, like the search and word routes. It never asserts that an identity has no profile, successor, or compromise notice without an evaluation. The activity route still answers, with interpretation `unavailable` per item.
+`/identities/KEY` and `/identities/KEY/activity` are the only identity paths. A longer path is HTTP 404.
 The counts describe events signed by that exact key in the snapshot. They are raw authorship, not imported source attribution.
 Activity items use event-ID order, which is stable but not chronological. `seen` is this server's receipt position, for navigation only.
 
-The records transport returns the committed envelope representation of the snapshot with its body when retained. Pages hold at most 200 records and 4 MiB.
+The records transport returns the committed envelope representation of the snapshot with its body when retained. Pages hold at most 200 records, and the encoded `items` bytes, as the response carries them before any transport compression, stay under 4 MiB. A page always holds at least one item, so one item can exceed that bound alone.
+`body_status` `missing` means that the snapshot never retained the body. `unavailable` means that the snapshot retained it and storage did not return it now. A client keeps the two apart: a missing body is a fact of the snapshot, and an unavailable one deserves another request.
 A client authenticates each envelope and body through the shared core and compares the complete set with the snapshot inventory before claiming a complete local calculation.
 
 Word layers contain definition IDs only. Assignment status is `eligible`, `inactive`, or `unknown`, with distinct pair scores.
@@ -1037,9 +1044,11 @@ Parts contain at most 2,000 entries and 4 MiB uncompressed. These are derived ar
 Their dedicated endpoint uses that limit rather than the 256 KiB event-body limit. Split a larger package into more parts.
 An entry contains `event`, `word`, `language`, `glosses`, `plain_text`, `classification`, and `body`.
 Event is the publication ID. Word is its word object. Body is its body hash or null.
-A version 2 entry adds `issuer`, `notes`, `rafsi`, and `attribution`.
+A version 2 entry adds `issuer`, `notes`, `rafsi`, `rafsi_complete`, and `attribution`.
 Issuer is the signing key, which is the importer for an import. Notes is true when the definition has notes.
-Rafsi lists the spellings of retained rafsi claim bodies for the word. Attribution is null for a native publication.
+Rafsi lists the spellings of retained rafsi claim bodies for the word, sorted, at most 64 of them. `rafsi_complete` is false when the word has more claims than the list holds. A client never treats a cut list as a complete conflict inventory. The exact claims of a word are the `rafsi` event IDs of the word route and their claim bodies.
+Attribution is null for a native publication.
+If an advertised version 2 package fails its checks, the client uses the version 1 package instead and records the reason with the cached package. It shows that state wherever it describes the package. It never falls back without that record.
 For an import it contains `source`, nullable `author`, nullable `account` with `origin` and `account`, and `dates`, a map of source date labels to source strings.
 These fields are server assertions derived from the records. They are not part of the signed format, and a client can authenticate them against the records.
 

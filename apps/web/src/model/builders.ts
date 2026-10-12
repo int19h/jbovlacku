@@ -82,6 +82,13 @@ export interface PackageInventory {
   gismu: { spelling: string; word: string }[];
   /** Whether the package carries rafsi claims at all. */
   hasClaims: boolean;
+  /**
+   * Words whose rafsi list the server cut at its bound. Their claims in
+   * `claims` are a sample, not the complete set. Empty when `complete`.
+   */
+  incompleteWords: { word: string; spelling: string }[];
+  /** False when any word's rafsi list was cut. A cut inventory is not a complete conflict check. */
+  complete: boolean;
 }
 /** The cached package with the most entries, preferring version 2, for inventories and search. */
 export async function cachedPackage(store: {
@@ -105,9 +112,17 @@ export function inventoryFromPackage(
   cached: CachedPackage | null,
 ): PackageInventory {
   if (!cached)
-    return { snapshot: null, claims: [], gismu: [], hasClaims: false };
+    return {
+      snapshot: null,
+      claims: [],
+      gismu: [],
+      hasClaims: false,
+      incompleteWords: [],
+      complete: true,
+    };
   const claims = new Map<string, RafsiInventoryClaim>();
   const gismu = new Map<string, string>();
+  const incomplete = new Map<string, string>();
   let hasClaims = false;
   for (const entry of cached.entries) {
     const id = wordId({ language: "jbo", spelling: entry.word.spelling });
@@ -115,6 +130,8 @@ export function inventoryFromPackage(
     if (kind === "gismu") gismu.set(id, entry.word.spelling);
     if ("rafsi" in entry && Array.isArray(entry.rafsi)) {
       hasClaims = true;
+      if ((entry as { rafsi_complete?: boolean }).rafsi_complete === false)
+        incomplete.set(id, entry.word.spelling);
       for (const rafsi of entry.rafsi) {
         const pair = rafsiPairId(id, rafsi);
         claims.set(pair, {
@@ -131,6 +148,11 @@ export function inventoryFromPackage(
     claims: [...claims.values()],
     gismu: [...gismu.entries()].map(([word, spelling]) => ({ spelling, word })),
     hasClaims,
+    incompleteWords: [...incomplete.entries()].map(([word, spelling]) => ({
+      word,
+      spelling,
+    })),
+    complete: incomplete.size === 0,
   };
 }
 /** Compound metadata for a chosen lujvo candidate. Joins stay out of the rafsi fields. */

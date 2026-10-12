@@ -68,7 +68,12 @@ const body = (text: string, notes: unknown[] = []) => ({
   },
   legacy: null,
 });
-async function fixture() {
+async function fixture(
+  options: {
+    limits?: { reviewers?: number; profileClaims?: number };
+    extra?: ReturnType<typeof createEvent>[];
+  } = {},
+) {
   await mkdir(process.env.JVC_TEST_ROOT ?? tmpdir(), { recursive: true });
   const directory = await mkdtemp(
     join(process.env.JVC_TEST_ROOT ?? tmpdir(), "jvc-reads-case-"),
@@ -175,6 +180,7 @@ async function fixture() {
     serverId: "reads-node",
     policyUrl: "https://example.invalid/policy",
     selectedView: view.envelope.id,
+    limits: options.limits,
   });
   for (const event of [
     view,
@@ -184,12 +190,15 @@ async function fixture() {
     heed,
     bless,
     selfBless,
+    ...(options.extra ?? []),
   ]) {
     const response = await service.fetch(request("/events", event));
     assert.ok(response.ok, await response.text());
   }
   return {
     service,
+    objects,
+    directory,
     definition,
     claim,
     profile,
@@ -391,4 +400,273 @@ test("version 2 search packages add issuer, notes, rafsi, and attribution beside
   assert.equal("issuer" in v1Part[0], false);
   const bad = await service.fetch(request("/packages/en?version=3"));
   assert.equal(bad.status, 400);
+});
+
+/** An imported definition with attribution and source dates. */
+function importedDefinition() {
+  const importer = new Uint8Array(32).fill(43);
+  const importWord = { language: "jbo" as const, spelling: "ckusro" };
+  return createEvent(
+    importer,
+    [],
+    "8".repeat(32),
+    {
+      kind: "definition.publish",
+      word: wordId(importWord),
+      language: "en",
+      parents: [],
+      origin: "import",
+    },
+    {
+      ...body("x1 is a library of books x2."),
+      word: importWord,
+      classification: { kind: "lujvo", selmaho: [] },
+      license: {
+        expression: "unknown",
+        url: null,
+        attribution: "Source author unknown",
+      },
+      legacy: {
+        source: "https://lensisku.invalid",
+        snapshot: "sha256:" + "a".repeat(64),
+        extraction: "reads-test-1",
+        record: { kind: "definition", id: 42 },
+        locator: "definitions/42",
+        original: { definition: "x1 is a library of books x2." },
+        attribution: {
+          author: "arj",
+          editor: null,
+          author_account: {
+            origin: "https://lensisku.invalid",
+            account: 8,
+            username: "arj",
+            evidence: {
+              kind: "source-id",
+              source: {
+                label: "definition 42 user_id",
+                url: "https://lensisku.invalid/api/definitions/42",
+                event: null,
+                locator: "user_id",
+              },
+            },
+          },
+          dates: { created_at: "2003-03-12T10:00:00Z" },
+        },
+        conversion: {
+          method: "literal",
+          tool: "reads-test",
+          version: "1",
+          model: null,
+          review: "unreviewed",
+          mappings: [],
+          warnings: [],
+        },
+        limitations: ["Synthetic test record."],
+      },
+    },
+  );
+}
+const pairIdFor = (pair: { word: string; rafsi: string }) =>
+  "jvr1:" +
+  contentHash(
+    utf8("jbovlacku-rafsi-v1\n" + canonicalize(utf8(JSON.stringify(pair)))),
+  ).slice(7);
+
+test("an explicit version 1 request, an import with attribution dates, and a cut rafsi list are served honestly", async () => {
+  // 65 claims for one word exceed the per-entry bound of 64.
+  const spellings: string[] = [];
+  for (let index = 0; spellings.length < 65; index++)
+    spellings.push(
+      `k${String.fromCharCode(97 + Math.floor(index / 5))}${"aeiou"[index % 5]}`,
+    );
+  const extraWord = { language: "jbo" as const, spelling: "klaku" };
+  const claimant = new Uint8Array(32).fill(44);
+  const claims: ReturnType<typeof createEvent>[] = [];
+  let previous: string | null = null;
+  for (const [index, rafsi] of spellings.entries()) {
+    const pair = { word: wordId(extraWord), rafsi };
+    const claim = createEvent(
+      claimant,
+      previous ? [previous] : [],
+      (100 + index).toString().padStart(32, "9"),
+      {
+        kind: "rafsi.publish",
+        word: pair.word,
+        assignment: pairIdFor(pair),
+        origin: "native",
+      },
+      { word: extraWord, rafsi, rationale: [], sources: [], legacy: null },
+    );
+    previous = claim.envelope.id;
+    claims.push(claim);
+  }
+  const extraDefinition = createEvent(
+    claimant,
+    [previous!],
+    "c".repeat(32),
+    {
+      kind: "definition.publish",
+      word: wordId(extraWord),
+      language: "en",
+      parents: [],
+      origin: "native",
+    },
+    { ...body("come"), word: extraWord },
+  );
+  const { service, definition } = await fixture({
+    extra: [importedDefinition(), ...claims, extraDefinition],
+  });
+  const manifest = await read(await service.fetch(request("/manifest")));
+  const explicit = await service.fetch(request("/packages/en?version=1"));
+  assert.equal(explicit.status, 200);
+  const v1Bytes = new Uint8Array(await explicit.arrayBuffer());
+  assert.equal(contentHash(v1Bytes), manifest.packages[0].hash);
+  assert.equal(JSON.parse(new TextDecoder().decode(v1Bytes)).version, 1);
+  const v2 = await read(await service.fetch(request("/packages/en?version=2")));
+  const part = await read(
+    await service.fetch(
+      request(`/package-parts/${encodeURIComponent(v2.parts[0].hash)}`),
+    ),
+  );
+  const byEvent = Object.fromEntries(part.map((e: any) => [e.event, e]));
+  const native = byEvent[definition.envelope.id];
+  assert.deepEqual(native.rafsi, ["kla"]);
+  assert.equal(native.rafsi_complete, true);
+  const imported = part.find((e: any) => e.word.spelling === "ckusro");
+  assert.deepEqual(imported.attribution, {
+    source: "https://lensisku.invalid",
+    author: "arj",
+    account: { origin: "https://lensisku.invalid", account: 8 },
+    dates: { created_at: "2003-03-12T10:00:00Z" },
+  });
+  const cut = byEvent[extraDefinition.envelope.id];
+  assert.equal(cut.rafsi.length, 64);
+  assert.deepEqual(cut.rafsi, [...spellings].sort().slice(0, 64));
+  assert.equal(cut.rafsi_complete, false);
+  // The exact claim set stays reachable through the word route.
+  const wordResponse = await read(
+    await service.fetch(request(`/words/${wordId(extraWord)}`)),
+  );
+  assert.equal(wordResponse.rafsi.length, 65);
+});
+
+test("reviewer details are bounded inside the core and flagged incomplete", async () => {
+  const { service, definition } = await fixture({ limits: { reviewers: 1 } });
+  const detailed = await read(
+    await service.fetch(request(`/words/${wordId(word)}?reviewers=1`)),
+  );
+  const score = detailed.scores.find(
+    (s: any) => s.target === definition.envelope.id,
+  );
+  assert.equal(score.direct_reviewers, 2);
+  assert.equal(score.reviewers.length, 1);
+  assert.equal(score.reviewers_complete, false);
+  const bad = await service.fetch(
+    request(`/words/${wordId(word)}?reviewers=2`),
+  );
+  assert.equal(bad.status, 400);
+  assert.equal((await read(bad)).code, "reviewers");
+});
+
+test("identity profiles report conflicted, unavailable, and cut claim states", async () => {
+  const identity = identityFromSeed(author);
+  const { claim } = await fixture();
+  // A second profile claim beside the first one, from the same previous head.
+  const rival = createEvent(
+    author,
+    [claim.envelope.id],
+    "d".repeat(32),
+    { kind: "identity.profile" },
+    { name: "la .bob.", bio: [], links: [] },
+  );
+  const cut = await fixture({
+    extra: [rival],
+    limits: { profileClaims: 1 },
+  });
+  const conflicted = await read(
+    await cut.service.fetch(
+      request(`/identities/${encodeURIComponent(identity)}`),
+    ),
+  );
+  assert.equal(conflicted.profile.state, "conflicted");
+  assert.equal(conflicted.profile.claims_count, 2);
+  assert.equal(conflicted.profile.claims.length, 1);
+  assert.equal(conflicted.profile.claims_complete, false);
+  assert.equal(conflicted.profile.claims[0].body_status, "present");
+  const full = await fixture({ extra: [rival] });
+  const both = await read(
+    await full.service.fetch(
+      request(`/identities/${encodeURIComponent(identity)}`),
+    ),
+  );
+  assert.equal(both.profile.state, "conflicted");
+  assert.equal(both.profile.claims.length, 2);
+  assert.equal(both.profile.claims_complete, true);
+  // A retained body that storage cannot return makes the profile unavailable.
+  const plain = await fixture();
+  const hash = plain.profile.envelope.header.content!.hash;
+  await rm(join(plain.directory, "objects", hash.replaceAll(":", "-")));
+  const unavailable = await read(
+    await plain.service.fetch(
+      request(`/identities/${encodeURIComponent(identity)}`),
+    ),
+  );
+  assert.equal(unavailable.profile.state, "unavailable");
+  assert.equal(unavailable.profile.claims[0].body, null);
+  assert.equal(unavailable.profile.claims[0].body_status, "unavailable");
+  assert.equal(unavailable.profile.claims[0].body_hash, hash);
+  // Malformed suffixes are refused.
+  const deep = await plain.service.fetch(
+    request(`/identities/${encodeURIComponent(identity)}/activity/anything`),
+  );
+  assert.equal(deep.status, 404);
+});
+
+test("records keep unretained and unreadable bodies apart, and new routes return 410 for an unknown snapshot", async () => {
+  const { service, directory, profile, definition } = await fixture();
+  const hash = profile.envelope.header.content!.hash;
+  await rm(join(directory, "objects", hash.replaceAll(":", "-")));
+  const records = await read(await service.fetch(request("/records")));
+  const byId = Object.fromEntries(records.items.map((i: any) => [i.id, i]));
+  assert.equal(byId[profile.envelope.id].body_status, "unavailable");
+  assert.equal(byId[profile.envelope.id].body, null);
+  assert.equal(byId[definition.envelope.id].body_status, "present");
+  const expired = "sha256:" + "0".repeat(64);
+  for (const path of [
+    `/records?snapshot=${expired}`,
+    `/identities/${encodeURIComponent(identityFromSeed(author))}?snapshot=${expired}`,
+    `/identities/${encodeURIComponent(identityFromSeed(author))}/activity?snapshot=${expired}`,
+    `/words/${wordId(word)}?snapshot=${expired}`,
+    `/packages/en?version=2&snapshot=${expired}`,
+  ]) {
+    const response = await service.fetch(request(path));
+    assert.equal(response.status, 410, path);
+    assert.equal((await read(response)).code, "snapshot_expired");
+  }
+});
+
+test("an identity read without an evaluation is 503, not a definite absence", async () => {
+  const { service } = await fixture();
+  // The evaluation helper reports an unavailable evaluation, as it does when
+  // the core hits its resource limit.
+  const original = (service as any).evaluation;
+  (service as any).evaluation = async (...args: unknown[]) => ({
+    ...(await original.apply(service, args)),
+    available: false,
+    receipts: {},
+  });
+  const identity = encodeURIComponent(identityFromSeed(author));
+  const response = await service.fetch(request(`/identities/${identity}`));
+  assert.equal(response.status, 503);
+  assert.equal((await read(response)).code, "resource_unavailable");
+  const wordResponse = await service.fetch(request(`/words/${wordId(word)}`));
+  assert.equal(wordResponse.status, 503);
+  // Activity still answers, with an explicit unavailable interpretation per item.
+  const activity = await service.fetch(
+    request(`/identities/${identity}/activity?limit=2`),
+  );
+  assert.equal(activity.status, 200);
+  const items = (await read(activity)).items;
+  assert.ok(items.length > 0);
+  assert.ok(items.every((i: any) => i.interpretation === "unavailable"));
 });

@@ -157,6 +157,74 @@ try {
         (await api(index, `/events/${entry.envelope.id}`)).status,
         200,
       );
+      // The newer read routes answer on both adapters with the same shapes.
+      const manifest: any = await (await api(index, "/manifest")).json();
+      assert.ok(Array.isArray(manifest.package_versions));
+      const records: any = await (
+        await api(index, "/records?limit=200")
+      ).json();
+      const record = records.items.find((i: any) => i.id === entry.envelope.id);
+      assert.ok(record, "records route lists the fixture event");
+      assert.equal(record.body_status, "present");
+      assert.equal(record.body.name, "Adapter fixture");
+      assert.equal(records.snapshot, manifest.snapshot);
+      // Identity reads need a retained view. The fixture key publishes one.
+      const view = createEvent(
+        seed,
+        [],
+        "f".repeat(32),
+        { kind: "view.publish", parents: [] },
+        {
+          name: "Adapter view",
+          description: [],
+          roots: [
+            {
+              identity: entry.envelope.header.issuer,
+              q: { numerator: 1, denominator: 1 },
+            },
+          ],
+          rafsi_threshold: { numerator: 1, denominator: 1 },
+          H: { numerator: 3, denominator: 1 },
+          alpha: { numerator: 1, denominator: 2 },
+          excluded: [],
+          calculation: "simple-routes-bounds-v1",
+          work: 1000,
+          import_sets: [],
+          account_witnesses: [],
+          account_authority: false,
+          notes: [],
+        },
+      );
+      const viewResponse = await api(index, "/events", view);
+      assert.equal(viewResponse.status, 201, await viewResponse.clone().text());
+      const identity = encodeURIComponent(entry.envelope.header.issuer);
+      const withView = `view=${encodeURIComponent(view.envelope.id)}`;
+      const personResponse = await api(
+        index,
+        `/identities/${identity}?${withView}`,
+      );
+      assert.equal(
+        personResponse.status,
+        200,
+        await personResponse.clone().text(),
+      );
+      const person: any = await personResponse.json();
+      assert.equal(person.profile.state, "known");
+      assert.equal(person.profile.claims_complete, true);
+      assert.equal(person.profile.claims[0].body_status, "present");
+      assert.equal(person.profile.claims[0].body.name, "Adapter fixture");
+      const activity: any = await (
+        await api(index, `/identities/${identity}/activity?limit=5&${withView}`)
+      ).json();
+      assert.ok(activity.items.some((i: any) => i.id === entry.envelope.id));
+      assert.equal(
+        (await api(index, `/identities/${identity}/activity/extra`)).status,
+        404,
+      );
+      assert.equal(
+        (await api(index, `/records?snapshot=sha256:${"0".repeat(64)}`)).status,
+        410,
+      );
       const invalid = await fetch(
         `http://127.0.0.1:${ports[index]}/api/v1/events`,
         {
@@ -289,7 +357,7 @@ try {
       status: "passed",
       adapters: indexes.map((index) => (index === 0 ? "node" : "worker")),
       checks:
-        "Node/Workers admission, late body, exact old snapshot, duplicate retry, process restart, strict JSON, shared snapshot, same-origin writes, bounded snapshot expiry and restart",
+        "Node/Workers admission, late body, exact old snapshot, duplicate retry, process restart, strict JSON, shared snapshot, same-origin writes, bounded snapshot expiry and restart, package_versions, records, identities and activity reads, 404 suffix, 410 snapshot",
       directory,
     }),
   );
