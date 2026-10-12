@@ -19,6 +19,7 @@ import {
   startDraft,
   stepBar,
   discardDraft,
+  DraftConflictError,
 } from "./common.ts";
 import type { SearchHit } from "../../model/types.ts";
 
@@ -77,12 +78,26 @@ export async function meaningPage(
       !draft.text.trim() &&
       !draft.meaning.trim())
   ) {
-    draft = await startDraft(app, {
-      spelling: requestedWord ?? "",
-      meaning: requestedMeaning ?? "",
-      language: requestedLanguage ?? app.session.preferences.definitionLanguage,
-      step: 1,
-    });
+    try {
+      draft = await startDraft(
+        app,
+        {
+          spelling: requestedWord ?? "",
+          meaning: requestedMeaning ?? "",
+          language:
+            requestedLanguage ?? app.session.preferences.definitionLanguage,
+          step: 1,
+        },
+        draft ? { revision: draft.revision } : "absent",
+      );
+    } catch (error) {
+      if (!(error instanceof DraftConflictError)) throw error;
+      // Another tab started or changed the draft first. Show that draft.
+      navigate(`${route.path}${route.params.size ? `?${route.params}` : ""}`, {
+        replace: true,
+      });
+      return;
+    }
   } else if (conflict) {
     main.append(
       el("h1", { class: "page", text: "A draft is already saved" }),
@@ -101,12 +116,29 @@ export async function meaningPage(
         button(
           `Start "${requestedWord}" instead`,
           async () => {
-            await startDraft(app, {
-              spelling: requestedWord,
-              meaning: requestedMeaning ?? "",
-              language:
-                requestedLanguage ?? app.session.preferences.definitionLanguage,
-            });
+            try {
+              await startDraft(
+                app,
+                {
+                  spelling: requestedWord,
+                  meaning: requestedMeaning ?? "",
+                  language:
+                    requestedLanguage ??
+                    app.session.preferences.definitionLanguage,
+                },
+                { revision: draft!.revision },
+              );
+            } catch (error) {
+              if (!(error instanceof DraftConflictError)) throw error;
+              // The saved draft changed in another tab. Ask again with the current draft.
+              navigate(
+                `${route.path}${route.params.size ? `?${route.params}` : ""}`,
+                {
+                  replace: true,
+                },
+              );
+              return;
+            }
             navigate("/new/meaning");
           },
           { class: "btn" },

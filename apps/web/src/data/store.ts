@@ -41,6 +41,24 @@ export interface PublicationRecord {
   signedAt: number;
 }
 /** The group transaction found a different draft state than the preview. */
+/** The stored draft state that a save expects to find. */
+export type ExpectedDraft = { revision: string } | "absent" | "unversioned";
+/** A draft save found storage in another state. Nothing was written. */
+export class DraftConflictError extends Error {
+  constructor(
+    public kind: "changed" | "published" | "removed",
+    /** The revision now in storage, or null when no draft is stored. */
+    public storedRevision: string | null,
+  ) {
+    super(
+      kind === "changed"
+        ? "The draft changed in another tab."
+        : kind === "published"
+          ? "The draft was published in another tab."
+          : "The draft was removed in another tab.",
+    );
+  }
+}
 export class PublicationConflictError extends Error {
   constructor(
     public kind: "already-published" | "newer-draft" | "draft-missing",
@@ -277,6 +295,59 @@ export class LocalStore {
         reject(
           tx.error ??
             new Error("Local storage did not save the delivery outcome."),
+        );
+      tx.onerror = () => {};
+    });
+  }
+  /**
+   * Writes a draft only when storage still holds the state the writer last
+   * saw: the exact revision, no draft, or an old draft without a revision.
+   * A stale tab therefore never replaces a newer draft and never recreates
+   * a draft that a publication or a discard removed.
+   */
+  async saveDraft(
+    key: string,
+    draft: { revision: string },
+    expected: ExpectedDraft,
+  ): Promise<void> {
+    const db = await this.database;
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction("drafts", "readwrite");
+      const drafts = tx.objectStore("drafts");
+      let failure: Error | undefined;
+      const current = drafts.get(key);
+      const published =
+        typeof expected === "object"
+          ? drafts.get(`published:${expected.revision}`)
+          : null;
+      let remaining = published ? 2 : 1;
+      const proceed = () => {
+        if (--remaining) return;
+        const stored = current.result as { revision?: string } | undefined;
+        const matches =
+          expected === "absent"
+            ? !stored
+            : expected === "unversioned"
+              ? Boolean(stored) && !stored!.revision
+              : Boolean(stored) && stored!.revision === expected.revision;
+        if (!matches) {
+          failure = new DraftConflictError(
+            !stored ? (published?.result ? "published" : "removed") : "changed",
+            (stored as { revision?: string } | undefined)?.revision ?? null,
+          );
+          tx.abort();
+          return;
+        }
+        drafts.put(draft, key);
+      };
+      current.onsuccess = proceed;
+      if (published) published.onsuccess = proceed;
+      tx.oncomplete = () => resolve();
+      tx.onabort = () =>
+        reject(
+          failure ??
+            tx.error ??
+            new Error("Local storage did not save this change."),
         );
       tx.onerror = () => {};
     });

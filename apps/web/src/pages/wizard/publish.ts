@@ -447,6 +447,9 @@ export async function publishPage(
                   return;
                 }
                 if (error.kind === "newer-draft") {
+                  // This page's copy is stale. It never saves again, so the
+                  // newer draft loads intact. Export still works from the copy.
+                  saver.detach();
                   outcome.replaceChildren(
                     el(
                       "p",

@@ -1113,9 +1113,162 @@ test("two tabs that publish the same reviewed revision keep one group, and a new
   expect(records).toHaveLength(4);
   const state = await draftState(page);
   expect(state.spelling).toBe("brodo");
-  expect(state.revision).toBe(
-    await page.evaluate(() => (window as any).__newerRevision),
+  const newerRevision = await page.evaluate(
+    () => (window as any).__newerRevision,
   );
+  expect(state.revision).toBe(newerRevision);
   expect(state.revision).not.toBe(second);
   expect(state.last?.revision).toBe(revision);
+  // The link's navigation flushes nothing from the stale page. The newer draft loads intact.
+  await page.getByRole("link", { name: "Review the newer draft" }).click();
+  await expect(page.locator("aside")).toContainText("Publish as");
+  await expect(page.locator("main")).toContainText("brodo");
+  await expect(page.locator("main")).not.toContainText("brodi");
+  const reviewed = await draftState(page);
+  expect(reviewed.spelling).toBe("brodo");
+  expect(reviewed.revision).toBe(newerRevision);
+});
+
+test("a second tab that navigates after the first tab publishes does not bring the published draft back", async ({
+  page,
+  context,
+}) => {
+  await createIdentity(page);
+  await page.getByText("Offline signing", { exact: true }).click();
+  await page.getByLabel("Sign from history saved in this browser only").check();
+  const revision = await writeReviewedDraft(page, "brode");
+  await page.route("**/api/v1/**", (route) => route.abort("connectionreset"));
+  await spaGoto(page, "/new/publish");
+  await expect(page.locator("aside")).toContainText("Publish as");
+  // The second tab shows the same reviewed draft and then goes stale.
+  const other = await context.newPage();
+  await other.route("**/api/v1/**", (route) => route.abort("connectionreset"));
+  await other.goto("/new/publish");
+  await expect(other.locator("aside")).toContainText("Publish as");
+  await page
+    .locator("aside")
+    .getByRole("button", { name: "Publish", exact: true })
+    .click();
+  await acceptFirstSignature(page);
+  await expect(
+    page.getByRole("region", { name: "Saved publication" }),
+  ).toContainText("Saved. Not delivered yet.");
+  const committed = await draftState(page);
+  expect(committed.revision).toBeNull();
+  expect(committed.last?.revision).toBe(revision);
+  const records = await outboxRecords(page);
+  expect(records).toHaveLength(4);
+  // Navigation in the stale tab saves nothing. Add a word starts an empty draft.
+  await other.getByRole("link", { name: "Add a word", exact: true }).click();
+  await expect(
+    other.getByRole("textbox", { name: "Meaning", exact: true }),
+  ).toHaveValue("");
+  const after = await draftState(other);
+  expect(after.spelling).toBe("");
+  expect(after.revision).not.toBe(revision);
+  expect(after.last?.revision).toBe(revision);
+  expect(await outboxRecords(other)).toHaveLength(4);
+  // Browser back to the stale publish page saves nothing either.
+  await other.goBack();
+  await expect(other.locator("aside")).toContainText("Publish as");
+  await expect(
+    other
+      .locator("aside")
+      .getByRole("button", { name: "Publish", exact: true }),
+  ).toBeDisabled();
+  expect((await draftState(other)).spelling).toBe("");
+  expect(await outboxRecords(other)).toHaveLength(4);
+  await other.close();
+});
+
+test("a delayed automatic save never replaces newer content from another tab, and a failed save keeps the unsaved edits and the saved revision", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await page.getByRole("link", { name: "Add a word" }).click();
+  const box = page.getByRole("textbox", { name: "Meaning", exact: true });
+  await box.fill("First text.");
+  await expect(page.getByRole("status").last()).toHaveText(
+    "Saved in this browser",
+  );
+  const storedMeaning = () =>
+    page.evaluate(async () => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const draft = await new LocalStore().get("drafts", "current");
+      return { meaning: draft?.meaning ?? null, revision: draft?.revision };
+    });
+  const first = await storedMeaning();
+  expect(first.meaning).toBe("First text.");
+  // Another tab saves newer content.
+  const newer = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore();
+    const draft = await store.get("drafts", "current");
+    draft.meaning = "Text from another tab.";
+    draft.revision = crypto.randomUUID();
+    await store.put("drafts", "current", draft);
+    return draft.revision as string;
+  });
+  // The delayed save from this page conflicts and writes nothing.
+  await box.fill("First text, edited here.");
+  const status = page.getByRole("status").last();
+  await expect(status).toContainText(
+    "Not saved: The draft changed in another tab.",
+  );
+  expect(await storedMeaning()).toEqual({
+    meaning: "Text from another tab.",
+    revision: newer,
+  });
+  // The unsaved edits stay available for export.
+  const exported = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export draft" }).click();
+  const file = await (await exported).path();
+  const content = JSON.parse(
+    await (await import("node:fs/promises")).readFile(file!, "utf8"),
+  );
+  expect(content.meaning).toBe("First text, edited here.");
+  // An explicit choice replaces the stored draft with this copy.
+  await page.getByRole("button", { name: "keep this copy" }).click();
+  await expect(status).toHaveText("Saved in this browser");
+  const kept = await storedMeaning();
+  expect(kept.meaning).toBe("First text, edited here.");
+  expect(kept.revision).not.toBe(newer);
+  // A storage failure leaves the saved revision and the stored content unchanged.
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const original = LocalStore.prototype.saveDraft;
+    (window as any).__restorePut = () => {
+      LocalStore.prototype.saveDraft = original;
+    };
+    LocalStore.prototype.saveDraft = async () => {
+      throw new Error("Injected save failure");
+    };
+  });
+  await box.fill("First text, edited here, and again.");
+  await expect(status).toContainText(
+    "Not saved: Injected save failure. Export the draft.",
+  );
+  expect(await storedMeaning()).toEqual(kept);
+  const exportedAgain = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export draft" }).click();
+  const again = JSON.parse(
+    await (
+      await import("node:fs/promises")
+    ).readFile((await (await exportedAgain).path())!, "utf8"),
+  );
+  expect(again.meaning).toBe("First text, edited here, and again.");
+  expect(again.revision).toBe(kept.revision);
+  // The next save after the failure uses the last saved revision and succeeds.
+  await page.evaluate(() => (window as any).__restorePut());
+  await box.fill("First text, edited here, and again, saved.");
+  await expect(status).toHaveText("Saved in this browser");
+  const final = await storedMeaning();
+  expect(final.meaning).toBe("First text, edited here, and again, saved.");
+  expect(final.revision).not.toBe(kept.revision);
+  // Navigation with nothing changed writes nothing.
+  await page.getByRole("link", { name: "About", exact: true }).click();
+  await expect(page.getByRole("heading", { level: 1 })).not.toHaveText(
+    "Add a word: Meaning",
+  );
+  expect(await storedMeaning()).toEqual(final);
 });

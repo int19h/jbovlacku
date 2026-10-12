@@ -11,6 +11,8 @@ import {
 import { navigate, routes, type Route } from "../../app/router.ts";
 import type { App } from "../../app/context.ts";
 import { newDraft, type Draft } from "../../model/draft.ts";
+import { DraftConflictError, type ExpectedDraft } from "../../data/store.ts";
+export { DraftConflictError };
 
 export const DRAFT_KEY = "current";
 export const steps = [
@@ -38,8 +40,15 @@ export async function loadDraft(app: App): Promise<Draft | null> {
       stored.gismu ??= null;
       if (!stored.revision) {
         // An older draft gets a revision, so a publication can name it exactly.
-        stored.revision = crypto.randomUUID();
-        await app.store.put("drafts", DRAFT_KEY, { ...stored });
+        // Another tab can do the same first. Its revision wins.
+        const revised = { ...stored, revision: crypto.randomUUID() };
+        try {
+          await app.store.saveDraft(DRAFT_KEY, revised, "unversioned");
+        } catch (error) {
+          if (!(error instanceof DraftConflictError)) throw error;
+          return loadDraft(app);
+        }
+        return revised;
       }
       return stored;
     }
@@ -49,11 +58,29 @@ export async function loadDraft(app: App): Promise<Draft | null> {
   }
 }
 let pendingSaver: DraftSaver | null = null;
-/** Flushes the active draft saver. The router awaits this before rendering the next page. */
+/**
+ * Flushes the active draft saver and detaches it. The router awaits this
+ * before rendering the next page. An unchanged draft writes nothing.
+ */
 export async function flushPendingDraft() {
-  if (pendingSaver) await pendingSaver.flush();
+  const saver = pendingSaver;
+  pendingSaver = null;
+  if (saver) await saver.flush();
 }
-/** Saves the draft and reports the outcome through the save indicator. */
+/** The fields that make two draft copies the same for saving. */
+function contentKey(draft: Draft): string {
+  const { revision, updatedAt, ...rest } = draft;
+  void revision;
+  void updatedAt;
+  return JSON.stringify(rest);
+}
+/**
+ * Saves the draft and reports the outcome through the save indicator.
+ *
+ * Every save names the revision it expects in storage, so a stale page never
+ * replaces a newer draft and never recreates a published or discarded one.
+ * The in-memory revision advances only after storage commits the save.
+ */
 export class DraftSaver {
   private timer: ReturnType<typeof setTimeout> | undefined;
   readonly indicator = el("span", {
@@ -63,35 +90,106 @@ export class DraftSaver {
     text: "",
   });
   private failed = false;
+  private detached = false;
+  /** The revision this page last saw in storage. */
+  private savedRevision: string;
+  /** The content of the last successful save, for the unchanged check. */
+  private savedContent: string;
+  /** What storage held when the last save conflicted, for an explicit replacement. */
+  private conflict: ExpectedDraft | null = null;
+  private saving: Promise<boolean> | null = null;
   constructor(
     private app: App,
     public draft: Draft,
   ) {
+    this.savedRevision = draft.revision;
+    this.savedContent = contentKey(draft);
+    pendingSaver?.detach();
     pendingSaver = this;
   }
   /** Schedules a save after edits settle. */
   touch() {
+    if (this.detached) return;
     this.draft.updatedAt = Date.now();
     this.indicator.textContent = "Saving…";
     clearTimeout(this.timer);
     this.timer = setTimeout(() => void this.flush(), 300);
   }
-  async flush(): Promise<boolean> {
+  /** Stops pending saves. The page's copy stays available for export. */
+  detach() {
+    this.detached = true;
     clearTimeout(this.timer);
     this.timer = undefined;
+    if (pendingSaver === this) pendingSaver = null;
+  }
+  /** Writes the draft when it changed since the last save. Returns false when nothing is saved. */
+  flush(): Promise<boolean> {
+    clearTimeout(this.timer);
+    this.timer = undefined;
+    if (this.saving) return this.saving.then(() => this.flush());
+    if (this.conflict) {
+      // The page copy is stale. Only an explicit choice replaces the stored draft.
+      return Promise.resolve(false);
+    }
+    if (contentKey(this.draft) === this.savedContent) {
+      // Nothing changed since the last save. Navigation writes nothing.
+      if (this.indicator.textContent === "Saving…")
+        this.indicator.textContent = "Saved in this browser";
+      return Promise.resolve(true);
+    }
+    this.saving = this.write({ revision: this.savedRevision });
+    return this.saving.finally(() => {
+      this.saving = null;
+    });
+  }
+  private async write(expected: ExpectedDraft): Promise<boolean> {
+    const revision = crypto.randomUUID();
+    const content = contentKey(this.draft);
     try {
-      // Every save is a new revision. A publication in progress for the old
-      // revision then refuses to commit, and this newer draft survives.
-      this.draft.revision = crypto.randomUUID();
-      await this.app.store.put("drafts", DRAFT_KEY, { ...this.draft });
-      this.indicator.textContent = "Saved in this browser";
+      await this.app.store.saveDraft(
+        DRAFT_KEY,
+        { ...this.draft, revision },
+        expected,
+      );
+      this.draft.revision = revision;
+      this.savedRevision = revision;
+      this.savedContent = content;
+      this.conflict = null;
       this.failed = false;
+      this.indicator.replaceChildren(text("Saved in this browser"));
       return true;
     } catch (error) {
       this.failed = true;
-      this.indicator.textContent = `Not saved: ${describe(error)}. Export the draft.`;
+      if (error instanceof DraftConflictError) {
+        this.conflict = error.storedRevision
+          ? { revision: error.storedRevision }
+          : "absent";
+        this.indicator.replaceChildren(
+          text(`Not saved: ${error.message} Export this copy, or `),
+          button("keep this copy", () => void this.keepThisCopy(), {
+            class: "btn btn-quiet",
+            style: "font-size:14px",
+          }),
+          text("."),
+        );
+      } else {
+        this.indicator.replaceChildren(
+          text(`Not saved: ${describe(error)}. Export the draft.`),
+        );
+      }
       return false;
     }
+  }
+  /** Replaces the stored draft with this page's copy after an explicit choice. */
+  async keepThisCopy(): Promise<boolean> {
+    if (this.saving) await this.saving;
+    const expected = this.conflict;
+    if (!expected) return this.flush();
+    this.conflict = null;
+    this.saving = this.write(expected);
+    return this.saving.finally(() => {
+      this.saving = null;
+    });
   }
   get hasFailed() {
     return this.failed;
@@ -167,22 +265,28 @@ export function actionBar(
   bar.append(left, right);
   return bar;
 }
-/** Starts a new draft, replacing the current one after an explicit choice. */
+/**
+ * Starts a new draft. `expected` names the stored state this replaces: the
+ * revision of the draft the user chose to replace, or "absent" for an
+ * automatic start. A conflict means another tab changed the draft first.
+ */
 export async function startDraft(
   app: App,
   patch: Partial<Draft>,
+  expected: ExpectedDraft,
 ): Promise<Draft> {
+  pendingSaver?.detach();
   const draft = newDraft(patch);
-  await app.store.put("drafts", DRAFT_KEY, draft);
+  await app.store.saveDraft(DRAFT_KEY, draft, expected);
   return draft;
 }
 export async function discardDraft(app: App) {
-  pendingSaver = null;
+  pendingSaver?.detach();
   await app.store.delete("drafts", DRAFT_KEY);
 }
 /** Stops the active saver without touching storage, after a commit removed the draft. */
 export function forgetDraft() {
-  pendingSaver = null;
+  pendingSaver?.detach();
 }
 export function wizardTitle(route: Route): string {
   const step = steps.find((s) => s.path === route.path);

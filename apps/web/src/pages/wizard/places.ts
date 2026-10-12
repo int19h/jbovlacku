@@ -290,8 +290,13 @@ export async function placesPage(
         );
       const origin =
         record.envelope.header.action.origin === "import" ? "import" : "native";
+      const replaced = draft;
       draft = draftFromBody(record.body, reviseId, origin);
-      await app.store.put("drafts", DRAFT_KEY, draft);
+      await app.store.saveDraft(
+        DRAFT_KEY,
+        draft,
+        replaced ? { revision: replaced.revision } : "absent",
+      );
     } catch (error) {
       main.append(
         el("h1", { class: "page", text: "Revise" }),
@@ -303,10 +308,14 @@ export async function placesPage(
   if (!context.live()) return;
   if (!draft) {
     if (full)
-      draft = await startDraft(app, {
-        step: 4,
-        language: app.session.preferences.definitionLanguage,
-      });
+      draft = await startDraft(
+        app,
+        {
+          step: 4,
+          language: app.session.preferences.definitionLanguage,
+        },
+        "absent",
+      );
     else {
       navigate("/new/meaning", { replace: true });
       return;
