@@ -33,13 +33,11 @@ test("browser keys use the backup profile and restore in another browser context
   const context = await browser.newContext();
   const restored = await context.newPage();
   await restored.goto("/identity");
-  await restored
-    .getByLabel("Backup file")
-    .setInputFiles({
-      name: "backup.json",
-      mimeType: "application/json",
-      buffer: Buffer.from(JSON.stringify(backup)),
-    });
+  await restored.getByLabel("Backup file").setInputFiles({
+    name: "backup.json",
+    mimeType: "application/json",
+    buffer: Buffer.from(JSON.stringify(backup)),
+  });
   await restored.getByLabel("Backup passphrase").fill("wrong");
   await restored.getByRole("button", { name: "Open backup locally" }).click();
   await expect(restored.getByRole("status")).toHaveText(
@@ -194,13 +192,11 @@ for (const action of ["create", "import"] as const) {
         return (await createKey("another passphrase")).backup;
       });
       refusedIdentity = candidate.identity;
-      await other
-        .getByLabel("Backup file")
-        .setInputFiles({
-          name: "other.json",
-          mimeType: "application/json",
-          buffer: Buffer.from(JSON.stringify(candidate)),
-        });
+      await other.getByLabel("Backup file").setInputFiles({
+        name: "other.json",
+        mimeType: "application/json",
+        buffer: Buffer.from(JSON.stringify(candidate)),
+      });
       await other.getByLabel("Backup passphrase").fill("another passphrase");
       await other.getByRole("button", { name: "Open backup locally" }).click();
     }
