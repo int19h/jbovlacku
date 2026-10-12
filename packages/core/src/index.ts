@@ -115,6 +115,15 @@ export function createEvent(
 }
 export const wordId = (word: { language: "jbo"; spelling: string }): string =>
   wasm.runtime_word_identifier(utf8(JSON.stringify(word)));
+/** The rafsi pair ID of a word ID and NFC rafsi spelling, per the format specification. */
+export const rafsiPairId = (word: string, rafsi: string): string =>
+  "jvr1:" +
+  contentHash(
+    utf8(
+      "jbovlacku-rafsi-v1\n" +
+        canonicalize(utf8(JSON.stringify({ word, rafsi }))),
+    ),
+  ).slice(7);
 
 export const validateAction = (envelopeBytes: Uint8Array): boolean =>
   wasm.check_action(envelopeBytes);

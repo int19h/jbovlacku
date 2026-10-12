@@ -221,7 +221,7 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
     });
   rafsiLine.append(
     text(" · "),
-    link("claim one", `${routes.add}?rafsi=${encodeURIComponent(spelling)}`, {
+    link("claim one", routes.claim(spelling), {
       style: "font-size:14px",
     }),
   );

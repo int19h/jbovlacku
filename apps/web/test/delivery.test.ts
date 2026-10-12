@@ -140,13 +140,12 @@ test("header-only acceptance stays unfinished until the matching body is confirm
 }) => {
   await createIdentity(page);
   const f = fixture();
-  // The first request answers with a header-only receipt. The outbox must keep a missing-body row.
+  // The first request reaches the server without its body, so the real receipt
+  // reports header-only acceptance. The outbox must keep a missing-body row.
   await page.route("**/api/v1/events", async (route) => {
-    const response = await route.fetch();
-    const receipt = await response.json();
-    await route.fulfill({
-      status: 201,
-      json: { ...receipt, body_status: "missing" },
+    const sent = JSON.parse(route.request().postData() ?? "{}");
+    await route.continue({
+      postData: JSON.stringify({ envelope: sent.envelope, body: null }),
     });
   });
   await page.getByLabel("Search words and meanings").fill("book");

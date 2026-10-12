@@ -1,0 +1,557 @@
+import { test, expect, type Page } from "@playwright/test";
+import {
+  acceptFirstSignature,
+  createIdentity,
+  fixture,
+  PASSPHRASE,
+} from "./helpers.ts";
+
+async function outboxActions(page: Page) {
+  return page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const items = await new LocalStore().list("outbox");
+    return items
+      .sort((a: any, b: any) => a.signedAt - b.signedAt || a.order - b.order)
+      .map((item: any) => ({
+        group: item.group,
+        order: item.order,
+        state: item.peers.self.state,
+        transport: JSON.parse(item.transport),
+      }));
+  });
+}
+const meaningBox = (page: Page) =>
+  page.getByRole("textbox", { name: "Meaning" });
+
+test("a first-time contributor writes a short literal definition and publishes it with an endorsement", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await page.getByRole("link", { name: "Add a word" }).click();
+  await expect(page).toHaveTitle("Add a word: Meaning · jbovlacku");
+  await meaningBox(page).fill("A disposable test meaning without places.");
+  await expect(page.getByText("Saved in this browser")).toBeVisible();
+  await page.getByRole("button", { name: "New word" }).click();
+  await page.getByRole("radio", { name: /^gismu/ }).check();
+  await page.getByRole("button", { name: "Make a gismu" }).click();
+  await page.getByLabel("Spelling").fill("brodu");
+  await page.getByRole("button", { name: "Use brodu" }).click();
+  await expect(page.getByRole("heading", { name: "brodu" })).toBeVisible();
+  await page
+    .getByRole("button", { name: "Use the meaning as the definition" })
+    .click();
+  await page.getByLabel("Read circled numbers as place references").uncheck();
+  await page.getByRole("button", { name: "Review" }).click();
+  await expect(page.getByRole("heading", { name: "Publish as" })).toBeVisible();
+  await expect(
+    page.getByText(
+      "New definitions use CC0 1.0. By publishing, you release your contribution under CC0 1.0.",
+    ),
+  ).toBeVisible();
+  await expect(page.getByRole("link", { name: "CC0 1.0" })).toHaveAttribute(
+    "href",
+    "https://creativecommons.org/publicdomain/zero/1.0/",
+  );
+  await expect(page.getByText("Your key backup is untested.")).toBeVisible();
+  await expect(
+    page.getByText("Signed with your key, with your endorsement."),
+  ).toBeVisible();
+  await expect(page.getByRole("checkbox")).toHaveCount(0);
+  await page.locator("aside").getByRole("button", { name: "Publish" }).click();
+  await acceptFirstSignature(page);
+  await expect(page).toHaveTitle("brodu · jbovlacku");
+  await expect(page.getByRole("status")).toContainText(
+    "Published brodu with your endorsement.",
+  );
+  const first = page.locator("article.definition").first();
+  await expect(first.getByRole("button", { name: "Endorse" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(
+    first.getByText("A disposable test meaning without places."),
+  ).toBeVisible();
+  const actions = await outboxActions(page);
+  expect(
+    actions.map((a: any) => [a.transport.envelope.header.action.kind, a.state]),
+  ).toEqual([
+    ["definition.publish", "accepted"],
+    ["judgment.set", "accepted"],
+  ]);
+  expect(actions[0].group).toBe(actions[1].group);
+  expect(actions[1].transport.envelope.header.action.target).toBe(
+    actions[0].transport.envelope.id,
+  );
+  expect(actions[0].transport.body.license).toEqual({
+    expression: "CC0-1.0",
+    url: "https://creativecommons.org/publicdomain/zero/1.0/",
+    attribution: "",
+  });
+  expect(actions[0].transport.body.legacy).toBe(null);
+  expect(actions[0].transport.envelope.header.action.origin).toBe("native");
+  // The draft is gone after publication.
+  await page.getByRole("link", { name: "Add a word" }).click();
+  await expect(meaningBox(page)).toHaveValue("");
+});
+
+test("structured places keep declared order when prose mentions place 3 first, and a bad reference offers a literal escape", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await page.getByRole("link", { name: "Add a word" }).click();
+  await meaningBox(page).fill("___ is read by ___ in ___.");
+  await expect(page.getByText("3 placeholders found.")).toBeVisible();
+  await page.getByRole("button", { name: "New word" }).click();
+  await page.getByRole("radio", { name: /^lujvo/ }).check();
+  await page.getByRole("button", { name: "Build the lujvo" }).click();
+  await page.getByLabel("Spelling").fill("brodyckusni");
+  await page.getByRole("button", { name: "Use brodyckusni" }).click();
+  await page
+    .getByRole("button", { name: "Use the meaning with numbered places" })
+    .click();
+  await expect(page.getByLabel("Number of places")).toHaveValue("fixed");
+  // Reorder the prose so place 3 appears first. The declared order stays 1, 2, 3.
+  const editor = page.getByRole("textbox", { name: "Definition text" });
+  await editor.fill("③ holds ① read by ②.");
+  await page.getByLabel("Description for place 1").fill("the text");
+  await page.getByLabel("Description for place 2").fill("the reader");
+  await page.getByLabel("Description for place 3").fill("the medium");
+  await page.getByLabel("Kind of thing for place 2").selectOption("object");
+  await page.getByLabel("From for place 3").fill("cukta 5");
+  await page.getByRole("button", { name: "Approve the numbering" }).click();
+  await expect(page.getByText("Place numbering approved.")).toBeVisible();
+  // A reference to an undeclared place blocks signing.
+  await editor.fill("③ holds ① read by ② at ④.");
+  await expect(
+    page.getByRole("region", { name: "Rendered definition" }),
+  ).toContainText("Place 4 is referenced but not declared.");
+  await page.getByRole("button", { name: "Review" }).click();
+  await expect(page.getByText(/\d+ problems? block signing\./)).toBeVisible();
+  await expect(
+    page.locator("aside").getByRole("button", { name: "Publish" }),
+  ).toBeDisabled();
+  await page.getByRole("link", { name: "Edit" }).first().click();
+  await page
+    .getByRole("button", { name: "Convert references to literal text" })
+    .click();
+  await expect(editor).toHaveValue("(3) holds (1) read by (2) at (4).");
+  // Restore the structured text and publish.
+  await editor.fill("③ holds ① read by ②.");
+  await page.getByRole("button", { name: "Approve the numbering" }).click();
+  await page.getByRole("button", { name: "Review" }).click();
+  await expect(
+    page.locator(".preview-card .place-strip").getByLabel("place 1: the text"),
+  ).toBeVisible();
+  await page.locator("aside").getByRole("button", { name: "Publish" }).click();
+  await acceptFirstSignature(page);
+  await expect(page).toHaveTitle("brodyckusni · jbovlacku");
+  const actions = await outboxActions(page);
+  const body = actions[0].transport.body;
+  expect(body.text).toEqual([[3, " holds ", 1, " read by ", 2, "."]]);
+  expect(body.frame.arity).toEqual({ mode: "fixed", count: 3 });
+  expect(body.frame.places.map((p: any) => p.index)).toEqual([1, 2, 3]);
+  expect(body.frame.places[1].type_hints).toEqual([
+    {
+      alternatives: [
+        { tags: ["entity"], abstractor: null, relation_arity: null },
+      ],
+      note: [],
+    },
+  ]);
+  expect(body.frame.places[2].derivation).toEqual([
+    {
+      word: { language: "jbo", spelling: "cukta" },
+      definition: null,
+      place: 5,
+      explanation: [],
+    },
+  ]);
+  await expect(
+    page
+      .locator("article.definition")
+      .first()
+      .getByRole("link", { name: "place 3", exact: true }),
+  ).toBeVisible();
+});
+
+test("the draft survives reload and browser back at every step and exports as a file", async ({
+  page,
+}) => {
+  await page.goto("/new/meaning");
+  await meaningBox(page).fill("A draft that must survive.");
+  await page.getByLabel("Lojban word").fill("brodo");
+  await expect(page.getByText("Saved in this browser")).toBeVisible();
+  await page.reload();
+  await expect(meaningBox(page)).toHaveValue("A draft that must survive.");
+  await expect(page.getByLabel("Lojban word")).toHaveValue("brodo");
+  await page.getByRole("button", { name: "New word" }).click();
+  await page.getByRole("radio", { name: /^cmavo/ }).check();
+  await page.getByRole("button", { name: "Enter the cmavo" }).click();
+  await page.getByLabel("selma'o").fill("UI");
+  await page.getByLabel("Morphology notes").fill("Attributed note.");
+  await page.goBack();
+  await expect(page.getByRole("radio", { name: /^cmavo/ })).toBeChecked();
+  await page.goForward();
+  await expect(page.getByLabel("selma'o")).toHaveValue("UI");
+  await page.reload();
+  await expect(page.getByLabel("Morphology notes")).toHaveValue(
+    "Attributed note.",
+  );
+  await expect(page.getByLabel("Spelling")).toHaveValue("brodo");
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export draft" }).click();
+  const download = await downloadPromise;
+  const text = await (await download.createReadStream())
+    .toArray()
+    .then((chunks) => Buffer.concat(chunks as Buffer[]).toString());
+  const exported = JSON.parse(text);
+  expect(exported.spelling).toBe("brodo");
+  expect(exported.selmaho).toEqual(["UI"]);
+  expect(exported.meaning).toBe("A draft that must survive.");
+  // Changing the type with incompatible fields asks first and keeps the prose.
+  await page.goto("/new/type");
+  page.once("dialog", (dialog) => dialog.dismiss());
+  await page.getByRole("radio", { name: /^gismu/ }).click();
+  await expect(page.getByRole("radio", { name: /^cmavo/ })).toBeChecked();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("radio", { name: /^gismu/ }).check();
+  await expect(page.getByRole("radio", { name: /^gismu/ })).toBeChecked();
+  await expect
+    .poll(async () =>
+      page.evaluate(async () => {
+        const { LocalStore } = await import(String("/src/data/store.ts"));
+        return (await new LocalStore().get("drafts", "current")).kind;
+      }),
+    )
+    .toBe("gismu");
+  await page.goto("/new/form");
+  await expect(page.getByLabel("selma'o")).toHaveCount(0);
+  await expect(page.getByLabel("Morphology notes")).toHaveValue(
+    "Attributed note.",
+  );
+});
+
+test("the full editor preserves every structured field and supports manual headword and type entry", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await page.getByRole("link", { name: "Add a word" }).click();
+  await page.getByRole("link", { name: "Skip to the full editor" }).click();
+  await expect(page).toHaveTitle("Full editor · jbovlacku");
+  await page.getByLabel("Headword").fill("brodi");
+  await page.getByLabel("Type").selectOption("cmavo");
+  await page.getByLabel("selma'o").fill("BAI");
+  await page
+    .getByRole("textbox", { name: "Definition text" })
+    .fill("① is the operand ② of [[brodi]].");
+  await page.getByRole("button", { name: "+ Add a place" }).click();
+  await page.getByRole("button", { name: "+ Add a place" }).click();
+  await page.getByLabel("Number of places").selectOption("context");
+  await page.getByLabel("Description for place 1").fill("the agent");
+  await page.getByLabel("Kind of thing for place 1").selectOption("custom");
+  await page
+    .getByLabel("Tags for alternative 1")
+    .fill("agent, https://example.invalid/tags/custom");
+  await page.getByLabel("Abstractor for alternative 1").selectOption("ka");
+  await page.getByRole("button", { name: "Approve the numbering" }).click();
+  await page.getByLabel("Add a gloss").fill("gloss (sense)");
+  await page.getByLabel("Add a gloss").press("Enter");
+  await page.getByRole("button", { name: "Add a default for place 1" }).click();
+  await page.getByLabel("Default value 1 for place 1").fill("li pa");
+  await page.getByLabel("Condition 1 for place 1").fill("when unspecified");
+  await page.getByLabel("Constraints between places").fill("① differs from ②");
+  await page
+    .getByRole("textbox", { name: "Notes" })
+    .fill("A note mentioning ①.");
+  await page.getByRole("button", { name: "Add an example" }).click();
+  await page.getByLabel("Example 1", { exact: true }).fill("mi brodi do");
+  await page.getByLabel("Translation of example 1").fill("I brodi you");
+  await page
+    .getByRole("textbox", { name: "Etymology" })
+    .fill("Made up for a test.");
+  await page.getByRole("button", { name: "Add a source" }).click();
+  await page.getByLabel("Source 1 label").fill("Test source");
+  await page.getByLabel("Source 1 link").fill("https://example.invalid/source");
+  await page.getByRole("button", { name: "Add an operand" }).click();
+  await page.getByLabel("Operand 1 ID").fill("bridi");
+  await page.getByLabel("Operand 1 category").fill("bridi");
+  await page.getByLabel("Operand 1 maximum").fill("");
+  await page.getByLabel("Labels", { exact: true }).fill("experimental, test");
+  await page.getByRole("button", { name: "Add a rafsi claim" }).click();
+  await page.getByLabel("Rafsi 1", { exact: true }).fill("bod");
+  await page.getByLabel("Rationale for rafsi 1").fill("Test claim.");
+  await page.getByRole("button", { name: "Review" }).click();
+  await expect(
+    page.getByText(
+      "4 signed records: the definition, your endorsement, 1 rafsi claim, and their pair endorsements.",
+    ),
+  ).toBeVisible();
+  await page.locator("aside").getByRole("button", { name: "Publish" }).click();
+  await acceptFirstSignature(page);
+  await expect(page).toHaveTitle("brodi · jbovlacku");
+  const actions = await outboxActions(page);
+  expect(
+    actions.map((a: any) => a.transport.envelope.header.action.kind),
+  ).toEqual([
+    "definition.publish",
+    "judgment.set",
+    "rafsi.publish",
+    "judgment.set",
+  ]);
+  expect(new Set(actions.map((a: any) => a.group)).size).toBe(1);
+  expect(actions.every((a: any) => a.state === "accepted")).toBe(true);
+  const body = actions[0].transport.body;
+  expect(body.classification).toEqual({ kind: "cmavo", selmaho: ["BAI"] });
+  expect(body.frame.arity).toEqual({ mode: "context" });
+  expect(body.frame.places[0].type_hints[0].alternatives[0]).toEqual({
+    tags: ["agent", "https://example.invalid/tags/custom"],
+    abstractor: "ka",
+    relation_arity: null,
+  });
+  expect(body.frame.places[0].defaults[0]).toEqual({
+    kind: "conventional",
+    value: { format: "lojban", text: "li pa" },
+    condition: [["when unspecified"]],
+    explanation: [],
+  });
+  expect(body.frame.constraints).toEqual([[[1, " differs from ", 2]]]);
+  expect(body.text[0]).toEqual([
+    1,
+    " is the operand ",
+    2,
+    " of ",
+    { word: { language: "jbo", spelling: "brodi" }, label: "brodi" },
+    ".",
+  ]);
+  expect(body.glosses).toEqual([
+    { language: "en", text: "gloss", sense: "sense" },
+  ]);
+  expect(body.notes).toEqual([["A note mentioning ", 1, "."]]);
+  expect(body.examples).toEqual([
+    {
+      language: "jbo",
+      text: "mi brodi do",
+      translation: [["I brodi you"]],
+      notes: [],
+    },
+  ]);
+  expect(body.etymology.text).toEqual([["Made up for a test."]]);
+  expect(body.sources).toEqual([
+    {
+      label: "Test source",
+      url: "https://example.invalid/source",
+      event: null,
+      locator: null,
+    },
+  ]);
+  expect(body.operands).toEqual([
+    {
+      id: "bridi",
+      category: "bridi",
+      description: [],
+      cardinality: { minimum: 1, maximum: null },
+    },
+  ]);
+  expect(body.labels).toEqual(["experimental", "test"]);
+  const claim = actions[2].transport;
+  expect(claim.body.rafsi).toBe("bod");
+  expect(claim.body.rationale).toEqual([["Test claim."]]);
+  expect(actions[3].transport.envelope.header.action.target).toBe(
+    claim.envelope.header.action.assignment,
+  );
+  // The word page shows the claim and the pair judgment.
+  await expect(
+    page.getByRole("heading", { name: "Rafsi claims" }),
+  ).toBeVisible();
+  await expect(page.getByText("bod", { exact: true }).first()).toBeVisible();
+  // Revise round-trips every field back into the editor.
+  await page
+    .locator("article.definition")
+    .first()
+    .getByRole("link", { name: "Revise" })
+    .click();
+  await expect(page).toHaveTitle("Full editor · jbovlacku");
+  await expect(page.getByLabel("Headword")).toHaveValue("brodi");
+  await expect(page.getByLabel("Type")).toHaveValue("cmavo");
+  await expect(
+    page.getByRole("textbox", { name: "Definition text" }),
+  ).toHaveValue("① is the operand ② of [[brodi]].");
+  await expect(page.getByLabel("Default value 1 for place 1")).toHaveValue(
+    "li pa",
+  );
+  await expect(page.getByLabel("Operand 1 ID")).toHaveValue("bridi");
+  await expect(page.getByLabel("Source 1 label")).toHaveValue("Test source");
+  await expect(page.getByText(/Revision of jve1:/)).toBeVisible();
+});
+
+test("revising an imported definition keeps the parent, cites it, copies the rights notice, and inherits no judgments", async ({
+  page,
+}) => {
+  const f = fixture();
+  await createIdentity(page);
+  await page.getByLabel("Search words and meanings").fill("library");
+  await page.getByLabel("Search words and meanings").press("Enter");
+  await page
+    .getByRole("region", { name: "Search results" })
+    .getByRole("link", { name: "ckusro", exact: true })
+    .click();
+  await page
+    .locator("article.definition")
+    .first()
+    .getByRole("link", { name: "Revise" })
+    .click();
+  await expect(
+    page.getByText(
+      "The imported attribution stays with the parent. Your contribution is released under CC0 1.0.",
+    ),
+  ).toBeVisible();
+  await page
+    .getByText("Sources", { exact: true })
+    .first()
+    .scrollIntoViewIfNeeded();
+  await expect(page.getByLabel("Source 1 record")).toHaveValue(
+    f.definitions.imported,
+  );
+  await expect(page.getByLabel("Source 2 position")).toHaveValue(
+    "footer.publicDomainNotice",
+  );
+  await expect(
+    page.getByText("Required for a revision of imported text"),
+  ).toHaveCount(2);
+  await page
+    .getByRole("textbox", { name: "Definition text" })
+    .fill("① is a library of books ②, revised.");
+  await page.getByLabel("Number of places").selectOption("fixed");
+  await page.getByRole("button", { name: "+ Add a place" }).click();
+  await page.getByRole("button", { name: "+ Add a place" }).click();
+  await page.getByRole("button", { name: "Approve the numbering" }).click();
+  await page.getByRole("button", { name: "Review" }).click();
+  await expect(
+    page.getByText(
+      "The imported text keeps its source rights claim and attribution through the parent link and sources.",
+    ),
+  ).toBeVisible();
+  await page.locator("aside").getByRole("button", { name: "Publish" }).click();
+  await acceptFirstSignature(page);
+  await expect(page).toHaveTitle("ckusro · jbovlacku");
+  const actions = await outboxActions(page);
+  const publish = actions[0].transport;
+  expect(publish.envelope.header.action.parents).toEqual([
+    f.definitions.imported,
+  ]);
+  expect(publish.envelope.header.action.origin).toBe("native");
+  expect(publish.body.legacy).toBe(null);
+  expect(publish.body.license.expression).toBe("CC0-1.0");
+  expect(publish.body.sources[0].event).toBe(f.definitions.imported);
+  expect(publish.body.sources.at(-1).locator).toBe("footer.publicDomainNotice");
+  // The revision shows beside the import with its own endorsement only.
+  const articles = page.locator("article.definition");
+  await expect(articles).toHaveCount(2);
+  const revised = articles.filter({ hasText: "revised." });
+  await expect(
+    revised.getByRole("button", { name: "Endorse" }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await expect(
+    revised.getByRole("img", {
+      name: /^Score 0: 0 for, 0 against, 1 reviewer/,
+    }),
+  ).toBeVisible();
+  const original = articles.filter({ hasText: "x1 is a library" });
+  await expect(original.getByText(/Revision proposed by/)).toBeVisible();
+  await expect(original.getByText("arj", { exact: true })).toBeVisible();
+});
+
+test("a standalone rafsi claim shows competing words, signs the claim with its pair blessing, and the rafsi page lists both", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await page.getByLabel("Search words and meanings").fill("dictionary");
+  await page.getByLabel("Search words and meanings").press("Enter");
+  await page
+    .getByRole("region", { name: "Search results" })
+    .getByRole("link", { name: "vlacku", exact: true })
+    .click();
+  await page.getByRole("link", { name: "claim one" }).click();
+  await expect(page).toHaveTitle("Claim a rafsi for vlacku · jbovlacku");
+  await page.getByLabel("Rafsi spelling").fill("cku");
+  await page
+    .getByLabel("Rationale")
+    .fill("A deliberate conflict for the test.");
+  await page.getByRole("button", { name: "Check claims and preview" }).click();
+  await expect(
+    page.getByText(/Conflict: cku is already claimed for/),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "cukta", exact: true }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Sign and publish the claim" })
+    .click();
+  await acceptFirstSignature(page);
+  await expect(page).toHaveTitle("vlacku · jbovlacku");
+  await expect(page.getByRole("status")).toContainText(
+    "Published the claim cku for vlacku with your endorsement.",
+  );
+  const actions = await outboxActions(page);
+  expect(
+    actions.map((a: any) => a.transport.envelope.header.action.kind),
+  ).toEqual(["rafsi.publish", "judgment.set"]);
+  expect(actions[1].transport.envelope.header.action.target).toBe(
+    actions[0].transport.envelope.header.action.assignment,
+  );
+  await expect(
+    page.getByRole("link", { name: "cku", exact: true }).first(),
+  ).toBeVisible();
+  await page.getByRole("link", { name: "cku", exact: true }).first().click();
+  await expect(page).toHaveTitle("Rafsi cku · jbovlacku");
+  await expect(page.getByText("2 words claim this rafsi.")).toBeVisible();
+  await expect(
+    page.getByRole("region", { name: "cku for cukta" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("region", { name: "cku for vlacku" }),
+  ).toBeVisible();
+});
+
+test("the wizard fits a 360 pixel screen and keeps every control reachable", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 360, height: 780 });
+  await page.goto("/new/meaning");
+  await meaningBox(page).fill("___ is narrow.");
+  await expect(page.getByText("Saved in this browser")).toBeVisible();
+  await page.getByRole("button", { name: "New word" }).click();
+  await expect(
+    page.getByRole("heading", { name: "What kind of word?" }),
+  ).toBeVisible();
+  for (const path of [
+    "/new/type",
+    "/new/form",
+    "/new/places",
+    "/new/editor",
+    "/new/publish",
+  ]) {
+    await page.goto(path);
+    await expect(page.locator("main h1").first()).toBeVisible();
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+      path,
+    ).toBe(true);
+  }
+  await page.goto("/new/places");
+  await page
+    .getByRole("button", { name: "Use the meaning with numbered places" })
+    .click();
+  await page.getByLabel("Description for place 1").fill("narrow");
+  await page.getByRole("button", { name: "Review" }).focus();
+  expect(
+    await page.evaluate(() => {
+      const active = document.activeElement!;
+      const rect = active.getBoundingClientRect();
+      return rect.top >= 0 && rect.bottom <= innerHeight;
+    }),
+  ).toBe(true);
+  void PASSPHRASE;
+});

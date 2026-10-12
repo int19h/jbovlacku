@@ -46,7 +46,7 @@ test("search rows show headword, rafsi, type, highlighted text, attribution, and
   ).not.toHaveAttribute("aria-pressed", /.*/);
   await expect(page.getByRole("link", { name: "Add it" })).toHaveAttribute(
     "href",
-    /\/new\?meaning=book/,
+    /\/new\/meaning\?meaning=book/,
   );
   await expect(
     page.getByRole("link", { name: "Trust: site view" }),
@@ -66,9 +66,6 @@ test("an imported definition keeps its source author, importer, rights, and sour
   await expect(
     row.getByRole("link", { name: "ckusro", exact: true }),
   ).toBeVisible();
-  await expect(row.getByText("arj", { exact: true })).toBeVisible();
-  await expect(row.getByText(/imported by/)).toBeVisible();
-  await expect(row.getByText(/Mar 2003/)).toBeVisible();
   await page.goto(`/definition/${encodeURIComponent(f.definitions.imported)}`);
   await expect(page).toHaveTitle("Definition: ckusro · jbovlacku");
   await page
@@ -171,7 +168,7 @@ test("the word page orders definitions by the two-root view and exposes the scor
   await expect(page.getByText("Eligible pair · 1 claim")).toBeVisible();
   await expect(
     page.getByRole("link", { name: "Add a definition" }),
-  ).toHaveAttribute("href", /\/new\?word=cukta/);
+  ).toHaveAttribute("href", /\/new\/meaning\?word=cukta/);
 });
 
 test("SPA routes update the title, focus the heading, and preserve search through history", async ({

@@ -185,7 +185,7 @@ export function disclosure(
   details.append(summary, container);
   let loaded = false;
   details.addEventListener("toggle", async () => {
-    if (!details.open || loaded) return;
+    if (!details.open || (loaded && container.childElementCount)) return;
     loaded = true;
     try {
       const result = await body();

@@ -200,7 +200,7 @@ export const defaultResolver: PeerResolver = (id) =>
 export class DeliveryEngine {
   private timer: ReturnType<typeof setTimeout> | undefined;
   private listeners = new Set<DeliveryListener>();
-  private inFlight = new Set<string>();
+  private inFlight = new Map<string, Promise<OutboxItem | undefined>>();
   constructor(
     private store: LocalStore,
     public resolvePeer: PeerResolver = defaultResolver,
@@ -306,43 +306,48 @@ export class DeliveryEngine {
     id: string,
     explicit: boolean,
   ): Promise<OutboxItem | undefined> {
-    if (this.inFlight.has(id)) return this.fresh(id);
-    this.inFlight.add(id);
-    try {
-      let item = await this.fresh(id);
-      if (!item) return undefined;
-      // Earlier records of the same group go first so dependencies arrive in order.
-      const earlier = (await this.items()).filter(
-        (other) =>
-          other.group === item!.group &&
-          other.order < item!.order &&
-          isActive(other),
-      );
-      for (const dependency of earlier) {
-        if (!this.inFlight.has(dependency.id))
-          await this.deliver(dependency.id, explicit);
-      }
-      item = (await this.fresh(id)) ?? item;
-      const now = Date.now();
-      for (const peerId of Object.keys(item.peers)) {
-        const current = await this.fresh(id);
-        if (!current) return undefined;
-        const peer = current.peers[peerId];
-        if (!peer || peer.state === "accepted") continue;
-        if (!explicit && (current.stopped || !this.automaticallyDue(peer, now)))
-          continue;
-        const next = await this.attempt(current, peerId, peer);
-        // Merge only this peer's result. A stop or another tab's write stays.
-        await this.store.mergeOutbox(id, (stored) => ({
-          ...stored,
-          peers: { ...stored.peers, [peerId]: next },
-        }));
-        await this.notify();
-      }
-      return this.fresh(id);
-    } finally {
-      this.inFlight.delete(id);
+    // A second caller waits for the attempt in progress instead of racing it.
+    const running = this.inFlight.get(id);
+    if (running) return running;
+    const work = this.deliverNow(id, explicit).finally(() =>
+      this.inFlight.delete(id),
+    );
+    this.inFlight.set(id, work);
+    return work;
+  }
+  private async deliverNow(
+    id: string,
+    explicit: boolean,
+  ): Promise<OutboxItem | undefined> {
+    let item = await this.fresh(id);
+    if (!item) return undefined;
+    // Earlier records of the same group go first so dependencies arrive in order.
+    const earlier = (await this.items()).filter(
+      (other) =>
+        other.group === item!.group &&
+        other.order < item!.order &&
+        isActive(other),
+    );
+    for (const dependency of earlier)
+      await this.deliver(dependency.id, explicit);
+    item = (await this.fresh(id)) ?? item;
+    const now = Date.now();
+    for (const peerId of Object.keys(item.peers)) {
+      const current = await this.fresh(id);
+      if (!current) return undefined;
+      const peer = current.peers[peerId];
+      if (!peer || peer.state === "accepted") continue;
+      if (!explicit && (current.stopped || !this.automaticallyDue(peer, now)))
+        continue;
+      const next = await this.attempt(current, peerId, peer);
+      // Merge only this peer's result. A stop or another tab's write stays.
+      await this.store.mergeOutbox(id, (stored) => ({
+        ...stored,
+        peers: { ...stored.peers, [peerId]: next },
+      }));
+      await this.notify();
     }
+    return this.fresh(id);
   }
   private async attempt(
     item: OutboxItem,

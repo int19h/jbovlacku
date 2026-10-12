@@ -1,0 +1,136 @@
+/**
+ * Step 3C: the manual Form screen. Spelling, attributed morphology notes, and
+ * selma'o for cmavo. The lujvo and gismu builders arrive with the shared
+ * morphology core. Until then every type uses this manual entry.
+ */
+import { el, p, text, field, link } from "../../lib/dom.ts";
+import { navigate, type RenderContext, type Route } from "../../app/router.ts";
+import type { App } from "../../app/context.ts";
+import type { Draft } from "../../model/draft.ts";
+import { actionBar, DraftSaver, loadDraft, stepBar } from "./common.ts";
+
+export async function formPage(route: Route, context: RenderContext, app: App) {
+  const { main } = context;
+  context.title("Add a word: Form");
+  main.className = "surface-wizard";
+  const draft = await loadDraft(app);
+  if (!context.live()) return;
+  if (!draft) {
+    navigate("/new/meaning", { replace: true });
+    return;
+  }
+  const saver = new DraftSaver(app, draft);
+  main.append(stepBar(draft, 3));
+  const kind = draft.kind;
+  const section = el("section", {
+    "aria-labelledby": "h1",
+    style: "max-width:40rem",
+  });
+  const title =
+    kind === "cmavo"
+      ? "Enter the cmavo"
+      : kind === "lujvo"
+        ? "Enter the lujvo"
+        : kind === "gismu"
+          ? "Enter the gismu"
+          : "Enter the form";
+  section.append(el("h1", { id: "h1", class: "page", text: title }));
+  if (route.params.get("manual") || kind === "lujvo" || kind === "gismu")
+    section.append(
+      p(
+        kind === "lujvo"
+          ? "The lujvo builder with rafsi choices and CLL scoring is not in this build yet. Enter the spelling you intend. The morphology notes stay attributed to you."
+          : kind === "gismu"
+            ? "The gismu generator with source-word scoring is not in this build yet. Enter the spelling you intend. A manual gismu carries no fabricated generation evidence."
+            : "Manual entry. The notes stay attributed to you and never become a parser rule.",
+        "small",
+      ),
+    );
+  const spelling = field("Spelling", {
+    value: draft.spelling,
+    spellcheck: false,
+    lang: "jbo",
+    hint: "Lojban letters, apostrophes, periods, commas, and single spaces. Case is preserved.",
+  });
+  spelling.input.style.fontSize = "24px";
+  spelling.input.addEventListener("input", () => {
+    draft.spelling = spelling.input.value;
+    saver.touch();
+    refresh();
+  });
+  section.append(spelling.wrapper);
+  if (kind === "cmavo") {
+    const selmaho = field("selma'o", {
+      value: draft.selmaho.join(", "),
+      placeholder: "for example UI, or BAI*",
+      hint: "The grammatical class as a claim. Separate alternatives with commas. An unknown or proposed selma'o is permitted.",
+    });
+    selmaho.input.addEventListener("input", () => {
+      draft.selmaho = selmaho.input.value
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      saver.touch();
+    });
+    section.append(
+      selmaho.wrapper,
+      p("A selma'o suggestion by AI is not configured on this server.", "meta"),
+    );
+  }
+  const notes = field("Morphology notes", {
+    multiline: true,
+    rows: 3,
+    value: draft.formNotes,
+    hint: "Optional. Why this form, which parts it comes from, or an experimental classification. Saved as etymology text under your name.",
+  });
+  notes.input.addEventListener("input", () => {
+    draft.formNotes = notes.input.value;
+    draft.etymologyText = notes.input.value;
+    saver.touch();
+  });
+  section.append(notes.wrapper);
+  if (
+    kind === "fuivla" ||
+    kind === "cmevla" ||
+    kind === "other" ||
+    kind === "compound" ||
+    kind === "letteral"
+  )
+    section.append(
+      p(
+        "Morphology assistance is not available in this build. A morphology disagreement is a warning, not a rejection. You can proceed with an explicit experimental classification.",
+        "meta",
+      ),
+    );
+  section.append(
+    el(
+      "p",
+      { class: "meta" },
+      text(
+        "Changing the form later marks formation-dependent annotations for review. It never rewrites your prose. ",
+      ),
+      link("Change the type", "/new/type"),
+    ),
+  );
+  main.append(section);
+  const bar = actionBar(saver, {
+    back: { label: "Back", href: "/new/type" },
+    primary: {
+      label: `Use ${draft.spelling.trim() || "this form"}`,
+      disabled: !draft.spelling.trim(),
+      action: async () => {
+        if (!draft.spelling.trim()) return;
+        draft.step = Math.max(draft.step, 4) as Draft["step"];
+        if (!(await saver.flush())) return;
+        navigate("/new/places");
+      },
+    },
+  });
+  const refresh = () => {
+    const button = bar.querySelector<HTMLButtonElement>(".btn-primary");
+    if (!button) return;
+    button.textContent = `Use ${draft.spelling.trim() || "this form"}`;
+    button.disabled = !draft.spelling.trim();
+  };
+  main.append(bar);
+}

@@ -35,9 +35,13 @@ The committed adapter comparison uses one signed profile event. Importer tests i
 Full-capture runs are separate development evidence, not part of these committed tests. This capture does not represent the general SQL migration.
 The [importer guide](packages/importer/README.md) describes its input, journal, signing command, and limits.
 
-The guided wizard, word builders, transfer editor, status editor, semantic search, AI, and Lensisku cross-posting remain target features.
+The guided wizard has five steps: Meaning, Type, Form, Places, and Publish. The full editor opens every field section and permits manual headword and type entry.
+Manual authoring works without AI. Publish signs the definition, a separate author blessing, selected rafsi claims, and their pair blessings as one locally persisted group.
+Revise copies a publication into a new draft with its exact parent. A revision of imported text cites the imported publication and copies the source-rights reference.
+The rafsi page lists known assignments across words from version 2 packages, and the claim page signs a claim with its pair blessing.
+The lujvo builder, gismu generator, status editor, transfer editor, semantic search, AI, and Lensisku cross-posting remain target features.
 Personal-view recalculation with private blocks, planned handover, and compromise notices also remain target features.
-The [web UI design](docs/ui-design.md) defines the layouts. The reading, identity, trust, and delivery screens follow it. The authoring screens do not exist yet.
+The [web UI design](docs/ui-design.md) defines the layouts. The reading, identity, trust, delivery, and authoring screens follow it. The builder screens for step 3 do not exist yet.
 The general SQL migration, automatic rafsi publications, and structured import conversion also remain unfinished.
 The complete `jvc` command catalog in the format specification remains a target interface.
 The [development guide](docs/development.md) describes the implemented native commands.

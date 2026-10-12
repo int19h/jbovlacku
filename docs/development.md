@@ -284,7 +284,14 @@ PLAYWRIGHT_BROWSERS_PATH="$PWD/.cache/playwright" JVC_TEST_ROOT="$PWD/.cache/bro
 ```
 
 The browser tests start their own API and Vite processes. Ports `8797` and `5177` must be free.
-Their fixture data uses a separate directory for each process. `JVC_TEST_ROOT` selects its parent directory.
+`JVC_TEST_API_PORT` and `JVC_WEB_PORT` select other ports. `JVC_TEST_ROOT` selects the parent directory of the run's data.
+The server fixture publishes a seeded two-root view with synthetic definitions, an import selection, and a rafsi claim. Its record IDs are written to `fixture.json` in that directory.
+The draft model has Node unit tests:
+
+```sh
+npx tsx --test apps/web/test/unit/*.test.ts
+```
+
 On this VM, place browser binaries and test data under a task-specific `/build/jbovlacku` directory.
 
 The shared format corpus also supports native and Chromium comparison:

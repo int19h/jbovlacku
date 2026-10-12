@@ -14,7 +14,7 @@ test("downloaded search queries work without an API request and offline signing 
   await expect(page.getByRole("status")).toHaveText(
     "The English search package is saved in this browser.",
   );
-  await expect(page.getByText(/7 definitions · snapshot/)).toBeVisible();
+  await expect(page.getByText(/\d+ definitions · snapshot/)).toBeVisible();
   let requests = 0;
   await page.route("**/api/v1/**", (route) => {
     requests++;

@@ -330,7 +330,7 @@ export function definitionBlock(
   }
   article.append(byline);
   if (body) {
-    const reviseHref = `${routes.add}?revise=${encodeURIComponent(id)}`;
+    const reviseHref = routes.revise(id);
     const strip = placeStrip(body, id, {
       revise: options.preview ? null : reviseHref,
       prefix,
@@ -442,7 +442,7 @@ export function definitionBlock(
     );
     if (body)
       tools.append(
-        link("Revise", `${routes.add}?revise=${encodeURIComponent(id)}`, {
+        link("Revise", routes.revise(id), {
           class: "btn btn-quiet",
           style: "font-size:14px",
         }),

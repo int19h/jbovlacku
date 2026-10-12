@@ -10,6 +10,7 @@ import { buildShell, syncSearchField } from "./app/shell.ts";
 import {
   currentRoute,
   installRouter,
+  navigate,
   onNavigate,
   type RenderContext,
   type Route,
@@ -26,6 +27,13 @@ import { outboxPage } from "./pages/outbox.ts";
 import { preferencesPage } from "./pages/preferences.ts";
 import { aboutPage } from "./pages/about.ts";
 import { trustPage } from "./pages/trust.ts";
+import { meaningPage } from "./pages/wizard/meaning.ts";
+import { typePage } from "./pages/wizard/type.ts";
+import { formPage } from "./pages/wizard/form.ts";
+import { placesPage } from "./pages/wizard/places.ts";
+import { publishPage } from "./pages/wizard/publish.ts";
+import { claimPage, rafsiPage } from "./pages/rafsi.ts";
+import { flushPendingDraft } from "./pages/wizard/common.ts";
 
 const root = document.querySelector<HTMLDivElement>("#app")!;
 type Page = (
@@ -106,18 +114,8 @@ async function start() {
     preferences: preferencesPage,
     about: aboutPage,
     trust: trustPage,
-    new: unavailable(
-      "Add a word",
-      "The guided editor is the next stage of this build. It is not available yet.",
-    ),
-    draft: unavailable(
-      "Add a word",
-      "The guided editor is the next stage of this build. It is not available yet.",
-    ),
-    rafsi: unavailable(
-      "Rafsi",
-      "The rafsi page is part of the authoring stage of this build.",
-    ),
+    rafsi: rafsiPage,
+    claim: claimPage,
     review: unavailable("Review queue", "This server has no review queue."),
   };
   let revision = 0;
@@ -129,7 +127,10 @@ async function start() {
     const signal = controller.signal;
     shell.announce("");
     syncSearchField(shell, route);
-    if (session.storageAvailable) void delivery.invalidate();
+    if (session.storageAvailable) {
+      void delivery.invalidate();
+      await flushPendingDraft();
+    }
     const main = shell.main;
     main.replaceChildren();
     main.className = "";
@@ -152,6 +153,26 @@ async function start() {
       }
       const head = route.segments[0] ?? "";
       let page = pages[head];
+      if (head === "new" || head === "draft") {
+        const step = route.segments[1] ?? "meaning";
+        page =
+          step === "type"
+            ? typePage
+            : step === "form"
+              ? formPage
+              : step === "places" || step === "editor"
+                ? placesPage
+                : step === "publish"
+                  ? publishPage
+                  : meaningPage;
+        if (route.segments.length === 1 && route.params.has("revise")) {
+          navigate(
+            `/new/editor?revise=${encodeURIComponent(route.params.get("revise")!)}`,
+            { replace: true },
+          );
+          return;
+        }
+      }
       if (head === "identity")
         page =
           route.segments.length > 1

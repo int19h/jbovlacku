@@ -121,5 +121,7 @@ export const routes = {
   outbox: "/outbox",
   preferences: "/preferences",
   about: "/about",
-  add: "/new",
+  add: "/new/meaning",
+  revise: (id: string) => `/new/editor?revise=${encodeURIComponent(id)}`,
+  claim: (spelling: string) => `/claim/${encodeURIComponent(spelling)}`,
 };
