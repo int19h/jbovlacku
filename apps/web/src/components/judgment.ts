@@ -33,8 +33,10 @@ export interface JudgmentOptions {
   score: ScoreRecord | null | undefined;
   /** Unavailable means the server could not compute the score. */
   unavailable: boolean;
-  /** Why no score is shown, when the reason is not the server. */
-  reason?: "personal";
+  /** True when the score comes from the local personal calculation. */
+  personal?: boolean;
+  /** Why no score is shown in the personal view, when the local calculation has none. */
+  reason?: string;
   /** Deprecated or other status, when known. */
   status?: string;
   calculation?: Calculation | null;
@@ -112,9 +114,15 @@ export function judgmentControl(
     role: "img",
     text: headline.text,
   });
-  if (options.reason === "personal") {
-    score.title =
-      "Personal view score unavailable in this build. Switch to the site view on the Trust page.";
+  if (options.personal && !headline.unavailable) {
+    score.title = `${headline.title} In your personal view.`;
+    score.setAttribute(
+      "aria-label",
+      `${headline.label}, in your personal view`,
+    );
+  }
+  if (options.personal && headline.unavailable) {
+    score.title = `Score unavailable in the personal view. ${options.reason ?? "No numeric score is assumed."}`;
     score.setAttribute("aria-label", "Score unavailable in the personal view");
   }
   if (options.status === "deprecated") {
@@ -232,10 +240,10 @@ export function scoreDetails(
   details.addEventListener("toggle", async () => {
     if (!details.open) return;
     body.replaceChildren();
-    if (options.reason === "personal") {
+    if (options.personal && !score) {
       body.append(
         p(
-          "Your personal view applies private choices from this browser. This build cannot compute personal scores yet, so no score is shown. The site view scores are available after switching the view on the Trust page.",
+          `Your personal view applies private choices from this browser. ${options.reason ?? "The local calculation has no score for this item."} No numeric score is assumed. The site view scores are available after switching the view on the Trust page.`,
           "small",
         ),
         el(
@@ -298,11 +306,14 @@ export function scoreDetails(
       body.append(slot);
       void (async () => {
         try {
-          const word = await getWord(target.word!, {
-            reviewers: true,
-            snapshot: options.calculation?.inventory,
-          });
-          const detailed = word.scores.find((s) => s.target === target.id);
+          const detailed = score.reviewers
+            ? score
+            : (
+                await getWord(target.word!, {
+                  reviewers: true,
+                  snapshot: options.calculation?.inventory,
+                })
+              ).scores.find((s) => s.target === target.id);
           slot.replaceChildren();
           if (!detailed?.reviewers) {
             slot.append(
@@ -428,8 +439,10 @@ export function scoreDetails(
       el(
         "p",
         { class: "meta" },
-        "The score adds the weight of each reviewer in your ",
-        el("a", { href: "/trust", text: "trust view" }),
+        options.personal
+          ? "The score adds the weight of each reviewer in your personal view, calculated in this browser from the downloaded records. "
+          : "The score adds the weight of each reviewer in the site view. ",
+        el("a", { href: "/trust", text: "Trust page" }),
         ".",
       ),
     );

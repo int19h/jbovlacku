@@ -28,6 +28,7 @@ import {
   TransportError,
 } from "../data/api.ts";
 import type { SearchHit, WordResponse } from "../model/types.ts";
+import { viewScores } from "../components/localview.ts";
 import { judgmentControl } from "../components/judgment.ts";
 import {
   attribution,
@@ -442,19 +443,21 @@ function hitRow(
         });
       } catch {}
       if (!context.live()) return;
-      const score = word?.scores.find((s) => s.target === previewId) ?? null;
-      const personal = app.session.preferences.viewMode === "personal";
+      const view = word ? await viewScores(app, hit.word_id, word) : null;
+      if (!context.live()) return;
+      const score = view?.scores.find((s) => s.target === previewId) ?? null;
       const unavailable =
-        personal ||
-        !word ||
-        word.unavailable_scores.includes(previewId) ||
+        !view ||
+        view.calculation === null ||
+        view.unavailable_scores.includes(previewId) ||
         !score;
       controlSlot.replaceChildren(
         judgmentControl(app, target, {
           score,
           unavailable,
-          reason: personal ? "personal" : undefined,
-          calculation: word?.calculation,
+          personal: view?.personal,
+          reason: view?.reason ?? undefined,
+          calculation: view?.calculation,
         }),
       );
       if (word?.assignments.length) {

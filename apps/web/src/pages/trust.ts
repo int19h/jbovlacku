@@ -3,6 +3,7 @@ import { el, p, link, text, button, describe, disclosure } from "../lib/dom.ts";
 import { fractionText, plural } from "../lib/format.ts";
 import { routes, type RenderContext, type Route } from "../app/router.ts";
 import type { App } from "../app/context.ts";
+import { calculationPanel } from "../components/localview.ts";
 import { getManifest, getWord, loadRecord } from "../data/api.ts";
 import { eventId, type ViewBody } from "../model/types.ts";
 import { identityLink } from "../components/attribution.ts";
@@ -86,9 +87,10 @@ export async function trustPage(
   );
   main.append(
     p(
-      "The site view shows this server's scores. The personal view applies your private choices in this browser. This build cannot compute personal scores yet, so word and search pages show unavailable scores in the personal view instead of substituting site scores. Your private choices are still saved here.",
+      "The site view shows this server's scores. The personal view downloads the snapshot's records, verifies them in this browser, and applies your private choices from this browser. It adds your identity as a root with allocation 1 when the view names no allocation for it, and it applies your public shuns as local blocks. When the local calculation cannot finish, word and search pages show unavailable scores instead of substituting site scores.",
       "meta",
     ),
+    calculationPanel(app, { mode: "personal", label: "Local calculation" }),
   );
   const overlay = await app.store.overlay().catch(() => null);
   const registers = await app.own.registers();

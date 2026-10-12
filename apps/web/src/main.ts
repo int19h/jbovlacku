@@ -34,6 +34,8 @@ import { placesPage } from "./pages/wizard/places.ts";
 import { publishPage } from "./pages/wizard/publish.ts";
 import { claimPage, rafsiPage } from "./pages/rafsi.ts";
 import { flushPendingDraft } from "./pages/wizard/common.ts";
+import { PersonalCalculator } from "./data/personal.ts";
+import type { TrustScope } from "./model/types.ts";
 
 const root = document.querySelector<HTMLDivElement>("#app")!;
 type Page = (
@@ -78,8 +80,21 @@ async function start() {
   applyTheme(session.preferences.theme);
   const shell = buildShell(root, session, delivery);
   const own = new OwnState(store, session, () => offlineSigning.value);
+  const personal = new PersonalCalculator(store, async () => {
+    const registers = await own.registers().catch(() => null);
+    const shuns: { identity: string; scope: TrustScope }[] = [];
+    for (const [key, state] of registers?.trust ?? []) {
+      if (!state.known || state.value !== "shun") continue;
+      const [identity, kind, word, language] = key.split("|");
+      shuns.push({ identity, scope: { kind, word, language } as TrustScope });
+    }
+    return { identity: session.identity ?? null, shuns };
+  });
+  store.onOverlayChange = () => personal.invalidate();
+  own.subscribe(() => personal.invalidate());
   const app: App = {
     store,
+    personal,
     session,
     delivery,
     signer,

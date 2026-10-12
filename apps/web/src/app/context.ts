@@ -54,6 +54,7 @@ export class OwnState {
 }
 export interface App {
   store: LocalStore;
+  personal: import("../data/personal.ts").PersonalCalculator;
   session: Session;
   delivery: DeliveryEngine;
   signer: Signer;

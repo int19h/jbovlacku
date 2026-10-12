@@ -39,6 +39,12 @@ import { judgmentControl, scoreDetails } from "../components/judgment.ts";
 import { identityLink } from "../components/attribution.ts";
 import { renderRichText } from "../model/richtext.ts";
 import { zbalermorna } from "../lib/zbalermorna.ts";
+import {
+  calculationPanel,
+  provenanceLine,
+  viewScores,
+} from "../components/localview.ts";
+import { recomputePanel } from "../components/recompute.ts";
 
 export async function wordPage(route: Route, context: RenderContext, app: App) {
   const { main } = context;
@@ -254,50 +260,35 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
   tabs.append(allTab);
   main.append(tabs);
   const personal = app.session.preferences.viewMode === "personal";
-  if (personal) {
-    const notice = el("div", {
-      class: "notice",
-      style: "margin-top:12px",
-      role: "region",
-      "aria-label": "Personal view",
-    });
-    notice.append(
-      text(
-        "Your personal view is selected. This build cannot compute personal scores yet, so scores and ranking are unavailable here. Definitions appear in event order. ",
-      ),
-      button(
-        "Use the site view",
-        async () => {
-          await app.session.setPreferences({ viewMode: "site" });
-          app.shell.setViewLabel("Trust: site view");
-          navigate(location.pathname + location.search, { replace: true });
-        },
-        { class: "btn", style: "min-height:36px" },
+  const rerender = () =>
+    navigate(location.pathname + location.search, { replace: true });
+  if (personal)
+    main.append(
+      calculationPanel(app, {
+        mode: "personal",
+        label: "Personal view",
+        onRefresh: rerender,
+      }),
+    );
+  // Scores under the selected view. The personal view waits for the local calculation.
+  const view = await viewScores(app, id, word);
+  if (!context.live()) return;
+  if (view.personal && view.reason)
+    main.append(
+      p(
+        `Personal scores are unavailable: ${view.reason} Definitions appear in event order. No numeric score is assumed.`,
+        "small",
       ),
     );
-    main.append(notice);
-  }
-  const snapshotNote = el("p", { class: "meta", style: "margin-top:8px" });
-  snapshotNote.append(
-    text(
-      `Snapshot ${word.snapshot.slice(7, 19)}… · view ${word.view.slice(5, 17)}…`,
-    ),
-  );
-  if (word.calculation === null)
-    snapshotNote.append(
-      text(
-        " · ranking unavailable for this word. No score is assumed.",
-        "meta",
-      ),
-    );
-  main.append(snapshotNote);
+  main.append(provenanceLine(view));
+  if (!personal) main.append(recomputePanel(app, id, word));
   // Definition order follows layers. Unranked definitions follow.
   const visible = new Set(
     active === "all" ? records.keys() : (byLanguage.get(active) ?? []),
   );
   const shown = new Set<string>();
   const ordered: { id: string; layer: number | null }[] = [];
-  for (const [index, layer] of (personal ? [] : word.layers).entries())
+  for (const [index, layer] of view.layers.entries())
     for (const definition of layer)
       if (visible.has(definition) && !shown.has(definition)) {
         shown.add(definition);
@@ -324,18 +315,17 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
   let lastLayer: number | null = -1;
   for (const { id: definition, layer } of ordered) {
     const record = records.get(definition)!;
-    const score = word.scores.find((s) => s.target === definition) ?? null;
+    const score = view.scores.find((s) => s.target === definition) ?? null;
     const unavailable =
-      personal ||
-      word.calculation === null ||
-      word.unavailable_scores.includes(definition) ||
+      view.calculation === null ||
+      view.unavailable_scores.includes(definition) ||
       !score;
     if (
       layer !== null &&
       layer !== lastLayer &&
-      word.layers[layer].filter((d) => visible.has(d)).length > 1
+      view.layers[layer].filter((d) => visible.has(d)).length > 1
     ) {
-      const size = word.layers[layer].filter((d) => visible.has(d)).length;
+      const size = view.layers[layer].filter((d) => visible.has(d)).length;
       main.append(
         p(
           `${plural(size, "alternative")} with unresolved order. Presentation order follows event IDs.`,
@@ -348,19 +338,20 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
       definitionBlock(app, record, {
         score,
         unavailable,
-        reason: personal ? "personal" : undefined,
+        personal: view.personal,
+        reason: view.reason ?? undefined,
         status: statusOf(definition),
-        calculation: word.calculation,
+        calculation: view.calculation,
         secondary: layer !== null && layer > 0,
         revisions: allRecords,
         word,
         onChange: refresh,
       }),
     );
-    if (layer === null && !personal)
+    if (layer === null && !(view.personal && view.reason))
       main.lastElementChild!.append(
         p(
-          "No ranking position is available for this definition in the server layers.",
+          `No ranking position is available for this definition in the ${view.personal ? "personal view layers" : "server layers"}.`,
           "meta",
         ),
       );
@@ -411,11 +402,10 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
         ),
       );
       const score =
-        word.scores.find((s) => s.target === entry.assignment) ?? null;
+        view.scores.find((s) => s.target === entry.assignment) ?? null;
       const unavailable =
-        personal ||
         entry.status !== "eligible" ||
-        word.unavailable_scores.includes(entry.assignment) ||
+        view.unavailable_scores.includes(entry.assignment) ||
         !score;
       const byline = el("div", { class: "byline" });
       byline.append(
@@ -434,8 +424,9 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
       const judgmentOptions = {
         score,
         unavailable,
-        reason: personal ? ("personal" as const) : undefined,
-        calculation: word.calculation,
+        personal: view.personal,
+        reason: view.reason ?? undefined,
+        calculation: view.calculation,
         large: true,
         onChange: refresh,
       };

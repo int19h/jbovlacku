@@ -40,7 +40,10 @@ Manual authoring works without AI. Publish signs the definition, a separate auth
 Revise copies a publication into a new draft with its exact parent. A revision of imported text cites the imported publication and copies the source-rights reference.
 The rafsi page lists known assignments across words from version 2 packages, and the claim page signs a claim with its pair blessing.
 The lujvo builder, gismu generator, status editor, transfer editor, semantic search, AI, and Lensisku cross-posting remain target features.
-Personal-view recalculation with private blocks, planned handover, and compromise notices also remain target features.
+The personal view downloads the snapshot records, verifies each envelope and body in a Web Worker, and ranks words locally with the private overlay.
+It adds the current identity as a root with allocation 1 when the view names no allocation for it, and it applies private blocks and public shuns as local blocks.
+A cancelled or incomplete local calculation keeps personal scores unavailable and offers the site view. "Recompute from records" compares a local site-view calculation with the server scores.
+Planned handover and compromise notices remain target features.
 The [web UI design](docs/ui-design.md) defines the layouts. The reading, identity, trust, delivery, and authoring screens follow it. The builder screens for step 3 do not exist yet.
 The general SQL migration, automatic rafsi publications, and structured import conversion also remain unfinished.
 The complete `jvc` command catalog in the format specification remains a target interface.

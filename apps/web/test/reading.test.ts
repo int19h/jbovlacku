@@ -124,9 +124,11 @@ test("the word page orders definitions by the two-root view and exposes the scor
   ).toBeVisible();
   await expect(first.getByText("Exact", { exact: true })).toBeVisible();
   await expect(
-    first.getByText(/The score adds the weight of each reviewer in your/),
+    first.getByText(
+      /The score adds the weight of each reviewer in the site view/,
+    ),
   ).toBeVisible();
-  await expect(first.getByRole("link", { name: "trust view" })).toHaveAttribute(
+  await expect(first.getByRole("link", { name: "Trust page" })).toHaveAttribute(
     "href",
     "/trust",
   );

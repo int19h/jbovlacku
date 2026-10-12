@@ -19,6 +19,7 @@ import { downloadPackage, isV2, type CachedPackage } from "../data/search.ts";
 import { getWord, loadRecord } from "../data/api.ts";
 import type { PackageEntryV2, RafsiBody } from "../model/types.ts";
 import { identityLink } from "../components/attribution.ts";
+import { viewScores } from "../components/localview.ts";
 import { judgmentControl, scoreDetails } from "../components/judgment.ts";
 import { renderRichText } from "../model/richtext.ts";
 
@@ -138,7 +139,9 @@ export async function rafsiPage(
       const word = await getWord(id, { signal: context.signal });
       if (!context.live()) return;
       const assignment = word.assignments.find((a) => a.id === pair);
-      const score = word.scores.find((s) => s.target === pair) ?? null;
+      const view = await viewScores(app, id, word);
+      if (!context.live()) return;
+      const score = view.scores.find((s) => s.target === pair) ?? null;
       const byline = el("div", { class: "byline" });
       byline.append(
         text(
@@ -158,15 +161,13 @@ export async function rafsiPage(
       const options = {
         score,
         unavailable:
-          app.session.preferences.viewMode === "personal" ||
           !assignment ||
           assignment.status !== "eligible" ||
+          view.unavailable_scores.includes(pair) ||
           !score,
-        reason:
-          app.session.preferences.viewMode === "personal"
-            ? ("personal" as const)
-            : undefined,
-        calculation: word.calculation,
+        personal: view.personal,
+        reason: view.reason ?? undefined,
+        calculation: view.calculation,
         large: true,
       };
       byline.append(

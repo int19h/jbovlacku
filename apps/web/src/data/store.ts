@@ -126,12 +126,14 @@ const stores = [
   "prefs",
   "ownhistory",
   "inventory",
+  "records",
+  "selections",
 ];
 export class LocalStore {
   private database: Promise<IDBDatabase>;
   constructor(name = "jbovlacku-browser-v1") {
     this.database = new Promise((resolve, reject) => {
-      const request = indexedDB.open(name, 2);
+      const request = indexedDB.open(name, 3);
       request.onupgradeneeded = (event) => {
         const db = request.result;
         for (const store of stores)
@@ -258,8 +260,11 @@ export class LocalStore {
   async overlay(): Promise<Overlay> {
     return (await this.get<Overlay>("prefs", "overlay")) ?? emptyOverlay();
   }
+  /** Called after every overlay write, so that local calculations restart. */
+  onOverlayChange: (() => void) | null = null;
   async setOverlay(overlay: Overlay): Promise<void> {
     await this.put("prefs", "overlay", overlay);
+    this.onOverlayChange?.();
   }
   /** Installs or restores the selected identity without replacing another one. */
   async installIdentity(
