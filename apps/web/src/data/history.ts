@@ -21,10 +21,15 @@ import {
   type TrustValue,
 } from "../model/types.ts";
 
-const WORK_LIMIT = 4096;
+/**
+ * The largest own history this client handles. The limit covers the verified
+ * events of one identity. It is a capacity limit of this browser client, and
+ * the message below states it. A larger history needs a client without it.
+ */
+export const WORK_LIMIT = 4096;
 const workLimit = () =>
   new Error(
-    "Own history exceeds the browser work limit. Export the outbox and merge history with the CLI.",
+    `Own history exceeds the browser work limit of ${WORK_LIMIT} events. Signing with this key is unavailable in this browser client. Export the outbox from Not delivered to keep your signed records. A larger history needs a future client without this limit.`,
   );
 export interface OwnHistory {
   identity: string;
@@ -77,6 +82,8 @@ export async function loadOwnHistory(
     }
   const manifest = options.offline ? null : await getManifest({ signal, peer });
   const verified = new Map<string, Envelope>();
+  /** Envelopes fetched from the server in this load. They are kept locally afterwards. */
+  const fetched: Envelope[] = [];
   let complete = true;
   const read = async (id: string): Promise<Envelope | null> => {
     check();
@@ -84,6 +91,7 @@ export async function loadOwnHistory(
     if (cached) return cached;
     if (verified.size >= WORK_LIMIT) throw workLimit();
     let envelope = local.get(id) ?? null;
+    const fromServer = !envelope && Boolean(manifest);
     if (!envelope && manifest)
       envelope = await getEnvelope(id, manifest.snapshot, { signal, peer });
     if (!envelope) {
@@ -94,6 +102,7 @@ export async function loadOwnHistory(
     if (envelope.id !== id || envelope.header.issuer !== identity)
       throw new Error("Own history did not match the signing identity.");
     verified.set(id, envelope);
+    if (fromServer) fetched.push(envelope);
     return envelope;
   };
   if (manifest) {
@@ -165,8 +174,15 @@ export async function loadOwnHistory(
   const frontier = [...known].filter((id) => !ancestors.has(id)).sort();
   if (frontier.length > 64)
     throw new Error(
-      "Own history has more than 64 branches. Export the outbox and merge history with the CLI.",
+      "Own history has more than 64 branches, which is the format limit for one record. Signing with this key is unavailable here. Export the outbox from Not delivered to keep your signed records.",
     );
+  // Every ancestor was walked, so the fetched records are authenticated
+  // history. Keeping them makes the next load local. A storage failure here
+  // only costs the next load a fetch.
+  if (fetched.length)
+    try {
+      await timed(store.rememberOwn(identity, fetched));
+    } catch {}
   return {
     identity,
     snapshot: manifest?.snapshot ?? null,
@@ -207,22 +223,6 @@ export interface OwnRegisters {
  */
 export function deriveRegisters(history: OwnHistory): OwnRegisters {
   const events = history.events;
-  const ancestorCache = new Map<string, Set<string>>();
-  const ancestorsOf = (id: string): Set<string> => {
-    const cached = ancestorCache.get(id);
-    if (cached) return cached;
-    const result = new Set<string>();
-    const stack = [...(events.get(id)?.header.previous ?? [])];
-    while (stack.length) {
-      const next = stack.pop()!;
-      if (result.has(next)) continue;
-      result.add(next);
-      for (const previous of events.get(next)?.header.previous ?? [])
-        stack.push(previous);
-    }
-    ancestorCache.set(id, result);
-    return result;
-  };
   const groups = new Map<
     string,
     { kind: "judgment" | "trust" | "profile"; key: string; ids: string[] }
@@ -253,13 +253,30 @@ export function deriveRegisters(history: OwnHistory): OwnRegisters {
     group.ids.push(envelope.id);
     groups.set(groupKey, group);
   }
+  /**
+   * The group members that no other member follows. One walk over the
+   * ancestors of every member finds them. A member reached by that walk has
+   * a causally later member, so it is not maximal.
+   */
+  const maximalOf = (ids: string[]): string[] => {
+    if (ids.length < 2) return ids;
+    const members = new Set(ids);
+    const reached = new Set<string>();
+    const stack = ids.flatMap((id) => events.get(id)?.header.previous ?? []);
+    while (stack.length) {
+      const next = stack.pop()!;
+      if (reached.has(next)) continue;
+      reached.add(next);
+      for (const previous of events.get(next)?.header.previous ?? [])
+        stack.push(previous);
+    }
+    return ids.filter((id) => members.has(id) && !reached.has(id));
+  };
   const resolve = <V>(
     ids: string[],
     value: (envelope: Envelope) => V,
   ): RegisterState<V> => {
-    const maximal = ids.filter(
-      (id) => !ids.some((other) => other !== id && ancestorsOf(other).has(id)),
-    );
+    const maximal = maximalOf(ids);
     const values = new Set(
       maximal.map((id) => JSON.stringify(value(events.get(id)!))),
     );

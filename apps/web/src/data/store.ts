@@ -616,6 +616,34 @@ export class LocalStore {
     });
   }
   /**
+   * Keeps authenticated own envelopes that were fetched from a server, so the
+   * next history load reads them here instead of fetching them again. The
+   * heads are not changed: these records are ancestors of known heads.
+   */
+  async rememberOwn(
+    identity: string,
+    envelopes: import("../model/types.ts").Envelope[],
+  ): Promise<void> {
+    if (!envelopes.length) return;
+    for (const envelope of envelopes)
+      if (envelope.header.issuer !== identity)
+        throw new Error(
+          "A remembered record does not belong to this identity.",
+        );
+    const db = await this.database;
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction("ownhistory", "readwrite");
+      const own = tx.objectStore("ownhistory");
+      for (const envelope of envelopes) own.put(envelope, envelope.id);
+      tx.oncomplete = () => resolve();
+      tx.onabort = () =>
+        reject(
+          tx.error ?? new Error("Local storage did not keep the own history."),
+        );
+      tx.onerror = () => {};
+    });
+  }
+  /**
    * Finishes the version 1 migration once the core is available. A migrated
    * row is accepted only when its retained receipt satisfies the same rules
    * as a fresh delivery. Otherwise it stays unknown with its exact bytes.

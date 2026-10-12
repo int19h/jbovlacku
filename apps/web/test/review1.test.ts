@@ -244,11 +244,28 @@ test("automatic delivery follows each peer's own schedule while an explicit retr
     500000,
   );
   expect(mirrorPosts).toBe(1);
-  // Automatic ticks respect the mirror's Retry-After even though the record is active.
+  // Automatic ticks respect the mirror's Retry-After even though the record is
+  // active. The test observes the tick itself, not a fixed delay: the engine
+  // runs a tick on the online event, and that tick must skip the mirror.
   await page.evaluate(async () => {
+    const { DeliveryEngine } = await import(String("/src/data/delivery.ts"));
+    const original = DeliveryEngine.prototype.tick;
+    (window as any).__ticks = 0;
+    DeliveryEngine.prototype.tick = async function (...args: unknown[]) {
+      const result = await (original as any).apply(this, args);
+      (window as any).__ticks += 1;
+      return result;
+    };
     window.dispatchEvent(new Event("online"));
-    await new Promise((resolve) => setTimeout(resolve, 800));
   });
+  await expect
+    .poll(() => page.evaluate(() => (window as any).__ticks as number))
+    .toBeGreaterThan(0);
+  items = await outboxItems(page);
+  expect(items[0].peers.mirror.attempts).toBe(1);
+  expect(items[0].peers.mirror.nextAttempt - Date.now()).toBeGreaterThan(
+    500000,
+  );
   expect(mirrorPosts).toBe(1);
   // An explicit retry attempts the mirror now.
   await page.getByRole("link", { name: "1 not delivered" }).click();

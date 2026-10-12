@@ -23,6 +23,7 @@ import {
 import type { App } from "../app/context.ts";
 import { renderExisting } from "./handover.ts";
 import type { HandoverRecord } from "../data/lifecycle.ts";
+import { identityProfile, profileName } from "../components/attribution.ts";
 
 export async function identityPage(
   route: Route,
@@ -54,10 +55,9 @@ export async function identityPage(
   }
   const backup = session.backup;
   const head = el("div", { class: "word-head" });
-  const registers = await app.own.registers();
+  // The display name is the server's effective profile claim for this key.
+  const name = profileName(await identityProfile(backup.identity));
   if (!context.live()) return;
-  const name =
-    registers?.profile.known && registers.profile.value ? null : null;
   head.append(
     el(
       "h1",
@@ -65,7 +65,7 @@ export async function identityPage(
       el("bdi", { text: name ?? shortIdentity(backup.identity) }),
     ),
     link("public page", routes.identity(backup.identity), { class: "small" }),
-    link("Edit name and bio", `${routes.identity(backup.identity)}#edit`, {
+    link("Edit public profile", `${routes.identity(backup.identity)}#edit`, {
       class: "btn btn-quiet",
       style: "margin-left:auto;font-size:14px",
     }),

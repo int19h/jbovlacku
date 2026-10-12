@@ -1,5 +1,18 @@
-import { test, expect } from "@playwright/test";
-import { corePath, fixture } from "./helpers.ts";
+import { test, expect, type Page } from "@playwright/test";
+import {
+  acceptFirstSignature,
+  corePath,
+  createIdentity,
+  fixture,
+  openWord,
+} from "./helpers.ts";
+
+async function outboxItems(page: Page) {
+  return page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    return new LocalStore().list("outbox");
+  });
+}
 
 test("a failed local write never reports a saved group and sends nothing", async ({
   page,
@@ -650,19 +663,32 @@ test("a native IndexedDB open failure keeps a warning and allows anonymous onlin
   ])
     await expect(page.getByRole("button", { name })).toBeDisabled();
   await expect(warning).toBeVisible();
-  for (const [path, heading, explanation] of [
-    ["/new/meaning", "Add a word", "drafts cannot be saved"],
+  // Each page names its explanation and hides the controls it offers with storage.
+  for (const [path, heading, explanation, absent] of [
+    [
+      "/new/meaning",
+      "Add a word",
+      "drafts cannot be saved",
+      () => page.getByRole("textbox", { name: "Meaning", exact: true }),
+    ],
     [
       "/identity",
       "Browser storage unavailable",
       "Restore browser storage access",
+      () => page.getByRole("button", { name: "Create a key", exact: true }),
     ],
     [
       "/outbox",
       "Browser storage unavailable",
       "Restore browser storage access",
+      () => page.getByRole("button", { name: "Export every retained record" }),
     ],
-    ["/preferences", "Settings", "Packages cannot be saved"],
+    [
+      "/preferences",
+      "Settings",
+      "Packages cannot be saved",
+      () => page.getByRole("button", { name: "Download", exact: true }),
+    ],
   ] as const) {
     await page.goto(path);
     await expect(
@@ -670,11 +696,17 @@ test("a native IndexedDB open failure keeps a warning and allows anonymous onlin
     ).toBeVisible();
     await expect(page.locator("main")).toContainText(explanation);
     await expect(warning).toBeVisible();
-    await expect(page.locator("main form")).toHaveCount(0);
-    await expect(
-      page.getByRole("button", { name: /Download|Publish|Create a key/ }),
-    ).toHaveCount(0);
+    await expect(absent()).toHaveCount(0);
   }
+  // The Trust page shows the site view and no private rule controls.
+  await page.goto("/trust");
+  await expect(
+    page.getByRole("heading", { name: "Trust", exact: true }),
+  ).toBeVisible();
+  await expect(warning).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: /Make public|Remove|Undo/ }),
+  ).toHaveCount(0);
   await page.goto("/search?q=book&lang=en");
   await expect(warning).toBeVisible();
   await expect(page.getByLabel("Search words and meanings")).toBeEnabled();
@@ -697,4 +729,106 @@ test("a native IndexedDB open failure keeps a warning and allows anonymous onlin
     await page.evaluate(() => (window as any).storageFailureEvents),
   ).toEqual({ openErrors: ["VersionError"], rejections: [] });
   expect(pageErrors).toEqual([]);
+});
+
+test("own records fetched from the server are kept locally, so later signatures fetch nothing again", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  // Counts fetches of this key's first record. Word pages fetch other records too.
+  let firstId = "";
+  let envelopeFetches = 0;
+  page.on("request", (request) => {
+    if (
+      firstId &&
+      request.method() === "GET" &&
+      request.url().includes(`/api/v1/events/${encodeURIComponent(firstId)}`)
+    )
+      envelopeFetches++;
+  });
+  await openWord(page, "cukta");
+  const articles = page.locator("article.definition");
+  await articles.nth(0).getByRole("button", { name: "Endorse" }).click();
+  await acceptFirstSignature(page);
+  await expect(page.getByRole("status")).toContainText(/ndorse/);
+  await expect
+    .poll(async () => (await outboxItems(page))[0]?.peers.self.state)
+    .toBe("accepted");
+  firstId = (await outboxItems(page))[0].id;
+  // A restored key holds no local history. Only the server knows the first record.
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore();
+    for (const name of ["outbox", "ownhistory", "heads"])
+      for (const key of await store.keys(name)) await store.delete(name, key);
+  });
+  await page.goto("/identity");
+  await page
+    .getByLabel("Passphrase", { exact: true })
+    .fill("test passphrase with spaces");
+  await page.getByRole("button", { name: "Unlock", exact: true }).click();
+  await expect(page.getByText("Unlocked", { exact: true })).toBeVisible();
+  await openWord(page, "cukta");
+  await articles.nth(1).getByRole("button", { name: "Endorse" }).click();
+  await expect(page.getByRole("status")).toContainText(/ndorse/);
+  await expect.poll(async () => (await outboxItems(page)).length).toBe(1);
+  // The first signature after the restore fetched the one unknown record and kept it.
+  expect(envelopeFetches).toBe(1);
+  const kept = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    return new LocalStore().list("ownhistory");
+  });
+  expect(kept).toHaveLength(1);
+  expect(kept[0].id).toBe(firstId);
+  // The next signature reads that record here. Nothing is fetched again.
+  await articles.nth(2).getByRole("button", { name: "Endorse" }).click();
+  await expect(page.getByRole("status")).toContainText(/ndorse/);
+  await expect.poll(async () => (await outboxItems(page)).length).toBe(2);
+  expect(envelopeFetches).toBe(1);
+  // The restored history is the chain: the third record follows the second, which follows the first.
+  const items = (await outboxItems(page)).sort(
+    (a: any, b: any) => a.signedAt - b.signedAt,
+  );
+  const second = JSON.parse(items[0].transport).envelope;
+  const third = JSON.parse(items[1].transport).envelope;
+  expect(second.header.previous).toEqual([firstId]);
+  expect(third.header.previous).toEqual([second.id]);
+});
+
+test("a record without a saved recipient address says that export is the only path", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await openWord(page, "cukta");
+  await page
+    .locator("article.definition")
+    .first()
+    .getByRole("button", { name: "Endorse" })
+    .click();
+  await acceptFirstSignature(page);
+  await expect
+    .poll(async () => (await outboxItems(page))[0]?.peers.self.state)
+    .toBe("accepted");
+  // A migrated row keeps its bytes and no address. Current preferences never supply one.
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { freshPeer } = await import(String("/src/data/delivery.ts"));
+    const store = new LocalStore();
+    const [item] = await store.list("outbox");
+    await store.put("outbox", item.id, {
+      ...item,
+      recipients: {},
+      peers: { self: freshPeer() },
+      stopped: false,
+    });
+  });
+  await page.goto("/outbox");
+  const row = page
+    .getByRole("list", { name: "Unfinished records" })
+    .getByRole("listitem");
+  await expect(row).toContainText("is not configured in this record");
+  await expect(row).toContainText(
+    "Export is the only path: save the record as a file and submit it with another client, then stop retrying here.",
+  );
+  await expect(row).not.toContainText("Next try");
 });

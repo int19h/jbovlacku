@@ -24,6 +24,10 @@ export function identityProfile(
   }
   return pending;
 }
+/** Drops the cached profile after this browser signed a new claim. */
+export function forgetProfile(identity: string) {
+  profileCache.delete(identity);
+}
 /** The display name of a known, unconflicted profile, or null. */
 export function profileName(response: IdentityResponse | null): string | null {
   if (!response || response.profile.state !== "known") return null;

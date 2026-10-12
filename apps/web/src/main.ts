@@ -37,7 +37,7 @@ import { handoverPage } from "./pages/handover.ts";
 import { compromisePage } from "./pages/compromise.ts";
 import { placesPage } from "./pages/wizard/places.ts";
 import { publishPage } from "./pages/wizard/publish.ts";
-import { claimPage, rafsiPage } from "./pages/rafsi.ts";
+import { claimPage, rafsiPage, rafsiPairPage } from "./pages/rafsi.ts";
 import { guardDraftNavigation } from "./pages/wizard/common.ts";
 import { PersonalCalculator } from "./data/personal.ts";
 import { classifyReceipt } from "./data/delivery.ts";
@@ -137,6 +137,7 @@ async function start() {
     about: aboutPage,
     trust: trustPage,
     rafsi: rafsiPage,
+    "rafsi-pair": rafsiPairPage,
     claim: claimPage,
     review: unavailable("Review queue", "This server has no review queue."),
   };

@@ -72,6 +72,94 @@ export async function wordsWithRafsi(
     a.spelling.localeCompare(b.spelling),
   );
 }
+/** One word's card for a rafsi: the pair status, the judgment control, and the retained claims. */
+async function pairCard(
+  app: App,
+  context: RenderContext,
+  w: { spelling: string; language: string },
+  rafsi: string,
+): Promise<HTMLElement> {
+  const id = deriveWordId({ language: "jbo", spelling: w.spelling });
+  const pair = rafsiPairId(id, rafsi);
+  const card = el("section", {
+    class: "definition",
+    "aria-label": `${rafsi} for ${w.spelling}`,
+  });
+  card.append(
+    el(
+      "p",
+      { class: "prose" },
+      link(w.spelling, routes.word(w.spelling, w.language), { lang: "jbo" }),
+      text(` with rafsi ${rafsi}`, "meta"),
+    ),
+  );
+  try {
+    const word = await getWord(id, { signal: context.signal });
+    if (!context.live()) return card;
+    const assignment = word.assignments.find((a) => a.id === pair);
+    const view = await viewScores(app, id, word);
+    if (!context.live()) return card;
+    const score = view.scores.find((s) => s.target === pair) ?? null;
+    const byline = el("div", { class: "byline" });
+    byline.append(
+      text(
+        assignment
+          ? `${assignment.status === "eligible" ? "Eligible pair" : assignment.status === "inactive" ? "Inactive pair" : "Pair status unknown"} · ${assignment.claims.length} claim${assignment.claims.length === 1 ? "" : "s"}`
+          : "No claim in the selected view",
+        "meta",
+      ),
+      el("span", { class: "spacer" }),
+    );
+    const target = {
+      id: pair,
+      word: id,
+      describe: (value: string) =>
+        `${value === "bless" ? "Endorsing" : value === "curse" ? "Opposing" : "Clearing your judgment on"} rafsi ${rafsi} for ${w.spelling}`,
+    };
+    const options = {
+      score,
+      unavailable:
+        !assignment ||
+        assignment.status !== "eligible" ||
+        view.unavailable_scores.includes(pair) ||
+        !score,
+      personal: view.personal,
+      reason: view.reason ?? undefined,
+      calculation: view.calculation,
+      large: true,
+    };
+    byline.append(
+      judgmentControl(app, target, options),
+      scoreDetails(app, target, options),
+    );
+    card.append(byline);
+    for (const claim of assignment?.claims ?? []) {
+      try {
+        const record = await loadRecord<RafsiBody>(claim, word.snapshot);
+        const row = el("div", { class: "small", style: "margin-top:8px" });
+        row.append(
+          text("Claimed by "),
+          identityLink(record.envelope.header.issuer),
+          text(" · "),
+          link("record", routes.definition(claim)),
+        );
+        if (record.body?.rationale.length)
+          row.append(
+            renderRichText(record.body.rationale, { placeHref: null }),
+          );
+        card.append(row);
+      } catch {}
+    }
+  } catch (error) {
+    card.append(
+      p(
+        `This server did not answer for ${w.spelling}: ${describe(error)}`,
+        "meta",
+      ),
+    );
+  }
+  return card;
+}
 export async function rafsiPage(
   route: Route,
   context: RenderContext,
@@ -120,88 +208,7 @@ export async function rafsiPage(
         "notice",
       ),
     );
-  for (const w of words) {
-    const id = deriveWordId({ language: "jbo", spelling: w.spelling });
-    const pair = rafsiPairId(id, rafsi);
-    const card = el("section", {
-      class: "definition",
-      "aria-label": `${rafsi} for ${w.spelling}`,
-    });
-    card.append(
-      el(
-        "p",
-        { class: "prose" },
-        link(w.spelling, routes.word(w.spelling, w.language), { lang: "jbo" }),
-        text(` with rafsi ${rafsi}`, "meta"),
-      ),
-    );
-    try {
-      const word = await getWord(id, { signal: context.signal });
-      if (!context.live()) return;
-      const assignment = word.assignments.find((a) => a.id === pair);
-      const view = await viewScores(app, id, word);
-      if (!context.live()) return;
-      const score = view.scores.find((s) => s.target === pair) ?? null;
-      const byline = el("div", { class: "byline" });
-      byline.append(
-        text(
-          assignment
-            ? `${assignment.status === "eligible" ? "Eligible pair" : assignment.status === "inactive" ? "Inactive pair" : "Pair status unknown"} · ${assignment.claims.length} claim${assignment.claims.length === 1 ? "" : "s"}`
-            : "No claim in the selected view",
-          "meta",
-        ),
-        el("span", { class: "spacer" }),
-      );
-      const target = {
-        id: pair,
-        word: id,
-        describe: (value: string) =>
-          `${value === "bless" ? "Endorsing" : value === "curse" ? "Opposing" : "Clearing your judgment on"} rafsi ${rafsi} for ${w.spelling}`,
-      };
-      const options = {
-        score,
-        unavailable:
-          !assignment ||
-          assignment.status !== "eligible" ||
-          view.unavailable_scores.includes(pair) ||
-          !score,
-        personal: view.personal,
-        reason: view.reason ?? undefined,
-        calculation: view.calculation,
-        large: true,
-      };
-      byline.append(
-        judgmentControl(app, target, options),
-        scoreDetails(app, target, options),
-      );
-      card.append(byline);
-      for (const claim of assignment?.claims ?? []) {
-        try {
-          const record = await loadRecord<RafsiBody>(claim, word.snapshot);
-          const row = el("div", { class: "small", style: "margin-top:8px" });
-          row.append(
-            text("Claimed by "),
-            identityLink(record.envelope.header.issuer),
-            text(" · "),
-            link("record", routes.definition(claim)),
-          );
-          if (record.body?.rationale.length)
-            row.append(
-              renderRichText(record.body.rationale, { placeHref: null }),
-            );
-          card.append(row);
-        } catch {}
-      }
-    } catch (error) {
-      card.append(
-        p(
-          `This server did not answer for ${w.spelling}: ${describe(error)}`,
-          "meta",
-        ),
-      );
-    }
-    main.append(card);
-  }
+  for (const w of words) main.append(await pairCard(app, context, w, rafsi));
   main.append(
     p(
       "A rafsi is not reserved by the first server that receives a claim. Judgments on a pair apply across all its publishers.",
@@ -392,4 +399,86 @@ export async function claimPage(
       submit.disabled = false;
     }
   });
+}
+
+/** A pair ID names a word and a rafsi, but the ID alone does not spell them. The local packages resolve it. */
+async function resolvePair(
+  app: App,
+  pair: string,
+  signal: AbortSignal,
+): Promise<{ spelling: string; language: string; rafsi: string } | null> {
+  const languages = new Set<string>([
+    app.session.preferences.definitionLanguage,
+  ]);
+  if (app.session.storageAvailable)
+    for (const key of await app.store.keys("packages").catch(() => []))
+      languages.add(key);
+  for (const language of languages) {
+    const pkg = await packageFor(app, language, signal);
+    if (!pkg) continue;
+    for (const entry of pkg.entries) {
+      if (!isV2(entry)) continue;
+      const id = deriveWordId(entry.word);
+      for (const rafsi of (entry as PackageEntryV2).rafsi)
+        if (rafsiPairId(id, rafsi) === pair)
+          return { spelling: entry.word.spelling, language, rafsi };
+    }
+  }
+  return null;
+}
+/** `/rafsi-pair/<pair ID>`: the word and rafsi of one pair, with its judgment control. */
+export async function rafsiPairPage(
+  route: Route,
+  context: RenderContext,
+  app: App,
+) {
+  const { main } = context;
+  main.className = "surface-word";
+  const pair = (route.segments[1] ?? "").trim();
+  context.title("Rafsi pair");
+  if (!/^jvr1:[0-9a-f]{64}$/.test(pair)) {
+    main.append(
+      el("h1", { class: "page", text: "Rafsi pair unavailable" }),
+      p("This link does not name a rafsi pair ID.", "notice"),
+    );
+    return;
+  }
+  const found = await resolvePair(app, pair, context.signal);
+  if (!context.live()) return;
+  if (!found) {
+    main.append(
+      el("h1", { class: "page", text: "Rafsi pair unavailable" }),
+      p(
+        "A pair ID names a word and a rafsi, but the ID alone does not spell them. No retained claim in this server's search packages matches this pair, so the word and the rafsi are unknown here. Coverage is limited to retained claim bodies.",
+        "notice",
+      ),
+      el("p", { class: "fingerprint", text: pair }),
+    );
+    return;
+  }
+  context.title(`Rafsi ${found.rafsi} for ${found.spelling}`);
+  main.append(
+    el(
+      "div",
+      { class: "word-head" },
+      el(
+        "h1",
+        { lang: "jbo" },
+        el("span", { class: "rafsi", text: found.rafsi }),
+      ),
+      text("rafsi pair", "meta"),
+    ),
+    el(
+      "p",
+      { class: "muted", style: "margin-top:6px" },
+      text(`${found.rafsi} ← `),
+      link(found.spelling, routes.word(found.spelling, found.language), {
+        lang: "jbo",
+      }),
+      text(" · "),
+      link(`all words with ${found.rafsi}`, routes.rafsi(found.rafsi)),
+    ),
+    await pairCard(app, context, found, found.rafsi),
+    el("p", { class: "fingerprint", text: pair }),
+  );
 }

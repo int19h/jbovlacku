@@ -52,6 +52,9 @@ function describeEvent(envelope: Envelope): string {
       return String(action.kind);
   }
 }
+/** The format limit for the `safe` list of a compromise notice. */
+const SAFE_LIMIT = 64;
+
 export async function compromisePage(
   _route: Route,
   context: RenderContext,
@@ -175,6 +178,19 @@ export async function compromisePage(
         "list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:6px",
       "aria-label": "Own records in causal order",
     });
+    const boxes: HTMLInputElement[] = [];
+    /** The format allows at most SAFE_LIMIT named records. Unchecked boxes close at the limit. */
+    const applyLimit = () => {
+      const full = safe.size >= SAFE_LIMIT;
+      for (const box of boxes) {
+        box.disabled = full && !box.checked;
+        box.title = box.disabled
+          ? `At most ${SAFE_LIMIT} records can be named. Clear one to name another.`
+          : "";
+      }
+      limitLine.textContent = `${safe.size} of ${SAFE_LIMIT} records named.${full ? " The limit is reached. Everything a named record follows is retained too, so name the latest record of each branch." : ""}`;
+    };
+    const limitLine = el("p", { class: "meta", "aria-live": "polite" });
     for (const envelope of order) {
       const input = el("input", {
         type: "checkbox",
@@ -182,10 +198,16 @@ export async function compromisePage(
       });
       input.checked = safe.has(envelope.id);
       input.addEventListener("change", () => {
+        if (input.checked && safe.size >= SAFE_LIMIT) {
+          input.checked = false;
+          return;
+        }
         if (input.checked) safe.add(envelope.id);
         else safe.delete(envelope.id);
+        applyLimit();
         renderPreview();
       });
+      boxes.push(input);
       ul.append(
         el(
           "li",
@@ -202,11 +224,13 @@ export async function compromisePage(
     }
     listBox.append(
       ul,
+      limitLine,
       p(
-        "Choose the last records you trust. Everything they follow is retained too. Leave every box empty to disable all authority of this key.",
+        `Choose the last records you trust. Everything they follow is retained too. A notice names at most ${SAFE_LIMIT} records. Leave every box empty to disable all authority of this key.`,
         "meta",
       ),
     );
+    applyLimit();
   };
   const renderPreview = () => {
     previewBody.replaceChildren();

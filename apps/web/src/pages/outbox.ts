@@ -190,6 +190,11 @@ function row(app: App, item: OutboxItem, stoppedView = false): HTMLElement {
       peer.state !== "refused"
     )
       parts.push(`Next try ${inDuration(peer.nextAttempt - Date.now())}.`);
+    if (peer.failure === "unresolved")
+      // A migrated record saved no address. Preferences never supply one.
+      parts.push(
+        "This browser cannot send it. Export is the only path: save the record as a file and submit it with another client, then stop retrying here.",
+      );
     info.append(el("small", { text: parts.join(" ") }));
   }
   li.append(info);

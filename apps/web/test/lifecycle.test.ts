@@ -184,6 +184,11 @@ test("a compromise notice previews retained and excluded records, needs approval
     name: "Own records in causal order",
   });
   await expect(records.getByRole("checkbox")).toHaveCount(2);
+  // The format limit for named safe records is shown before signing.
+  await expect(page.locator("main")).toContainText("0 of 64 records named.");
+  await expect(page.locator("main")).toContainText(
+    "A notice names at most 64 records.",
+  );
   const preview = page.getByRole("region", { name: "Cutoff preview" });
   await expect(preview).toContainText("Retained: nothing");
   await expect(preview).toContainText(
@@ -403,12 +408,17 @@ test("a handover is refused without saving or sending when another tab retired t
   for (const box of await page.getByRole("checkbox").all()) await box.check();
   const sign = page.getByRole("button", { name: "Sign the handover" });
   await sign.click();
-  await expect(
-    page.getByRole("button", { name: "Checking the known history…" }),
-  ).toBeDisabled();
-  await page
-    .getByRole("button", { name: "Checking the known history…" })
-    .click({ force: true });
+  const checking = page.getByRole("button", {
+    name: "Checking the known history…",
+  });
+  await expect(checking).toBeDisabled();
+  // The disabled attribute alone would stop a click. Re-enable the button so
+  // the second click reaches the handler, where the signing guard refuses it.
+  await checking.evaluate((node: HTMLButtonElement) => {
+    node.disabled = false;
+  });
+  await checking.click();
+  await expect(checking).toHaveText("Checking the known history…");
   await expect(page.getByRole("status").last()).toContainText(
     "Old key retired",
   );

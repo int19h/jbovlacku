@@ -1,16 +1,22 @@
 /** Public identity: fingerprint, profile when known, trust actions, and this server's evidence. */
-import { el, p, link, text, button, describe } from "../lib/dom.ts";
+import { el, p, link, text, button, describe, field } from "../lib/dom.ts";
 import { fingerprintText, plural, shortIdentity } from "../lib/format.ts";
 import { getActivity } from "../data/api.ts";
 import {
   identityProfile,
   profileName,
   identityLink,
+  forgetProfile,
 } from "../components/attribution.ts";
-import { renderRichText } from "../model/richtext.ts";
+import {
+  countNodes,
+  renderRichText,
+  richTextToText,
+  textToRichText,
+} from "../model/richtext.ts";
 import { routes, type RenderContext, type Route } from "../app/router.ts";
 import type { App } from "../app/context.ts";
-import { identityId } from "../model/types.ts";
+import { identityId, type ProfileBody } from "../model/types.ts";
 import { trustPanel } from "../components/trustpanel.ts";
 import { loadSiteView } from "./trust.ts";
 import { scopeKey } from "../data/history.ts";
@@ -152,7 +158,7 @@ export async function personPage(
     if (c.reports) parts.push(plural(c.reports, "report"));
     main.append(p(parts.join(" · "), "meta"));
   }
-  if (isSelf)
+  if (isSelf) {
     main.append(
       el(
         "p",
@@ -161,6 +167,18 @@ export async function personPage(
         link("Manage it", routes.localIdentity),
       ),
     );
+    const current =
+      response?.profile.state === "known"
+        ? (response.profile.claims[0]?.body ?? null)
+        : null;
+    main.append(
+      profileEditor(app, identity, current, () => {
+        if (!context.live()) return;
+        main.replaceChildren();
+        void personPage(route, context, app);
+      }),
+    );
+  }
   const view = await loadSiteView(context.signal).catch(() => null);
   if (!context.live()) return;
   if (view?.body) {
@@ -384,6 +402,209 @@ function activityRow(
       }),
     );
   return li;
+}
+/** The format limits of an identity profile. */
+const PROFILE_LIMITS = { name: 80, links: 8, nodes: 8192 };
+/**
+ * The public profile editor for the local key. A profile is a public signed
+ * claim. The editor shows the format limits, checks every field before the
+ * preview, and signs only from the preview.
+ */
+function profileEditor(
+  app: App,
+  identity: string,
+  current: ProfileBody | null,
+  onSigned: () => void,
+): HTMLElement {
+  const section = el("section", {
+    id: "edit",
+    class: "card",
+    style: "margin-top:16px",
+    "aria-labelledby": "edit-h",
+  });
+  section.append(
+    el("h2", {
+      id: "edit-h",
+      class: "section",
+      style: "margin-top:0",
+      text: "Edit public profile",
+    }),
+    p(
+      "A profile is a public signed claim from your key. Readers of every server that keeps your records see it. Earlier claims stay in history.",
+      "small",
+    ),
+  );
+  if (!app.session.storageAvailable) {
+    section.append(
+      p(
+        "Browser storage is unavailable, so a profile cannot be signed or kept.",
+        "notice",
+      ),
+    );
+    return section;
+  }
+  const form = el("form");
+  const name = field("Name", {
+    value: current?.name ?? "",
+    hint: `At most ${PROFILE_LIMITS.name} characters. Shown with your fingerprint, never instead of it.`,
+    autocomplete: "off",
+  });
+  const bio = field("Biography", {
+    multiline: true,
+    rows: 4,
+    value: current ? richTextToText(current.bio) : "",
+    hint: "Plain text. A blank line starts a new paragraph.",
+  });
+  const links = field("Links", {
+    multiline: true,
+    rows: 3,
+    value: (current?.links ?? []).join("\n"),
+    hint: `One HTTPS address per line, at most ${PROFILE_LIMITS.links}.`,
+  });
+  const problems = el("ul", {
+    class: "notice small",
+    style: "margin:8px 0;padding-left:20px",
+    "aria-live": "polite",
+  });
+  problems.hidden = true;
+  const previewBox = el("div", { "aria-live": "polite" });
+  const submit = el("button", {
+    type: "submit",
+    class: "btn",
+    text: "Preview the signed claim",
+  });
+  form.append(
+    name.wrapper,
+    bio.wrapper,
+    links.wrapper,
+    problems,
+    el("div", { class: "actions" }, submit),
+  );
+  section.append(form, previewBox);
+  /** Builds the body, or lists every problem. */
+  const build = (): { body: ProfileBody | null; errors: string[] } => {
+    const errors: string[] = [];
+    const nameValue = name.input.value.trim().normalize("NFC");
+    if ([...nameValue].length > PROFILE_LIMITS.name)
+      errors.push(
+        `The name has ${[...nameValue].length} characters. The limit is ${PROFILE_LIMITS.name}.`,
+      );
+    const bioText = bio.input.value.replace(/\r\n/g, "\n").normalize("NFC");
+    const bioRich = bioText.trim() ? textToRichText(bioText, false) : [];
+    const nodes = countNodes(bioRich);
+    if (nodes > PROFILE_LIMITS.nodes)
+      errors.push(
+        `The biography has ${nodes} text parts. The limit is ${PROFILE_LIMITS.nodes}.`,
+      );
+    const linkValues = links.input.value
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (linkValues.length > PROFILE_LIMITS.links)
+      errors.push(
+        `There are ${linkValues.length} links. The limit is ${PROFILE_LIMITS.links}.`,
+      );
+    for (const value of linkValues) {
+      let ok = false;
+      try {
+        ok =
+          new URL(value).protocol === "https:" && value.startsWith("https://");
+      } catch {}
+      if (!ok) errors.push(`"${value}" is not an absolute HTTPS address.`);
+    }
+    return {
+      body: errors.length
+        ? null
+        : { name: nameValue, bio: bioRich, links: linkValues },
+      errors,
+    };
+  };
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    previewBox.replaceChildren();
+    const { body, errors } = build();
+    problems.replaceChildren(...errors.map((e) => el("li", { text: e })));
+    problems.hidden = !errors.length;
+    if (!body) return;
+    const preview = el("div", {
+      class: "card",
+      style: "margin-top:12px",
+      role: "region",
+      "aria-label": "Profile preview",
+    });
+    const line = el("p", { style: "margin-top:8px" });
+    if (body.bio.length)
+      line.append(
+        renderRichText(body.bio, { placeHref: null, paragraph: "span" }),
+      );
+    for (const url of body.links)
+      line.append(
+        text(line.childElementCount ? " · " : ""),
+        link(url, url, { rel: "noopener noreferrer", target: "_blank" }),
+      );
+    preview.append(
+      el("h3", { class: "section", style: "margin-top:0", text: "Preview" }),
+      el(
+        "p",
+        {},
+        el(
+          "strong",
+          {},
+          el("bdi", { text: body.name || shortIdentity(identity) }),
+        ),
+        text(` · ${fingerprintText(identity)}`, "fingerprint"),
+      ),
+      line,
+      p(
+        "This is a public signed claim with retained history. Signing replaces your current profile for readers. It does not remove earlier claims. The name never establishes authority. The fingerprint does.",
+        "meta",
+      ),
+    );
+    const sign = button(
+      "Sign and publish the profile",
+      async () => {
+        sign.disabled = true;
+        try {
+          await app.session.requireUnlocked(
+            "Publishing your profile",
+            async () => {
+              if (!(await app.session.firstSignatureDisclosure())) return;
+              const results = await app.signer.publish([
+                { action: { kind: "identity.profile" }, body },
+              ]);
+              app.own.invalidate();
+              forgetProfile(identity);
+              const done = results.every((item) =>
+                Object.values(item.peers).every(
+                  (peer) => peer.state === "accepted",
+                ),
+              );
+              app.announce(
+                done
+                  ? "The profile is signed and published."
+                  : "The profile is signed and saved here. Delivery is not finished. See Not delivered.",
+              );
+              onSigned();
+            },
+          );
+        } catch (error) {
+          app.announce(describe(error));
+        } finally {
+          sign.disabled = false;
+        }
+      },
+      { class: "btn btn-primary" },
+    );
+    preview.append(el("div", { class: "actions" }, sign));
+    previewBox.append(preview);
+  });
+  // The key page links here with #edit. Put the first field in focus then.
+  if (location.hash === "#edit")
+    setTimeout(() => {
+      section.scrollIntoView();
+      name.input.focus();
+    }, 0);
+  return section;
 }
 function describeKey(key: string) {
   const [, kind, word, language] = key.split("|");

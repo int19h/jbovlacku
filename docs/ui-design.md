@@ -316,7 +316,7 @@ Pending dependencies or index lag never become a false fully published state or 
 
 ## Your key screen
 
-The local identity page shows the name, public-page link, Edit name and bio, and the full fingerprint.
+The local identity page shows the name, public-page link, Edit public profile, and the full fingerprint.
 Until a local recovery test succeeds, an amber banner says “Test your backup” and offers Test the backup and Download again.
 The test decrypts the backup and makes sure that the recovered identity matches. Opening a file alone is insufficient.
 The page offers lock state with Lock, Stay unlocked this session, Lensisku account link, and import another key.
