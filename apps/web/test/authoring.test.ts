@@ -1,6 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 import {
   acceptFirstSignature,
+  corePath,
   createIdentity,
   fixture,
   PASSPHRASE,
@@ -1578,8 +1579,22 @@ test("a draft from the old prototype's version 1 database opens a choice instead
   // Seed the real version 1 database shape before the app opens it.
   await page.route("**/src/main.ts*", (route) => route.abort());
   await page.goto("/");
+  const oldRow = {
+    id: "current",
+    word: "brodyka",
+    language: "en",
+    text: "Old prototype text with ① and ②.",
+    places: "the first thing\nthe second thing",
+    gloss: "old gloss",
+    notes: "old notes",
+    license: "CC-BY-4.0",
+    attribution: "An old attribution",
+    kind: "gismu",
+    structured: true,
+    unknownField: { kept: true },
+  };
   await page.evaluate(
-    () =>
+    (row) =>
       new Promise<void>((resolve, reject) => {
         const del = indexedDB.deleteDatabase("jbovlacku-browser-v1");
         del.onerror = () => reject(String(del.error));
@@ -1598,22 +1613,7 @@ test("a draft from the old prototype's version 1 database opens a choice instead
           open.onerror = () => reject(String(open.error));
           open.onsuccess = () => {
             const tx = open.result.transaction("drafts", "readwrite");
-            tx.objectStore("drafts").put(
-              {
-                id: "current",
-                word: "brodyka",
-                language: "en",
-                text: "Old prototype text with ① and ②.",
-                places: "the first thing\nthe second thing",
-                gloss: "old gloss",
-                notes: "old notes",
-                license: "CC-BY-4.0",
-                attribution: "An old attribution",
-                kind: "gismu",
-                structured: true,
-              },
-              "current",
-            );
+            tx.objectStore("drafts").put(row, "current");
             tx.oncomplete = () => {
               open.result.close();
               resolve();
@@ -1622,6 +1622,7 @@ test("a draft from the old prototype's version 1 database opens a choice instead
           };
         };
       }),
+    oldRow,
   );
   await page.unroute("**/src/main.ts*");
   await page.goto("/new/meaning");
@@ -1634,27 +1635,93 @@ test("a draft from the old prototype's version 1 database opens a choice instead
   expect(
     await page.evaluate(() => (window as any).__replaceState),
   ).toBeLessThan(5);
-  // The old row is untouched until a choice is made. The export keeps every old field.
+  // The old row is untouched until a choice is made, and the export keeps
+  // every old field, including one this build does not know.
+  const rawRow = () =>
+    page.evaluate(async () => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      return new LocalStore().get("drafts", "current");
+    });
+  expect(await rawRow()).toEqual(oldRow);
+  const readDownload = async (download: Promise<any>) =>
+    JSON.parse(
+      await (
+        await import("node:fs/promises")
+      ).readFile((await (await download).path())!, "utf8"),
+    );
   const exported = page.waitForEvent("download");
   await page.getByRole("button", { name: "Export the old draft" }).click();
-  const content = JSON.parse(
-    await (
-      await import("node:fs/promises")
-    ).readFile((await (await exported).path())!, "utf8"),
-  );
-  expect(content.legacy.license).toBe("CC-BY-4.0");
-  expect(content.legacy.attribution).toBe("An old attribution");
+  const content = await readDownload(exported);
+  expect(content.legacy).toEqual(oldRow);
   expect(content.spelling).toBe("brodyka");
+  expect(await rawRow()).toEqual(oldRow);
+  // The choice screen survives a reload, and every wizard route leads to it.
+  await page.reload();
+  await expect(
+    page.getByRole("heading", { name: "An older draft is saved" }),
+  ).toBeVisible();
+  await page.goto("/new/places");
+  await expect(
+    page.getByRole("heading", { name: "An older draft is saved" }),
+  ).toBeVisible();
+  expect(await rawRow()).toEqual(oldRow);
+  // A newer draft from another tab is never replaced by a stale conversion or discard.
+  const newer = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { newDraft } = await import(String("/src/model/draft.ts"));
+    const next = newDraft({
+      spelling: "brodna",
+      kind: "gismu",
+      meaning: "Newer draft from another tab",
+      text: "Newer draft from another tab",
+    });
+    await new LocalStore().put("drafts", "current", next);
+    return next.revision as string;
+  });
+  await page
+    .getByRole("button", { name: "Convert it into a new draft" })
+    .click();
+  await expect(page.getByRole("status").last()).toContainText(
+    "Nothing was converted or discarded",
+  );
+  expect((await rawRow()).revision).toBe(newer);
+  page.once("dialog", (dialog) => void dialog.accept());
+  await page.getByRole("button", { name: "Discard the old draft" }).click();
+  await expect(page.getByRole("status").last()).toContainText(
+    "Nothing was converted or discarded",
+  );
+  expect((await rawRow()).revision).toBe(newer);
+  // The old copy stays exportable from the conflict notice.
+  const again = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export the old copy" }).click();
+  expect((await readDownload(again)).legacy).toEqual(oldRow);
+  await page.getByRole("button", { name: "Show the current draft" }).click();
+  await expect(
+    page.getByRole("textbox", { name: "Meaning", exact: true }),
+  ).toHaveValue("Newer draft from another tab");
+  // The explicit discard of the old row, then the conversion.
+  const restoreOld = () =>
+    page.evaluate(async (row) => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      await new LocalStore().put("drafts", "current", row);
+    }, oldRow);
+  await restoreOld();
+  await page.goto("/new/meaning");
+  page.once("dialog", (dialog) => void dialog.accept());
+  await page.getByRole("button", { name: "Discard the old draft" }).click();
+  await expect(
+    page.getByRole("textbox", { name: "Meaning", exact: true }),
+  ).toHaveValue("");
+  expect((await rawRow()).version).toBe(2);
+  await restoreOld();
+  await page.goto("/new/meaning");
   await page
     .getByRole("button", { name: "Convert it into a new draft" })
     .click();
   await expect(
     page.getByRole("textbox", { name: "Meaning", exact: true }),
   ).toHaveValue("Old prototype text with ① and ②.");
-  const stored = await page.evaluate(async () => {
-    const { LocalStore } = await import(String("/src/data/store.ts"));
-    return new LocalStore().get("drafts", "current");
-  });
+  const stored = await rawRow();
   expect(stored.version).toBe(2);
   expect(stored.spelling).toBe("brodyka");
   expect(stored.places.map((p: any) => p.description)).toEqual([
@@ -1766,4 +1833,329 @@ test("the full editor keeps referents on removal, saves type notes and derivatio
   await expect(editor).toHaveValue("① gives \\② to ②. See \\① here. And ②.");
   await expect(rendered.getByRole("img", { name: "place 1" })).toHaveCount(1);
   await expect(rendered.getByRole("img", { name: "place 2" })).toHaveCount(2);
+});
+
+test("Revise of an independently signed rich parent with compound evidence publishes every unchanged field exactly", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await page.goto("/preferences");
+  await page.getByRole("button", { name: "Download", exact: true }).click();
+  await expect(page.getByRole("status")).toHaveText(
+    "The English search package is saved in this browser.",
+  );
+  // An independent key signs a rich lujvo body and uploads it to the test server.
+  const parent = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    const { postEvent } = await import(String("/src/data/api.ts"));
+    const { compoundMetadata } = await import(String("/src/model/builders.ts"));
+    const built = core.buildLujvo({
+      profile: "cll",
+      components: [
+        {
+          id: "a",
+          spelling: "cukta",
+          kind: "gismu",
+          claims: [{ rafsi: "cku", pair: "jvr1:" + "c".repeat(64) }],
+        },
+        {
+          id: "b",
+          spelling: "valsi",
+          kind: "gismu",
+          claims: [{ rafsi: "vla", pair: "jvr1:" + "d".repeat(64) }],
+        },
+      ],
+    });
+    const candidate = built.candidates[0];
+    const compound = compoundMetadata(
+      built,
+      candidate,
+      [
+        {
+          id: "a",
+          spelling: "cukta",
+          kind: "gismu",
+          definition: null,
+          gloss: "",
+          claims: [],
+          locked: null,
+        },
+        {
+          id: "b",
+          spelling: "valsi",
+          kind: "gismu",
+          definition: null,
+          gloss: "",
+          claims: [],
+          locked: null,
+        },
+      ],
+      "built for the test",
+    );
+    const body = {
+      word: { language: "jbo", spelling: candidate.spelling },
+      language: "en",
+      text: [
+        [
+          "Rich ",
+          { url: "https://example.org/r", label: "" },
+          " text with `code`, ",
+          { code: "ko'a" },
+          " and literal ① at ",
+          1,
+          "  ",
+        ],
+        ["second paragraph with a blank\n\nline inside"],
+      ],
+      frame: {
+        role: "constructed-predicate",
+        arity: { mode: "fixed", count: 1 },
+        places: [
+          {
+            index: 1,
+            glosses: [{ language: "fr", text: "livre  ", sense: "a" }],
+            description: [
+              [
+                "the word ",
+                { word: { language: "jbo", spelling: "cukta" }, label: "" },
+              ],
+            ],
+            type_hints: [
+              {
+                alternatives: [
+                  { tags: ["entity"], abstractor: null, relation_arity: null },
+                ],
+                note: [["note ", 1]],
+              },
+            ],
+            defaults: [
+              {
+                kind: "suggested",
+                value: { format: "lojban", text: "zo'e" },
+                condition: [["when ", 1]],
+                explanation: [[{ code: "" }]],
+              },
+            ],
+            constraints: [],
+            derivation: [
+              {
+                word: { language: "jbo", spelling: "cukta" },
+                definition: null,
+                place: 1,
+                explanation: [["from cukta "]],
+              },
+            ],
+          },
+        ],
+        tail: null,
+        constraints: [],
+      },
+      operands: [],
+      glosses: [{ language: "en", text: "word of a book", sense: null }],
+      notes: [["notes  "]],
+      etymology: {
+        text: [["from cukta and valsi"]],
+        formation: null,
+        compound,
+      },
+      examples: [
+        {
+          language: "jbo",
+          text: "mi " + candidate.spelling,
+          translation: [["I ", { code: "x" }]],
+          notes: [],
+        },
+      ],
+      classification: { kind: "lujvo", selmaho: [] },
+      labels: ["parent"],
+      sources: [
+        {
+          label: " src ",
+          url: "https://example.org/s",
+          event: null,
+          locator: null,
+        },
+      ],
+      license: {
+        expression: "CC0-1.0",
+        url: "https://creativecommons.org/publicdomain/zero/1.0/",
+        attribution: "",
+      },
+      legacy: null,
+    };
+    const seed = crypto.getRandomValues(new Uint8Array(32));
+    const event = core.createEvent(
+      seed,
+      [],
+      "7".repeat(32),
+      {
+        kind: "definition.publish",
+        word: core.wordId(body.word),
+        language: "en",
+        parents: [],
+        origin: "native",
+      },
+      body,
+    );
+    const receipt = await postEvent(
+      JSON.stringify({ envelope: event.envelope, body: event.body }),
+    );
+    return {
+      id: event.envelope.id as string,
+      body,
+      admission: receipt.admission as string,
+      spelling: candidate.spelling as string,
+    };
+  }, corePath);
+  expect(parent.admission).toBe("accepted");
+  // Revise through the real route, keep the draft through a reload, and change one harmless field.
+  await page.goto(`/new/editor?revise=${encodeURIComponent(parent.id)}`);
+  await expect(page.locator("main")).toContainText(
+    "This draft copies every field of the parent definition.",
+  );
+  await page.reload();
+  await expect(page.getByLabel("Headword")).toHaveValue(parent.spelling);
+  await page.getByLabel("Labels").fill("parent, revised");
+  await expect(page.getByRole("status").last()).toHaveText(
+    "Saved in this browser",
+  );
+  await page.getByRole("button", { name: "Review" }).click();
+  await expect(page.locator("aside")).toContainText("Publish as");
+  await expect(page.getByText(/problems? block signing/)).toHaveCount(0);
+  await page
+    .locator("aside")
+    .getByRole("button", { name: "Publish", exact: true })
+    .click();
+  // The reload locked the key, so signing asks for the passphrase first.
+  const unlock = page.getByRole("dialog", { name: "Unlock your key" });
+  await unlock.getByLabel("Passphrase").fill(PASSPHRASE);
+  await unlock.getByRole("button", { name: "Unlock" }).click();
+  await acceptFirstSignature(page);
+  await expect(page.getByRole("status")).toContainText(/Published/);
+  const records = await outboxRecords(page);
+  const published = records
+    .map((r: any) => JSON.parse(r.transport))
+    .find((t: any) => t.envelope.header.action.kind === "definition.publish");
+  expect(published.envelope.header.action.parents).toEqual([parent.id]);
+  const { labels: parentLabels, ...parentRest } = parent.body as any;
+  const { labels: revisedLabels, ...revisedRest } = published.body;
+  expect(revisedLabels).toEqual(["parent", "revised"]);
+  expect(parentLabels).toEqual(["parent"]);
+  expect(revisedRest).toEqual(parentRest);
+});
+
+test("moving a place keeps every referent, and a language change keeps each place gloss's language", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await page.getByRole("link", { name: "Add a word" }).click();
+  await page.getByRole("link", { name: "Skip to the full editor" }).click();
+  await page.getByLabel("Headword").fill("brodgu");
+  await page.getByLabel("Type", { exact: true }).selectOption("gismu");
+  const editor = page.getByRole("textbox", { name: "Definition text" });
+  for (let i = 0; i < 3; i++)
+    await page.getByRole("button", { name: "+ Add a place" }).click();
+  await page.getByLabel("Description for place 1").fill("first");
+  await page.getByLabel("Description for place 2").fill("second, after ①");
+  await page.getByLabel("Description for place 3").fill("third");
+  await editor.fill("① gives ② to ③.");
+  await page.getByLabel("Add a gloss for place 1").fill("fr: premier");
+  await page.getByLabel("Add a gloss for place 1").press("Enter");
+  await page.getByRole("button", { name: "Approve the numbering" }).click();
+  const stored = () =>
+    page.evaluate(async () => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      return new LocalStore().get("drafts", "current");
+    });
+  // Move the second place up: it becomes place 1, and every reference follows.
+  await page.getByRole("button", { name: "Move place 2 up" }).click();
+  await expect(editor).toHaveValue("② gives ① to ③.");
+  await expect(page.getByLabel("Description for place 1")).toHaveValue(
+    "second, after ②",
+  );
+  await expect(page.getByLabel("Description for place 2")).toHaveValue("first");
+  await page.getByRole("button", { name: "Move place 3 up" }).click();
+  await expect(editor).toHaveValue("③ gives ① to ②.");
+  // The automatic save runs after the edits settle.
+  await expect
+    .poll(async () => (await stored()).places.map((p: any) => p.description))
+    .toEqual(["second, after ③", "third", "first"]);
+  const draft = await stored();
+  expect(draft.places[1].glosses).toEqual([]);
+  expect(draft.places[2].glosses).toEqual([
+    { language: "fr", text: "premier", sense: "" },
+  ]);
+  // A definition language change does not relabel place glosses.
+  await page.getByLabel("Definition language").fill("de");
+  await expect.poll(async () => (await stored()).language).toBe("de");
+  expect((await stored()).places[2].glosses[0].language).toBe("fr");
+});
+
+test("root conflicts of a gismu are checked again against the current package before publication", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await page.goto("/preferences");
+  await page.getByRole("button", { name: "Download", exact: true }).click();
+  await expect(page.getByRole("status")).toHaveText(
+    "The English search package is saved in this browser.",
+  );
+  // A reviewed gismu draft whose recorded run acknowledged no conflict, for a form the package now holds.
+  await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { newDraft } = await import(String("/src/model/draft.ts"));
+    const { manualFormation } = await import(String("/src/model/builders.ts"));
+    const preset = core.builderPresets().find((p: any) => p.id === "cll-1995");
+    const rows = preset.languages.map((l: any) => ({
+      language: l.language,
+      name: l.name,
+      word: l.language,
+      input: "cukta",
+      weight: {
+        numerator: String(l.numerator),
+        denominator: String(preset.denominator),
+      },
+    }));
+    const draft = newDraft({
+      spelling: "cukta",
+      kind: "gismu",
+      meaning: "A disposable root.",
+      text: "A disposable root.",
+      structured: false,
+      frameMode: "none",
+      step: 5,
+      formation: manualFormation(rows, "Chosen before the package changed."),
+      evidenceForm: "cukta",
+      gismu: {
+        preset: preset.id,
+        rows,
+        candidates: "source-letters",
+        selected: null,
+        manual: "cukta",
+        acknowledged: [],
+        reason: "",
+        window: 12,
+      },
+    });
+    await new LocalStore().put("drafts", "current", draft);
+  }, corePath);
+  await page.goto("/new/publish");
+  const conflicts = page.getByRole("region", { name: "Known conflicts" });
+  await expect(conflicts).toContainText(
+    "Root conflicts were checked again against the local package",
+  );
+  await expect(conflicts).toContainText(
+    "New since the recorded run: identical conflict with cukta",
+  );
+  const publish = page
+    .locator("aside")
+    .getByRole("button", { name: "Publish", exact: true });
+  await expect(publish).toBeDisabled();
+  await page
+    .getByLabel(
+      /although the refreshed package shows a new root conflict with cukta/,
+    )
+    .check();
+  await expect(publish).toBeEnabled();
 });

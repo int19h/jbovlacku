@@ -28,9 +28,10 @@ import {
   hintForChoice,
   kindChoices,
   editorToRichText,
+  fieldsReferencing,
   literalize,
   newPlace,
-  remapPlaces,
+  rewriteReferences,
   richTextToEditor,
   type DraftGloss,
   numberPlaceholders,
@@ -777,10 +778,14 @@ export async function placesPage(
       });
       idx.value = String(place.index);
       idx.addEventListener("change", () => {
+        const previous = place.index;
         place.index = Math.max(
           1,
           Math.min(65535, Number(idx.value) || place.index),
         );
+        // References to this place follow its new number.
+        if (place.index !== previous)
+          rewriteReferences(draft, (n) => (n === previous ? place.index : n));
         draft.places.sort((a, b) => a.index - b.index);
         draft.numberingApproved = false;
         saver.touch();
@@ -869,8 +874,14 @@ export async function placesPage(
             draft.places[index],
             draft.places[index - 1],
           ];
-          if (draft.frameMode === "fixed")
+          if (draft.frameMode === "fixed") {
+            // Each reference follows its place to the place's new number.
+            const moved = new Map<number, number>();
+            draft.places.forEach((pl, i) => moved.set(pl.index, i + 1));
             draft.places = renumber(draft.places);
+            rewriteReferences(draft, (n) => moved.get(n) ?? n);
+            syncMirrors();
+          }
           draft.numberingApproved = false;
           saver.touch();
           renderPlaces();
@@ -891,8 +902,14 @@ export async function placesPage(
             draft.places[index],
             draft.places[index + 1],
           ];
-          if (draft.frameMode === "fixed")
+          if (draft.frameMode === "fixed") {
+            // Each reference follows its place to the place's new number.
+            const moved = new Map<number, number>();
+            draft.places.forEach((pl, i) => moved.set(pl.index, i + 1));
             draft.places = renumber(draft.places);
+            rewriteReferences(draft, (n) => moved.get(n) ?? n);
+            syncMirrors();
+          }
           draft.numberingApproved = false;
           saver.touch();
           renderPlaces();
@@ -1930,89 +1947,4 @@ function derivationEditor(place: DraftPlace, changed: () => void): HTMLElement {
   };
   render();
   return box;
-}
-/** Every editor text field that can hold a place reference, with a label. */
-function referenceFields(
-  draft: Draft,
-): { label: string; get: () => string; set: (v: string) => void }[] {
-  const fields: {
-    label: string;
-    get: () => string;
-    set: (v: string) => void;
-  }[] = [
-    {
-      label: "the definition",
-      get: () => draft.text,
-      set: (v) => (draft.text = v),
-    },
-    {
-      label: "the notes",
-      get: () => draft.notes,
-      set: (v) => (draft.notes = v),
-    },
-  ];
-  for (const place of draft.places) {
-    fields.push({
-      label: `the description of place ${place.index}`,
-      get: () => place.description,
-      set: (v) => (place.description = v),
-    });
-    place.constraints.forEach((_, i) =>
-      fields.push({
-        label: `constraint ${i + 1} of place ${place.index}`,
-        get: () => place.constraints[i],
-        set: (v) => (place.constraints[i] = v),
-      }),
-    );
-    place.defaults.forEach((d, i) =>
-      fields.push(
-        {
-          label: `the condition of default ${i + 1} of place ${place.index}`,
-          get: () => d.condition,
-          set: (v) => (d.condition = v),
-        },
-        {
-          label: `the explanation of default ${i + 1} of place ${place.index}`,
-          get: () => d.explanation,
-          set: (v) => (d.explanation = v),
-        },
-      ),
-    );
-  }
-  if (draft.tail)
-    fields.push({
-      label: "the description of the repeated places",
-      get: () => draft.tail!.description,
-      set: (v) => (draft.tail!.description = v),
-    });
-  draft.frameConstraints.forEach((_, i) =>
-    fields.push({
-      label: `frame constraint ${i + 1}`,
-      get: () => draft.frameConstraints[i],
-      set: (v) => (draft.frameConstraints[i] = v),
-    }),
-  );
-  draft.operands.forEach((o) =>
-    fields.push({
-      label: `the description of operand ${o.id || "without ID"}`,
-      get: () => o.description,
-      set: (v) => (o.description = v),
-    }),
-  );
-  return fields;
-}
-/** The fields that refer to a place, by label. */
-function fieldsReferencing(draft: Draft, index: number): string[] {
-  if (!draft.structured) return [];
-  return referenceFields(draft)
-    .filter((f) => referencedPlaces(editorToRichText(f.get(), true)).has(index))
-    .map((f) => f.label);
-}
-/** Rewrites every place reference in every field. Literal text never changes. */
-function rewriteReferences(
-  draft: Draft,
-  map: (index: number) => number | "literal",
-) {
-  if (!draft.structured) return;
-  for (const f of referenceFields(draft)) f.set(remapPlaces(f.get(), map));
 }

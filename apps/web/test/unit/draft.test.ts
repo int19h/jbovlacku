@@ -28,6 +28,7 @@ import {
   normalizeDraft,
   numberPlaceholders,
   remapPlaces,
+  rewriteReferences,
   richTextToEditor,
   LENSISKU_RIGHTS_REFERENCE,
 } from "../../src/model/draft.ts";
@@ -361,6 +362,9 @@ test("builder metadata for a chosen lujvo and a generated gismu satisfies the bo
     [],
   );
   assert.ok(admissible(body));
+  // Every preset names the digest of its pinned source bytes.
+  for (const pr of builderPresets())
+    assert.match(pr.source_digest, /^[0-9a-f]{64}$/, pr.id);
   const preset = builderPresets().find((pr) => pr.id === "cll-1995")!;
   const rows = preset.languages.map((l) => ({
     language: l.language,
@@ -833,4 +837,240 @@ test("the editor and the core agree on every reviewed invalid draft", () => {
     blocking(operandRef).join("\n"),
     /operand "y", which is not declared/,
   );
+});
+
+test("Revise keeps every core-valid parent value exactly when the field is not edited", () => {
+  const parentId = "jve1:" + "c".repeat(64);
+  const cases: { name: string; text: unknown }[] = [
+    {
+      name: "code with paragraph break",
+      text: [[{ code: "first\n\nsecond" }]],
+    },
+    { name: "literal with paragraph break", text: [["first\n\nsecond"]] },
+    { name: "trailing literal spaces", text: [["text  "]] },
+    { name: "empty code", text: [[{ code: "" }]] },
+    {
+      name: "link with an empty label",
+      text: [[{ url: "https://example.org/x", label: "" }]],
+    },
+    {
+      name: "word link with an empty label",
+      text: [[{ word: { language: "jbo", spelling: "cukta" }, label: "" }]],
+    },
+  ];
+  for (const c of cases) {
+    const parent = {
+      ...draftToBody(
+        newDraft({
+          spelling: "broda",
+          kind: "gismu",
+          text: "x",
+          structured: false,
+        }),
+      ).body!,
+      text: c.text,
+      glosses: [{ language: "en", text: "  spaced  ", sense: " s " }],
+      sources: [{ label: " label ", url: null, event: null, locator: " loc " }],
+    } as never;
+    assert.ok(admissible(parent), `${c.name}: the parent must be admissible`);
+    const draft = draftFromBody(parent, parentId, "native");
+    const { body, problems } = draftToBody(draft);
+    assert.deepEqual(
+      problems.filter((pr) => pr.blocking),
+      [],
+      c.name,
+    );
+    assert.deepEqual(body!.text, c.text, c.name);
+    assert.deepEqual(
+      body!.glosses,
+      (parent as { glosses: unknown }).glosses,
+      c.name,
+    );
+    assert.deepEqual(
+      body!.sources,
+      (parent as { sources: unknown }).sources,
+      c.name,
+    );
+    assert.ok(admissible(body, [parentId]), c.name);
+    // An edited field goes through the editor. The others still keep the parent's values.
+    draft.notes = "edited";
+    const edited = draftToBody(draft).body!;
+    assert.deepEqual(edited.text, c.text, c.name);
+    assert.deepEqual(edited.notes, [["edited"]]);
+  }
+});
+
+test("place rewrites touch only place nodes and cover type notes, and a frame constraint reference is a named problem", () => {
+  const draft = newDraft({
+    spelling: "broda",
+    kind: "gismu",
+    frameMode: "fixed",
+    text: "① then ② then ③ with `code ②` and [[https://e.org/②|label ②]] and \\② kept",
+    notes: "notes ③",
+    frameConstraints: ["frame ③"],
+    places: [
+      newPlace(1),
+      {
+        ...newPlace(2),
+        description: "second ③",
+        constraints: ["only ③"],
+        defaults: [
+          {
+            kind: "suggested",
+            format: "lojban",
+            language: "",
+            text: "x",
+            condition: "when ③",
+            explanation: "see ③",
+          },
+        ],
+      },
+      {
+        ...newPlace(3),
+        description: "third",
+        kind: "custom",
+        hint: {
+          alternatives: [
+            { tags: ["entity"], abstractor: null, relation_arity: null },
+          ],
+          note: [["note ", 3]],
+        },
+      },
+    ],
+    operands: [
+      {
+        id: "x",
+        category: "sumti",
+        description: "operand ③",
+        minimum: 0,
+        maximum: null,
+      },
+    ],
+    numberingApproved: true,
+  });
+  // Remove place 2: references to 2 become literal, references to 3 now name place 2.
+  draft.places.splice(1, 1);
+  rewriteReferences(draft, (n) => (n === 2 ? "literal" : n > 2 ? n - 1 : n));
+  draft.places = draft.places.map((pl, i) => ({ ...pl, index: i + 1 }));
+  assert.equal(
+    draft.text,
+    "① then \\② then ② with `code ②` and [[https://e.org/②|label ②]] and \\② kept",
+  );
+  assert.equal(draft.notes, "notes ②");
+  assert.equal(draft.frameConstraints[0], "frame ②");
+  assert.equal(draft.operands[0].description, "operand ②");
+  assert.deepEqual(draft.places[1].hint!.note, [["note ", 2]]);
+  const { body, problems } = draftToBody(draft);
+  assert.deepEqual(
+    problems.filter((pr) => pr.blocking),
+    [],
+  );
+  assert.deepEqual(body!.text[0], [
+    1,
+    " then ② then ",
+    2,
+    " with ",
+    { code: "code ②" },
+    " and ",
+    { url: "https://e.org/②", label: "label ②" },
+    " and ② kept",
+  ]);
+  // P1 as reported: a reference in a frame constraint with only place 1 declared.
+  const frameRef = newDraft({
+    spelling: "broda",
+    kind: "gismu",
+    text: "x",
+    frameMode: "fixed",
+    places: [newPlace(1)],
+    frameConstraints: ["only ②"],
+    numberingApproved: true,
+  });
+  assert.match(
+    draftToBody(frameRef)
+      .problems.filter((pr) => pr.blocking)
+      .map((pr) => pr.message)
+      .join("\n"),
+    /Place 2 is referenced in frame constraint 1 but not declared/,
+  );
+});
+
+test("a core-only rule reaches the author as a blocking problem with the core's reason", () => {
+  const draft = newDraft({
+    spelling: "broda",
+    kind: "gismu",
+    text: "fine",
+    evidenceForm: "broda",
+    formation: {
+      method: "non-algorithmic",
+      algorithm: null,
+      sources: [
+        {
+          language: "en",
+          word: "big",
+          input: null,
+          weight: { numerator: 2, denominator: 4 } as never,
+          notes: [],
+        },
+      ],
+      weights_profile: null,
+      generated: null,
+      selected_score: null,
+      selected_rank: null,
+      selection_reason: [],
+      candidates: [],
+      conflicts: [],
+    },
+  });
+  const messages = draftToBody(draft)
+    .problems.filter((pr) => pr.blocking)
+    .map((pr) => pr.message);
+  assert.deepEqual(messages, [
+    "The format rules reject the body: schema: rational must use lowest terms.",
+  ]);
+});
+
+test("the place and minimum bounds hold at 256 and fail at 257, and morphology notes follow retained etymology", () => {
+  const places = (n: number) =>
+    Array.from({ length: n }, (_, i) => newPlace(i + 1));
+  const at = newDraft({
+    spelling: "broda",
+    kind: "gismu",
+    text: "x",
+    frameMode: "variadic",
+    variadicMinimum: 256,
+    places: places(256),
+    tail: { description: "more", kind: "object", hint: null },
+  });
+  assert.deepEqual(
+    draftToBody(at).problems.filter((pr) => pr.blocking),
+    [],
+  );
+  const over = newDraft({ ...at, variadicMinimum: 257, places: places(257) });
+  const messages = draftToBody(over)
+    .problems.filter((pr) => pr.blocking)
+    .map((pr) => pr.message)
+    .join("\n");
+  assert.match(messages, /at most 256 places/);
+  assert.match(messages, /minimum number of places is at most 256/);
+  const parent = {
+    ...draftToBody(
+      newDraft({
+        spelling: "broda",
+        kind: "gismu",
+        text: "x",
+        structured: false,
+      }),
+    ).body!,
+    etymology: {
+      text: [["from ", { url: "https://e.org", label: "e" }]],
+      formation: null,
+      compound: null,
+    },
+  } as never;
+  const draft = draftFromBody(parent, "jve1:" + "d".repeat(64), "native");
+  draft.formNotes = "my note";
+  assert.deepEqual(draftToBody(draft).body!.etymology.text, [
+    ["from ", { url: "https://e.org", label: "e" }],
+    ["my note"],
+  ]);
 });

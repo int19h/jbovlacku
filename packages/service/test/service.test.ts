@@ -876,7 +876,7 @@ test("search preview uses strongest lexical entry with stable ties and active-vi
     request("/search?q=movement&language=en&retired=2"),
   );
   assert.equal(bad.status, 400);
-  assert.equal((await bad.json()).code, "retired");
+  assert.equal(((await bad.json()) as { code: string }).code, "retired");
   coordinator.close();
 });
 test("search text preserves place markers and readable rich nodes without metadata", async () => {

@@ -5,7 +5,10 @@
  * page binds to that group and offers delivery controls instead of a second
  * publication.
  */
-import { rafsiPairId } from "../../../../../packages/core/src/index.ts";
+import {
+  generateGismu,
+  rafsiPairId,
+} from "../../../../../packages/core/src/index.ts";
 import {
   el,
   p,
@@ -253,6 +256,67 @@ export async function publishPage(
   }
   const existingLine = el("p", { class: "meta" });
   conflicts.append(existingLine);
+  // Root conflicts of a gismu are checked again against the current local
+  // package. A conflict that the recorded run did not acknowledge needs an
+  // explicit choice before publication.
+  const rootConflicts: { word: string; rule: string }[] = [];
+  const rootLine = el("p", { class: "meta" });
+  conflicts.append(rootLine);
+  if (draft.kind === "gismu" && body) {
+    const rows = draft.gismu?.rows ?? [];
+    const acknowledgedRoots = new Set(
+      (draft.formation?.conflicts ?? []).map((c) => `${c.word}|${c.rule}`),
+    );
+    if (!rows.length || rows.some((r) => !r.input.trim() || !r.weight))
+      rootLine.textContent =
+        "Root conflicts were not checked again: the form has no completed source rows. The generator checks a form only under a run.";
+    else if (!inventory.snapshot)
+      rootLine.textContent =
+        "Root conflicts were not checked again: no local package is downloaded.";
+    else
+      try {
+        const result = generateGismu({
+          sources: rows.map((r) => ({
+            language: r.language.trim(),
+            word: r.word,
+            input: r.input,
+            weight: r.weight,
+          })),
+          candidates: draft.gismu?.candidates ?? "source-letters",
+          inventory: {
+            snapshot: inventory.snapshot,
+            gismu: inventory.gismu,
+            claims: inventory.claims,
+          },
+          window: 1,
+          manual: body.word.spelling,
+          limits: { work: 60_000_000 },
+        });
+        const found = result.manual?.conflicts ?? [];
+        // Conflicts name the word ID. The package inventory gives its spelling.
+        const spellingOf = (id: string) =>
+          inventory.gismu.find((g) => g.word === id)?.spelling ?? id;
+        for (const c of found)
+          if (!acknowledgedRoots.has(`${c.word}|${c.rule}`))
+            rootConflicts.push({ word: spellingOf(c.word), rule: c.rule });
+        rootLine.textContent = `Root conflicts were checked again against the local package of snapshot ${inventory.snapshot.slice(7, 19)}…${inventory.complete ? "" : " (rafsi coverage incomplete)"}: ${
+          found.length
+            ? `${found.length} known ${found.length === 1 ? "conflict" : "conflicts"}, ${rootConflicts.length} new since the recorded run.`
+            : "no root conflict."
+        }`;
+        for (const c of rootConflicts) {
+          const line = el("p", { class: "warn" });
+          line.append(
+            text(`New since the recorded run: ${c.rule} conflict with `),
+            link(c.word, routes.word(c.word), { lang: "jbo" }),
+            text("."),
+          );
+          conflicts.append(line);
+        }
+      } catch (error) {
+        rootLine.textContent = `Root conflicts were not checked again: ${describe(error)}. Coverage is unknown.`;
+      }
+  }
   if (wordId) {
     try {
       const existing = await getWord(wordId, { signal: context.signal });
@@ -346,6 +410,22 @@ export async function publishPage(
     );
   }
   // Known collisions need an explicit acknowledgment. Unknown coverage does not block.
+  let rootAcknowledged = rootConflicts.length === 0;
+  if (rootConflicts.length)
+    panel.append(
+      el(
+        "div",
+        { class: "notice", style: "margin-top:12px" },
+        checkbox(
+          `I publish ${body?.word.spelling ?? "this form"} although the refreshed package shows ${rootConflicts.length === 1 ? "a new root conflict" : "new root conflicts"} with ${rootConflicts.map((c) => c.word).join(", ")}.`,
+          false,
+          (value) => {
+            rootAcknowledged = value;
+            refreshPublish();
+          },
+        ),
+      ),
+    );
   let acknowledged = collisions.length === 0;
   if (collisions.length)
     panel.append(
@@ -376,7 +456,12 @@ export async function publishPage(
   };
   const refreshPublish = () => {
     const disabled =
-      saved || blocking.length > 0 || !identity || !body || !acknowledged;
+      saved ||
+      blocking.length > 0 ||
+      !identity ||
+      !body ||
+      !acknowledged ||
+      !rootAcknowledged;
     publish.disabled = disabled;
     const primary = bar?.querySelector<HTMLButtonElement>(".btn-primary");
     if (primary) primary.disabled = disabled;
@@ -428,7 +513,8 @@ export async function publishPage(
   const publish = button(
     "Publish",
     async () => {
-      if (!body || !wordId || saved || !acknowledged) return;
+      if (!body || !wordId || saved || !acknowledged || !rootAcknowledged)
+        return;
       publish.disabled = true;
       try {
         await app.session.requireUnlocked(

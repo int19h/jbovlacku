@@ -166,6 +166,11 @@ export interface DraftOperand {
   maximum: number | null;
 }
 export type FrameMode = "none" | "fixed" | "variadic" | "context";
+export interface OriginalParent {
+  body: DefinitionBody;
+  /** The draft fields that `draftFromBody` made, keyed by field name. */
+  fields: Record<string, unknown>;
+}
 export interface Draft {
   version: 2;
   id: string;
@@ -211,6 +216,13 @@ export interface Draft {
   lujvo: LujvoState | null;
   /** Gismu generator state, when the author opened the generator. */
   gismu: GismuState | null;
+  /**
+   * The parent of a Revise copy: its exact body and the draft fields made
+   * from it. An unchanged field publishes the parent's exact value, so a
+   * value the editor cannot write back, such as trailing spaces or a blank
+   * line inside a paragraph, is never changed by a revision.
+   */
+  original: OriginalParent | null;
   /** Fields marked for review after a type or language change. */
   review: string[];
   /** Whether the author approved the current place numbering. */
@@ -254,6 +266,7 @@ export function newDraft(patch: Partial<Draft> = {}): Draft {
     rafsiClaims: [],
     lujvo: null,
     gismu: null,
+    original: null,
     review: [],
     numberingApproved: false,
     ...patch,
@@ -302,6 +315,7 @@ export function normalizeDraft(stored: Draft): Draft {
     ...stored,
     places,
     frameRole: stored.frameRole ?? "predicate",
+    original: stored.original ?? null,
     evidenceForm:
       stored.evidenceForm ??
       (stored.formation || stored.compound ? stored.spelling : null),
@@ -350,7 +364,7 @@ const lojbanWord = /^[a-z',.]+(?: [a-z',.]+)*$/u;
  *   that character as literal text.
  */
 const TOKEN =
-  /\\([\s\S])|([①-⑳])|\{place (\d{1,5})\}|\{operand ([a-z][a-z0-9_-]{0,31})\}|`((?:\\.|[^`])*)`|\[\[((?:\\.|[^\]|])+)(?:\|((?:\\.|[^\]])+))?\]\]/gu;
+  /\\([\s\S])|([①-⑳])|\{place (\d{1,5})\}|\{operand ([a-z][a-z0-9_-]{0,31})\}|`((?:\\.|[^`])*)`|\[\[((?:\\.|[^\]|])+)(?:\|((?:\\.|[^\]])*))?\]\]/gu;
 const unescape = (value: string) => value.replace(/\\([\s\S])/gu, "$1");
 /** Editor text to rich text. Structured mode reads the token syntax. */
 export function editorToRichText(
@@ -413,6 +427,7 @@ export function richTextToEditor(value: RichText): string {
             return node <= 20
               ? String.fromCodePoint(0x245f + node)
               : `{place ${node}}`;
+          // An empty label is written as `[[target|]]`. It is valid in the format.
           if ("word" in node)
             return node.label === node.word.spelling
               ? `[[${escapeInside(node.word.spelling)}]]`
@@ -430,47 +445,149 @@ export function richTextToEditor(value: RichText): string {
     )
     .join("\n\n");
 }
+/** The literal text form of one place number. */
+const literalPlace = (index: number) =>
+  index <= 20
+    ? `\\${String.fromCodePoint(0x245f + index)}`
+    : `\\{place ${index}}`;
+/** The reference form of one place number. */
+const referencePlace = (index: number) =>
+  index <= 20 ? String.fromCodePoint(0x245f + index) : `{place ${index}}`;
+/**
+ * Maps place numbers in editor text, for removal, moves, and index edits.
+ * The text is read with the token syntax, so a circled character inside
+ * code, a link target, a link label, or an escape is not a reference and
+ * stays as it is. A mapped reference keeps its referent.
+ */
+export function remapPlaces(
+  text: string,
+  map: (index: number) => number | "literal",
+): string {
+  return text.replace(TOKEN, (whole, _escaped, circled, placeNumber) => {
+    if (!circled && !placeNumber) return whole;
+    const index = circled
+      ? (circled as string).codePointAt(0)! - 0x245f
+      : Number(placeNumber);
+    const target = map(index);
+    return target === "literal" ? literalPlace(index) : referencePlace(target);
+  });
+}
 /**
  * Turns every place reference in editor text into a literal circled
  * character. The visible text stays the same, and nothing refers to a place.
  */
 export function literalize(text: string): string {
-  return text.replace(
-    /(?<!\\)(?:\\\\)*(?:([①-⑳])|\{place (\d{1,5})\})/gu,
-    (whole, circled: string | undefined, n: string | undefined) => {
-      const prefix = whole.slice(
-        0,
-        whole.length - (circled ? 1 : n!.length + 8),
-      );
-      if (circled) return `${prefix}\\${circled}`;
-      const number = Number(n);
-      return number <= 20
-        ? `${prefix}\\${String.fromCodePoint(0x245f + number)}`
-        : `${prefix}\\{place ${number}}`;
-    },
-  );
+  return remapPlaces(text, () => "literal");
 }
-/** Maps place numbers in editor text, for removal and reordering. References keep their referent. */
-export function remapPlaces(
-  text: string,
-  map: (index: number) => number | "literal",
-): string {
-  return text.replace(
-    /(?<!\\)(?:\\\\)*(?:([①-⑳])|\{place (\d{1,5})\})/gu,
-    (whole, circled: string | undefined, n: string | undefined) => {
-      const prefix = whole.slice(
-        0,
-        whole.length - (circled ? 1 : n!.length + 8),
-      );
-      const index = circled ? circled.codePointAt(0)! - 0x245f : Number(n);
-      const target = map(index);
-      if (target === "literal")
-        return `${prefix}\\${index <= 20 ? String.fromCodePoint(0x245f + index) : `{place ${index}}`}`;
-      return target <= 20
-        ? `${prefix}${String.fromCodePoint(0x245f + target)}`
-        : `${prefix}{place ${target}}`;
+/** One editor text field that can hold a place reference, with a label. */
+export interface ReferenceField {
+  label: string;
+  get: () => string;
+  set: (value: string) => void;
+}
+/**
+ * Every field of a draft that permits local place references, as editor
+ * text. Type notes are rich text in the draft, so they are converted on the
+ * way in and out. Fields that the format keeps free of references, such as
+ * derivation explanations and examples, are not listed.
+ */
+export function referenceFields(draft: Draft): ReferenceField[] {
+  const fields: ReferenceField[] = [
+    {
+      label: "the definition",
+      get: () => draft.text,
+      set: (v) => (draft.text = v),
     },
+    {
+      label: "the notes",
+      get: () => draft.notes,
+      set: (v) => (draft.notes = v),
+    },
+  ];
+  const note = (
+    label: string,
+    hint: () => TypeHint | null,
+  ): ReferenceField | null =>
+    hint()
+      ? {
+          label,
+          get: () => richTextToEditor(hint()!.note),
+          set: (v) => (hint()!.note = editorToRichText(v, true)),
+        }
+      : null;
+  for (const place of draft.places) {
+    fields.push({
+      label: `the description of place ${place.index}`,
+      get: () => place.description,
+      set: (v) => (place.description = v),
+    });
+    const typeNote = note(`the type note of place ${place.index}`, () =>
+      place.kind === "custom" ? place.hint : null,
+    );
+    if (typeNote) fields.push(typeNote);
+    place.constraints.forEach((_, i) =>
+      fields.push({
+        label: `constraint ${i + 1} of place ${place.index}`,
+        get: () => place.constraints[i],
+        set: (v) => (place.constraints[i] = v),
+      }),
+    );
+    place.defaults.forEach((d, i) =>
+      fields.push(
+        {
+          label: `the condition of default ${i + 1} of place ${place.index}`,
+          get: () => d.condition,
+          set: (v) => (d.condition = v),
+        },
+        {
+          label: `the explanation of default ${i + 1} of place ${place.index}`,
+          get: () => d.explanation,
+          set: (v) => (d.explanation = v),
+        },
+      ),
+    );
+  }
+  if (draft.tail) {
+    fields.push({
+      label: "the description of the repeated places",
+      get: () => draft.tail!.description,
+      set: (v) => (draft.tail!.description = v),
+    });
+    const tailNote = note("the type note of the repeated places", () =>
+      draft.tail?.kind === "custom" ? draft.tail.hint : null,
+    );
+    if (tailNote) fields.push(tailNote);
+  }
+  draft.frameConstraints.forEach((_, i) =>
+    fields.push({
+      label: `frame constraint ${i + 1}`,
+      get: () => draft.frameConstraints[i],
+      set: (v) => (draft.frameConstraints[i] = v),
+    }),
   );
+  draft.operands.forEach((o) =>
+    fields.push({
+      label: `the description of operand ${o.id || "without ID"}`,
+      get: () => o.description,
+      set: (v) => (o.description = v),
+    }),
+  );
+  return fields;
+}
+/** The fields that refer to a place, by label. */
+export function fieldsReferencing(draft: Draft, index: number): string[] {
+  if (!draft.structured) return [];
+  return referenceFields(draft)
+    .filter((f) => referencedPlaces(editorToRichText(f.get(), true)).has(index))
+    .map((f) => f.label);
+}
+/** Rewrites every place reference in every field. Literal text never changes. */
+export function rewriteReferences(
+  draft: Draft,
+  map: (index: number) => number | "literal",
+) {
+  if (!draft.structured) return;
+  for (const f of referenceFields(draft)) f.set(remapPlaces(f.get(), map));
 }
 function plainRich(text: string): RichText {
   return textToRichText(text, false);
@@ -518,15 +635,12 @@ function richProblems(
           report(
             `${entry.label} links the word "${node.word.spelling}", which is not a Lojban spelling.`,
           );
-        if (!node.label) report(`${entry.label} has a word link without text.`);
       } else if ("url" in node) {
         if (!/^https:\/\/[^\s/]+/u.test(node.url))
           report(
             `${entry.label} links "${node.url}", which is not an HTTPS URL.`,
           );
-        if (!node.label) report(`${entry.label} has a link without text.`);
-      } else if ("code" in node && !node.code)
-        report(`${entry.label} has empty code.`);
+      }
     }
 }
 const KNOWN_TAGS = new Set([
@@ -1243,6 +1357,7 @@ export function draftToBody(draft: Draft): {
     license: { ...CC0_LICENSE },
     legacy: null,
   };
+  keepOriginal(draft, body);
   let id: string | null = null;
   try {
     id = wordId(body.word);
@@ -1325,7 +1440,7 @@ export function draftFromBody(
   }
   const tailHint = frame?.tail?.type_hints[0] ?? null;
   const spelling = body.word.spelling;
-  return newDraft({
+  const draft = newDraft({
     step: 4,
     meaning: richTextToText(body.text),
     language: body.language,
@@ -1377,6 +1492,91 @@ export function draftFromBody(
     revisedImport,
     numberingApproved: true,
   });
+  draft.original = {
+    body: structuredClone(body),
+    fields: originalFields(draft),
+  };
+  return draft;
+}
+/** The draft fields whose unchanged state means the parent's exact value is published. */
+function originalFields(draft: Draft): Record<string, unknown> {
+  return structuredClone({
+    text: draft.text,
+    notes: draft.notes,
+    glosses: draft.glosses,
+    operands: draft.operands,
+    examples: draft.examples,
+    labels: draft.labels,
+    sources: draft.sources,
+    etymologyText: draft.etymologyText,
+    selmaho: draft.selmaho,
+    frameMode: draft.frameMode,
+    frameRole: draft.frameRole,
+    variadicMinimum: draft.variadicMinimum,
+    tail: draft.tail,
+    frameConstraints: draft.frameConstraints,
+    places: draft.places,
+  });
+}
+/**
+ * Puts the parent's exact values back into the built body for every field
+ * the author did not change. The editor's text form cannot write back every
+ * valid value, such as trailing spaces, so an unchanged field never goes
+ * through it.
+ */
+function keepOriginal(draft: Draft, body: DefinitionBody) {
+  const original = draft.original;
+  if (!original) return;
+  const same = (key: string, value: unknown) =>
+    JSON.stringify(value) === JSON.stringify(original.fields[key]);
+  const parent = original.body;
+  if (same("text", draft.text)) body.text = structuredClone(parent.text);
+  if (same("notes", draft.notes)) body.notes = structuredClone(parent.notes);
+  if (same("glosses", draft.glosses))
+    body.glosses = structuredClone(parent.glosses);
+  if (same("operands", draft.operands))
+    body.operands = structuredClone(parent.operands);
+  if (same("examples", draft.examples))
+    body.examples = structuredClone(parent.examples);
+  if (same("labels", draft.labels))
+    body.labels = structuredClone(parent.labels);
+  if (same("sources", draft.sources))
+    body.sources = structuredClone(parent.sources);
+  if (same("etymologyText", draft.etymologyText) && !draft.formNotes.trim())
+    body.etymology.text = structuredClone(parent.etymology.text);
+  if (same("selmaho", draft.selmaho))
+    body.classification.selmaho = structuredClone(
+      parent.classification.selmaho,
+    );
+  if (
+    body.frame &&
+    parent.frame &&
+    same("frameMode", draft.frameMode) &&
+    same("frameRole", draft.frameRole) &&
+    same("variadicMinimum", draft.variadicMinimum)
+  ) {
+    const places = original.fields.places as DraftPlace[];
+    body.frame.places = body.frame.places.map((built, i) => {
+      const parentPlace = parent.frame!.places.find(
+        (pl) => pl.index === built.index,
+      );
+      return draft.places[i] &&
+        places[i] &&
+        parentPlace &&
+        JSON.stringify(draft.places[i]) === JSON.stringify(places[i])
+        ? structuredClone(parentPlace)
+        : built;
+    });
+    if (
+      same("tail", draft.tail) &&
+      parent.frame.tail &&
+      body.frame.tail &&
+      parent.frame.tail.from === body.frame.tail.from
+    )
+      body.frame.tail = structuredClone(parent.frame.tail);
+    if (same("frameConstraints", draft.frameConstraints))
+      body.frame.constraints = structuredClone(parent.frame.constraints);
+  }
 }
 /** What a native revision changes in a parent body. Everything else is copied. */
 export function revisionChanges(

@@ -357,6 +357,46 @@ export class LocalStore {
    * No stored draft counts as done. A different revision means another tab
    * saved newer work, which stays.
    */
+  /**
+   * Replaces or removes the draft row only while storage holds exactly the
+   * value this page loaded. A draft from an older build has no revision, so
+   * the whole stored value is the comparison. `next` null removes the row.
+   */
+  async replaceDraft(
+    key: string,
+    next: unknown | null,
+    expectedValue: unknown,
+  ): Promise<void> {
+    const db = await this.database;
+    const expected = JSON.stringify(expectedValue);
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction("drafts", "readwrite");
+      const drafts = tx.objectStore("drafts");
+      let failure: Error | undefined;
+      const current = drafts.get(key);
+      current.onsuccess = () => {
+        const stored = current.result as { revision?: string } | undefined;
+        if (JSON.stringify(stored) !== expected) {
+          failure = new DraftConflictError(
+            stored ? "changed" : "removed",
+            stored?.revision ?? null,
+          );
+          tx.abort();
+          return;
+        }
+        if (next === null) drafts.delete(key);
+        else drafts.put(next, key);
+      };
+      tx.oncomplete = () => resolve();
+      tx.onabort = () =>
+        reject(
+          failure ??
+            tx.error ??
+            new Error("Local storage did not save this change."),
+        );
+      tx.onerror = () => {};
+    });
+  }
   async deleteDraft(
     key: string,
     expected: { revision: string },

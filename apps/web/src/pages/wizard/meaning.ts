@@ -540,7 +540,34 @@ function renderLegacyDraft(
     navigate(`${route.path}${route.params.size ? `?${route.params}` : ""}`, {
       replace: true,
     });
+  const notice = el("div", { role: "status", "aria-live": "polite" });
+  /**
+   * Another tab changed the row after this page loaded it. Nothing was
+   * changed here. The old copy this page shows stays available for export,
+   * and the page then shows what storage holds now.
+   */
+  const conflict = () => {
+    notice.replaceChildren(
+      el(
+        "p",
+        { class: "notice" },
+        text(
+          "The saved draft changed in another tab after this page loaded the old draft. Nothing was converted or discarded. Export the old copy shown here if you want to keep it, then continue with the current draft. ",
+        ),
+        button("Export the old copy", () => exportDraft(preview, stored), {
+          class: "btn btn-quiet",
+          style: "min-height:32px",
+        }),
+        text(" "),
+        button("Show the current draft", reload, {
+          class: "btn btn-quiet",
+          style: "min-height:32px",
+        }),
+      ),
+    );
+  };
   main.append(
+    notice,
     el(
       "div",
       { class: "actions", style: "margin-top:14px" },
@@ -551,13 +578,17 @@ function renderLegacyDraft(
         "Convert it into a new draft",
         async () => {
           try {
-            await app.store.saveDraft(
+            // The exact old value is compared inside the transaction, so a
+            // newer draft from another tab is never replaced.
+            await app.store.replaceDraft(
               DRAFT_KEY,
               convertLegacyDraft(stored),
-              "unversioned",
+              stored,
             );
           } catch (error) {
             if (!(error instanceof DraftConflictError)) throw error;
+            conflict();
+            return;
           }
           reload();
         },
@@ -567,7 +598,13 @@ function renderLegacyDraft(
         "Discard the old draft",
         async () => {
           if (!confirm("Discard the old draft? This cannot be undone.")) return;
-          await app.store.delete("drafts", DRAFT_KEY);
+          try {
+            await app.store.replaceDraft(DRAFT_KEY, null, stored);
+          } catch (error) {
+            if (!(error instanceof DraftConflictError)) throw error;
+            conflict();
+            return;
+          }
           reload();
         },
         { class: "btn btn-quiet" },
