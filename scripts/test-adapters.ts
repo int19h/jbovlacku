@@ -4,7 +4,12 @@ import { once } from "node:events";
 import { createServer } from "node:net";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { resolve, join } from "node:path";
-import { initializeCore, createEvent } from "../packages/core/src/index.ts";
+import {
+  initializeCore,
+  createEvent,
+  contentHash,
+  wordId,
+} from "../packages/core/src/index.ts";
 
 const root = resolve(import.meta.dirname, "..");
 const testRoot = resolve(
@@ -157,9 +162,93 @@ try {
         (await api(index, `/events/${entry.envelope.id}`)).status,
         200,
       );
+      // A definition makes the adapter build search packages in both versions.
+      const definitionWord = { language: "jbo" as const, spelling: "klama" };
+      const definition = createEvent(
+        seed,
+        [],
+        "12".repeat(16),
+        {
+          kind: "definition.publish",
+          word: wordId(definitionWord),
+          language: "en",
+          parents: [],
+          origin: "native",
+        },
+        {
+          word: definitionWord,
+          language: "en",
+          text: [["x1 goes to x2."]],
+          frame: null,
+          operands: [],
+          glosses: [{ language: "en", text: "go", sense: null }],
+          notes: [],
+          etymology: { text: [], formation: null, compound: null },
+          examples: [],
+          classification: { kind: "gismu", selmaho: [] },
+          labels: [],
+          sources: [],
+          license: {
+            expression: "CC0-1.0",
+            url: "https://creativecommons.org/publicdomain/zero/1.0/",
+            attribution: "",
+          },
+          legacy: null,
+        },
+      );
+      const published = await api(index, "/events", definition);
+      assert.equal(published.status, 201, await published.clone().text());
       // The newer read routes answer on both adapters with the same shapes.
       const manifest: any = await (await api(index, "/manifest")).json();
       assert.ok(Array.isArray(manifest.package_versions));
+      // Version 2 package bytes match their descriptor, and their entry carries the row fields.
+      const descriptor = manifest.package_versions.find(
+        (p: any) => p.language === "en" && p.version === 2,
+      );
+      assert.ok(
+        descriptor,
+        "manifest advertises the English version 2 package",
+      );
+      const packageResponse = await api(
+        index,
+        `/packages/en?version=2&snapshot=${encodeURIComponent(manifest.snapshot)}`,
+      );
+      assert.equal(packageResponse.status, 200);
+      const packageBytes = new Uint8Array(await packageResponse.arrayBuffer());
+      assert.equal(packageBytes.length, descriptor.bytes);
+      assert.equal(contentHash(packageBytes), descriptor.hash);
+      const pkg = JSON.parse(new TextDecoder().decode(packageBytes));
+      assert.equal(pkg.version, 2);
+      assert.equal(pkg.language, "en");
+      assert.equal(pkg.snapshot, manifest.snapshot);
+      assert.equal(pkg.parts.length, 1);
+      const partResponse = await api(
+        index,
+        `/package-parts/${encodeURIComponent(pkg.parts[0].hash)}`,
+      );
+      assert.equal(partResponse.status, 200);
+      const partBytes = new Uint8Array(await partResponse.arrayBuffer());
+      assert.equal(partBytes.length, pkg.parts[0].bytes);
+      assert.equal(contentHash(partBytes), pkg.parts[0].hash);
+      const entries = JSON.parse(new TextDecoder().decode(partBytes));
+      assert.equal(entries.length, pkg.parts[0].count);
+      const row = entries.find((e: any) => e.event === definition.envelope.id);
+      assert.ok(row, "version 2 part lists the published definition");
+      assert.equal(row.issuer, entry.envelope.header.issuer);
+      assert.equal(row.notes, false);
+      assert.deepEqual(row.rafsi, []);
+      assert.equal(row.rafsi_complete, true);
+      assert.equal(row.attribution, null);
+      assert.equal(row.body, definition.envelope.header.content!.hash);
+      const v1Descriptor = manifest.packages.find(
+        (p: any) => p.language === "en",
+      );
+      assert.ok(v1Descriptor, "manifest lists the English version 1 package");
+      const v1Bytes = new Uint8Array(
+        await (await api(index, "/packages/en")).arrayBuffer(),
+      );
+      assert.equal(contentHash(v1Bytes), v1Descriptor.hash);
+      assert.equal(JSON.parse(new TextDecoder().decode(v1Bytes)).version, 1);
       const records: any = await (
         await api(index, "/records?limit=200")
       ).json();
@@ -357,7 +446,7 @@ try {
       status: "passed",
       adapters: indexes.map((index) => (index === 0 ? "node" : "worker")),
       checks:
-        "Node/Workers admission, late body, exact old snapshot, duplicate retry, process restart, strict JSON, shared snapshot, same-origin writes, bounded snapshot expiry and restart, package_versions, records, identities and activity reads, 404 suffix, 410 snapshot",
+        "Node/Workers admission, late body, exact old snapshot, duplicate retry, process restart, strict JSON, shared snapshot, same-origin writes, bounded snapshot expiry and restart, package_versions, records, identities and activity reads, 404 suffix, 410 snapshot, version 2 package bytes and parts",
       directory,
     }),
   );

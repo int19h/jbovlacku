@@ -610,7 +610,10 @@ export async function lujvoPage(
     })
       .then((word) => {
         if (!context.live() || chosenCandidate()?.spelling !== checked) return;
-        availability.textContent += ` The server defines ${checked} in snapshot ${word.snapshot.slice(7, 19)}….`;
+        // A word response without definitions means the server knows no definition of this spelling.
+        availability.textContent += word.definitions.length
+          ? ` The server defines ${checked} in snapshot ${word.snapshot.slice(7, 19)}….`
+          : ` The server has no definition of ${checked} in snapshot ${word.snapshot.slice(7, 19)}….`;
       })
       .catch((error: unknown) => {
         if (!context.live() || chosenCandidate()?.spelling !== checked) return;

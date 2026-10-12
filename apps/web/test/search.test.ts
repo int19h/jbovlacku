@@ -709,3 +709,388 @@ test("the retired-results filter asks the server for retired publications and sh
   await expect(page).not.toHaveURL(/retired=1/);
   expect(requests.at(-1)).not.toContain("retired=");
 });
+
+/** Builds canonical package bytes in the page, where the core is loaded. */
+const packageFixture = `
+  const build = (version, snapshot, entries) => {
+    const part = core.utf8(core.canonicalize(core.utf8(JSON.stringify(entries))));
+    const pkg = core.utf8(core.canonicalize(core.utf8(JSON.stringify({
+      version, language: "en", snapshot,
+      parts: [{ hash: core.contentHash(part), bytes: part.length, count: entries.length }],
+    }))));
+    const decode = (bytes) => new TextDecoder().decode(bytes);
+    return { pkg: decode(pkg), hash: core.contentHash(pkg), bytes: pkg.length, part: decode(part), partHash: core.contentHash(part) };
+  };
+  const v1 = (spelling, event) => ({
+    event: "jve1:" + event.repeat(64),
+    word: { language: "jbo", spelling },
+    language: "en",
+    glosses: [{ language: "en", text: "book", sense: null }],
+    plain_text: "x1 is a book",
+    classification: { kind: "gismu", selmaho: [] },
+    body: null,
+  });
+  const v2 = (spelling, event, rafsi, complete) => ({
+    ...v1(spelling, event),
+    issuer: "ed25519:" + "2".repeat(64),
+    notes: false,
+    rafsi,
+    rafsi_complete: complete,
+    attribution: null,
+  });
+`;
+type Built = {
+  pkg: string;
+  hash: string;
+  bytes: number;
+  part: string;
+  partHash: string;
+};
+/** Serves the manifest and package routes from built fixtures, by version query and part hash. */
+async function servePackages(
+  page: import("@playwright/test").Page,
+  snapshot: string,
+  state: {
+    v1: Built | null;
+    v2: Built | null;
+    mode?: "abort" | "server" | "hang";
+  },
+) {
+  await page.route("**/api/v1/manifest", async (route) => {
+    const real = await (await route.fetch()).json();
+    await route.fulfill({
+      json: {
+        ...real,
+        snapshot,
+        packages: state.v1
+          ? [{ language: "en", hash: state.v1.hash, bytes: state.v1.bytes }]
+          : [],
+        package_versions: state.v2
+          ? [
+              {
+                language: "en",
+                version: 2,
+                hash: state.v2.hash,
+                bytes: state.v2.bytes,
+              },
+            ]
+          : [],
+      },
+    });
+  });
+  await page.route("**/api/v1/packages/**", async (route) => {
+    if (state.mode === "abort") return route.abort("connectionreset");
+    if (state.mode === "server")
+      return route.fulfill({
+        status: 500,
+        json: {
+          code: "storage_unavailable",
+          message: "Injected server error.",
+          event: null,
+          field: null,
+        },
+      });
+    if (state.mode === "hang") {
+      await new Promise((resolve) => setTimeout(resolve, 4000));
+      return route.abort("connectionreset");
+    }
+    const wantsV2 =
+      new URL(route.request().url()).searchParams.get("version") === "2";
+    const built = wantsV2 ? state.v2 : state.v1;
+    if (!built)
+      return route.fulfill({
+        status: 404,
+        json: {
+          code: "missing",
+          message: "No package.",
+          event: null,
+          field: null,
+        },
+      });
+    await route.fulfill({ body: built.pkg });
+  });
+  await page.route("**/api/v1/package-parts/**", async (route) => {
+    const hash = decodeURIComponent(
+      route.request().url().split("/package-parts/")[1],
+    );
+    const built = [state.v1, state.v2].find((b) => b && b.partHash === hash);
+    if (!built)
+      return route.fulfill({
+        status: 404,
+        json: {
+          code: "missing",
+          message: "No part.",
+          event: null,
+          field: null,
+        },
+      });
+    await route.fulfill({ body: built.part });
+  });
+}
+const packageRequests = (page: import("@playwright/test").Page) => {
+  const urls: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().includes("/api/v1/packages/")) urls.push(request.url());
+  });
+  return urls;
+};
+const cachedPackage = (page: import("@playwright/test").Page) =>
+  page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    return new LocalStore().get("packages", "en");
+  });
+const writeClaimDraft = (
+  page: import("@playwright/test").Page,
+  rafsi: string,
+) =>
+  page.evaluate(async (rafsi) => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { newDraft } = await import(String("/src/model/draft.ts"));
+    await new LocalStore().put(
+      "drafts",
+      "current",
+      newDraft({
+        spelling: "brodu",
+        kind: "gismu",
+        meaning: "A disposable test meaning.",
+        text: "A disposable test meaning.",
+        structured: false,
+        frameMode: "none",
+        step: 5,
+        rafsiClaims: [{ rafsi, rationale: "Disposable claim." }],
+      }),
+    );
+  }, rafsi);
+
+test("the client asks for an advertised version 2 package, binds it to the manifest snapshot, and rejects wrong-version or wrong-snapshot bytes without touching the cache", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const snapshot = "sha256:" + "a".repeat(64);
+  const fixture = await page.evaluate(
+    async ({ corePath, snapshot, helpers }) => {
+      const core = await import(corePath);
+      await core.initializeCore();
+      const build = new Function("core", helpers + "return { build, v1, v2 };")(
+        core,
+      );
+      const entries = [build.v2("cukta", "1", ["cku"], true)];
+      const v1 = build.build(1, snapshot, [build.v1("cukta", "1")]);
+      return {
+        entries,
+        v1,
+        // The same version 1 bytes under a descriptor hash that does not match them.
+        brokenV1: { ...v1, hash: "sha256:" + "d".repeat(64) },
+        good: build.build(2, snapshot, entries),
+        // Hash-correct bytes that say version 1 while the descriptor says 2.
+        wrongVersion: build.build(1, snapshot, [build.v1("cukta", "1")]),
+        // Hash-correct bytes bound to another snapshot.
+        wrongSnapshot: build.build(2, "sha256:" + "b".repeat(64), entries),
+      };
+    },
+    { corePath, snapshot, helpers: packageFixture },
+  );
+  const state = { v1: fixture.v1 as Built | null, v2: fixture.good as Built };
+  await servePackages(page, snapshot, state);
+  const urls = packageRequests(page);
+  await page.goto("/preferences");
+  await page.getByRole("button", { name: "Download", exact: true }).click();
+  await expect(page.getByRole("status")).toHaveText(
+    "The English search package is saved in this browser.",
+  );
+  expect(urls).toHaveLength(1);
+  const query = new URL(urls[0]).searchParams;
+  expect(query.get("version")).toBe("2");
+  expect(query.get("snapshot")).toBe(snapshot);
+  const cached = await cachedPackage(page);
+  expect(cached.version).toBe(2);
+  expect(cached.snapshot).toBe(snapshot);
+  expect(cached.downgrade).toBeNull();
+  expect(cached.entries).toEqual(fixture.entries);
+  // Wrong version inside hash-correct bytes. The version 1 package is also
+  // unusable here, so nothing replaces the cache.
+  state.v2 = fixture.wrongVersion;
+  state.v1 = fixture.brokenV1;
+  await page.getByRole("button", { name: "Refresh English" }).click();
+  await expect(page.getByRole("status")).toContainText("hash did not match");
+  await expect.poll(() => urls.length).toBe(3);
+  expect(await cachedPackage(page)).toEqual(cached);
+  // Another snapshot inside hash-correct bytes. The status text is the same,
+  // so the request count shows that this attempt finished.
+  state.v2 = fixture.wrongSnapshot;
+  await page.getByRole("button", { name: "Refresh English" }).click();
+  await expect.poll(() => urls.length).toBe(5);
+  await expect(page.getByRole("status")).toContainText("hash did not match");
+  expect(await cachedPackage(page)).toEqual(cached);
+  // Each attempt asked for version 2 first and never activated its bytes.
+  const versions = urls.map((url) => new URL(url).searchParams.get("version"));
+  expect(versions).toEqual(["2", "2", null, "2", null]);
+  const final = await cachedPackage(page);
+  expect(final.version).toBe(2);
+  expect(final.snapshot).toBe(snapshot);
+});
+
+test("an invalid version 2 package falls back to version 1 with a recorded reason, and the publish page then reports unknown coverage", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  const snapshot = "sha256:" + "a".repeat(64);
+  const fixture = await page.evaluate(
+    async ({ corePath, snapshot, helpers }) => {
+      const core = await import(corePath);
+      await core.initializeCore();
+      const build = new Function("core", helpers + "return { build, v1, v2 };")(
+        core,
+      );
+      return {
+        v1: build.build(1, snapshot, [build.v1("cukta", "1")]),
+        wrongVersion: build.build(1, snapshot, [build.v1("cukta", "1")]),
+      };
+    },
+    { corePath, snapshot, helpers: packageFixture },
+  );
+  await servePackages(page, snapshot, {
+    v1: fixture.v1,
+    v2: fixture.wrongVersion,
+  });
+  const urls = packageRequests(page);
+  await page.goto("/preferences");
+  await page.getByRole("button", { name: "Download", exact: true }).click();
+  const status = page.getByRole("status");
+  await expect(status).toContainText(
+    "The English search package is saved in this browser as version 1.",
+  );
+  await expect(status).toContainText("invalid");
+  await expect(page.locator("main")).toContainText(
+    "Version 1 was saved instead of version 2: The search package is invalid",
+  );
+  const cached = await cachedPackage(page);
+  expect(cached.version).toBe(1);
+  expect(typeof cached.downgrade).toBe("string");
+  expect(cached.downgrade).toContain("invalid");
+  expect(urls.map((url) => new URL(url).searchParams.get("version"))).toEqual([
+    "2",
+    null,
+  ]);
+  // A version 1 package carries no claims, so the publish page says the coverage is unknown.
+  await writeClaimDraft(page, "rod");
+  await page.goto("/new/publish");
+  const conflicts = page.getByRole("region", { name: "Known conflicts" });
+  await expect(conflicts).toContainText("Rafsi claims: rod.");
+  await expect(conflicts).toContainText(
+    "The local package carries no rafsi claims, so conflict coverage is unknown.",
+  );
+});
+
+test("a version 2 transport failure, server error, or cancel makes no version 1 request and keeps the cache", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const snapshot = "sha256:" + "a".repeat(64);
+  const fixture = await page.evaluate(
+    async ({ corePath, snapshot, helpers }) => {
+      const core = await import(corePath);
+      await core.initializeCore();
+      const build = new Function("core", helpers + "return { build, v1, v2 };")(
+        core,
+      );
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const entries = [build.v2("cukta", "1", ["cku"], true)];
+      await new LocalStore().put("packages", "en", {
+        snapshot: "sha256:" + "c".repeat(64),
+        version: 2,
+        entries,
+        downgrade: null,
+      });
+      return {
+        v1: build.build(1, snapshot, [build.v1("cukta", "1")]),
+        v2: build.build(2, snapshot, entries),
+      };
+    },
+    { corePath, snapshot, helpers: packageFixture },
+  );
+  const before = await cachedPackage(page);
+  const state = {
+    v1: fixture.v1 as Built,
+    v2: fixture.v2 as Built,
+    mode: "abort" as "abort" | "server" | "hang" | undefined,
+  };
+  await servePackages(page, snapshot, state);
+  const urls = packageRequests(page);
+  await page.goto("/preferences");
+  const status = page.getByRole("status");
+  await page.getByRole("button", { name: "Refresh English" }).click();
+  await expect(status).not.toContainText("refreshed");
+  await expect(status).not.toHaveText("");
+  expect(urls).toHaveLength(1);
+  expect(new URL(urls[0]).searchParams.get("version")).toBe("2");
+  expect(await cachedPackage(page)).toEqual(before);
+  state.mode = "server";
+  await page.getByRole("button", { name: "Refresh English" }).click();
+  await expect(status).toContainText("Injected server error");
+  expect(urls).toHaveLength(2);
+  expect(new URL(urls[1]).searchParams.get("version")).toBe("2");
+  expect(await cachedPackage(page)).toEqual(before);
+  // A cancel while the version 2 bytes are in flight.
+  state.mode = "hang";
+  const outcome = await page.evaluate(async () => {
+    const { downloadPackage } = await import(String("/src/data/search.ts"));
+    const controller = new AbortController();
+    const pending = downloadPackage("en", { signal: controller.signal });
+    setTimeout(() => controller.abort(), 500);
+    try {
+      await pending;
+      return "resolved";
+    } catch (error) {
+      return (error as Error).name;
+    }
+  });
+  expect(outcome).toBe("AbortError");
+  await page.waitForTimeout(600);
+  expect(urls).toHaveLength(3);
+  expect(new URL(urls[2]).searchParams.get("version")).toBe("2");
+  expect(await cachedPackage(page)).toEqual(before);
+  // After the failures the full package still downloads.
+  state.mode = undefined;
+  await page.getByRole("button", { name: "Refresh English" }).click();
+  await expect(status).toContainText("The English package is refreshed.");
+  expect((await cachedPackage(page)).snapshot).toBe(snapshot);
+});
+
+test("a version 2 entry with a cut rafsi list makes the publish page name the incomplete coverage and the word", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  const snapshot = "sha256:" + "a".repeat(64);
+  const fixture = await page.evaluate(
+    async ({ corePath, snapshot, helpers }) => {
+      const core = await import(corePath);
+      await core.initializeCore();
+      const build = new Function("core", helpers + "return { build, v1, v2 };")(
+        core,
+      );
+      return {
+        v1: build.build(1, snapshot, [build.v1("cukta", "1")]),
+        v2: build.build(2, snapshot, [
+          build.v2("cukta", "1", ["cku"], false),
+          build.v2("vlacku", "3", ["vla"], true),
+        ]),
+      };
+    },
+    { corePath, snapshot, helpers: packageFixture },
+  );
+  await servePackages(page, snapshot, { v1: fixture.v1, v2: fixture.v2 });
+  await page.goto("/preferences");
+  await page.getByRole("button", { name: "Download", exact: true }).click();
+  await expect(page.getByRole("status")).toHaveText(
+    "The English search package is saved in this browser.",
+  );
+  await writeClaimDraft(page, "rod");
+  await page.goto("/new/publish");
+  const conflicts = page.getByRole("region", { name: "Known conflicts" });
+  await expect(conflicts).toContainText("Rafsi claims: rod.");
+  await expect(conflicts).toContainText(
+    "The package lists at most 64 claims per word, so coverage is incomplete for cukta.",
+  );
+  await expect(conflicts).not.toContainText("vlacku");
+});

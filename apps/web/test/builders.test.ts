@@ -49,6 +49,22 @@ test("the lujvo builder offers long forms beside listed rafsi, recovers parts, h
   await expect(result).toContainText("ckusinxa");
   await expect(result).toContainText("Construction score 7917");
   await expect(result).toContainText("Recovered parts: cku + sinxa");
+  // The spelling is absent: the package and the server both say so.
+  await expect(result).toContainText(
+    /Not in the local package of snapshot [0-9a-f]{12}…/,
+  );
+  await expect(result).toContainText(
+    /The server has no definition of ckusinxa in snapshot [0-9a-f]{12}…/,
+  );
+  // A specific source definition is the author's choice among the package's definitions.
+  const exact = page.getByLabel("Exact definition of cukta");
+  await expect(exact).toHaveValue("");
+  const options = await exact
+    .locator("option")
+    .evaluateAll((nodes) => nodes.map((n) => (n as HTMLOptionElement).value));
+  expect(options.length).toBeGreaterThan(2);
+  const chosenDefinition = options[2];
+  await exact.selectOption(chosenDefinition);
   // Every gismu row offers the stem and the whole gismu beside the listed claim.
   const cuktaRow = page.getByRole("group", { name: "Rafsi for cukta" });
   await expect(
@@ -95,11 +111,51 @@ test("the lujvo builder offers long forms beside listed rafsi, recovers parts, h
     draft.compound.components.map((c: { rafsi: string }) => c.rafsi),
   ).toEqual(["cku", "sinxa"]);
   expect(draft.compound.score).toBe(7917);
-  expect(draft.compound.morphology.version).toBe("1");
+  expect(draft.compound.morphology.version).toBe("2");
+  expect(
+    draft.compound.components.map(
+      (c: { definition: string | null }) => c.definition,
+    ),
+  ).toEqual([chosenDefinition, null]);
+  expect(draft.evidenceForm).toBe("ckusinxa");
   // The builder state survives a reload.
   await page.goto("/new/lujvo");
   await expect(page.getByRole("region", { name: "Result" })).toContainText(
     "ckusinxa",
+  );
+  // The evidence describes one exact form. Another spelling blocks publication until the form is built again.
+  await page.goto("/new/editor");
+  await page.getByLabel("Headword").fill("ckusinxe");
+  await expect(page.getByRole("status").last()).toHaveText(
+    "Saved in this browser",
+  );
+  await page.goto("/new/publish");
+  await expect(page.locator("main")).toContainText(
+    'The compound evidence describes "ckusinxa", not "ckusinxe". Build the form again, or remove the evidence.',
+  );
+  await expect(
+    page.locator("aside").getByRole("button", { name: "Publish", exact: true }),
+  ).toBeDisabled();
+});
+
+test("the lujvo builder says when a spelling is taken in the local package and on the server", async ({
+  page,
+}) => {
+  await downloadPackage(page);
+  await startDraft(page, "lujvo");
+  await page.getByLabel("Add a part").fill("cukta");
+  await page.getByRole("button", { name: "Add cukta", exact: true }).click();
+  await page.getByLabel("Add a part").fill("sorcu");
+  await page.getByRole("button", { name: "Add sorcu as entered" }).click();
+  await page.getByLabel("Other rafsi you know").nth(1).fill("sro");
+  await page.getByLabel("Other rafsi you know").nth(1).press("Tab");
+  const result = page.getByRole("region", { name: "Result" });
+  await expect(result).toContainText("Recovered parts: cku + sro");
+  await expect(result).toContainText(
+    /Taken: ckusro is defined in the local package of snapshot [0-9a-f]{12}…/,
+  );
+  await expect(result).toContainText(
+    /The server defines ckusro in snapshot [0-9a-f]{12}…/,
   );
 });
 
@@ -122,13 +178,28 @@ test("the extended profile joins whole-word parts that CLL rules reject", async 
   await expect(result).toContainText("fulty'ismu");
   await expect(result).toContainText("under the extended scorer");
   await expect(result).toContainText("Recovered parts: fult + y' + ismu");
-  // A fu'ivla part is offered whole under the extended profile.
+  // Without a package, availability is unknown and says so. The server still answers.
+  await expect(result).toContainText(
+    "Availability in the local package is unknown: no package is downloaded.",
+  );
+  await expect(result).toContainText(
+    /The server has no definition of fulty'ismu (now|in snapshot [0-9a-f]{12}…)\./,
+  );
+  // With the rafsi claim ful, the builder makes fuly'ismu. The pinned jbotci
+  // lineage reads it back as ful, y', ismu (crates/jvc-morphology/evidence/word-parses.json).
+  await page.getByLabel("Other rafsi you know").nth(0).fill("ful");
+  await page.getByLabel("Other rafsi you know").nth(0).press("Tab");
+  await expect(result).toContainText("fuly'ismu");
+  await expect(result).toContainText("Recovered parts: ful + y' + ismu");
+  // A whole-word core that no reference reads as one lujvo is rejected, not offered.
   await page.getByRole("button", { name: "Remove fulta" }).click();
   await page.getByLabel("Add a part").fill("leksiko");
   await page.getByRole("button", { name: "Add leksiko as entered" }).click();
   await page.getByRole("button", { name: "Move leksiko up" }).click();
-  await expect(result).toContainText("leksiko'yismu");
-  await expect(result).toContainText("Recovered parts: leksiko + 'y + ismu");
+  await expect(result).toContainText("No valid lujvo comes from these parts");
+  await expect(result).toContainText(
+    "leksiko'yismu: The selected profile does not read this form as one lujvo.",
+  );
 });
 
 test("the gismu generator scores exactly, shares ranks, lists conflicts, and records the run", async ({
@@ -187,19 +258,30 @@ test("the gismu generator scores exactly, shares ranks, lists conflicts, and rec
   );
   expect(after, "a lower score after the tied group").toBeDefined();
   expect(after!.rank).toBe(tied![1][0] + tied![1].length);
+  // A typed form that repeats an existing gismu is scored under the run.
+  // Before its row is chosen, its conflicts already block the primary action.
+  await page.getByLabel("Type a form yourself").fill("cukta");
+  await expect(candidates).toContainText("identical to cukta");
+  const primary = page.locator("button.btn-primary");
+  await expect(primary).toHaveText("Use cukta");
+  await expect(primary).toBeDisabled();
+  await expect(primary).toHaveAttribute(
+    "title",
+    "Acknowledge every known conflict first, or choose another form.",
+  );
   await page.getByRole("button", { name: "Choose monku" }).click();
+  await expect(primary).toHaveText("Use monku");
+  await expect(primary).toBeEnabled();
   const selected = page.getByRole("region", { name: "Selected form" });
   await expect(selected).toContainText("exactly 4477/10000");
   await expect(selected).toContainText("rank 6 of 10944");
   await expect(selected).toContainText("4 of 4 letters recognized");
   await expect(selected).toContainText("Possible short rafsi: mo'u, mok, mon");
   // A manual form that repeats an existing gismu lists the identical conflict and needs acknowledgment.
-  await page.getByLabel("Type a form yourself").fill("cukta");
-  await expect(candidates).toContainText("identical to cukta");
+  // Choosing the manual row keeps the same conflicts and the same acknowledgment rule.
   await page.getByRole("button", { name: "Choose cukta" }).click();
   await expect(selected).toContainText("identical to cukta");
   await expect(selected).toContainText("cku is claimed by cukta");
-  const primary = page.locator("button.btn-primary");
   await expect(primary).toHaveText("Use cukta");
   await expect(primary).toBeDisabled();
   await selected.getByRole("checkbox").check();
@@ -249,6 +331,15 @@ test("a custom profile needs a positive weight and an unfinished row never gets 
   for (let row = 1; row <= 6; row++) {
     await page.getByRole("button", { name: `Remove row 1` }).click();
   }
+  // Without a completed run, a typed form has unknown conflicts and cannot be used from here.
+  await page.getByLabel("Type a form yourself").fill("pilta");
+  const manualNote = page.getByText(
+    "The manual form is checked for conflicts under the run. Complete the source rows so the run can score it, or use Enter without generation.",
+  );
+  await expect(manualNote).toBeVisible();
+  await expect(page.locator("button.btn-primary")).toHaveText("Use pilta");
+  await expect(page.locator("button.btn-primary")).toBeDisabled();
+  await page.getByLabel("Type a form yourself").fill("");
   await page.getByLabel("Scoring letters for deu").fill("pilts");
   await expect(
     page.getByText(/At least one language weight must be positive/),

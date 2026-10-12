@@ -207,6 +207,8 @@ export interface BuilderPreset {
   description: string;
   source_url: string;
   reference_url: string | null;
+  /** The SHA-256 of the pinned source bytes, as hexadecimal. Additive in morphology version 2. */
+  source_digest: string;
   denominator: number;
   languages: { language: string; name: string; numerator: number }[];
 }
