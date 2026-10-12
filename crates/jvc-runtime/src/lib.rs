@@ -238,6 +238,52 @@ pub fn finish_signing(bytes: &[u8], signature: &[u8]) -> std::result::Result<Str
 fn ratio_value(value: &jvc_rank::Rational) -> Value {
     json!({"numerator":value.numer().to_string(),"denominator":value.denom().to_string()})
 }
+/// Bounded incoming-edge explanations listed with each reviewer.
+const REVIEWER_INCOMING_LIMIT: usize = 16;
+/// Reviewer details for one target: every actor with an effective verdict,
+/// its influence interval, and a bounded explanation of its incoming routes
+/// from the effective graph. Shares of individual routes are not invented.
+fn reviewer_details(
+    graph: &jvc_state::ContextGraph,
+    ranking: &jvc_rank::Ranking,
+    verdicts: &[jvc_rank::Verdict],
+) -> Vec<Value> {
+    let zero = jvc_rank::rational(0, 1);
+    let mut incoming: Vec<Vec<usize>> = vec![Vec::new(); graph.actors.len()];
+    for (from, row) in graph.rows.iter().enumerate() {
+        for edge in row {
+            if edge.to < incoming.len() {
+                incoming[edge.to].push(from);
+            }
+        }
+    }
+    verdicts
+        .iter()
+        .enumerate()
+        .filter(|(_, verdict)| **verdict != jvc_rank::Verdict::Absent)
+        .map(|(index, verdict)| {
+            let root = graph.roots.get(index).filter(|q| **q > zero);
+            let sources = &incoming[index];
+            let listed = sources
+                .iter()
+                .take(REVIEWER_INCOMING_LIMIT)
+                .map(|from| json!(graph.actors[*from]))
+                .collect::<Vec<_>>();
+            let route_count = sources.len() + usize::from(root.is_some());
+            json!({
+                "identity": graph.actors[index],
+                "verdict": match verdict { jvc_rank::Verdict::Bless => "bless", jvc_rank::Verdict::Curse => "curse", jvc_rank::Verdict::Absent => "absent" },
+                "weight": ranking.weights.get(index).map(interval_value).unwrap_or(Value::Null),
+                "root": root.map(ratio_value),
+                "blocked": graph.blocked.contains(&index),
+                "incoming": listed,
+                "incoming_count": sources.len(),
+                "incoming_complete": sources.len() <= REVIEWER_INCOMING_LIMIT,
+                "multiple_routes": route_count > 1,
+            })
+        })
+        .collect()
+}
 fn interval_value(interval: &jvc_rank::Interval) -> Value {
     json!([ratio_value(&interval.lower), ratio_value(&interval.upper)])
 }
@@ -416,7 +462,8 @@ fn rank_word_state(
                     .iter()
                     .filter(|v| **v != jvc_rank::Verdict::Absent)
                     .count();
-                scores.push(json!({"target":id,"support":interval_value(&score.support),"opposition":interval_value(&score.opposition),"net":interval_value(&score.net),"direct_reviewers":reviewers,"status":status}));
+                let details = reviewer_details(contextual, ranking, &candidate.verdicts);
+                scores.push(json!({"target":id,"support":interval_value(&score.support),"opposition":interval_value(&score.opposition),"net":interval_value(&score.net),"direct_reviewers":reviewers,"status":status,"reviewers":details}));
                 scored.insert(id.clone(), (candidate, score, graph_key, *definition));
             }
             Err(_) => {

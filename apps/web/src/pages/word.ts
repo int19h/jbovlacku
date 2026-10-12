@@ -1,0 +1,472 @@
+/**
+ * The word page: headword, composition, rafsi line, language tabs, and one
+ * block per definition in layer order under the selected view.
+ */
+import { wordId } from "../../../../packages/core/src/index.ts";
+import {
+  el,
+  link,
+  p,
+  text,
+  button,
+  describe,
+  icon,
+  disclosure,
+} from "../lib/dom.ts";
+import { languageName, plural } from "../lib/format.ts";
+import { routes, type RenderContext, type Route } from "../app/router.ts";
+import type { App } from "../app/context.ts";
+import {
+  getWord,
+  loadDefinition,
+  loadRecord,
+  RequestError,
+  type LoadedRecord,
+} from "../data/api.ts";
+import {
+  wordIdValid,
+  type DefinitionBody,
+  type RafsiBody,
+  type WordResponse,
+} from "../model/types.ts";
+import { definitionBlock } from "../components/definition.ts";
+import { judgmentControl, scoreDetails } from "../components/judgment.ts";
+import { identityLink } from "../components/attribution.ts";
+import { renderRichText } from "../model/richtext.ts";
+import { zbalermorna } from "../lib/zbalermorna.ts";
+
+export async function wordPage(route: Route, context: RenderContext, app: App) {
+  const { main } = context;
+  main.className = "surface-word";
+  const key: string = route.segments[1] ?? "";
+  const isId: boolean = /^jvw1:[0-9a-f]{64}$/.test(key);
+  const id = isId
+    ? key
+    : wordId({ language: "jbo", spelling: key.normalize("NFC") });
+  const spellingHint = isId ? null : key.normalize("NFC");
+  const requestedLanguage =
+    route.params.get("lang") ?? app.session.preferences.definitionLanguage;
+  context.title(spellingHint ?? "Word");
+  let word: WordResponse;
+  try {
+    word = await getWord(id, {
+      signal: context.signal,
+      fresh: route.params.has("fresh"),
+    });
+  } catch (error) {
+    if (!context.live()) return;
+    main.append(
+      el("h1", { class: "page", text: spellingHint ?? "Word" }),
+      p(describe(error), "notice"),
+    );
+    if (spellingHint)
+      main.append(
+        p(
+          "No definitions are available for this spelling on this server.",
+          "small",
+        ),
+        link(
+          "Add a definition",
+          `${routes.add}?word=${encodeURIComponent(spellingHint)}`,
+          { class: "btn" },
+        ),
+      );
+    return;
+  }
+  if (!context.live()) return;
+  const spelling = word.word?.spelling ?? spellingHint ?? "Word unavailable";
+  context.title(spelling);
+  const head = el("div", { class: "word-head" });
+  const h1 = el("h1", { lang: "jbo", text: spelling });
+  head.append(h1);
+  const zb = zbalermorna(spelling);
+  if (zb)
+    head.append(
+      el("span", { class: "zbalermorna", "aria-hidden": "true", text: zb }),
+    );
+  const kindTag = el("span", { class: "meta", style: "font-size:15px" });
+  head.append(kindTag);
+  head.append(
+    button(
+      icon("copy", "", 17),
+      async () => {
+        try {
+          await navigator.clipboard.writeText(spelling);
+          app.announce(`Copied ${spelling}.`);
+        } catch {
+          app.announce("The browser did not allow copying.");
+        }
+      },
+      {
+        class: "btn btn-quiet btn-icon",
+        "aria-label": `Copy ${spelling}`,
+        title: "Copy the Latin spelling",
+      },
+    ),
+  );
+  main.append(head);
+  const composition = el("p", { class: "muted", style: "margin-top:6px" });
+  const rafsiLine = el("p", { class: "muted", style: "margin-top:4px" });
+  main.append(composition, rafsiLine);
+  if (!word.word && !word.definitions.length) {
+    main.append(
+      p(
+        "No definitions are available for this word in the selected view.",
+        "small",
+      ),
+    );
+    if (spellingHint)
+      main.append(
+        link(
+          "Add a definition",
+          `${routes.add}?word=${encodeURIComponent(spellingHint)}`,
+          { class: "btn", style: "margin-top:12px" },
+        ),
+      );
+    return;
+  }
+  // Load every definition record. Group by language.
+  const records = new Map<string, LoadedRecord<DefinitionBody>>();
+  const failures = new Map<string, string>();
+  await Promise.all(
+    word.definitions.map(async (definition) => {
+      try {
+        records.set(
+          definition,
+          await loadDefinition(definition, word.snapshot),
+        );
+      } catch (error) {
+        failures.set(definition, describe(error));
+      }
+    }),
+  );
+  if (!context.live()) return;
+  const byLanguage = new Map<string, string[]>();
+  for (const [definitionId, record] of records) {
+    const language =
+      record.body?.language ??
+      (record.envelope.header.action.language as string) ??
+      "und";
+    byLanguage.set(language, [
+      ...(byLanguage.get(language) ?? []),
+      definitionId,
+    ]);
+  }
+  const kinds = new Set(
+    [...records.values()]
+      .map((r) => r.body?.classification.kind)
+      .filter(Boolean),
+  );
+  kindTag.textContent = [...kinds]
+    .map((k) => (k === "fuivla" ? "fu'ivla" : k))
+    .join(" · ");
+  // Composition line from any compound evidence.
+  const compound = [...records.values()]
+    .map((r) => r.body?.etymology.compound)
+    .find(Boolean);
+  if (compound) {
+    const words = compound.components
+      .map((c, i) => [
+        i ? text(" + ") : null,
+        link(c.word.spelling, routes.word(c.word.spelling), { lang: "jbo" }),
+      ])
+      .flat()
+      .filter(Boolean) as Node[];
+    composition.append(
+      ...words,
+      text(` · ${compound.components.map((c) => c.rafsi).join(" + ")}`),
+    );
+  } else composition.hidden = true;
+  // Rafsi line from claims.
+  const claims: {
+    assignment: string;
+    status: string;
+    claims: LoadedRecord<RafsiBody>[];
+  }[] = [];
+  for (const assignment of word.assignments) {
+    const loaded: LoadedRecord<RafsiBody>[] = [];
+    for (const claim of assignment.claims) {
+      try {
+        loaded.push(await loadRecord<RafsiBody>(claim, word.snapshot));
+      } catch {}
+    }
+    claims.push({
+      assignment: assignment.id,
+      status: assignment.status,
+      claims: loaded,
+    });
+  }
+  if (!context.live()) return;
+  rafsiLine.append(text("rafsi: "));
+  if (!claims.length) rafsiLine.append(text("none yet", "meta"));
+  else
+    claims.forEach((entry, index) => {
+      if (index) rafsiLine.append(text(", "));
+      const spellingText =
+        entry.claims.map((c) => c.body?.rafsi).find(Boolean) ??
+        "unidentified claim";
+      rafsiLine.append(
+        link(spellingText, routes.rafsi(spellingText), {
+          lang: "jbo",
+          class: "rafsi",
+        }),
+      );
+      if (entry.status !== "eligible")
+        rafsiLine.append(text(` (${entry.status})`, "meta"));
+    });
+  rafsiLine.append(
+    text(" · "),
+    link("claim one", `${routes.add}?rafsi=${encodeURIComponent(spelling)}`, {
+      style: "font-size:14px",
+    }),
+  );
+  // Language tabs.
+  const languages = [...byLanguage.keys()].sort();
+  const active = languages.includes(requestedLanguage)
+    ? requestedLanguage
+    : "all";
+  const tabs = el("nav", {
+    class: "tabs",
+    "aria-label": "Definition language",
+  });
+  for (const language of languages)
+    tabs.append(
+      link(null, routes.word(spelling, language), {
+        class: "tab",
+        "aria-current": active === language ? "true" : undefined,
+      }),
+    );
+  for (const [index, language] of languages.entries())
+    tabs.children[index].append(
+      text(languageName(language)),
+      text(String(byLanguage.get(language)!.length), "meta"),
+    );
+  const allTab = link(null, `${routes.word(spelling)}?lang=all`, {
+    class: "tab",
+    "aria-current": active === "all" ? "true" : undefined,
+  });
+  allTab.append(text("All"), text(String(records.size), "meta"));
+  tabs.append(allTab);
+  main.append(tabs);
+  const snapshotNote = el("p", { class: "meta", style: "margin-top:8px" });
+  snapshotNote.append(
+    text(
+      `Snapshot ${word.snapshot.slice(7, 19)}… · view ${word.view.slice(5, 17)}…`,
+    ),
+  );
+  if (word.calculation === null)
+    snapshotNote.append(
+      text(
+        " · ranking unavailable for this word. No score is assumed.",
+        "meta",
+      ),
+    );
+  main.append(snapshotNote);
+  // Definition order follows layers. Unranked definitions follow.
+  const visible = new Set(
+    active === "all" ? records.keys() : (byLanguage.get(active) ?? []),
+  );
+  const shown = new Set<string>();
+  const ordered: { id: string; layer: number | null }[] = [];
+  for (const [index, layer] of word.layers.entries())
+    for (const definition of layer)
+      if (visible.has(definition) && !shown.has(definition)) {
+        shown.add(definition);
+        ordered.push({ id: definition, layer: index });
+      }
+  for (const definition of word.definitions)
+    if (visible.has(definition) && !shown.has(definition))
+      ordered.push({ id: definition, layer: null });
+  const allRecords = [...records.values()];
+  const statusOf = (definition: string) =>
+    word.statuses.find((s) => s?.event === definition)?.state;
+  if (
+    word.definitions.length &&
+    word.definitions.every((d) => statusOf(d) === "deprecated")
+  )
+    main.append(p("No active definitions in this snapshot.", "small"));
+  const refresh = () => {
+    void (async () => {
+      try {
+        await getWord(id, { fresh: true });
+      } catch {}
+    })();
+  };
+  let lastLayer: number | null = -1;
+  for (const { id: definition, layer } of ordered) {
+    const record = records.get(definition)!;
+    const score = word.scores.find((s) => s.target === definition) ?? null;
+    const unavailable =
+      word.calculation === null ||
+      word.unavailable_scores.includes(definition) ||
+      !score;
+    if (
+      layer !== null &&
+      layer !== lastLayer &&
+      word.layers[layer].filter((d) => visible.has(d)).length > 1
+    ) {
+      const size = word.layers[layer].filter((d) => visible.has(d)).length;
+      main.append(
+        p(
+          `${plural(size, "alternative")} with unresolved order. Presentation order follows event IDs.`,
+          "meta",
+        ),
+      );
+    }
+    lastLayer = layer;
+    main.append(
+      definitionBlock(app, record, {
+        score,
+        unavailable,
+        status: statusOf(definition),
+        calculation: word.calculation,
+        secondary: layer !== null && layer > 0,
+        revisions: allRecords,
+        word,
+        onChange: refresh,
+      }),
+    );
+    if (layer === null)
+      main.lastElementChild!.append(
+        p(
+          "No ranking position is available for this definition in the server layers.",
+          "meta",
+        ),
+      );
+  }
+  for (const [definition, failure] of failures)
+    if (visible.has(definition) || active === "all")
+      main.append(
+        el(
+          "div",
+          { class: "definition" },
+          p(
+            `Definition ${definition.slice(0, 20)}… is unavailable: ${failure}`,
+            "notice",
+          ),
+        ),
+      );
+  const after = el("div", { class: "after-definitions" });
+  after.append(
+    text("Know this word better?"),
+    link(
+      "Add a definition",
+      `${routes.add}?word=${encodeURIComponent(spelling)}&lang=${encodeURIComponent(active === "all" ? app.session.preferences.definitionLanguage : active)}`,
+      { class: "btn" },
+    ),
+    link(
+      "Add a translation",
+      `${routes.add}?word=${encodeURIComponent(spelling)}&translate=1`,
+      { class: "btn btn-quiet" },
+    ),
+  );
+  main.append(after);
+  // Rafsi claims section.
+  if (claims.length) {
+    const section = el("section", { "aria-labelledby": "rafsi-h" });
+    section.append(
+      el("h2", { id: "rafsi-h", class: "section", text: "Rafsi claims" }),
+    );
+    for (const entry of claims) {
+      const card = el("div", { class: "definition" });
+      const rafsiSpelling =
+        entry.claims.map((c) => c.body?.rafsi).find(Boolean) ?? "unidentified";
+      card.append(
+        el(
+          "p",
+          { class: "prose" },
+          el("span", { lang: "jbo", class: "rafsi", text: rafsiSpelling }),
+          text(` for ${spelling}`, "meta"),
+        ),
+      );
+      const score =
+        word.scores.find((s) => s.target === entry.assignment) ?? null;
+      const unavailable =
+        entry.status !== "eligible" ||
+        word.unavailable_scores.includes(entry.assignment) ||
+        !score;
+      const byline = el("div", { class: "byline" });
+      byline.append(
+        text(
+          `${entry.status === "eligible" ? "Eligible pair" : entry.status === "inactive" ? "Inactive pair" : "Pair status unknown"} · ${plural(entry.claims.length, "claim")}`,
+          "meta",
+        ),
+        el("span", { class: "spacer" }),
+      );
+      const target = {
+        id: entry.assignment,
+        word: id,
+        describe: (value: string) =>
+          `${value === "bless" ? "Endorsing" : value === "curse" ? "Opposing" : "Clearing your judgment on"} rafsi ${rafsiSpelling} for ${spelling}`,
+      };
+      const judgmentOptions = {
+        score,
+        unavailable,
+        calculation: word.calculation,
+        large: true,
+        onChange: refresh,
+      };
+      byline.append(
+        judgmentControl(app, target, judgmentOptions),
+        scoreDetails(app, target, judgmentOptions),
+      );
+      card.append(byline);
+      card.append(
+        p(
+          "One judgment applies to this word and rafsi pair across all its publishers.",
+          "meta",
+        ),
+      );
+      for (const claim of entry.claims) {
+        const row = el("div", { class: "small", style: "margin-top:8px" });
+        row.append(
+          text("Claimed by "),
+          identityLink(claim.envelope.header.issuer),
+          text(" · "),
+          link("record", routes.definition(claim.envelope.id)),
+        );
+        if (claim.body?.rationale.length)
+          row.append(renderRichText(claim.body.rationale, { placeHref: null }));
+        card.append(row);
+      }
+      section.append(card);
+    }
+    main.append(section);
+  }
+  // See also: component words and derivation sources.
+  const related = new Set<string>();
+  for (const record of allRecords) {
+    for (const component of record.body?.etymology.compound?.components ?? [])
+      related.add(component.word.spelling);
+    for (const place of record.body?.frame?.places ?? [])
+      for (const d of place.derivation) related.add(d.word.spelling);
+    for (const paragraph of record.body?.text ?? [])
+      for (const node of paragraph)
+        if (typeof node === "object" && node && "word" in node)
+          related.add(node.word.spelling);
+  }
+  related.delete(spelling);
+  if (related.size) {
+    const section = el("section", {
+      "aria-labelledby": "rel-h",
+      style: "padding-top:20px",
+    });
+    section.append(
+      el("h2", {
+        id: "rel-h",
+        class: "section",
+        style: "margin-top:0",
+        text: "See also",
+      }),
+    );
+    const line = el("p", { class: "muted" });
+    [...related].sort().forEach((s, i) => {
+      if (i) line.append(text(" · "));
+      line.append(link(s, routes.word(s), { lang: "jbo" }));
+    });
+    section.append(line);
+    main.append(section);
+  }
+  void disclosure;
+  void RequestError;
+}

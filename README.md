@@ -20,8 +20,12 @@ Both adapters share admission, receipts, snapshots, search packages, and diction
 The native `jvc` command reads, writes, validates, and merges dictionary carriers. It also reads exact committed Git trees locally.
 The [carrier guide](crates/jvc-carrier/README.md) describes canonical files, import selections, retention policies, and read limits.
 
-The browser supports anonymous lookup, verified definition pages, encrypted key backups, drafts, and an exact signed outbox.
-It supports public scoped trust decisions and definition judgments. Downloaded search packages permit local search without a request for each query.
+The browser supports anonymous lookup, verified definition pages, encrypted key backups with a recovery test, and signed delivery with per-server receipts.
+Search sits in the header of every page. Result rows show the headword, rafsi, type, highlighted definition text, attribution, and a net score with Endorse and Oppose arrows.
+Word pages show every definition under the selected view, with place strips, revision notices, comparisons, source evidence, rafsi pair cards, and reviewer details.
+Public identity pages show the signed profile, counts, and activity. Trust actions offer a private rule or a public signed record.
+The Not delivered page lists unfinished delivery only. It supports receipt lookup before retry, identical retries, Retry-After, Stop retrying, export, and Resume delivery.
+Downloaded search packages permit local search without a request for each query. Version 2 packages carry authors, notes, and rafsi for result rows.
 Signing needs localhost or HTTPS. A plain HTTP Tailscale address supports reading only.
 
 The importer prepares signed proposals from pinned local Lensisku JSON captures. Repeat imports reuse signed records and retain source evidence.
@@ -32,7 +36,8 @@ Full-capture runs are separate development evidence, not part of these committed
 The [importer guide](packages/importer/README.md) describes its input, journal, signing command, and limits.
 
 The guided wizard, word builders, transfer editor, status editor, semantic search, AI, and Lensisku cross-posting remain target features.
-The [web UI design](docs/ui-design.md) also remains a target. The prototype does not implement that redesign.
+Personal-view recalculation with private blocks, planned handover, and compromise notices also remain target features.
+The [web UI design](docs/ui-design.md) defines the layouts. The reading, identity, trust, and delivery screens follow it. The authoring screens do not exist yet.
 The general SQL migration, automatic rafsi publications, and structured import conversion also remain unfinished.
 The complete `jvc` command catalog in the format specification remains a target interface.
 The [development guide](docs/development.md) describes the implemented native commands.

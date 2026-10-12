@@ -763,9 +763,12 @@ Public reads need no account. Public event admission follows published quotas an
 | `POST /events` | One envelope plus nullable canonical body encoded as a UTF-8 JSON value. |
 | `GET /receipts/ID` | This server's receipt and interpretation outcome for that event. |
 | `GET /package-parts/HASH` | Canonical derived search-part bytes, with a 4 MiB uncompressed limit. |
-| `GET /packages/LANGUAGE?snapshot=S` | Search package manifest and content hashes. |
+| `GET /packages/LANGUAGE?snapshot=S&version=N` | Search package manifest and content hashes. Version 1 is the default. Version 2 adds row metadata. |
 | `GET /search?q=Q&language=L&view=V&snapshot=S` | Optional remote results with view and snapshot metadata. |
-| `GET /words/WORD_ID?view=V&snapshot=S` | Candidate IDs, rafsi claims, and attributed ranking summary. |
+| `GET /words/WORD_ID?view=V&snapshot=S&reviewers=1` | Candidate IDs, rafsi claims, and attributed ranking summary. `reviewers=1` adds bounded reviewer details to each score. |
+| `GET /identities/KEY?view=V&snapshot=S` | Effective profile claims, continuity state, and activity counts for one signing key. |
+| `GET /identities/KEY/activity?view=V&snapshot=S&after=ID&limit=N` | Events signed by that key in event-ID order, with their interpretation and local receipt position. |
+| `GET /records?snapshot=S&after=ID&limit=N` | Snapshot records for local calculation: envelope, body, and body status, bounded by count and bytes. |
 
 The POST /events body contains exactly `envelope` and `body`. Canonicalize the enclosed body and compare its hash and byte length before acceptance.
 Transport whitespace outside canonical objects does not alter signed bytes. The server preserves canonical signed meaning and never changes a field to make a signature pass.
@@ -860,7 +863,8 @@ Capabilities = {
 ManifestResponse = {
   snapshot: ID, logical_inventory: ID, manifest: FormatManifest,
   accepted_cursor: cursor, materialized_cursor: cursor,
-  packages: [{language: string, hash: ID, bytes: integer}]
+  packages: [{language: string, hash: ID, bytes: integer}],
+  package_versions: [{language: string, version: integer, hash: ID, bytes: integer}]
 }
 InventoryResponse = {
   snapshot: ID, kind: "events" | "bodies" | "import_selections", ids: [ID], next: ID | null
@@ -885,7 +889,31 @@ Calculation = {
 Score = {
   target: event-ID | rafsi-pair-ID, support: [rational, rational],
   opposition: [rational, rational], net: [rational, rational],
-  direct_reviewers: integer, status: "active" | "deprecated" | "conflicted" | "unavailable"
+  direct_reviewers: integer, status: "active" | "deprecated" | "conflicted" | "unavailable",
+  reviewers?: [ReviewerDetail], reviewers_complete?: boolean
+}
+ReviewerDetail = {
+  identity: identity-string, verdict: "bless" | "curse", weight: [rational, rational] | null,
+  root: rational | null, blocked: boolean, incoming: [identity-string],
+  incoming_count: integer, incoming_complete: boolean, multiple_routes: boolean
+}
+IdentityResponse = {
+  snapshot: ID, view: event-ID, identity: identity-string, actor: identity-string,
+  successor: identity-string | null, retired: boolean, compromised: boolean, suspended: boolean,
+  profile: {state: "none" | "known" | "conflicted" | "unavailable",
+            claims: [{event: event-ID, issuer: identity-string | null, body_hash: ID | null, body: ProfileBody | null}]},
+  counts: {definitions: integer, rafsi: integer, judgments: integer, trust: integer, reports: integer, other: integer}
+}
+ActivityResponse = {
+  snapshot: ID, view: event-ID, identity: identity-string,
+  items: [{id: event-ID, action: action-object, interpretation: interpretation-string, seen: cursor | null}],
+  next: event-ID | null
+}
+RecordsResponse = {
+  snapshot: ID, logical_inventory: ID,
+  items: [{id: event-ID, envelope: envelope-object, body: canonical-object | null,
+           body_status: "present" | "missing" | "none"}],
+  next: event-ID | null
 }
 PublicationStatus = {
   event: event-ID,
@@ -910,6 +938,19 @@ SearchResponse = {
 }
 Error = {code: string, message: string, event: event-ID | null, field: string | null}
 ```
+
+Reviewer details appear only when the request asks for them. Each list is bounded to 64 entries, and `reviewers_complete` says whether the list is complete.
+A detail names the resolved actor, its effective verdict, and its influence interval under the same graph that produced the score.
+`root` is the actor's starting allowance when it is a root of the view. `incoming` lists the actors whose resolved heeds reach it directly, bounded to 16.
+`multiple_routes` is true when more than one route can contribute. The response never states a per-route share, because the bounded calculation does not derive one.
+An older server omits the field. A client distinguishes that omission from an empty list, which means that no reviewer exists.
+
+Identity responses resolve the profile register under the effective continuity rules. Concurrent profile claims appear together with state `conflicted`.
+The counts describe events signed by that exact key in the snapshot. They are raw authorship, not imported source attribution.
+Activity items use event-ID order, which is stable but not chronological. `seen` is this server's receipt position, for navigation only.
+
+The records transport returns the committed envelope representation of the snapshot with its body when retained. Pages hold at most 200 records and 4 MiB.
+A client authenticates each envelope and body through the shared core and compares the complete set with the snapshot inventory before claiming a complete local calculation.
 
 Word layers contain definition IDs only. Assignment status is `eligible`, `inactive`, or `unknown`, with distinct pair scores.
 Statuses contains one entry for each returned definition, sorted by event ID. It uses the response's exact snapshot and view.
@@ -987,13 +1028,20 @@ A no-judgment candidate has an exact zero score when complete graph inputs suppo
 
 ### Search package contract
 
-A package manifest contains exactly `version`, `language`, `snapshot`, and `parts`. Version is 1.
+A package manifest contains exactly `version`, `language`, `snapshot`, and `parts`. Version is 1 or 2.
+The manifest response lists version 1 packages in `packages` and every other version in `package_versions`.
+A client requests a version explicitly with the `version` query. The default remains version 1.
 Each part contains `hash`, `bytes`, and `count`. Part hashes identify canonical JSON arrays of search entries.
 Parts contain at most 2,000 entries and 4 MiB uncompressed. These are derived artifacts, not signed event bodies.
 
 Their dedicated endpoint uses that limit rather than the 256 KiB event-body limit. Split a larger package into more parts.
 An entry contains `event`, `word`, `language`, `glosses`, `plain_text`, `classification`, and `body`.
 Event is the publication ID. Word is its word object. Body is its body hash or null.
+A version 2 entry adds `issuer`, `notes`, `rafsi`, and `attribution`.
+Issuer is the signing key, which is the importer for an import. Notes is true when the definition has notes.
+Rafsi lists the spellings of retained rafsi claim bodies for the word. Attribution is null for a native publication.
+For an import it contains `source`, nullable `author`, nullable `account` with `origin` and `account`, and `dates`, a map of source date labels to source strings.
+These fields are server assertions derived from the records. They are not part of the signed format, and a client can authenticate them against the records.
 
 Other fields use definition shapes, except plain_text, which is a literal search string derived from rich text.
 The package sorts entries by event ID and preserves alternatives. It does not encode one chosen definition per word.

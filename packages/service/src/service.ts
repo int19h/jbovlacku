@@ -61,6 +61,11 @@ export interface ServiceOptions {
   allowPrototypeBatch?: boolean;
   beforeCommit?: (state: State) => Promise<void>;
 }
+/** Reviewer details listed per score when a word request asks for them. */
+const REVIEWER_LIMIT = 64;
+/** Records transport page bounds. */
+const RECORD_PAGE_LIMIT = 200;
+const RECORD_PAGE_BYTES = 4194304;
 export class DictionaryService {
   constructor(
     public objects: ObjectStore,
@@ -784,6 +789,14 @@ export class DictionaryService {
           hash: p.hash,
           bytes: p.bytes,
         })),
+        package_versions: Object.entries(packages.packages2).map(
+          ([language, p]) => ({
+            language,
+            version: 2,
+            hash: p.hash,
+            bytes: p.bytes,
+          }),
+        ),
       });
     }
     if (path === "/inventory") {
@@ -876,7 +889,13 @@ export class DictionaryService {
     if (path.startsWith("/packages/")) {
       const language = this.language(decodeURIComponent(path.slice(10)));
       const snapshot = await this.snapshot(url.searchParams.get("snapshot"));
-      const pkg = (await this.packages(snapshot)).packages[language];
+      const version = url.searchParams.get("version") ?? "1";
+      if (version !== "1" && version !== "2")
+        throw new ApiError(400, "version", "Package version must be 1 or 2.");
+      const built = await this.packages(snapshot);
+      const pkg = (version === "2" ? built.packages2 : built.packages)[
+        language
+      ];
       if (!pkg)
         throw new ApiError(404, "missing", "Language package is unavailable.");
       return this.objectResponse(pkg.hash);
@@ -1119,6 +1138,18 @@ export class DictionaryService {
         const session = this.sessions.get(snapshot.snapshot + "|" + view);
         if (session) ranking = session.rankWord(id);
       } catch {}
+      const withReviewers = url.searchParams.get("reviewers") === "1";
+      const scores = (ranking.scores as Record<string, unknown>[]).map(
+        ({ reviewers, ...score }) => {
+          if (!withReviewers) return score;
+          const list = Array.isArray(reviewers) ? reviewers : [];
+          return {
+            ...score,
+            reviewers: list.slice(0, REVIEWER_LIMIT),
+            reviewers_complete: list.length <= REVIEWER_LIMIT,
+          };
+        },
+      );
       return json({
         snapshot: snapshot.snapshot,
         view,
@@ -1134,12 +1165,181 @@ export class DictionaryService {
         definitions,
         rafsi,
         assignments,
-        scores: ranking.scores,
+        scores,
         statuses: definitions.map(
           (event) => evaluation.publication_statuses[event],
         ),
         layers: ranking.layers,
         unavailable_scores: ranking.unavailable_scores,
+      });
+    }
+    if (path === "/records") {
+      const snapshot = await this.snapshot(url.searchParams.get("snapshot"));
+      const after = url.searchParams.get("after");
+      if (after !== null) this.identifier(after, "jve1:");
+      const limit = this.limit(url, RECORD_PAGE_LIMIT);
+      const ids = sorted(Object.keys(snapshot.events)).filter(
+        (id) => after === null || id > after,
+      );
+      const items: unknown[] = [];
+      let bytes = 0;
+      let truncated = false;
+      for (const id of ids) {
+        if (items.length >= limit) {
+          truncated = true;
+          break;
+        }
+        const event = snapshot.events[id];
+        const envelope = await this.objects.get(event.envelope_hash);
+        if (!envelope)
+          throw new ApiError(
+            503,
+            "storage_unavailable",
+            "Envelope bytes are unavailable.",
+            id,
+          );
+        const body = event.body_hash
+          ? await this.objects.get(event.body_hash)
+          : null;
+        const size = envelope.length + (body?.length ?? 0);
+        if (items.length && bytes + size > RECORD_PAGE_BYTES) {
+          truncated = true;
+          break;
+        }
+        bytes += size;
+        items.push({
+          id,
+          envelope: JSON.parse(new TextDecoder().decode(envelope)),
+          body: body ? JSON.parse(new TextDecoder().decode(body)) : null,
+          body_status: body
+            ? "present"
+            : event.header.content
+              ? "missing"
+              : "none",
+        });
+      }
+      return json({
+        snapshot: snapshot.snapshot,
+        logical_inventory: snapshot.logical_inventory,
+        items,
+        next: truncated ? (items.at(-1) as { id: string }).id : null,
+      });
+    }
+    if (path.startsWith("/identities/")) {
+      const rest = decodeURIComponent(path.slice(12));
+      const [identity, section] = rest.split("/");
+      this.identifier(identity, "ed25519:");
+      if (section !== undefined && section !== "activity")
+        throw new ApiError(404, "missing", "API route is unavailable.");
+      const snapshot = await this.snapshot(url.searchParams.get("snapshot"));
+      const view =
+        url.searchParams.get("view") ?? this.options.selectedView ?? zeroView;
+      this.identifier(view, "jve1:");
+      await this.requireView(snapshot, view);
+      const evaluation = await this.evaluation(snapshot, view);
+      const own = sorted(
+        Object.entries(snapshot.events)
+          .filter(([, e]) => e.header.issuer === identity)
+          .map(([id]) => id),
+      );
+      if (section === "activity") {
+        const after = url.searchParams.get("after");
+        if (after !== null) this.identifier(after, "jve1:");
+        const remaining = own.filter((id) => after === null || id > after);
+        const page = remaining.slice(0, this.limit(url));
+        const state = await this.coordinator.load();
+        return json({
+          snapshot: snapshot.snapshot,
+          view,
+          identity,
+          items: page.map((id) => ({
+            id,
+            action: snapshot.events[id].header.action,
+            interpretation:
+              evaluation.receipts[id]?.interpretation ?? "unavailable",
+            seen: state.events[id]
+              ? this.cursor(state.events[id].position)
+              : null,
+          })),
+          next: remaining.length > page.length ? page.at(-1) : null,
+        });
+      }
+      const lifecycle = evaluation.lifecycle as {
+        key_actor: Record<string, string>;
+        successor: Record<string, string>;
+        suspended: Record<string, unknown>;
+        retired: string[];
+        compromised: string[];
+      };
+      const actor = lifecycle.key_actor[identity] ?? identity;
+      const registers = evaluation.registers as Record<
+        string,
+        {
+          actor: string;
+          heads: string[];
+          conflicted: boolean;
+          values: string[];
+        }
+      >;
+      const register = registers[`${actor}|profile`];
+      const claims: unknown[] = [];
+      let unavailable = false;
+      for (const head of register?.heads ?? []) {
+        const event = snapshot.events[head];
+        const bytes = event?.body_hash
+          ? await this.objects.get(event.body_hash)
+          : null;
+        let body: unknown = null;
+        if (bytes) {
+          const envelope = await this.objects.get(event!.envelope_hash);
+          if (envelope && inspectBody(envelope, bytes).availability === "valid")
+            body = JSON.parse(new TextDecoder().decode(bytes));
+        }
+        if (body === null) unavailable = true;
+        claims.push({
+          event: head,
+          issuer: event?.header.issuer ?? null,
+          body_hash: event?.body_hash ?? null,
+          body,
+        });
+      }
+      const counts = {
+        definitions: 0,
+        rafsi: 0,
+        judgments: 0,
+        trust: 0,
+        reports: 0,
+        other: 0,
+      };
+      for (const id of own) {
+        const kind = snapshot.events[id].header.action.kind;
+        if (kind === "definition.publish") counts.definitions++;
+        else if (kind === "rafsi.publish") counts.rafsi++;
+        else if (kind === "judgment.set") counts.judgments++;
+        else if (kind === "trust.set") counts.trust++;
+        else if (kind === "report.set") counts.reports++;
+        else counts.other++;
+      }
+      return json({
+        snapshot: snapshot.snapshot,
+        view,
+        identity,
+        actor,
+        successor: lifecycle.successor?.[identity] ?? null,
+        retired: lifecycle.retired?.includes(identity) ?? false,
+        compromised: lifecycle.compromised?.includes(identity) ?? false,
+        suspended: Object.hasOwn(lifecycle.suspended ?? {}, actor),
+        profile: {
+          state: !register
+            ? "none"
+            : register.conflicted
+              ? "conflicted"
+              : unavailable
+                ? "unavailable"
+                : "known",
+          claims,
+        },
+        counts,
       });
     }
     if (path === "/account-control") {
