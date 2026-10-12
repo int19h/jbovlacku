@@ -880,3 +880,90 @@ test("a lost connection, a timeout, or a malformed activity shape after the head
     ),
   ).toBe(false);
 });
+
+test("a compromise notice refuses a 65th safe record before any unlock, and saves and sends nothing", async ({
+  page,
+}) => {
+  await page.goto("/");
+  // Sixty-six own records in one chain, signed and kept locally without delivery.
+  await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    const { createKey } = await import(String("/src/data/keys.ts"));
+    const { signWith, outboxItem } = await import(
+      String("/src/data/lifecycle.ts")
+    );
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore();
+    const created = await createKey("test passphrase with spaces");
+    await store.put("keys", "selected", created.backup);
+    let previous: string[] = [];
+    for (let i = 0; i < 66; i++) {
+      const transport = await signWith(
+        created.key,
+        created.backup.identity,
+        previous,
+        {
+          kind: "judgment.set",
+          target: "jve1:" + i.toString(16).padStart(64, "0"),
+          value: "bless",
+        },
+      );
+      const item = outboxItem(transport, crypto.randomUUID(), 0, {
+        self: {
+          origin: location.origin,
+          base: "/api/v1",
+          label: "this server",
+        },
+      });
+      item.stopped = true;
+      await store.queueGroup([item]);
+      previous = [transport.envelope.id];
+    }
+  }, corePath);
+  let posts = 0;
+  await page.route("**/api/v1/events", (route) => {
+    posts++;
+    return route.continue();
+  });
+  await page.goto("/identity");
+  await expect(page.getByText("Locked", { exact: true })).toBeVisible();
+  await page.getByRole("link", { name: "Report" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Report a stolen key" }),
+  ).toBeVisible();
+  const records = page.getByRole("list", {
+    name: "Own records in causal order",
+  });
+  const boxes = records.getByRole("checkbox");
+  await expect(boxes).toHaveCount(66);
+  for (let i = 0; i < 64; i++) await boxes.nth(i).check();
+  await expect(page.locator("main")).toContainText(
+    "64 of 64 records named. The limit is reached.",
+  );
+  // The 65th box is closed. A forced change leaves it unchecked.
+  await expect(boxes.nth(64)).toBeDisabled();
+  await expect(boxes.nth(64)).toHaveAttribute(
+    "title",
+    "At most 64 records can be named. Clear one to name another.",
+  );
+  await boxes.nth(64).evaluate((node: HTMLInputElement) => {
+    node.checked = true;
+    node.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await expect(boxes.nth(64)).not.toBeChecked();
+  await expect(page.locator("main")).toContainText("64 of 64 records named.");
+  // Nothing was unlocked, saved, or sent.
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(page.getByText(/compromise notice is saved/)).toHaveCount(0);
+  const items = await outboxItems(page);
+  expect(items).toHaveLength(66);
+  expect(
+    items.filter((i: any) => i.label.action !== "endorsement"),
+  ).toHaveLength(0);
+  expect(posts).toBe(0);
+  // Clearing one box opens the others again.
+  await boxes.nth(0).uncheck();
+  await expect(boxes.nth(64)).toBeEnabled();
+  await expect(page.locator("main")).toContainText("63 of 64 records named.");
+});

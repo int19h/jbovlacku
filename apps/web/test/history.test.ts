@@ -603,6 +603,47 @@ test("a native IndexedDB open failure keeps a warning and allows anonymous onlin
 }) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(String(error)));
+  // Data that exists before the failure: a delivered record and a private trust rule.
+  // The checks below then cover controls that only populated data shows.
+  const curator = fixture().identities.curator;
+  await createIdentity(page);
+  await openWord(page, "cukta");
+  await page
+    .locator("article.definition")
+    .first()
+    .getByRole("button", { name: "Endorse" })
+    .click();
+  await acceptFirstSignature(page);
+  await expect
+    .poll(async () => (await outboxItems(page))[0]?.peers.self.state)
+    .toBe("accepted");
+  await page.evaluate(async (curator) => {
+    const { LocalStore, emptyOverlay } = await import(
+      String("/src/data/store.ts")
+    );
+    const store = new LocalStore();
+    await store.setOverlay({
+      ...emptyOverlay(),
+      trust: [
+        {
+          issuer: "local",
+          subject: curator,
+          scope: { kind: "*", word: "*", language: "*" },
+          value: "heed",
+          weight: null,
+        },
+      ],
+    });
+  }, curator);
+  await page.goto("/trust");
+  await expect(
+    page.getByRole("button", { name: /Make public|Remove/ }).first(),
+  ).toBeVisible();
+  await page.goto("/outbox");
+  await page.getByText(/Retained records \(0 stopped, 1 delivered\)/).click();
+  await expect(
+    page.getByRole("button", { name: "Export every retained record" }),
+  ).toBeVisible();
   await page.addInitScript(async () => {
     const events = { openErrors: [] as string[], rejections: [] as string[] };
     (window as any).storageFailureEvents = events;
@@ -619,7 +660,11 @@ test("a native IndexedDB open failure keeps a warning and allows anonymous onlin
     };
     await new Promise<void>((resolve, reject) => {
       const request = indexedDB.open("jbovlacku-browser-v1", 4);
-      request.onupgradeneeded = () => request.result.createObjectStore("keys");
+      request.onupgradeneeded = () => {
+        // The store exists when data was written before the failure.
+        if (!request.result.objectStoreNames.contains("keys"))
+          request.result.createObjectStore("keys");
+      };
       request.onsuccess = () => {
         request.result.close();
         resolve();
@@ -698,7 +743,7 @@ test("a native IndexedDB open failure keeps a warning and allows anonymous onlin
     await expect(warning).toBeVisible();
     await expect(absent()).toHaveCount(0);
   }
-  // The Trust page shows the site view and no private rule controls.
+  // The Trust page shows the site view. The saved private rule has no controls now.
   await page.goto("/trust");
   await expect(
     page.getByRole("heading", { name: "Trust", exact: true }),
