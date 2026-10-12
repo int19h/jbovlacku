@@ -25,7 +25,8 @@ The search field has a persistent accessible label, a search icon, and an access
 With an existing key, the identity link includes a lock icon and an accessible description of its lock state.
 Without a key, “Your key” opens `/identity` for creation or import. Navigation alone never generates a key.
 The delivery marker counts distinct unfinished records listed on Not delivered, not requests, retries, or peers.
-Listed records include offline failure, refusal, and unknown delivery. Normal transient sends and accepted index lag remain excluded.
+Listed records include active offline failure, refusal, and unknown delivery. Stopped records remain retained but leave the list and count.
+Normal transient sends and accepted index lag remain excluded.
 Its details show independent outcomes for each peer. An ordinary transient send does not display it.
 
 The footer includes the active view link, Settings, About, and Source on every page.
@@ -111,7 +112,7 @@ Links use the accent and an underline offset of 0.18em. Selected actions retain 
 ## Shared components
 
 Buttons use an 8px radius, a 1px border, 16px horizontal padding, and a minimum 44px height.
-Outlined fields and buttons use ink3 or accent boundaries for their states and meet at least 3:1 boundary contrast.
+Outlined fields and buttons use ink3 or accent boundaries that meet at least 3:1 contrast in every enabled state.
 Line and line2 remain decorative. Primary buttons use the accent and on-accent text.
 Quiet text actions remain visibly identifiable without a forced box and can use a sunk hover background.
 Fields use an 8px radius, 9px vertical padding, and 12px horizontal padding.
@@ -300,7 +301,8 @@ Below it, a conflict line identifies the current snapshot and every acknowledgme
 Edit returns to the retained draft.
 
 The panel names the signing identity and says “Signed with your key, with your endorsement.”
-It does not promise permanent storage. Each new native definition carries the fixed CC0 expression and official URL.
+It does not promise permanent storage. Each new native definition carries the fixed CC0 expression, official URL, and empty `license.attribution` string.
+The signed header issuer identifies the contributor. These fields remain read-only, and imported author attribution stays in separate source evidence.
 The linked notice reads “New definitions use CC0 1.0. By publishing, you release your contribution under CC0 1.0.”
 Publish expresses agreement without a separate checkbox. Imported text retains its source rights claim rather than a fabricated legacy CC0 choice.
 
@@ -370,11 +372,14 @@ Pin this version, Use another view, and Earlier versions retain the adoption and
 
 The page title is “Not delivered” and its route remains `/outbox`.
 Its opening paragraph describes retained local records and automatic retry, qualified by the actual failure or refusal.
-Each listed unfinished record names its target and action, last attempt, next retry, and Try now.
+Each listed unfinished record names its target and action, last attempt, next retry, Try now, and Stop retrying.
+Stop retrying stops future attempts to all still-unfinished selected peers for that record.
+The app retains signed bytes and receipts, then removes the row from the active list and count.
+It does not retract a public record or guarantee that an in-flight request stopped.
 Unknown delivery states explain that the client asks whether the record arrived before it sends the same bytes again.
 The app stores bounded retry and backoff state. Connectivity return and reload resume eligible retries while the app is active.
 The client respects Retry-After. A closed browser does not guarantee background delivery.
-Refusal shows the server's reason and avoids pointless automatic retries.
+A known permanent refusal shows the server's reason and stays auto-paused until corrective action or explicit retry.
 
 The page offers “Save them as a file” and states that browser clearing can lose local work.
 Delivery completes only when the receipt confirms the submitted envelope and, when required, its matching submitted body.
@@ -382,6 +387,9 @@ Header-only acceptance retains a missing-body row. After lookup, an identical co
 Body refusal remains an unfinished delivery outcome. Accepted bodies with interpretation dependencies or index lag are delivered.
 Finished rows disappear and the header marker clears when no listed unfinished records remain.
 The direct route remains valid and shows an empty state. Stored records and independent peer receipts remain retained.
+A quiet retained-records disclosure exposes stopped records, export, and Resume delivery within `/outbox`.
+Resume uses the same bytes, selected recipients, and receipt lookup before retry, including after reload.
+It never creates a new signature or silently changes recipients. Acceptance scenarios in the frontend specification cover this flow.
 Normal transient sends do not appear here. Accepted pending dependencies and index lag remain accurate publication states elsewhere.
 
 ## Responsive and accessible behavior

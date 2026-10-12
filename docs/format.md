@@ -633,6 +633,9 @@ Both frame and place `constraints` fields are arrays of rich-text values. `gloss
 A license value records a rights claim. Signature acceptance does not establish that claim's legal validity.
 
 The reference client fills new native definitions with `expression: "CC0-1.0"` and `url: "https://creativecommons.org/publicdomain/zero/1.0/"`.
+It sets `license.attribution` to an empty string. The signed header's `issuer` identifies the contributor.
+The full editor does not expose another author attribution input.
+These are client defaults, not additional schema validity rules. Imported attribution follows the separate rules below.
 The Publish action is explicit agreement to these terms. The client shows the linked notice before that action, without a separate checkbox.
 The [frontend specification](frontend.md#5-add-a-definition) defines the publication flow and notice.
 The software license remains a separate prelaunch decision.
@@ -655,9 +658,10 @@ The notice covers imported dictionary text. It does not establish rights for thi
 Imports without established rights retain `expression: "unknown"` and their available source evidence.
 Existing signed bodies with unknown rights remain immutable. Section 11 defines how an explicit enriched extraction records newly established rights.
 A native revision uses the same CC0 fields for the contributor's own contribution.
-Its `license.attribution` describes that contributor's own contribution.
+The reference client also sets its `license.attribution` to an empty string.
 Its parent link retains the imported publication, including the original author attribution and numeric account evidence.
-Its `sources` include a reference whose `event` names that exact imported publication and the separate rights reference defined above.
+Its `sources` include two separate references. The first sets `event` to that exact imported publication's ID.
+The second copies the rights reference defined above, including its notice `label`, pinned `url`, null `event`, and `locator: "footer.publicDomainNotice"`.
 That action does not relicense the imported source.
 Prototype fixtures declare their own rights and do not establish rights for real source content.
 
@@ -688,7 +692,7 @@ This complete body includes empty values for its unused fields. Pretty-printed e
   "notes":[],"etymology":{"text":[],"formation":null,"compound":null},"examples":[],
   "classification":{"kind":"gismu","selmaho":[]},
   "labels":[],"sources":[],
-  "license":{"expression":"CC0-1.0","url":"https://creativecommons.org/publicdomain/zero/1.0/","attribution":"Illustrative specification example"},
+  "license":{"expression":"CC0-1.0","url":"https://creativecommons.org/publicdomain/zero/1.0/","attribution":""},
   "legacy":null
 }
 ```

@@ -116,7 +116,8 @@ Every page includes the wordmark, labeled search field, “Add a word,” delive
 With an existing key, the identity link shows the lock state with an accessible label.
 Without a key, it reads “Your key” and opens `/identity` for creation or import. Navigation alone never generates a key.
 The delivery marker counts distinct unfinished records listed on Not delivered, never attempts or network requests.
-The list includes offline failure, refusal, and unknown delivery. Ordinary transient sends and accepted index lag remain excluded.
+The list includes active offline failure, refusal, and unknown delivery. Stopped records remain retained but leave the list and count.
+Ordinary transient sends and accepted index lag remain excluded.
 One record with unfinished delivery at several peers counts once. Its per-peer outcomes remain separately visible.
 The footer links to the active trust view, Settings, About, and Source. Settings opens `/preferences`.
 The search page starts with results for the current query, without an introduction.
@@ -369,6 +370,8 @@ Show the complete spelling, definition, place table, formation evidence, sources
 Signing requires valid structured references and schema fields. Linguistic disagreement alone does not make the record structurally invalid.
 The author can correct a typed reference or convert it to literal text after a preview.
 New native definitions use fixed `license.expression: "CC0-1.0"` and the official CC0 URL.
+Their fixed `license.attribution` is an empty string. The signed header issuer identifies the contributor.
+These license fields remain read-only. Imported author attribution stays in its separate source evidence and parent references.
 The notice reads: “New definitions use CC0 1.0. By publishing, you release your contribution under CC0 1.0.”
 Link “CC0 1.0” to https://creativecommons.org/publicdomain/zero/1.0/. The Publish action expresses agreement, without a separate checkbox.
 Imported text retains its source rights statement and provenance. This notice does not claim that legacy authors selected CC0.
@@ -693,6 +696,13 @@ The page title is “Not delivered,” and its path remains `/outbox`.
 It shows only unfinished records after offline delivery, failure, refusal, or an unknown outcome.
 An ordinary transient send does not create a header warning. Each visible row states the last attempt and next retry.
 “Try now” follows the same receipt lookup and immutable retry rules.
+Each row also offers “Stop retrying.” It stops future attempts to every still-unfinished selected peer for that record.
+The app retains signed bytes and receipts, then removes the row from the active list and count.
+Stopping does not retract a public record or guarantee that an in-flight request stopped.
+
+A quiet retained-records disclosure within `/outbox` exposes stopped records, export, and “Resume delivery.”
+Resume uses the same stored bytes, selected recipients, and receipt lookup before retry.
+No new signature or silent recipient change occurs.
 Accepted dependency waits and index lag remain visible where they affect publication, without being mislabeled delivery failures.
 When no listed unfinished records remain, remove the header marker and show a sensible empty state at the direct route.
 Keep stored records and receipts after the page empties. “Save them as a file” exports unfinished records and their bodies.
@@ -707,7 +717,8 @@ Retain every record and independent per-peer receipt after delivery completes.
 
 The app persists bounded retry state and backoff with each event and peer.
 While the app is active, connectivity return or reload resumes eligible retries automatically.
-The client respects Retry-After and avoids an automatic refusal loop. A refusal needs its stated corrective action or explicit retry.
+The client respects Retry-After and avoids an automatic refusal loop.
+A known permanent refusal stays auto-paused until corrective action or explicit retry.
 The page reports the next attempt accurately. A closed browser does not guarantee background delivery.
 
 The client overlays its queued events only in a clearly labeled personal preview.
@@ -1022,7 +1033,7 @@ Inline prose links and place markers use the [WCAG inline exception](https://www
 They remain clickable without overlapping enlarged hit areas.
 Equivalent 44px place-navigation controls can appear in the existing place strip or details.
 Do not insert another control beside every inline marker occurrence.
-Outlined fields and buttons use ink3 or accent boundaries that meet 3:1 contrast in the selected state.
+Outlined fields and buttons use ink3 or accent boundaries that meet 3:1 contrast in every enabled state.
 The line and line2 tokens remain decorative. Quiet text actions remain visibly identifiable without a forced box.
 The app meets WCAG 2.2 AA contrast and interaction requirements as a release target.
 Test zoom, screen readers, reduced motion, long words, and right-to-left interface text.
@@ -1059,7 +1070,7 @@ The implementer must demonstrate these end-to-end cases before public release:
 18. “Not delivered” clears finished rows while retaining records and receipts. Its direct route shows an empty state.
 19. Net scores expose support, opposition, reviewer count, exact values, ranges, and unavailable state through keyboard and touch.
 20. Search rows expose rafsi, notes, matching alternatives, more results, retired results, and immediate judgment actions.
-21. New native definitions contain the fixed CC0 expression and URL. Imported records retain source rights and attribution.
+21. New native definitions contain the fixed CC0 expression, URL, and empty attribution. Imported records retain source rights and author attribution.
 22. The default local lexical nearby search sends no private draft. Explicit remote search and new providers obtain consent for their declared scope.
 23. Private blocks survive a public clear. Root removal never claims to block every incoming route.
 24. The full editor preserves every structured field and supports manual headword and type entry without bypassing validation.
@@ -1068,6 +1079,10 @@ The implementer must demonstrate these end-to-end cases before public release:
 27. A nonzero exact score never displays as zero. “No judgments yet” requires known zero direct reviewers.
 28. First-signature copy explains public history before direct judgments or trust actions without adding per-action confirmation.
 29. Manual Form preserves spelling, classification, and notes, and private Ignore writes the scoped blocked entry.
+30. Stop retrying removes one record from the active list and count while retaining its bytes, receipts, and export.
+31. Resume delivery retrieves receipt state and retries identical bytes to the original recipients, including after reload.
+32. Permanent refusal stays auto-paused. Stopping neither retracts public records nor promises cancellation of an in-flight request.
+33. Outlined control boundaries meet 3:1 contrast in every enabled state in both themes.
 
 The app must also measure cold package load, local search latency, signature latency, backup unlock time, and ranking cost on representative mobile devices.
 No target in this design constitutes a completed browser compatibility or accessibility audit.
