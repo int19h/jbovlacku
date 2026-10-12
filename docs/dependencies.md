@@ -29,6 +29,8 @@ The notices use each package's local license, copyright, and notice files withou
 Identical files share one text block. Each block lists every corresponding source package and file.
 The SHA-256 digest identifies the original UTF-8 text. A dependency change requires a new inventory and the matching source notices.
 
+`crates/jvc-morphology` ports word-form rules from jbotci under the MIT License. Its `THIRD-PARTY-NOTICES.md` keeps that notice and the preset citations. The crate adds no new external package to `Cargo.lock`.
+
 The Rust standard library also contributes code outside `Cargo.lock`.
 Its toolchain provides `share/doc/rust/COPYRIGHT-library.html` under the path from `rustc --print sysroot`.
 The core build copies that upstream file into `packages/core/generated/rust-standard-library-notices.html` without changing its bytes.

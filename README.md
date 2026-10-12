@@ -39,12 +39,15 @@ The guided wizard has five steps: Meaning, Type, Form, Places, and Publish. The 
 Manual authoring works without AI. Publish signs the definition, a separate author blessing, selected rafsi claims, and their pair blessings as one locally persisted group.
 Revise copies a publication into a new draft with its exact parent. A revision of imported text cites the imported publication and copies the source-rights reference.
 The rafsi page lists known assignments across words from version 2 packages, and the claim page signs a claim with its pair blessing.
-The lujvo builder, gismu generator, status editor, transfer editor, semantic search, AI, and Lensisku cross-posting remain target features.
+The lujvo builder offers short rafsi, gismu stems, whole gismu, whole-word parts under the extended profile, locks, CLL scores, recovered parts, and every competing rafsi claim from the local package.
+The gismu generator offers the CLL 1987, CLL 1995, and Ilmen presets with pinned sources, custom weights, exact scores, tied ranks, per-language contributions, root and rafsi conflicts, and manual forms without fabricated evidence.
+The [morphology profiles](docs/morphology.md) name the rules and versions that the metadata records.
+The status editor, transfer editor, semantic search, AI, and Lensisku cross-posting remain target features.
 The personal view downloads the snapshot records, verifies each envelope and body in a Web Worker, and ranks words locally with the private overlay.
 It adds the current identity as a root with allocation 1 when the view names no allocation for it, and it applies private blocks and public shuns as local blocks.
 A cancelled or incomplete local calculation keeps personal scores unavailable and offers the site view. "Recompute from records" compares a local site-view calculation with the server scores.
 Planned handover and compromise notices remain target features.
-The [web UI design](docs/ui-design.md) defines the layouts. The reading, identity, trust, delivery, and authoring screens follow it. The builder screens for step 3 do not exist yet.
+The [web UI design](docs/ui-design.md) defines the layouts. The reading, identity, trust, delivery, authoring, and builder screens follow it.
 The general SQL migration, automatic rafsi publications, and structured import conversion also remain unfinished.
 The complete `jvc` command catalog in the format specification remains a target interface.
 The [development guide](docs/development.md) describes the implemented native commands.

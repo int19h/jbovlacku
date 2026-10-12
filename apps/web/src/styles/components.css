@@ -981,3 +981,10 @@ dialog.sheet h2 {
   border-bottom: 0;
   padding-bottom: 0;
 }
+.warn {
+  color: var(--warn);
+  font-weight: 600;
+}
+.native {
+  font-family: var(--font-native, inherit);
+}

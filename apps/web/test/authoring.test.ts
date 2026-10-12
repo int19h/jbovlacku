@@ -34,6 +34,10 @@ test("a first-time contributor writes a short literal definition and publishes i
   await page.getByRole("button", { name: "New word" }).click();
   await page.getByRole("radio", { name: /^gismu/ }).check();
   await page.getByRole("button", { name: "Make a gismu" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Make a gismu" }),
+  ).toBeVisible();
+  await page.getByRole("link", { name: "Enter without generation" }).click();
   await page.getByLabel("Spelling").fill("brodu");
   await page.getByRole("button", { name: "Use brodu" }).click();
   await expect(page.getByRole("heading", { name: "brodu" })).toBeVisible();
@@ -104,6 +108,10 @@ test("structured places keep declared order when prose mentions place 3 first, a
   await page.getByRole("button", { name: "New word" }).click();
   await page.getByRole("radio", { name: /^lujvo/ }).check();
   await page.getByRole("button", { name: "Build the lujvo" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Build the lujvo" }),
+  ).toBeVisible();
+  await page.getByRole("link", { name: "Type the spelling yourself" }).click();
   await page.getByLabel("Spelling").fill("brodyckusni");
   await page.getByRole("button", { name: "Use brodyckusni" }).click();
   await page

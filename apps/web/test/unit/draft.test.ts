@@ -9,7 +9,15 @@ import {
   canonicalize,
   contentHash,
   utf8,
+  buildLujvo,
+  builderPresets,
+  generateGismu,
 } from "../../../../packages/core/src/index.ts";
+import {
+  compoundMetadata,
+  formationMetadata,
+  manualFormation,
+} from "../../src/model/builders.ts";
 import {
   draftFromBody,
   draftToBody,
@@ -261,4 +269,144 @@ test("placeholders become numbered places only through explicit numbering", () =
   assert.equal(count, 3);
   assert.equal(text, "① reads ② in ③");
   assert.equal(richTextToText(editorToRichText(text, true)), "① reads ② in ③");
+});
+
+test("builder metadata for a chosen lujvo and a generated gismu satisfies the body rules", () => {
+  const lujvo = buildLujvo({
+    profile: "cll",
+    components: [
+      {
+        id: "a",
+        spelling: "cukta",
+        kind: "gismu",
+        claims: [{ rafsi: "cku", pair: "jvr1:" + "c".repeat(64) }],
+      },
+      { id: "b", spelling: "sinxa", kind: "gismu", claims: [] },
+    ],
+  });
+  assert.equal(lujvo.candidates[0].spelling, "ckusinxa");
+  const compound = compoundMetadata(
+    lujvo,
+    lujvo.candidates[0],
+    [
+      {
+        id: "a",
+        spelling: "cukta",
+        kind: "gismu",
+        definition: "jve1:" + "a".repeat(64),
+        gloss: "book",
+        claims: [],
+        locked: null,
+      },
+      {
+        id: "b",
+        spelling: "sinxa",
+        kind: "gismu",
+        definition: null,
+        gloss: "",
+        claims: [],
+        locked: null,
+      },
+    ],
+    "",
+  );
+  assert.deepEqual(
+    compound.components.map((c) => c.rafsi),
+    ["cku", "sinxa"],
+  );
+  assert.equal(compound.score, 7917);
+  const draft = newDraft({
+    spelling: "ckusinxa",
+    kind: "lujvo",
+    text: "A bookmark.",
+    structured: false,
+    compound,
+  });
+  const { body, problems } = draftToBody(draft);
+  assert.deepEqual(
+    problems.filter((pr) => pr.blocking),
+    [],
+  );
+  assert.ok(admissible(body));
+  const preset = builderPresets().find((pr) => pr.id === "cll-1995")!;
+  const rows = preset.languages.map((l) => ({
+    language: l.language,
+    name: l.name,
+    word: l.language,
+    input: "makru",
+    weight: {
+      numerator: String(l.numerator),
+      denominator: String(preset.denominator),
+    },
+  }));
+  const gismu = generateGismu({
+    sources: rows.map((r) => ({
+      language: r.language,
+      word: r.word,
+      input: r.input,
+      weight: r.weight,
+    })),
+    window: 4,
+    manual: "makru",
+    inventory: {
+      snapshot: "sha256:" + "0".repeat(64),
+      gismu: [{ spelling: "makru", word: "jvw1:" + "1".repeat(64) }],
+    },
+  });
+  const candidate = gismu.manual!;
+  assert.equal(candidate.rank, 1);
+  assert.equal(candidate.conflicts[0].rule, "identical");
+  const formation = formationMetadata({
+    result: gismu,
+    candidate,
+    rows,
+    preset,
+    acknowledged: [
+      {
+        word: candidate.conflicts[0].word,
+        rule: "identical",
+        snapshot: "sha256:" + "0".repeat(64),
+      },
+    ],
+    reason: "Shortest form.",
+  });
+  assert.equal(formation.selected_score!.numerator, "1");
+  assert.equal(formation.selected_rank, 1);
+  assert.equal(formation.weights_profile!.name, "CLL 1995");
+  assert.equal(
+    formation.algorithm!.parameters.weighting,
+    "normalize-positive-sum-v1",
+  );
+  const gismuDraft = newDraft({
+    spelling: "makru",
+    kind: "gismu",
+    text: "x",
+    structured: false,
+    formation,
+  });
+  const built = draftToBody(gismuDraft);
+  assert.deepEqual(
+    built.problems.filter((pr) => pr.blocking),
+    [],
+  );
+  assert.ok(admissible(built.body));
+  const manual = manualFormation(
+    rows.map((r) => ({ ...r, input: "" })),
+    "A name-like root.",
+  );
+  assert.equal(manual!.method, "non-algorithmic");
+  assert.equal(manual!.algorithm, null);
+  assert.ok(
+    admissible(
+      draftToBody(
+        newDraft({
+          spelling: "makru",
+          kind: "gismu",
+          text: "x",
+          structured: false,
+          formation: manual,
+        }),
+      ).body,
+    ),
+  );
 });

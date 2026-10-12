@@ -132,6 +132,7 @@ export interface DraftExample {
   translation: string;
   notes: string;
 }
+import type { GismuState, LujvoState } from "./builders.ts";
 export interface DraftRafsiClaim {
   rafsi: string;
   rationale: string;
@@ -179,6 +180,10 @@ export interface Draft {
   /** Set when the draft revises an imported publication. */
   revisedImport: { event: string; source: string } | null;
   rafsiClaims: DraftRafsiClaim[];
+  /** Lujvo builder state, when the author opened the builder. */
+  lujvo: LujvoState | null;
+  /** Gismu generator state, when the author opened the generator. */
+  gismu: GismuState | null;
   /** Fields marked for review after a type or language change. */
   review: string[];
   /** Whether the author approved the current place numbering. */
@@ -217,6 +222,8 @@ export function newDraft(patch: Partial<Draft> = {}): Draft {
     parents: [],
     revisedImport: null,
     rafsiClaims: [],
+    lujvo: null,
+    gismu: null,
     review: [],
     numberingApproved: false,
     ...patch,

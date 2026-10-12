@@ -20,6 +20,12 @@ export const steps = [
   { number: 4, label: "Places", path: "/new/places" },
   { number: 5, label: "Publish", path: "/new/publish" },
 ] as const;
+/** The step 3 page for the draft's type: a builder for lujvo and gismu, else manual entry. */
+export function formPath(draft: Draft): string {
+  if (draft.kind === "lujvo") return "/new/lujvo";
+  if (draft.kind === "gismu") return "/new/gismu";
+  return "/new/form";
+}
 export function stepPath(step: number): string {
   return steps.find((s) => s.number === step)?.path ?? "/new/meaning";
 }
@@ -27,7 +33,11 @@ export async function loadDraft(app: App): Promise<Draft | null> {
   if (!app.session.storageAvailable) return null;
   try {
     const stored = await app.store.get<Draft>("drafts", DRAFT_KEY);
-    if (stored && stored.version === 2) return stored;
+    if (stored && stored.version === 2) {
+      stored.lujvo ??= null;
+      stored.gismu ??= null;
+      return stored;
+    }
     return null;
   } catch {
     return null;
@@ -94,7 +104,7 @@ export function stepBar(draft: Draft, current: number): HTMLElement {
     const done =
       step.number < current ||
       (step.number < draft.step && step.number !== current);
-    const anchor = link(null, step.path, {
+    const anchor = link(null, step.number === 3 ? formPath(draft) : step.path, {
       class: `step${done ? " done" : ""}`,
     });
     if (step.number === current) anchor.setAttribute("aria-current", "step");

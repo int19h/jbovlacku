@@ -613,6 +613,37 @@ impl EvaluationSession {
     }
 }
 
+/// Word-form tools. Requests and results cross as JSON. A builder error is a
+/// JSON object with `kind` of `invalid` or `resource-limit`.
+fn builder_fail(e: jvc_morphology::BuilderError) -> JsValue {
+    JsValue::from_str(&serde_json::to_string(&e).unwrap())
+}
+fn builder_input<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> std::result::Result<T, JsValue> {
+    serde_json::from_slice(bytes).map_err(|e| builder_fail(jvc_morphology::BuilderError::Invalid { message: format!("The request is malformed: {e}") }))
+}
+#[wasm_bindgen]
+pub fn builder_presets() -> std::result::Result<String, JsValue> {
+    output(jvc_morphology::builder_presets())
+}
+#[wasm_bindgen]
+pub fn analyze_word(profile: &str, spelling: &str) -> std::result::Result<String, JsValue> {
+    let profile = match profile {
+        "cll" => jvc_morphology::Profile::Cll,
+        "extended" => jvc_morphology::Profile::Extended,
+        _ => return Err(builder_fail(jvc_morphology::BuilderError::Invalid { message: "The profile is cll or extended.".into() })),
+    };
+    output(jvc_morphology::analyze_word(profile, spelling))
+}
+#[wasm_bindgen]
+pub fn build_lujvo(bytes: &[u8]) -> std::result::Result<String, JsValue> {
+    let request: jvc_morphology::LujvoRequest = builder_input(bytes)?;
+    output(jvc_morphology::build_lujvo(&request).map_err(builder_fail)?)
+}
+#[wasm_bindgen]
+pub fn generate_gismu(bytes: &[u8]) -> std::result::Result<String, JsValue> {
+    let request: jvc_morphology::GismuRequest = builder_input(bytes)?;
+    output(jvc_morphology::generate_gismu(&request).map_err(builder_fail)?)
+}
 fn assignment_status(current: Option<&str>, eligibility: &jvc_state::Eligibility) -> &'static str {
     if current == Some("active") || *eligibility == jvc_state::Eligibility::Eligible {
         "active"

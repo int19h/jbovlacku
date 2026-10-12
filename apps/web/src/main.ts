@@ -30,6 +30,8 @@ import { trustPage } from "./pages/trust.ts";
 import { meaningPage } from "./pages/wizard/meaning.ts";
 import { typePage } from "./pages/wizard/type.ts";
 import { formPage } from "./pages/wizard/form.ts";
+import { lujvoPage } from "./pages/wizard/lujvo.ts";
+import { gismuPage } from "./pages/wizard/gismu.ts";
 import { placesPage } from "./pages/wizard/places.ts";
 import { publishPage } from "./pages/wizard/publish.ts";
 import { claimPage, rafsiPage } from "./pages/rafsi.ts";
@@ -164,11 +166,15 @@ async function start() {
             ? typePage
             : step === "form"
               ? formPage
-              : step === "places" || step === "editor"
-                ? placesPage
-                : step === "publish"
-                  ? publishPage
-                  : meaningPage;
+              : step === "lujvo"
+                ? lujvoPage
+                : step === "gismu"
+                  ? gismuPage
+                  : step === "places" || step === "editor"
+                    ? placesPage
+                    : step === "publish"
+                      ? publishPage
+                      : meaningPage;
         if (route.segments.length === 1 && route.params.has("revise")) {
           navigate(
             `/new/editor?revise=${encodeURIComponent(route.params.get("revise")!)}`,

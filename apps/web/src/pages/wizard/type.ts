@@ -4,7 +4,13 @@ import { navigate, type RenderContext, type Route } from "../../app/router.ts";
 import type { App } from "../../app/context.ts";
 import { formationFieldsFor, type Draft } from "../../model/draft.ts";
 import type { LexicalKind } from "../../model/types.ts";
-import { actionBar, DraftSaver, loadDraft, stepBar } from "./common.ts";
+import {
+  actionBar,
+  DraftSaver,
+  formPath,
+  loadDraft,
+  stepBar,
+} from "./common.ts";
 
 const cards: {
   kind: LexicalKind;
@@ -238,7 +244,7 @@ export async function typePage(
         if (!draft.kind) return;
         draft.step = Math.max(draft.step, 3) as Draft["step"];
         if (!(await saver.flush())) return;
-        navigate("/new/form");
+        navigate(formPath(draft));
       },
     },
   });

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/jvc-core", "crates/jvc-state", "crates/jvc-rank", "crates/jvc-runtime", "crates/jvc-carrier"]
+members = ["crates/jvc-core", "crates/jvc-state", "crates/jvc-rank", "crates/jvc-runtime", "crates/jvc-carrier", "crates/jvc-morphology"]
 resolver = "2"
 
 [workspace.package]

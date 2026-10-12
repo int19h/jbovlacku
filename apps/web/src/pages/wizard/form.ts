@@ -1,7 +1,7 @@
 /**
  * Step 3C: the manual Form screen. Spelling, attributed morphology notes, and
- * selma'o for cmavo. The lujvo and gismu builders arrive with the shared
- * morphology core. Until then every type uses this manual entry.
+ * selma'o for cmavo. The lujvo builder and the gismu generator have their own
+ * pages and link back here for manual entry.
  */
 import { el, p, text, field, link } from "../../lib/dom.ts";
 import { navigate, type RenderContext, type Route } from "../../app/router.ts";
@@ -35,14 +35,28 @@ export async function formPage(route: Route, context: RenderContext, app: App) {
           ? "Enter the gismu"
           : "Enter the form";
   section.append(el("h1", { id: "h1", class: "page", text: title }));
-  if (route.params.get("manual") || kind === "lujvo" || kind === "gismu")
+  if (kind === "lujvo" || kind === "gismu")
+    section.append(
+      el(
+        "p",
+        { class: "small" },
+        text(
+          kind === "lujvo"
+            ? "Manual entry. A lujvo entered here carries no construction evidence. "
+            : "Manual entry. A gismu entered here carries no fabricated generation evidence. ",
+        ),
+        link(
+          kind === "lujvo"
+            ? "Open the lujvo builder"
+            : "Open the gismu generator",
+          kind === "lujvo" ? "/new/lujvo" : "/new/gismu",
+        ),
+      ),
+    );
+  else if (route.params.get("manual"))
     section.append(
       p(
-        kind === "lujvo"
-          ? "The lujvo builder with rafsi choices and CLL scoring is not in this build yet. Enter the spelling you intend. The morphology notes stay attributed to you."
-          : kind === "gismu"
-            ? "The gismu generator with source-word scoring is not in this build yet. Enter the spelling you intend. A manual gismu carries no fabricated generation evidence."
-            : "Manual entry. The notes stay attributed to you and never become a parser rule.",
+        "Manual entry. The notes stay attributed to you and never become a parser rule.",
         "small",
       ),
     );
