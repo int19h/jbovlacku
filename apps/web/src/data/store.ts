@@ -352,6 +352,41 @@ export class LocalStore {
       tx.onerror = () => {};
     });
   }
+  /**
+   * Deletes a draft only while storage still holds the expected revision.
+   * No stored draft counts as done. A different revision means another tab
+   * saved newer work, which stays.
+   */
+  async deleteDraft(
+    key: string,
+    expected: { revision: string },
+  ): Promise<void> {
+    const db = await this.database;
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction("drafts", "readwrite");
+      const drafts = tx.objectStore("drafts");
+      let failure: Error | undefined;
+      const current = drafts.get(key);
+      current.onsuccess = () => {
+        const stored = current.result as { revision?: string } | undefined;
+        if (!stored) return;
+        if (stored.revision !== expected.revision) {
+          failure = new DraftConflictError("changed", stored.revision ?? null);
+          tx.abort();
+          return;
+        }
+        drafts.delete(key);
+      };
+      tx.oncomplete = () => resolve();
+      tx.onabort = () =>
+        reject(
+          failure ??
+            tx.error ??
+            new Error("Local storage did not delete this record."),
+        );
+      tx.onerror = () => {};
+    });
+  }
   async delete(store: string, id: string): Promise<void> {
     const db = await this.database;
     return new Promise((resolve, reject) => {

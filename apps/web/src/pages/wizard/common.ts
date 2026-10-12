@@ -59,13 +59,28 @@ export async function loadDraft(app: App): Promise<Draft | null> {
 }
 let pendingSaver: DraftSaver | null = null;
 /**
- * Flushes the active draft saver and detaches it. The router awaits this
- * before rendering the next page. An unchanged draft writes nothing.
+ * The router's guard. Before the page changes, the active saver writes the
+ * draft. A failed or conflicting save keeps the current page, with its
+ * unsaved copy, its export control, and a choice to leave anyway.
  */
-export async function flushPendingDraft() {
+export function guardDraftNavigation(
+  target: string,
+): boolean | Promise<boolean> {
   const saver = pendingSaver;
-  pendingSaver = null;
-  if (saver) await saver.flush();
+  // Without a saver the verdict is synchronous, so ordinary navigation stays synchronous.
+  if (!saver) return true;
+  if (saver.leaving === target) {
+    saver.detach();
+    return true;
+  }
+  return saver.flush().then((ok) => {
+    if (ok) {
+      saver.detach();
+      return true;
+    }
+    saver.blocked(target);
+    return false;
+  });
 }
 /** The fields that make two draft copies the same for saving. */
 function contentKey(draft: Draft): string {
@@ -111,9 +126,16 @@ export class DraftSaver {
   touch() {
     if (this.detached) return;
     this.draft.updatedAt = Date.now();
-    this.indicator.textContent = "Saving…";
+    // After a conflict the message and its controls stay while edits continue.
+    if (!this.conflict) this.indicator.textContent = "Saving…";
     clearTimeout(this.timer);
     this.timer = setTimeout(() => void this.flush(), 300);
+  }
+  /** The target of a navigation the user chose to make without saving. */
+  leaving: string | null = null;
+  /** Reports a refused navigation. The page keeps the unsaved copy. */
+  blocked(target: string) {
+    this.report(target);
   }
   /** Stops pending saves. The page's copy stays available for export. */
   detach() {
@@ -129,6 +151,7 @@ export class DraftSaver {
     if (this.saving) return this.saving.then(() => this.flush());
     if (this.conflict) {
       // The page copy is stale. Only an explicit choice replaces the stored draft.
+      this.report();
       return Promise.resolve(false);
     }
     if (contentKey(this.draft) === this.savedContent) {
@@ -164,21 +187,52 @@ export class DraftSaver {
         this.conflict = error.storedRevision
           ? { revision: error.storedRevision }
           : "absent";
-        this.indicator.replaceChildren(
-          text(`Not saved: ${error.message} Export this copy, or `),
-          button("keep this copy", () => void this.keepThisCopy(), {
-            class: "btn btn-quiet",
-            style: "font-size:14px",
-          }),
-          text("."),
-        );
+        this.failure = `Not saved: ${error.message}`;
       } else {
-        this.indicator.replaceChildren(
-          text(`Not saved: ${describe(error)}. Export the draft.`),
-        );
+        this.failure = `Not saved: ${describe(error)}.`;
       }
+      this.report();
       return false;
     }
+  }
+  /** The last failure message, kept while the edits stay unsaved. */
+  private failure = "";
+  /** Shows the failure with its recovery controls. */
+  private report(blockedTarget?: string) {
+    const small = { class: "btn btn-quiet", style: "font-size:14px" };
+    const parts: (string | Node)[] = [text(`${this.failure} `)];
+    if (blockedTarget) {
+      this.leaving = null;
+      parts.push(
+        text(
+          "Your unsaved edits stay on this page. Export this copy, retry, or ",
+        ),
+        button(
+          "leave without saving",
+          () => {
+            this.leaving = blockedTarget;
+            navigate(blockedTarget);
+          },
+          small,
+        ),
+        text("."),
+      );
+    } else if (this.conflict) {
+      parts.push(text("Export this copy, or keep this copy."));
+    } else {
+      parts.push(text("Export the draft."));
+    }
+    if (this.conflict)
+      parts.push(
+        text(" "),
+        button("keep this copy", () => void this.keepThisCopy(), small),
+      );
+    else if (blockedTarget)
+      parts.push(
+        text(" "),
+        button("retry", () => void this.flush(), small),
+      );
+    this.indicator.replaceChildren(...parts);
   }
   /** Replaces the stored draft with this page's copy after an explicit choice. */
   async keepThisCopy(): Promise<boolean> {
@@ -280,9 +334,13 @@ export async function startDraft(
   await app.store.saveDraft(DRAFT_KEY, draft, expected);
   return draft;
 }
-export async function discardDraft(app: App) {
+/**
+ * Deletes the draft this page shows. Newer work that another tab saved
+ * stays, and the caller shows that draft for a new choice.
+ */
+export async function discardDraft(app: App, draft: Draft) {
+  await app.store.deleteDraft(DRAFT_KEY, { revision: draft.revision });
   pendingSaver?.detach();
-  await app.store.delete("drafts", DRAFT_KEY);
 }
 /** Stops the active saver without touching storage, after a commit removed the draft. */
 export function forgetDraft() {

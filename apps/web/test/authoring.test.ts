@@ -1272,3 +1272,181 @@ test("a delayed automatic save never replaces newer content from another tab, an
   );
   expect(await storedMeaning()).toEqual(final);
 });
+
+/** The stored draft's meaning and revision. */
+async function storedDraft(page: Page) {
+  return page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const draft = await new LocalStore().get("drafts", "current");
+    return draft
+      ? { meaning: draft.meaning as string, revision: draft.revision as string }
+      : null;
+  });
+}
+async function failDraftSaves(page: Page, message: string) {
+  await page.evaluate(async (message) => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const original = LocalStore.prototype.saveDraft;
+    (window as any).__restoreSave = () => {
+      LocalStore.prototype.saveDraft = original;
+    };
+    LocalStore.prototype.saveDraft = async () => {
+      throw new Error(message);
+    };
+  }, message);
+}
+
+test("a failed save keeps the editor on internal links and browser Back, and leaves only through an explicit choice", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await page.getByRole("link", { name: "About", exact: true }).click();
+  await expect(page).toHaveURL(/\/about$/);
+  await page.getByRole("link", { name: "Add a word" }).click();
+  const box = page.getByRole("textbox", { name: "Meaning", exact: true });
+  await box.fill("Saved original.");
+  const status = page.getByRole("status").last();
+  await expect(status).toHaveText("Saved in this browser");
+  const saved = await storedDraft(page);
+  await failDraftSaves(page, "Injected save failure");
+  await box.fill("Unsaved valuable edit.");
+  await expect(status).toContainText("Not saved: Injected save failure.");
+  // An internal link keeps the editor and its unsaved text.
+  await page.getByRole("link", { name: "About", exact: true }).click();
+  await expect(status).toContainText(
+    "Your unsaved edits stay on this page. Export this copy, retry, or leave without saving.",
+  );
+  await expect(page).toHaveURL(/\/new\/meaning$/);
+  await expect(box).toHaveValue("Unsaved valuable edit.");
+  expect(await storedDraft(page)).toEqual(saved);
+  // Browser Back also keeps the editor, and the address stays on the editor.
+  await page.goBack();
+  await expect(box).toHaveValue("Unsaved valuable edit.");
+  await expect(page).toHaveURL(/\/new\/meaning$/);
+  await expect(status).toContainText("leave without saving");
+  // The export holds the unsaved text without storage.
+  const exported = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export draft" }).click();
+  const content = JSON.parse(
+    await (
+      await import("node:fs/promises")
+    ).readFile((await (await exported).path())!, "utf8"),
+  );
+  expect(content.meaning).toBe("Unsaved valuable edit.");
+  // Retry after storage returns saves the edit, and the next link works.
+  await page.evaluate(() => (window as any).__restoreSave());
+  await page.getByRole("button", { name: "retry", exact: true }).click();
+  await expect(status).toHaveText("Saved in this browser");
+  expect((await storedDraft(page))?.meaning).toBe("Unsaved valuable edit.");
+  // A new failure, then the explicit choice to leave. Storage keeps the last saved text.
+  const kept = await storedDraft(page);
+  await failDraftSaves(page, "Injected save failure");
+  await box.fill("Edit that the user gives up.");
+  await expect(status).toContainText("Not saved: Injected save failure.");
+  await page.getByRole("link", { name: "About", exact: true }).click();
+  await page.getByRole("button", { name: "leave without saving" }).click();
+  await expect(page).toHaveURL(/\/about$/);
+  expect(await storedDraft(page)).toEqual(kept);
+  await page.evaluate(() => (window as any).__restoreSave());
+  await page.goBack();
+  await expect(box).toHaveValue("Unsaved valuable edit.");
+});
+
+test("a conflicting save keeps the editor on navigation and keeps its feedback while editing continues", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await page.getByRole("link", { name: "Add a word" }).click();
+  const box = page.getByRole("textbox", { name: "Meaning", exact: true });
+  await box.fill("Original.");
+  const status = page.getByRole("status").last();
+  await expect(status).toHaveText("Saved in this browser");
+  const newer = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore();
+    const draft = await store.get("drafts", "current");
+    draft.meaning = "Another tab.";
+    draft.revision = crypto.randomUUID();
+    await store.put("drafts", "current", draft);
+    return draft.revision as string;
+  });
+  await box.fill("My edit.");
+  await expect(status).toContainText(
+    "Not saved: The draft changed in another tab.",
+  );
+  // Further edits keep the conflict message and its control.
+  await box.fill("My next edit.");
+  await expect(status).not.toContainText("Saving…");
+  await expect(status).toContainText(
+    "Not saved: The draft changed in another tab.",
+  );
+  await expect(
+    page.getByRole("button", { name: "keep this copy", exact: true }),
+  ).toHaveCount(1);
+  expect(await storedDraft(page)).toEqual({
+    meaning: "Another tab.",
+    revision: newer,
+  });
+  // A link keeps the editor, and the newer stored draft stays intact.
+  await page.getByRole("link", { name: "About", exact: true }).click();
+  await expect(status).toContainText("Your unsaved edits stay on this page.");
+  await expect(box).toHaveValue("My next edit.");
+  await expect(page).toHaveURL(/\/new\/meaning$/);
+  expect(await storedDraft(page)).toEqual({
+    meaning: "Another tab.",
+    revision: newer,
+  });
+  // Browser Back keeps it too.
+  await page.goBack();
+  await expect(box).toHaveValue("My next edit.");
+  await expect(page).toHaveURL(/\/new\/meaning$/);
+  // Keeping this copy saves it, and the link then works.
+  await page
+    .getByRole("button", { name: "keep this copy", exact: true })
+    .click();
+  await expect(status).toHaveText("Saved in this browser");
+  expect((await storedDraft(page))?.meaning).toBe("My next edit.");
+  await page.getByRole("link", { name: "About", exact: true }).click();
+  await expect(page).toHaveURL(/\/about$/);
+});
+
+test("discard in a stale tab keeps newer work that another tab saved, and discards only after a new choice", async ({
+  page,
+  context,
+}) => {
+  await createIdentity(page);
+  await page.getByRole("link", { name: "Add a word" }).click();
+  const box = page.getByRole("textbox", { name: "Meaning", exact: true });
+  await box.fill("Old draft text.");
+  await expect(page.getByRole("status").last()).toHaveText(
+    "Saved in this browser",
+  );
+  const other = await context.newPage();
+  await other.goto("/new/meaning");
+  await other
+    .getByRole("textbox", { name: "Meaning", exact: true })
+    .fill("Newer work in another tab.");
+  await expect(other.getByRole("status").last()).toHaveText(
+    "Saved in this browser",
+  );
+  const newer = await storedDraft(other);
+  expect(newer?.meaning).toBe("Newer work in another tab.");
+  await other.close();
+  // Discard from the stale tab deletes nothing and shows the newer draft.
+  page.on("dialog", (dialog) => void dialog.accept());
+  await page
+    .getByRole("button", { name: "Discard draft", exact: true })
+    .click();
+  await expect(page.getByRole("status").last()).toContainText(
+    "The draft changed in another tab. Nothing was discarded.",
+  );
+  await expect(box).toHaveValue("Newer work in another tab.");
+  await expect(page).toHaveURL(/\/new\/meaning$/);
+  expect(await storedDraft(page)).toEqual(newer);
+  // A new choice from the current draft discards it.
+  await page
+    .getByRole("button", { name: "Discard draft", exact: true })
+    .click();
+  await expect(page).toHaveURL(/\/$/);
+  expect(await storedDraft(page)).toBeNull();
+});

@@ -10,6 +10,7 @@ import { buildShell, syncSearchField } from "./app/shell.ts";
 import {
   currentRoute,
   installRouter,
+  setNavigationGuard,
   navigate,
   onNavigate,
   type RenderContext,
@@ -37,7 +38,7 @@ import { compromisePage } from "./pages/compromise.ts";
 import { placesPage } from "./pages/wizard/places.ts";
 import { publishPage } from "./pages/wizard/publish.ts";
 import { claimPage, rafsiPage } from "./pages/rafsi.ts";
-import { flushPendingDraft } from "./pages/wizard/common.ts";
+import { guardDraftNavigation } from "./pages/wizard/common.ts";
 import { PersonalCalculator } from "./data/personal.ts";
 import { classifyReceipt } from "./data/delivery.ts";
 import type { TrustScope } from "./model/types.ts";
@@ -148,10 +149,7 @@ async function start() {
     const signal = controller.signal;
     shell.announce("");
     syncSearchField(shell, route);
-    if (session.storageAvailable) {
-      void delivery.invalidate();
-      await flushPendingDraft();
-    }
+    if (session.storageAvailable) void delivery.invalidate();
     const main = shell.main;
     main.replaceChildren();
     main.className = "";
@@ -244,6 +242,7 @@ async function start() {
     }
   };
   onNavigate((route, options) => void render(route, options));
+  if (session.storageAvailable) setNavigationGuard(guardDraftNavigation);
   installRouter();
   await render(currentRoute(), { focusHeading: false });
 }

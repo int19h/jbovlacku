@@ -92,9 +92,13 @@ test("an unknown delivery outcome asks for the receipt before any retry and neve
   page,
 }) => {
   await createIdentity(page);
+  // The counter is a listener that stays active through recovery. The route only drops the response.
   let posted = 0;
+  page.on("request", (request) => {
+    if (request.method() === "POST" && request.url().includes("/api/v1/events"))
+      posted++;
+  });
   await page.route("**/api/v1/events", async (route) => {
-    posted++;
     const response = await route.fetch();
     expect(response.status()).toBe(201);
     await route.abort("failed");
@@ -112,8 +116,11 @@ test("an unknown delivery outcome asks for the receipt before any retry and neve
   await expect(
     page.getByText("Your endorsement is not delivered yet"),
   ).toBeVisible();
+  await expect
+    .poll(async () => (await outboxItems(page))[0].peers.self.state)
+    .toBe("unknown");
   const original = (await outboxItems(page))[0];
-  expect(original.peers.self.state).toBe("unknown");
+  expect(posted).toBe(1);
   await page.unroute("**/api/v1/events");
   await page.reload();
   await page.getByRole("link", { name: "1 not delivered" }).click();
@@ -140,9 +147,22 @@ test("header-only acceptance stays unfinished until the matching body is confirm
 }) => {
   await createIdentity(page);
   const f = fixture();
-  // The first request reaches the server without its body, so the real receipt
-  // reports header-only acceptance. The outbox must keep a missing-body row.
+  // Phase one strips the body from every upload, so the real receipt reports
+  // header-only acceptance. The handler stays installed. Only its phase changes.
+  let strip = true;
+  const requests: { kind: "post" | "receipt"; withBody: boolean }[] = [];
+  page.on("request", (request) => {
+    const url = request.url();
+    if (request.method() === "POST" && url.includes("/api/v1/events"))
+      requests.push({
+        kind: "post",
+        withBody: JSON.parse(request.postData() ?? "{}").body != null,
+      });
+    else if (request.method() === "GET" && url.includes("/api/v1/receipts/"))
+      requests.push({ kind: "receipt", withBody: false });
+  });
   await page.route("**/api/v1/events", async (route) => {
+    if (!strip) return route.continue();
     const sent = JSON.parse(route.request().postData() ?? "{}");
     await route.continue({
       postData: JSON.stringify({ envelope: sent.envelope, body: null }),
@@ -172,19 +192,53 @@ test("header-only acceptance stays unfinished until the matching body is confirm
     .getByRole("button", { name: "Sign and publish the report" })
     .click();
   await acceptFirstSignature(page);
-  await expect(
-    page.getByRole("link", { name: "1 not delivered" }),
-  ).toBeVisible();
-  await page.unroute("**/api/v1/events");
-  await page.goto("/outbox");
+  // The marker also counts a queued record. Wait for the stored missing-body state.
+  await expect
+    .poll(async () => {
+      const items = await outboxItems(page);
+      const peer = items[0]?.peers.self;
+      return items.length === 1 &&
+        peer?.state === "missing-body" &&
+        peer.receipt?.body_status === "missing" &&
+        ["accepted", "duplicate"].includes(peer.receipt?.admission) &&
+        JSON.parse(items[0].transport).body != null
+        ? "missing-body"
+        : (peer?.state ?? "none");
+    })
+    .toBe("missing-body");
+  const original = (await outboxItems(page))[0];
+  expect(requests).toEqual([{ kind: "post", withBody: true }]);
+  // The interface shows the missing body while uploads still lose it.
+  await page.getByRole("link", { name: "1 not delivered" }).click();
+  await expect(page).toHaveTitle("Not delivered · jbovlacku");
   await expect(
     page.getByText(/stored the signed header without its body/),
   ).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "1 not delivered" }),
+  ).toBeVisible();
+  expect((await outboxItems(page))[0].peers.self.state).toBe("missing-body");
+  // Phase two lets the complete record through. The retry asks for the receipt first.
+  strip = false;
   await page.getByRole("button", { name: "Try now" }).click();
   await expect(page.getByRole("status")).toHaveText("Delivered.");
+  await expect
+    .poll(async () => (await outboxItems(page))[0].peers.self.state)
+    .toBe("accepted");
   const items = await outboxItems(page);
-  expect(items[0].peers.self.state).toBe("accepted");
+  expect(items).toHaveLength(1);
+  expect(items[0].id).toBe(original.id);
+  expect(items[0].transport).toBe(original.transport);
   expect(items[0].peers.self.receipt.body_status).toBe("present");
+  expect(items[0].peers.self.receipt.body_hash).toBe(
+    JSON.parse(items[0].transport).envelope.header.content.hash,
+  );
+  expect(requests).toEqual([
+    { kind: "post", withBody: true },
+    { kind: "receipt", withBody: false },
+    { kind: "post", withBody: true },
+  ]);
+  await expect(page.getByText("No unfinished records.")).toBeVisible();
 });
 
 test("a permanent refusal pauses retries, Retry-After schedules the next try, and stop and resume keep the bytes", async ({

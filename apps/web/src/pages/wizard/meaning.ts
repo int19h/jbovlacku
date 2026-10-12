@@ -450,7 +450,18 @@ export async function meaningPage(
           "Discard draft",
           async () => {
             if (!confirm("Discard this draft? This cannot be undone.")) return;
-            await discardDraft(app);
+            try {
+              await discardDraft(app, draft);
+            } catch (error) {
+              if (!(error instanceof DraftConflictError)) throw error;
+              // Another tab saved newer work. Show it, and ask again from that draft.
+              saver.detach();
+              navigate(route.path, { replace: true });
+              app.announce(
+                "The draft changed in another tab. Nothing was discarded. The newer draft is shown.",
+              );
+              return;
+            }
             navigate("/");
           },
           { class: "btn btn-quiet" },
