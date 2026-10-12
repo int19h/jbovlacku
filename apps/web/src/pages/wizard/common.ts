@@ -36,6 +36,11 @@ export async function loadDraft(app: App): Promise<Draft | null> {
     if (stored && stored.version === 2) {
       stored.lujvo ??= null;
       stored.gismu ??= null;
+      if (!stored.revision) {
+        // An older draft gets a revision, so a publication can name it exactly.
+        stored.revision = crypto.randomUUID();
+        await app.store.put("drafts", DRAFT_KEY, { ...stored });
+      }
       return stored;
     }
     return null;
@@ -75,6 +80,9 @@ export class DraftSaver {
     clearTimeout(this.timer);
     this.timer = undefined;
     try {
+      // Every save is a new revision. A publication in progress for the old
+      // revision then refuses to commit, and this newer draft survives.
+      this.draft.revision = crypto.randomUUID();
       await this.app.store.put("drafts", DRAFT_KEY, { ...this.draft });
       this.indicator.textContent = "Saved in this browser";
       this.failed = false;
@@ -171,6 +179,10 @@ export async function startDraft(
 export async function discardDraft(app: App) {
   pendingSaver = null;
   await app.store.delete("drafts", DRAFT_KEY);
+}
+/** Stops the active saver without touching storage, after a commit removed the draft. */
+export function forgetDraft() {
+  pendingSaver = null;
 }
 export function wizardTitle(route: Route): string {
   const step = steps.find((s) => s.path === route.path);

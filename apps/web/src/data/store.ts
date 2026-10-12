@@ -26,6 +26,35 @@ export interface PeerDelivery {
   failure: "offline" | "timeout" | "server" | "refused" | "unresolved" | null;
   receipt: import("../model/types.ts").Receipt | null;
 }
+/** The exact draft revision that a group publishes. */
+export interface Publication {
+  draftKey: string;
+  revision: string;
+}
+/** A committed link between a reviewed draft revision and its signed group. */
+export interface PublicationRecord {
+  revision: string;
+  draftKey: string;
+  group: string;
+  ids: string[];
+  identity: string;
+  signedAt: number;
+}
+/** The group transaction found a different draft state than the preview. */
+export class PublicationConflictError extends Error {
+  constructor(
+    public kind: "already-published" | "newer-draft" | "draft-missing",
+    public record: PublicationRecord | null,
+  ) {
+    super(
+      kind === "already-published"
+        ? "This reviewed draft was already published. Its saved group is shown instead."
+        : kind === "newer-draft"
+          ? "The draft changed in another tab while signing. Nothing was saved or sent. Review the newer draft before publishing."
+          : "The draft is no longer in this browser. Nothing was saved or sent.",
+    );
+  }
+}
 export interface OutboxLabel {
   /** Plain description of the signed action for lists. */
   action: string;
@@ -321,7 +350,10 @@ export class LocalStore {
    * Saves a signed group and advances the remembered heads in one transaction.
    * Nothing is sent before this transaction completes.
    */
-  async queueGroup(items: OutboxItem[]): Promise<void> {
+  async queueGroup(
+    items: OutboxItem[],
+    publication?: Publication,
+  ): Promise<void> {
     if (!items.length) return;
     const identity = items[0].identity;
     const predecessors = new Set<string>();
@@ -340,16 +372,29 @@ export class LocalStore {
     }
     const db = await this.database;
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(["outbox", "heads", "keys"], "readwrite");
+      const tx = db.transaction(
+        ["outbox", "heads", "keys", "drafts"],
+        "readwrite",
+      );
       const outbox = tx.objectStore("outbox");
       const heads = tx.objectStore("heads");
       const keys = tx.objectStore("keys");
+      const drafts = tx.objectStore("drafts");
       let failure: Error | undefined;
       // A key retired or reported stolen in another tab cannot gain new ordinary records.
       const retired = keys.get(`handover:${identity}`);
       const compromised = keys.get(`compromised:${identity}`);
       const request = heads.get(identity);
-      let remaining = 3;
+      // A publication names the exact draft revision it signed. The draft and
+      // its publication record are read in this transaction, so two tabs
+      // cannot publish one revision twice, and a newer draft is never removed.
+      const draftRequest = publication
+        ? drafts.get(publication.draftKey)
+        : null;
+      const recordRequest = publication
+        ? drafts.get(`published:${publication.revision}`)
+        : null;
+      let remaining = 3 + (publication ? 2 : 0);
       const proceed = () => {
         if (--remaining) return;
         if (retired.result || compromised.result) {
@@ -360,6 +405,42 @@ export class LocalStore {
           );
           tx.abort();
           return;
+        }
+        if (publication) {
+          const existing = recordRequest!.result as
+            | PublicationRecord
+            | undefined;
+          if (existing) {
+            failure = new PublicationConflictError(
+              "already-published",
+              existing,
+            );
+            tx.abort();
+            return;
+          }
+          const stored = draftRequest!.result as
+            | { revision?: string }
+            | undefined;
+          if (!stored || stored.revision !== publication.revision) {
+            failure = new PublicationConflictError(
+              stored ? "newer-draft" : "draft-missing",
+              null,
+            );
+            tx.abort();
+            return;
+          }
+          const record: PublicationRecord = {
+            revision: publication.revision,
+            draftKey: publication.draftKey,
+            group: items[0].group,
+            ids: items.map((item) => item.id),
+            identity,
+            signedAt: Date.now(),
+          };
+          drafts.put(record, `published:${publication.revision}`);
+          drafts.put(record, `published:last`);
+          // The reviewed draft leaves with the same commit that saves its records.
+          drafts.delete(publication.draftKey);
         }
         for (const item of items) outbox.put(item, item.id);
         const current: string[] = request.result ?? [];
@@ -376,6 +457,8 @@ export class LocalStore {
       retired.onsuccess = proceed;
       compromised.onsuccess = proceed;
       request.onsuccess = proceed;
+      if (draftRequest) draftRequest.onsuccess = proceed;
+      if (recordRequest) recordRequest.onsuccess = proceed;
       tx.oncomplete = () => resolve();
       tx.onabort = () =>
         reject(

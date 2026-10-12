@@ -148,6 +148,8 @@ export type FrameMode = "none" | "fixed" | "variadic" | "context";
 export interface Draft {
   version: 2;
   id: string;
+  /** Changes with every save. A publication commits one exact revision. */
+  revision: string;
   createdAt: number;
   updatedAt: number;
   step: 1 | 2 | 3 | 4 | 5;
@@ -194,6 +196,7 @@ export function newDraft(patch: Partial<Draft> = {}): Draft {
   return {
     version: 2,
     id: "current",
+    revision: crypto.randomUUID(),
     createdAt: now,
     updatedAt: now,
     step: 1,

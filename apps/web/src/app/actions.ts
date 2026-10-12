@@ -16,6 +16,7 @@ import {
   describeTransport,
   type OutboxItem,
   type OutboxLabel,
+  type Publication,
   type SavedRecipient,
 } from "../data/store.ts";
 import type { Session } from "./session.ts";
@@ -43,6 +44,7 @@ export class Signer {
   async sign(
     items: GroupItem[],
     peerIds: string[] = this.session.preferences.peers.map((peer) => peer.id),
+    publication?: Publication,
   ): Promise<SignedGroup> {
     const session = this.session;
     if (!session.storageAvailable)
@@ -135,8 +137,11 @@ export class Signer {
       ids.push(transport.envelope.id);
       previous = [transport.envelope.id];
     }
-    await session.store.queueGroup(signed);
-    await this.delivery.invalidate();
+    await session.store.queueGroup(signed, publication);
+    // The commit is the boundary. A failure after it never reports an unsaved group.
+    try {
+      await this.delivery.invalidate();
+    } catch {}
     session.touch();
     return { group, items: signed, ids };
   }

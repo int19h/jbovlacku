@@ -695,10 +695,17 @@ test("after the group is saved, a lost delivery response offers delivery of the 
 }) => {
   await createIdentity(page);
   await openPublishWithClaim(page, "brode", "rod");
+  // The listener counts every POST, including after the route handler is removed.
   let posts = 0;
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      new URL(request.url()).pathname.endsWith("/api/v1/events")
+    )
+      posts++;
+  });
   await page.route("**/api/v1/events", async (route) => {
     if (route.request().method() !== "POST") return route.continue();
-    posts++;
     // The server stores the record, but the browser gets a receipt it cannot match.
     const response = await route.fetch();
     const receipt = await response.json();
@@ -729,9 +736,17 @@ test("after the group is saved, a lost delivery response offers delivery of the 
   await expect(
     page.getByRole("button", { name: "Publish", exact: true }),
   ).toHaveCount(0);
+  // Every record was uploaded exactly once. A receipt lookup for a dependency
+  // can already have confirmed some records; the last one stays unknown.
+  await expect
+    .poll(async () =>
+      (await outboxRecords(page)).every((r: any) => r.state !== "queued"),
+    )
+    .toBe(true);
   const first = await outboxRecords(page);
   expect(first).toHaveLength(4);
-  expect(posts).toBeGreaterThanOrEqual(1);
+  expect(first.some((r: any) => r.state === "unknown")).toBe(true);
+  expect(posts).toBe(4);
   const postsBefore = posts;
   // A second action on the page delivers the saved bytes. The receipt lookup finds the stored record without a new POST.
   await page.unroute("**/api/v1/events");
@@ -743,14 +758,23 @@ test("after the group is saved, a lost delivery response offers delivery of the 
     first.map((r: any) => [r.id, r.group, r.transport]),
   );
   expect(after.every((r: any) => r.state === "accepted")).toBe(true);
-  // Reload and browser back do not bring the draft back as a new publication.
+  // Reload and browser back show the saved group, never the draft as a new publication.
   await page.reload();
-  await expect(page).toHaveURL(/\/new\/meaning$/);
-  await expect(page.getByRole("textbox", { name: "Meaning" })).toHaveValue("");
+  await expect(
+    page.getByRole("heading", { name: "Saved publication" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Publish", exact: true }),
+  ).toHaveCount(0);
   await page.goto("/word/brode");
   await page.goBack();
-  await expect(page).toHaveURL(/\/new\/meaning$/);
+  await expect(
+    page.getByRole("heading", { name: "Saved publication" }),
+  ).toBeVisible();
   expect((await outboxRecords(page)).length).toBe(4);
+  // A new draft starts from Add a word with nothing of the old one.
+  await page.getByRole("link", { name: "Add a word" }).click();
+  await expect(page.getByRole("textbox", { name: "Meaning" })).toHaveValue("");
   // The published text with hostile markup renders literally after recovery.
   await page.goto(
     `/definition/${encodeURIComponent(first.find((r: any) => r.kind === "definition.publish").id)}`,
@@ -861,12 +885,237 @@ test("a fully disconnected author signs a complete definition into storage and l
   );
   await page.goto("/word/brodu");
   await expect(
-    page.getByText(
-      "A disposable test meaning with <script>window.bad=true</script>.",
-      { exact: true },
-    ),
+    page
+      .getByText(
+        "A disposable test meaning with <script>window.bad=true</script>.",
+        { exact: true },
+      )
+      .first(),
   ).toBeVisible();
   await expect(
     page.getByRole("link", { name: "rod", exact: true }),
   ).toBeVisible();
+});
+
+/** Writes a reviewed draft with one claim and returns its revision. */
+async function writeReviewedDraft(page: Page, spelling: string) {
+  return page.evaluate(async (spelling) => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { newDraft } = await import(String("/src/model/draft.ts"));
+    const draft = newDraft({
+      spelling,
+      kind: "gismu",
+      meaning: "A disposable test meaning.",
+      text: "A disposable test meaning.",
+      structured: false,
+      frameMode: "none",
+      step: 5,
+      rafsiClaims: [{ rafsi: "rod", rationale: "Disposable claim." }],
+    });
+    await new LocalStore().put("drafts", "current", draft);
+    return draft.revision as string;
+  }, spelling);
+}
+async function draftState(page: Page) {
+  return page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore();
+    const draft = await store.get("drafts", "current");
+    const last = await store.get("drafts", "published:last");
+    return {
+      revision: draft?.revision ?? null,
+      spelling: draft?.spelling ?? null,
+      last: last
+        ? { revision: last.revision, group: last.group, ids: last.ids }
+        : null,
+    };
+  });
+}
+
+test("a failure right after the group commits still recovers the same group after reload, and a failure before it keeps the draft", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await page.getByText("Offline signing", { exact: true }).click();
+  await page.getByLabel("Sign from history saved in this browser only").check();
+  await page.route("**/api/v1/**", (route) => route.abort("connectionreset"));
+  // Before the commit: a failing group transaction keeps the draft and writes nothing.
+  const revision = await writeReviewedDraft(page, "brodu");
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const original = LocalStore.prototype.queueGroup;
+    (window as any).__restoreQueue = () => {
+      LocalStore.prototype.queueGroup = original;
+    };
+    LocalStore.prototype.queueGroup = async () => {
+      throw new Error("Injected commit failure");
+    };
+  });
+  await spaGoto(page, "/new/publish");
+  await page
+    .locator("aside")
+    .getByRole("button", { name: "Publish", exact: true })
+    .click();
+  await acceptFirstSignature(page);
+  await expect(page.getByRole("status").last()).toContainText(
+    "Injected commit failure",
+  );
+  expect(await outboxRecords(page)).toHaveLength(0);
+  expect((await draftState(page)).revision).toBe(revision);
+  await expect(
+    page.locator("aside").getByRole("button", { name: "Publish", exact: true }),
+  ).toBeEnabled();
+  // After the commit: a failing delivery refresh and a failing draft cleanup cannot undo the commit.
+  await page.evaluate(async () => {
+    (window as any).__restoreQueue();
+    const { DeliveryEngine } = await import(String("/src/data/delivery.ts"));
+    DeliveryEngine.prototype.invalidate = async () => {
+      throw new Error("Injected refresh failure");
+    };
+    const originalDelete = IDBObjectStore.prototype.delete;
+    IDBObjectStore.prototype.delete = function (
+      ...args: [IDBValidKey | IDBKeyRange]
+    ) {
+      if (
+        this.name === "drafts" &&
+        this.transaction.objectStoreNames.length === 1
+      )
+        throw new Error("Injected draft cleanup failure");
+      return originalDelete.apply(this, args);
+    };
+  });
+  await page
+    .locator("aside")
+    .getByRole("button", { name: "Publish", exact: true })
+    .click();
+  const saved = page.getByRole("region", { name: "Saved publication" });
+  await expect(saved).toContainText("Saved. Not delivered yet.");
+  const first = await outboxRecords(page);
+  expect(first).toHaveLength(4);
+  const state = await draftState(page);
+  expect(state.revision).toBeNull();
+  expect(state.last?.revision).toBe(revision);
+  expect(new Set(first.map((r: any) => r.group)).size).toBe(1);
+  expect(state.last?.group).toBe(first[0].group);
+  // Reload lands on the saved group. No Publish control exists for that revision.
+  await page.reload();
+  await expect(
+    page.getByRole("heading", { name: "Saved publication" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("region", { name: "Saved publication" }),
+  ).toContainText("Saved. Not delivered yet.");
+  await expect(
+    page.getByRole("button", { name: "Publish", exact: true }),
+  ).toHaveCount(0);
+  const after = await outboxRecords(page);
+  expect(after.map((r: any) => [r.id, r.group, r.transport])).toEqual(
+    first.map((r: any) => [r.id, r.group, r.transport]),
+  );
+  // A new draft is a separate publication.
+  await page.getByRole("link", { name: "Add a word" }).click();
+  await expect(page.getByRole("textbox", { name: "Meaning" })).toHaveValue("");
+});
+
+test("two tabs that publish the same reviewed revision keep one group, and a newer draft from another tab survives signing", async ({
+  page,
+  context,
+}) => {
+  await createIdentity(page);
+  await page.getByText("Offline signing", { exact: true }).click();
+  await page.getByLabel("Sign from history saved in this browser only").check();
+  const revision = await writeReviewedDraft(page, "brode");
+  await page.route("**/api/v1/**", (route) => route.abort("connectionreset"));
+  await spaGoto(page, "/new/publish");
+  // The second tab opens the same reviewed revision.
+  const other = await context.newPage();
+  await other.goto("/identity");
+  await other.getByLabel("Passphrase", { exact: true }).fill(PASSPHRASE);
+  await other.getByRole("button", { name: "Unlock", exact: true }).click();
+  await expect(other.getByText("Unlocked", { exact: true })).toBeVisible();
+  await other.getByText("Offline signing", { exact: true }).click();
+  await other
+    .getByLabel("Sign from history saved in this browser only")
+    .check();
+  await other.route("**/api/v1/**", (route) => route.abort("connectionreset"));
+  await spaGoto(other, "/new/publish");
+  await expect(other.locator("aside")).toContainText("Publish as");
+  // The first tab commits.
+  await page
+    .locator("aside")
+    .getByRole("button", { name: "Publish", exact: true })
+    .click();
+  await acceptFirstSignature(page);
+  await expect(
+    page.getByRole("region", { name: "Saved publication" }),
+  ).toContainText("Saved. Not delivered yet.");
+  const first = await outboxRecords(page);
+  expect(first).toHaveLength(4);
+  // The second tab's commit finds the revision already published and shows that group.
+  await other
+    .locator("aside")
+    .getByRole("button", { name: "Publish", exact: true })
+    .click();
+  // This tab's session has not seen the first-signature acknowledgment yet.
+  await acceptFirstSignature(other);
+  await expect(other.getByRole("status").last()).toContainText(
+    "already published",
+  );
+  await expect(
+    other.getByRole("region", { name: "Saved publication" }),
+  ).toContainText("Saved. Not delivered yet.");
+  await expect(
+    other
+      .locator("aside")
+      .getByRole("button", { name: "Publish", exact: true }),
+  ).toHaveCount(0);
+  const after = await outboxRecords(other);
+  expect(after.map((r: any) => [r.id, r.group]).sort()).toEqual(
+    first.map((r: any) => [r.id, r.group]).sort(),
+  );
+  expect((await draftState(other)).last?.revision).toBe(revision);
+  await other.close();
+  // A newer draft saved by another tab during signing survives, and nothing is committed for the old revision.
+  const second = await writeReviewedDraft(page, "brodi");
+  await spaGoto(page, "/new/publish");
+  await expect(page.locator("aside")).toContainText("Publish as");
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const original = LocalStore.prototype.queueGroup;
+    LocalStore.prototype.queueGroup = async function (...args: unknown[]) {
+      // Another tab saves a newer revision while this tab is still signing.
+      const { newDraft } = await import(String("/src/model/draft.ts"));
+      const newer = newDraft({
+        spelling: "brodo",
+        kind: "gismu",
+        meaning: "Newer.",
+        text: "Newer text.",
+        structured: false,
+        frameMode: "none",
+        step: 5,
+      });
+      await new LocalStore().put("drafts", "current", newer);
+      (window as any).__newerRevision = newer.revision;
+      return (original as any).apply(this, args);
+    };
+  });
+  await page
+    .locator("aside")
+    .getByRole("button", { name: "Publish", exact: true })
+    .click();
+  await expect(page.getByRole("status").last()).toContainText(
+    "The draft changed in another tab while signing",
+  );
+  await expect(
+    page.getByRole("link", { name: "Review the newer draft" }),
+  ).toBeVisible();
+  const records = await outboxRecords(page);
+  expect(records).toHaveLength(4);
+  const state = await draftState(page);
+  expect(state.spelling).toBe("brodo");
+  expect(state.revision).toBe(
+    await page.evaluate(() => (window as any).__newerRevision),
+  );
+  expect(state.revision).not.toBe(second);
+  expect(state.last?.revision).toBe(revision);
 });

@@ -29,13 +29,18 @@ import { definitionBlock } from "../../components/definition.ts";
 import { identityProfile, profileName } from "../../components/attribution.ts";
 import { getWord, selfPeer } from "../../data/api.ts";
 import { describePeer } from "../../data/delivery.ts";
-import type { OutboxItem } from "../../data/store.ts";
-import type { GroupItem } from "../../app/actions.ts";
+import {
+  PublicationConflictError,
+  type OutboxItem,
+  type PublicationRecord,
+} from "../../data/store.ts";
+import type { GroupItem, SignedGroup } from "../../app/actions.ts";
 import type { Envelope } from "../../model/types.ts";
 import {
   actionBar,
+  DRAFT_KEY,
   DraftSaver,
-  discardDraft,
+  forgetDraft,
   loadDraft,
   stepBar,
 } from "./common.ts";
@@ -57,12 +62,44 @@ export async function publishPage(
   main.className = "surface-publish";
   const draft = await loadDraft(app);
   if (!context.live()) return;
+  /** Items of a committed group, from the outbox, for the recovery view. */
+  const groupItems = async (record: PublicationRecord) => {
+    const items = await app.delivery.items();
+    return record.ids
+      .map((id) => items.find((item) => item.id === id))
+      .filter((item): item is OutboxItem => Boolean(item));
+  };
   if (!draft) {
-    navigate("/new/meaning", { replace: true });
+    // The commit removed the reviewed draft. A reload or a later failure lands here and finds the saved group.
+    const last = app.session.storageAvailable
+      ? await app.store.get<PublicationRecord>("drafts", "published:last")
+      : undefined;
+    if (!context.live()) return;
+    const items = last ? await groupItems(last) : [];
+    if (!last || !items.length) {
+      navigate("/new/meaning", { replace: true });
+      return;
+    }
+    main.append(
+      el("h1", { class: "page", text: "Saved publication" }),
+      p(
+        "The reviewed draft was published and removed. Its signed records are kept in this browser with their delivery state. Start a new draft from Add a word.",
+        "small",
+      ),
+    );
+    const outcome = el("div", { "aria-live": "polite" });
+    main.append(outcome);
+    renderSavedGroup(app, outcome, items);
     return;
   }
   const saver = new DraftSaver(app, draft);
   main.append(stepBar(draft, 5));
+  // A revision that another tab already committed shows its group, never a second Publish.
+  const published = await app.store.get<PublicationRecord>(
+    "drafts",
+    `published:${draft.revision}`,
+  );
+  if (!context.live()) return;
   const { body, problems, wordId } = draftToBody(draft);
   const blocking = problems.filter((pr) => pr.blocking);
   const columns = el("div", { class: "two-col" });
@@ -323,6 +360,14 @@ export async function publishPage(
   const outcome = el("div", { "aria-live": "polite" });
   let saved = false;
   let bar: HTMLElement | null = null;
+  /** The page now belongs to a committed group. The publish controls go away and the saver stops. */
+  const bindSaved = () => {
+    saved = true;
+    forgetDraft();
+    refreshPublish();
+    publish.remove();
+    bar?.remove();
+  };
   const refreshPublish = () => {
     const disabled =
       saved || blocking.length > 0 || !identity || !body || !acknowledged;
@@ -372,88 +417,8 @@ export async function publishPage(
     }
     return group;
   };
-  /** Binds the page to the saved group: delivery state and controls, no second publication. */
-  const renderSaved = (items: OutboxItem[]) => {
-    outcome.replaceChildren();
-    const definition = items[0];
-    const unfinished = items.filter((item) =>
-      Object.values(item.peers).some((peer) => peer.state !== "accepted"),
-    );
-    const box = el("div", {
-      class: "notice",
-      style: "margin-top:12px",
-      role: "region",
-      "aria-label": "Saved publication",
-    });
-    box.append(
-      el(
-        "p",
-        {},
-        el("strong", {
-          text: unfinished.length
-            ? "Saved. Not delivered yet. "
-            : "Published. ",
-        }),
-        text(
-          unfinished.length
-            ? `${unfinished.length} of ${items.length} signed records did not finish delivery. They are kept in this browser with their exact bytes and sent again automatically. Publishing again would create a second definition, so this page offers delivery of the saved records instead. `
-            : `All ${items.length} signed records were accepted. `,
-        ),
-        link("See Not delivered", routes.outbox),
-      ),
-    );
-    const list = el("ul", { class: "small", style: "margin:8px 0 0" });
-    for (const item of items) {
-      const line = el("li");
-      line.append(
-        text(`${item.label.action} ${item.label.subject}: `),
-        text(
-          Object.values(item.peers)
-            .map((peer) => describePeer(peer))
-            .join(" "),
-          "meta",
-        ),
-      );
-      list.append(line);
-    }
-    box.append(list);
-    const actions = el("div", { class: "actions", style: "margin-top:8px" });
-    if (unfinished.length) {
-      const retry = button(
-        "Try now",
-        async () => {
-          retry.disabled = true;
-          try {
-            for (const item of unfinished) await app.delivery.tryNow(item.id);
-            const fresh = await app.delivery.items();
-            renderSaved(
-              items.map((i) => fresh.find((f) => f.id === i.id) ?? i),
-            );
-          } catch (error) {
-            app.announce(describe(error));
-          } finally {
-            retry.disabled = false;
-          }
-        },
-        { class: "btn", style: "min-height:40px" },
-      );
-      actions.append(retry);
-    }
-    actions.append(
-      link("Open the record", routes.definition(definition.id), {
-        class: "btn btn-quiet",
-        style: "min-height:40px",
-      }),
-    );
-    box.append(
-      actions,
-      p(
-        "This is a local preview of your signed record. It is not the server's public state until a receipt confirms it.",
-        "meta",
-      ),
-    );
-    outcome.append(box);
-  };
+  const renderSaved = (items: OutboxItem[]) =>
+    renderSavedGroup(app, outcome, items);
   const publish = button(
     "Publish",
     async () => {
@@ -464,14 +429,39 @@ export async function publishPage(
           `Publishing ${body.word.spelling}`,
           async () => {
             if (!(await app.session.firstSignatureDisclosure())) return;
-            // Persist the whole group first. From here on the page belongs to that group.
-            const signed = await app.signer.sign(buildGroup());
-            saved = true;
-            refreshPublish();
-            // The page now belongs to the saved group. The publish controls go away.
-            publish.remove();
-            bar?.remove();
-            await discardDraft(app);
+            // Commit the whole group with the draft revision it publishes. The
+            // same transaction removes the reviewed draft. From here on the
+            // page belongs to that group, whatever fails later.
+            let signed: SignedGroup;
+            try {
+              signed = await app.signer.sign(buildGroup(), undefined, {
+                draftKey: DRAFT_KEY,
+                revision: draft.revision,
+              });
+            } catch (error) {
+              if (error instanceof PublicationConflictError) {
+                if (error.kind === "already-published" && error.record) {
+                  bindSaved();
+                  renderSaved(await groupItems(error.record));
+                  app.announce(error.message);
+                  return;
+                }
+                if (error.kind === "newer-draft") {
+                  outcome.replaceChildren(
+                    el(
+                      "p",
+                      { class: "notice" },
+                      text(`${error.message} `),
+                      link("Review the newer draft", "/new/publish"),
+                    ),
+                  );
+                  app.announce(error.message);
+                  return;
+                }
+              }
+              throw error;
+            }
+            bindSaved();
             app.own.invalidate();
             renderSaved(signed.items);
             const results: OutboxItem[] = [];
@@ -498,9 +488,22 @@ export async function publishPage(
           },
         );
       } catch (error) {
-        // Nothing was saved. Publication stays available.
-        app.announce(describe(error));
-        outcome.replaceChildren(p(describe(error), "notice"));
+        if (saved) {
+          // The group is committed. A later failure never reports it unsaved.
+          app.announce(
+            `The group is saved. A later step failed: ${describe(error)}`,
+          );
+          outcome.append(
+            p(
+              `A step after saving failed: ${describe(error)}. The saved records keep their delivery path above.`,
+              "notice",
+            ),
+          );
+        } else {
+          // Nothing was saved. Publication stays available.
+          app.announce(describe(error));
+          outcome.replaceChildren(p(describe(error), "notice"));
+        }
       } finally {
         refreshPublish();
       }
@@ -547,4 +550,90 @@ export async function publishPage(
   });
   main.append(bar);
   refreshPublish();
+  if (published) {
+    bindSaved();
+    renderSaved(await groupItems(published));
+  }
+}
+/** The saved group: delivery state per record and the controls that use the saved bytes. */
+function renderSavedGroup(app: App, outcome: HTMLElement, items: OutboxItem[]) {
+  outcome.replaceChildren();
+  const definition = items[0];
+  const unfinished = items.filter((item) =>
+    Object.values(item.peers).some((peer) => peer.state !== "accepted"),
+  );
+  const box = el("div", {
+    class: "notice",
+    style: "margin-top:12px",
+    role: "region",
+    "aria-label": "Saved publication",
+  });
+  box.append(
+    el(
+      "p",
+      {},
+      el("strong", {
+        text: unfinished.length ? "Saved. Not delivered yet. " : "Published. ",
+      }),
+      text(
+        unfinished.length
+          ? `${unfinished.length} of ${items.length} signed records did not finish delivery. They are kept in this browser with their exact bytes and sent again automatically. Publishing again would create a second definition, so this page offers delivery of the saved records instead. `
+          : `All ${items.length} signed records were accepted. `,
+      ),
+      link("See Not delivered", routes.outbox),
+    ),
+  );
+  const list = el("ul", { class: "small", style: "margin:8px 0 0" });
+  for (const item of items) {
+    const line = el("li");
+    line.append(
+      text(`${item.label.action} ${item.label.subject}: `),
+      text(
+        Object.values(item.peers)
+          .map((peer) => describePeer(peer))
+          .join(" "),
+        "meta",
+      ),
+    );
+    list.append(line);
+  }
+  box.append(list);
+  const actions = el("div", { class: "actions", style: "margin-top:8px" });
+  if (unfinished.length) {
+    const retry = button(
+      "Try now",
+      async () => {
+        retry.disabled = true;
+        try {
+          for (const item of unfinished) await app.delivery.tryNow(item.id);
+          const fresh = await app.delivery.items();
+          renderSavedGroup(
+            app,
+            outcome,
+            items.map((i) => fresh.find((f) => f.id === i.id) ?? i),
+          );
+        } catch (error) {
+          app.announce(describe(error));
+        } finally {
+          retry.disabled = false;
+        }
+      },
+      { class: "btn", style: "min-height:40px" },
+    );
+    actions.append(retry);
+  }
+  actions.append(
+    link("Open the record", routes.definition(definition.id), {
+      class: "btn btn-quiet",
+      style: "min-height:40px",
+    }),
+  );
+  box.append(
+    actions,
+    p(
+      "This is a local preview of your signed record. It is not the server's public state until a receipt confirms it.",
+      "meta",
+    ),
+  );
+  outcome.append(box);
 }
