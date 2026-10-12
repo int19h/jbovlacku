@@ -1,6 +1,7 @@
 //! Lujvo bonding, scoring, segmentation, and the component builder.
 //! Bonding, tosmabru, and scoring are ported from jbotci. Segmentation
 //! uses the pinned recognizer and compares parsed parts with intended parts.
+use crate::detail_budget::DetailBudget;
 use crate::phonotactics::{PairClass, is_consonant, is_initial_pair, is_vowel, pair_class};
 use crate::rafsi::{
     RafsiShape, gismu_shape, is_short_rafsi_form, rafsi_shape, universal_gismu_forms,
@@ -460,6 +461,13 @@ pub struct RowAnalysis {
 }
 /// The choices of one component under the profile.
 pub fn row_choices(profile: Profile, component: &Component) -> RowAnalysis {
+    row_choices_with_parser(profile, component, crate::recognize::parse)
+}
+fn row_choices_with_parser(
+    profile: Profile,
+    component: &Component,
+    parse: impl Fn(&str) -> Result<crate::recognize::Reading, BuilderError>,
+) -> RowAnalysis {
     let mut diagnostics = Vec::new();
     if component.spelling.len() > crate::recognize::MAX_WORD_BYTES
         || component.claims.len() > 64
@@ -549,7 +557,31 @@ pub fn row_choices(profile: Profile, component: &Component) -> RowAnalysis {
         }
         "cmevla" => diagnostics.push("A name has no combining form in a lujvo.".into()),
         _ if !gismu => {
-            if is_brivla_core(&normalized) {
+            let reading = match parse(&normalized) {
+                Ok(reading) => reading,
+                Err(error) => {
+                    diagnostics.push(format!("Whole-word recognition is incomplete: {error}"));
+                    let lock_valid = component
+                        .locked
+                        .as_ref()
+                        .is_none_or(|locked| choices.iter().any(|c| &c.form == locked));
+                    return RowAnalysis {
+                        id: component.id.clone(),
+                        normalized,
+                        choices,
+                        lock_valid,
+                        diagnostics,
+                    };
+                }
+            };
+            if !normalized.contains('y')
+                && matches!(
+                    reading.kind,
+                    crate::recognize::Kind::Gismu
+                        | crate::recognize::Kind::Lujvo
+                        | crate::recognize::Kind::Fuivla
+                )
+            {
                 if profile == Profile::Extended {
                     choices.push(Choice {
                         form: normalized.clone(),
@@ -717,6 +749,12 @@ impl std::fmt::Display for BuilderError {
 /// Builds every valid lujvo from the component choices, in ascending score
 /// order, then spelling, then the choice tuple.
 pub fn build_lujvo(request: &LujvoRequest) -> Result<LujvoResult, BuilderError> {
+    build_lujvo_with_detail_budget(request, DetailBudget::default())
+}
+fn build_lujvo_with_detail_budget(
+    request: &LujvoRequest,
+    mut detail_budget: DetailBudget,
+) -> Result<LujvoResult, BuilderError> {
     let count = request.components.len() as u64;
     if !(2..=64).contains(&count) {
         return Err(BuilderError::Invalid {
@@ -790,14 +828,6 @@ pub fn build_lujvo(request: &LujvoRequest) -> Result<LujvoResult, BuilderError> 
             limit: request.limits.choice_product.min(20_000),
         });
     }
-    let claims_by_rafsi: BTreeMap<&str, Vec<&InventoryClaim>> = request
-        .inventory
-        .claims
-        .iter()
-        .fold(BTreeMap::new(), |mut m, c| {
-            m.entry(c.rafsi.as_str()).or_default().push(c);
-            m
-        });
     let mut candidates: Vec<Candidate> = Vec::new();
     let mut rejected = Vec::new();
     let mut considered = 0u64;
@@ -839,32 +869,6 @@ pub fn build_lujvo(request: &LujvoRequest) -> Result<LujvoResult, BuilderError> 
             let spelling: String = tokens.concat();
             match validate_checked(request.profile, &parts, &tokens, &mut recognition_work) {
                 Ok(recovered_parts) => {
-                    let mut conflicts = Vec::new();
-                    let mut unlisted = Vec::new();
-                    for (choice, component) in chosen.iter().zip(&request.components) {
-                        if choice.origin != Origin::Claim {
-                            continue;
-                        }
-                        let known = claims_by_rafsi
-                            .get(choice.form.as_str())
-                            .map(|v| v.as_slice())
-                            .unwrap_or(&[]);
-                        if !known.iter().any(|k| Some(&k.pair) == choice.pair.as_ref()) {
-                            unlisted.push(choice.form.clone());
-                        }
-                        for other in known
-                            .iter()
-                            .filter(|k| Some(&k.pair) != choice.pair.as_ref())
-                        {
-                            conflicts.push(Conflict {
-                                rafsi: choice.form.clone(),
-                                id: component.id.clone(),
-                                word: other.word.clone(),
-                                spelling: other.spelling.clone(),
-                                pair: other.pair.clone(),
-                            });
-                        }
-                    }
                     candidates.push(Candidate {
                         spelling,
                         parts: chosen
@@ -880,8 +884,8 @@ pub fn build_lujvo(request: &LujvoRequest) -> Result<LujvoResult, BuilderError> 
                         score: score(&tokens).expect("validated word length bounds its score"),
                         tokens,
                         recovered: recovered_parts,
-                        conflicts,
-                        unlisted,
+                        conflicts: vec![],
+                        unlisted: vec![],
                     });
                 }
                 Err(error @ BuilderError::ResourceLimit { .. }) => {
@@ -914,6 +918,7 @@ pub fn build_lujvo(request: &LujvoRequest) -> Result<LujvoResult, BuilderError> 
             })
     });
     candidates.truncate(request.limits.results.min(512));
+    add_conflict_details(&mut candidates, &request.inventory, &mut detail_budget)?;
     Ok(LujvoResult {
         rows,
         candidates,
@@ -930,6 +935,65 @@ pub fn build_lujvo(request: &LujvoRequest) -> Result<LujvoResult, BuilderError> 
         },
         diagnostics,
     })
+}
+/// Checks all selected conflict details before copying any strings.
+fn add_conflict_details(
+    candidates: &mut [Candidate],
+    inventory: &Inventory,
+    budget: &mut DetailBudget,
+) -> Result<(), BuilderError> {
+    if candidates.is_empty() {
+        return Ok(());
+    }
+    budget.scan(inventory.claims.len())?;
+    let claims_by_rafsi: BTreeMap<&str, Vec<&InventoryClaim>> =
+        inventory
+            .claims
+            .iter()
+            .fold(BTreeMap::new(), |mut map, claim| {
+                map.entry(claim.rafsi.as_str()).or_default().push(claim);
+                map
+            });
+    for candidate in candidates.iter() {
+        for part in candidate.parts.iter().filter(|p| p.origin == Origin::Claim) {
+            let known = claims_by_rafsi
+                .get(part.form.as_str())
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            // Account for the preflight and the later copy pass.
+            budget.scan(known.len().saturating_mul(2))?;
+            for other in known.iter().filter(|c| Some(&c.pair) != part.pair.as_ref()) {
+                budget.detail(&[
+                    &part.form,
+                    &part.id,
+                    &other.word,
+                    &other.spelling,
+                    &other.pair,
+                ])?;
+            }
+        }
+    }
+    for candidate in candidates {
+        for part in candidate.parts.iter().filter(|p| p.origin == Origin::Claim) {
+            let known = claims_by_rafsi
+                .get(part.form.as_str())
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            if !known.iter().any(|c| Some(&c.pair) == part.pair.as_ref()) {
+                candidate.unlisted.push(part.form.clone());
+            }
+            for other in known.iter().filter(|c| Some(&c.pair) != part.pair.as_ref()) {
+                candidate.conflicts.push(Conflict {
+                    rafsi: part.form.clone(),
+                    id: part.id.clone(),
+                    word: other.word.clone(),
+                    spelling: other.spelling.clone(),
+                    pair: other.pair.clone(),
+                });
+            }
+        }
+    }
+    Ok(())
 }
 /// The word kind that analysis recognizes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -991,6 +1055,9 @@ pub fn analyze_word(profile: Profile, spelling: &str) -> Analysis {
                 }
                 _ => WordKind::Unknown,
             };
+            if profile == Profile::Cll && analysis.kind == WordKind::Fuivla {
+                analysis.diagnostics.push("Fu'ivla recognition uses the extended jbotci lineage. This classification does not establish CLL validity.".into());
+            }
             if analysis.kind == WordKind::Lujvo {
                 let parts: Vec<Part> = reading
                     .tokens
@@ -1576,5 +1643,122 @@ mod tests {
             validate_checked(Profile::Extended, &parts, &tokens, &mut work),
             Err(BuilderError::ResourceLimit { .. })
         ));
+    }
+    #[test]
+    fn classic_fuivla_analysis_reports_its_recognition_scope() {
+        let classic = analyze_word(Profile::Cll, "ismu");
+        let extended = analyze_word(Profile::Extended, "ismu");
+        assert_eq!(classic.kind, WordKind::Fuivla);
+        assert_eq!(extended.kind, WordKind::Fuivla);
+        assert!(
+            classic
+                .diagnostics
+                .iter()
+                .any(|d| d.contains("extended jbotci lineage")
+                    && d.contains("does not establish CLL validity"))
+        );
+        assert!(extended.diagnostics.is_empty());
+        assert!(
+            analyze_word(Profile::Cll, "leksiko")
+                .diagnostics
+                .iter()
+                .any(|d| d.contains("does not establish CLL validity"))
+        );
+    }
+    #[test]
+    fn row_recognition_exhaustion_is_not_a_linguistic_rejection() {
+        let component = Component {
+            id: "a".into(),
+            spelling: "ismu".into(),
+            kind: "fuivla".into(),
+            definition: None,
+            claims: vec![],
+            locked: Some("ismu".into()),
+        };
+        let row = row_choices_with_parser(Profile::Extended, &component, |_| {
+            Err(resource("recognition work", 2, 1))
+        });
+        assert!(row.choices.is_empty());
+        assert!(
+            row.diagnostics
+                .iter()
+                .any(|d| d.contains("recognition is incomplete") && d.contains("recognition work"))
+        );
+        assert!(!row.diagnostics.iter().any(
+            |d| d.contains("not a brivla") || d.contains("not one of this component's choices")
+        ));
+    }
+    fn conflict_request() -> LujvoRequest {
+        let component = |id: &str, spelling: &str, rafsi: &str| Component {
+            id: id.into(),
+            spelling: spelling.into(),
+            kind: "gismu".into(),
+            definition: None,
+            locked: None,
+            claims: vec![Claim {
+                rafsi: rafsi.into(),
+                pair: format!("selected-{rafsi}"),
+            }],
+        };
+        LujvoRequest {
+            profile: Profile::Cll,
+            components: vec![
+                component("a", "cukta", "cku"),
+                component("b", "sinxa", "sni"),
+            ],
+            inventory: Inventory {
+                snapshot: None,
+                claims: (0..2)
+                    .map(|n| InventoryClaim {
+                        rafsi: "cku".into(),
+                        word: format!("word-{n}"),
+                        spelling: "test".into(),
+                        pair: format!("other-{n}"),
+                    })
+                    .collect(),
+            },
+            limits: Limits {
+                choice_product: 20_000,
+                results: 1,
+            },
+        }
+    }
+    #[test]
+    fn conflicts_are_described_only_for_selected_lujvo_candidates() {
+        let mut request = conflict_request();
+        let result =
+            build_lujvo_with_detail_budget(&request, DetailBudget::new(100, 2, 1_000)).unwrap();
+        assert_eq!(result.considered, 4);
+        assert_eq!(result.candidates.len(), 1);
+        assert_eq!(result.candidates[0].conflicts.len(), 2);
+        request.limits.results = 2;
+        assert!(
+            matches!(build_lujvo_with_detail_budget(&request,DetailBudget::new(100,2,1_000)),Err(BuilderError::ResourceLimit {measure,..}) if measure=="conflict detail rows")
+        );
+    }
+    #[test]
+    fn lujvo_conflict_preflight_copies_nothing_when_it_refuses() {
+        let request = conflict_request();
+        let mut result = build_lujvo(&request).unwrap();
+        for candidate in &mut result.candidates {
+            candidate.conflicts.clear();
+            candidate.unlisted.clear();
+        }
+        for budget in [
+            DetailBudget::new(100, 1, 1_000),
+            DetailBudget::new(100, 10, 1),
+            DetailBudget::new(1, 10, 1_000),
+        ] {
+            assert!(matches!(
+                add_conflict_details(&mut result.candidates, &request.inventory, &mut { budget }),
+                Err(BuilderError::ResourceLimit { .. })
+            ));
+            assert!(
+                result
+                    .candidates
+                    .iter()
+                    .all(|c| c.conflicts.is_empty() && c.unlisted.is_empty())
+            );
+        }
     }
 }

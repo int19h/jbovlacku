@@ -2,6 +2,7 @@
 //! normalization over distinct languages, maximum aggregation of alternatives,
 //! tied ranks, and complete conflict lists. Recognition counting and the
 //! similar-consonant mapping are ported from jbotci.
+use crate::detail_budget::DetailBudget;
 use crate::lujvo::{BuilderError, InventoryClaim, Versioned};
 use crate::phonotactics::{
     CONSONANTS, VOWELS, is_consonant, is_initial_pair, is_permissible_pair, is_vowel,
@@ -269,14 +270,22 @@ struct ConflictIndex<'a> {
     by_candidate: BTreeMap<String, Vec<(&'a InventoryGismu, &'static str)>>,
 }
 impl<'a> ConflictIndex<'a> {
-    fn build(inventory: &'a [InventoryGismu]) -> Self {
+    fn build(
+        inventory: &'a [InventoryGismu],
+        budget: &mut DetailBudget,
+    ) -> Result<Self, BuilderError> {
         let mut by_candidate: BTreeMap<String, Vec<(&InventoryGismu, &'static str)>> =
             BTreeMap::new();
+        budget.scan(inventory.len())?;
         for entry in inventory {
+            if entry.spelling.len() != 5 {
+                continue;
+            }
             let chars: Vec<char> = entry.spelling.chars().collect();
             if chars.len() != 5 {
                 continue;
             }
+            budget.scan(1)?;
             by_candidate
                 .entry(entry.spelling.clone())
                 .or_default()
@@ -285,6 +294,7 @@ impl<'a> ConflictIndex<'a> {
                 for vowel in VOWELS.chars().filter(|v| *v != chars[4]) {
                     let mut c = chars.clone();
                     c[4] = vowel;
+                    budget.scan(1)?;
                     by_candidate
                         .entry(c.iter().collect())
                         .or_default()
@@ -301,6 +311,7 @@ impl<'a> ConflictIndex<'a> {
                 {
                     let mut c = chars.clone();
                     c[index] = proposed;
+                    budget.scan(1)?;
                     by_candidate
                         .entry(c.iter().collect())
                         .or_default()
@@ -308,7 +319,16 @@ impl<'a> ConflictIndex<'a> {
                 }
             }
         }
-        Self { by_candidate }
+        Ok(Self { by_candidate })
+    }
+    fn preflight(&self, candidate: &str, budget: &mut DetailBudget) -> Result<(), BuilderError> {
+        if let Some(entries) = self.by_candidate.get(candidate) {
+            budget.scan(entries.len().saturating_mul(2))?;
+            for (entry, rule) in entries {
+                budget.detail(&[&entry.word, &entry.spelling, rule])?;
+            }
+        }
+        Ok(())
     }
     fn conflicts(&self, candidate: &str) -> Vec<RootConflict> {
         let mut out: Vec<RootConflict> = self
@@ -588,6 +608,12 @@ impl Scorer {
 type Scored<'a> = (BigUint, &'a str, Vec<(usize, usize)>);
 /// Runs the generator. The search is complete or refused; a window only limits the output.
 pub fn generate_gismu(request: &GismuRequest) -> Result<GismuResult, BuilderError> {
+    generate_gismu_with_detail_budget(request, DetailBudget::default())
+}
+fn generate_gismu_with_detail_budget(
+    request: &GismuRequest,
+    mut detail_budget: DetailBudget,
+) -> Result<GismuResult, BuilderError> {
     let languages = resolve_languages(&request.sources)?;
     let mut denominator_lcm = BigUint::one();
     for language in &languages {
@@ -668,7 +694,8 @@ pub fn generate_gismu(request: &GismuRequest) -> Result<GismuResult, BuilderErro
         greater += (end - index) as u64;
         index = end;
     }
-    let conflicts = ConflictIndex::build(&request.inventory.gismu);
+    let conflicts = ConflictIndex::build(&request.inventory.gismu, &mut detail_budget)?;
+    detail_budget.scan(request.inventory.claims.len())?;
     let claims_by_rafsi: BTreeMap<&str, Vec<&InventoryClaim>> = request
         .inventory
         .claims
@@ -677,54 +704,66 @@ pub fn generate_gismu(request: &GismuRequest) -> Result<GismuResult, BuilderErro
             m.entry(c.rafsi.as_str()).or_default().push(c);
             m
         });
-    let describe =
-        |form: &str, sum: &BigUint, best: &[(usize, usize)], rank: Option<u64>| -> GismuCandidate {
-            let contributions = languages
-                .iter()
-                .enumerate()
-                .map(|(l, language)| {
-                    let (a, m) = best[l];
-                    Contribution {
-                        language: language.language.clone(),
-                        input: language.inputs[a].iter().collect(),
-                        matched: m,
-                        length: language.inputs[a].len(),
-                        weighted: calculated(&scorer.rational(&scorer.tables[l][a][m])),
-                    }
-                })
-                .collect();
-            let short_rafsi = possible_short_rafsi(form);
-            let rafsi_conflicts = short_rafsi
-                .iter()
-                .flat_map(|r| {
-                    claims_by_rafsi
-                        .get(r.as_str())
-                        .into_iter()
-                        .flatten()
-                        .map(move |c| RafsiConflict {
-                            rafsi: r.clone(),
-                            word: c.word.clone(),
-                            spelling: c.spelling.clone(),
-                            pair: c.pair.clone(),
-                        })
-                })
-                .collect();
-            GismuCandidate {
-                form: form.to_owned(),
-                score: calculated(&scorer.rational(sum)),
-                rank,
-                contributions,
-                short_rafsi,
-                conflicts: conflicts.conflicts(form),
-                rafsi_conflicts,
+    let mut describe = |form: &str,
+                        sum: &BigUint,
+                        best: &[(usize, usize)],
+                        rank: Option<u64>|
+     -> Result<GismuCandidate, BuilderError> {
+        let short_rafsi = possible_short_rafsi(form);
+        conflicts.preflight(form, &mut detail_budget)?;
+        for rafsi in &short_rafsi {
+            if let Some(claims) = claims_by_rafsi.get(rafsi.as_str()) {
+                detail_budget.scan(claims.len().saturating_mul(2))?;
+                for claim in claims {
+                    detail_budget.detail(&[rafsi, &claim.word, &claim.spelling, &claim.pair])?;
+                }
             }
-        };
+        }
+        let contributions = languages
+            .iter()
+            .enumerate()
+            .map(|(l, language)| {
+                let (a, m) = best[l];
+                Contribution {
+                    language: language.language.clone(),
+                    input: language.inputs[a].iter().collect(),
+                    matched: m,
+                    length: language.inputs[a].len(),
+                    weighted: calculated(&scorer.rational(&scorer.tables[l][a][m])),
+                }
+            })
+            .collect();
+        let rafsi_conflicts = short_rafsi
+            .iter()
+            .flat_map(|r| {
+                claims_by_rafsi
+                    .get(r.as_str())
+                    .into_iter()
+                    .flatten()
+                    .map(move |c| RafsiConflict {
+                        rafsi: r.clone(),
+                        word: c.word.clone(),
+                        spelling: c.spelling.clone(),
+                        pair: c.pair.clone(),
+                    })
+            })
+            .collect();
+        Ok(GismuCandidate {
+            form: form.to_owned(),
+            score: calculated(&scorer.rational(sum)),
+            rank,
+            contributions,
+            short_rafsi,
+            conflicts: conflicts.conflicts(form),
+            rafsi_conflicts,
+        })
+    };
     let candidates: Vec<GismuCandidate> = scored
         .iter()
         .zip(&ranks)
         .take(window)
         .map(|((sum, form, best), rank)| describe(form, sum, best, Some(*rank)))
-        .collect();
+        .collect::<Result<_, _>>()?;
     let mut diagnostics = Vec::new();
     let manual = match request
         .manual
@@ -754,7 +793,7 @@ pub fn generate_gismu(request: &GismuRequest) -> Result<GismuResult, BuilderErro
                     if rank.is_none() {
                         diagnostics.push(format!("\"{normalized}\" is outside the generated inventory, so it has a score but no rank."));
                     }
-                    Some(describe(&normalized, &sum, &best, rank))
+                    Some(describe(&normalized, &sum, &best, rank)?)
                 }
             } else {
                 None
@@ -1077,6 +1116,57 @@ mod tests {
         assert!(
             parse_rational(&serde_json::json!({"numerator":"1".repeat(65),"denominator":1}))
                 .is_none()
+        );
+    }
+    #[test]
+    fn gismu_conflict_budget_includes_ranked_and_manual_output() {
+        let mut request = GismuRequest {
+            sources: vec![row("eng", "banta", 1, 1)],
+            candidates: CandidateRecipe::SourceLetters,
+            inventory: GismuInventory::default(),
+            window: 1,
+            manual: None,
+            limits: GismuLimits::default(),
+        };
+        let first = generate_gismu(&request).unwrap().candidates.remove(0);
+        let rafsi = first.short_rafsi[0].clone();
+        request.manual = Some(first.form.clone());
+        request.inventory.claims.push(InventoryClaim {
+            rafsi,
+            word: "other-word".into(),
+            spelling: "other".into(),
+            pair: "other-pair".into(),
+        });
+        let complete = generate_gismu(&request).unwrap();
+        assert_eq!(complete.candidates[0].rafsi_conflicts.len(), 1);
+        assert_eq!(complete.manual.unwrap().rafsi_conflicts.len(), 1);
+        assert!(
+            matches!(generate_gismu_with_detail_budget(&request,DetailBudget::new(100,1,1_000)),Err(BuilderError::ResourceLimit {measure,..}) if measure=="conflict detail rows")
+        );
+        request.manual = None;
+        assert!(
+            matches!(generate_gismu_with_detail_budget(&request,DetailBudget::new(100,10,1)),Err(BuilderError::ResourceLimit {measure,..}) if measure=="conflict detail bytes")
+        );
+        assert!(
+            matches!(generate_gismu_with_detail_budget(&request,DetailBudget::new(1,10,1_000)),Err(BuilderError::ResourceLimit {measure,..}) if measure=="conflict detail work")
+        );
+    }
+    #[test]
+    fn root_conflict_index_and_output_have_work_and_copy_bounds() {
+        let inventory = vec![InventoryGismu {
+            spelling: "sakli".into(),
+            word: "word".into(),
+        }];
+        assert!(matches!(
+            ConflictIndex::build(&inventory, &mut DetailBudget::new(1, 10, 1_000)),
+            Err(BuilderError::ResourceLimit { .. })
+        ));
+        let index = ConflictIndex::build(&inventory, &mut DetailBudget::default()).unwrap();
+        assert!(
+            matches!(index.preflight("sakli",&mut DetailBudget::new(100,0,1_000)),Err(BuilderError::ResourceLimit {measure,..}) if measure=="conflict detail rows")
+        );
+        assert!(
+            matches!(index.preflight("sakli",&mut DetailBudget::new(100,10,1)),Err(BuilderError::ResourceLimit {measure,..}) if measure=="conflict detail bytes")
         );
     }
 }

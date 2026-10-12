@@ -2,6 +2,7 @@
 //! phonotactic tables, rafsi shapes, the lujvo builder, and the gismu
 //! generator. Every function is pure. See docs/morphology.md for the profiles
 //! and their versions, and THIRD-PARTY-NOTICES.md for the ported sources.
+mod detail_budget;
 pub mod gismu;
 pub mod lujvo;
 pub mod phonotactics;

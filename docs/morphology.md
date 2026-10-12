@@ -36,7 +36,7 @@ The extended profile adds the audited jbotci behavior for whole-word parts. It i
 
 The word recognizer ports the pure recognition functions from jbotci's `segment.rs` and the indicator table from `cmavo.rs`. Contract macros and source diagnostic types do not enter the port. The crate adds work limits around the same parsing rules. It returns spelling spans without jbotci's stress and glide marks.
 
-The CLL profile restricts lujvo components and construction joins. General word recognition uses the pinned jbotci lineage for both profiles. This is not full equivalence with gencmu's `cll-ebnf` grammar. For example, jbotci and gencmu `bpfk` recognize `ismu`, while gencmu `cll-ebnf` rejects it. The retained [reference results](../crates/jvc-morphology/evidence/word-parses.json) record this difference. Fu'ivla classification is advisory under the CLL profile.
+The CLL profile restricts lujvo components and construction joins. General word recognition uses the pinned jbotci lineage for both profiles. This is not full equivalence with gencmu's `cll-ebnf` grammar. For example, jbotci and gencmu `bpfk` recognize `ismu`, while gencmu `cll-ebnf` rejects it. The retained [reference results](../crates/jvc-morphology/evidence/word-parses.json) record this difference. Fu'ivla classification is advisory under the CLL profile. Every such analysis reports that the extended jbotci lineage does not establish CLL validity.
 
 The extended parser recognizes `sakrsakysakli` as `sakrsak + y + sakli`. The CLL profile rejects it. Neither profile returns the invalid classic split `sak + rsak + y + sakli`.
 
@@ -44,9 +44,13 @@ The extended parser recognizes `sakrsakysakli` as `sakrsak + y + sakli`. The CLL
 
 The recognizer accepts at most 128 input bytes. It permits at most 50,000 calls to recursive recognition functions that share its cache. This counts failed paths and cached calls. Exhaustion invalidates the whole analysis, including any earlier successful branch. Analysis returns `unknown` with a resource diagnostic. Builders return `BuilderError::ResourceLimit` and no partial result.
 
-A lujvo request accepts 2 through 64 components, 64 claims per component, and 20,000 inventory claims. A component or claimed rafsi accepts at most 128 bytes. A build permits at most 20,000 choice combinations and 2,000,000 recognition calls across candidate checks. Failed candidate parses count toward that total. A result window permits at most 512 candidates. Caller limits can reduce these ceilings. The public Rust score function returns an error above 128 bytes, before arithmetic.
+A lujvo request accepts 2 through 64 components, 64 claims per component, and 20,000 inventory claims. A component or claimed rafsi accepts at most 128 bytes. A build permits at most 20,000 choice combinations and 2,000,000 recognition calls across candidate checks. Failed candidate parses count toward that total. A result window permits at most 512 candidates. The builder creates conflict details after it selects that window. Caller limits can reduce these ceilings. The public Rust score function returns an error above 128 bytes, before arithmetic.
 
 A gismu request accepts 1 through 64 source rows. Each raw scoring input and native source word accepts at most 256 bytes. A normalized scoring input accepts at most 64 letters. A language identifier accepts at most 64 bytes. Each weight part accepts at most 64 decimal digits. Exact weight arithmetic permits at most 4096 bits in its shared denominator and total weight. The search permits at most 60,000,000 candidate-input-letter operations. Each inventory list permits at most 20,000 rows. Caller limits can reduce these ceilings.
+
+Each builder shares one conflict budget across its result. It permits 1,000,000 inventory scans and index references, 20,000 copied conflict rows, and 4,000,000 copied text bytes. Gismu budgets include both ranked candidates and the manual form. Preflight checks cover the later copy pass before that pass allocates conflict strings. A resource error returns no partial result and no incomplete conflict list.
+
+Direct component analysis reports incomplete recognition when the recognizer reaches its work limit. It does not declare the spelling invalid or the whole-word lock obsolete from that incomplete result.
 
 ## Extended lujvo scoring
 
