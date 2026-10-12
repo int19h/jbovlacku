@@ -24,6 +24,8 @@ pub struct Preset {
 const LANGSTAT: &str = "https://lojban.org/files/etymology/langstat99.htm";
 const CLL_4_14: &str = "https://lojban.github.io/cll/4/14/";
 const GIMYZBA: &str = "https://github.com/lynn/lynn.github.io/blob/master/gimyzba/index.html";
+const GIMYZBA_FIRST_COMMIT: &str = "https://github.com/lynn/lynn.github.io/commit/567f4ada91";
+const GIMYZBA_README_2020: &str = "https://github.com/lynn/gimyzba/blob/b413e2b/README.md";
 fn language(language: &str, name: &str, numerator: u32) -> PresetLanguage {
     PresetLanguage {
         language: language.into(),
@@ -55,27 +57,27 @@ pub fn builder_presets() -> Vec<Preset> {
         Preset {
             id: "ilmen6".into(),
             label: "Ilmen 6".into(),
-            description: "The six-language table of lynn's gimyzba page, labeled there as first and second language speakers. The page names no population source.".into(),
+            description: "The six-language table of lynn's gimyzba page, labeled there as first and second language speakers. It first appears in that page's first commit of 2026-06-16. The attribution to Ilmen is by name only, and the page names no population source.".into(),
             source_url: GIMYZBA.into(),
-            reference_url: None,
+            reference_url: Some(GIMYZBA_FIRST_COMMIT.into()),
             denominator: 1000,
             languages: vec![language("eng", "English", 339), language("cmn", "Mandarin Chinese", 255), language("hin", "Hindi", 136), language("spa", "Spanish", 126), language("ara", "Arabic", 74), language("fra", "French", 70)],
         },
         Preset {
             id: "ilmen8".into(),
             label: "Ilmen 8".into(),
-            description: "The eight-language table of lynn's gimyzba page. The page names no population source.".into(),
+            description: "Ilmen's 2016 twelve-language weights cut to eight languages and rescaled, as the lynn/gimyzba README credited on 2020-11-12. No source states the population data.".into(),
             source_url: GIMYZBA.into(),
-            reference_url: None,
+            reference_url: Some(GIMYZBA_README_2020.into()),
             denominator: 1000,
             languages: vec![language("cmn", "Mandarin Chinese", 271), language("eng", "English", 170), language("spa", "Spanish", 130), language("hin", "Hindi", 125), language("ara", "Arabic", 104), language("ben", "Bengali", 76), language("rus", "Russian", 64), language("por", "Portuguese", 60)],
         },
         Preset {
             id: "ilmen12".into(),
             label: "Ilmen 12".into(),
-            description: "The twelve-language table of lynn's gimyzba page. Its numerators sum to 999. The page names no population source.".into(),
+            description: "The twelve-language table of lynn's gimyzba page. Its numerators sum to 999. It first appears in that page's first commit of 2026-06-16 and differs from Ilmen's 2016 table. The attribution to Ilmen is by name only, and the page names no population source.".into(),
             source_url: GIMYZBA.into(),
-            reference_url: None,
+            reference_url: Some(GIMYZBA_FIRST_COMMIT.into()),
             denominator: 1000,
             languages: vec![language("cmn", "Mandarin Chinese", 238), language("eng", "English", 160), language("spa", "Spanish", 113), language("hin", "Hindi", 108), language("ara", "Arabic", 90), language("ben", "Bengali", 66), language("rus", "Russian", 55), language("por", "Portuguese", 52), language("msa", "Malay", 32), language("jpn", "Japanese", 30), language("deu", "German", 29), language("fra", "French", 26)],
         },
