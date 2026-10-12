@@ -114,6 +114,7 @@ test("a transfer listed after the first activity page is found and authenticated
   });
   const [knowledge] = await askPeers([peer], identity(), null);
   assert.equal(knowledge.complete, true);
+  assert.equal(knowledge.outcome, "complete");
   assert.equal(knowledge.status, "answered");
   assert.deepEqual(knowledge.transfers, [
     { id: transfer.id, successor: successor() },
@@ -166,7 +167,8 @@ test("a repeated activity cursor is a malformed scan, not an answer", async () =
   });
   const [knowledge] = await askPeers([peer], identity(), null);
   assert.equal(knowledge.complete, false);
-  assert.match(knowledge.status, /repeated a cursor/);
+  assert.equal(knowledge.outcome, "malformed");
+  assert.match(knowledge.status, /repeated or malformed a cursor/);
 });
 
 test("a listed transfer that the peer cannot supply as a valid signed record is unverified, not evidence", async () => {
@@ -205,7 +207,34 @@ test("a listed transfer that the peer cannot supply as a valid signed record is 
   });
   const [knowledge] = await askPeers([peer], identity(), null);
   assert.equal(knowledge.complete, true);
+  assert.equal(knowledge.outcome, "malformed");
   assert.deepEqual(knowledge.transfers, []);
   assert.equal(knowledge.unverified.length, 1);
   assert.match(knowledge.status, /could not supply as valid signed evidence/);
+});
+
+test("an activity page for another snapshot and an unreachable peer are told apart", async () => {
+  serve({
+    "/api/v1/manifest": manifest,
+    "/api/v1/identity-heads/": () => ({
+      snapshot,
+      identity: identity(),
+      heads: [],
+      next: null,
+    }),
+    "/api/v1/identities/": () => ({
+      snapshot: "sha256:" + "b".repeat(64),
+      view: "jve1:" + "0".repeat(64),
+      identity: identity(),
+      items: [],
+      next: null,
+    }),
+  });
+  const [mismatched] = await askPeers([peer], identity(), null);
+  assert.equal(mismatched.outcome, "malformed");
+  assert.match(mismatched.status, /another snapshot/);
+  serve({});
+  const [down] = await askPeers([peer], identity(), null);
+  assert.equal(down.outcome, "unreachable");
+  assert.equal(down.complete, false);
 });

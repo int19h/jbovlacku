@@ -87,12 +87,20 @@ export interface UnverifiedClaim {
   reason: string;
 }
 /** What one configured peer knows about an identity. */
+/**
+ * How a peer scan ended. "complete" reached every terminal cursor and proved
+ * every listed claim. "unreachable" got no usable answer at all. "partial"
+ * stopped at a limit or timeout. "malformed" received a page that breaks the
+ * API contract, such as a repeated cursor or another snapshot.
+ */
+export type ScanOutcome = "complete" | "unreachable" | "partial" | "malformed";
 export interface PeerKnowledge {
   peer: Peer;
   /** "answered" when every request succeeded and every scan reached its end, else the failure text. */
   status: "answered" | string;
   /** True only when the head and activity scans reached a terminal cursor. */
   complete: boolean;
+  outcome: ScanOutcome;
   snapshot: string | null;
   heads: string[];
   /** Authenticated transfer events by this identity, with their successor. */
@@ -107,6 +115,7 @@ export interface PeerKnowledge {
 /** Bounds on one peer scan. They are explicit and reported when hit. */
 export const SCAN_LIMITS = { pages: 64, items: 20000, millis: 60000 };
 class ScanIncomplete extends Error {}
+class ScanMalformed extends Error {}
 /**
  * Asks every configured peer for the identity's heads and lifecycle events.
  * A scan is complete only when every page sequence reached a terminal cursor
@@ -126,6 +135,7 @@ export async function askPeers(
         peer,
         status: "answered",
         complete: false,
+        outcome: "unreachable",
         snapshot: null,
         heads: [],
         transfers: [],
@@ -163,7 +173,7 @@ export async function askPeers(
           );
           for (const head of result.heads) {
             if (after !== null && head <= after)
-              throw new Error("the head scan did not advance");
+              throw new ScanMalformed("the head scan did not advance");
             knowledge.heads.push(head);
           }
           if (result.next === null) break;
@@ -172,7 +182,9 @@ export async function askPeers(
             result.next !== result.heads.at(-1) ||
             (after !== null && result.next <= after)
           )
-            throw new Error("the head scan repeated or malformed a cursor");
+            throw new ScanMalformed(
+              "the head scan repeated or malformed a cursor",
+            );
           seen.add(result.next);
           after = result.next;
         }
@@ -192,10 +204,24 @@ export async function askPeers(
               snapshot: manifest.snapshot,
               limit: 200,
             });
+            if (result.snapshot !== manifest.snapshot)
+              throw new ScanMalformed(
+                "the activity scan answered for another snapshot",
+              );
+            for (const item of result.items) {
+              if (cursor !== null && item.id <= cursor)
+                throw new ScanMalformed("the activity scan did not advance");
+              cursor = item.id;
+            }
             items.push(...result.items);
             if (result.next === null) break;
-            if (cursors.has(result.next))
-              throw new Error("the activity scan repeated a cursor");
+            if (
+              cursors.has(result.next) ||
+              result.next !== result.items.at(-1)?.id
+            )
+              throw new ScanMalformed(
+                "the activity scan repeated or malformed a cursor",
+              );
             cursors.add(result.next);
             cursor = result.next;
           }
@@ -266,15 +292,23 @@ export async function askPeers(
                 });
             }
         knowledge.complete = true;
+        knowledge.outcome = knowledge.unverified.length
+          ? "malformed"
+          : "complete";
         if (knowledge.unverified.length)
           knowledge.status = `it listed ${knowledge.unverified.length} lifecycle record${knowledge.unverified.length === 1 ? "" : "s"} that it could not supply as valid signed evidence`;
       } catch (error) {
-        knowledge.status =
-          error instanceof ScanIncomplete
-            ? `incomplete: ${error.message}`
-            : error instanceof Error
-              ? error.message
-              : "The peer did not answer.";
+        if (error instanceof ScanIncomplete) {
+          knowledge.outcome = "partial";
+          knowledge.status = `incomplete: ${error.message}`;
+        } else if (error instanceof ScanMalformed) {
+          knowledge.outcome = "malformed";
+          knowledge.status = `malformed answer: ${error.message}`;
+        } else {
+          knowledge.outcome = "unreachable";
+          knowledge.status =
+            error instanceof Error ? error.message : "The peer did not answer.";
+        }
       }
       return knowledge;
     }),
@@ -295,13 +329,14 @@ export async function fetchBranches(
 ): Promise<{ fetched: number }> {
   let fetched = 0;
   for (const k of knowledge) {
-    if (!k.complete || !k.snapshot) continue;
+    if (k.outcome !== "complete" || !k.snapshot) continue;
+    const learned = new Map<string, Envelope>();
     const pending = k.heads.filter((h) => !history.events.has(h));
     while (pending.length) {
       signal?.throwIfAborted();
       const id = pending.pop()!;
-      if (history.events.has(id)) continue;
-      if (fetched >= 4096)
+      if (history.events.has(id) || learned.has(id)) continue;
+      if (fetched + learned.size >= 4096)
         throw new Error(
           `${k.peer.label} reports more than 4096 unknown records. Export and merge history with the CLI.`,
         );
@@ -310,6 +345,7 @@ export async function fetchBranches(
         envelope = await getEnvelope(id, k.snapshot, { peer: k.peer, signal });
         verifyEnvelope(utf8(JSON.stringify(envelope)));
       } catch (error) {
+        // A branch with a missing ancestor is not known history. Nothing of it is kept.
         throw new Error(
           `${k.peer.label} reports record ${id.slice(0, 20)}… but could not supply it as a valid signed record (${error instanceof Error ? error.message : String(error)}).`,
         );
@@ -318,13 +354,17 @@ export async function fetchBranches(
         throw new Error(
           `${k.peer.label} supplied a record that does not belong to this key.`,
         );
-      history.events.set(id, envelope);
-      // Keep the verified branch locally, so later history loads do not depend on that peer.
-      await store.put("ownhistory", id, envelope);
-      fetched++;
+      learned.set(id, envelope);
       for (const previous of envelope.header.previous)
-        if (!history.events.has(previous)) pending.push(previous);
+        if (!history.events.has(previous) && !learned.has(previous))
+          pending.push(previous);
     }
+    if (!learned.size) continue;
+    // Keep the complete verified branch and its heads locally in one write, so
+    // later history loads do not depend on that peer.
+    await store.recordBranch(history.identity, [...learned.values()]);
+    for (const [id, envelope] of learned) history.events.set(id, envelope);
+    fetched += learned.size;
   }
   if (fetched) {
     const ancestors = new Set<string>();

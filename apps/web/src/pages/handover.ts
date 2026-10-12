@@ -95,13 +95,13 @@ interface Gathered {
   blocked: string | null;
   digest: string;
 }
-/** A peer whose scan ended early or listed claims it could not prove. */
+/** A peer whose scan stopped early, answered against the API contract, or listed claims it could not prove. */
 function scanIncomplete(k: PeerKnowledge): boolean {
-  return !k.complete && k.status.startsWith("incomplete");
+  return k.outcome === "partial" || k.outcome === "malformed";
 }
 /** A peer that could not be reached at all. */
 function unanswered(k: PeerKnowledge): boolean {
-  return !k.complete && !scanIncomplete(k);
+  return k.outcome === "unreachable";
 }
 export async function handoverPage(
   _route: Route,
@@ -358,27 +358,8 @@ export async function handoverPage(
     });
     let existingTransfer: Gathered["existingTransfer"] = null;
     let compromised: string | null = null;
-    for (const envelope of history.events.values()) {
-      if (envelope.header.action.kind === "identity.transfer")
-        existingTransfer = {
-          id: envelope.id,
-          successor: String(envelope.header.action.successor),
-          peer: "this browser",
-        };
-      if (envelope.header.action.kind === "identity.compromise")
-        compromised = "this browser";
-    }
     const { peers } = configuredPeers(app);
     const knowledge = await askPeers(peers, old.identity, null, context.signal);
-    for (const k of knowledge) {
-      for (const t of k.transfers)
-        existingTransfer ??= {
-          id: t.id,
-          successor: t.successor,
-          peer: k.peer.label,
-        };
-      if (k.compromises.length) compromised ??= k.peer.label;
-    }
     let blocked: string | null = null;
     let fetched = 0;
     if (!history.complete)
@@ -396,13 +377,33 @@ export async function handoverPage(
         blocked = describe(error);
       }
     }
+    // Lifecycle state comes from the complete authenticated union, including fetched branches.
+    for (const envelope of history.events.values()) {
+      if (envelope.header.action.kind === "identity.transfer")
+        existingTransfer = {
+          id: envelope.id,
+          successor: String(envelope.header.action.successor),
+          peer: "this browser",
+        };
+      if (envelope.header.action.kind === "identity.compromise")
+        compromised = "this browser";
+    }
+    for (const k of knowledge) {
+      for (const t of k.transfers)
+        existingTransfer ??= {
+          id: t.id,
+          successor: t.successor,
+          peer: k.peer.label,
+        };
+      if (k.compromises.length) compromised ??= k.peer.label;
+    }
     const heads = [...history.frontier].sort();
     const digest = JSON.stringify({
       heads,
       existingTransfer,
       compromised,
       blocked,
-      peers: knowledge.map((k) => [k.peer.id, k.status, k.complete, k.heads]),
+      peers: knowledge.map((k) => [k.peer.id, k.outcome, k.status, k.heads]),
     });
     return {
       history,
@@ -453,7 +454,7 @@ export async function handoverPage(
     const list = el("ul", { class: "small" });
     for (const k of g.knowledge) {
       const item = el("li");
-      if (k.complete) {
+      if (k.outcome === "complete") {
         item.append(
           text(
             `${k.peer.label}: ${k.heads.length === 0 ? "no own events" : k.heads.length === 1 ? "one head" : `${k.heads.length} heads`}, scan complete.`,

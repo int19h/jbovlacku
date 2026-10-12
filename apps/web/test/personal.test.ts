@@ -310,3 +310,51 @@ test("a body that became available is fetched for a cached record, and malformed
   await panel.getByRole("button", { name: "Recompute from records" }).click();
   await expect(panel).toContainText(/Personal view calculated in this browser/);
 });
+
+test("a cached body takes part only when the selected snapshot retains it", async ({
+  page,
+}) => {
+  await page.goto("/trust");
+  await page
+    .getByRole("radio", { name: "Mine: site view + my choices" })
+    .check();
+  await openWord(page, "cukta");
+  await expect(
+    page.getByRole("region", { name: "Personal view" }),
+  ).toContainText(/Personal view calculated in this browser/);
+  const result = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { loadRecords } = await import(String("/src/data/records.ts"));
+    const store = new LocalStore();
+    const a = await store.get("inventory", "latest");
+    // Snapshot B has the same events but retains no bodies.
+    const b = { ...a, snapshot: "sha256:" + "b".repeat(64), bodies: [] };
+    const withA = await loadRecords(store, a);
+    const withB = await loadRecords(store, b);
+    // An empty cache for B: the same envelopes without any body.
+    const empty = new LocalStore(`empty-cache-${Date.now()}`);
+    for (const id of a.events) {
+      const record = await store.get("records", id);
+      await empty.put("records", id, {
+        ...record,
+        body: null,
+        bodyStatus: record.bodyHash ? "missing" : "none",
+      });
+    }
+    for (const hash of a.selections)
+      await empty.put("selections", hash, await store.get("selections", hash));
+    const fromEmpty = await loadRecords(empty, b);
+    return {
+      bodiesA: Object.keys(withA.bodies).length,
+      bodiesB: Object.keys(withB.bodies).length,
+      sameAsEmpty: JSON.stringify(withB) === JSON.stringify(fromEmpty),
+      cachedBodies: (await store.list("records")).filter((r: any) => r.body)
+        .length,
+    };
+  });
+  expect(result.bodiesA).toBeGreaterThan(0);
+  expect(result.bodiesB).toBe(0);
+  expect(result.sameAsEmpty).toBe(true);
+  // The cache keeps the bodies for snapshot A.
+  expect(result.cachedBodies).toBe(result.bodiesA);
+});

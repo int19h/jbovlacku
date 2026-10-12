@@ -131,6 +131,8 @@ export async function compromisePage(
   const actionBox = el("div", { class: "actions", style: "margin-top:16px" });
   main.append(actionBox);
   let history: OwnHistory | null = null;
+  /** The heads stored in this browser when the preview was made. The write compares them again. */
+  let storedHeads: string[] = [];
   let failure: string | null = null;
   const safe = new Set<string>();
   let approveEmpty = false;
@@ -287,6 +289,10 @@ export async function compromisePage(
     previewBody.replaceChildren();
     actionBox.replaceChildren();
     try {
+      storedHeads = [
+        ...((await app.store.get<string[]>("heads", keyField.input.value)) ??
+          []),
+      ].sort();
       history = await loadOwnHistory(app.store, keyField.input.value, {
         offline: app.offlineSigning.value,
         signal: context.signal,
@@ -385,7 +391,7 @@ export async function compromisePage(
       await queueCompromise(
         app.store,
         outboxItem(transport, crypto.randomUUID(), 0, recipients),
-        frontier,
+        storedHeads,
       );
       app.own.invalidate();
       await app.delivery.invalidate();

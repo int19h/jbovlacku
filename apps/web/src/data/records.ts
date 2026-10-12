@@ -424,7 +424,13 @@ export async function loadRecords(
 }> {
   const events: string[] = [];
   const bodies: Record<string, string> = {};
-  const bodySet = new Set(inventory.bodies ?? []);
+  if (!Array.isArray(inventory.bodies))
+    throw new RecordsError(
+      "The cached inventory predates body tracking. Download the records again.",
+      "missing",
+    );
+  // Only bodies that this snapshot retains take part. Other cached bodies stay cached for other snapshots.
+  const bodySet = new Set(inventory.bodies);
   for (const id of inventory.events) {
     const stored = await store.get<StoredRecord>("records", id);
     if (!stored)
@@ -434,7 +440,8 @@ export async function loadRecords(
       );
     const record = normalize(stored);
     events.push(record.envelope);
-    if (record.body) bodies[id] = record.body;
+    if (record.body && record.bodyHash && bodySet.has(record.bodyHash))
+      bodies[id] = record.body;
     else if (record.bodyHash && bodySet.has(record.bodyHash))
       throw new RecordsError(
         `The body of ${id} is retained by the snapshot but not cached. Download the records again.`,

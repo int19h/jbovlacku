@@ -387,6 +387,46 @@ export class LocalStore {
     });
   }
   /**
+   * Records own records learned from another peer: the verified envelopes and
+   * the heads they add, in one transaction that merges with the heads stored
+   * meanwhile. Heads that the new records follow are replaced.
+   */
+  async recordBranch(
+    identity: string,
+    envelopes: import("../model/types.ts").Envelope[],
+  ): Promise<void> {
+    if (!envelopes.length) return;
+    for (const envelope of envelopes)
+      if (envelope.header.issuer !== identity)
+        throw new Error("A learned record does not belong to this identity.");
+    const ids = new Set(envelopes.map((e) => e.id));
+    const predecessors = new Set(envelopes.flatMap((e) => e.header.previous));
+    const db = await this.database;
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(["ownhistory", "heads"], "readwrite");
+      const own = tx.objectStore("ownhistory");
+      for (const envelope of envelopes) own.put(envelope, envelope.id);
+      const heads = tx.objectStore("heads");
+      const request = heads.get(identity);
+      request.onsuccess = () => {
+        const current: string[] = request.result ?? [];
+        heads.put(
+          [
+            ...new Set([
+              ...current.filter((id) => !predecessors.has(id)),
+              ...[...ids].filter((id) => !predecessors.has(id)),
+            ]),
+          ].sort(),
+          identity,
+        );
+      };
+      tx.oncomplete = () => resolve();
+      tx.onabort = () =>
+        reject(tx.error ?? new Error("Local storage did not save the branch."));
+      tx.onerror = () => {};
+    });
+  }
+  /**
    * Finishes the version 1 migration once the core is available. A migrated
    * row is accepted only when its retained receipt satisfies the same rules
    * as a fresh delivery. Otherwise it stays unknown with its exact bytes.
@@ -414,10 +454,18 @@ export class LocalStore {
               : 0,
         };
       }
+      // Classification waited on the network. Another tab or a delivery attempt
+      // can have recorded fresh evidence meanwhile. That evidence stays.
+      const before = JSON.stringify(peer);
       await this.mergeOutbox(item.id, (stored) => {
         const { migrated, ...rest } = stored;
-        void migrated;
-        return { ...rest, peers: { ...stored.peers, self: next } };
+        if (!migrated) return stored;
+        const current = stored.peers.self;
+        const unchanged = JSON.stringify(current) === before;
+        return {
+          ...rest,
+          peers: { ...stored.peers, self: unchanged ? next : current },
+        };
       });
       changed++;
     }
@@ -432,17 +480,6 @@ function migrateOutboxItem(old: {
   receipt?: import("../model/types.ts").Receipt;
   error?: string;
 }): OutboxItem {
-  // A stored mark alone does not prove that the required body reached the peer.
-  // Accept only with receipt evidence of admission and a matching body status.
-  let transportBody: unknown = null;
-  let envelopeHash: string | null = null;
-  try {
-    const parsed = JSON.parse(old.transport) as Transport;
-    transportBody = parsed.body;
-    envelopeHash = parsed.envelope.header.content?.hash ?? null;
-  } catch {}
-  void transportBody;
-  void envelopeHash;
   // A stored mark is never accepted here. The receipt is kept, and the
   // reconciliation after the core loads applies the full delivery rules:
   // the receipt must name the stored envelope hash and the required body hash.

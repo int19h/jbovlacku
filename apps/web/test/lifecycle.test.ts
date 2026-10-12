@@ -287,139 +287,37 @@ async function addMirrorPeer(page: Page) {
   await expect(page.getByText("Unlocked", { exact: true })).toBeVisible();
 }
 
-test("a handover fetches a branch that only a second peer holds, includes it in the transfer, and blocks when that branch cannot be supplied", async ({
+test("a handover fetches a branch that only a second peer holds, blocks while that branch cannot be supplied, and then follows it", async ({
   page,
 }) => {
-  const old = await createIdentity(page);
-  await endorseFirst(page, "cukta");
-  await acceptFirstSignature(page);
-  await expect(page.getByRole("status").last()).toHaveText(
-    "Your endorsement is published.",
+  const { branch, mode } = await mirrorBranchSetup(page);
+  // The mirror reports the branch but cannot supply it. The ordinary handover is blocked, not acknowledged away.
+  mode.supply = false;
+  await page.goto("/identity/transfer");
+  await expect(knownHistory(page)).toContainText(
+    /mirror reports record .* but could not supply it as a valid signed record/,
   );
-  // Sign a second record that only the mirror will hold: capture its upload and keep it away from this server.
-  let captured: {
-    envelope: { id: string; header: { previous: string[] } };
-  } | null = null;
-  await page.route("**/api/v1/events", async (route) => {
-    if (route.request().method() !== "POST" || captured)
-      return route.continue();
-    captured = JSON.parse(route.request().postData() ?? "{}");
-    await route.fulfill({
-      status: 503,
-      json: { code: "busy", message: "Later.", event: null, field: null },
-    });
-  });
-  await endorseFirst(page, "vlacku");
-  await expect(
-    page.getByRole("link", { name: "1 not delivered" }),
-  ).toBeVisible();
-  await page.unroute("**/api/v1/events");
-  expect(captured).not.toBeNull();
-  const branch = captured!.envelope;
-  const firstHead = branch.header.previous[0];
-  // Forget the branch locally. Only the mirror knows it.
-  await page.evaluate(
-    async ({ id, identity, head }) => {
-      const { LocalStore } = await import(String("/src/data/store.ts"));
-      const store = new LocalStore();
-      await store.delete("outbox", id);
-      await store.put("heads", identity, [head]);
-    },
-    { id: branch.id, identity: old.identity, head: firstHead },
-  );
-  await addMirrorPeer(page);
-  const manifestOf = async (route: import("@playwright/test").Route) => {
-    const response = await route.fetch({
-      url: new URL("/api/v1/manifest", page.url()).href,
-    });
-    return response.json();
-  };
-  let supplyBranch = true;
-  await page.route("**/mirror/api/v1/**", async (route) => {
-    const url = new URL(route.request().url());
-    const path = decodeURIComponent(url.pathname).replace(
-      /^\/mirror\/api\/v1/,
-      "",
-    );
-    if (path === "/manifest")
-      return route.fulfill({ json: await manifestOf(route) });
-    const manifest = await manifestOf(route);
-    if (path.startsWith("/identity-heads/"))
-      return route.fulfill({
-        json: {
-          snapshot: manifest.snapshot,
-          identity: old.identity,
-          heads: [branch.id],
-          next: null,
-        },
-      });
-    if (path.endsWith("/activity"))
-      return route.fulfill({
-        json: {
-          snapshot: manifest.snapshot,
-          view: "jve1:" + "0".repeat(64),
-          identity: old.identity,
-          items: [],
-          next: null,
-        },
-      });
-    if (path === `/events/${branch.id}`)
-      return supplyBranch
-        ? route.fulfill({ json: branch })
-        : route.fulfill({
-            status: 404,
-            json: {
-              code: "missing",
-              message: "Event is unavailable.",
-              event: null,
-              field: null,
-            },
-          });
-    if (path === "/events" && route.request().method() === "POST")
-      return route.fulfill({
-        status: 503,
-        json: { code: "busy", message: "Later.", event: null, field: null },
-      });
-    return route.fulfill({
-      status: 404,
-      json: { code: "missing", message: "No route.", event: null, field: null },
-    });
-  });
-  await page.getByRole("link", { name: /key (unlocked|locked)/ }).click();
-  await page.getByRole("link", { name: "Start" }).click();
-  await expect(
-    page.getByRole("heading", { name: "Move to a new key" }),
-  ).toBeVisible();
-  const history = page.getByRole("region", {
-    name: "Known history",
-    exact: true,
-  });
-  await expect(history).toContainText(
-    "One known head over 2 verified records, 1 fetched from other peers",
-  );
-  await expect(history).toContainText("mirror: one head, scan complete.");
   await createSuccessor(page);
-  for (const box of await page.getByRole("checkbox").all()) await box.check();
-  // The branch disappears from the mirror before signing. The refresh blocks the handover instead of dropping the branch.
-  supplyBranch = false;
-  await page.getByRole("button", { name: "Sign the handover" }).click();
-  await expect(page.getByRole("status").last()).toContainText(
-    "The known history changed",
-  );
-  await expect(history).toContainText(
-    /could not supply it as a valid signed record/,
-  );
-  await expect(page.getByText(/blocks the handover/)).toBeVisible();
+  await expect(
+    page.getByText("The old key's state blocks the handover."),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Sign the handover" }),
+  ).toHaveCount(0);
   expect(
     (await outboxItems(page)).some(
       (i: any) => i.label.action === "key handover",
     ),
   ).toBe(false);
-  // The branch is available again. The preview needs renewed approval, then the transfer follows the fetched branch.
-  supplyBranch = true;
-  // A full page load locks the key. The signing step then opens the unlock dialog.
+  // The mirror supplies the branch. It is fetched, verified, kept, and the transfer follows it.
+  mode.supply = true;
   await page.goto("/identity/transfer");
-  await expect(history).toContainText("1 fetched from other peers");
+  await expect(knownHistory(page)).toContainText(
+    "One known head over 2 verified records, 1 fetched from other peers",
+  );
+  await expect(knownHistory(page)).toContainText(
+    "mirror: one head, scan complete.",
+  );
   await createSuccessor(page);
   for (const box of await page.getByRole("checkbox").all()) await box.check();
   await page.getByRole("button", { name: "Sign the handover" }).click();
@@ -578,4 +476,345 @@ test("a retired key signs a compromise notice through a masked passphrase field"
   expect(JSON.parse(notice.transport).envelope.header.action.safe).toHaveLength(
     1,
   );
+});
+
+/** The mirror's behavior, changed by the test between phases. */
+interface MirrorMode {
+  down: boolean;
+  supply: boolean;
+  activity: "ok" | "repeat" | "wrong-snapshot";
+  heads: "ok" | "endless";
+}
+/**
+ * Creates a key with one record on this server and one record that only the
+ * mirror holds, then routes the mirror according to the mode.
+ */
+async function mirrorBranchSetup(page: Page) {
+  const old = await createIdentity(page);
+  await endorseFirst(page, "cukta");
+  await acceptFirstSignature(page);
+  await expect(page.getByRole("status")).toHaveText(
+    "Your endorsement is published.",
+  );
+  let captured: {
+    envelope: { id: string; header: { previous: string[] } };
+  } | null = null;
+  await page.route("**/api/v1/events", async (route) => {
+    if (route.request().method() !== "POST" || captured)
+      return route.continue();
+    captured = JSON.parse(route.request().postData() ?? "{}");
+    await route.fulfill({
+      status: 503,
+      json: { code: "busy", message: "Later.", event: null, field: null },
+    });
+  });
+  await endorseFirst(page, "vlacku");
+  await expect(
+    page.getByRole("link", { name: "1 not delivered" }),
+  ).toBeVisible();
+  await page.unroute("**/api/v1/events");
+  const branch = captured!.envelope;
+  await page.evaluate(
+    async ({ id, identity, head }) => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const store = new LocalStore();
+      await store.delete("outbox", id);
+      await store.put("heads", identity, [head]);
+    },
+    { id: branch.id, identity: old.identity, head: branch.header.previous[0] },
+  );
+  await addMirrorPeer(page);
+  const mode: MirrorMode = {
+    down: false,
+    supply: true,
+    activity: "ok",
+    heads: "ok",
+  };
+  let headPage = 0;
+  await page.route("**/mirror/api/v1/**", async (route) => {
+    const fail = (status: number, message: string) =>
+      route.fulfill({
+        status,
+        json: { code: "busy", message, event: null, field: null },
+      });
+    if (mode.down) return fail(503, "The mirror is down.");
+    const url = new URL(route.request().url());
+    const path = decodeURIComponent(url.pathname).replace(
+      /^\/mirror\/api\/v1/,
+      "",
+    );
+    const manifest = await (
+      await route.fetch({ url: new URL("/api/v1/manifest", page.url()).href })
+    ).json();
+    if (path === "/manifest") return route.fulfill({ json: manifest });
+    if (path.startsWith("/identity-heads/")) {
+      if (mode.heads === "endless") {
+        headPage++;
+        const head = "jve1:" + headPage.toString(16).padStart(64, "0");
+        return route.fulfill({
+          json: {
+            snapshot: manifest.snapshot,
+            identity: old.identity,
+            heads: [head],
+            next: head,
+          },
+        });
+      }
+      return route.fulfill({
+        json: {
+          snapshot: manifest.snapshot,
+          identity: old.identity,
+          heads: [branch.id],
+          next: null,
+        },
+      });
+    }
+    if (path.endsWith("/activity")) {
+      const base = {
+        view: "jve1:" + "0".repeat(64),
+        identity: old.identity,
+        items: [],
+        next: null,
+      };
+      if (mode.activity === "repeat")
+        return route.fulfill({
+          json: {
+            ...base,
+            snapshot: manifest.snapshot,
+            next: "jve1:" + "f".repeat(64),
+          },
+        });
+      if (mode.activity === "wrong-snapshot")
+        return route.fulfill({
+          json: { ...base, snapshot: "sha256:" + "b".repeat(64) },
+        });
+      return route.fulfill({ json: { ...base, snapshot: manifest.snapshot } });
+    }
+    if (path === `/events/${branch.id}`)
+      return mode.supply
+        ? route.fulfill({ json: branch })
+        : fail(404, "Event is unavailable.");
+    if (path === "/events") return fail(503, "Later.");
+    return fail(404, "No route.");
+  });
+  return { old, branch, mode };
+}
+const knownHistory = (page: Page) =>
+  page.getByRole("region", { name: "Known history", exact: true });
+
+test("a branch fetched from a peer stays known after that peer stops answering, and the transfer still follows it", async ({
+  page,
+}) => {
+  const { branch, mode } = await mirrorBranchSetup(page);
+  await page.goto("/identity/transfer");
+  await expect(knownHistory(page)).toContainText("1 fetched from other peers");
+  const stored = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore();
+    const selected = await store.get("keys", "selected");
+    return {
+      heads: await store.get("heads", selected.identity),
+      branches: (await store.list("ownhistory")).length,
+    };
+  });
+  expect(stored.heads).toEqual([branch.id]);
+  expect(stored.branches).toBe(1);
+  // The mirror goes down. The branch is still known history, not an acknowledged loss.
+  mode.down = true;
+  await page.goto("/identity/transfer");
+  await expect(knownHistory(page)).toContainText(
+    "One known head over 2 verified records",
+  );
+  await expect(knownHistory(page)).toContainText("mirror: did not answer");
+  await expect(knownHistory(page)).not.toContainText(
+    "fetched from other peers",
+  );
+  await createSuccessor(page);
+  for (const box of await page.getByRole("checkbox").all()) await box.check();
+  await page.getByRole("button", { name: "Sign the handover" }).click();
+  const unlock = page.getByRole("dialog", { name: "Unlock your key" });
+  await unlock.getByLabel("Passphrase").fill(PASSPHRASE);
+  await unlock.getByRole("button", { name: "Unlock" }).click();
+  await expect(page.getByRole("status").last()).toContainText(
+    "Old key retired",
+  );
+  const transfer = (await outboxItems(page)).find(
+    (i: any) => i.label.action === "key handover",
+  );
+  expect(JSON.parse(transfer.transport).envelope.header.previous).toEqual([
+    branch.id,
+  ]);
+});
+
+test("a repeated cursor, another snapshot, or a partial head scan from a peer blocks the handover page", async ({
+  page,
+}) => {
+  const { mode } = await mirrorBranchSetup(page);
+  mode.activity = "repeat";
+  await page.goto("/identity/transfer");
+  await expect(knownHistory(page)).toContainText(
+    "mirror: malformed answer: the activity scan repeated or malformed a cursor",
+  );
+  await expect(knownHistory(page)).toContainText(
+    "needs a complete scan of every configured peer",
+  );
+  await createSuccessor(page);
+  await expect(
+    page.getByText("The old key's state blocks the handover."),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Sign the handover" }),
+  ).toHaveCount(0);
+  mode.activity = "wrong-snapshot";
+  await page.goto("/identity/transfer");
+  await expect(knownHistory(page)).toContainText(
+    "mirror: malformed answer: the activity scan answered for another snapshot",
+  );
+  await expect(knownHistory(page)).toContainText("needs a complete scan");
+  mode.activity = "ok";
+  mode.heads = "endless";
+  await page.goto("/identity");
+  await page.evaluate(async () => {
+    const { SCAN_LIMITS } = await import(String("/src/data/lifecycle.ts"));
+    SCAN_LIMITS.pages = 2;
+  });
+  await page.getByRole("link", { name: "Start" }).click();
+  await expect(knownHistory(page)).toContainText(
+    "mirror: incomplete: the head scan did not end within 2 pages",
+  );
+  await expect(knownHistory(page)).toContainText("needs a complete scan");
+  expect(
+    (await outboxItems(page)).some(
+      (i: any) => i.label.action === "key handover",
+    ),
+  ).toBe(false);
+});
+
+test("a key restored into fresh storage signs a notice about its server history", async ({
+  page,
+  browser,
+}) => {
+  const me = await createIdentity(page);
+  await endorseFirst(page, "cukta");
+  await acceptFirstSignature(page);
+  await expect(page.getByRole("status")).toHaveText(
+    "Your endorsement is published.",
+  );
+  await page.getByRole("link", { name: /key (unlocked|locked)/ }).click();
+  const downloadPromise = page.waitForEvent("download");
+  await page
+    .getByRole("button", { name: "Download the encrypted backup" })
+    .click();
+  const backup = await (await downloadPromise).path();
+  const fresh = await browser.newContext({
+    baseURL: new URL(page.url()).origin,
+  });
+  const restored = await fresh.newPage();
+  await restored.goto("/identity");
+  await restored.getByLabel("Backup file").setInputFiles(backup!);
+  await restored.getByLabel("Backup passphrase").fill(PASSPHRASE);
+  await restored.getByRole("button", { name: "Open backup locally" }).click();
+  await expect(restored.getByText("Unlocked", { exact: true })).toBeVisible();
+  const localHeads = await restored.evaluate(async (identity) => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    return (await new LocalStore().get("heads", identity)) ?? [];
+  }, me.identity);
+  expect(localHeads).toEqual([]);
+  await restored.getByRole("link", { name: "Report" }).click();
+  const records = restored.getByRole("list", {
+    name: "Own records in causal order",
+  });
+  await expect(records.getByRole("checkbox")).toHaveCount(1);
+  await records.getByRole("checkbox").first().check();
+  await restored
+    .getByRole("checkbox", { name: /cannot prove which holder/ })
+    .check();
+  await restored.getByRole("button", { name: "Sign the notice" }).click();
+  await expect(restored.getByRole("status")).toContainText(
+    "compromise notice is saved",
+  );
+  const items = await restored.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    return new LocalStore().list("outbox");
+  });
+  const notice = items.find((i: any) => i.label.action === "compromise notice");
+  expect(JSON.parse(notice.transport).envelope.header.previous).toHaveLength(1);
+  expect(JSON.parse(notice.transport).envelope.header.action.safe).toHaveLength(
+    1,
+  );
+  await fresh.close();
+});
+
+test("a migrated row keeps fresh receipt evidence recorded while its old receipt was being checked", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const result = await page.evaluate(async () => {
+    const core = await import(
+      String(
+        "/@fs" +
+          "/build/jbovlacku/worktrees/web-ui-refinement/packages/core/src/index.ts",
+      )
+    );
+    await core.initializeCore();
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { outboxItem } = await import(String("/src/data/lifecycle.ts"));
+    const seed = new Uint8Array(32).fill(188);
+    const head = core.createEvent(
+      seed,
+      [],
+      "c".repeat(32),
+      { kind: "identity.merge" },
+      null,
+    );
+    const store = new LocalStore(`migration-race-${Date.now()}`);
+    const item = outboxItem(head, "race", 0, {
+      self: { origin: location.origin, base: "/api/v1", label: "self" },
+    });
+    item.migrated = true;
+    item.peers.self.state = "unknown";
+    item.peers.self.receipt = { id: head.envelope.id, admission: "accepted" };
+    await store.put("outbox", item.id, item);
+    let begin: () => void = () => {};
+    const started = new Promise<void>((resolve) => (begin = resolve));
+    let finish: () => void = () => {};
+    const held = new Promise<void>((resolve) => (finish = resolve));
+    const reconcile = store.reconcileMigrated(async () => {
+      begin();
+      await held;
+      return {
+        state: "unknown",
+        error: "Earlier receipt lacks complete evidence.",
+      };
+    });
+    await started;
+    // A delivery attempt records a fresh accepted receipt while the old one is being checked.
+    await store.mergeOutbox(item.id, (stored: any) => ({
+      ...stored,
+      peers: {
+        ...stored.peers,
+        self: {
+          ...stored.peers.self,
+          state: "accepted",
+          error: null,
+          receipt: {
+            id: head.envelope.id,
+            admission: "accepted",
+            proof: "fresh",
+          },
+        },
+      },
+    }));
+    finish();
+    await reconcile;
+    const after = await store.get("outbox", item.id);
+    return {
+      state: after.peers.self.state,
+      receipt: after.peers.self.receipt,
+      migrated: after.migrated ?? null,
+    };
+  });
+  expect(result.state).toBe("accepted");
+  expect(result.receipt.proof).toBe("fresh");
+  expect(result.migrated).toBeNull();
 });
