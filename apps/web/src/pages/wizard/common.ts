@@ -83,14 +83,24 @@ export function guardDraftNavigation(
     saver.detach();
     return true;
   }
-  return saver.flush().then((ok) => {
-    if (ok) {
-      saver.detach();
-      return true;
-    }
-    saver.blocked(target);
-    return false;
-  });
+  return saver.flush().then(
+    (ok) => {
+      // The flush settles the latest content. A check here covers an edit
+      // that arrived in the same turn, before this page is taken down.
+      if (ok && !saver.hasUnsaved) {
+        saver.detach();
+        return true;
+      }
+      saver.blocked(target);
+      return false;
+    },
+    (error: unknown) => {
+      // An unexpected failure never removes an editor with unsaved edits.
+      saver.unexpected(error);
+      saver.blocked(target);
+      return false;
+    },
+  );
 }
 /** The fields that make two draft copies the same for saving. */
 function contentKey(draft: Draft): string {
@@ -154,29 +164,50 @@ export class DraftSaver {
     this.timer = undefined;
     if (pendingSaver === this) pendingSaver = null;
   }
-  /** Writes the draft when it changed since the last save. Returns false when nothing is saved. */
-  flush(): Promise<boolean> {
+  /**
+   * Writes until the current content is the stored content. Edits that
+   * arrive during a write are written next. Returns true only when the
+   * latest content reached storage, and false after a failure or conflict.
+   */
+  async flush(): Promise<boolean> {
     clearTimeout(this.timer);
     this.timer = undefined;
-    if (this.saving) return this.saving.then(() => this.flush());
-    if (this.conflict) {
-      // The page copy is stale. Only an explicit choice replaces the stored draft.
-      this.report();
-      return Promise.resolve(false);
+    for (;;) {
+      if (this.saving) {
+        await this.saving;
+        continue;
+      }
+      if (this.conflict) {
+        // The page copy is stale. Only an explicit choice replaces the stored draft.
+        this.report();
+        return false;
+      }
+      if (!this.hasUnsaved) {
+        // Nothing changed since the last save. Navigation writes nothing.
+        if (this.indicator.textContent === "Saving…")
+          this.indicator.textContent = "Saved in this browser";
+        return true;
+      }
+      if (!(await this.run(this.write({ revision: this.savedRevision }))))
+        return false;
     }
-    if (contentKey(this.draft) === this.savedContent) {
-      // Nothing changed since the last save. Navigation writes nothing.
-      if (this.indicator.textContent === "Saving…")
-        this.indicator.textContent = "Saved in this browser";
-      return Promise.resolve(true);
-    }
-    this.saving = this.write({ revision: this.savedRevision });
-    return this.saving.finally(() => {
+  }
+  /** Tracks one write as the active save. */
+  private run(write: Promise<boolean>): Promise<boolean> {
+    this.saving = write.finally(() => {
       this.saving = null;
     });
+    return this.saving;
+  }
+  /** Reports a failure outside the save itself, such as a guard error. */
+  unexpected(error: unknown) {
+    this.failed = true;
+    this.failure = `Not saved: ${describe(error)}.`;
   }
   private async write(expected: ExpectedDraft): Promise<boolean> {
     const revision = crypto.randomUUID();
+    // The write commits exactly this snapshot. Later edits stay unsaved
+    // until their own write, whatever this one reports.
     const content = contentKey(this.draft);
     try {
       await this.app.store.saveDraft(
@@ -189,7 +220,9 @@ export class DraftSaver {
       this.savedContent = content;
       this.conflict = null;
       this.failed = false;
-      this.indicator.replaceChildren(text("Saved in this browser"));
+      this.indicator.replaceChildren(
+        text(this.hasUnsaved ? "Saving…" : "Saved in this browser"),
+      );
       return true;
     } catch (error) {
       this.failed = true;
@@ -246,25 +279,23 @@ export class DraftSaver {
   }
   /** Replaces the stored draft with this page's copy after an explicit choice. */
   async keepThisCopy(): Promise<boolean> {
-    if (this.saving) await this.saving;
+    while (this.saving) await this.saving;
     const expected = this.conflict;
     if (!expected) return this.flush();
     this.conflict = null;
-    this.saving = this.write(expected);
-    return this.saving.finally(() => {
-      this.saving = null;
-    });
+    if (!(await this.run(this.write(expected)))) return false;
+    // Edits made while that write ran are written next.
+    return this.flush();
   }
   get hasFailed() {
     return this.failed;
   }
-  /** Edits that storage did not take, after a failure or a conflict. */
+  /**
+   * Whether the current content differs from the content that storage
+   * holds: before the timer runs, during a write, and after a failure.
+   */
   get hasUnsaved() {
-    return (
-      !this.detached &&
-      this.failed &&
-      contentKey(this.draft) !== this.savedContent
-    );
+    return !this.detached && contentKey(this.draft) !== this.savedContent;
   }
 }
 export function exportDraft(draft: Draft) {

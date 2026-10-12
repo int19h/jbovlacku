@@ -46,14 +46,24 @@ let shown = { href: location.href, state: history.state as unknown };
 function track() {
   shown = { href: location.href, state: history.state as unknown };
 }
-/** Runs the guard. A synchronous verdict keeps navigation synchronous. */
+/**
+ * Runs the guard. A synchronous verdict keeps navigation synchronous. A
+ * guard that fails keeps the current page, because the guard exists to
+ * protect it. A full page load still leaves.
+ */
 function allowed(target: string): boolean | Promise<boolean> {
   if (!guard) return true;
   try {
     const verdict = guard(target);
-    return typeof verdict === "boolean" ? verdict : verdict.catch(() => true);
-  } catch {
-    return true;
+    return typeof verdict === "boolean"
+      ? verdict
+      : verdict.catch((error: unknown) => {
+          console.error("The navigation guard failed.", error);
+          return false;
+        });
+  } catch (error) {
+    console.error("The navigation guard failed.", error);
+    return false;
   }
 }
 export function onNavigate(listener: Listener) {

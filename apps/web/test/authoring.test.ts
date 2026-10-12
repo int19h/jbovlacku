@@ -1476,3 +1476,78 @@ test("a failed save makes the browser ask before the page unloads, and dismissin
   await expect(box).toHaveValue("Unsaved valuable edit.");
   expect((await storedDraft(page))?.meaning).toBe("Saved original.");
 });
+
+test("a fresh edit before the automatic save asks before a reload, and a fully saved draft does not", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await page.goto("/new/meaning");
+  const box = page.getByRole("textbox", { name: "Meaning", exact: true });
+  const status = page.getByRole("status").last();
+  const dialogs: string[] = [];
+  page.on("dialog", (dialog) => {
+    dialogs.push(dialog.type());
+    void dialog.dismiss();
+  });
+  await box.fill("Saved text.");
+  await expect(status).toHaveText("Saved in this browser");
+  // A reload of a fully saved draft asks nothing.
+  await page.reload();
+  await expect(box).toHaveValue("Saved text.");
+  expect(dialogs).toEqual([]);
+  // An edit before the timer runs is unsaved. The browser asks, and the edit stays.
+  await box.fill("Fresh edit before the automatic save.");
+  await page.evaluate(() => location.reload());
+  await expect.poll(() => dialogs).toEqual(["beforeunload"]);
+  await expect(box).toHaveValue("Fresh edit before the automatic save.");
+  await expect(status).toHaveText("Saved in this browser");
+  expect((await storedDraft(page))?.meaning).toBe(
+    "Fresh edit before the automatic save.",
+  );
+  // Once saved, a reload asks nothing again and shows the saved edit.
+  await page.reload();
+  await expect(box).toHaveValue("Fresh edit before the automatic save.");
+  expect(dialogs).toEqual(["beforeunload"]);
+});
+
+test("edits made while a navigation waits for a slow save reach storage before the page changes", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await page.getByRole("link", { name: "Add a word" }).click();
+  const box = page.getByRole("textbox", { name: "Meaning", exact: true });
+  const status = page.getByRole("status").last();
+  await box.fill("Original.");
+  await expect(status).toHaveText("Saved in this browser");
+  // The next save waits until the test releases it.
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const original = LocalStore.prototype.saveDraft;
+    let first = true;
+    LocalStore.prototype.saveDraft = async function (...args: unknown[]) {
+      if (first) {
+        first = false;
+        await new Promise((resolve) => {
+          (window as any).__releaseSave = resolve;
+        });
+      }
+      return (original as any).apply(this, args);
+    };
+  });
+  await box.fill("First edit.");
+  await page.waitForFunction(
+    () => typeof (window as any).__releaseSave === "function",
+  );
+  await page.getByRole("link", { name: "About", exact: true }).click();
+  // The navigation waits. A later edit arrives during the write.
+  await box.fill("Later edit while the navigation is saving.");
+  await expect(status).toHaveText("Saving…");
+  await expect(page).toHaveURL(/\/new\/meaning$/);
+  await page.evaluate(() => (window as any).__releaseSave());
+  await expect(page).toHaveURL(/\/about$/);
+  expect((await storedDraft(page))?.meaning).toBe(
+    "Later edit while the navigation is saving.",
+  );
+  await page.goBack();
+  await expect(box).toHaveValue("Later edit while the navigation is saving.");
+});
