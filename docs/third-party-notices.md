@@ -1,7 +1,8 @@
 # Third-party notices
 
 These notices apply to third-party components, not to Jbovlacku itself.
-The project software license and new contribution terms remain undecided.
+The project software license remains undecided.
+New native definitions use the [CC0 contribution terms](format.md#remaining-body-fields). Imported content retains its separate source rights claim.
 
 The Rust inventory follows the resolved normal and build dependencies of `jvc-runtime` for `wasm32-unknown-unknown`.
 It includes compile-time helpers. It does not claim that every listed package contributes machine code to the final binary.

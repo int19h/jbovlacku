@@ -56,7 +56,8 @@ CARGO_TARGET_DIR=/build/jbovlacku/targets/prototype npm run build:core
 
 Use established cryptographic libraries. Do not implement curve arithmetic in application code.
 Keep dependency notices with redistributed files. The [dependency guide](dependencies.md) describes the required notices.
-The project software license and terms for new contributions remain prelaunch choices.
+The project software license remains a prelaunch choice.
+New native definitions use the [CC0 contribution terms](format.md#remaining-body-fields). Imports retain their source rights and attribution.
 
 ## Standalone app
 
@@ -371,5 +372,6 @@ It does not authorize production deployment, live dictionary contributions, exte
 Expressly authorized private GitHub issues and pull requests remain development work.
 Do not merge or deploy through an inferred review approval.
 Real provider requests and authenticated cross-posting require their own authorized test scope.
-Before launch, select the software license, contribution terms, trust roots, witnesses, imports, and operator policies.
+Before launch, select the software license, trust roots, witnesses, imports, and operator policies.
+Implement and test the chosen CC0 contribution flow and the separate imported source-rights convention before public contributions.
 Retain the distinction between signed attribution and permission to distribute source content.

@@ -1,6 +1,7 @@
 # Dependencies and notices
 
-Jbovlacku does not yet select a software license or terms for new contributions.
+Jbovlacku does not yet select a software license.
+New native definitions use the [CC0 contribution terms](format.md#remaining-body-fields). Imported content retains its separate source rights claim.
 Third-party licenses apply to their own components. They do not assign a license to Jbovlacku or imported dictionary content.
 The [third-party notices](third-party-notices.md) retain component versions, declared licenses, copyright notices, and full license texts.
 

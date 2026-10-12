@@ -148,12 +148,14 @@ Do not silently remove planned features to label an earlier stage complete as th
 
 Public launch still needs these operator decisions:
 
-1. Select contribution terms and the software license.
+1. Select the software license.
 2. Publish the initial trust roots, account witnesses, and accepted import selections.
 3. Select retention, admission, and optional inference policies.
 
 The protocol permits these choices without a format redesign. Prototype fixtures use explicit synthetic substitutes.
-Existing Lensisku disclaimer evidence does not silently select CC0 for new Jbovlacku submissions.
+New native definitions use the chosen [CC0 contribution terms](format.md#remaining-body-fields).
+The publication flow and Lensisku source-rights convention need implementation and tests before public contributions.
+Imported source claims remain distinct from CC0 agreement for new contributions. Existing signed imports remain immutable.
 
 ## Local tools
 
