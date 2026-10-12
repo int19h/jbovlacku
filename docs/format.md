@@ -640,11 +640,14 @@ The software license remains a separate prelaunch decision.
 Imported Lensisku dictionary text uses `expression: "LicenseRef-Lensisku-Public-Domain"`.
 Its `url` is `https://github.com/lojban/lensisku/blob/d5a12821ed1e8c24ede711b63625b0782d2f6ae8/frontend/src/locales/en.json#L362`.
 This expression records the source public-domain claim. It does not mean that Lensisku selected CC0.
-The importer preserves original author attribution and the following exact statement in `license.attribution`:
+The importer keeps original author attribution in `license.attribution`, for example `Lensisku source author: USER`.
+If the source author is unknown, it records `Lensisku source author unknown`.
+Original author names and numeric account evidence remain in `legacy.attribution`.
+The rights source reference uses this exact statement as its `label`:
 
 > All content is public domain. By submitting content, you agree to place it in the public domain to the fullest extent allowed by local law.
 
-The importer also records a source reference with that URL and locator `footer.publicDomainNotice`.
+That reference uses the pinned URL above, `event: null`, and `locator: "footer.publicDomainNotice"`.
 Retain the statement and pinned source evidence in the import archive.
 This is the importer's report of the source notice, not proof of historical contributor consent or authorship.
 The notice covers imported dictionary text. It does not establish rights for third-party images or other separately sourced artifacts.
@@ -652,7 +655,9 @@ The notice covers imported dictionary text. It does not establish rights for thi
 Imports without established rights retain `expression: "unknown"` and their available source evidence.
 Existing signed bodies with unknown rights remain immutable. Section 11 defines how an explicit enriched extraction records newly established rights.
 A native revision uses the same CC0 fields for the contributor's own contribution.
-Its `license.attribution` and `sources` retain the imported rights claim, original attribution, and source evidence.
+Its `license.attribution` describes that contributor's own contribution.
+Its parent link retains the imported publication, including the original author attribution and numeric account evidence.
+Its `sources` include a reference whose `event` names that exact imported publication and the separate rights reference defined above.
 That action does not relicense the imported source.
 Prototype fixtures declare their own rights and do not establish rights for real source content.
 
@@ -1246,7 +1251,7 @@ The digest excludes votes, ranking scores, timestamps, display-name changes, and
 
 An attribution correction remains separately reported provenance. It never invents a new lexical edit.
 
-Identical coverage and lexical digests reuse the existing publication envelope.
+Identical coverage and lexical digests reuse the ledger's associated publication envelope, except for a deliberate enriched extraction.
 With different coverage, compare every jointly known field. Agreement means no observed lexical change, not proof that omitted fields stayed unchanged.
 A poorer capture cannot erase richer historical evidence. Newly exposed fields enter the source archive as enrichment.
 A deliberate enriched extraction can create a new imported revision, labeled enrichment rather than a historical author edit.
@@ -1255,6 +1260,12 @@ Changing extraction software alone does not automatically republish every defini
 A deliberate rights enrichment uses an updated extraction version and creates a new imported publication with the previous publication as its parent.
 It retains the source notice and labels the change as importer evidence, not a historical author edit.
 This applies even when the lexical digest is unchanged. It never rewrites an existing signed body.
+Parent links still require the same word and language. Across contexts, use a source reference instead.
+When the importer completes an enrichment, it updates the local ledger's reuse association for the source origin, record ID, coverage, and lexical digest.
+Later ordinary batches reuse that associated publication, even when their routine extraction software version differs.
+The ledger retains older observations and publications.
+If ledger recovery finds ambiguous reuse associations, require explicit selection. Never choose by timestamp or hash order.
+The reuse association is local importer state, not view adoption.
 The view publisher explicitly selects the new publication under the existing import-selection rules.
 A changed known lexical value creates a new imported revision. Its parent is the preceding known version for the same word and language.
 If the source changes word or language, use a source reference rather than an invalid parent link across contexts.

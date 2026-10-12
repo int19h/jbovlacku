@@ -1,6 +1,7 @@
 # Jbovlacku UI design
 
-This document defines the target visual system and twelve screen layouts.
+This document alone defines the target visual system and twelve screen layouts.
+An implementation needs no access to the optional design canvas to follow these requirements.
 The [frontend specification](frontend.md) defines behavior, storage, accessibility, and acceptance scenarios.
 The [format specification](format.md) defines field shapes, signatures, authority, and ranking.
 The [README](../README.md) describes the implemented scope. These layouts do not establish that a feature exists.
@@ -21,11 +22,14 @@ The header and footer use a centered container with a maximum width of 64rem and
 The header uses 10px vertical padding, an 8px row gap, and a 16px column gap.
 It includes the wordmark, search, “Add a word,” the conditional “Not delivered” marker, and the local identity link.
 The search field has a persistent accessible label, a search icon, and an accessible clear button.
-The identity link includes a lock icon and an accessible description of the current lock state.
-The delivery marker counts distinct unfinished failed events, not requests, retries, or failed peers.
+With an existing key, the identity link includes a lock icon and an accessible description of its lock state.
+Without a key, “Your key” opens `/identity` for creation or import. Navigation alone never generates a key.
+The delivery marker counts distinct unfinished records listed on Not delivered, not requests, retries, or peers.
+Listed records include offline failure, refusal, and unknown delivery. Normal transient sends and accepted index lag remain excluded.
 Its details show independent outcomes for each peer. An ordinary transient send does not display it.
 
 The footer includes the active view link, Settings, About, and Source on every page.
+Settings opens `/preferences`, which includes search mode, delivery peers, languages, storage, export, and appearance.
 For a personal view, its label reads “Trust: personal view.” The label follows the actual selected mode.
 The footer uses 13px text, 14px vertical padding, and gaps of 6px by 18px.
 Editor action bars supplement this navigation. They do not remove it.
@@ -86,7 +90,7 @@ Decorative separators do not establish sufficient contrast for interactive bound
 | `surface` | `#ffffff` | `#1a1c1f` | Header, fields, cards |
 | `sunk` | `#eeeeea` | `#222429` | Place strips, quiet hover |
 | `line` | `#e3e3dd` | `#2c2f34` | Decorative separators |
-| `line2` | `#c9c9c1` | `#3d4147` | Secondary borders |
+| `line2` | `#c9c9c1` | `#3d4147` | Secondary decorative borders |
 | `ink` | `#1a1c1e` | `#ecebe6` | Main text |
 | `ink2` | `#474c52` | `#c0c2c5` | Secondary text |
 | `ink3` | `#656b72` | `#9da1a7` | Metadata |
@@ -107,16 +111,21 @@ Links use the accent and an underline offset of 0.18em. Selected actions retain 
 ## Shared components
 
 Buttons use an 8px radius, a 1px border, 16px horizontal padding, and a minimum 44px height.
-Primary buttons use the accent and on-accent text. Quiet buttons use secondary text and a sunk hover background.
+Outlined fields and buttons use ink3 or accent boundaries for their states and meet at least 3:1 boundary contrast.
+Line and line2 remain decorative. Primary buttons use the accent and on-accent text.
+Quiet text actions remain visibly identifiable without a forced box and can use a sunk hover background.
 Fields use an 8px radius, 9px vertical padding, and 12px horizontal padding.
 The header search uses a 10px radius and 44px space at either end for its controls.
-Every interactive target is at least 44 by 44 CSS pixels, including arrows, copy, removal, movement, chips, and links.
+Standalone touch controls are at least 44 by 44 CSS pixels, including arrows, copy, removal, movement, and chips.
+Inline prose links and place markers use the [WCAG inline exception](https://www.w3.org/WAI/WCAG22/Understanding/target-size-enhanced.html).
+They remain clickable without overlapping enlarged hit areas.
 Small glyphs can remain visually compact within that target. Adjacent targets must not overlap.
 
 Place markers use a 1.5px border and a circular shape of 1.45em, with a 0.7em number and weight 650.
-Their accessible name is “place N.” Word-page markers link to their declared place rows.
+Their accessible name is “place N.” Word-page markers link to the declared place rows.
 For numbers above 20, use an outlined numeric badge with the same accessible name.
-An inline marker link needs a sufficient target or an adjacent accessible control to reach its place.
+Equivalent 44px place-navigation controls can appear in the existing place strip or details.
+Do not insert a new button beside each inline occurrence. Never overlap enlarged marker hit areas.
 Literal circled characters remain text. The token, not its glyph, establishes a structured reference.
 
 The judgment control contains an up arrow, net score, and down arrow.
@@ -127,6 +136,8 @@ A known clear or absent judgment leaves both arrows unpressed. Unknown evidence 
 Conflicted or unknown state never becomes an arbitrary pressed arrow. Pending local changes remain separately labeled.
 The score title and accessible name include support, opposition, and direct reviewer count.
 A disclosure exposes that breakdown through keyboard and touch. Hover is an additional route only.
+An exact nonzero headline never rounds to zero. Use sufficient precision, scientific notation, or a signed small-value indicator with exact details.
+“No judgments yet” requires a known zero direct-reviewer count, not a zero net score or unknown evidence.
 Bounded results show ranges or unresolved order. Unavailable results never become zero.
 
 The step bar uses Meaning, Type, Form, Places, Publish.
@@ -208,6 +219,11 @@ An explicit AI action can mark a proposal “AI pick” and show its reason. It 
 “Have the spelling already? Type it in and skip the builder” opens manual entry.
 The primary button names the selected next action, such as “Build the lujvo.”
 Type changes preserve prose and annotations and require review before incompatible formation fields disappear.
+
+The manual Form branch, step 3C, uses a spelling field and attributed morphology notes.
+Cmavo also provide selma'o and an opt-in AI suggestion with its explanation.
+Back returns to Type, and “Use <form>” continues to Places.
+Direct navigation to Places preserves manual spelling, classification, and notes.
 
 ## Lujvo screen, step 3A
 
@@ -291,7 +307,8 @@ Publish expresses agreement without a separate checkbox. Imported text retains i
 An untested backup warning appears above Publish. The author can test it or proceed after the required loss warning.
 The panel names each configured recipient and states that failed delivery remains in this browser for retry.
 The definition, author blessing, selected rafsi claims, and pair blessings persist as one intended local group before dispatch.
-Separate receipts describe their outcomes. Durable definition acceptance opens the word page with accurate remaining state.
+Separate receipts describe their outcomes.
+Receipt confirmation of the envelope and matching required body opens the word page. The page shows accurate remaining state.
 Delivery failure opens a clearly labeled local preview and the Not delivered marker.
 Pending dependencies or index lag never become a false fully published state or automatic redelivery.
 
@@ -306,6 +323,8 @@ Move to a new key and report a stolen key open the dedicated lifecycle flows.
 The idle lock remains 15 minutes without a signing action, unless the explicit session setting applies.
 Working keys remain in memory and passphrases never enter persistent browser storage.
 The page explains that site code can misuse the key and that no reset or recovery exists without a backup.
+Before the first public signature, one explanation states that judgments and public trust choices are signed public records.
+It says “Undo adds a record. It does not erase the earlier public record.” Direct arrows need no additional modal or checkbox.
 Lifecycle previews retain exact successor approval, causal frontier selection, missing evidence, and partial delivery from the frontend specification.
 A compromise notice does not erase arbitrary later history. A handover does not provide a grace-period undo.
 
@@ -319,8 +338,11 @@ Trust their judgments, Ignore their judgments, and Report abuse are separate act
 The trust panel offers Just for me and Publicly, an all-judgments default scope, and a link to narrower scopes.
 Public mode previews the exact subject and scope before signing.
 Its explanation says “Signed. Others can build on it. It stays in history after you undo it.”
-Private Ignore blocks the identity and routes through it in the personal view.
-Public Ignore uses `shun`, with the separate meaning and personal-overlay effect from the frontend specification.
+Private Ignore writes `overlay.blocked` with the selected identity and scope.
+It blocks the identity and routes through it in the personal view.
+It does not write an issuer-edge shun into `overlay.trust`.
+Public Ignore signs `trust.set` with `value: "shun"`.
+The personal view also applies the current user's effective public shuns as local blocks.
 Abuse reports require category, explanation, and explicit public preview. Linguistic disagreement uses Oppose.
 
 Recent lists dated actions with exact targets and an All activity link for this identity.
@@ -348,14 +370,17 @@ Pin this version, Use another view, and Earlier versions retain the adoption and
 
 The page title is “Not delivered” and its route remains `/outbox`.
 Its opening paragraph describes retained local records and automatic retry, qualified by the actual failure or refusal.
-Each unfinished failed row names its target and action, last attempt, next retry, and Try now.
+Each listed unfinished record names its target and action, last attempt, next retry, and Try now.
 Unknown delivery states explain that the client asks whether the record arrived before it sends the same bytes again.
 The app stores bounded retry and backoff state. Connectivity return and reload resume eligible retries while the app is active.
 The client respects Retry-After. A closed browser does not guarantee background delivery.
 Refusal shows the server's reason and avoids pointless automatic retries.
 
 The page offers “Save them as a file” and states that browser clearing can lose local work.
-Finished rows disappear and the header marker clears when no unfinished failures remain.
+Delivery completes only when the receipt confirms the submitted envelope and, when required, its matching submitted body.
+Header-only acceptance retains a missing-body row. After lookup, an identical complete submission can supply that body.
+Body refusal remains an unfinished delivery outcome. Accepted bodies with interpretation dependencies or index lag are delivered.
+Finished rows disappear and the header marker clears when no listed unfinished records remain.
 The direct route remains valid and shows an empty state. Stored records and independent peer receipts remain retained.
 Normal transient sends do not appear here. Accepted pending dependencies and index lag remain accurate publication states elsewhere.
 
@@ -381,7 +406,8 @@ Critical delivery, authority, storage, and conflict state remains accessible des
 
 ## Evidence and sample data
 
-The visual reference is the [design canvas](https://claude.ai/artifact/RA67uPNTP1oiVoSmks6Fsi).
+The [design canvas](https://claude.ai/artifact/RA67uPNTP1oiVoSmks6Fsi) is an optional, informative reference.
+This document contains the requirements independently of canvas access.
 Its twelve screens are Search, Word, Meaning, Type, Lujvo, Gismu, Places, Publish, Your key, Public identity, Trust, and Not delivered.
 Their layout and palette inform this document. Their canvas scripts and runtime-dependent HTML are not application code.
 The behavior and corrections in these specifications take precedence over illustrative screen omissions.

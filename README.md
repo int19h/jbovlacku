@@ -88,7 +88,8 @@ The documentation defines the product, its records, and the development process:
 New native definitions use CC0 1.0 in the target contribution flow.
 The client shows the [CC0 notice](https://creativecommons.org/publicdomain/zero/1.0/) before publication. Selecting Publish is explicit agreement, without a separate checkbox.
 The [format specification](docs/format.md#remaining-body-fields) defines the fixed fields and imported source-rights convention.
-Imported Lensisku dictionary text retains its public-domain source claim, original attribution, and pinned notice evidence. It does not become a historical CC0 submission.
+In the target convention, imported Lensisku dictionary text retains its public-domain source claim, original attribution, and pinned notice evidence.
+It does not become a historical CC0 submission.
 Existing signed imports remain unchanged. A contributor who revises imported text releases only their own contribution under CC0 and retains the source evidence.
 Imports with unestablished rights remain explicitly unknown. Third-party images need their own rights evidence.
 The software license remains a prelaunch decision. This repository does not assign a software license by implication.

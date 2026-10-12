@@ -113,10 +113,12 @@ Advanced fields appear on demand. They remain reachable by keyboard and visible 
 No modal dialog is required for ordinary reading, expanding notes, or switching definition language.
 
 Every page includes the wordmark, labeled search field, “Add a word,” delivery marker when needed, and local identity link.
-The identity link shows the lock state with an accessible label.
-The delivery marker counts distinct unfinished failed events, never attempts or network requests.
-One event with failures at several peers counts once. Its per-peer outcomes remain separately visible.
-The footer links to the active trust view, Settings, About, and Source.
+With an existing key, the identity link shows the lock state with an accessible label.
+Without a key, it reads “Your key” and opens `/identity` for creation or import. Navigation alone never generates a key.
+The delivery marker counts distinct unfinished records listed on Not delivered, never attempts or network requests.
+The list includes offline failure, refusal, and unknown delivery. Ordinary transient sends and accepted index lag remain excluded.
+One record with unfinished delivery at several peers counts once. Its per-peer outcomes remain separately visible.
+The footer links to the active trust view, Settings, About, and Source. Settings opens `/preferences`.
 The search page starts with results for the current query, without an introduction.
 There is no general activity feed, chat, discussion control, or icon-only navigation.
 Short explanations appear where the user takes the relevant action. Critical state, conflicts, and errors remain visible.
@@ -134,8 +136,8 @@ The app provides these addressable routes:
 | `/review` | Optional review queue. |
 | `/trust` | Public decisions and private view controls. |
 | `/identity` | Local key, backup, transfer, and loss controls. |
-| `/outbox` | “Not delivered,” with unfinished delivery failures and an empty state. |
-| `/preferences` | Languages, peers, storage, data export, and appearance. |
+| `/outbox` | “Not delivered,” with unfinished delivery records and an empty state. |
+| `/preferences` | Settings: languages, search mode, delivery peers, storage, data export, and appearance. |
 
 Every route preserves browser back and forward behavior. Query changes use replace-state while typing, then a stable navigation state when selected.
 Links to a publication always retain its exact event ID. A default word link does not pretend to pin a particular revision.
@@ -196,7 +198,8 @@ An importer never signs an endorsement as that curator or changes original sourc
 
 The client renders all imported text as inert content. It never evaluates HTML, remote scripts, or executable TeX.
 
-Circled place markers link to their place rows. Screen readers hear “place 1” rather than an unexplained symbol.
+Circled place markers link to their place rows, under the inline target rules in section 13.
+Screen readers hear “place 1” rather than an unexplained symbol.
 For indices above 20, render an outlined numeric badge. Its accessible name uses the same rule.
 A marker's numeric identity comes from the token, not its glyph or position in the sentence.
 
@@ -323,7 +326,9 @@ A possible rafsi is not a reserved or assigned rafsi. The author selects any des
 
 ### Step 3C: cmavo and other words
 
+The manual Form screen provides spelling, attributed morphology notes, Back, and “Use <form>.”
 For cmavo, ask for selma'o and offer an optional AI suggestion with its explanation.
+Direct navigation from type selection to Places preserves manually entered spelling, classification, and notes.
 An unknown or proposed selma'o is permitted as an attributed claim. It is not a parser installation request.
 The advanced details distinguish grammatical operands from the numbered places of a relation that a construction forms.
 
@@ -378,7 +383,8 @@ The app persists the whole intended group, complete immutable envelopes, bodies,
 It then sends those records in dependency order. Every record and peer has an independent receipt.
 This group does not form an atomic network transaction. Retry reuses the stored records, never replacement signatures.
 
-After the definition receives durable acceptance, navigate to its word page and report unfinished outcomes separately.
+After a receipt confirms the definition envelope and its matching required body, navigate to the word page.
+Report unfinished outcomes separately.
 Accepted records with pending dependencies or index lag never appear as fully interpreted, published results.
 Index lag alone never triggers redelivery.
 On delivery failure, show a clearly labeled local pending preview and the “Not delivered” marker.
@@ -458,6 +464,8 @@ The title and accessible name expose support, opposition, and direct reviewer co
 A keyboard- and tap-accessible disclosure exposes the same breakdown without hover.
 The word page also provides an “N reviewers” disclosure with identities, their routes, and influence units.
 The interface uses “score,” not “votes.” Display rounding changes presentation only, never ranking or the calculation profile.
+An exact nonzero score never rounds to zero. Use sufficient precision, scientific notation, or a signed small-value indicator with exact details.
+“No judgments yet” requires a known zero direct-reviewer count. A zero net score or unknown evidence does not establish that state.
 Exact details retain the underlying values. A bounded score shows an honest range or “Order unresolved.”
 An unavailable score reads “Unavailable,” never an invented zero.
 
@@ -496,9 +504,11 @@ The default scope is all dictionary judgments. Advanced controls narrow it by de
 Before publishing, the user sees the subject identity link with its fingerprint and the selected scope.
 A public decision states that its history is public even after a later clear.
 
-“Ignore influence from this identity” creates a local shun by default.
-The dialog explains that the local view also blocks routes through that identity.
-A separate choice publishes an editorial shun. Other readers interpret that as this user's refusal to heed, not a universal veto.
+“Ignore influence from this identity” creates an `overlay.blocked` entry with the selected identity and scope by default.
+It removes that identity and routes through it from the personal view.
+It does not use an `overlay.trust` shun, which only blocks an issuer's edge.
+A separate choice signs `trust.set` with `value: "shun"` to publish an editorial shun.
+Other readers interpret that as this user's refusal to heed, not a universal veto.
 The personal view also applies the current user's public shuns as local blocks, as the format specifies.
 The UI never labels an ordinary shun as an allegation of malice.
 
@@ -548,6 +558,9 @@ Do not describe an unaudited fallback as audited merely because it is popular.
 
 Before the first public signature, the app states: “Keep a backup. Losing this key can make this identity unusable.”
 It also states: “This website supplies the code that uses your key. A compromised website can misuse it.”
+The same explanation states that judgments and public trust choices are signed public records.
+It says: “Undo adds a record. It does not erase the earlier public record.”
+This one-time explanation covers direct actions without a preview. It adds no per-action modal or checkbox.
 A copied name cannot impersonate the key. A stolen private key can sign as that identity.
 There is no email reset, server recovery, or custodial signing mode.
 
@@ -557,7 +570,7 @@ Do not store the passphrase or an unencrypted private-key export in IndexedDB, l
 Non-exportability limits extraction through the API. It does not stop hostile same-origin code from requesting signatures.
 
 Unlock once per active editing session. Lock after 15 minutes without a signing action, when the user selects Lock, or when the page closes.
-An explicit “Keep unlocked for this session” option suits review work and shows its current state.
+An explicit “Stay unlocked this session” option suits review work and shows its current state.
 Per-action unlocking is optional. The UI does not claim that it defeats a hostile origin.
 If locking discards an in-memory key, the user unlocks the encrypted local copy again.
 
@@ -681,10 +694,16 @@ It shows only unfinished records after offline delivery, failure, refusal, or an
 An ordinary transient send does not create a header warning. Each visible row states the last attempt and next retry.
 “Try now” follows the same receipt lookup and immutable retry rules.
 Accepted dependency waits and index lag remain visible where they affect publication, without being mislabeled delivery failures.
-When no unfinished failed rows remain, remove the header marker and show a sensible empty state at the direct route.
+When no listed unfinished records remain, remove the header marker and show a sensible empty state at the direct route.
 Keep stored records and receipts after the page empties. “Save them as a file” exports unfinished records and their bodies.
 
 A timeout means delivery unknown. The client queries by ID before retrying and can safely resend identical bytes.
+Delivery completes only when the peer receipt confirms the submitted envelope and every required submitted body with matching hash.
+Header-only acceptance does not complete delivery of a publication body.
+If lookup finds the envelope but its required body is missing, resend the identical complete stored submission.
+A peer body refusal remains an unfinished delivery outcome with its reason.
+An accepted matching body with pending dependencies or index lag is delivered, with interpretation still pending.
+Retain every record and independent per-peer receipt after delivery completes.
 
 The app persists bounded retry state and backoff with each event and peer.
 While the app is active, connectivity return or reload resumes eligible retries automatically.
@@ -989,7 +1008,8 @@ The signer page uses no third-party script. Dependency updates remain a code-sup
 
 Search history, private heeds, drafts, and backup passphrases remain local by default.
 Public heeds, judgments, reports, and publication content can be copied indefinitely after delivery.
-The preview states that clearing or deprecating an action does not erase its public history.
+The first-signature explanation covers retained public history for direct actions without a preview.
+Later previews also state that clearing or deprecating an action does not erase its public history.
 Peer addresses and outbox receipt times reveal some network activity. The app does not describe the protocol as anonymous.
 
 ## 13. Accessibility and review tools
@@ -997,7 +1017,13 @@ Peer addresses and outbox receipt times reveal some network activity. The app do
 Every input has a persistent label. Every icon control has an accessible name.
 Focus is visible. Dialogs restore focus to their invoking control. Status changes use noninterrupting announcements.
 
-All actions work by keyboard. Touch targets are at least 44 by 44 CSS pixels.
+All actions work by keyboard. Standalone touch controls are at least 44 by 44 CSS pixels.
+Inline prose links and place markers use the [WCAG inline exception](https://www.w3.org/WAI/WCAG22/Understanding/target-size-enhanced.html).
+They remain clickable without overlapping enlarged hit areas.
+Equivalent 44px place-navigation controls can appear in the existing place strip or details.
+Do not insert another control beside every inline marker occurrence.
+Outlined fields and buttons use ink3 or accent boundaries that meet 3:1 contrast in the selected state.
+The line and line2 tokens remain decorative. Quiet text actions remain visibly identifiable without a forced box.
 The app meets WCAG 2.2 AA contrast and interaction requirements as a release target.
 Test zoom, screen readers, reduced motion, long words, and right-to-left interface text.
 
@@ -1020,7 +1046,7 @@ The implementer must demonstrate these end-to-end cases before public release:
 5. A malformed place reference blocks signing and offers a lossless literal-text escape.
 6. Two devices change one judgment offline, then resolve their conflict without a timestamp tie-break.
 7. A published revision receives its author blessing, inherits no parent judgments, and displays exact changes to places and defaults.
-8. A local shun blocks routes while an unrelated public report remains an allegation.
+8. Private Ignore writes an overlay.blocked entry and blocks routes while an unrelated public report remains an allegation.
 9. Root changes appear as a view change, with no claim that scores are comparable universal units.
 10. Broad score intervals remain visible when most candidates form one unresolved layer, including a long list of alternatives.
 11. Wrong-password, altered-backup, unsupported-algorithm, quota, and storage-eviction cases preserve honest UI states.
@@ -1038,6 +1064,10 @@ The implementer must demonstrate these end-to-end cases before public release:
 23. Private blocks survive a public clear. Root removal never claims to block every incoming route.
 24. The full editor preserves every structured field and supports manual headword and type entry without bypassing validation.
 25. Every page exposes search and footer navigation, including all twelve layouts in [UI design](ui-design.md).
+26. Header-only acceptance retains a missing-body row until matching body delivery completes. Body refusal never becomes index lag.
+27. A nonzero exact score never displays as zero. “No judgments yet” requires known zero direct reviewers.
+28. First-signature copy explains public history before direct judgments or trust actions without adding per-action confirmation.
+29. Manual Form preserves spelling, classification, and notes, and private Ignore writes the scoped blocked entry.
 
 The app must also measure cold package load, local search latency, signature latency, backup unlock time, and ranking cost on representative mobile devices.
 No target in this design constitutes a completed browser compatibility or accessibility audit.
