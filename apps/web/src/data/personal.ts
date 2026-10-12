@@ -134,6 +134,8 @@ type Pending = {
 /** One calculation run. Every asynchronous step checks that its run is still the current one. */
 interface Run {
   id: number;
+  /** The generation the run belongs to. Cancel and invalidate advance it. */
+  generation: number;
   abort: AbortController;
 }
 type Message = WorkerRequest extends infer R
@@ -166,6 +168,13 @@ export class PersonalCalculator {
    * automatic call from a page never restarts a cancelled calculation.
    */
   private cancelled = false;
+  /**
+   * Advances on every cancel and every invalidation. Every asynchronous step
+   * compares its generation with this one. An older step never changes state.
+   */
+  private generation = 0;
+  /** Counts cancels. A call that a cancel interrupted ends cancelled, whatever happens later. */
+  private cancels = 0;
   constructor(
     private store: LocalStore,
     private context: () => Promise<OverlayContext>,
@@ -223,6 +232,8 @@ export class PersonalCalculator {
    * cancelled state. Only an explicit refresh starts a calculation again.
    */
   cancel() {
+    this.generation++;
+    this.cancels++;
     this.current?.abort.abort(new Error(CANCELLED));
     this.current = null;
     this.worker?.terminate();
@@ -269,54 +280,90 @@ export class PersonalCalculator {
     } = {},
   ): Promise<PersonalStatus> {
     const mode = options.mode ?? "personal";
-    if (options.refresh) this.cancelled = false;
-    while (this.loading) {
-      const asked = this.loadingRequest;
-      const current = await this.loading;
-      if (
-        current.state === "ready" &&
-        current.mode === mode &&
-        !options.refresh
-      )
-        return current;
-      if (current.state === "failed" && current.kind === "cancelled")
-        return current;
-      // A failure answers a waiter that asked for the same mode without a
-      // new download. A waiter for another mode or for a new download runs
-      // its own load.
-      if (
-        current.state === "failed" &&
-        asked &&
-        asked.mode === mode &&
-        !options.refresh
-      )
-        return current;
-    }
-    if (this.cancelled && !options.refresh) return this.status;
-    if (
-      this.status.state === "ready" &&
-      this.status.mode === mode &&
-      !options.refresh &&
-      this.loadedKey
-    ) {
-      // The overlay can change between calls. Compare before reusing the session.
-      const inventory = await latestInventory(this.store);
-      if (inventory && (await this.key(inventory, mode)) === this.loadedKey)
-        return this.status;
-    }
-    const run: Run = { id: ++this.runs, abort: new AbortController() };
-    this.current?.abort.abort(new Error(CANCELLED));
-    this.current = run;
-    const promise = this.run(run, mode, options.refresh ?? false);
-    this.loading = promise;
-    this.loadingRequest = { mode, refresh: options.refresh ?? false };
-    try {
-      return await promise;
-    } finally {
-      if (this.loading === promise) {
-        this.loading = null;
-        this.loadingRequest = null;
+    const refresh = options.refresh ?? false;
+    if (refresh) this.cancelled = false;
+    const cancels = this.cancels;
+    const cancelledStatus = (): PersonalStatus => ({
+      state: "failed",
+      message:
+        "The local calculation was cancelled. Recompute from records starts it again.",
+      kind: "cancelled",
+    });
+    // Every await below is followed by a generation check. A cancel ends the
+    // call with the cancelled state. An invalidation starts the call again
+    // with the new choices, so no older step restores state.
+    for (;;) {
+      const generation = this.generation;
+      const moved = () => generation !== this.generation;
+      if (this.loading) {
+        const asked = this.loadingRequest;
+        const current = await this.loading;
+        if (moved()) {
+          if (this.cancels !== cancels) return cancelledStatus();
+          continue;
+        }
+        if (current.state === "ready" && current.mode === mode && !refresh)
+          return current;
+        if (current.state === "failed" && current.kind === "cancelled")
+          return current;
+        // A failure answers a waiter that asked for the same mode without a
+        // new download. A waiter for another mode or for a new download runs
+        // its own load.
+        if (
+          current.state === "failed" &&
+          asked &&
+          asked.mode === mode &&
+          !refresh
+        )
+          return current;
+        continue;
       }
+      if (this.cancelled && !refresh) return this.status;
+      if (
+        this.status.state === "ready" &&
+        this.status.mode === mode &&
+        !refresh &&
+        this.loadedKey
+      ) {
+        // The overlay can change between calls. Compare before reusing the session.
+        const inventory = await latestInventory(this.store);
+        if (moved()) {
+          if (this.cancels !== cancels) return cancelledStatus();
+          continue;
+        }
+        if (inventory) {
+          const key = await this.key(inventory, mode);
+          if (moved()) {
+            if (this.cancels !== cancels) return cancelledStatus();
+            continue;
+          }
+          if (key === this.loadedKey) return this.status;
+        }
+      }
+      const run: Run = {
+        id: ++this.runs,
+        generation,
+        abort: new AbortController(),
+      };
+      this.current?.abort.abort(new Error(CANCELLED));
+      this.current = run;
+      const promise = this.run(run, mode, refresh);
+      this.loading = promise;
+      this.loadingRequest = { mode, refresh };
+      let result: PersonalStatus;
+      try {
+        result = await promise;
+      } finally {
+        if (this.loading === promise) {
+          this.loading = null;
+          this.loadingRequest = null;
+        }
+      }
+      if (moved()) {
+        if (this.cancels !== cancels) return cancelledStatus();
+        continue;
+      }
+      return result;
     }
   }
   /** One calculation. Nothing here touches shared state after the run stops being current. */
@@ -326,7 +373,11 @@ export class PersonalCalculator {
     refresh: boolean,
   ): Promise<PersonalStatus> {
     const live = () => {
-      if (this.current !== run || run.abort.signal.aborted)
+      if (
+        this.current !== run ||
+        run.generation !== this.generation ||
+        run.abort.signal.aborted
+      )
         throw new Error(CANCELLED);
     };
     try {
@@ -341,20 +392,18 @@ export class PersonalCalculator {
         inventory = cached;
       }
       live();
-      const key = await this.key(inventory, mode);
+      // One overlay per run. The digest is derived from the exact overlay
+      // that enters the worker, so a result never carries another digest.
+      const overlay = await this.overlayFor(inventory, mode);
       live();
+      const digest = overlay ? overlayDigest(overlay) : nullOverlayDigest();
+      const key = `${inventory.snapshot}|${inventory.view}|${digest}|${mode}`;
       if (this.loadedKey === key && this.status.state === "ready")
         return this.status;
       const records = await loadRecords(this.store, inventory, {
         signal: run.abort.signal,
       });
       live();
-      const overlay =
-        mode === "personal"
-          ? await this.effective(inventory, records.bodies)
-          : null;
-      live();
-      const digest = key.split("|")[2];
       this.loadedKey = null;
       this.rankCache.clear();
       this.set({
@@ -447,24 +496,24 @@ export class PersonalCalculator {
       viewRoots,
     );
   }
+  /** The effective overlay for a mode, read once from the private choices and the cached view body. */
+  private async overlayFor(
+    inventory: SnapshotInventory,
+    mode: CalculationMode,
+  ): Promise<Overlay | null> {
+    if (mode !== "personal") return null;
+    const view = await this.store.get<{ body: string | null }>(
+      "records",
+      inventory.view,
+    );
+    return this.effective(inventory, { [inventory.view]: view?.body ?? "" });
+  }
   private async key(
     inventory: SnapshotInventory,
     mode: CalculationMode,
   ): Promise<string> {
-    const digest =
-      mode === "personal"
-        ? overlayDigest(
-            await this.effective(inventory, {
-              [inventory.view]:
-                (
-                  await this.store.get<{ body: string | null }>(
-                    "records",
-                    inventory.view,
-                  )
-                )?.body ?? "",
-            }),
-          )
-        : nullOverlayDigest();
+    const overlay = await this.overlayFor(inventory, mode);
+    const digest = overlay ? overlayDigest(overlay) : nullOverlayDigest();
     return `${inventory.snapshot}|${inventory.view}|${digest}|${mode}`;
   }
   /**
@@ -551,8 +600,13 @@ export class PersonalCalculator {
   }
   /** Forgets the loaded session after private choices or the identity change. */
   invalidate() {
+    // The choices or the identity changed. A calculation in progress is
+    // inert from here on, and the next call starts from the new choices.
+    this.generation++;
+    this.current?.abort.abort(new Error(CANCELLED));
+    this.current = null;
     this.loadedKey = null;
     this.rankCache.clear();
-    if (this.status.state === "ready") this.set({ state: "idle" });
+    if (this.status.state !== "failed") this.set({ state: "idle" });
   }
 }

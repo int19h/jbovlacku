@@ -833,3 +833,174 @@ test("cancel during record loading never lets the old run touch the new calculat
   expect(shared.a).toBe("failed");
   expect(shared.b).toBe("ready:site");
 });
+
+test("a calculation binds its digest to the one overlay it sends, and a choice change during record loading recomputes with the new choices", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const outcome = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { PersonalCalculator, overlayDigest } = await import(
+      String("/src/data/personal.ts")
+    );
+    const store = new LocalStore();
+    // Every worker load is recorded. The real worker still evaluates.
+    const loads: any[] = [];
+    const RealWorker = window.Worker;
+    class RecordingWorker extends RealWorker {
+      postMessage(message: any, ...rest: any[]) {
+        if (message.type === "load") loads.push(structuredClone(message));
+        return super.postMessage(message, ...(rest as []));
+      }
+    }
+    window.Worker = RecordingWorker as any;
+    try {
+      const originalOverlay = store.overlay.bind(store);
+      const base = await originalOverlay();
+      let work = 1000;
+      let reads = 0;
+      store.overlay = async () => {
+        reads++;
+        return { ...base, work };
+      };
+      const calc = new PersonalCalculator(store, async () => ({
+        identity: null,
+        shuns: [],
+      }));
+      // Part one: the choices change between any two reads. One read per run binds the digest.
+      const first = await calc.ensure({ mode: "personal" });
+      const firstLoad = loads.at(-1);
+      const bound = {
+        state: first.state,
+        reads,
+        matches:
+          first.state === "ready" &&
+          first.overlay === overlayDigest(firstLoad.input.overlay),
+      };
+      // Part two: the choices change while records load. The run is inert and the call recomputes.
+      const originalGet = store.get.bind(store);
+      let entered: () => void = () => {};
+      let release: () => void = () => {};
+      const held = new Promise<void>((resolve) => (entered = resolve));
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      let hold = true;
+      store.get = async (name: string, id: string) => {
+        if (name === "records" && hold) {
+          hold = false;
+          entered();
+          await gate;
+        }
+        return originalGet(name, id);
+      };
+      const loadsBefore = loads.length;
+      calc.invalidate();
+      const pending = calc.ensure({ mode: "personal" });
+      await held;
+      // A private choice changes. The app invalidates, as main.ts does.
+      work = 2000;
+      calc.invalidate();
+      release();
+      const result = await pending;
+      const used = loads.at(-1);
+      return {
+        bound,
+        result: result.state,
+        loadsDuring: loads.length - loadsBefore,
+        usedWork: used.input.overlay.work,
+        matchesUsed:
+          result.state === "ready" &&
+          result.overlay === overlayDigest(used.input.overlay),
+        finalState: calc.status.state,
+      };
+    } finally {
+      window.Worker = RealWorker;
+    }
+  });
+  expect(outcome.bound.state).toBe("ready");
+  expect(outcome.bound.matches).toBe(true);
+  expect(outcome.result).toBe("ready");
+  expect(outcome.loadsDuring).toBe(1);
+  expect(outcome.usedWork).toBe(2000);
+  expect(outcome.matchesUsed).toBe(true);
+  expect(outcome.finalState).toBe("ready");
+});
+
+test("cancel during the cache-reuse check does not restart the calculation, and an invalidation there recomputes once", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const outcome = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { PersonalCalculator } = await import(
+      String("/src/data/personal.ts")
+    );
+    const store = new LocalStore();
+    const calc = new PersonalCalculator(store, async () => ({
+      identity: null,
+      shuns: [],
+    }));
+    await calc.ensure({ mode: "personal" });
+    const originalGet = store.get.bind(store);
+    const holdOnce = () => {
+      let entered: () => void = () => {};
+      let release: () => void = () => {};
+      const held = new Promise<void>((resolve) => (entered = resolve));
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      let hold = true;
+      store.get = async (name: string, id: string) => {
+        if (name === "inventory" && id === "latest" && hold) {
+          hold = false;
+          entered();
+          await gate;
+        }
+        return originalGet(name, id);
+      };
+      return { held, release: () => release() };
+    };
+    const states: string[] = [];
+    calc.subscribe((status: any) =>
+      states.push(status.state + ":" + (status.kind ?? "")),
+    );
+    // Cancel while the ready calculator reads the cached inventory.
+    const one = holdOnce();
+    const pending = calc.ensure({ mode: "personal" });
+    await one.held;
+    calc.cancel();
+    const marker = states.length;
+    one.release();
+    const result = await pending;
+    const afterCancel = {
+      result: result.state + ":" + (result as any).kind,
+      statesAfterCancel: states.slice(marker),
+      finalState: calc.status.state,
+    };
+    // An explicit recompute is still available.
+    const again = await calc.ensure({ mode: "personal", refresh: true });
+    // Invalidate while the ready calculator reads the cached inventory. One recompute follows.
+    const two = holdOnce();
+    const marker2 = states.length;
+    const pending2 = calc.ensure({ mode: "personal" });
+    await two.held;
+    calc.invalidate();
+    two.release();
+    const result2 = await pending2;
+    return {
+      afterCancel,
+      again: again.state,
+      afterInvalidate: {
+        result: result2.state,
+        states: states.slice(marker2),
+      },
+    };
+  });
+  expect(outcome.afterCancel.result).toBe("failed:cancelled");
+  expect(outcome.afterCancel.statesAfterCancel).toEqual([]);
+  expect(outcome.afterCancel.finalState).toBe("failed");
+  expect(outcome.again).toBe("ready");
+  expect(outcome.afterInvalidate.result).toBe("ready");
+  expect(outcome.afterInvalidate.states).toEqual([
+    "idle:",
+    "evaluating:",
+    "ready:",
+  ]);
+});
