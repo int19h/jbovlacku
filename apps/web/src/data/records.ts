@@ -23,7 +23,11 @@ export interface StoredRecord {
   envelope: string;
   /** Canonical body JSON, or null when no valid body is cached. */
   body: string | null;
-  /** "present" with a body, "missing" when the header requires one, "none" when it requires none, "invalid" when the server's body failed inspection. */
+  /**
+   * "present" with a body that the current schema interprets, "invalid" with
+   * authenticated body bytes that it cannot interpret, "missing" when the
+   * header requires a body that is not cached, "none" when it requires none.
+   */
   bodyStatus: "present" | "missing" | "none" | "invalid";
   /** The required body hash from the header, or null. */
   bodyHash: string | null;
@@ -144,10 +148,17 @@ function storedRecord(
       `The body of ${id} does not match its signed hash.`,
       "invalid",
     );
+  // Authenticated bytes stay even when the current schema cannot interpret
+  // them. The shared evaluator applies the format's invalid-content rules, so
+  // one unsupported record stays inert instead of disabling the calculation.
   const inspected = inspectBody(utf8(envelope), utf8(body));
-  if (inspected.availability === "invalid")
-    return { id, envelope, body: null, bodyStatus: "invalid", bodyHash };
-  return { id, envelope, body, bodyStatus: "present", bodyHash };
+  return {
+    id,
+    envelope,
+    body,
+    bodyStatus: inspected.availability === "invalid" ? "invalid" : "present",
+    bodyHash,
+  };
 }
 /** Upgrades a record cached before body availability was tracked. */
 function normalize(record: StoredRecord): StoredRecord {
@@ -342,7 +353,7 @@ export async function syncRecords(
     await store.put("records", id, updated);
     cached.set(id, updated);
   }
-  // Every retained body of a cached record must now be present.
+  // Every retained body of a cached record must now be cached.
   for (const id of events) {
     const record = cached.get(id)!;
     if (

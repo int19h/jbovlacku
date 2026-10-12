@@ -17,6 +17,8 @@ import {
   getEnvelope,
   getManifest,
   identityHeads,
+  RequestError,
+  TransportError,
   type Peer,
 } from "./api.ts";
 import { loadOwnHistory, type OwnHistory } from "./history.ts";
@@ -154,9 +156,13 @@ export async function askPeers(
           );
         signal?.throwIfAborted();
       };
+      // Which scan stage is running. After the manifest answered, a later
+      // failure leaves known evidence and blocks instead of counting as unreachable.
+      let stage: "manifest" | "heads" | "activity" | "claims" = "manifest";
       try {
         const manifest = await getManifest({ peer, signal: scanSignal });
         knowledge.snapshot = manifest.snapshot;
+        stage = "heads";
         let after: string | null = null;
         const seen = new Set<string>();
         for (let page = 0; ; page++) {
@@ -188,6 +194,7 @@ export async function askPeers(
           seen.add(result.next);
           after = result.next;
         }
+        stage = "activity";
         const scan = async (who: string) => {
           const items: { id: string; action: Record<string, unknown> }[] = [];
           let cursor: string | null = null;
@@ -255,7 +262,10 @@ export async function askPeers(
             return null;
           }
         };
-        for (const item of await scan(identity)) {
+        const ownItems = await scan(identity);
+        const successorItems = successor ? await scan(successor) : [];
+        stage = "claims";
+        for (const item of ownItems) {
           if (item.action.kind === "identity.transfer") {
             const envelope = await authenticated(
               item.id,
@@ -277,20 +287,19 @@ export async function askPeers(
             if (envelope) knowledge.compromises.push(envelope.id);
           }
         }
-        if (successor)
-          for (const item of await scan(successor))
-            if (item.action.kind === "identity.accept") {
-              const envelope = await authenticated(
-                item.id,
-                successor,
-                "identity.accept",
-              );
-              if (envelope)
-                knowledge.acceptances.push({
-                  id: envelope.id,
-                  transfer: String(envelope.header.action.transfer),
-                });
-            }
+        for (const item of successorItems)
+          if (successor && item.action.kind === "identity.accept") {
+            const envelope = await authenticated(
+              item.id,
+              successor,
+              "identity.accept",
+            );
+            if (envelope)
+              knowledge.acceptances.push({
+                id: envelope.id,
+                transfer: String(envelope.header.action.transfer),
+              });
+          }
         knowledge.complete = true;
         knowledge.outcome = knowledge.unverified.length
           ? "malformed"
@@ -298,16 +307,29 @@ export async function askPeers(
         if (knowledge.unverified.length)
           knowledge.status = `it listed ${knowledge.unverified.length} lifecycle record${knowledge.unverified.length === 1 ? "" : "s"} that it could not supply as valid signed evidence`;
       } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "The peer did not answer.";
         if (error instanceof ScanIncomplete) {
           knowledge.outcome = "partial";
-          knowledge.status = `incomplete: ${error.message}`;
+          knowledge.status = `incomplete: ${message}`;
         } else if (error instanceof ScanMalformed) {
           knowledge.outcome = "malformed";
-          knowledge.status = `malformed answer: ${error.message}`;
-        } else {
+          knowledge.status = `malformed answer: ${message}`;
+        } else if (stage === "manifest") {
+          // No usable answer at all.
           knowledge.outcome = "unreachable";
-          knowledge.status =
-            error instanceof Error ? error.message : "The peer did not answer.";
+          knowledge.status = message;
+        } else if (error instanceof TransportError) {
+          // The connection failed or timed out after the peer supplied evidence.
+          knowledge.outcome = "partial";
+          knowledge.status = `incomplete: the ${stage} scan stopped (${message})`;
+        } else if (error instanceof RequestError) {
+          knowledge.outcome = "malformed";
+          knowledge.status = `malformed answer: the ${stage} scan got HTTP ${error.status} (${message})`;
+        } else {
+          // A response that the shared readers could not interpret.
+          knowledge.outcome = "malformed";
+          knowledge.status = `malformed answer: ${message}`;
         }
       }
       return knowledge;

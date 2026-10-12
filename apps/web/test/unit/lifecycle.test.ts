@@ -238,3 +238,53 @@ test("an activity page for another snapshot and an unreachable peer are told apa
   assert.equal(down.outcome, "unreachable");
   assert.equal(down.complete, false);
 });
+
+test("transport failures and unreadable pages after the heads arrived are partial or malformed, never unreachable", async () => {
+  const headsRoute = () => ({
+    snapshot,
+    identity: identity(),
+    heads: ["jve1:" + "b".repeat(64)],
+    next: null,
+  });
+  const cases: [string, () => unknown, string, RegExp][] = [
+    [
+      "lost connection",
+      () => {
+        throw new TypeError("Failed to fetch");
+      },
+      "partial",
+      /incomplete: the activity scan stopped \(No connection to the server\.\)/,
+    ],
+    [
+      "timeout",
+      () => {
+        throw new DOMException("Timed out", "TimeoutError");
+      },
+      "partial",
+      /incomplete: the activity scan stopped \(The server did not answer in time\.\)/,
+    ],
+    [
+      "unreadable shape",
+      () => ({
+        snapshot,
+        identity: identity(),
+        items: "not an array",
+        next: null,
+      }),
+      "malformed",
+      /malformed answer: The server returned an invalid activity page\./,
+    ],
+  ];
+  for (const [name, activity, outcome, status] of cases) {
+    serve({
+      "/api/v1/manifest": manifest,
+      "/api/v1/identity-heads/": headsRoute,
+      "/api/v1/identities/": activity,
+    });
+    const [knowledge] = await askPeers([peer], identity(), null);
+    assert.equal(knowledge.outcome, outcome, name);
+    assert.equal(knowledge.complete, false, name);
+    assert.deepEqual(knowledge.heads, ["jve1:" + "b".repeat(64)], name);
+    assert.match(knowledge.status, status, name);
+  }
+});

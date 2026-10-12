@@ -1,6 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 import {
   acceptFirstSignature,
+  corePath,
   createIdentity,
   fixture,
   openWord,
@@ -482,7 +483,7 @@ test("a retired key signs a compromise notice through a masked passphrase field"
 interface MirrorMode {
   down: boolean;
   supply: boolean;
-  activity: "ok" | "repeat" | "wrong-snapshot";
+  activity: "ok" | "repeat" | "wrong-snapshot" | "abort" | "hang" | "bad-shape";
   heads: "ok" | "endless";
 }
 /**
@@ -570,6 +571,21 @@ async function mirrorBranchSetup(page: Page) {
       });
     }
     if (path.endsWith("/activity")) {
+      // Real transport failures after the heads arrived.
+      if (mode.activity === "abort") return route.abort("connectionreset");
+      if (mode.activity === "hang") {
+        await new Promise((resolve) => setTimeout(resolve, 4000));
+        return route.abort("timedout");
+      }
+      if (mode.activity === "bad-shape")
+        return route.fulfill({
+          json: {
+            snapshot: manifest.snapshot,
+            identity: old.identity,
+            items: "not an array",
+            next: null,
+          },
+        });
       const base = {
         view: "jve1:" + "0".repeat(64),
         identity: old.identity,
@@ -749,13 +765,8 @@ test("a migrated row keeps fresh receipt evidence recorded while its old receipt
   page,
 }) => {
   await page.goto("/");
-  const result = await page.evaluate(async () => {
-    const core = await import(
-      String(
-        "/@fs" +
-          "/build/jbovlacku/worktrees/web-ui-refinement/packages/core/src/index.ts",
-      )
-    );
+  const result = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
     await core.initializeCore();
     const { LocalStore } = await import(String("/src/data/store.ts"));
     const { outboxItem } = await import(String("/src/data/lifecycle.ts"));
@@ -813,8 +824,49 @@ test("a migrated row keeps fresh receipt evidence recorded while its old receipt
       receipt: after.peers.self.receipt,
       migrated: after.migrated ?? null,
     };
-  });
+  }, corePath);
   expect(result.state).toBe("accepted");
   expect(result.receipt.proof).toBe("fresh");
   expect(result.migrated).toBeNull();
+});
+
+test("a lost connection, a timeout, or a malformed activity shape after the heads arrived blocks the handover page", async ({
+  page,
+}) => {
+  const { mode } = await mirrorBranchSetup(page);
+  // Lost connection: the browser's fetch rejects, which the HTTP layer reports as a transport error.
+  mode.activity = "abort";
+  await page.goto("/identity/transfer");
+  await expect(knownHistory(page)).toContainText(
+    "mirror: incomplete: the activity scan stopped (No connection to the server.)",
+  );
+  await expect(knownHistory(page)).toContainText("needs a complete scan");
+  // Malformed shape: the shared activity reader rejects the page.
+  mode.activity = "bad-shape";
+  await page.goto("/identity/transfer");
+  await expect(knownHistory(page)).toContainText(
+    "mirror: malformed answer: The server returned an invalid activity page.",
+  );
+  await expect(knownHistory(page)).toContainText("needs a complete scan");
+  // Timeout: the scan deadline aborts the pending request, which the HTTP layer reports as a timeout.
+  mode.activity = "hang";
+  await page.goto("/identity");
+  await page.evaluate(async () => {
+    const { SCAN_LIMITS } = await import(String("/src/data/lifecycle.ts"));
+    SCAN_LIMITS.millis = 1500;
+  });
+  await page.getByRole("link", { name: "Start" }).click();
+  await expect(knownHistory(page)).toContainText(
+    "mirror: incomplete: the activity scan stopped (The server did not answer in time.)",
+  );
+  await expect(knownHistory(page)).toContainText("needs a complete scan");
+  await createSuccessor(page);
+  await expect(
+    page.getByText("The old key's state blocks the handover."),
+  ).toBeVisible();
+  expect(
+    (await outboxItems(page)).some(
+      (i: any) => i.label.action === "key handover",
+    ),
+  ).toBe(false);
 });

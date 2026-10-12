@@ -1,6 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 import {
   acceptFirstSignature,
+  corePath,
   createIdentity,
   fixture,
   openWord,
@@ -357,4 +358,310 @@ test("a cached body takes part only when the selected snapshot retains it", asyn
   expect(result.sameAsEmpty).toBe(true);
   // The cache keeps the bodies for snapshot A.
   expect(result.cachedBodies).toBe(result.bodiesA);
+});
+
+test("an authenticated record that the schema cannot interpret stays inert and never disables the local calculation", async ({
+  page,
+}) => {
+  const f = fixture();
+  await page.goto("/word/cukta");
+  const result = await page.evaluate(
+    async ({ corePath, cuktaWord, cukta1 }) => {
+      const core = await import(corePath);
+      await core.initializeCore();
+      const { syncRecords, loadRecords } = await import(
+        String("/src/data/records.ts")
+      );
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const canon = (value: unknown) =>
+        core.canonicalize(core.utf8(JSON.stringify(value)));
+      const hash = (value: unknown) =>
+        core.contentHash(core.utf8(canon(value)));
+      const sign = (
+        seed: Uint8Array,
+        previous: string[],
+        nonce: string,
+        action: Record<string, unknown>,
+        body: unknown,
+      ) => {
+        const content =
+          body === null
+            ? null
+            : { hash: hash(body), bytes: core.utf8(canon(body)).length };
+        const envelope = core.signHeader(seed, {
+          version: 1,
+          issuer: core.identityFromSeed(seed),
+          previous: [...previous].sort(),
+          nonce,
+          action,
+          content,
+        });
+        return { envelope, body };
+      };
+      // The server's real records.
+      const server = await (await fetch("/api/v1/manifest")).json();
+      const page1 = await (
+        await fetch(
+          `/api/v1/records?snapshot=${encodeURIComponent(server.snapshot)}&limit=200`,
+        )
+      ).json();
+      const base = page1.items as {
+        id: string;
+        envelope: any;
+        body: unknown;
+      }[];
+      const selectionsIds = (
+        await (
+          await fetch(
+            `/api/v1/inventory?kind=import_selections&snapshot=${encodeURIComponent(server.snapshot)}`,
+          )
+        ).json()
+      ).ids as string[];
+      const selectionBytes: Record<string, string> = {};
+      for (const id of selectionsIds)
+        selectionBytes[id] = await (
+          await fetch(
+            `/api/v1/import-selections/${encodeURIComponent(id)}?snapshot=${encodeURIComponent(server.snapshot)}`,
+          )
+        ).text();
+      // One inert record: an unknown action with a matching body.
+      const stranger = new Uint8Array(32).fill(201);
+      const inert = sign(
+        stranger,
+        [],
+        "a".repeat(32),
+        { kind: "future.unknown" },
+        { future: "data" },
+      );
+      // A root of its own view blesses, clears, then blesses again with an explanation body that the schema rejects.
+      const judge = new Uint8Array(32).fill(202);
+      const judgeId = core.identityFromSeed(judge);
+      const view = sign(
+        judge,
+        [],
+        "b".repeat(32),
+        { kind: "view.publish", parents: [] },
+        {
+          name: "Judge view",
+          description: [["One root."]],
+          roots: [{ identity: judgeId, q: { numerator: 1, denominator: 1 } }],
+          rafsi_threshold: { numerator: 1, denominator: 1 },
+          H: { numerator: 3, denominator: 1 },
+          alpha: { numerator: 1, denominator: 2 },
+          excluded: [],
+          calculation: "simple-routes-bounds-v1",
+          work: 10000,
+          import_sets: [],
+          account_witnesses: [],
+          account_authority: false,
+          notes: [],
+        },
+      );
+      const bless = sign(
+        judge,
+        [view.envelope.id],
+        "c".repeat(32),
+        { kind: "judgment.set", target: cukta1, value: "bless" },
+        null,
+      );
+      const clear = sign(
+        judge,
+        [bless.envelope.id],
+        "d".repeat(32),
+        { kind: "judgment.set", target: cukta1, value: "clear" },
+        null,
+      );
+      // The same clear with an explanation body that the schema rejects. The
+      // header value stands: an invalid explanation cannot hide a signed clear.
+      const malformed = sign(
+        judge,
+        [bless.envelope.id],
+        "e".repeat(32),
+        { kind: "judgment.set", target: cukta1, value: "clear" },
+        { not: "an explanation" },
+      );
+      const admission = (record: { envelope: unknown; body: unknown }) =>
+        core.prepareAdmission(core.utf8(JSON.stringify(record)));
+      const buildSnapshot = (extra: { envelope: any; body: unknown }[]) => {
+        const items = [
+          ...base,
+          ...extra.map((r) => ({
+            id: r.envelope.id,
+            envelope: r.envelope,
+            body: r.body,
+          })),
+        ].sort((x, y) => (x.id < y.id ? -1 : 1));
+        const events = items.map((i) => i.id);
+        const bodies = [
+          ...new Set(
+            items
+              .filter((i) => i.envelope.header.content)
+              .map((i) => i.envelope.header.content.hash),
+          ),
+        ].sort();
+        const manifest = {
+          version: 1,
+          events: {
+            count: events.length,
+            hash: core.contentHash(
+              core.utf8(items.map((i) => canon(i.envelope) + "\n").join("")),
+            ),
+          },
+          bodies: { count: bodies.length, hash: hash(bodies) },
+          import_selections: {
+            count: selectionsIds.length,
+            hash: hash(selectionsIds),
+          },
+        };
+        const snapshot = hash(manifest);
+        return {
+          items,
+          events,
+          bodies,
+          manifest,
+          snapshot,
+          logical_inventory: hash({
+            events,
+            bodies,
+            import_selections: selectionsIds,
+          }),
+        };
+      };
+      const saved = globalThis.fetch;
+      const serve = (
+        snap: ReturnType<typeof buildSnapshot>,
+        viewId: string,
+      ) => {
+        globalThis.fetch = (async (input: string | URL | Request) => {
+          const url = new URL(
+            String(input instanceof Request ? input.url : input),
+            location.origin,
+          );
+          let value: unknown;
+          if (url.pathname.endsWith("/manifest"))
+            value = {
+              snapshot: snap.snapshot,
+              logical_inventory: snap.logical_inventory,
+              manifest: snap.manifest,
+              accepted_cursor: "x.1",
+              materialized_cursor: "x.1",
+              packages: [],
+            };
+          else if (url.pathname.endsWith("/inventory")) {
+            const kind = url.searchParams.get("kind")!;
+            value = {
+              snapshot: snap.snapshot,
+              kind,
+              ids: {
+                events: snap.events,
+                bodies: snap.bodies,
+                import_selections: selectionsIds,
+              }[kind],
+              next: null,
+            };
+          } else if (url.pathname.endsWith("/records"))
+            value = {
+              snapshot: snap.snapshot,
+              logical_inventory: snap.logical_inventory,
+              items: snap.items,
+              next: null,
+            };
+          else if (url.pathname.includes("/import-selections/"))
+            return new Response(
+              selectionBytes[
+                decodeURIComponent(url.pathname.split("/").at(-1)!)
+              ],
+              { headers: { "content-type": "application/json" } },
+            );
+          else value = { view: viewId };
+          return new Response(JSON.stringify(value), {
+            headers: { "content-type": "application/json" },
+          });
+        }) as typeof fetch;
+      };
+      const evaluate = async (
+        snap: ReturnType<typeof buildSnapshot>,
+        viewId: string,
+      ) => {
+        serve(snap, viewId);
+        try {
+          const store = new LocalStore(
+            `inert-${snap.snapshot.slice(7, 19)}-${Date.now()}`,
+          );
+          const inventory = await syncRecords(store);
+          const records = await loadRecords(store, inventory);
+          const session = core.evaluateSession({
+            events: records.events,
+            bodies: records.bodies,
+            selected_view: viewId,
+            import_selections: records.selections,
+          });
+          const ranking = session.rankWord(cuktaWord);
+          session.free();
+          const stored = await store.get("records", inert.envelope.id);
+          return {
+            scores: ranking.scores.map((s: any) => [
+              s.target,
+              s.net,
+              s.direct_reviewers,
+            ]),
+            layers: ranking.layers,
+            inertStatus: stored?.bodyStatus ?? null,
+          };
+        } finally {
+          globalThis.fetch = saved;
+        }
+      };
+      const serverWord = await (
+        await fetch(
+          `/api/v1/words/${encodeURIComponent(cuktaWord)}?snapshot=${encodeURIComponent(server.snapshot)}`,
+        )
+      ).json();
+      const withInert = await evaluate(buildSnapshot([inert]), serverWord.view);
+      const judgeCleared = await evaluate(
+        buildSnapshot([view, bless, clear]),
+        view.envelope.id,
+      );
+      const judgeMalformed = await evaluate(
+        buildSnapshot([view, bless, malformed]),
+        view.envelope.id,
+      );
+      const judgeBlessed = await evaluate(
+        buildSnapshot([view, bless]),
+        view.envelope.id,
+      );
+      return {
+        inertAdmission: admission(inert).body_status,
+        malformedAdmission: {
+          action: admission(malformed).action_valid,
+          body: admission(malformed).body_status,
+        },
+        inertStatus: withInert.inertStatus,
+        localScores: withInert.scores,
+        serverScores: serverWord.scores.map((s: any) => [
+          s.target,
+          s.net,
+          s.direct_reviewers,
+        ]),
+        localLayers: withInert.layers,
+        serverLayers: serverWord.layers,
+        cleared: judgeCleared.scores.find((s: any) => s[0] === cukta1),
+        malformed: judgeMalformed.scores.find((s: any) => s[0] === cukta1),
+        blessed: judgeBlessed.scores.find((s: any) => s[0] === cukta1),
+      };
+    },
+    { corePath, cuktaWord: f.words.cukta, cukta1: f.definitions.cukta1 },
+  );
+  expect(result.inertAdmission).toBe("invalid");
+  expect(result.malformedAdmission).toEqual({ action: true, body: "invalid" });
+  // The inert record is cached with its authenticated bytes and the calculation still runs and matches the server.
+  expect(result.inertStatus).toBe("invalid");
+  expect(result.localScores).toEqual(result.serverScores);
+  expect(result.localLayers).toEqual(result.serverLayers);
+  // The root's bless counts and the clear supersedes it. A clear whose
+  // explanation body is invalid still clears: the malformed body cannot
+  // restore the superseded bless, and it cannot disable the calculation.
+  expect(result.blessed[2]).toBe(result.cleared[2] + 1);
+  expect(result.blessed[1]).not.toEqual(result.cleared[1]);
+  expect(result.malformed).toEqual(result.cleared);
 });
