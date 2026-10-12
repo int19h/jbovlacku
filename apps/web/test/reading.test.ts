@@ -769,13 +769,43 @@ test("a full snapshot hash fits a narrow screen and the wizard works in both the
 test("judgment controls stop listening after their page is gone", async ({
   page,
 }) => {
-  await page.goto("/word/cukta");
+  await page.goto("/");
+  // Count live own-state subscriptions. Every control subscribes once.
+  await page.evaluate(async () => {
+    const { OwnState } = await import(String("/src/app/context.ts"));
+    const original = OwnState.prototype.subscribe;
+    (window as any).__ownListeners = 0;
+    OwnState.prototype.subscribe = function (listener: () => void) {
+      (window as any).__ownListeners++;
+      const unsubscribe = original.call(this, listener);
+      return () => {
+        (window as any).__ownListeners--;
+        return unsubscribe();
+      };
+    };
+  });
+  const listeners = () => page.evaluate(() => (window as any).__ownListeners);
+  // The Trust page's own subscriptions are the baseline.
+  await page.getByRole("link", { name: /^Trust:/ }).click();
+  await expect(
+    page.getByRole("radio", { name: "Site view only" }),
+  ).toBeVisible();
+  const baseline = await listeners();
+  await page.getByLabel("Search words and meanings").fill("cukta");
+  await page.getByLabel("Search words and meanings").press("Enter");
+  await page
+    .getByRole("region", { name: "Search results" })
+    .getByRole("link", { name: "cukta", exact: true })
+    .first()
+    .click();
+  await expect(page).toHaveTitle("cukta · jbovlacku");
   await expect(
     page
       .locator("article.definition")
       .first()
       .getByRole("button", { name: "Endorse" }),
   ).toBeVisible();
+  expect(await listeners()).toBeGreaterThan(baseline);
   await page.getByLabel("Search words and meanings").fill("vlacku");
   await page.getByLabel("Search words and meanings").press("Enter");
   await page
@@ -788,7 +818,9 @@ test("judgment controls stop listening after their page is gone", async ({
   await expect(
     page.getByRole("radio", { name: "Site view only" }),
   ).toBeVisible();
-  // Every control of the earlier pages is gone. A session change reaches none of them.
+  // The explicit boundary: every subscription from the earlier pages is gone.
+  await expect.poll(listeners).toBe(baseline);
+  // A session change then reaches no control at all.
   await page.evaluate(async () => {
     const { LocalStore } = await import(String("/src/data/store.ts"));
     const original = LocalStore.prototype.list;
@@ -804,8 +836,17 @@ test("judgment controls stop listening after their page is gone", async ({
   await expect(
     page.getByRole("link", { name: "Trust: personal view" }),
   ).toBeVisible();
-  await page.waitForTimeout(500);
+  // The preference is saved, so the session listeners have all run.
+  await expect
+    .poll(() =>
+      page.evaluate(async () => {
+        const { LocalStore } = await import(String("/src/data/store.ts"));
+        return (await new LocalStore().preferences()).viewMode;
+      }),
+    )
+    .toBe("personal");
   expect(await page.evaluate(() => (window as any).__outboxReads)).toBe(0);
+  expect(await listeners()).toBe(baseline);
 });
 
 test("a literal circled character in a search preview stays literal text", async ({

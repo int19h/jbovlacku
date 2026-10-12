@@ -14,6 +14,7 @@ import type {
   JudgmentValue,
   ScoreRecord,
   Calculation,
+  ReviewerDetail,
 } from "../model/types.ts";
 import type { RegisterState } from "../data/history.ts";
 import type { OutboxItem } from "../data/store.ts";
@@ -309,7 +310,21 @@ export function scoreDetails(
       exact ? "Exact" : "Bounded. Order unresolved where intervals overlap.",
     );
     body.append(dl);
-    if (score.direct_reviewers === 0)
+    // In the personal view a reviewer can be blocked by this browser's
+    // private choices. The overlay names those blocks. A blocked reviewer is
+    // shown with that label, even when the local list has no reviewer left.
+    const privateBlocks = options.personal
+      ? (await app.store.overlay()).blocked
+      : [];
+    const privatelyBlocked = (identity: string) =>
+      privateBlocks.some(
+        (entry) =>
+          entry.identity === identity &&
+          (entry.scope.kind === "*" || entry.scope.kind === "definition") &&
+          (entry.scope.word === "*" || entry.scope.word === target.word) &&
+          entry.scope.language === "*",
+      );
+    if (score.direct_reviewers === 0 && !privateBlocks.length)
       body.append(p("No judgments yet.", "small"));
     else if (target.word) {
       const slot = el(
@@ -328,13 +343,53 @@ export function scoreDetails(
                   snapshot: options.calculation?.inventory,
                 })
               ).scores.find((s) => s.target === target.id);
+          // The local list omits a reviewer that a private choice blocks. The
+          // server's site-view list still names that reviewer, so the
+          // breakdown shows the blocked reviewer with no influence. A bounded
+          // site list can leave a blocked reviewer out.
+          const blockedRows: ReviewerDetail[] = [];
+          if (options.personal && privateBlocks.length) {
+            try {
+              const site = (
+                await getWord(target.word!, {
+                  reviewers: true,
+                  snapshot: options.calculation?.inventory,
+                })
+              ).scores.find((s) => s.target === target.id);
+              for (const reviewer of site?.reviewers ?? [])
+                if (
+                  privatelyBlocked(reviewer.identity) &&
+                  !detailed?.reviewers?.some(
+                    (r) => r.identity === reviewer.identity,
+                  )
+                )
+                  blockedRows.push({
+                    ...reviewer,
+                    root: null,
+                    incoming: [],
+                    incoming_count: 0,
+                    incoming_complete: true,
+                    blocked: true,
+                    multiple_routes: false,
+                    weight: null,
+                  });
+            } catch {
+              // Without the site list the blocked reviewer stays unlisted.
+            }
+          }
           slot.replaceChildren();
-          if (!detailed?.reviewers) {
+          if (!detailed?.reviewers && !blockedRows.length) {
             slot.append(
-              p("This server does not supply reviewer details.", "meta"),
+              p(
+                score.direct_reviewers === 0
+                  ? "No judgments yet."
+                  : "This server does not supply reviewer details.",
+                "meta",
+              ),
             );
             return;
           }
+          const reviewers = [...(detailed?.reviewers ?? []), ...blockedRows];
           const table = el("table", { class: "small" });
           table.append(
             el(
@@ -350,7 +405,7 @@ export function scoreDetails(
             ),
           );
           const tbody = el("tbody");
-          for (const reviewer of detailed.reviewers) {
+          for (const reviewer of reviewers) {
             const route: string[] = [];
             if (reviewer.root)
               route.push(`root of the view (q=${fractionText(reviewer.root)})`);
@@ -380,9 +435,11 @@ export function scoreDetails(
             if (!reviewer.root && !reviewer.incoming.length)
               routeCell.append(
                 text(
-                  reviewer.blocked
-                    ? "blocked in this view"
-                    : "no route in this view",
+                  privatelyBlocked(reviewer.identity)
+                    ? "blocked by your private choice"
+                    : reviewer.blocked
+                      ? "blocked in this view"
+                      : "no route in this view",
                 ),
               );
             if (reviewer.multiple_routes)
@@ -391,7 +448,9 @@ export function scoreDetails(
               ? intervalIsExact(reviewer.weight)
                 ? fractionText(reviewer.weight[0])
                 : `${fractionText(reviewer.weight[0])} to ${fractionText(reviewer.weight[1])}`
-              : "unavailable";
+              : privatelyBlocked(reviewer.identity)
+                ? "0"
+                : "unavailable";
             tbody.append(
               el(
                 "tr",
@@ -426,7 +485,7 @@ export function scoreDetails(
               table,
             ),
           );
-          if (!detailed.reviewers_complete)
+          if (detailed?.reviewers && !detailed.reviewers_complete)
             slot.append(
               p(
                 `Only the first ${detailed.reviewers.length} of ${detailed.direct_reviewers} reviewers are listed.`,
@@ -434,7 +493,7 @@ export function scoreDetails(
               ),
             );
           const you = app.session.identity;
-          if (you && !detailed.reviewers.some((r) => r.identity === you))
+          if (you && !reviewers.some((r) => r.identity === you))
             slot.append(p("You: not in this view yet.", "meta"));
           slot.append(
             p(

@@ -5,6 +5,7 @@ import {
   createIdentity,
   fixture,
   openWord,
+  PASSPHRASE,
 } from "./helpers.ts";
 
 const firstScore = (page: Page) =>
@@ -678,17 +679,28 @@ test("the personal view refuses a calculation from another snapshot and offers a
     "aria-label",
     /in your personal view$/,
   );
-  // A new signed judgment moves the server to a newer snapshot.
-  const third = page.locator("article.definition", {
-    hasText: "Third meaning",
-  });
-  await third.getByRole("button", { name: "Endorse" }).click();
+  // A new signed judgment moves the server to a newer snapshot. The judged
+  // word is outside the exact-count fixtures, so test order does not matter.
+  await openWord(page, "vlacku");
+  await page
+    .locator("article.definition")
+    .first()
+    .getByRole("button", { name: "Endorse" })
+    .click();
   await acceptFirstSignature(page);
   await expect(page.getByRole("status")).toHaveText(
     "Your endorsement is published.",
   );
   // The next word page shows the newer snapshot. The old calculation is not shown beside it.
-  await openWord(page, "cukta");
+  // The word is fetched fresh, past the short response cache, inside the app.
+  await page.evaluate(() => {
+    const anchor = document.createElement("a");
+    anchor.href = "/word/cukta?fresh=1";
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+  });
+  await expect(page).toHaveTitle("cukta · jbovlacku");
   await expect(
     page.getByText(
       /Personal scores are unavailable: The local calculation is for snapshot .* but this content is from snapshot/,
@@ -710,14 +722,19 @@ test("the personal view refuses a calculation from another snapshot and offers a
     "aria-label",
     /in your personal view$/,
   );
-  // The own endorsement now counts. Other tests sign on this server too, so only the change is asserted.
-  await expect(
-    page
-      .locator("article.definition", { hasText: "Third meaning" })
-      .getByRole("img"),
-  ).toHaveAttribute("aria-label", /: 1 for, .*in your personal view$/);
+  // The own endorsement now counts on the judged word.
+  await openWord(page, "vlacku");
+  const judged = page.locator("article.definition").first();
+  await expect(judged.getByRole("img")).toHaveAttribute(
+    "aria-label",
+    /: 1 for, .*in your personal view$/,
+  );
+  await expect(judged.getByRole("button", { name: "Endorse" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
   // Search rows follow the same rule. Another judgment makes the calculation stale again.
-  await third.getByRole("button", { name: "Endorse" }).click();
+  await judged.getByRole("button", { name: "Endorse" }).click();
   await expect(page.getByRole("status")).toHaveText(
     "Your judgment is cleared.",
   );
@@ -1003,4 +1020,495 @@ test("cancel during the cache-reuse check does not restart the calculation, and 
     "evaluating:",
     "ready:",
   ]);
+});
+
+/** A disposable calculator over its own store, with every worker load recorded. */
+const calculatorHarness = `async () => {
+  const { LocalStore } = await import("/src/data/store.ts");
+  const { PersonalCalculator, overlayDigest } = await import("/src/data/personal.ts");
+  const store = new LocalStore();
+  const loads = [];
+  const RealWorker = window.Worker;
+  class RecordingWorker extends RealWorker {
+    postMessage(message, ...rest) {
+      if (message.type === "load") loads.push(structuredClone(message));
+      return super.postMessage(message, ...rest);
+    }
+  }
+  window.Worker = RecordingWorker;
+  const context = { identity: null, shuns: [] };
+  const calc = new PersonalCalculator(store, async () => ({ ...context }));
+  // The app's own invalidation paths: an overlay write and a session change.
+  store.onOverlayChange = () => calc.invalidate();
+  const originalOverlay = store.overlay.bind(store);
+  let reads = 0;
+  store.overlay = async () => { reads++; return originalOverlay(); };
+  const originalGet = store.get.bind(store);
+  const gateRead = (name, id) => {
+    let entered, release;
+    const held = new Promise((r) => (entered = r));
+    const gate = new Promise((r) => (release = r));
+    let hold = true;
+    store.get = async (n, i) => {
+      if (n === name && (id === null || i === id) && hold) { hold = false; entered(); await gate; }
+      return originalGet(n, i);
+    };
+    return { held, release: () => release() };
+  };
+  const net = async (word, target) => {
+    const ranking = await calc.rankWord(word, { mode: "personal" });
+    const score = ranking.scores.find((s) => s.target === target);
+    return score ? score.net[0].numerator : null;
+  };
+  return { store, calc, loads, context, overlayDigest, gateRead, net, reads: () => reads, restore: () => { window.Worker = RealWorker; } };
+}`;
+const allScope = { kind: "*", word: "*", language: "*" };
+
+test("a private Ignore or an identity change during record loading reaches the worker with its digest, and every waiter gets the new context", async ({
+  page,
+}) => {
+  const f = fixture();
+  await page.goto("/");
+  const outcome = await page.evaluate(
+    async ({ harness, cuktaWord, cukta1, curator, allScope }) => {
+      const h = await new Function("return " + harness)()();
+      try {
+        // One run reads the private choices once.
+        const first = await h.calc.ensure({ mode: "personal" });
+        const readsForFirstRun = h.reads();
+        const before = await h.net(cuktaWord, cukta1);
+        // Part one: a private Ignore of the seeded curator lands while records load.
+        const one = h.gateRead("records", null);
+        h.calc.invalidate();
+        const waiterA = h.calc.ensure({ mode: "personal" });
+        await one.held;
+        const waiterB = h.calc.ensure({ mode: "personal" });
+        const loadsBefore = h.loads.length;
+        const overlay = await h.store.overlay();
+        await h.store.setOverlay({
+          ...overlay,
+          blocked: [{ identity: curator, scope: allScope }],
+        });
+        one.release();
+        const [a, b] = await Promise.all([waiterA, waiterB]);
+        const used = h.loads.at(-1);
+        const afterIgnore = {
+          a: a.state,
+          b: b.state,
+          sameDigest: a.overlay === b.overlay,
+          loadsDuring: h.loads.length - loadsBefore,
+          blockedInInput: used.input.overlay.blocked.some(
+            (e: any) => e.identity === curator,
+          ),
+          digestMatches: a.overlay === h.overlayDigest(used.input.overlay),
+          oldDigestGone: a.overlay !== first.overlay,
+          statusMatches: h.calc.status.overlay === a.overlay,
+          score: await h.net(cuktaWord, cukta1),
+        };
+        // Part two: the active identity changes while records load.
+        const identity = "ed25519:" + "7".repeat(64);
+        const two = h.gateRead("records", null);
+        h.calc.invalidate();
+        const waiterC = h.calc.ensure({ mode: "personal" });
+        await two.held;
+        const loadsBefore2 = h.loads.length;
+        h.context.identity = identity;
+        h.calc.invalidate();
+        two.release();
+        const c = await waiterC;
+        const used2 = h.loads.at(-1);
+        const afterIdentity = {
+          c: c.state,
+          loadsDuring: h.loads.length - loadsBefore2,
+          rootInInput: used2.input.overlay.root_changes.some(
+            (r: any) => r.identity === identity && r.q.numerator === 1,
+          ),
+          digestMatches: c.overlay === h.overlayDigest(used2.input.overlay),
+          differsFromIgnoreRun: c.overlay !== a.overlay,
+          statusMatches: h.calc.status.overlay === c.overlay,
+        };
+        return { readsForFirstRun, before, afterIgnore, afterIdentity };
+      } finally {
+        h.restore();
+      }
+    },
+    {
+      harness: calculatorHarness,
+      cuktaWord: f.words.cukta,
+      cukta1: f.definitions.cukta1,
+      curator: f.identities.curator,
+      allScope,
+    },
+  );
+  expect(outcome.readsForFirstRun).toBe(1);
+  expect(outcome.before).toBe("6");
+  expect(outcome.afterIgnore).toEqual({
+    a: "ready",
+    b: "ready",
+    sameDigest: true,
+    loadsDuring: 1,
+    blockedInInput: true,
+    digestMatches: true,
+    oldDigestGone: true,
+    statusMatches: true,
+    score: "0",
+  });
+  expect(outcome.afterIdentity).toEqual({
+    c: "ready",
+    loadsDuring: 1,
+    rootInInput: true,
+    digestMatches: true,
+    differsFromIgnoreRun: true,
+    statusMatches: true,
+  });
+});
+
+test("an old ready-state reuse check released after a newer calculation leaves that calculation untouched", async ({
+  page,
+}) => {
+  const f = fixture();
+  await page.goto("/");
+  const outcome = await page.evaluate(
+    async ({ harness, cuktaWord, cukta1, curator, allScope }) => {
+      const h = await new Function("return " + harness)()();
+      try {
+        await h.calc.ensure({ mode: "personal" });
+        // The old call waits inside the reuse check.
+        const hold = h.gateRead("inventory", "latest");
+        const old = h.calc.ensure({ mode: "personal" });
+        await hold.held;
+        // A newer calculation for changed choices completes meanwhile.
+        const overlay = await h.store.overlay();
+        await h.store.setOverlay({
+          ...overlay,
+          blocked: [{ identity: curator, scope: allScope }],
+        });
+        const newer = await h.calc.ensure({ mode: "personal", refresh: true });
+        const newerScore = await h.net(cuktaWord, cukta1);
+        const generation = h.calc.generation;
+        const loads = h.loads.length;
+        hold.release();
+        const oldResult = await old;
+        return {
+          newer: newer.state,
+          oldResult: oldResult.state,
+          sameDigest: oldResult.overlay === newer.overlay,
+          generationUnchanged: h.calc.generation === generation,
+          snapshotUnchanged: h.calc.status.snapshot === newer.snapshot,
+          digestUnchanged: h.calc.status.overlay === newer.overlay,
+          loadsAfter: h.loads.length - loads,
+          scoreUnchanged: (await h.net(cuktaWord, cukta1)) === newerScore,
+          newerScore,
+        };
+      } finally {
+        h.restore();
+      }
+    },
+    {
+      harness: calculatorHarness,
+      cuktaWord: f.words.cukta,
+      cukta1: f.definitions.cukta1,
+      curator: f.identities.curator,
+      allScope,
+    },
+  );
+  expect(outcome).toEqual({
+    newer: "ready",
+    oldResult: "ready",
+    sameDigest: true,
+    generationUnchanged: true,
+    snapshotUnchanged: true,
+    digestUnchanged: true,
+    loadsAfter: 0,
+    scoreUnchanged: true,
+    newerScore: "0",
+  });
+});
+
+test("the Personal view panel completes with available scores when the snapshot holds a record the schema cannot interpret", async ({
+  page,
+}) => {
+  await page.goto("/trust");
+  await page
+    .getByRole("radio", { name: "Mine: site view + my choices" })
+    .check();
+  await expect(
+    page.getByRole("link", { name: "Trust: personal view" }),
+  ).toBeVisible();
+  // A synthetic snapshot: the server's records plus one authenticated record with an unknown action.
+  const synthetic = await page.evaluate(
+    async ({ corePath }) => {
+      const core = await import(corePath);
+      await core.initializeCore();
+      const canon = (value: unknown) =>
+        core.canonicalize(core.utf8(JSON.stringify(value)));
+      const hash = (value: unknown) =>
+        core.contentHash(core.utf8(canon(value)));
+      const saved = globalThis.fetch;
+      const server = await (await saved("/api/v1/manifest")).json();
+      const base = (
+        await (
+          await saved(
+            `/api/v1/records?snapshot=${encodeURIComponent(server.snapshot)}&limit=200`,
+          )
+        ).json()
+      ).items as { id: string; envelope: any; body: unknown }[];
+      const selectionsIds = (
+        await (
+          await saved(
+            `/api/v1/inventory?kind=import_selections&snapshot=${encodeURIComponent(server.snapshot)}`,
+          )
+        ).json()
+      ).ids as string[];
+      const stranger = new Uint8Array(32).fill(205);
+      const body = { future: "data" };
+      const envelope = core.signHeader(stranger, {
+        version: 1,
+        issuer: core.identityFromSeed(stranger),
+        previous: [],
+        nonce: "f".repeat(32),
+        action: { kind: "future.unknown" },
+        content: { hash: hash(body), bytes: core.utf8(canon(body)).length },
+      });
+      const items = [...base, { id: envelope.id, envelope, body }].sort(
+        (x, y) => (x.id < y.id ? -1 : 1),
+      );
+      const events = items.map((i) => i.id);
+      const bodies = [
+        ...new Set(
+          items
+            .filter((i) => i.envelope.header.content)
+            .map((i) => i.envelope.header.content.hash),
+        ),
+      ].sort();
+      const manifest = {
+        version: 1,
+        events: {
+          count: events.length,
+          hash: core.contentHash(
+            core.utf8(items.map((i) => canon(i.envelope) + "\n").join("")),
+          ),
+        },
+        bodies: { count: bodies.length, hash: hash(bodies) },
+        import_selections: {
+          count: selectionsIds.length,
+          hash: hash(selectionsIds),
+        },
+      };
+      const snapshot = hash(manifest);
+      const logical = hash({
+        events,
+        bodies,
+        import_selections: selectionsIds,
+      });
+      const zeroWord = "/words/jvw1:" + "0".repeat(64);
+      // The page's own requests see the synthetic snapshot. Word responses are bound to it.
+      globalThis.fetch = (async (input: any, init?: any) => {
+        const url = new URL(
+          String(input instanceof Request ? input.url : input),
+          location.origin,
+        );
+        const json = (value: unknown) =>
+          new Response(JSON.stringify(value), {
+            headers: { "content-type": "application/json" },
+          });
+        // Any other request that names the synthetic snapshot asks the server for its own snapshot.
+        const toServer = () => {
+          if (url.searchParams.get("snapshot") === snapshot)
+            url.searchParams.set("snapshot", server.snapshot);
+          return saved(url.href, init);
+        };
+        if (url.pathname.endsWith("/manifest"))
+          return json({
+            snapshot,
+            logical_inventory: logical,
+            manifest,
+            accepted_cursor: "x.1",
+            materialized_cursor: "x.1",
+            packages: [],
+          });
+        if (url.pathname.endsWith("/inventory")) {
+          const kind = url.searchParams.get("kind")!;
+          return json({
+            snapshot,
+            kind,
+            ids: { events, bodies, import_selections: selectionsIds }[kind],
+            next: null,
+          });
+        }
+        if (url.pathname.endsWith("/records"))
+          return json({
+            snapshot,
+            logical_inventory: logical,
+            items,
+            next: null,
+          });
+        if (url.pathname.includes(zeroWord)) {
+          const real = await (await toServer()).json();
+          return json({ view: real.view });
+        }
+        if (url.pathname.includes("/words/")) {
+          const real = await (
+            await saved(
+              `/api/v1${url.pathname.slice(url.pathname.indexOf("/words/"))}?snapshot=${encodeURIComponent(server.snapshot)}`,
+            )
+          ).json();
+          return json({ ...real, snapshot, logical_inventory: logical });
+        }
+        return toServer();
+      }) as typeof fetch;
+      return { snapshot, inert: envelope.id, events: events.length };
+    },
+    { corePath },
+  );
+  await openWord(page, "cukta");
+  const panel = page.getByRole("region", { name: "Personal view" });
+  await expect(panel).toContainText(
+    `Personal view calculated in this browser from ${synthetic.events} verified records of snapshot ${synthetic.snapshot.slice(7, 19)}`,
+  );
+  await expect(panel).not.toContainText("The evaluation reports");
+  await expect(firstScore(page)).toHaveAttribute(
+    "aria-label",
+    /^Score 6: 6 for, 0 against, \d+ reviewers?, in your personal view$/,
+  );
+  await expect(page.getByText(/Personal scores are unavailable/)).toHaveCount(
+    0,
+  );
+  const stored = await page.evaluate(async (id) => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const record = await new LocalStore().get("records", id);
+    return record?.bodyStatus ?? null;
+  }, synthetic.inert);
+  expect(stored).toBe("invalid");
+});
+
+test("the breakdown follows both root routes to one reviewer, and a privately blocked reviewer is labeled blocked", async ({
+  page,
+}) => {
+  const f = fixture();
+  const short = (identity: string) =>
+    identity.slice(8, 12) + "…" + identity.slice(-4);
+  await page.goto("/word/cukta");
+  const first = page.locator("article.definition").first();
+  await first.getByText(/^\d+ reviewers?$/).click();
+  const curatorRow = first.locator("tbody tr", {
+    has: page.getByRole("link", { name: short(f.identities.curator) }),
+  });
+  // Both roots heed the curator. The route cell names both and says that several routes contribute.
+  await expect(curatorRow).toContainText("trusted by 2 identities, including");
+  await expect(
+    curatorRow.getByRole("link", { name: short(f.identities.rootA) }),
+  ).toBeVisible();
+  await expect(
+    curatorRow.getByRole("link", { name: short(f.identities.rootB) }),
+  ).toBeVisible();
+  await expect(curatorRow).toContainText("several routes contribute");
+  await expect(curatorRow).toContainText("endorses");
+  // A private Ignore in the personal view labels the same reviewer as blocked by that choice.
+  await choosePersonal(page);
+  await ignorePrivately(page, f.identities.curator);
+  // The private block names the curator for every scope.
+  expect(
+    await page.evaluate(async () => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      return (await new LocalStore().overlay()).blocked;
+    }),
+  ).toEqual([
+    {
+      identity: f.identities.curator,
+      scope: { kind: "*", word: "*", language: "*" },
+    },
+  ]);
+  await openWord(page, "cukta");
+  // The order changes with the choice. The curator's definition is found by its link.
+  const curated = page.locator("article.definition", {
+    has: page.locator(
+      `a[href="/definition/${encodeURIComponent(f.definitions.cukta1)}"]`,
+    ),
+  });
+  await expect(curated.getByRole("img")).toHaveAttribute(
+    "aria-label",
+    /^Score 0.*in your personal view$/,
+  );
+  const details = curated.locator("details.judgment-details");
+  await details.locator("summary").click();
+  const blockedRow = details.locator("tbody tr", {
+    has: page.getByRole("link", { name: short(f.identities.curator) }),
+  });
+  await expect(blockedRow).toContainText("blocked by your private choice");
+  await expect(blockedRow).toContainText("+0");
+  await expect(blockedRow).not.toContainText("trusted by");
+  await expect(details).not.toContainText("No judgments yet.");
+  // The delegate's route ran through the blocked curator. It is gone in this view.
+  const delegated = page.locator("article.definition", {
+    has: page.locator(
+      `a[href="/definition/${encodeURIComponent(f.definitions.cukta2)}"]`,
+    ),
+  });
+  const delegatedDetails = delegated.locator("details.judgment-details");
+  await delegatedDetails.locator("summary").click();
+  await expect(
+    delegatedDetails.locator("tbody tr", {
+      has: page.getByRole("link", { name: short(f.identities.delegate) }),
+    }),
+  ).toContainText("no route in this view");
+});
+
+test("a restored key with no local history in offline signing shows unknown evidence instead of a known absence", async ({
+  page,
+  browser,
+}) => {
+  const backup = await createIdentity(page);
+  // One judgment from the original browser, so the server holds history for this key.
+  await openWord(page, "vlacku");
+  await page
+    .locator("article.definition")
+    .first()
+    .getByRole("button", { name: "Endorse" })
+    .click();
+  await acceptFirstSignature(page);
+  await expect(page.getByRole("status")).toHaveText(
+    "Your endorsement is published.",
+  );
+  const context = await browser.newContext();
+  const restored = await context.newPage();
+  await restored.goto("/identity");
+  await restored.getByLabel("Backup file").setInputFiles({
+    name: "backup.json",
+    mimeType: "application/json",
+    buffer: Buffer.from(JSON.stringify(backup)),
+  });
+  await restored.getByLabel("Backup passphrase").fill(PASSPHRASE);
+  await restored.getByRole("button", { name: "Open backup locally" }).click();
+  await expect(restored.getByText("Unlocked", { exact: true })).toBeVisible();
+  await restored.getByText("Offline signing", { exact: true }).click();
+  await restored
+    .getByLabel("Sign from history saved in this browser only")
+    .check();
+  await openWord(restored, "vlacku");
+  const control = restored.locator("article.definition").first();
+  // The local history is empty. Offline, that proves nothing about the server's history.
+  await expect(control.getByRole("button", { name: "Endorse" })).toBeVisible();
+  await expect(
+    control.getByRole("button", { name: "Endorse" }),
+  ).not.toHaveAttribute("aria-pressed", /.*/);
+  await expect(
+    control.getByRole("button", { name: "Oppose" }),
+  ).not.toHaveAttribute("aria-pressed", /.*/);
+  await expect(
+    control.getByText("Your judgment is unknown here"),
+  ).toBeVisible();
+  // With a connection the authenticated history shows the endorsement.
+  await restored.goto("/identity");
+  await restored.getByLabel("Passphrase", { exact: true }).fill(PASSPHRASE);
+  await restored.getByRole("button", { name: "Unlock", exact: true }).click();
+  await expect(restored.getByText("Unlocked", { exact: true })).toBeVisible();
+  await openWord(restored, "vlacku");
+  await expect(
+    restored
+      .locator("article.definition")
+      .first()
+      .getByRole("button", { name: "Endorse" }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await context.close();
 });
