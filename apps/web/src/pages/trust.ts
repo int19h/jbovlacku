@@ -415,7 +415,7 @@ export async function trustPage(
           "meta",
         ),
         p(
-          "Pinning a version, using another view, and earlier versions need a view history endpoint that this server does not expose yet.",
+          "You can use another retained signed view by its exact event ID in the chooser above. Browsing the earlier versions of a view, pinning one of them, and following the later changes of another view need a view history endpoint that this server does not expose yet.",
           "meta",
         ),
       ];
@@ -431,7 +431,15 @@ async function makePublic(
   done: () => void,
 ) {
   const { confirmPublicTrust } = await import("../components/trustpanel.ts");
-  const ok = await confirmPublicTrust(app, subject, scope, value);
+  // The preview explains a shun under the profile of the signed view in use.
+  const view = await loadSiteView().catch(() => null);
+  const ok = await confirmPublicTrust(
+    app,
+    subject,
+    scope,
+    value,
+    view?.body?.calculation ?? null,
+  );
   if (!ok) return;
   await app.session.requireUnlocked(
     `Publishing ${value === "heed" ? "trust" : "ignore"} for ${subject.slice(8, 16)}`,

@@ -540,7 +540,7 @@ A public decision states that its history is public even after a later clear.
 
 “Ignore influence from this identity” creates an `overlay.blocked` entry with the selected identity and scope by default.
 It removes that identity and routes through it from the personal view.
-It does not use an `overlay.trust` shun, which only blocks an issuer's edge.
+It does not use an `overlay.trust` shun. Under `simple-routes-bounds-v1` a shun removes only the issuer's own trust edge. Under `simple-routes-shun-v1` a route is also refused where any earlier actor on it effectively shuns the next person, while independent routes and the person's own starting allocation stay.
 A separate choice signs `trust.set` with `value: "shun"` to publish an editorial shun.
 Other readers interpret that as this user's refusal to heed, not a universal veto.
 The personal view also applies the current user's public shuns as local blocks, as the format specifies. The reviewer list labels such a block apart from a private choice.

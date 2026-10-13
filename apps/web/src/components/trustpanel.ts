@@ -65,7 +65,7 @@ export function confirmPublicTrust(
           value === "heed"
             ? "Their judgments count for you, and so do the people they trust within this scope."
             : value === "shun"
-              ? `Your public refusal to heed. In the site view's calculation profile${profile ? ` ${profile}` : ""}: ${describeProfile(profile ?? "").shunRule} In your own personal view it also acts as a block. Other readers see it as your choice, not a universal veto or an accusation.`
+              ? `Your public refusal to heed. In the calculation profile of the signed view in use${profile ? `, ${profile}` : ""}: ${describeProfile(profile ?? "").shunRule} In your own personal view it also acts as a block. Other readers see it as your choice, not a universal veto or an accusation.`
               : "Clears your earlier public choice.",
         ),
         p(

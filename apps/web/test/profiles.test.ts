@@ -396,3 +396,95 @@ test("an unknown profile or a resource failure leaves scores unavailable without
   });
   expect(states).toBe(f.views.shunGraphBounds);
 });
+
+test("Make public on the Trust page previews a shun under the profile of the signed view in use, with the exact subject and scope, and signs nothing", async ({
+  page,
+}) => {
+  const f = await fixture();
+  await createIdentity(page);
+  // Private choices only: a block of curator2 and a rule for delegate2.
+  await page.goto(`/identity/${encodeURIComponent(f.identities.curator2)}`);
+  await page.getByRole("button", { name: "Ignore their judgments" }).click();
+  await page.getByRole("radio", { name: /Just for me/ }).check();
+  await page
+    .getByRole("region", { name: /Ignore/ })
+    .getByRole("button", { name: "Ignore", exact: true })
+    .click();
+  await expect(page.getByRole("status")).toContainText(
+    "Saved as a private block",
+  );
+  await page.goto(`/identity/${encodeURIComponent(f.identities.delegate2)}`);
+  await page.getByRole("button", { name: "Trust their judgments" }).click();
+  await page.getByRole("radio", { name: /Just for me/ }).check();
+  await page
+    .getByRole("region", { name: /Trust/ })
+    .getByRole("button", { name: "Trust", exact: true })
+    .click();
+  await expect(page.getByRole("status")).toContainText(
+    "Saved as a private rule",
+  );
+  const fingerprint = (identity: string) =>
+    `ed25519 ${identity
+      .slice(8)
+      .match(/.{1,4}/g)!
+      .join(" ")}`;
+  const blockedRow = page
+    .locator("div.row", { hasText: "also blocks trust that passes through" })
+    .filter({ hasText: f.identities.curator2.slice(8, 12) });
+  const ruleRow = page
+    .locator("div.row", { hasText: f.identities.delegate2.slice(8, 12) })
+    .filter({ hasNotText: "also blocks" });
+  const shunDialog = page.getByRole("dialog", {
+    name: "Ignore publicly: public signed record",
+  });
+  // Under the server's view the preview names the bounds profile and its rule.
+  await page.goto("/trust");
+  await expect(page.locator("main")).toContainText("Selected by this server");
+  await blockedRow.getByRole("button", { name: "Make public" }).click();
+  await expect(shunDialog).toContainText("simple-routes-bounds-v1");
+  await expect(shunDialog).toContainText(
+    "A public shun removes only the issuer's own trust edge.",
+  );
+  await expect(shunDialog).not.toContainText("does not know");
+  await expect(shunDialog).toContainText(fingerprint(f.identities.curator2));
+  await expect(shunDialog).toContainText("Scope: all judgments.");
+  await shunDialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(shunDialog).toBeHidden();
+  // Under the chosen refusal view the same private block previews that rule.
+  await useView(page, f.views.shun);
+  await blockedRow.getByRole("button", { name: "Make public" }).click();
+  await expect(shunDialog).toContainText("simple-routes-shun-v1");
+  await expect(shunDialog).toContainText(
+    "a route is refused where any earlier actor",
+  );
+  await expect(shunDialog).not.toContainText("does not know");
+  await expect(shunDialog).toContainText(fingerprint(f.identities.curator2));
+  await expect(shunDialog).toContainText("Scope: all judgments.");
+  await shunDialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(shunDialog).toBeHidden();
+  // The private rule previews a public heed with the exact subject and scope.
+  await ruleRow.getByRole("button", { name: "Make public" }).click();
+  const heedDialog = page.getByRole("dialog", {
+    name: "Trust: public signed record",
+  });
+  await expect(heedDialog).toContainText(fingerprint(f.identities.delegate2));
+  await expect(heedDialog).toContainText("Scope: all judgments.");
+  await heedDialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(heedDialog).toBeHidden();
+  // Nothing was signed. The private choices are still private.
+  const outbox = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    return (await new LocalStore().list("outbox")).length;
+  });
+  expect(outbox).toBe(0);
+  await expect(blockedRow).toContainText("private");
+  await expect(ruleRow).toContainText("private");
+  // The settings text names the chooser and the missing history endpoint apart.
+  await page.getByText("Settings and history").click();
+  await expect(page.locator("main")).toContainText(
+    "You can use another retained signed view by its exact event ID in the chooser above.",
+  );
+  await expect(page.locator("main")).toContainText(
+    "need a view history endpoint that this server does not expose yet.",
+  );
+});
