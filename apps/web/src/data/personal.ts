@@ -53,10 +53,20 @@ export type PersonalStatus =
       kind: RecordsError["kind"] | "worker" | "cancelled";
     };
 type Listener = (status: PersonalStatus) => void;
-/** What the overlay needs from the session: the identity and its effective public shuns. */
+/** What the effective overlay needs from the session: the current identity, or null when anonymous. */
 export interface OverlayContext {
   identity: string | null;
-  shuns: { identity: string; scope: TrustScope }[];
+}
+/**
+ * The effective input of one personal calculation: a version 2 overlay. It
+ * has the six version 1 fields and `public_shun_issuer`. The core resolves
+ * that issuer's effective public shuns into personal blocks, with scope,
+ * continuity, clear, and conflict rules, so this client derives none.
+ * Saved private preferences stay version 1. Nothing here is stored.
+ */
+export interface EffectiveOverlay extends Omit<Overlay, "version"> {
+  version: 2;
+  public_shun_issuer: string | null;
 }
 /** The digest of canonical JSON null: the overlay digest of the site view. */
 export const nullOverlayDigest = () => contentHash(utf8("null"));
@@ -69,16 +79,18 @@ function sortedUnique<T>(items: T[], key: (item: T) => string): T[] {
     .map((entry) => entry.item);
 }
 /**
- * The overlay as the core expects it. The current identity becomes a root with
- * q=1 only when the view names no allocation for it. Public shuns of the
- * current identity become local blocks, as the format specifies.
+ * The overlay as the core expects it for a personal calculation. The current
+ * identity becomes a root with q=1 only when the view names no allocation for
+ * it, and it is the `public_shun_issuer` whose effective public shuns the core
+ * turns into personal blocks. An anonymous session names no issuer. Private
+ * blocks are copied as saved. No public shun is derived here.
  */
 export function effectiveOverlay(
   overlay: Overlay,
   baseView: string,
   context: OverlayContext,
   viewRoots: string[],
-): Overlay {
+): EffectiveOverlay {
   const rootChanges = overlay.root_changes.map((r) => ({
     identity: r.identity,
     q: r.q,
@@ -90,20 +102,15 @@ export function effectiveOverlay(
     !rootChanges.some((r) => r.identity === identity)
   )
     rootChanges.push({ identity, q: { numerator: 1, denominator: 1 } });
-  const blocked = [
-    ...overlay.blocked.map((entry) => ({
-      identity: entry.identity,
-      scope: entry.scope,
-    })),
-    ...context.shuns.map((entry) => ({
-      identity: entry.identity,
-      scope: entry.scope,
-    })),
-  ];
+  const blocked = overlay.blocked.map((entry) => ({
+    identity: entry.identity,
+    scope: entry.scope,
+  }));
   const scopeKey = (scope: TrustScope) =>
     `${scope.kind}|${scope.word}|${scope.language}`;
   return {
-    version: 1,
+    version: 2,
+    public_shun_issuer: /^ed25519:/.test(identity ?? "") ? identity : null,
     base_view: baseView,
     root_changes: sortedUnique(rootChanges, (r) => r.identity),
     trust: sortedUnique(
@@ -125,7 +132,9 @@ export function effectiveOverlay(
     work: overlay.work,
   };
 }
-export function overlayDigest(overlay: Overlay | null): string {
+export function overlayDigest(
+  overlay: Overlay | EffectiveOverlay | null,
+): string {
   return contentHash(utf8(canonicalize(utf8(JSON.stringify(overlay)))));
 }
 type Pending = {
@@ -482,7 +491,7 @@ export class PersonalCalculator {
   private async effective(
     inventory: SnapshotInventory,
     bodies: Record<string, string>,
-  ): Promise<Overlay> {
+  ): Promise<EffectiveOverlay> {
     const viewRoots: string[] = [];
     const body = bodies[inventory.view];
     if (body)
@@ -501,7 +510,7 @@ export class PersonalCalculator {
   private async overlayFor(
     inventory: SnapshotInventory,
     mode: CalculationMode,
-  ): Promise<Overlay | null> {
+  ): Promise<EffectiveOverlay | null> {
     if (mode !== "personal") return null;
     const view = await this.store.get<{ body: string | null }>(
       "records",

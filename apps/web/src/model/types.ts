@@ -231,6 +231,12 @@ export interface ReviewerDetail {
   /** Starting allowance when the reviewer is a root of the view. */
   root: Rational | null;
   blocked: boolean;
+  /**
+   * Reasons for a block, supplied only by a version 2 local calculation.
+   * Absent means that the response gives no such reason. Both can apply.
+   */
+  public_shun_block?: true;
+  private_block?: true;
   /** Identities whose resolved heed reaches this reviewer directly, bounded. */
   incoming: string[];
   incoming_count: number;

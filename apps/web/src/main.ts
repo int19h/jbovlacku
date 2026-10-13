@@ -41,7 +41,6 @@ import { claimPage, rafsiPage, rafsiPairPage } from "./pages/rafsi.ts";
 import { guardDraftNavigation } from "./pages/wizard/common.ts";
 import { PersonalCalculator } from "./data/personal.ts";
 import { classifyReceipt } from "./data/delivery.ts";
-import type { TrustScope } from "./model/types.ts";
 
 const root = document.querySelector<HTMLDivElement>("#app")!;
 type Page = (
@@ -87,16 +86,11 @@ async function start() {
   applyTheme(session.preferences.theme);
   const shell = buildShell(root, session, delivery);
   const own = new OwnState(store, session, () => offlineSigning.value);
-  const personal = new PersonalCalculator(store, async () => {
-    const registers = await own.registers().catch(() => null);
-    const shuns: { identity: string; scope: TrustScope }[] = [];
-    for (const [key, state] of registers?.trust ?? []) {
-      if (!state.known || state.value !== "shun") continue;
-      const [identity, kind, word, language] = key.split("|");
-      shuns.push({ identity, scope: { kind, word, language } as TrustScope });
-    }
-    return { identity: session.identity ?? null, shuns };
-  });
+  // The core resolves the current identity's effective public shuns from the
+  // calculation's own snapshot. The context names that identity only.
+  const personal = new PersonalCalculator(store, async () => ({
+    identity: session.identity ?? null,
+  }));
   store.onOverlayChange = () => personal.invalidate();
   own.subscribe(() => personal.invalidate());
   const app: App = {

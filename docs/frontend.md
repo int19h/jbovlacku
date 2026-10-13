@@ -543,7 +543,10 @@ It removes that identity and routes through it from the personal view.
 It does not use an `overlay.trust` shun. Under `simple-routes-bounds-v1` a shun removes only the issuer's own trust edge. Under `simple-routes-shun-v1` a route is also refused where any earlier actor on it effectively shuns the next person, while independent routes and the person's own starting allocation stay.
 A separate choice signs `trust.set` with `value: "shun"` to publish an editorial shun.
 Other readers interpret that as this user's refusal to heed, not a universal veto.
-The personal view also applies the current user's public shuns as local blocks, as the format specifies. The reviewer list labels such a block apart from a private choice.
+The personal view also applies the current user's effective public shuns as local blocks, as the format specifies. The browser keeps its saved private preferences as a version 1 overlay. For each personal calculation it builds a version 2 overlay with the same fields and `public_shun_issuer`, the current session identity or null for an anonymous session. The core resolves that issuer's public shuns with the scope, continuity, clear, and conflict rules of the calculation's snapshot. The browser derives no block from its own registers, and it stores no derived block list or issuer.
+A narrower public heed or a public clear can lift such a block in its context. A private Ignore is a separate block that stays until the user removes it, also after a public clear. The interface says so where it offers the private choice.
+The reviewer list labels a block with the reasons that the calculation result supplies: `public_shun_block`, `private_block`, both, or a generic block when the result gives no reason. The client infers no reason from a different snapshot.
+A newly signed public trust choice changes a personal calculation only in a snapshot that holds it. After the signature the status says that the personal view includes it after delivery and a recompute for that snapshot. An older snapshot's scores do not claim to include it.
 The public preview explains the effect of a shun under the calculation profile of the signed view in use. It does not claim that a public shun removes every influence of that person in every reader's view.
 The UI never labels an ordinary shun as an allegation of malice.
 
@@ -571,7 +574,7 @@ Each import entry exposes its source, importer, and exact publication selection.
 
 It labels H as “Outward allowance,” not reach or a depth limit.
 It labels H=3 and alpha=1/2 as initial values for real-use tuning.
-Users can pin an older view, import another view, or create a personal overlay.
+Users can pin a retained view version by choosing its exact event ID, or create a personal overlay. Browsing a view's history and following the later changes of another view need a view history endpoint.
 Results always name an exact view event. If a known newer view body is unavailable, label the older selection explicitly.
 
 The reference personal overlay adds the current identity with `q=1` only when no allocation already names its continuity group.

@@ -69,7 +69,7 @@ export async function trustPage(
   );
   main.append(
     p(
-      "The site view shows this server's scores for the signed view below. The personal view downloads the snapshot's records, verifies them in this browser, and applies your private choices from this browser. It adds your identity as a root with allocation 1 when the view names no allocation for it, and it applies your own public shuns as local blocks. When the local calculation cannot finish, word and search pages show unavailable scores instead of substituting site scores.",
+      "The site view shows this server's scores for the signed view below. The personal view downloads the snapshot's records, verifies them in this browser, and applies your private choices from this browser. It adds your identity as a root with allocation 1 when the view names no allocation for it, and it applies your own effective public shuns as local blocks, as the format specifies: the core resolves their scopes and identity continuity in the calculation's snapshot, so a narrower public heed or a public clear can lift such a block, while a private Ignore stays until you remove it. When the local calculation cannot finish, word and search pages show unavailable scores instead of substituting site scores.",
       "meta",
     ),
     p(
@@ -126,7 +126,7 @@ export async function trustPage(
               ]);
               app.own.invalidate();
               app.announce(
-                "Signed a clear. The earlier public choice stays in history.",
+                "Signed a clear. The earlier public choice stays in history. Your personal view follows the clear after delivery, when you recompute for the snapshot that holds it. A private Ignore stays until you remove it.",
               );
               rerender();
             } catch (error) {
@@ -415,7 +415,7 @@ export async function trustPage(
           "meta",
         ),
         p(
-          "You can use another retained signed view by its exact event ID in the chooser above. Browsing the earlier versions of a view, pinning one of them, and following the later changes of another view need a view history endpoint that this server does not expose yet.",
+          "You can use another retained signed view by its exact event ID in the chooser above. That choice pins that version. Browsing the earlier versions of a view and following the later changes of another view need a view history endpoint that this server does not expose yet.",
           "meta",
         ),
       ];
@@ -430,7 +430,8 @@ async function makePublic(
   value: "heed" | "shun",
   done: () => void,
 ) {
-  const { confirmPublicTrust } = await import("../components/trustpanel.ts");
+  const { confirmPublicTrust, PENDING_NOTE } =
+    await import("../components/trustpanel.ts");
   // The preview explains a shun under the profile of the signed view in use.
   const view = await loadSiteView().catch(() => null);
   const ok = await confirmPublicTrust(
@@ -451,7 +452,8 @@ async function makePublic(
         ]);
         app.own.invalidate();
         app.announce(
-          "Signed. Others can build on it. It stays in history after you undo it.",
+          "Signed. Others can build on it. It stays in history after you undo it." +
+            PENDING_NOTE,
         );
         done();
       } catch (error) {

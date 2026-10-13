@@ -23,7 +23,7 @@ import { getWord } from "../data/api.ts";
 import { identityLink } from "./attribution.ts";
 import { onDisconnect } from "../lib/lifetime.ts";
 import { describeProfile } from "../model/profiles.ts";
-import type { TrustScope } from "../model/types.ts";
+import { influenceText, routeNote } from "../model/reviewers.ts";
 
 export interface JudgmentTarget {
   /** Definition event ID or rafsi pair ID. */
@@ -325,46 +325,7 @@ export function scoreDetails(
       exact ? "Exact" : "Bounded. Order unresolved where intervals overlap.",
     );
     body.append(dl);
-    // In the personal view a reviewer can be blocked by this browser's
-    // private choices. The overlay names those blocks. A blocked reviewer is
-    // shown with that label, even when the local list has no reviewer left.
-    const privateBlocks = options.personal
-      ? (await app.store.overlay()).blocked
-      : [];
-    // The current identity's own public shuns act as blocks in the personal
-    // view, as the format specifies. They are labeled apart from private choices.
-    const ownShuns: { identity: string; scope: TrustScope }[] = [];
-    if (options.personal)
-      for (const [key, state] of (await app.own.registers())?.trust ?? [])
-        if (state.known && !state.conflicted && state.value === "shun") {
-          const [subject, kind, word, language] = key.split("|");
-          ownShuns.push({
-            identity: subject,
-            scope: { kind: kind as TrustScope["kind"], word, language },
-          });
-        }
-    const matches = (
-      entries: { identity: string; scope: TrustScope }[],
-      identity: string,
-    ) =>
-      entries.some(
-        (entry) =>
-          entry.identity === identity &&
-          (entry.scope.kind === "*" || entry.scope.kind === "definition") &&
-          (entry.scope.word === "*" || entry.scope.word === target.word) &&
-          entry.scope.language === "*",
-      );
-    const ownShunned = (identity: string) => matches(ownShuns, identity);
-    const privatelyBlocked = (identity: string) =>
-      ownShunned(identity) ||
-      privateBlocks.some(
-        (entry) =>
-          entry.identity === identity &&
-          (entry.scope.kind === "*" || entry.scope.kind === "definition") &&
-          (entry.scope.word === "*" || entry.scope.word === target.word) &&
-          entry.scope.language === "*",
-      );
-    if (score.direct_reviewers === 0 && !privateBlocks.length)
+    if (score.direct_reviewers === 0)
       body.append(p("No judgments yet.", "small"));
     else if (target.word) {
       const slot = el(
@@ -383,42 +344,8 @@ export function scoreDetails(
                   snapshot: options.calculation?.inventory,
                 })
               ).scores.find((s) => s.target === target.id);
-          // The local list omits a reviewer that a private choice blocks. The
-          // server's site-view list still names that reviewer, so the
-          // breakdown shows the blocked reviewer with no influence. A bounded
-          // site list can leave a blocked reviewer out.
-          const blockedRows: ReviewerDetail[] = [];
-          if (options.personal && privateBlocks.length) {
-            try {
-              const site = (
-                await getWord(target.word!, {
-                  reviewers: true,
-                  snapshot: options.calculation?.inventory,
-                })
-              ).scores.find((s) => s.target === target.id);
-              for (const reviewer of site?.reviewers ?? [])
-                if (
-                  privatelyBlocked(reviewer.identity) &&
-                  !detailed?.reviewers?.some(
-                    (r) => r.identity === reviewer.identity,
-                  )
-                )
-                  blockedRows.push({
-                    ...reviewer,
-                    root: null,
-                    incoming: [],
-                    incoming_count: 0,
-                    incoming_complete: true,
-                    blocked: true,
-                    multiple_routes: false,
-                    weight: null,
-                  });
-            } catch {
-              // Without the site list the blocked reviewer stays unlisted.
-            }
-          }
           slot.replaceChildren();
-          if (!detailed?.reviewers && !blockedRows.length) {
+          if (!detailed?.reviewers) {
             slot.append(
               p(
                 score.direct_reviewers === 0
@@ -429,7 +356,9 @@ export function scoreDetails(
             );
             return;
           }
-          const reviewers = [...(detailed?.reviewers ?? []), ...blockedRows];
+          // A blocked reviewer with a judgment stays listed with no influence.
+          // The result names the reason for the block when it has one.
+          const reviewers = detailed.reviewers;
           const table = el("table", { class: "small" });
           table.append(
             el(
@@ -453,7 +382,6 @@ export function scoreDetails(
               route.push(
                 `trusted by ${reviewer.incoming.length === 1 ? "" : `${reviewer.incoming_count} identities, including `}`,
               );
-            if (reviewer.blocked) route.push("blocked in this view");
             const routeCell = el("td", { class: "meta" });
             if (reviewer.root) routeCell.append(text(route[0]));
             if (reviewer.incoming.length) {
@@ -473,26 +401,14 @@ export function scoreDetails(
                 routeCell.append(text(" and more"));
             }
             if (!reviewer.root && !reviewer.incoming.length)
-              routeCell.append(
-                text(
-                  ownShunned(reviewer.identity)
-                    ? "blocked in your personal view by your public shun"
-                    : privatelyBlocked(reviewer.identity)
-                      ? "blocked by your private choice"
-                      : reviewer.blocked
-                        ? "blocked in this view"
-                        : "no route in this view",
-                ),
-              );
+              routeCell.append(text(routeNote(reviewer)));
             if (reviewer.multiple_routes)
               routeCell.append(text(" · several routes contribute", "meta"));
             const weight = reviewer.weight
               ? intervalIsExact(reviewer.weight)
                 ? fractionText(reviewer.weight[0])
                 : `${fractionText(reviewer.weight[0])} to ${fractionText(reviewer.weight[1])}`
-              : privatelyBlocked(reviewer.identity)
-                ? "0"
-                : "unavailable";
+              : influenceText(reviewer);
             tbody.append(
               el(
                 "tr",

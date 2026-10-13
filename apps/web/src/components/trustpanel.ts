@@ -18,6 +18,9 @@ export function describeScope(scope: TrustScope): string {
   if (scope.language !== "*") parts.push(`language ${scope.language}`);
   return parts.join(", ") + " only";
 }
+/** Said after a public trust signature: an older snapshot never includes it. */
+export const PENDING_NOTE =
+  " Your personal view includes it after delivery, when you recompute for the snapshot that holds it.";
 /** Previews the exact subject and scope before a public signature. */
 export function confirmPublicTrust(
   app: App,
@@ -131,7 +134,7 @@ export function trustPanel(app: App, options: TrustPanelOptions): HTMLElement {
       "Just for me",
       mode === "trust"
         ? "Stays in this browser as a private rule."
-        : "Stays in this browser. Also blocks trust that passes through them in your personal view.",
+        : "Stays in this browser. Also blocks trust that passes through them in your personal view. A later public clear does not remove it.",
     ],
     [
       "public",
@@ -278,7 +281,8 @@ export function trustPanel(app: App, options: TrustPanelOptions): HTMLElement {
             ]);
             app.own.invalidate();
             app.announce(
-              "Signed. Others can build on it. It stays in history after you undo it.",
+              "Signed. Others can build on it. It stays in history after you undo it." +
+                PENDING_NOTE,
             );
             options.onDone();
           },

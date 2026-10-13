@@ -199,7 +199,7 @@ test("the personal view follows the chosen profile, private blocks and own publi
       const overlay = effectiveOverlay(
         await store.overlay(),
         view,
-        { identity, shuns: [] },
+        { identity },
         viewBody.roots.map((r: any) => r.identity),
       );
       const session = core.evaluateSession({
