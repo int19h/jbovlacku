@@ -1302,3 +1302,57 @@ test("caret movement, selection, and a pointer action in the already focused sea
   await expect(heading).not.toBeFocused();
   await expect(field).toHaveValue("cukta");
 });
+
+test.describe("touch input", () => {
+  test.use({ hasTouch: true });
+  test("a touch tap that focuses a control inside the content during a held load keeps that focus, like a mouse click, while a script's focus or a tap on text does not", async ({
+    page,
+  }) => {
+    const heading = page.locator("main h1");
+    const trustLink = page.locator("footer").getByRole("link", {
+      name: "Trust: site view",
+    });
+    const control = page.getByRole("button", { name: "page control" });
+    const probe = "**/api/v1/words/jvw1%3A0000*";
+    for (const pass of ["tap", "click", "script", "tap on text"] as const) {
+      // A fresh page load, so no probe answer is cached. The footer link is
+      // activated by keyboard, so no pointer event comes before the action.
+      await page.goto("/");
+      await expect(trustLink).toBeVisible();
+      let release = () => {};
+      const held = new Promise<void>((resolve) => (release = resolve));
+      await page.route(probe, async (route) => {
+        await held;
+        await route.continue();
+      });
+      await trustLink.focus();
+      await page.keyboard.press("Enter");
+      await expect(
+        page.getByRole("radio", { name: "Site view only" }),
+      ).toBeVisible();
+      await expect(page.locator("main")).not.toContainText(
+        "Calculation profile",
+      );
+      // A control in the page content that does not have the focus.
+      await page.evaluate(() => {
+        const own = document.createElement("button");
+        own.textContent = "page control";
+        document.querySelector("main")!.append(own);
+      });
+      await expect(control).not.toBeFocused();
+      if (pass === "tap") await control.tap();
+      else if (pass === "click") await control.click();
+      else if (pass === "script") await control.evaluate((b) => b.focus());
+      else await page.locator("main h1").tap();
+      if (pass === "tap on text") await expect(control).not.toBeFocused();
+      else await expect(control).toBeFocused();
+      release();
+      await expect(page.locator("main")).toContainText("Calculation profile");
+      if (pass === "tap" || pass === "click") {
+        await expect(control).toBeFocused();
+        await expect(heading).not.toBeFocused();
+      } else await expect(heading).toBeFocused();
+      await page.unroute(probe);
+    }
+  });
+});

@@ -10,7 +10,8 @@
  * - an element outside the changing page content that receives the focus,
  *   also without key or pointer events, as a screen reader can move it;
  * - an element inside the page content that receives the focus in the same
- *   task as a reader key or pointer event, such as Tab or a click.
+ *   task as a reader key, pointer, or mouse event, such as Tab, a click, or
+ *   a touch tap.
  *
  * A focus move to the element that had the focus when the render started is
  * not a new choice. A key that only scrolls changes no focus, so the heading
@@ -55,8 +56,9 @@ export function watchReaderFocus(
 ): ReaderFocus {
   const start = document.activeElement;
   const chosen = new Set<Element>();
-  // True from a reader key or pointer event until the end of its task. A
-  // focus move by Tab or by a click happens in that same task.
+  // True from a reader key, pointer, or mouse event until the end of its
+  // task. A focus move by Tab, by a click, or by the mousedown of a touch tap
+  // happens in that same task.
   let readerEvent = false;
   let clearReaderEvent: ReturnType<typeof setTimeout> | undefined;
   const onReader = (event: Event) => {
@@ -81,7 +83,10 @@ export function watchReaderFocus(
       return;
     if (!main.contains(target) || readerEvent) chosen.add(target);
   };
-  const readerTypes = ["keydown", "pointerdown", "input"];
+  // A touch tap sends pointerdown when the touch starts, but the emulated
+  // mousedown and its focus move come later, in another task. The mousedown
+  // therefore opens the reader-event window too. It moves no focus by itself.
+  const readerTypes = ["keydown", "pointerdown", "mousedown", "input"];
   for (const type of readerTypes)
     document.addEventListener(type, onReader, { capture: true, signal });
   document.addEventListener("focusin", onFocus, { capture: true, signal });
