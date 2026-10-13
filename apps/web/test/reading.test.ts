@@ -1034,3 +1034,157 @@ test("a focus choice made while a page loads is kept, Enter then submits the sea
   await page.getByRole("link", { name: /^Trust:/ }).click();
   await expect(page.locator("main h1")).toBeFocused();
 });
+
+test("a key that only scrolls after the activated link left the page does not keep the focus on the body, so the finished word page focuses its heading", async ({
+  page,
+}) => {
+  const heading = page.locator("main h1");
+  const resultLink = page
+    .getByRole("region", { name: "Search results" })
+    .getByRole("link", { name: "cukta", exact: true })
+    .first();
+  const bodyHasFocus = () =>
+    page.evaluate(() => document.activeElement === document.body);
+  // Each pass holds the word request, activates the result link, checks that
+  // the link left the page with the focus on the body, presses at most one
+  // scrolling key, then releases the request.
+  for (const pass of [
+    { activate: "click", key: null },
+    { activate: "click", key: "PageDown" },
+    { activate: "Enter", key: "ArrowDown" },
+  ] as const) {
+    await page.goto("/search?q=cukta&lang=en");
+    await expect(resultLink).toBeVisible();
+    let release = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    await page.route("**/api/v1/words/**", async (route) => {
+      await held;
+      await route.continue();
+    });
+    if (pass.activate === "click") await resultLink.click();
+    else {
+      await resultLink.focus();
+      await page.keyboard.press("Enter");
+    }
+    await expect(page).toHaveURL(/\/word\/cukta/);
+    await expect(resultLink).toHaveCount(0);
+    expect(await bodyHasFocus()).toBe(true);
+    if (pass.key) await page.keyboard.press(pass.key);
+    expect(await bodyHasFocus()).toBe(true);
+    release();
+    await expect(page).toHaveTitle("cukta · jbovlacku");
+    await expect(heading).toHaveText("cukta");
+    await expect(heading).toBeFocused();
+    await page.unroute("**/api/v1/words/**");
+  }
+});
+
+test("a focus move to the header field without key or pointer events is kept, while a page's own focus inside the content does not count and an open dialog keeps its focus", async ({
+  page,
+}) => {
+  const field = page.getByLabel("Search words and meanings");
+  const heading = page.locator("main h1");
+  const probe = "**/api/v1/words/jvw1%3A0000*";
+  /**
+   * Holds the Trust page's view probe and opens the Trust page from the header
+   * link. The client caches the probe response, so the cache is cleared first,
+   * with the same view preference. The content after the probe must be absent
+   * while the request waits.
+   */
+  const openHeldTrust = async () => {
+    await page.evaluate(async () => {
+      const { getPreferredView, setPreferredView } = await import(
+        String("/src/data/api.ts")
+      );
+      setPreferredView(getPreferredView());
+    });
+    let release = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    await page.route(probe, async (route) => {
+      await held;
+      await route.continue();
+    });
+    await page.getByRole("link", { name: /^Trust:/ }).click();
+    await expect(
+      page.getByRole("radio", { name: "Site view only" }),
+    ).toBeVisible();
+    await expect(page.locator("main")).not.toContainText("Calculation profile");
+    return async () => {
+      release();
+      await expect(page.locator("main")).toContainText("Calculation profile");
+      await page.unroute(probe);
+    };
+  };
+  await page.goto("/search?q=klama&lang=en");
+  await expect(page).toHaveTitle("Search: klama · jbovlacku");
+  // A scripted focus on the header field, as a screen reader can move it,
+  // with no keydown, pointerdown, or input event.
+  let finish = await openHeldTrust();
+  const events = await page.evaluate(() => {
+    const seen: string[] = [];
+    for (const type of ["keydown", "pointerdown", "input"])
+      document.addEventListener(type, () => seen.push(type), {
+        capture: true,
+      });
+    const input = document.getElementById("q") as HTMLInputElement;
+    input.value = "cukta";
+    input.focus();
+    return seen;
+  });
+  expect(events).toEqual([]);
+  await expect(field).toBeFocused();
+  await finish();
+  await expect(field).toBeFocused();
+  await expect(heading).not.toBeFocused();
+  // Enter submits the field's query after the request finished.
+  await field.press("Enter");
+  await expect(page).toHaveURL(/\/search\?q=cukta&lang=en$/);
+  await expect(
+    page
+      .getByRole("region", { name: "Search results" })
+      .getByRole("link", { name: "cukta", exact: true })
+      .first(),
+  ).toBeVisible();
+  // A focus inside the changing page content is the page's own focus, not a
+  // reader choice. The finished page focuses its heading.
+  finish = await openHeldTrust();
+  await page.evaluate(() => {
+    const own = document.createElement("button");
+    own.textContent = "page control";
+    document.querySelector("main")!.append(own);
+    own.focus();
+  });
+  await expect(
+    page.getByRole("button", { name: "page control" }),
+  ).toBeFocused();
+  await finish();
+  await expect(heading).toBeFocused();
+  // An open dialog keeps its focus when the page finishes, and a focus move
+  // into the dialog is not a reader choice: after it closes, the next page
+  // focuses its heading again.
+  await page.getByRole("link", { name: "Settings" }).click();
+  await expect(heading).toBeFocused();
+  finish = await openHeldTrust();
+  await page.evaluate(() => {
+    const dialog = document.createElement("dialog");
+    dialog.setAttribute("aria-label", "Test dialog");
+    const inside = document.createElement("button");
+    inside.textContent = "inside the dialog";
+    dialog.append(inside);
+    document.body.append(dialog);
+    dialog.showModal();
+    inside.focus();
+  });
+  const inside = page.getByRole("button", { name: "inside the dialog" });
+  await expect(inside).toBeFocused();
+  await finish();
+  await expect(inside).toBeFocused();
+  await expect(heading).not.toBeFocused();
+  await page.evaluate(() => {
+    const dialog = document.querySelector("dialog[aria-label='Test dialog']");
+    (dialog as HTMLDialogElement).close();
+    dialog!.remove();
+  });
+  await page.getByRole("link", { name: "Settings" }).click();
+  await expect(heading).toBeFocused();
+});

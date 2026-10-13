@@ -148,16 +148,29 @@ async function start() {
     const main = shell.main;
     main.replaceChildren();
     main.className = "";
-    // A focus choice that the reader makes while the page loads is kept: a
-    // key, a pointer, or input in a field after navigation started means that
-    // the heading is not focused when the page finishes. The listeners end
-    // with this render, or earlier when a newer route aborts it.
+    // A focus choice that the reader makes while the page loads is kept. A
+    // key, a pointer, or input in a field after navigation started counts as
+    // a reader action. A focus move to an element outside the changing page
+    // content counts too, because a screen reader can move the focus without
+    // key or pointer events. A page's own focus inside the content or inside
+    // an open dialog does not count. The listeners end with this render, or
+    // earlier when a newer route aborts it.
     let readerActed = false;
     const noteReader = () => {
       readerActed = true;
     };
+    const noteFocus = (event: FocusEvent) => {
+      const target = event.target;
+      if (
+        target instanceof Element &&
+        !main.contains(target) &&
+        !target.closest("dialog[open]")
+      )
+        readerActed = true;
+    };
     for (const type of ["keydown", "pointerdown", "input"])
       document.addEventListener(type, noteReader, { capture: true, signal });
+    document.addEventListener("focusin", noteFocus, { capture: true, signal });
     const context: RenderContext = {
       main,
       live: () => current === revision,
@@ -239,11 +252,21 @@ async function start() {
     } finally {
       for (const type of ["keydown", "pointerdown", "input"])
         document.removeEventListener(type, noteReader, { capture: true });
-      const inDialog = document.activeElement?.closest("dialog[open]");
+      document.removeEventListener("focusin", noteFocus, { capture: true });
+      const active = document.activeElement;
+      const inDialog = active?.closest("dialog[open]");
+      // A reader action keeps the focus only where it left the focus on a
+      // control. A key that only scrolled, after the activated link left the
+      // page, leaves the focus on the body, and the heading then receives it.
+      const readerFocus =
+        readerActed &&
+        active instanceof HTMLElement &&
+        active !== document.body &&
+        active.isConnected;
       if (
         current === revision &&
         options.focusHeading &&
-        !readerActed &&
+        !readerFocus &&
         !inDialog
       ) {
         const heading = main.querySelector<HTMLElement>("h1");
