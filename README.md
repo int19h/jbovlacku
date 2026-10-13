@@ -47,6 +47,7 @@ A draft saved by the earlier prototype opens a choice to export it, convert it i
 Remote search offers a retired-results filter that shows each publication's status. The lujvo builder says whether a candidate spelling is taken in the local package and on the server.
 The rafsi page lists known assignments across words from version 2 packages, and the claim page signs a claim with its pair blessing.
 The lujvo builder offers short rafsi, gismu stems, whole gismu, whole-word parts under the extended profile, locks, CLL scores, recovered parts, and every competing rafsi claim from the local package.
+Choosing [optional hyphens](docs/morphology.md) in the lujvo builder remains a target change; the builder adds only the required hyphens.
 The gismu generator offers the CLL 1987, CLL 1995, and Ilmen presets with pinned sources, custom weights, exact scores, tied ranks, per-language contributions, root and rafsi conflicts, and manual forms without fabricated evidence.
 The [morphology profiles](docs/morphology.md) name the rules and versions that the metadata records.
 The status editor, transfer editor, semantic search, AI, and Lensisku cross-posting remain target features.

@@ -31,6 +31,7 @@ import {
 } from "../data/search.ts";
 import {
   getManifest,
+  getPreferredView,
   getWord,
   loadDefinition,
   remoteSearch,
@@ -58,6 +59,12 @@ interface SearchState {
   source: "local" | "remote";
   snapshot: string;
   view: string | null;
+  /**
+   * The reader's view choice when the results were fetched: a signed view ID,
+   * or null for the server's view. Results are restored only under the same
+   * choice. Older saved state without this field is not restored.
+   */
+  choice?: string | null;
   hits: SearchHit[];
   next: string | null;
   cursors: string[];
@@ -251,6 +258,7 @@ export async function searchPage(
       source: cached ? "local" : "remote",
       snapshot,
       view,
+      choice: getPreferredView(),
       hits: displayed,
       next,
       cursors: [...cursors],
@@ -401,11 +409,15 @@ export async function searchPage(
   };
   // Restore a remembered page after browser Back.
   const saved = history.state?.dictionarySearch as SearchState | undefined;
+  // Saved results belong to the view choice that produced them. After a
+  // different choice a new search runs under the current one.
   const restorable =
     saved &&
     saved.query === query &&
     saved.language === language &&
     saved.source === (cached ? "local" : "remote") &&
+    "choice" in saved &&
+    (saved.choice ?? null) === getPreferredView() &&
     Array.isArray(saved.hits) &&
     saved.hits.length <= RESULT_LIMIT;
   try {

@@ -405,12 +405,13 @@ export function validateWord(value: unknown, id: string): WordResponse {
       throw invalid();
   void id;
   const word = value as unknown as WordResponse;
-  // A calculation profile this client does not know gives no scores. The
-  // name stays visible, and nothing substitutes another calculation.
+  // A calculation profile this client does not know gives no scores and no
+  // order. The name stays visible, and nothing substitutes another calculation.
   if (word.calculation && !describeProfile(word.calculation.algorithm).known)
     return {
       ...word,
       scores: [],
+      layers: [],
       unavailable_scores: [
         ...new Set([
           ...word.unavailable_scores,

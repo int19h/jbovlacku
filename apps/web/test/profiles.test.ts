@@ -334,17 +334,44 @@ test("an unknown profile or a resource failure leaves scores unavailable without
     /Exact value/,
   );
   // A response that names a profile this client does not know gives no score.
+  // Its layers put the definitions in the reverse of event order. That order
+  // is not shown either: the page falls back to event order and says so.
   await page.route("**/api/v1/words/**", async (route) => {
     const response = await route.fetch();
     const body = await response.json();
-    if (body.calculation)
+    if (body.calculation) {
       body.calculation.algorithm = "simple-routes-future-v9";
+      body.layers = [...body.definitions].reverse().map((d: string) => [d]);
+    }
     await route.fulfill({ response, json: body });
   });
   await page.goto("/word/dunda");
   await expect(score(page, "Gives something")).toHaveAttribute(
     "aria-label",
     "Score unavailable",
+  );
+  await expect(score(page, "Donates a gift")).toHaveAttribute(
+    "aria-label",
+    "Score unavailable",
+  );
+  const eventOrder = await page.evaluate(async (wordId) => {
+    const { getWord } = await import(String("/src/data/api.ts"));
+    return (await getWord(wordId, { fresh: true })).definitions;
+  }, f.words.dunda);
+  expect(eventOrder).toEqual([f.definitions.dunda1, f.definitions.dunda2]);
+  const shownOrder = await page
+    .locator("article.definition a[href^='/definition/']")
+    .evaluateAll((links) =>
+      links.map((a) =>
+        decodeURIComponent((a as HTMLAnchorElement).pathname.slice(12)),
+      ),
+    );
+  expect(shownOrder).toEqual(eventOrder);
+  await expect(page.locator("main")).toContainText(
+    "Scores and order from the calculation profile simple-routes-future-v9 are not shown, because this client does not know its route rule. Definitions appear in event order.",
+  );
+  await expect(page.locator("main")).not.toContainText(
+    "No ranking position is available",
   );
   const details = page
     .locator("article.definition", { hasText: "Gives something" })

@@ -118,16 +118,16 @@ export async function trustPage(
           async () => {
             if (!(await app.session.firstSignatureDisclosure())) return;
             try {
-              await app.signer.publish([
+              const results = await app.signer.publish([
                 {
                   action: { kind: "trust.set", subject, scope, value: "clear" },
                   body: null,
                 },
               ]);
               app.own.invalidate();
-              app.announce(
-                "Signed a clear. The earlier public choice stays in history. Your personal view follows the clear after delivery, when you recompute for the snapshot that holds it. A private Ignore stays until you remove it.",
-              );
+              const { publicClearOutcome } =
+                await import("../components/trustpanel.ts");
+              app.announce(publicClearOutcome(results));
               rerender();
             } catch (error) {
               app.announce(describe(error));
@@ -430,16 +430,17 @@ async function makePublic(
   value: "heed" | "shun",
   done: () => void,
 ) {
-  const { confirmPublicTrust, PENDING_NOTE } =
+  const { confirmPublicTrust, previewProfile, publicTrustOutcome } =
     await import("../components/trustpanel.ts");
-  // The preview explains a shun under the profile of the signed view in use.
+  // The preview explains a shun under the profile of the signed view in use,
+  // or says that the view did not load.
   const view = await loadSiteView().catch(() => null);
   const ok = await confirmPublicTrust(
     app,
     subject,
     scope,
     value,
-    view?.body?.calculation ?? null,
+    previewProfile(view),
   );
   if (!ok) return;
   await app.session.requireUnlocked(
@@ -447,14 +448,11 @@ async function makePublic(
     async () => {
       if (!(await app.session.firstSignatureDisclosure())) return;
       try {
-        await app.signer.publish([
+        const results = await app.signer.publish([
           { action: { kind: "trust.set", subject, scope, value }, body: null },
         ]);
         app.own.invalidate();
-        app.announce(
-          "Signed. Others can build on it. It stays in history after you undo it." +
-            PENDING_NOTE,
-        );
+        app.announce(publicTrustOutcome(results));
         done();
       } catch (error) {
         app.announce(describe(error));

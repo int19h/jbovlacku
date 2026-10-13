@@ -4,6 +4,7 @@ import {
   createIdentity,
   acceptFirstSignature,
   openWord,
+  fixture,
 } from "./helpers.ts";
 
 test("downloaded search queries work without an API request and offline signing uses saved history", async ({
@@ -1112,4 +1113,65 @@ test("a version 2 entry with a cut rafsi list makes the publish page name the in
     "The package lists at most 64 claims per word, so coverage is incomplete for cukta.",
   );
   await expect(conflicts).not.toContainText("vlacku");
+});
+
+test("a restored search belongs to the view choice that produced it: a changed choice or a return to the server's view starts a new search, and the same choice restores without a request", async ({
+  page,
+}) => {
+  const f = fixture();
+  const requests: string[] = [];
+  await page.route("**/api/v1/search?**", (route) => {
+    requests.push(new URL(route.request().url()).search);
+    return route.continue();
+  });
+  const results = page.getByRole("region", { name: "Search results" });
+  const provenance = page.locator("details", {
+    hasText: "Search source and snapshot",
+  });
+  await page.goto("/search?q=cukta&lang=en");
+  await expect(results.locator("article").first()).toBeVisible();
+  await provenance.locator("summary").click();
+  await expect(provenance).toContainText(`View: ${f.view}`);
+  expect(requests).toHaveLength(1);
+  expect(requests[0]).not.toContain("view=");
+  // The reader chooses another signed view inside the app, then goes back.
+  await page.getByRole("link", { name: /^Trust:/ }).click();
+  await page.getByLabel("Signed view event ID").fill(f.views.shun);
+  await page.getByRole("button", { name: "Use this view" }).click();
+  await expect(page.locator("main")).toContainText(
+    `Signed view in use: ${f.views.shun}`,
+  );
+  await page.goBack();
+  await expect(page.getByLabel("Search words and meanings")).toHaveValue(
+    "cukta",
+  );
+  await expect(results.locator("article").first()).toBeVisible();
+  await expect(provenance).toContainText(`View: ${f.views.shun}`);
+  expect(requests).toHaveLength(2);
+  expect(requests[1]).toContain(`view=${encodeURIComponent(f.views.shun)}`);
+  // The same choice restores the results without a request.
+  await page.getByRole("link", { name: "Settings" }).click();
+  await page.goBack();
+  await expect(results.locator("article").first()).toBeVisible();
+  await expect(provenance).toContainText(`View: ${f.views.shun}`);
+  expect(requests).toHaveLength(2);
+  // A return to the server's view is a change of choice too.
+  await page.getByRole("link", { name: /^Trust:/ }).click();
+  await page.getByRole("button", { name: "Back to the server's view" }).click();
+  await expect(page.locator("main")).toContainText("Selected by this server");
+  await page.goBack();
+  await expect(results.locator("article").first()).toBeVisible();
+  await expect(provenance).toContainText(`View: ${f.view}`);
+  expect(requests).toHaveLength(3);
+  expect(requests[2]).not.toContain("view=");
+  // Older saved state without a choice marker is not restored.
+  await page.evaluate(() => {
+    const state = { ...(history.state ?? {}) };
+    delete state.dictionarySearch.choice;
+    history.replaceState(state, "");
+  });
+  await page.getByRole("link", { name: "Settings" }).click();
+  await page.goBack();
+  await expect(results.locator("article").first()).toBeVisible();
+  expect(requests).toHaveLength(4);
 });

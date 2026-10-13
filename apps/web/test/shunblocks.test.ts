@@ -1,6 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 import {
   acceptFirstSignature,
+  corePath,
   createIdentity,
   fixture,
   openWord,
@@ -417,4 +418,249 @@ test("a broad public shun with a narrower public heed blocks a reviewer in the r
   );
   await expect(rafsiRow).not.toContainText("private choice");
   await expect(rafsiRow).toContainText("+0");
+});
+
+/** Holds every event POST and answers it with a server error. */
+async function failDelivery(page: Page) {
+  await page.route("**/api/v1/events", (route) =>
+    route.fulfill({ status: 503, json: { error: "held by the test" } }),
+  );
+}
+async function retryDelivery(page: Page, expected: string[]) {
+  await page.unroute("**/api/v1/events");
+  await page.getByRole("link", { name: /not delivered/ }).click();
+  await page.getByRole("button", { name: "Try now" }).first().click();
+  await expect
+    .poll(() => outboxStates(page), { timeout: 20000 })
+    .toEqual(expected);
+}
+const shellStatus = (page: Page) => page.locator("div.status[role=status]");
+
+test("Make public and Undo on the Trust page say when delivery is not finished, and say that others can build on an accepted record", async ({
+  page,
+}) => {
+  const f = await fixture();
+  await createIdentity(page);
+  // Two private choices: a block of curator2 and a rule for delegate2.
+  await page.goto(`/identity/${encodeURIComponent(f.identities.curator2)}`);
+  await page.getByRole("button", { name: "Ignore their judgments" }).click();
+  await page.getByRole("radio", { name: /Just for me/ }).check();
+  await page
+    .getByRole("region", { name: /Ignore/ })
+    .getByRole("button", { name: "Ignore", exact: true })
+    .click();
+  await expect(shellStatus(page)).toContainText("Saved as a private block");
+  await page.goto(`/identity/${encodeURIComponent(f.identities.delegate2)}`);
+  await page.getByRole("button", { name: "Trust their judgments" }).click();
+  await page.getByRole("radio", { name: /Just for me/ }).check();
+  await page
+    .getByRole("region", { name: /Trust/ })
+    .getByRole("button", { name: "Trust", exact: true })
+    .click();
+  await expect(shellStatus(page)).toContainText("Saved as a private rule");
+  const blockedRow = page
+    .locator("div.row", { hasText: "also blocks trust that passes through" })
+    .filter({ hasText: f.identities.curator2.slice(8, 12) });
+  const ruleRow = page
+    .locator("div.row", { hasText: f.identities.delegate2.slice(8, 12) })
+    .filter({ hasText: "private" })
+    .filter({ hasNotText: "also blocks" });
+  // Make public with a failing delivery: saved here, not finished, pending rule.
+  await page.goto("/trust");
+  await failDelivery(page);
+  await blockedRow.getByRole("button", { name: "Make public" }).click();
+  await page
+    .getByRole("dialog", { name: "Ignore publicly: public signed record" })
+    .getByRole("button", { name: "Ignore publicly" })
+    .click();
+  await unlockIfAsked(page);
+  await acceptFirstSignature(page);
+  await expect(shellStatus(page)).toContainText(
+    "Signed and saved here. Delivery is not finished. See Not delivered.",
+  );
+  await expect(shellStatus(page)).toContainText(PENDING_NOTE);
+  await expect(shellStatus(page)).not.toContainText("Others can build on it");
+  expect(await outboxStates(page)).toEqual(["unknown"]);
+  await retryDelivery(page, ["accepted"]);
+  // Undo with a failing delivery: the clear is saved here and not finished,
+  // and the private Ignore stays.
+  await page.goto("/trust");
+  await failDelivery(page);
+  const publicRow = page
+    .locator("div.row", { hasText: "public" })
+    .filter({ hasText: f.identities.curator2.slice(8, 12) })
+    .filter({ hasNotText: "private" });
+  await publicRow.getByRole("button", { name: "Undo" }).click();
+  await unlockIfAsked(page);
+  await expect(shellStatus(page)).toContainText(
+    "Signed a clear and saved here. Delivery is not finished. See Not delivered.",
+  );
+  await expect(shellStatus(page)).toContainText(
+    "A private Ignore stays until you remove it.",
+  );
+  expect(await outboxStates(page)).toEqual(["accepted", "unknown"]);
+  await retryDelivery(page, ["accepted", "accepted"]);
+  // Control: an accepted delivery says that others can build on it.
+  await page.goto("/trust");
+  await ruleRow.getByRole("button", { name: "Make public" }).click();
+  await page
+    .getByRole("dialog", { name: "Trust: public signed record" })
+    .getByRole("button", { name: "Trust" })
+    .click();
+  await unlockIfAsked(page);
+  await expect(shellStatus(page)).toContainText(
+    "Signed. Others can build on it. It stays in history after you undo it.",
+  );
+  await expect(shellStatus(page)).toContainText(PENDING_NOTE);
+  await expect(shellStatus(page)).not.toContainText("saved here");
+  expect(await outboxStates(page)).toEqual([
+    "accepted",
+    "accepted",
+    "accepted",
+  ]);
+  // Control: an accepted clear.
+  await page.goto("/trust");
+  const publicRule = page
+    .locator("div.row", { hasText: "public" })
+    .filter({ hasText: f.identities.delegate2.slice(8, 12) })
+    .filter({ hasNotText: "private" });
+  await publicRule.getByRole("button", { name: "Undo" }).click();
+  await unlockIfAsked(page);
+  await expect(shellStatus(page)).toContainText(
+    "Signed a clear. The earlier public choice stays in history.",
+  );
+  await expect(shellStatus(page)).not.toContainText("saved here");
+  await expect(shellStatus(page)).toContainText(
+    "A private Ignore stays until you remove it.",
+  );
+});
+
+test("the public shun preview says that the signed view did not load and why, on the identity page and the Trust page, for a silent server and for an unavailable body", async ({
+  page,
+}) => {
+  const f = await fixture();
+  await createIdentity(page);
+  await page.goto(`/identity/${encodeURIComponent(f.identities.curator2)}`);
+  await page.getByRole("button", { name: "Ignore their judgments" }).click();
+  await page.getByRole("radio", { name: /Just for me/ }).check();
+  await page
+    .getByRole("region", { name: /Ignore/ })
+    .getByRole("button", { name: "Ignore", exact: true })
+    .click();
+  await expect(shellStatus(page)).toContainText("Saved as a private block");
+  // The server does not answer the view probe. The view cannot load.
+  const probe = "**/api/v1/words/jvw1%3A0000*";
+  await page.route(probe, (route) =>
+    route.fulfill({
+      status: 503,
+      json: {
+        code: "resource_unavailable",
+        message: "unavailable",
+        event: null,
+        field: null,
+      },
+    }),
+  );
+  const dialog = page.getByRole("dialog", { name: /Ignore publicly/ });
+  await page.goto(`/identity/${encodeURIComponent(f.identities.curator2)}`);
+  await page.getByRole("button", { name: "Ignore their judgments" }).click();
+  await page.getByRole("radio", { name: /Publicly/ }).check();
+  await page
+    .getByRole("region", { name: /Ignore/ })
+    .getByRole("button", { name: "Ignore", exact: true })
+    .click();
+  await expect(dialog).toContainText(
+    "The signed view in use did not load, so its route rule is unavailable: The server did not report its selected view.",
+  );
+  await expect(dialog).not.toContainText("does not know");
+  await expect(dialog).toContainText(
+    "In your own personal view it also acts as a block.",
+  );
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await page.goto("/trust");
+  const blockedRow = page
+    .locator("div.row", { hasText: "also blocks trust that passes through" })
+    .filter({ hasText: f.identities.curator2.slice(8, 12) });
+  await blockedRow.getByRole("button", { name: "Make public" }).click();
+  await expect(dialog).toContainText(
+    "The signed view in use did not load, so its route rule is unavailable",
+  );
+  await expect(dialog).not.toContainText("does not know");
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await page.unroute(probe);
+  // A signed view that names a profile this client does not know does not
+  // satisfy the core's body rules, so its body is unavailable. The preview
+  // reports that load failure with its reason, not an unknown profile. The
+  // test signs such a view with the core and serves its record.
+  const future = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    const canon = (value: unknown) =>
+      core.canonicalize(core.utf8(JSON.stringify(value)));
+    const seed = new Uint8Array(32).fill(203);
+    const body = {
+      name: "Future view",
+      description: [["A profile this client does not know."]],
+      roots: [
+        {
+          identity: core.identityFromSeed(seed),
+          q: { numerator: 1, denominator: 1 },
+        },
+      ],
+      rafsi_threshold: { numerator: 1, denominator: 1 },
+      H: { numerator: 3, denominator: 1 },
+      alpha: { numerator: 1, denominator: 2 },
+      excluded: [],
+      calculation: "simple-routes-future-v9",
+      work: 10000,
+      import_sets: [],
+      account_witnesses: [],
+      account_authority: false,
+      notes: [],
+    };
+    const bodyText = canon(body);
+    const hash = core.contentHash(core.utf8(bodyText));
+    const envelope = core.signHeader(seed, {
+      version: 1,
+      issuer: core.identityFromSeed(seed),
+      previous: [],
+      nonce: "e".repeat(32),
+      action: { kind: "view.publish", parents: [] },
+      content: { hash, bytes: core.utf8(bodyText).length },
+    });
+    return { id: envelope.id, envelopeText: canon(envelope), bodyText, hash };
+  }, corePath);
+  await page.route(probe, async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.view = future.id;
+    await route.fulfill({ response, json: body });
+  });
+  await page.route(
+    `**/api/v1/events/${encodeURIComponent(future.id)}*`,
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: future.envelopeText,
+      }),
+  );
+  await page.route(
+    `**/api/v1/bodies/${encodeURIComponent(future.hash)}*`,
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: future.bodyText,
+      }),
+  );
+  await page.goto("/trust");
+  await expect(page.locator("main")).toContainText(`View event ${future.id}`);
+  await blockedRow.getByRole("button", { name: "Make public" }).click();
+  await expect(dialog).toContainText(
+    "The signed view in use did not load, so its route rule is unavailable: This signed body does not satisfy the format rules.",
+  );
+  await expect(dialog).not.toContainText("does not know");
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  expect(await outboxStates(page)).toEqual([]);
 });

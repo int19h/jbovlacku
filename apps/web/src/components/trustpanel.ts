@@ -21,17 +21,50 @@ export function describeScope(scope: TrustScope): string {
 /** Said after a public trust signature: an older snapshot never includes it. */
 export const PENDING_NOTE =
   " Your personal view includes it after delivery, when you recompute for the snapshot that holds it.";
+type Delivered = { peers: Record<string, { state: string }> }[];
+/** True when the first delivery of the signed record was accepted. */
+const accepted = (results: Delivered) =>
+  results[0]?.peers.self?.state === "accepted";
 /** The status after a public trust signature, by the first delivery outcome. */
-export function publicTrustOutcome(
-  results: { peers: Record<string, { state: string }> }[],
-): string {
-  const accepted = results[0]?.peers.self?.state === "accepted";
+export function publicTrustOutcome(results: Delivered): string {
   return (
-    (accepted
+    (accepted(results)
       ? "Signed. Others can build on it. It stays in history after you undo it."
       : "Signed and saved here. Delivery is not finished. See Not delivered. It stays in history after you undo it.") +
     PENDING_NOTE
   );
+}
+/** The status after a public clear, by the first delivery outcome. */
+export function publicClearOutcome(results: Delivered): string {
+  return (
+    (accepted(results)
+      ? "Signed a clear. The earlier public choice stays in history."
+      : "Signed a clear and saved here. Delivery is not finished. See Not delivered. The earlier public choice stays in history.") +
+    " Your personal view follows the clear after delivery, when you recompute for the snapshot that holds it. A private Ignore stays until you remove it."
+  );
+}
+/**
+ * What the public preview knows about the signed view in use: its profile when
+ * the view loaded, or why it did not load. A load failure is not an unknown
+ * profile.
+ */
+export interface PreviewProfile {
+  profile: string | null;
+  loadError: string | null;
+}
+export function previewProfile(
+  view: { body: { calculation: string } | null; error: string | null } | null,
+): PreviewProfile {
+  if (view?.body) return { profile: view.body.calculation, loadError: null };
+  return {
+    profile: null,
+    loadError: view?.error ?? "The signed view in use could not be loaded.",
+  };
+}
+function shunRuleText(source: PreviewProfile): string {
+  if (source.profile)
+    return `In the calculation profile of the signed view in use, ${source.profile}: ${describeProfile(source.profile).shunRule}`;
+  return `The signed view in use did not load, so its route rule is unavailable: ${source.loadError}`;
 }
 /** Previews the exact subject and scope before a public signature. */
 export function confirmPublicTrust(
@@ -39,7 +72,7 @@ export function confirmPublicTrust(
   subject: string,
   scope: TrustScope,
   value: "heed" | "shun" | "clear",
-  profile?: string | null,
+  source: PreviewProfile = { profile: null, loadError: null },
 ): Promise<boolean> {
   return new Promise((resolve) => {
     const opener = document.activeElement as HTMLElement | null;
@@ -80,7 +113,7 @@ export function confirmPublicTrust(
           value === "heed"
             ? "Their judgments count for you, and so do the people they trust within this scope."
             : value === "shun"
-              ? `Your public refusal to heed. In the calculation profile of the signed view in use${profile ? `, ${profile}` : ""}: ${describeProfile(profile ?? "").shunRule} In your own personal view it also acts as a block. Other readers see it as your choice, not a universal veto or an accusation.`
+              ? `Your public refusal to heed. ${shunRuleText(source)} In your own personal view it also acts as a block. Other readers see it as your choice, not a universal veto or an accusation.`
               : "Clears your earlier public choice.",
         ),
         p(
@@ -277,7 +310,7 @@ export function trustPanel(app: App, options: TrustPanelOptions): HTMLElement {
             subject,
             scope,
             value,
-            site?.body?.calculation ?? null,
+            previewProfile(site),
           ))
         )
           return;

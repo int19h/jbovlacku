@@ -45,6 +45,7 @@ import {
   viewScores,
 } from "../components/localview.ts";
 import { recomputePanel } from "../components/recompute.ts";
+import { describeProfile } from "../model/profiles.ts";
 
 export async function wordPage(route: Route, context: RenderContext, app: App) {
   const { main } = context;
@@ -308,8 +309,21 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
   );
   const shown = new Set<string>();
   const ordered: { id: string; layer: number | null }[] = [];
-  // Without a calculation the server makes no ranking claim. Definitions follow event order.
-  const rankedLayers = view.calculation === null ? [] : view.layers;
+  // Without a calculation the server makes no ranking claim. A calculation
+  // from a profile this client does not know makes none that this client can
+  // show. In both cases definitions follow event order.
+  const unknownProfile =
+    view.calculation !== null &&
+    !describeProfile(view.calculation.algorithm).known;
+  const rankedLayers =
+    view.calculation === null || unknownProfile ? [] : view.layers;
+  if (unknownProfile)
+    main.append(
+      p(
+        `Scores and order from the calculation profile ${view.calculation!.algorithm} are not shown, because this client does not know its route rule. Definitions appear in event order.`,
+        "small",
+      ),
+    );
   for (const [index, layer] of rankedLayers.entries())
     for (const definition of layer)
       if (visible.has(definition) && !shown.has(definition)) {
@@ -370,7 +384,7 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
         onChange: refresh,
       }),
     );
-    if (layer === null && !(view.personal && view.reason))
+    if (layer === null && !(view.personal && view.reason) && !unknownProfile)
       main.lastElementChild!.append(
         p(
           `No ranking position is available for this definition in the ${view.personal ? "personal view layers" : "server layers"}.`,
