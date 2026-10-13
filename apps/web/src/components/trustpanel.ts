@@ -21,6 +21,18 @@ export function describeScope(scope: TrustScope): string {
 /** Said after a public trust signature: an older snapshot never includes it. */
 export const PENDING_NOTE =
   " Your personal view includes it after delivery, when you recompute for the snapshot that holds it.";
+/** The status after a public trust signature, by the first delivery outcome. */
+export function publicTrustOutcome(
+  results: { peers: Record<string, { state: string }> }[],
+): string {
+  const accepted = results[0]?.peers.self?.state === "accepted";
+  return (
+    (accepted
+      ? "Signed. Others can build on it. It stays in history after you undo it."
+      : "Signed and saved here. Delivery is not finished. See Not delivered. It stays in history after you undo it.") +
+    PENDING_NOTE
+  );
+}
 /** Previews the exact subject and scope before a public signature. */
 export function confirmPublicTrust(
   app: App,
@@ -133,7 +145,7 @@ export function trustPanel(app: App, options: TrustPanelOptions): HTMLElement {
       "private",
       "Just for me",
       mode === "trust"
-        ? "Stays in this browser as a private rule."
+        ? "Stays in this browser as a private rule. It does not cancel a block from your own public shun."
         : "Stays in this browser. Also blocks trust that passes through them in your personal view. A later public clear does not remove it.",
     ],
     [
@@ -273,17 +285,14 @@ export function trustPanel(app: App, options: TrustPanelOptions): HTMLElement {
           `${mode === "trust" ? "Trusting" : "Ignoring"} ${label} publicly`,
           async () => {
             if (!(await app.session.firstSignatureDisclosure())) return;
-            await app.signer.publish([
+            const results = await app.signer.publish([
               {
                 action: { kind: "trust.set", subject, scope, value },
                 body: null,
               },
             ]);
             app.own.invalidate();
-            app.announce(
-              "Signed. Others can build on it. It stays in history after you undo it." +
-                PENDING_NOTE,
-            );
+            app.announce(publicTrustOutcome(results));
             options.onDone();
           },
         );

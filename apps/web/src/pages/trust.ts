@@ -69,7 +69,7 @@ export async function trustPage(
   );
   main.append(
     p(
-      "The site view shows this server's scores for the signed view below. The personal view downloads the snapshot's records, verifies them in this browser, and applies your private choices from this browser. It adds your identity as a root with allocation 1 when the view names no allocation for it, and it applies your own effective public shuns as local blocks, as the format specifies: the core resolves their scopes and identity continuity in the calculation's snapshot, so a narrower public heed or a public clear can lift such a block, while a private Ignore stays until you remove it. When the local calculation cannot finish, word and search pages show unavailable scores instead of substituting site scores.",
+      "The site view shows this server's scores for the signed view below. The personal view downloads the snapshot's records, verifies them in this browser, and applies your private choices from this browser. It adds your identity as a root with allocation 1 when the view names no allocation for it, and it applies your own effective public shuns as local blocks, as the format specifies: the core resolves their scopes and identity continuity in the calculation's snapshot, so a narrower public heed or a public clear can lift such a block. A private Trust rule does not cancel that block. A private Ignore stays until you remove it, also after a public clear. When the local calculation cannot finish, word and search pages show unavailable scores instead of substituting site scores.",
       "meta",
     ),
     p(
