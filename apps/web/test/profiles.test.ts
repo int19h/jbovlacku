@@ -282,6 +282,19 @@ test("the personal view follows the chosen profile, private blocks and own publi
   await unlock.getByRole("button", { name: "Unlock" }).click();
   await acceptFirstSignature(page);
   await expect(page.getByRole("status")).toContainText(/Signed/);
+  // Delivery runs after the signature. Wait until the server accepted the
+  // shun, so the next page load and the recompute see one snapshot.
+  await expect
+    .poll(
+      () =>
+        page.evaluate(async () => {
+          const { LocalStore } = await import(String("/src/data/store.ts"));
+          const items = await new LocalStore().list("outbox");
+          return items.map((item: any) => item.peers?.self?.state);
+        }),
+      { timeout: 20000 },
+    )
+    .toEqual(["accepted"]);
   await page.goto("/word/dunda");
   // The signed shun moved the snapshot. The personal view refuses the older
   // calculation until an explicit recompute, which includes the new record.
@@ -294,15 +307,15 @@ test("the personal view follows the chosen profile, private blocks and own publi
   const donate = page
     .locator("article.definition", { hasText: "Donates a gift" })
     .locator("details.judgment-details");
-  // The recompute re-renders the page. Open the details of the rendered element.
+  // The recompute re-renders the page. Open the details of the rendered
+  // element and read the breakdown of the same element.
   await expect(async () => {
     if ((await donate.getAttribute("open")) === null)
       await donate.locator("summary").click();
-    expect(await donate.getAttribute("open")).not.toBeNull();
+    expect(await donate.textContent()).toContain(
+      "blocked in your personal view by your public shun",
+    );
   }).toPass();
-  await expect(donate).toContainText(
-    "blocked in your personal view by your public shun",
-  );
   const after = await serverWeights(page, f.words.dunda, f.views.shun);
   expect(after.scores[f.definitions.dunda2].weights[f.identities.scoped]).toBe(
     "3/16",
