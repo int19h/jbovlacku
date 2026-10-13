@@ -518,6 +518,7 @@ version = "0.1.0"
 dependencies = [
  "hex",
  "jvc-core",
+ "jvc-rank",
  "num-bigint",
  "num-rational",
  "num-traits",

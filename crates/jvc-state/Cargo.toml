@@ -14,5 +14,6 @@ num-rational = { version = "=0.4.2", features = ["serde"] }
 num-traits = "=0.2.19"
 
 [dev-dependencies]
+jvc-rank = { path = "../jvc-rank" }
 sha2 = "=0.10.9"
 hex = "=0.4.3"

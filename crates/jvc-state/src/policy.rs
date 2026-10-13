@@ -507,6 +507,14 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn refusal_pair_limit_matches_ranker_default() {
+        assert_eq!(
+            MAX_CONTEXT_REFUSALS,
+            jvc_rank::Limits::default().max_refusals
+        );
+    }
+
+    #[test]
     fn refusal_construction_is_bounded_and_reports_unavailable() {
         let input = EvaluationInput {
             events: Vec::new(),

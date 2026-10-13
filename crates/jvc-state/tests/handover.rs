@@ -2062,3 +2062,122 @@ fn equal_positive_graphs_keep_distinct_scoped_refusals_and_profiles() {
     assert_eq!(new.rows, en.rows);
     assert_eq!(new.calculation, "simple-routes-shun-v1");
 }
+
+#[test]
+fn private_overlay_replaces_public_heeds_and_shuns_at_the_same_scope() {
+    for (public, private) in [("heed", "shun"), ("shun", "heed")] {
+        let mut f = Fixture::new();
+        shun_policy(&mut f);
+        let scope = json!({"kind":"definition","word":"*","language":"en"});
+        f.event(
+            3,
+            vec![],
+            json!({"kind":"trust.set","subject":key(4),"scope":scope,"value":public}),
+            None,
+        );
+        let baseline = jvc_state::evaluate_context(&evaluate_observed(&f.input), &context());
+        assert!(baseline.available);
+        assert_eq!(
+            refusal_pairs(&baseline),
+            if public == "shun" {
+                vec![(key(3), key(4))]
+            } else {
+                vec![]
+            }
+        );
+        f.input.overlay = Some(overlay(
+            &f.input.selected_view,
+            json!([]),
+            json!([{"issuer":key(3),"subject":key(4),"scope":scope,"value":private,"weight":null}]),
+            json!([]),
+        ));
+        let graph = jvc_state::evaluate_context(&evaluate_observed(&f.input), &context());
+        assert!(graph.available);
+        let issuer = graph
+            .actors
+            .iter()
+            .position(|actor| actor == &key(3))
+            .unwrap();
+        let subject = graph
+            .actors
+            .iter()
+            .position(|actor| actor == &key(4))
+            .unwrap();
+        if private == "shun" {
+            assert_eq!(refusal_pairs(&graph), vec![(key(3), key(4))]);
+            assert!(graph.rows[issuer].is_empty());
+        } else {
+            assert!(refusal_pairs(&graph).is_empty());
+            assert_eq!(
+                graph.rows[issuer],
+                vec![jvc_state::PositiveEdge {
+                    to: subject,
+                    share: jvc_state::Rational::from_integer(1.into()),
+                }]
+            );
+        }
+    }
+}
+
+#[test]
+fn private_overlay_clear_of_narrow_public_shun_falls_back_to_broad_shun() {
+    let mut f = Fixture::new();
+    shun_policy(&mut f);
+    let broad_scope = json!({"kind":"*","word":"*","language":"*"});
+    let narrow_scope = json!({"kind":"definition","word":"*","language":"en"});
+    let broad = f.event(
+        3,
+        vec![],
+        json!({"kind":"trust.set","subject":key(4),"scope":broad_scope,"value":"shun"}),
+        None,
+    );
+    let narrow = f.event(
+        3,
+        vec![broad],
+        json!({"kind":"trust.set","subject":key(4),"scope":narrow_scope,"value":"shun"}),
+        None,
+    );
+    f.input.overlay = Some(overlay(
+        &f.input.selected_view,
+        json!([]),
+        json!([{"issuer":key(3),"subject":key(4),"scope":narrow_scope,"value":"clear","weight":null}]),
+        json!([]),
+    ));
+    let graph = jvc_state::evaluate_context(&evaluate_observed(&f.input), &context());
+    assert!(graph.available);
+    assert_eq!(refusal_pairs(&graph), vec![(key(3), key(4))]);
+    assert!(graph.rows.iter().all(Vec::is_empty));
+
+    // Changing the broad value proves that the private clear removed the narrow shun.
+    f.event(
+        3,
+        vec![narrow],
+        json!({"kind":"trust.set","subject":key(4),"scope":broad_scope,"value":"heed"}),
+        None,
+    );
+    let graph = jvc_state::evaluate_context(&evaluate_observed(&f.input), &context());
+    assert!(graph.available);
+    assert!(refusal_pairs(&graph).is_empty());
+    let issuer = graph
+        .actors
+        .iter()
+        .position(|actor| actor == &key(3))
+        .unwrap();
+    let subject = graph
+        .actors
+        .iter()
+        .position(|actor| actor == &key(4))
+        .unwrap();
+    assert_eq!(
+        graph.rows[issuer],
+        vec![jvc_state::PositiveEdge {
+            to: subject,
+            share: jvc_state::Rational::from_integer(1.into()),
+        }]
+    );
+    f.input.overlay = None;
+    let graph = jvc_state::evaluate_context(&evaluate_observed(&f.input), &context());
+    assert!(graph.available);
+    assert_eq!(refusal_pairs(&graph), vec![(key(3), key(4))]);
+    assert!(graph.rows[issuer].is_empty());
+}
