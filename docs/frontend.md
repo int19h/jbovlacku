@@ -263,7 +263,26 @@ Equal scores use lexical order for stable presentation, with no claim of linguis
 Show the numerical construction score separately from editorial support for rafsi assignments.
 A locked rafsi remains locked when another component changes. The app explains any resulting invalid combination.
 
-Required joining characters come from the selected morphology rules. The app does not permit arbitrary joining characters under the CLL profile.
+Required joining characters come from the selected morphology rules. The builder defaults to automatic joins, without optional hyphens.
+The author can choose an optional hyphen at each boundary where the selected profile permits it.
+The boundary control offers automatic joins and each permitted explicit choice, including no optional hyphen.
+An explicit choice cannot remove a required hyphen or add a join that the selected profile rejects.
+The preview separates joining characters from component rafsi and identifies each required or optional hyphen.
+
+An optional hyphen can increase the construction score. The builder accepts that choice and scores the exact selected spelling.
+It never substitutes a shorter spelling during selection, draft restoration, or publication.
+The lowest-score default remains available through the automatic join controls.
+
+Optional hyphens follow the selected parser rules, such as the [PEG morphology rules](https://mw.lojban.org/papri/BPFK_Section:_PEG_Morphology_Algorithm).
+The app never describes an optional variant as output from the original [CLL 4.11 algorithm](https://lojban.github.io/cll/4/11/).
+That algorithm adds only required hyphens. A profile that adds optional construction choices needs a new version.
+Existing profile versions retain their construction rules.
+
+The draft stores explicit join choices separately from rafsi choices.
+Back navigation, reloads, and editor changes preserve each choice while the same adjacent components remain compatible.
+A component change or reorder can invalidate a join choice. The app marks that boundary for review and explains the incompatible choice.
+It requires a new explicit choice or a return to automatic joins before the builder accepts that candidate.
+It never silently removes an invalidated choice or changes the author's prose.
 
 Every gismu row offers its permitted long forms as well as listed short rafsi.
 A complete five-letter gismu belongs in a final position under the classic rules. A nonfinal long form uses the appropriate stem.
@@ -1397,7 +1416,7 @@ The provider interface follows the documented capabilities of [OpenRouter](https
 Release scenarios must cover these additional cases:
 
 1. Complete every wizard branch with inference disabled and the network unavailable.
-2. Preserve drafts, undo history, rafsi locks, and human prose after mode switches and delayed AI responses.
+2. Preserve drafts, undo history, rafsi locks, explicit join choices, and human prose after mode switches and delayed AI responses.
 3. Generate cmavo-based compounds and permitted long fu'ivla forms with short alternatives also present.
 4. Select a non-top gismu candidate and acknowledge every known root and rafsi conflict.
 5. Reuse shared vectors only with matching content, input recipe, vector profile, and accepted producer.
@@ -1410,5 +1429,8 @@ Release scenarios must cover these additional cases:
 12. Ignore new former-period actions outside the carry while preserving source attribution and the original importer signature.
 13. Change witnesses without an active fallback, then preview a parentless reset and obtain new certificate evidence.
 14. Inspect a stranger's account claim without replacing the genuine profile marker's accepted observation.
+15. Select valid optional `y`, `r`, and `n` hyphens under profiles that permit them, including forms with worse construction scores.
+16. Refuse missing required joins and invalid optional joins. Recover the intended components and joins from every accepted spelling.
+17. Preserve optional joins through publication and revision. Require review when a component change invalidates an explicit join choice.
 
 The [prototype plan](prototype-plan.md) defines implementation stages. The [handover cases](handover-cases.md) define required account-control outcomes.

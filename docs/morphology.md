@@ -14,7 +14,10 @@ The profile follows [CLL chapter 4](https://lojban.github.io/cll/4/1/):
 - A component form is a short rafsi (CVC, CCV, CVV, CV'V), a four-letter gismu stem (CVCC, CCVC) before another part, or a whole gismu in the last position. A CVC rafsi never ends a lujvo.
 - Joins follow CLL 4.11. A `y` follows a four-letter stem, separates a forbidden consonant pair, and separates `n` from `tc`, `ts`, `dj`, or `dz`. An `r` follows a first CVV rafsi, or `n` when the next part begins with `r`, unless the lujvo has two parts and the second is CCV. The tosmabru test adds one `y` after a leading CVC run that would read as cmavo before a gismu.
 - A constructed candidate must parse as one lujvo and recover the intended parts and joins. Construction uses the required joins from CLL 4.11.
-- Analysis accepts legal optional hyphens, such as the `r` in `sairzba`, under the pinned recognizer. These analysis rules follow CLL 4.6. An analyzed spelling does not become a construction result unless its joins satisfy the construction rules.
+- Analysis accepts legal optional hyphens, such as the `r` in `sairzba`, under the pinned recognizer. The [PEG morphology rules](https://mw.lojban.org/papri/BPFK_Section:_PEG_Morphology_Algorithm) permit such optional joins. The original CLL 4.11 construction algorithm adds only required hyphens. An analyzed spelling does not become a construction result unless its joins satisfy the construction rules.
+
+The [frontend target](frontend.md#step-3a-lujvo-builder) also permits explicit optional joins in the builder. The current construction API does not implement that control.
+An implementation needs a new morphology version for the added construction choices. Version `2` retains its required-only construction behavior.
 
 ## CLL lujvo scoring
 

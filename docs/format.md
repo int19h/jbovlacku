@@ -581,10 +581,18 @@ A source inconsistency or a calculated mismatch produces a visible diagnostic. I
 
 The compound object contains exactly components, morphology, scoring, score, and notes.
 Components is an ordered array of 2 through 64 objects. Each contains word, definition, and rafsi.
-Word is a word object. Definition is a nullable exact definition event ID. Rafsi is the selected nonempty spelling, without automatically inserted joining characters.
+Word is a word object. Definition is a nullable exact definition event ID.
+Rafsi is the selected nonempty component spelling. It excludes joining characters, whether the algorithm or the author selects them.
 
 Morphology and scoring are objects with exactly id and version. Id is an HTTPS identifier, and version is nonempty.
 Score is null or a safe integer. Notes is rich text. This metadata does not itself assign or endorse any rafsi.
+
+The definition's `word.spelling` preserves its exact compound spelling, including optional hyphens.
+The morphology identifier and version determine which joins that spelling permits.
+A client must use that spelling when it recovers joins and calculates the recorded construction score.
+It must not reconstruct the spelling from component rafsi with a default joining algorithm, because that can remove the author's optional hyphens.
+An optional hyphen or a worse construction score never invalidates otherwise well-formed compound metadata.
+The [frontend specification](frontend.md#step-3a-lujvo-builder) defines author controls and the distinction between parser acceptance and default construction.
 
 The author can record both structured formation fields when that reflects the word's history. Neither field overrides its classification.
 

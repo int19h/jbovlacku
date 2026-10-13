@@ -236,6 +236,13 @@ A construction score describes the stated algorithm. It does not guarantee reada
 Each component row includes move up, move down, word and gloss, permitted rafsi chips, lock, and remove.
 Rows use 14px by 16px padding, 12px radii, and wrapped gaps of 10px by 16px.
 Permitted long forms remain available. A displayed joining character stays separate from the selected component rafsi.
+
+Each boundary offers automatic joins and the optional hyphens that the selected morphology profile permits.
+Required hyphens remain visible and cannot be removed. A boundary with no optional choices needs no extra control.
+An explicit choice updates the candidate spelling and construction score without changing component rafsi or definition text.
+The result card distinguishes required and optional hyphens. A worse score never prevents selection of an otherwise valid form.
+
+A component change that invalidates a join choice exposes that boundary for review instead of silently resetting it.
 “Add a part” appears with “AI Suggest parts” and “AI Suggest a lujvo.”
 “Other forms from these parts” opens a table of forms, component sequences, scores, and Use controls.
 
