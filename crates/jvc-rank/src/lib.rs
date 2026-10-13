@@ -1,4 +1,4 @@
-//! Exact ranking for the `simple-routes-bounds-v1` calculation profile.
+//! Exact ranking for the supported simple-route calculation profiles.
 //!
 //! The caller resolves identity continuity and effective scoped judgments first.
 //! Missing state is an error in that layer. It must never become a zero weight.
@@ -9,6 +9,28 @@ use std::fmt;
 
 pub type Rational = num_rational::BigRational;
 pub const ALGORITHM: &str = "simple-routes-bounds-v1";
+pub const SHUN_ALGORITHM: &str = "simple-routes-shun-v1";
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Profile {
+    #[default]
+    BoundsV1,
+    ShunV1,
+}
+impl Profile {
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            ALGORITHM => Some(Self::BoundsV1),
+            SHUN_ALGORITHM => Some(Self::ShunV1),
+            _ => None,
+        }
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::BoundsV1 => ALGORITHM,
+            Self::ShunV1 => SHUN_ALGORITHM,
+        }
+    }
+}
 pub fn rational(n: i64, d: i64) -> Rational {
     Rational::new(BigInt::from(n), BigInt::from(d))
 }
@@ -38,9 +60,12 @@ pub struct Edge {
 }
 #[derive(Clone, Debug)]
 pub struct Graph {
+    pub profile: Profile,
     pub actors: Vec<String>,
     pub q: Vec<Rational>,
     pub rows: Vec<Vec<Edge>>,
+    /// Each target lists the earlier actors whose effective shuns forbid entry.
+    pub refusals: Vec<Vec<usize>>,
 }
 impl Graph {
     /// Each actor is a resolved continuity group. Rows contain unique destinations.
@@ -54,7 +79,21 @@ impl Graph {
     pub fn with_limits(
         actors: Vec<String>,
         q: Vec<Rational>,
+        rows: Vec<Vec<Edge>>,
+        limits: &Limits,
+    ) -> Result<Self, RankError> {
+        if actors.len() > limits.max_actors {
+            return Err(RankError::ResourceLimit("actors"));
+        }
+        let refusals = vec![Vec::new(); actors.len()];
+        Self::with_refusals(Profile::BoundsV1, actors, q, rows, refusals, limits)
+    }
+    pub fn with_refusals(
+        profile: Profile,
+        actors: Vec<String>,
+        q: Vec<Rational>,
         mut rows: Vec<Vec<Edge>>,
+        mut refusals: Vec<Vec<usize>>,
         limits: &Limits,
     ) -> Result<Self, RankError> {
         let n = actors.len();
@@ -64,6 +103,9 @@ impl Graph {
         if rows.iter().map(Vec::len).sum::<usize>() > limits.max_edges {
             return Err(RankError::ResourceLimit("edges"));
         }
+        if refusals.iter().map(Vec::len).sum::<usize>() > limits.max_refusals {
+            return Err(RankError::ResourceLimit("refusals"));
+        }
         let mut arithmetic_bits = 0;
         for value in q
             .iter()
@@ -71,7 +113,7 @@ impl Graph {
         {
             check(value, limits, &mut arithmetic_bits)?;
         }
-        if q.len() != n || rows.len() != n {
+        if q.len() != n || rows.len() != n || refusals.len() != n {
             return Err(RankError::InvalidGraph("graph dimensions differ".into()));
         }
         if actors.iter().collect::<BTreeSet<_>>().len() != n {
@@ -81,6 +123,16 @@ impl Graph {
             return Err(RankError::InvalidGraph(
                 "negative starting allowance".into(),
             ));
+        }
+        for (target, list) in refusals.iter_mut().enumerate() {
+            list.sort_unstable();
+            if list.iter().any(|&actor| actor >= n || actor == target)
+                || list.windows(2).any(|pair| pair[0] == pair[1])
+            {
+                return Err(RankError::InvalidGraph(
+                    "invalid or duplicate refusal".into(),
+                ));
+            }
         }
         for (from, row) in rows.iter_mut().enumerate() {
             row.sort_by_key(|edge| edge.to);
@@ -104,7 +156,13 @@ impl Graph {
                 return Err(RankError::InvalidGraph("outgoing shares exceed one".into()));
             }
         }
-        Ok(Self { actors, q, rows })
+        Ok(Self {
+            profile,
+            actors,
+            q,
+            rows,
+            refusals,
+        })
     }
 }
 
@@ -159,6 +217,8 @@ impl Default for Parameters {
 pub struct Limits {
     pub max_actors: usize,
     pub max_edges: usize,
+    pub max_refusals: usize,
+    pub max_refusal_tests: u64,
     pub max_prefixes: usize,
     pub max_visited_actor_entries: usize,
     pub max_rational_bits: u64,
@@ -171,6 +231,8 @@ impl Default for Limits {
         Self {
             max_actors: 10_000,
             max_edges: 100_000,
+            max_refusals: 100_000,
+            max_refusal_tests: 10_000_000,
             max_prefixes: 250_000,
             max_visited_actor_entries: 4_000_000,
             max_rational_bits: 16_384,
@@ -221,6 +283,7 @@ pub struct Ranker<'a> {
     lower: Vec<Rational>,
     prefixes: BTreeMap<Prefix, Rational>,
     completed_work: u64,
+    refusal_tests: u64,
     stages: usize,
     peak_prefixes: usize,
     max_bits: u64,
@@ -235,6 +298,28 @@ fn check(value: &Rational, limits: &Limits, max_bits: &mut u64) -> Result<(), Ra
         return Err(RankError::ResourceLimit("rational bits"));
     }
     Ok(())
+}
+fn refused(
+    visited: &[usize],
+    shunners: &[usize],
+    tests: &mut u64,
+    limit: u64,
+) -> Result<bool, RankError> {
+    let (shorter, longer) = if visited.len() < shunners.len() {
+        (visited, shunners)
+    } else {
+        (shunners, visited)
+    };
+    for actor in shorter {
+        if *tests >= limit {
+            return Err(RankError::ResourceLimit("refusal tests"));
+        }
+        *tests += 1;
+        if longer.binary_search(actor).is_ok() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 impl<'a> Ranker<'a> {
     pub fn new(
@@ -259,6 +344,9 @@ impl<'a> Ranker<'a> {
         if graph.rows.iter().map(Vec::len).sum::<usize>() > limits.max_edges {
             return Err(RankError::ResourceLimit("edges"));
         }
+        if graph.refusals.iter().map(Vec::len).sum::<usize>() > limits.max_refusals {
+            return Err(RankError::ResourceLimit("refusals"));
+        }
         let mut max_bits = 0;
         for value in graph
             .q
@@ -268,12 +356,19 @@ impl<'a> Ranker<'a> {
         {
             check(value, &limits, &mut max_bits)?;
         }
-        Graph::with_limits(
+        let validated = Graph::with_refusals(
+            graph.profile,
             graph.actors.clone(),
             graph.q.clone(),
             graph.rows.clone(),
+            graph.refusals.clone(),
             &limits,
         )?;
+        if graph.refusals != validated.refusals {
+            return Err(RankError::InvalidGraph(
+                "refusal lists must be sorted".into(),
+            ));
+        }
         let mut prefixes = BTreeMap::new();
         for (actor, q) in graph.q.iter().enumerate() {
             let mass = &h * q;
@@ -303,6 +398,7 @@ impl<'a> Ranker<'a> {
             lower: graph.q.clone(),
             prefixes,
             completed_work: 0,
+            refusal_tests: 0,
             stages: 0,
             peak_prefixes,
             max_bits,
@@ -330,10 +426,21 @@ impl<'a> Ranker<'a> {
             let mut lower = self.lower.clone();
             let mut next: BTreeMap<Prefix, Rational> = BTreeMap::new();
             let mut stage_bits = self.max_bits;
+            let mut refusal_tests = self.refusal_tests;
             let mut visited_entries: usize = self.prefixes.keys().map(|p| p.visited.len()).sum();
             for (prefix, mass) in &self.prefixes {
                 for edge in &self.graph.rows[prefix.endpoint] {
                     if prefix.visited.binary_search(&edge.to).is_ok() {
+                        continue;
+                    }
+                    if self.graph.profile == Profile::ShunV1
+                        && refused(
+                            &prefix.visited,
+                            &self.graph.refusals[edge.to],
+                            &mut refusal_tests,
+                            self.limits.max_refusal_tests,
+                        )?
+                    {
                         continue;
                     }
                     let credit = mass * &edge.share;
@@ -376,6 +483,7 @@ impl<'a> Ranker<'a> {
             self.completed_work += cost;
             self.stages += 1;
             self.max_bits = stage_bits;
+            self.refusal_tests = refusal_tests;
         }
         Ok(())
     }

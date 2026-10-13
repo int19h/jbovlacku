@@ -1037,6 +1037,7 @@ fn continuity_group_private_weight_conflict_blocks_edge() {
     let graph = jvc_state::evaluate_context(&evaluate_observed(&f.input), &context());
     let i = graph.actors.iter().position(|a| a == &key(5)).unwrap();
     assert!(graph.rows[i].is_empty());
+    assert!(graph.refusals.iter().all(Vec::is_empty));
 }
 #[test]
 fn block_does_not_redistribute_preexisting_row_share() {
@@ -1081,6 +1082,7 @@ fn narrow_clear_falls_back_and_incomparable_shun_blocks() {
     f.event(3,vec![],json!({"kind":"trust.set","subject":key(4),"scope":{"kind":"definition","word":"*","language":"en"},"value":"shun"}),None);
     let graph = jvc_state::evaluate_context(&evaluate_observed(&f.input), &context());
     assert!(graph.rows[i].is_empty());
+    assert_eq!(refusal_pairs(&graph), vec![(key(3), key(4))]);
 }
 #[test]
 fn exact_status_and_account_api_expose_committed_evidence() {
@@ -1925,4 +1927,116 @@ fn retirement_of_one_conflicting_source_revision_keeps_all_members_unavailable()
         assert!(status.reasons.contains("source_selection_conflict"));
     }
     assert!(result.publications[&f.d].status_frontier.contains(&f.old));
+}
+
+fn refusal_pairs(graph: &jvc_state::ContextGraph) -> Vec<(String, String)> {
+    graph
+        .refusals
+        .iter()
+        .enumerate()
+        .flat_map(|(target, issuers)| {
+            issuers
+                .iter()
+                .map(move |issuer| (graph.actors[*issuer].clone(), graph.actors[target].clone()))
+        })
+        .collect()
+}
+
+#[test]
+fn narrow_heed_overrides_broad_shun_and_narrow_clear_restores_it() {
+    let mut f = Fixture::new();
+    let broad = f.event(3, vec![], json!({"kind":"trust.set","subject":key(4),"scope":{"kind":"*","word":"*","language":"*"},"value":"shun"}), None);
+    let narrow = f.event(3, vec![broad], json!({"kind":"trust.set","subject":key(4),"scope":{"kind":"definition","word":"*","language":"en"},"value":"heed"}), None);
+    let graph = jvc_state::evaluate_context(&evaluate_observed(&f.input), &context());
+    assert!(refusal_pairs(&graph).is_empty());
+    assert_eq!(
+        graph.rows[graph.actors.iter().position(|a| a == &key(3)).unwrap()].len(),
+        1
+    );
+    f.event(3, vec![narrow], json!({"kind":"trust.set","subject":key(4),"scope":{"kind":"definition","word":"*","language":"en"},"value":"clear"}), None);
+    let graph = jvc_state::evaluate_context(&evaluate_observed(&f.input), &context());
+    assert_eq!(refusal_pairs(&graph), vec![(key(3), key(4))]);
+    assert!(graph.rows.iter().all(Vec::is_empty));
+}
+
+#[test]
+fn retained_conflict_refuses_only_when_it_contains_shun() {
+    let mut f = Fixture::new();
+    for value in ["heed", "clear"] {
+        f.event(3, vec![], json!({"kind":"trust.set","subject":key(4),"scope":{"kind":"*","word":"*","language":"*"},"value":value}), None);
+    }
+    let graph = jvc_state::evaluate_context(&evaluate_observed(&f.input), &context());
+    assert!(refusal_pairs(&graph).is_empty());
+    assert!(graph.rows.iter().all(Vec::is_empty));
+    f.event(3, vec![], json!({"kind":"trust.set","subject":key(4),"scope":{"kind":"*","word":"*","language":"*"},"value":"shun"}), None);
+    let graph = jvc_state::evaluate_context(&evaluate_observed(&f.input), &context());
+    assert_eq!(refusal_pairs(&graph), vec![(key(3), key(4))]);
+}
+
+#[test]
+fn continuity_resolves_both_shun_ends_and_ignores_self_shuns() {
+    let mut f = Fixture::new();
+    let shun = f.event(3, vec![], json!({"kind":"trust.set","subject":key(6),"scope":{"kind":"*","word":"*","language":"*"},"value":"shun"}), None);
+    let transfer = f.event(
+        3,
+        vec![shun],
+        json!({"kind":"identity.transfer","successor":key(4)}),
+        None,
+    );
+    f.event(
+        4,
+        vec![],
+        json!({"kind":"identity.accept","transfer":transfer}),
+        None,
+    );
+    let transfer = f.event(
+        5,
+        vec![],
+        json!({"kind":"identity.transfer","successor":key(6)}),
+        None,
+    );
+    let accept = f.event(
+        6,
+        vec![],
+        json!({"kind":"identity.accept","transfer":transfer}),
+        None,
+    );
+    f.event(6, vec![accept], json!({"kind":"trust.set","subject":key(5),"scope":{"kind":"*","word":"*","language":"*"},"value":"shun"}), None);
+    let graph = jvc_state::evaluate_context(&evaluate_observed(&f.input), &context());
+    assert_eq!(refusal_pairs(&graph), vec![(key(3), key(5))]);
+    assert!(!graph.actors.contains(&key(4)));
+    assert!(!graph.actors.contains(&key(6)));
+}
+
+#[test]
+fn equal_positive_graphs_keep_distinct_scoped_refusals_and_profiles() {
+    let mut f = Fixture::new();
+    f.event(3, vec![], json!({"kind":"trust.set","subject":key(4),"scope":{"kind":"definition","word":"*","language":"en"},"value":"shun"}), None);
+    root_policy(&mut f, vec![(3, 1), (4, 1)]);
+    let evaluation = evaluate_observed(&f.input);
+    let en = jvc_state::evaluate_context(&evaluation, &context());
+    let fr = jvc_state::evaluate_context(
+        &evaluation,
+        &jvc_state::Context {
+            language: Some("fr".into()),
+            ..context()
+        },
+    );
+    assert_eq!(en.actors, fr.actors);
+    assert_eq!(en.roots, fr.roots);
+    assert_eq!(en.rows, fr.rows);
+    assert_ne!(en.refusals, fr.refusals);
+    assert_eq!(en.calculation, "simple-routes-bounds-v1");
+    let mut body: Value = serde_json::from_slice(&f.input.bodies[&f.input.selected_view]).unwrap();
+    body["calculation"] = json!("simple-routes-shun-v1");
+    let id = f.event(
+        20,
+        vec![],
+        json!({"kind":"view.publish","parents":[f.input.selected_view]}),
+        Some(body),
+    );
+    f.input.selected_view = id;
+    let new = jvc_state::evaluate_context(&evaluate_observed(&f.input), &context());
+    assert_eq!(new.refusals, en.refusals);
+    assert_eq!(new.calculation, "simple-routes-shun-v1");
 }

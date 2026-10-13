@@ -728,3 +728,16 @@ fn noncanonical_identity_r_vectors_satisfy_the_decoded_point_equation() {
     }
     assert_ne!(scalars[0], scalars[1]);
 }
+
+#[test]
+fn view_schema_accepts_both_explicit_route_profiles_and_rejects_unknown_names() {
+    let mut body = json!({"name":"fixture","description":[],"roots":[],"rafsi_threshold":{"numerator":1,"denominator":1},"H":{"numerator":3,"denominator":1},"alpha":{"numerator":1,"denominator":2},"excluded":[],"calculation":"simple-routes-bounds-v1","work":1000,"import_sets":[],"account_witnesses":[],"account_authority":false,"notes":[]});
+    let mut header = header(json!({"kind":"view.publish","parents":[]}), None);
+    for profile in ["simple-routes-bounds-v1", "simple-routes-shun-v1"] {
+        body["calculation"] = json!(profile);
+        header.content = Some(body_descriptor(&canonical_value(&body).unwrap()).unwrap());
+        validate_body(&header, &body).unwrap();
+    }
+    body["calculation"] = json!("unsupported-profile");
+    assert!(validate_body(&header, &body).is_err());
+}

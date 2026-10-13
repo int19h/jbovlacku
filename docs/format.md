@@ -716,7 +716,7 @@ A `view.publish` body contains these fields:
 | `H` | Rational outward multiplier. Reference value `3/1`. |
 | `alpha` | Rational onward fraction. Reference value `1/2`. |
 | `excluded` | Sorted objects containing `identity` and `evidence`, an array of event IDs. |
-| `calculation` | `simple-routes-bounds-v1`. |
+| `calculation` | `simple-routes-bounds-v1` or `simple-routes-shun-v1`. |
 | `work` | Positive integer expansion budget. Reference value 1,000,000. |
 | `import_sets` | Sorted objects containing `source`, `importer`, and `selection`. |
 | `account_witnesses` | Sorted identity keys trusted for external-account observations, without duplicates. |
@@ -781,7 +781,20 @@ If every retained value is `heed`, an edge exists. Any shun or conflict blocks t
 
 Incomparable scopes can therefore conflict. A narrow clear falls back to a broader heed, but a narrow shun blocks it.
 
-A public shun prevents its issuer's direct edge. It does not cancel independent routes from other people.
+A public shun prevents its issuer's direct edge in both supported profiles.
+The `simple-routes-bounds-v1` profile applies no further route refusal.
+The `simple-routes-shun-v1` profile also prevents entry to a target that any earlier actor on that route effectively shuns.
+Resolve scope specificity and identity continuity before constructing these refusals.
+Any retained value set that contains `shun` creates a refusal, including a conflict that contains `shun`.
+A conflict without `shun`, a clear alone, and missing trust create no refusal.
+Self-shuns create no refusal.
+
+A refused entry gives the target no judgment weight or onward mass from that route.
+Independent routes, credit from other permitted routes, and the target's own starting allocation remain eligible.
+For `R -> A -> B -> C`, an effective `A shuns C` rejects entry to C under `simple-routes-shun-v1`.
+An independent `X -> C` route remains eligible when X does not shun C.
+The refusal never redistributes the rejected share.
+
 A reader's local shun removes the target and all routes through it in that reader's view.
 A view exclusion has that same graph effect within the named view.
 
@@ -810,7 +823,9 @@ The contribution along route `(r,v1,...,vk)` is:
 H * q_r * alpha^(k-1) * p[r,v1] * ... * p[v(k-1),vk]
 ```
 
-An actor's weight equals its own `q` plus all simple-route contributions that end there.
+An actor's weight equals its own `q` plus all permitted simple-route contributions that end there.
+Under `simple-routes-shun-v1`, each entry must also pass every earlier actor's effective shuns.
+Under `simple-routes-bounds-v1`, every simple route in the positive graph remains permitted.
 An actor retains every received contribution for its judgments and forwards the alpha fraction onward.
 Its own outward pool is `H*q`, independent of its own judgment allowance.
 Changing only its outgoing heeds cannot increase its own weight. No route can return through proxies and pay it again.
@@ -842,18 +857,22 @@ Initialize each actor's lower weight to its q.
 Before costing a stage, merge prefixes with identical visited actor sets and identical endpoints. Sum their outgoing masses exactly.
 Visited sets contain continuity-group actor IDs. Prefix order does not affect merging or cost.
 
-A stage attempts every positive-share edge of every merged current prefix. Outgoing degree counts positive entries in the effective matrix P. Its cost is the sum of those outgoing degrees, including repeated-actor attempts.
+A stage attempts every positive-share edge of every merged current prefix.
+Outgoing degree counts positive entries in the effective matrix P.
+Its cost is the sum of those outgoing degrees, including attempts that repeat an actor or encounter a route refusal.
 Compute that cost before expansion. If it exceeds the remaining budget, stop before the complete stage.
 
 A prefix holds outgoing mass m before edge shares. An allowed edge of share p adds m*p to the destination's lower weight.
 Queue outgoing mass alpha*m*p for the next stage. These operations place alpha after the first hop, as the route formula requires.
 
-Discard repeated-actor edges and zero masses. Do not redistribute them. If no prefixes remain, the result is exact.
+Discard repeated-actor edges, forbidden entries under the selected profile, and zero masses.
+Do not redistribute them. If no prefixes remain, the result is exact.
 Identity order determines stable serialization only. It never selects a partial stage for deeper expansion.
 
 At the limit, aggregate every unexpanded prefix's outgoing mass by endpoint into vector b.
 This aggregation scans prefixes once. It does not enumerate their neighbors again.
-Set `f = Pᵀ*b`. This first relaxed step ignores visited-set restrictions, so it supplies an upper bound, not additional lower credit.
+Set `f = Pᵀ*b`.
+This first relaxed step ignores visited-set restrictions and route refusals, so it supplies an upper bound, not additional lower credit.
 The lower result remains the completed-stage totals L. For the upper result, add these vectors to L:
 
 ```text
@@ -867,6 +886,9 @@ alpha^65 * sum(f) / (1-alpha)
 ```
 
 Each allowed continuation occurs in this nonnegative relaxed walk sum. Extra repeated routes only enlarge the upper bound.
+Under `simple-routes-shun-v1`, unfinished upper bounds can also include routes that effective shuns forbid.
+The result's algorithm name identifies that profile. Its `exact` flag identifies whether exploration completed.
+An unfinished upper endpoint does not measure received influence.
 Rows sum to at most one, so the stated tail contains every remaining contribution. Empty b gives exact bounds.
 The largest useful complete stage depends on the graph. A high-degree graph can stop before its first stage.
 
@@ -877,10 +899,21 @@ An implementation with outward rounding must identify a derived calculation prof
 It cannot claim an ordering that the reference bounds do not establish. More complete exact stages use a larger declared budget.
 Implementations that prove tighter bounds through another method also need a distinct profile name.
 
-The format's mathematical target remains unchanged across these calculation profiles.
+Derived arithmetic profiles must preserve the route rule of the profile they name as their reference.
+The two supported profiles have different route rules. A new signed view selects a different rule.
+Do not rewrite an existing view publication or reinterpret its selected profile.
 
 The expansion budget does not bound graph construction, memory, rational sizes, or matrix work.
 A server can return a resource-limit error. It cannot label uncertified partial numbers as final scores.
+
+The reference implementation stores at most 100,000 effective refusal pairs in sorted lists indexed by target.
+For each permitted non-repeat attempt, it searches for a common actor between the visited set and the target's refusal list.
+It iterates the shorter list and searches the other sorted list.
+Each searched element counts as one refusal test. An empty target list requires no tests.
+The limit is 10,000,000 refusal tests across committed stages of one calculation.
+No separate exclusion set is copied into each prefix.
+If a refusal limit fails, the implementation returns a resource failure without committing the partial stage.
+These limits bound resources. They do not change signature validity.
 
 For signed judgments, add blessing intervals and subtract curse intervals in the opposite endpoint order.
 If support is `[b0,b1]` and opposition is `[c0,c1]`, net support is `[b0-c1,b1-c0]`.
@@ -904,6 +937,12 @@ Within a layer, use full event ID order for stable presentation. Label this as p
 The client offers more computation and exposes the intervals.
 
 A resumable calculation retains its complete-stage prefixes and lower totals. It never resumes by treating upper-bound contributions as exact credit. It never silently substitutes a hop limit or random estimate.
+Graph comparison, cached weights, and retained prefixes must use the same profile and effective refusal relation.
+Identical visited sets and endpoints still merge because they imply identical accumulated refusals within that graph.
+
+An effective reviewer with zero influence remains a direct reviewer. It does not become an absence of judgments.
+Declared incoming heeds show potential sources. They do not prove that a route delivered a measured amount.
+A list of shunners alone does not prove that those actors occurred on a route that supplied a reviewer.
 
 ### Rafsi decisions and future edits
 

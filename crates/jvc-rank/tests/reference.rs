@@ -17,7 +17,12 @@ fn oracle(graph: &Graph, h: &Rational, alpha: &Rational) -> Vec<Rational> {
         result: &mut [Rational],
     ) {
         for edge in &graph.rows[actor] {
-            if path.contains(&edge.to) {
+            if path.contains(&edge.to)
+                || (graph.profile == Profile::ShunV1
+                    && graph.refusals[edge.to]
+                        .iter()
+                        .any(|actor| path.contains(actor)))
+            {
                 continue;
             }
             let product = &product * &edge.share;
@@ -614,5 +619,409 @@ fn coprime_row_denominators_grow_exactly_or_return_a_resource_error() {
             }
         ),
         Err(RankError::ResourceLimit("rational bits"))
+    ));
+}
+
+fn shun_graph(mut graph: Graph, pairs: &[(usize, usize)], profile: Profile) -> Graph {
+    graph.profile = profile;
+    for &(issuer, target) in pairs {
+        graph.refusals[target].push(issuer);
+    }
+    for list in &mut graph.refusals {
+        list.sort_unstable();
+    }
+    graph
+}
+
+#[test]
+fn every_earlier_actor_refuses_entry_and_onward_credit() {
+    // R -> A -> B -> C -> E, with A shunning C.
+    let base = graph(
+        &[1, 0, 0, 0, 0],
+        &[&[(1, 1, 1)], &[(2, 1, 1)], &[(3, 1, 1)], &[(4, 1, 1)], &[]],
+    );
+    for profile in [Profile::BoundsV1, Profile::ShunV1] {
+        let g = shun_graph(base.clone(), &[(1, 3)], profile);
+        let result = rank(&g, &params(1000), Limits::default()).unwrap();
+        assert!(result.exact);
+        assert_eq!(result.weights[1].lower, rational(3, 1));
+        assert_eq!(result.weights[2].lower, rational(3, 2));
+        assert_eq!(
+            result.weights[3].lower,
+            if profile == Profile::BoundsV1 {
+                rational(3, 4)
+            } else {
+                Rational::zero()
+            }
+        );
+        assert_eq!(
+            result.weights[4].lower,
+            if profile == Profile::BoundsV1 {
+                rational(3, 8)
+            } else {
+                Rational::zero()
+            }
+        );
+        assert_eq!(
+            result.completed_work,
+            if profile == Profile::BoundsV1 { 4 } else { 3 }
+        );
+    }
+}
+
+#[test]
+fn independent_routes_prior_credit_and_own_allocation_survive() {
+    // R -> A -> B -> C and R -> X -> C. A shuns C.
+    let base = graph(
+        &[1, 0, 0, 0, 0],
+        &[
+            &[(1, 1, 2), (4, 1, 2)],
+            &[(2, 1, 1)],
+            &[(3, 1, 1)],
+            &[],
+            &[(3, 1, 1)],
+        ],
+    );
+    for (profile, expected) in [
+        (Profile::BoundsV1, rational(9, 8)),
+        (Profile::ShunV1, rational(3, 4)),
+    ] {
+        let g = shun_graph(base.clone(), &[(1, 3)], profile);
+        assert_eq!(
+            rank(&g, &params(1000), Limits::default()).unwrap().weights[3].lower,
+            expected
+        );
+    }
+    // R shuns C. A second root X supplies C, which also retains its own q.
+    let base = graph(
+        &[1, 0, 0, 1, 1, 0],
+        &[
+            &[(1, 1, 1)],
+            &[(2, 1, 1)],
+            &[(3, 1, 1)],
+            &[(5, 1, 1)],
+            &[(3, 1, 1)],
+            &[],
+        ],
+    );
+    let g = shun_graph(base, &[(0, 3)], Profile::ShunV1);
+    let result = rank(&g, &params(1000), Limits::default()).unwrap();
+    assert_eq!(result.weights[3].lower, rational(4, 1));
+    assert_eq!(result.weights[5].lower, rational(9, 2));
+}
+
+#[test]
+fn rejected_share_is_not_redistributed() {
+    let g = shun_graph(
+        graph(
+            &[1, 0, 0, 0],
+            &[&[(1, 1, 1)], &[(2, 1, 2), (3, 1, 2)], &[], &[]],
+        ),
+        &[(0, 2)],
+        Profile::ShunV1,
+    );
+    let result = rank(&g, &params(1000), Limits::default()).unwrap();
+    assert_eq!(result.weights[2].lower, Rational::zero());
+    assert_eq!(result.weights[3].lower, rational(3, 4));
+    assert_eq!(result.completed_work, 3);
+}
+
+#[test]
+fn oracle_checks_both_profiles_bounds_comparisons_and_monotonic_refusals() {
+    for seed in 0..32_u64 {
+        let mut random = seed + 1;
+        let n = 5;
+        let mut rows = vec![Vec::new(); n];
+        let mut refusals = Vec::new();
+        for (from, row) in rows.iter_mut().enumerate() {
+            for to in 0..n {
+                random = random.wrapping_mul(6364136223846793005).wrapping_add(1);
+                if from == to {
+                    continue;
+                }
+                if random >> 61 >= 3 {
+                    row.push(Edge {
+                        to,
+                        share: rational(1 + (random % 3) as i64, 12),
+                    });
+                }
+                if random & 3 == 0 {
+                    refusals.push((from, to));
+                }
+            }
+        }
+        let base = Graph::new(
+            (0..n).map(|i| format!("actor{i}")).collect(),
+            vec![
+                rational(1, 1),
+                Rational::zero(),
+                rational(1, 1),
+                Rational::zero(),
+                Rational::zero(),
+            ],
+            rows,
+        )
+        .unwrap();
+        let a = candidate(
+            "a",
+            vec![
+                Verdict::Bless,
+                Verdict::Curse,
+                Verdict::Bless,
+                Verdict::Absent,
+                Verdict::Curse,
+            ],
+        );
+        let b = candidate(
+            "b",
+            vec![
+                Verdict::Curse,
+                Verdict::Bless,
+                Verdict::Bless,
+                Verdict::Bless,
+                Verdict::Absent,
+            ],
+        );
+        let fewer = shun_graph(
+            base.clone(),
+            &refusals[..refusals.len() / 2],
+            Profile::ShunV1,
+        );
+        let fewer_exact = oracle(&fewer, &rational(3, 1), &rational(1, 2));
+        for profile in [Profile::BoundsV1, Profile::ShunV1] {
+            let g = shun_graph(base.clone(), &refusals, profile);
+            let exact = oracle(&g, &rational(3, 1), &rational(1, 2));
+            if profile == Profile::ShunV1 {
+                assert!(exact
+                    .iter()
+                    .zip(&fewer_exact)
+                    .all(|(more, fewer)| more <= fewer));
+            }
+            for budget in [1, 2, 5, 20, 1000] {
+                let result = rank(&g, &params(budget), Limits::default()).unwrap();
+                assert!(result
+                    .weights
+                    .iter()
+                    .zip(&exact)
+                    .all(|(w, e)| w.lower <= *e && *e <= w.upper));
+                if result.exact {
+                    assert!(result
+                        .weights
+                        .iter()
+                        .zip(&exact)
+                        .all(|(w, e)| w.lower == *e && w.upper == *e));
+                }
+                let score_a = score(&a, &result.weights).unwrap();
+                let exact_a = exact_score(&a, &exact);
+                assert!(score_a.net.lower <= exact_a && exact_a <= score_a.net.upper);
+                let delta = difference(&a, &b, &result.weights).unwrap();
+                let exact_delta = exact_a - exact_score(&b, &exact);
+                assert!(delta.lower <= exact_delta && exact_delta <= delta.upper);
+            }
+            assert!(rank(&g, &params(1000), Limits::default()).unwrap().exact);
+        }
+    }
+}
+
+#[test]
+fn refusal_limits_leave_the_last_complete_stage_unchanged() {
+    let base = graph(
+        &[1, 0, 0, 0, 0],
+        &[
+            &[(1, 1, 1)],
+            &[(2, 1, 3), (3, 1, 3), (4, 1, 3)],
+            &[],
+            &[],
+            &[],
+        ],
+    );
+    let g = shun_graph(base, &[(0, 3), (0, 4)], Profile::ShunV1);
+    assert!(matches!(
+        rank(
+            &g,
+            &params(1000),
+            Limits {
+                max_refusals: 1,
+                ..Limits::default()
+            }
+        ),
+        Err(RankError::ResourceLimit("refusals"))
+    ));
+    let mut calculation = Ranker::new(
+        &g,
+        rational(3, 1),
+        rational(1, 2),
+        Limits {
+            max_refusal_tests: 1,
+            ..Limits::default()
+        },
+    )
+    .unwrap();
+    calculation.advance(1).unwrap();
+    let before = calculation.bounds().unwrap();
+    assert!(matches!(
+        calculation.advance(1000),
+        Err(RankError::ResourceLimit("refusal tests"))
+    ));
+    let after = calculation.bounds().unwrap();
+    // The failed stage credited actor 2 before its later membership failure.
+    assert_eq!(after.weights[2].lower, Rational::zero());
+    assert_eq!(before.weights, after.weights);
+    assert_eq!(before.completed_work, after.completed_work);
+    assert_eq!(before.complete_stages, after.complete_stages);
+    assert_eq!(before.peak_prefixes, after.peak_prefixes);
+    assert_eq!(before.max_arithmetic_bits, after.max_arithmetic_bits);
+    assert!(matches!(
+        calculation.advance(1000),
+        Err(RankError::ResourceLimit("refusal tests"))
+    ));
+    let old = shun_graph(g.clone(), &[], Profile::BoundsV1);
+    assert!(
+        rank(
+            &old,
+            &params(1000),
+            Limits {
+                max_refusal_tests: 0,
+                ..Limits::default()
+            }
+        )
+        .unwrap()
+        .exact
+    );
+    let empty = shun_graph(graph(&[1, 0], &[&[(1, 1, 1)], &[]]), &[], Profile::ShunV1);
+    assert!(
+        rank(
+            &empty,
+            &params(1000),
+            Limits {
+                max_refusal_tests: 0,
+                ..Limits::default()
+            }
+        )
+        .unwrap()
+        .exact
+    );
+}
+
+#[test]
+fn shorter_refusal_list_bounds_membership_work_and_resume_matches_fresh() {
+    let g = shun_graph(
+        graph(
+            &[1, 0, 0, 0, 0],
+            &[&[(1, 1, 1)], &[(2, 1, 1)], &[], &[], &[]],
+        ),
+        &[(2, 1), (3, 1), (4, 1), (0, 2)],
+        Profile::ShunV1,
+    );
+    // First entry searches one visited actor. The second searches one shunner.
+    let mut calculation = Ranker::new(
+        &g,
+        rational(3, 1),
+        rational(1, 2),
+        Limits {
+            max_refusal_tests: 2,
+            ..Limits::default()
+        },
+    )
+    .unwrap();
+    calculation.advance(1).unwrap();
+    calculation.advance(1000).unwrap();
+    let fresh = rank(
+        &g,
+        &params(1000),
+        Limits {
+            max_refusal_tests: 2,
+            ..Limits::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(calculation.bounds().unwrap().weights, fresh.weights);
+    assert_eq!(fresh.weights[1].lower, rational(3, 1));
+    assert_eq!(fresh.weights[2].lower, Rational::zero());
+    assert!(matches!(
+        rank(
+            &g,
+            &params(1000),
+            Limits {
+                max_refusal_tests: 1,
+                ..Limits::default()
+            }
+        ),
+        Err(RankError::ResourceLimit("refusal tests"))
+    ));
+}
+
+#[test]
+fn graph_refusal_validation_rejects_invalid_dimensions_ids_and_duplicates() {
+    let base = graph(&[1, 0], &[&[(1, 1, 1)], &[]]);
+    for refusals in [
+        vec![],
+        vec![vec![0], vec![]],
+        vec![vec![], vec![2]],
+        vec![vec![], vec![0, 0]],
+    ] {
+        assert!(Graph::with_refusals(
+            Profile::ShunV1,
+            base.actors.clone(),
+            base.q.clone(),
+            base.rows.clone(),
+            refusals,
+            &Limits::default()
+        )
+        .is_err());
+    }
+    let mut mutated = graph(&[1, 0, 0], &[&[(1, 1, 1)], &[], &[]]);
+    mutated.refusals[2] = vec![1, 0];
+    assert!(Ranker::new(&mutated, rational(3, 1), rational(1, 2), Limits::default()).is_err());
+    assert_eq!(Profile::from_name("unsupported"), None);
+    for profile in [Profile::BoundsV1, Profile::ShunV1] {
+        assert_eq!(Profile::from_name(profile.name()), Some(profile));
+    }
+}
+
+#[test]
+fn default_refusal_pair_ceiling_is_inclusive() {
+    let n = 350;
+    let mut refusals = vec![Vec::new(); n];
+    for (target, list) in refusals.iter_mut().enumerate() {
+        list.extend((0..n).filter(|&issuer| issuer != target));
+    }
+    let mut remaining = Limits::default().max_refusals;
+    for list in &mut refusals {
+        let retained = remaining.min(list.len());
+        list.truncate(retained);
+        remaining -= retained;
+    }
+    assert_eq!(refusals.iter().map(Vec::len).sum::<usize>(), 100_000);
+    let accepted = Graph::with_refusals(
+        Profile::ShunV1,
+        (0..n).map(|i| format!("actor{i}")).collect(),
+        vec![Rational::zero(); n],
+        vec![Vec::new(); n],
+        refusals,
+        &Limits::default(),
+    )
+    .unwrap();
+    let mut oversized = accepted;
+    oversized.refusals[n - 1].push(0);
+    assert!(matches!(
+        Ranker::new(
+            &oversized,
+            rational(3, 1),
+            rational(1, 2),
+            Limits::default()
+        ),
+        Err(RankError::ResourceLimit("refusals"))
+    ));
+    assert!(matches!(
+        Graph::with_refusals(
+            oversized.profile,
+            oversized.actors,
+            oversized.q,
+            oversized.rows,
+            oversized.refusals,
+            &Limits::default()
+        ),
+        Err(RankError::ResourceLimit("refusals"))
     ));
 }

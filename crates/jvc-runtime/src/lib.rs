@@ -241,8 +241,8 @@ fn ratio_value(value: &jvc_rank::Rational) -> Value {
 /// Bounded incoming-edge explanations listed with each reviewer.
 const REVIEWER_INCOMING_LIMIT: usize = 16;
 /// Reviewer details for one target: every actor with an effective verdict,
-/// its influence interval, and a bounded explanation of its incoming routes
-/// from the effective graph. Shares of individual routes are not invented.
+/// its influence interval, and a bounded list of potential incoming sources.
+/// The list does not measure the credit that any route supplies.
 /// At most `limit` entries are materialized, in actor order. The second
 /// value says whether the list holds every reviewer.
 fn reviewer_details(
@@ -375,6 +375,17 @@ fn rank_word_state(
         }
     }
     let policy = evaluation.policy.as_ref();
+    let profile = policy
+        .map(|policy| {
+            jvc_rank::Profile::from_name(policy["calculation"].as_str().unwrap_or_default())
+                .ok_or_else(|| {
+                    Error::new(
+                        "unsupported_calculation",
+                        "view calculation profile is unsupported",
+                    )
+                })
+        })
+        .transpose()?;
     let params = policy
         .map(|p| {
             Ok(jvc_rank::Parameters {
@@ -389,8 +400,7 @@ fn rank_word_state(
         })
         .transpose()?;
     let limits = jvc_rank::Limits::default();
-    let mut graphs: BTreeMap<String, (jvc_state::ContextGraph, jvc_rank::Ranking)> =
-        BTreeMap::new();
+    let mut graphs: BTreeMap<String, jvc_rank::Ranking> = BTreeMap::new();
     let mut unavailable = Vec::new();
     let mut scores = Vec::new();
     let mut scored: BTreeMap<String, (jvc_rank::Candidate, jvc_rank::Score, String, bool)> =
@@ -410,13 +420,14 @@ fn rank_word_state(
             exact = false;
             continue;
         }
-        // Equal actor weights share the same calculation, including across language scopes.
+        // Reuse weights only when the profile and the complete resolved graph match.
         let graph_key = serde_json::to_string(
-            &json!({"actors":contextual.actors,"roots":contextual.roots,"rows":contextual.rows}),
+            &json!({"calculation":contextual.calculation,"actors":contextual.actors,"roots":contextual.roots,"rows":contextual.rows,"refusals":contextual.refusals}),
         )
         .unwrap();
         if !graphs.contains_key(&graph_key) {
-            let graph = jvc_rank::Graph::new(
+            let graph = jvc_rank::Graph::with_refusals(
+                profile.unwrap(),
                 contextual.actors.clone(),
                 contextual.roots.clone(),
                 contextual
@@ -431,13 +442,15 @@ fn rank_word_state(
                             .collect()
                     })
                     .collect(),
+                contextual.refusals.clone(),
+                &limits,
             );
             let ranking =
                 graph.and_then(|g| jvc_rank::rank(&g, params.as_ref().unwrap(), limits.clone()));
             match ranking {
                 Ok(ranking) => {
                     exact &= ranking.exact;
-                    graphs.insert(graph_key.clone(), (contextual.clone(), ranking));
+                    graphs.insert(graph_key.clone(), ranking);
                 }
                 Err(_) => {
                     unavailable.push(id.clone());
@@ -446,7 +459,7 @@ fn rank_word_state(
                 }
             }
         }
-        let (contextual, ranking) = &graphs[&graph_key];
+        let ranking = &graphs[&graph_key];
         let verdicts = contextual
             .actors
             .iter()
@@ -478,7 +491,7 @@ fn rank_word_state(
                 let mut entry = json!({"target":id,"support":interval_value(&score.support),"opposition":interval_value(&score.opposition),"net":interval_value(&score.net),"direct_reviewers":reviewers,"status":status});
                 if let Some(limit) = reviewers_limit {
                     let (details, complete) =
-                        reviewer_details(contextual, ranking, &candidate.verdicts, limit);
+                        reviewer_details(&contextual, ranking, &candidate.verdicts, limit);
                     entry["reviewers"] = Value::Array(details);
                     entry["reviewers_complete"] = Value::Bool(complete);
                 }
@@ -521,7 +534,7 @@ fn rank_word_state(
             }
             if ga == gb {
                 comparison_terms = comparison_terms
-                    .checked_add(graphs[ga].1.weights.len())
+                    .checked_add(graphs[ga].weights.len())
                     .ok_or_else(|| {
                         Error::new("resource_unavailable", "candidate actor terms overflow")
                     })?;
@@ -533,7 +546,7 @@ fn rank_word_state(
                 }
             }
             let difference = if ga == gb {
-                jvc_rank::difference_with_limits(ca, cb, &graphs[ga].1.weights, &limits)
+                jvc_rank::difference_with_limits(ca, cb, &graphs[ga].weights, &limits)
                     .map_err(|e| Error::new("resource_unavailable", e.to_string()))?
             } else {
                 jvc_rank::separate_difference(sa, sb)
@@ -576,7 +589,7 @@ fn rank_word_state(
         let default_overlay = json!({"version":1,"base_view":input.selected_view,"root_changes":[],"trust":[],"blocked":[],"work":null});
         let overlay = input.overlay.as_ref().unwrap_or(&default_overlay);
         let suspensions=evaluation.lifecycle.suspended.iter().flat_map(|(identity,causes)|causes.iter().map(move|cause|json!({"identity":identity,"cause":cause,"reason":"incomplete_history"}))).collect::<Vec<_>>();
-        json!({"algorithm":jvc_rank::ALGORITHM,"budget":params.as_ref().unwrap().work,"completed":graphs.values().map(|(_,r)|r.completed_work).sum::<u64>(),"exact":exact,"overlay":jvc_core::hash_id("sha256:",b"",&canonical_value(overlay)?),"incomplete_identities":evaluation.lifecycle.suspended.keys().collect::<Vec<_>>(),"suspensions":suspensions})
+        json!({"algorithm":profile.unwrap().name(),"budget":params.as_ref().unwrap().work,"completed":graphs.values().map(|r|r.completed_work).sum::<u64>(),"exact":exact,"overlay":jvc_core::hash_id("sha256:",b"",&canonical_value(overlay)?),"incomplete_identities":evaluation.lifecycle.suspended.keys().collect::<Vec<_>>(),"suspensions":suspensions})
     };
     Ok(
         json!({"calculation":calculation,"scores":scores,"layers":layers,"unavailable_scores":unavailable}),
@@ -636,9 +649,7 @@ impl EvaluationSession {
         word: &str,
         reviewers: usize,
     ) -> std::result::Result<String, JsValue> {
-        output(
-            rank_word_state(&self.input, &self.evaluation, word, Some(reviewers)).map_err(fail)?,
-        )
+        output(rank_word_state(&self.input, &self.evaluation, word, Some(reviewers)).map_err(fail)?)
     }
 }
 
@@ -683,7 +694,11 @@ pub fn analyze_word(profile: &str, spelling: &str) -> std::result::Result<String
     let profile = match profile {
         "cll" => jvc_morphology::Profile::Cll,
         "extended" => jvc_morphology::Profile::Extended,
-        _ => return Err(builder_fail(jvc_morphology::BuilderError::Invalid { message: "The profile is cll or extended.".into() })),
+        _ => {
+            return Err(builder_fail(jvc_morphology::BuilderError::Invalid {
+                message: "The profile is cll or extended.".into(),
+            }));
+        }
     };
     output(jvc_morphology::analyze_word(profile, spelling))
 }
@@ -708,7 +723,7 @@ fn assignment_status(current: Option<&str>, eligibility: &jvc_state::Eligibility
 }
 #[cfg(test)]
 mod builder_input_tests {
-    use super::{builder_input_checked, BUILDER_INPUT_LIMIT};
+    use super::{BUILDER_INPUT_LIMIT, builder_input_checked};
     use jvc_morphology::{BuilderError, LujvoRequest};
     #[test]
     fn a_request_over_the_byte_ceiling_is_refused_before_parsing() {
@@ -717,7 +732,11 @@ mod builder_input_tests {
         bytes.resize(BUILDER_INPUT_LIMIT + 1, b'x');
         let result: Result<LujvoRequest, BuilderError> = builder_input_checked(&bytes);
         match result {
-            Err(BuilderError::ResourceLimit { measure, value, limit }) => {
+            Err(BuilderError::ResourceLimit {
+                measure,
+                value,
+                limit,
+            }) => {
                 assert_eq!(measure, "request bytes");
                 assert_eq!(value, (BUILDER_INPUT_LIMIT + 1) as u64);
                 assert_eq!(limit, BUILDER_INPUT_LIMIT as u64);

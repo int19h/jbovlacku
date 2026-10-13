@@ -1,7 +1,7 @@
 # Exact ranking prototype
 
 This crate implements section 8 of the [format specification](../../docs/format.md) with exact fractions.
-Its calculation profile is `simple-routes-bounds-v1`.
+Its calculation profiles are `simple-routes-bounds-v1` and `simple-routes-shun-v1`.
 `BigRational` stores a fraction with integers that can grow beyond machine integer sizes.
 The library builds for native Rust and `wasm32-unknown-unknown`.
 
@@ -14,6 +14,14 @@ It also zeroes blocked actors' own allowances and outgoing rows.
 Missing identity or eligibility data must produce an unavailable state in the caller.
 
 `Graph::new` rejects self edges, duplicate destinations, nonpositive shares, and rows whose shares exceed one.
+It selects `Profile::BoundsV1` and supplies empty refusal lists.
+`Graph::with_refusals` accepts an explicit profile and resolved refusal lists.
+Each target lists the actors whose effective shuns forbid entry.
+The constructor sorts these lists and rejects duplicates or invalid actors.
+Under `Profile::ShunV1`, a route cannot enter a target that any earlier actor on that route shuns.
+The rejected route supplies neither judgment weight nor onward mass. Its share disappears without redistribution.
+The target's own allowance, prior credit, and independent permitted routes remain eligible.
+`Profile::BoundsV1` ignores route refusals and preserves the old expansion rule.
 `normalize_row` accepts distinct resolved destinations and positive weights.
 It divides weights by the larger of their sum and one.
 It then removes blocked destinations without enlarging surviving shares.
@@ -21,7 +29,7 @@ The helper does not merge contradictory weights or resolve scope.
 
 `rank` returns an interval for every actor and reports completed expansion work.
 `Ranker::advance` retains complete stages for a later total budget.
-It costs every positive edge attempt before each stage, including attempts that revisit an actor.
+It costs every positive edge attempt before each stage, including attempts that revisit an actor or encounter a refusal.
 It merges prefixes by visited actor set and endpoint.
 A failed stage leaves the retained lower totals and completed work unchanged.
 If `Ranker::advance` returns a resource error, `bounds()` retains valid intervals for the last complete stage.
@@ -32,6 +40,9 @@ An unfinished calculation keeps all completed contributions in its lower result.
 Its upper result adds exactly 65 relaxed terms, from `f` through `alpha^64 * P^T^64 * f`.
 It then adds `alpha^65 * sum(f) / (1-alpha)` to each actor's upper endpoint.
 The first relaxed frontier gives no lower credit.
+The upper calculation ignores route refusals as well as repeated actors.
+An unfinished `simple-routes-shun-v1` upper endpoint can include forbidden routes. It does not measure received influence.
+The selected algorithm name and the result's `exact` flag identify this limitation.
 No hop cutoff, random estimate, coefficient change, or tighter alternate calculation replaces this profile.
 
 `score` returns support, opposition, and net intervals.
@@ -60,6 +71,8 @@ It never returns a completed score with an uncertified partial upper endpoint.
 | --------------------------------------------------------- | ------------: |
 | Actors                                                    |        10,000 |
 | Positive graph edges                                      |       100,000 |
+| Effective refusal pairs                                   |       100,000 |
+| Searched elements across refusal membership tests         |    10,000,000 |
 | Live prefixes across current and next stages              |       250,000 |
 | Entries across live visited actor sets                    |     4,000,000 |
 | Bits in either integer of each checked fraction           |        16,384 |
@@ -70,6 +83,11 @@ It never returns a completed score with an uncertified partial upper endpoint.
 The fraction limit measures each stored or calculated fraction after an operation.
 An individual integer operation can temporarily use more bits before this check.
 The prefix and visited-set limits bound both live stage maps together.
+Refusal membership tests iterate the shorter of the visited set and the target's refusal list.
+Each element searched in the other sorted list counts as one test. Empty target lists require no tests.
+The test count accumulates across committed stages and resumed work.
+A failed stage leaves that count unchanged along with the lower totals and frontier.
+Graph reuse must also match the selected profile and effective refusal relation.
 The library does not install an operating-system memory or CPU deadline.
 The caller must bound input construction before it allocates an oversized graph.
 
@@ -77,6 +95,9 @@ The caller must bound input construction before it allocates an oversized graph.
 
 The test oracle enumerates each individual simple route without merging stages or calculating relaxed walks.
 Twenty-four generated five-actor graphs test actor bounds, candidate score bounds, and candidate difference bounds at five budgets.
+Thirty-two further five-actor graphs compare both profiles with the independent oracle at five budgets.
+They also test that additional refusals on fixed positive rows never increase exact weights.
+The shun cases cover intermediary refusals, independent routes, onward credit, retained allowances, rejected shares, and bounded membership work.
 The adversarial tests cover cycles, shared verdicts, opposite verdicts, input permutation, merged-stage cost, blocked shares, zero coefficients, and resume.
 They also cover unavailable candidates, negative active scores, exact ties, and transactional resource failures.
 The state crate owns continuity, scope, and missing-history tests because this crate accepts their resolved output.
@@ -124,7 +145,7 @@ These results do not select a user-facing budget or prove acceptable performance
 Every native and WebAssembly run agrees on actor intervals, candidate net intervals, layer presentation, completed work, and arithmetic-bit measurements.
 The examples compare a stable noncryptographic digest of these values and assert matching comparison counts.
 Both runtimes also execute an independent eight-graph route oracle with candidate comparisons at three budgets.
-The full native suite contains fifteen tests.
+The measurement evidence predates the shun profile. It does not measure refusal storage or membership work.
 The weighted probes grow from 1,255 fraction bits at eight actors to 3,572 bits at sixteen actors.
 The sixteen-actor probe needs 4.598 seconds natively and 8.119 seconds in WebAssembly despite zero completed expansion work.
 A separate coprime-denominator test proves oracle containment and makes a 64-bit resource cap return an error.
