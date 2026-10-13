@@ -1,6 +1,19 @@
 import { test, expect, type Page } from "@playwright/test";
 import { corePath, fixture, fingerprintText } from "./helpers.ts";
 
+/**
+ * Opens the Source disclosure of the definition on the page by its exact
+ * summary, apart from any other "Source" text, and waits until it is open.
+ */
+async function openSourceDisclosure(page: Page) {
+  const details = page.locator("main details.disclosure", {
+    has: page.locator("summary", { hasText: /^Source$/ }),
+  });
+  await expect(details).toHaveCount(1);
+  await details.locator("summary").click();
+  await expect(details).toHaveAttribute("open", "");
+}
+
 test("search rows show headword, rafsi, type, highlighted text, attribution, and a net score", async ({
   page,
 }) => {
@@ -68,11 +81,7 @@ test("an imported definition keeps its source author, importer, rights, and sour
   ).toBeVisible();
   await page.goto(`/definition/${encodeURIComponent(f.definitions.imported)}`);
   await expect(page).toHaveTitle("Definition: ckusro · jbovlacku");
-  await page
-    .getByRole("button", { name: "Source" })
-    .or(page.getByText("Source", { exact: true }))
-    .first()
-    .click();
+  await openSourceDisclosure(page);
   await expect(
     page.getByText("Source author: arj.", { exact: true }),
   ).toBeVisible();
@@ -557,11 +566,7 @@ test("hostile imported attribution and text stay literal, and the source details
   ).toBeVisible();
   expect(await page.locator("main b, main i, main script").count()).toBe(0);
   expect(await page.evaluate(() => Boolean((window as any).bad))).toBe(false);
-  await page
-    .getByRole("button", { name: "Source" })
-    .or(page.getByText("Source", { exact: true }))
-    .first()
-    .click();
+  await openSourceDisclosure(page);
   await expect(
     page.getByText("Source author: <b>Fixture author</b>.", { exact: true }),
   ).toBeVisible();
