@@ -27,6 +27,7 @@ struct Fixture {
     word: String,
     nonce: u64,
     selected_view: String,
+    overlay: Option<Value>,
 }
 impl Fixture {
     fn new() -> Self {
@@ -36,15 +37,27 @@ impl Fixture {
             word: word_id(&json!({"language":"jbo","spelling":"banli"})).unwrap(),
             nonce: 0,
             selected_view: String::new(),
+            overlay: None,
         }
     }
     fn event(&mut self, seed: u8, action: Value, body: Option<Value>) -> String {
+        self.event_after(seed, Vec::new(), action, body)
+    }
+    fn event_after(
+        &mut self,
+        seed: u8,
+        mut previous: Vec<String>,
+        action: Value,
+        body: Option<Value>,
+    ) -> String {
         self.nonce += 1;
         let bytes = body.as_ref().map(|body| canonical_value(body).unwrap());
+        previous.sort();
+        previous.dedup();
         let header = Header {
             version: 1,
             issuer: key(seed),
-            previous: Vec::new(),
+            previous,
             nonce: format!("{:032x}", self.nonce),
             action,
             content: bytes.as_ref().map(|bytes| body_descriptor(bytes).unwrap()),
@@ -81,6 +94,15 @@ impl Fixture {
         );
     }
     fn view(&mut self, profile: &str, roots: &[u8], work: u64) -> String {
+        self.view_with_exclusions(profile, roots, &[], work)
+    }
+    fn view_with_exclusions(
+        &mut self,
+        profile: &str,
+        roots: &[u8],
+        excluded: &[u8],
+        work: u64,
+    ) -> String {
         let mut roots: Vec<_> = roots
             .iter()
             .map(|seed| json!({"identity":key(*seed),"q":{"numerator":1,"denominator":1}}))
@@ -92,12 +114,17 @@ impl Fixture {
         } else {
             vec![parent]
         };
-        let id = self.event(20, json!({"kind":"view.publish","parents":parents}), Some(json!({"name":"fixture","description":[],"roots":roots,"rafsi_threshold":{"numerator":1,"denominator":1},"H":{"numerator":3,"denominator":1},"alpha":{"numerator":1,"denominator":2},"excluded":[],"calculation":profile,"work":work,"import_sets":[],"account_witnesses":[],"account_authority":false,"notes":[]})));
+        let mut excluded: Vec<_> = excluded
+            .iter()
+            .map(|seed| json!({"identity":key(*seed),"evidence":[]}))
+            .collect();
+        excluded.sort_by_key(|item| item["identity"].as_str().unwrap().to_owned());
+        let id = self.event(20, json!({"kind":"view.publish","parents":parents}), Some(json!({"name":"fixture","description":[],"roots":roots,"rafsi_threshold":{"numerator":1,"denominator":1},"H":{"numerator":3,"denominator":1},"alpha":{"numerator":1,"denominator":2},"excluded":excluded,"calculation":profile,"work":work,"import_sets":[],"account_witnesses":[],"account_authority":false,"notes":[]})));
         self.selected_view = id.clone();
         id
     }
     fn bytes(&self) -> Vec<u8> {
-        canonical_value(&json!({"events":self.events,"bodies":self.bodies,"selected_view":self.selected_view,"import_selections":{},"overlay":null})).unwrap()
+        canonical_value(&json!({"events":self.events,"bodies":self.bodies,"selected_view":self.selected_view,"import_selections":{},"overlay":self.overlay})).unwrap()
     }
     fn rank(&self, name: &str) -> Value {
         let bytes = self.bytes();
@@ -306,4 +333,438 @@ fn old_profile_keeps_shared_weight_grouping_work_and_correlated_comparisons() {
     let mut unresolved = vec![en, fr];
     unresolved.sort();
     assert_eq!(new["layers"], json!([unresolved]));
+}
+
+fn local_overlay(f: &Fixture, issuer: Option<u8>, trust: Value, mut blocked: Value) -> Value {
+    blocked
+        .as_array_mut()
+        .unwrap()
+        .sort_by_key(|entry| canonical_value(entry).unwrap());
+    json!({"version":2,"base_view":f.selected_view,"root_changes":[],"trust":trust,"blocked":blocked,"work":null,"public_shun_issuer":issuer.map(key)})
+}
+fn reviewer<'a>(result: &'a Value, target: &str, identity: &str) -> &'a Value {
+    score(result, target)["reviewers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|reviewer| reviewer["identity"] == identity)
+        .unwrap()
+}
+fn reasons(result: &Value, target: &str, identity: &str, public: bool, private: bool) {
+    let reviewer = reviewer(result, target, identity);
+    for (field, expected) in [("public_shun_block", public), ("private_block", private)] {
+        if expected {
+            assert_eq!(reviewer[field], true);
+        } else {
+            assert!(!reviewer.as_object().unwrap().contains_key(field));
+        }
+    }
+}
+
+#[test]
+fn personal_shun_blocks_follow_public_scopes_for_languages_and_rafsi_in_both_profiles() {
+    for profile in ["simple-routes-bounds-v1", "simple-routes-shun-v1"] {
+        let mut f = Fixture::new();
+        let en = f.definition("en");
+        let fr = f.definition("fr");
+        let pair = jvc_core::rafsi_pair_id(&f.word, "ban").unwrap();
+        f.event(9,json!({"kind":"rafsi.publish","word":f.word,"assignment":pair,"origin":"native"}),Some(json!({"word":{"language":"jbo","spelling":"banli"},"rafsi":"ban","rationale":[],"sources":[],"legacy":null})));
+        for target in [&en, &fr, &pair] {
+            f.bless(4, target);
+        }
+        let broad = f.event(1,json!({"kind":"trust.set","subject":key(4),"scope":{"kind":"*","word":"*","language":"*"},"value":"shun"}),None);
+        f.event_after(1,vec![broad],json!({"kind":"trust.set","subject":key(4),"scope":{"kind":"definition","word":"*","language":"en"},"value":"heed"}),None);
+        f.event(6,json!({"kind":"trust.set","subject":key(4),"scope":{"kind":"*","word":"*","language":"*"},"value":"heed"}),None);
+        f.view(profile, &[1, 6], 1000);
+        f.overlay = Some(local_overlay(&f, Some(1), json!([]), json!([])));
+        let result = f.rank(&format!("personal-scope-{profile}"));
+        exact_net(&result, &en, "6", "1");
+        exact_net(&result, &fr, "0", "1");
+        exact_net(&result, &pair, "0", "1");
+        let details = f.reviewers();
+        reasons(&details, &en, &key(4), false, false);
+        reasons(&details, &fr, &key(4), true, false);
+        reasons(&details, &pair, &key(4), true, false);
+        assert_eq!(reviewer(&details, &fr, &key(4))["blocked"], true);
+        assert_eq!(result["calculation"]["algorithm"], profile);
+        f.overlay = Some(local_overlay(
+            &f,
+            None,
+            json!([]),
+            json!([{"identity":key(4),"scope":{"kind":"rafsi","word":f.word,"language":"*"}}]),
+        ));
+        let result = f.rank(&format!("personal-private-rafsi-{profile}"));
+        exact_net(&result, &en, "6", "1");
+        exact_net(&result, &fr, "3", "1");
+        exact_net(&result, &pair, "0", "1");
+        let details = f.reviewers();
+        reasons(&details, &en, &key(4), false, false);
+        reasons(&details, &fr, &key(4), false, false);
+        reasons(&details, &pair, &key(4), false, true);
+    }
+}
+
+#[test]
+fn personal_shun_conflicts_private_replacement_and_explicit_blocks_remain_distinct() {
+    for (index, values) in [vec!["heed", "shun"], vec!["heed", "clear"]]
+        .iter()
+        .enumerate()
+    {
+        let mut f = Fixture::new();
+        let target = f.definition("en");
+        f.bless(4, &target);
+        for value in values {
+            f.trust(1, 4, value, "*");
+        }
+        f.trust(6, 4, "heed", "*");
+        f.view("simple-routes-bounds-v1", &[1, 6], 1000);
+        f.overlay = Some(local_overlay(&f, Some(1), json!([]), json!([])));
+        let result = f.rank(&format!("personal-conflict-{index}"));
+        exact_net(
+            &result,
+            &target,
+            if values.contains(&"shun") { "0" } else { "3" },
+            "1",
+        );
+        reasons(
+            &f.reviewers(),
+            &target,
+            &key(4),
+            values.contains(&"shun"),
+            false,
+        );
+    }
+    let mut f = Fixture::new();
+    let target = f.definition("en");
+    f.bless(4, &target);
+    f.trust(1, 4, "shun", "*");
+    f.trust(6, 4, "heed", "*");
+    f.view("simple-routes-shun-v1", &[1, 6], 1000);
+    let scope = json!({"kind":"definition","word":"*","language":"*"});
+    for value in ["heed", "clear", "shun"] {
+        f.overlay = Some(local_overlay(
+            &f,
+            Some(1),
+            json!([{"issuer":key(1),"subject":key(4),"scope":scope,"value":value,"weight":null}]),
+            json!([]),
+        ));
+        let result = f.rank(&format!("personal-private-{value}"));
+        exact_net(&result, &target, "0", "1");
+        reasons(&f.reviewers(), &target, &key(4), true, false);
+    }
+    f.overlay = Some(local_overlay(
+        &f,
+        Some(1),
+        json!([]),
+        json!([{"identity":key(4),"scope":scope}]),
+    ));
+    exact_net(&f.rank("personal-both-reasons"), &target, "0", "1");
+    reasons(&f.reviewers(), &target, &key(4), true, true);
+}
+
+#[test]
+fn personal_shun_reason_metadata_stays_fresh_when_old_profile_weights_are_reused() {
+    let mut f = Fixture::new();
+    let en = f.definition("en");
+    let fr = f.definition("fr");
+    let de = f.definition("de");
+    for target in [&en, &fr, &de] {
+        f.bless(4, target);
+    }
+    f.trust(1, 4, "shun", "en");
+    f.trust(6, 4, "heed", "*");
+    f.trust(6, 8, "heed", "*");
+    f.view_with_exclusions("simple-routes-bounds-v1", &[1, 6], &[4], 1000);
+    f.overlay = Some(local_overlay(
+        &f,
+        Some(1),
+        json!([]),
+        json!([{"identity":key(4),"scope":{"kind":"definition","word":"*","language":"fr"}}]),
+    ));
+    let result = f.rank("personal-reason-cache");
+    assert_eq!(result["calculation"]["completed"], 1);
+    let details = f.reviewers();
+    reasons(&details, &en, &key(4), true, false);
+    reasons(&details, &fr, &key(4), false, true);
+    reasons(&details, &de, &key(4), false, false);
+    for target in [&en, &fr, &de] {
+        assert_eq!(reviewer(&details, target, &key(4))["blocked"], true);
+    }
+}
+
+#[test]
+fn personal_shun_versions_null_issuer_and_identity_digests_keep_response_contracts() {
+    let mut f = Fixture::new();
+    let target = f.definition("en");
+    f.bless(4, &target);
+    f.trust(1, 4, "shun", "*");
+    f.trust(6, 4, "heed", "*");
+    f.view("simple-routes-shun-v1", &[1, 6], 1000);
+    let site = f.rank("personal-null-site");
+    exact_net(&site, &target, "3", "1");
+    let site_details = f.reviewers();
+    reasons(&site_details, &target, &key(4), false, false);
+    let version2 = local_overlay(&f, None, json!([]), json!([]));
+    let mut version1 = version2.clone();
+    version1["version"] = json!(1);
+    version1
+        .as_object_mut()
+        .unwrap()
+        .remove("public_shun_issuer");
+    f.overlay = Some(version1.clone());
+    let old = f.rank("personal-overlay-v1");
+    exact_net(&old, &target, "3", "1");
+    assert_eq!(f.reviewers()["scores"], site_details["scores"]);
+    f.overlay = Some(version2);
+    let anonymous = f.rank("personal-overlay-v2-null");
+    exact_net(&anonymous, &target, "3", "1");
+    reasons(&f.reviewers(), &target, &key(4), false, false);
+    assert_ne!(
+        anonymous["calculation"]["overlay"],
+        old["calculation"]["overlay"]
+    );
+    f.overlay = Some(local_overlay(&f, Some(1), json!([]), json!([])));
+    let first = f.rank("personal-issuer-one");
+    exact_net(&first, &target, "0", "1");
+    assert_eq!(
+        first["calculation"]["overlay"],
+        jvc_core::hash_id(
+            "sha256:",
+            b"",
+            &canonical_value(f.overlay.as_ref().unwrap()).unwrap()
+        )
+    );
+    f.overlay = Some(local_overlay(&f, Some(6), json!([]), json!([])));
+    let second = f.rank("personal-issuer-six");
+    exact_net(&second, &target, "3", "1");
+    assert_ne!(
+        first["calculation"]["overlay"],
+        second["calculation"]["overlay"]
+    );
+    let mut private = local_overlay(
+        &f,
+        None,
+        json!([]),
+        json!([{"identity":key(4),"scope":{"kind":"*","word":"*","language":"*"}}]),
+    );
+    f.overlay = Some(private.clone());
+    f.rank("personal-null-private-block");
+    reasons(&f.reviewers(), &target, &key(4), false, true);
+    private["version"] = json!(1);
+    private
+        .as_object_mut()
+        .unwrap()
+        .remove("public_shun_issuer");
+    f.overlay = Some(private);
+    f.rank("personal-v1-private-block");
+    reasons(&f.reviewers(), &target, &key(4), false, false);
+}
+
+#[test]
+fn personal_shun_handovers_resolve_both_ends_without_self_blocks() {
+    let mut f = Fixture::new();
+    let target = f.definition("en");
+    let shun=f.event(1,json!({"kind":"trust.set","subject":key(5),"scope":{"kind":"*","word":"*","language":"*"},"value":"shun"}),None);
+    let transfer = f.event_after(
+        1,
+        vec![shun],
+        json!({"kind":"identity.transfer","successor":key(2)}),
+        None,
+    );
+    let accept = f.event(
+        2,
+        json!({"kind":"identity.accept","transfer":transfer}),
+        None,
+    );
+    f.event_after(2,vec![accept],json!({"kind":"trust.set","subject":key(1),"scope":{"kind":"*","word":"*","language":"*"},"value":"shun"}),None);
+    let transfer = f.event(
+        4,
+        json!({"kind":"identity.transfer","successor":key(5)}),
+        None,
+    );
+    let accept = f.event(
+        5,
+        json!({"kind":"identity.accept","transfer":transfer}),
+        None,
+    );
+    f.event_after(
+        5,
+        vec![accept],
+        json!({"kind":"judgment.set","target":target,"value":"bless"}),
+        None,
+    );
+    f.trust(6, 5, "heed", "*");
+    f.view("simple-routes-bounds-v1", &[2, 6], 1000);
+    f.overlay = Some(local_overlay(
+        &f,
+        Some(2),
+        json!([]),
+        json!([{"identity":key(5),"scope":{"kind":"*","word":"*","language":"*"}}]),
+    ));
+    exact_net(&f.rank("personal-handovers"), &target, "0", "1");
+    let details = f.reviewers();
+    reasons(&details, &target, &key(4), true, true);
+    assert_eq!(details["calculation"]["incomplete_identities"], json!([]));
+}
+
+#[test]
+fn personal_shun_unavailable_or_invalid_input_never_produces_fallback_scores() {
+    let mut f = Fixture::new();
+    let target = f.definition("en");
+    f.bless(4, &target);
+    f.trust(6, 4, "heed", "*");
+    f.view("simple-routes-bounds-v1", &[1, 6], 1000);
+    let mut invalid = local_overlay(&f, Some(1), json!([]), json!([]));
+    invalid
+        .as_object_mut()
+        .unwrap()
+        .remove("public_shun_issuer");
+    f.overlay = Some(invalid);
+    let result = f.rank("personal-invalid-v2");
+    assert!(result["scores"].as_array().unwrap().is_empty());
+    assert_eq!(result["unavailable_scores"], json!([target]));
+    f.event_after(1,vec![format!("jve1:{}","f".repeat(64))],json!({"kind":"trust.set","subject":key(4),"scope":{"kind":"*","word":"*","language":"*"},"value":"shun"}),None);
+    f.overlay = Some(local_overlay(&f, Some(1), json!([]), json!([])));
+    let result = f.rank("personal-unavailable-issuer");
+    assert!(result["scores"].as_array().unwrap().is_empty());
+    assert_eq!(result["unavailable_scores"], json!([target]));
+    let state = jvc_runtime::evaluate_bytes(&f.bytes()).unwrap();
+    assert_eq!(state["available"], false);
+    assert!(
+        state["reasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|reason| reason == "public_shun_issuer_unavailable")
+    );
+}
+
+#[test]
+fn personal_shun_reviewer_reasons_keep_existing_response_bounds() {
+    let mut f = Fixture::new();
+    let target = f.definition("en");
+    for seed in 30..48 {
+        f.bless(seed, &target);
+    }
+    f.trust(1, 30, "shun", "*");
+    f.trust(1, 49, "shun", "*");
+    f.view("simple-routes-bounds-v1", &[1], 1000);
+    f.overlay = Some(local_overlay(&f, Some(1), json!([]), json!([])));
+    f.rank("personal-reviewer-bound");
+    let details = f.reviewers();
+    assert_eq!(score(&details, &target)["direct_reviewers"], 18);
+    assert_eq!(
+        score(&details, &target)["reviewers"]
+            .as_array()
+            .unwrap()
+            .len(),
+        16
+    );
+    assert_eq!(score(&details, &target)["reviewers_complete"], false);
+    assert!(
+        !score(&details, &target)["reviewers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|reviewer| reviewer["identity"] == key(49))
+    );
+}
+
+#[test]
+fn personal_shun_public_clears_and_incomparable_scopes_keep_their_context_rules() {
+    for profile in ["simple-routes-bounds-v1", "simple-routes-shun-v1"] {
+        let mut f = Fixture::new();
+        let target = f.definition("en");
+        f.bless(4, &target);
+        f.trust(6, 4, "heed", "*");
+        let broad=f.event(1,json!({"kind":"trust.set","subject":key(4),"scope":{"kind":"*","word":"*","language":"*"},"value":"shun"}),None);
+        let narrow=f.event_after(1,vec![broad],json!({"kind":"trust.set","subject":key(4),"scope":{"kind":"definition","word":"*","language":"en"},"value":"clear"}),None);
+        f.view(profile, &[1, 6], 1000);
+        f.overlay = Some(local_overlay(&f, Some(1), json!([]), json!([])));
+        exact_net(
+            &f.rank(&format!("personal-clear-fallback-{profile}")),
+            &target,
+            "0",
+            "1",
+        );
+        reasons(&f.reviewers(), &target, &key(4), true, false);
+        let cleared=f.event_after(1,vec![narrow],json!({"kind":"trust.set","subject":key(4),"scope":{"kind":"*","word":"*","language":"*"},"value":"clear"}),None);
+        f.overlay = Some(local_overlay(
+            &f,
+            Some(1),
+            json!([]),
+            json!([{"identity":key(4),"scope":{"kind":"*","word":"*","language":"*"}}]),
+        ));
+        exact_net(
+            &f.rank(&format!("personal-clear-private-survives-{profile}")),
+            &target,
+            "0",
+            "1",
+        );
+        reasons(&f.reviewers(), &target, &key(4), false, true);
+        let heed=f.event_after(1,vec![cleared],json!({"kind":"trust.set","subject":key(4),"scope":{"kind":"definition","word":f.word,"language":"*"},"value":"heed"}),None);
+        f.event_after(1,vec![heed],json!({"kind":"trust.set","subject":key(4),"scope":{"kind":"definition","word":"*","language":"en"},"value":"shun"}),None);
+        f.overlay = Some(local_overlay(&f, Some(1), json!([]), json!([])));
+        exact_net(
+            &f.rank(&format!("personal-incomparable-{profile}")),
+            &target,
+            "0",
+            "1",
+        );
+        reasons(&f.reviewers(), &target, &key(4), true, false);
+    }
+}
+
+#[test]
+fn personal_shun_unaccepted_handover_does_not_borrow_the_old_keys_shuns() {
+    let mut f = Fixture::new();
+    let target = f.definition("en");
+    f.bless(4, &target);
+    f.trust(6, 4, "heed", "*");
+    let shun=f.event(1,json!({"kind":"trust.set","subject":key(4),"scope":{"kind":"*","word":"*","language":"*"},"value":"shun"}),None);
+    f.event_after(
+        1,
+        vec![shun],
+        json!({"kind":"identity.transfer","successor":key(2)}),
+        None,
+    );
+    f.view("simple-routes-bounds-v1", &[2, 6], 1000);
+    f.overlay = Some(local_overlay(&f, Some(2), json!([]), json!([])));
+    exact_net(&f.rank("personal-unaccepted-handover"), &target, "3", "1");
+    reasons(&f.reviewers(), &target, &key(4), false, false);
+}
+
+#[test]
+fn personal_shun_blocks_remove_own_and_onward_credit_without_redistribution() {
+    let mut f = Fixture::new();
+    let target = f.definition("en");
+    for seed in [4, 7, 8] {
+        f.bless(seed, &target);
+    }
+    f.trust(1, 4, "shun", "*");
+    f.trust(6, 4, "heed", "*");
+    f.trust(6, 8, "heed", "*");
+    f.trust(4, 7, "heed", "*");
+    f.view("simple-routes-bounds-v1", &[1, 4, 6], 1000);
+    exact_net(
+        &f.rank("personal-block-site-normalization"),
+        &target,
+        "31",
+        "4",
+    );
+    f.overlay = Some(local_overlay(&f, Some(1), json!([]), json!([])));
+    exact_net(&f.rank("personal-block-normalization"), &target, "3", "2");
+    let details = f.reviewers();
+    for seed in [4, 7] {
+        assert_eq!(
+            reviewer(&details, &target, &key(seed))["weight"][0]["numerator"],
+            "0"
+        );
+    }
+    assert_eq!(
+        reviewer(&details, &target, &key(8))["weight"][0],
+        json!({"numerator":"3","denominator":"2"})
+    );
+    reasons(&details, &target, &key(4), true, false);
+    reasons(&details, &target, &key(7), false, false);
 }

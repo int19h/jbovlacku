@@ -2181,3 +2181,298 @@ fn private_overlay_clear_of_narrow_public_shun_falls_back_to_broad_shun() {
     assert_eq!(refusal_pairs(&graph), vec![(key(3), key(4))]);
     assert!(graph.rows[issuer].is_empty());
 }
+
+fn personal_overlay(f: &Fixture, issuer: Option<u8>, trust: Value, blocked: Value) -> Value {
+    let mut value = overlay(&f.input.selected_view, json!([]), trust, blocked);
+    value["version"] = json!(2);
+    value["public_shun_issuer"] = json!(issuer.map(key));
+    value
+}
+fn blocked_names(
+    graph: &jvc_state::ContextGraph,
+    indices: &std::collections::BTreeSet<usize>,
+) -> Vec<String> {
+    indices
+        .iter()
+        .map(|index| graph.actors[*index].clone())
+        .collect()
+}
+
+#[test]
+fn personal_public_shuns_resolve_language_and_rafsi_scopes_under_both_profiles() {
+    for new_profile in [false, true] {
+        let mut f = Fixture::new();
+        root_policy(&mut f, vec![(3, 1), (4, 1)]);
+        if new_profile {
+            shun_policy(&mut f);
+        }
+        let broad = f.event(3, vec![], json!({"kind":"trust.set","subject":key(4),"scope":{"kind":"*","word":"*","language":"*"},"value":"shun"}), None);
+        f.event(3, vec![broad], json!({"kind":"trust.set","subject":key(4),"scope":{"kind":"definition","word":"*","language":"en"},"value":"heed"}), None);
+        f.event(6, vec![], json!({"kind":"trust.set","subject":key(4),"scope":{"kind":"*","word":"*","language":"*"},"value":"heed"}), None);
+        f.input.overlay = Some(personal_overlay(&f, Some(3), json!([]), json!([])));
+        let evaluation = evaluate_observed(&f.input);
+        for (kind, language, blocked) in [
+            ("definition", Some("en"), false),
+            ("definition", Some("fr"), true),
+            ("rafsi", None, true),
+        ] {
+            let graph = jvc_state::evaluate_context(
+                &evaluation,
+                &jvc_state::Context {
+                    kind: kind.into(),
+                    language: language.map(str::to_owned),
+                    ..context()
+                },
+            );
+            assert!(graph.available);
+            let subject = graph
+                .actors
+                .iter()
+                .position(|actor| actor == &key(4))
+                .unwrap();
+            let independent = graph
+                .actors
+                .iter()
+                .position(|actor| actor == &key(6))
+                .unwrap();
+            assert_eq!(graph.blocked.contains(&subject), blocked);
+            assert_eq!(graph.public_shun_blocked.contains(&subject), blocked);
+            assert!(graph.private_blocked.is_empty());
+            assert_eq!(
+                graph.roots[subject],
+                jvc_state::Rational::from_integer((!blocked as i64).into())
+            );
+            assert_eq!(graph.rows[independent].is_empty(), blocked);
+            if !new_profile {
+                assert!(graph.refusals.is_empty());
+            }
+        }
+    }
+}
+
+#[test]
+fn personal_public_shuns_keep_conflicts_clear_fallback_and_incomparable_scopes() {
+    for values in [vec!["heed", "shun"], vec!["heed", "clear"]] {
+        let mut f = Fixture::new();
+        for value in &values {
+            f.event(3, vec![], json!({"kind":"trust.set","subject":key(4),"scope":{"kind":"*","word":"*","language":"*"},"value":value}), None);
+        }
+        f.input.overlay = Some(personal_overlay(&f, Some(3), json!([]), json!([])));
+        let graph = jvc_state::evaluate_context(&evaluate_observed(&f.input), &context());
+        assert_eq!(
+            !graph.public_shun_blocked.is_empty(),
+            values.contains(&"shun")
+        );
+    }
+    let mut f = Fixture::new();
+    let broad = f.event(3, vec![], json!({"kind":"trust.set","subject":key(4),"scope":{"kind":"*","word":"*","language":"*"},"value":"shun"}), None);
+    f.event(3, vec![broad], json!({"kind":"trust.set","subject":key(4),"scope":{"kind":"definition","word":"*","language":"en"},"value":"clear"}), None);
+    f.input.overlay = Some(personal_overlay(&f, Some(3), json!([]), json!([])));
+    let graph = jvc_state::evaluate_context(&evaluate_observed(&f.input), &context());
+    assert_eq!(
+        blocked_names(&graph, &graph.public_shun_blocked),
+        vec![key(4)]
+    );
+    f.event(3, vec![], json!({"kind":"trust.set","subject":key(4),"scope":{"kind":"definition","word":context().word,"language":"*"},"value":"heed"}), None);
+    f.event(3, vec![], json!({"kind":"trust.set","subject":key(4),"scope":{"kind":"definition","word":"*","language":"en"},"value":"shun"}), None);
+    let graph = jvc_state::evaluate_context(&evaluate_observed(&f.input), &context());
+    assert_eq!(
+        blocked_names(&graph, &graph.public_shun_blocked),
+        vec![key(4)]
+    );
+}
+
+#[test]
+fn personal_public_shuns_precede_private_replacement_and_private_ignore_survives_public_clear() {
+    let mut f = Fixture::new();
+    root_policy(&mut f, vec![(4, 1)]);
+    let scope = json!({"kind":"*","word":"*","language":"*"});
+    let public = f.event(
+        3,
+        vec![],
+        json!({"kind":"trust.set","subject":key(4),"scope":scope,"value":"shun"}),
+        None,
+    );
+    for value in ["heed", "clear", "shun"] {
+        f.input.overlay = Some(personal_overlay(
+            &f,
+            Some(3),
+            json!([{"issuer":key(3),"subject":key(4),"scope":scope,"value":value,"weight":null}]),
+            json!([]),
+        ));
+        let graph = jvc_state::evaluate_context(&evaluate_observed(&f.input), &context());
+        assert!(graph.available);
+        assert_eq!(
+            blocked_names(&graph, &graph.public_shun_blocked),
+            vec![key(4)]
+        );
+        assert!(graph.private_blocked.is_empty());
+    }
+    f.event(
+        3,
+        vec![public],
+        json!({"kind":"trust.set","subject":key(4),"scope":scope,"value":"clear"}),
+        None,
+    );
+    f.input.overlay = Some(personal_overlay(
+        &f,
+        Some(3),
+        json!([]),
+        json!([{"identity":key(4),"scope":scope}]),
+    ));
+    root_policy(&mut f, vec![(4, 1)]);
+    f.input.overlay.as_mut().unwrap()["base_view"] = json!(f.input.selected_view);
+    let graph = jvc_state::evaluate_context(&evaluate_observed(&f.input), &context());
+    assert!(graph.public_shun_blocked.is_empty());
+    assert_eq!(blocked_names(&graph, &graph.private_blocked), vec![key(4)]);
+    assert!(
+        graph
+            .roots
+            .iter()
+            .all(|q| *q == jvc_state::Rational::from_integer(0.into()))
+    );
+    f.input.overlay = Some(personal_overlay(
+        &f,
+        Some(3),
+        json!([{"issuer":key(3),"subject":key(4),"scope":scope,"value":"shun","weight":null}]),
+        json!([]),
+    ));
+    let graph = jvc_state::evaluate_context(&evaluate_observed(&f.input), &context());
+    assert!(graph.public_shun_blocked.is_empty());
+    assert!(graph.private_blocked.is_empty());
+}
+
+#[test]
+fn personal_public_shuns_resolve_both_handovers_and_ignore_self_shuns() {
+    let mut f = Fixture::new();
+    let shun = f.event(3,vec![],json!({"kind":"trust.set","subject":key(6),"scope":{"kind":"*","word":"*","language":"*"},"value":"shun"}),None);
+    let transfer = f.event(
+        3,
+        vec![shun],
+        json!({"kind":"identity.transfer","successor":key(4)}),
+        None,
+    );
+    let acceptance = f.event(
+        4,
+        vec![],
+        json!({"kind":"identity.accept","transfer":transfer}),
+        None,
+    );
+    f.event(4,vec![acceptance],json!({"kind":"trust.set","subject":key(3),"scope":{"kind":"*","word":"*","language":"*"},"value":"shun"}),None);
+    let transfer = f.event(
+        5,
+        vec![],
+        json!({"kind":"identity.transfer","successor":key(6)}),
+        None,
+    );
+    f.event(
+        6,
+        vec![],
+        json!({"kind":"identity.accept","transfer":transfer}),
+        None,
+    );
+    root_policy(&mut f, vec![(3, 1), (5, 1), (6, 1)]);
+    f.input.overlay = Some(personal_overlay(
+        &f,
+        Some(4),
+        json!([]),
+        json!([{"identity":key(6),"scope":{"kind":"*","word":"*","language":"*"}}]),
+    ));
+    let graph = jvc_state::evaluate_context(&evaluate_observed(&f.input), &context());
+    assert!(graph.available);
+    assert_eq!(
+        blocked_names(&graph, &graph.public_shun_blocked),
+        vec![key(5)]
+    );
+    assert_eq!(blocked_names(&graph, &graph.private_blocked), vec![key(5)]);
+    let own = graph
+        .actors
+        .iter()
+        .position(|actor| actor == &key(3))
+        .unwrap();
+    assert!(!graph.blocked.contains(&own));
+}
+
+#[test]
+fn personal_public_shuns_do_not_invent_unresolved_continuity_or_suspended_history() {
+    let mut f = Fixture::new();
+    let shun = f.event(3,vec![],json!({"kind":"trust.set","subject":key(5),"scope":{"kind":"*","word":"*","language":"*"},"value":"shun"}),None);
+    f.event(
+        3,
+        vec![shun],
+        json!({"kind":"identity.transfer","successor":key(4)}),
+        None,
+    );
+    f.input.overlay = Some(personal_overlay(&f, Some(4), json!([]), json!([])));
+    let graph = jvc_state::evaluate_context(&evaluate_observed(&f.input), &context());
+    assert!(graph.available);
+    assert!(graph.public_shun_blocked.is_empty());
+    f.event(4,vec![fake("jve1:")],json!({"kind":"trust.set","subject":key(5),"scope":{"kind":"*","word":"*","language":"*"},"value":"shun"}),None);
+    let evaluation = evaluate_observed(&f.input);
+    assert!(!evaluation.available);
+    assert!(
+        evaluation
+            .reasons
+            .contains("public_shun_issuer_unavailable")
+    );
+    assert!(!jvc_state::evaluate_context(&evaluation, &context()).available);
+}
+
+#[test]
+fn personal_overlay_versions_keep_exact_fields_and_null_issuer_compatibility() {
+    let mut f = Fixture::new();
+    f.event(3,vec![],json!({"kind":"trust.set","subject":key(4),"scope":{"kind":"*","word":"*","language":"*"},"value":"shun"}),None);
+    let version2 = personal_overlay(&f, None, json!([]), json!([]));
+    f.input.overlay = Some(version2.clone());
+    let graph = jvc_state::evaluate_context(&evaluate_observed(&f.input), &context());
+    assert!(graph.available);
+    assert!(graph.public_shun_blocked.is_empty());
+    for invalid in [
+        json!(true),
+        json!(1),
+        json!("ed25519:bad"),
+        json!(fake("jve1:")),
+        json!([]),
+        json!({}),
+    ] {
+        let mut value = version2.clone();
+        value["public_shun_issuer"] = invalid;
+        f.input.overlay = Some(value);
+        assert!(
+            evaluate_observed(&f.input)
+                .reasons
+                .contains("invalid_overlay")
+        );
+    }
+    for variant in [0, 1, 2] {
+        let mut value = version2.clone();
+        match variant {
+            0 => {
+                value.as_object_mut().unwrap().remove("public_shun_issuer");
+            }
+            1 => {
+                value["extra"] = json!(null);
+            }
+            _ => {
+                value["version"] = json!(1);
+            }
+        }
+        f.input.overlay = Some(value);
+        assert!(
+            evaluate_observed(&f.input)
+                .reasons
+                .contains("invalid_overlay")
+        );
+    }
+    f.input.overlay = Some(overlay(
+        &f.input.selected_view,
+        json!([]),
+        json!([]),
+        json!([]),
+    ));
+    let old = jvc_state::evaluate_context(&evaluate_observed(&f.input), &context());
+    assert!(old.available);
+    assert_eq!(old.rows, graph.rows);
+    assert_eq!(old.roots, graph.roots);
+    assert!(old.public_shun_blocked.is_empty());
+}

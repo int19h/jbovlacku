@@ -828,18 +828,29 @@ Public view adoption is outside event validity. A client never adopts a view mer
 A view update is a new publication with parent links. Its changed allocations remain inspectable and reversible by choosing another view.
 Private roots, scopes, weights, and exclusions form an unsigned local overlay. The client includes its digest in result metadata.
 
-The overlay has exactly `version`, `base_view`, `root_changes`, `trust`, `blocked`, and `work`.
-Version is 1. Base view is the public view event ID. Work is null or a permitted replacement expansion budget.
+Overlay version 1 has exactly `version`, `base_view`, `root_changes`, `trust`, `blocked`, and `work`.
+Overlay version 2 has those fields plus required `public_shun_issuer`.
+That field is one valid `ed25519:` identity key or null. Missing, malformed, or unknown fields make the overlay invalid.
+Base view is the public view event ID. Work is null or a permitted replacement expansion budget.
 Each root change has `identity` and `q`, where null removes that root and a rational replaces its allocation.
 Each private trust rule has `issuer`, `subject`, `scope`, `value`, and nullable rational `weight`.
 
-Values are `heed`, `shun`, and `clear`. A private exact-scope rule replaces the corresponding public rule before specificity resolution.
+Values are `heed`, `shun`, and `clear`.
+A private exact-scope rule replaces the corresponding public rule before specificity resolution for edges and route refusals.
+It does not change the separate public-shun blocks that version 2 derives below.
 A clear removes the exact public rule and permits broader fallback. A weight is permitted only with heed and must be positive.
 Unweighted effective heeds receive relative weight 1. Conflicting retained private heed weights block that edge until the user resolves them.
 
 Blocked entries contain `identity` and `scope`. Their local reason text is stored separately and has no scoring effect.
 Arrays sort by their canonical object bytes and contain no duplicate register keys. The overlay digest hashes the canonical complete object.
+The digest includes the version and, for version 2, the issuer field.
 A null overlay uses the digest of canonical JSON null. Private preferences never become signed records through ordinary synchronization.
+
+`public_shun_issuer` is an unsigned local preference. It proves no control of the named key and grants no public authority.
+A custom client can select any issuer for its own local calculation.
+The reference frontend supplies the current session identity, or null for an anonymous session, when it builds a personal calculation.
+Saved private preferences remain version 1. The frontend builds version 2 for calculation and saves no derived blocks or selected issuer there.
+Site calculations use a null overlay. Version 1 keeps its existing interpretation.
 
 ### Scope and shuns
 
@@ -878,6 +889,31 @@ A view exclusion has that same graph effect within the named view.
 A block naming any key in a continuity group blocks the whole group. Its own q becomes zero as well as its incident routes. Neither action reverses curses into blessings.
 The reference frontend also treats its current user's effective public shuns as local blocks in that user's personal view.
 This personal behavior does not impose a veto on the public view.
+
+For a version 2 overlay with a non-null issuer, derive those blocks from authenticated public trust rules in the same snapshot.
+Resolve the issuer and subjects through accepted continuity before grouping rules.
+Use the matching scopes, narrowest scopes, clear fallback, conflict values, and self-shun rule defined above.
+Any retained value set containing shun creates a personal block, including a conflict containing shun.
+A conflict without shun creates none. A narrower public heed overrides a broader public shun in its matching context.
+
+Resolve this public source before private trust replacement. Private heeds, clears, and trust shuns neither remove nor create these public blocks.
+While the public source stands, a private heed cannot restore influence through that actor in the personal calculation.
+A public clear or a narrower public heed can remove that source in the relevant context.
+An explicit private block remains separate and survives a public clear.
+Add both block sources before final graph filtering under either signed public calculation profile.
+
+Only records in the named authenticated snapshot affect these public blocks.
+Undelivered or unindexed public actions remain pending until a later snapshot includes them and the client recalculates.
+A receipt alone does not prove that the calculation includes a newly signed public action.
+Unavailable issuer history makes the personal calculation unavailable. It does not produce an empty successful block result.
+
+Version 2 reviewer details can include optional `public_shun_block` and `private_block` fields.
+Each is absent or the literal true. Absence supplies no such reason.
+The first names a block derived from `public_shun_issuer`. The second names a matching explicit `overlay.blocked` entry.
+Resolve both reasons against the exact comparison context and continuity group. Both can apply to the same reviewer.
+Neither reason represents a view exclusion or a suspension. Keep the existing generic `blocked` field.
+These reasons add no reviewers without judgments and preserve the existing response bounds.
+Version 1 and site reviewer response shapes remain unchanged.
 
 Build each positive outgoing row before applying view exclusions and local blocks. Divide it equally among its resolved heeds.
 Private weights can replace equal weights. Let s be their positive sum.

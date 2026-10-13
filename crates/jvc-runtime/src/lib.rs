@@ -250,6 +250,7 @@ fn reviewer_details(
     ranking: &jvc_rank::Ranking,
     verdicts: &[jvc_rank::Verdict],
     limit: usize,
+    block_reasons: bool,
 ) -> (Vec<Value>, bool) {
     let zero = jvc_rank::rational(0, 1);
     let mut incoming: Vec<Vec<usize>> = vec![Vec::new(); graph.actors.len()];
@@ -278,7 +279,7 @@ fn reviewer_details(
                 .map(|from| json!(graph.actors[*from]))
                 .collect::<Vec<_>>();
             let route_count = sources.len() + usize::from(root.is_some());
-            json!({
+            let mut detail = json!({
                 "identity": graph.actors[index],
                 "verdict": match verdict { jvc_rank::Verdict::Bless => "bless", jvc_rank::Verdict::Curse => "curse", jvc_rank::Verdict::Absent => "absent" },
                 "weight": ranking.weights.get(index).map(interval_value).unwrap_or(Value::Null),
@@ -288,7 +289,14 @@ fn reviewer_details(
                 "incoming_count": sources.len(),
                 "incoming_complete": sources.len() <= REVIEWER_INCOMING_LIMIT,
                 "multiple_routes": route_count > 1,
-            })
+            });
+            if block_reasons && graph.public_shun_blocked.contains(&index) {
+                detail["public_shun_block"] = json!(true);
+            }
+            if block_reasons && graph.private_blocked.contains(&index) {
+                detail["private_block"] = json!(true);
+            }
+            detail
         })
         .collect();
     (listed, total <= limit)
@@ -491,8 +499,16 @@ fn rank_word_state(
                     .count();
                 let mut entry = json!({"target":id,"support":interval_value(&score.support),"opposition":interval_value(&score.opposition),"net":interval_value(&score.net),"direct_reviewers":reviewers,"status":status});
                 if let Some(limit) = reviewers_limit {
-                    let (details, complete) =
-                        reviewer_details(&contextual, ranking, &candidate.verdicts, limit);
+                    let (details, complete) = reviewer_details(
+                        &contextual,
+                        ranking,
+                        &candidate.verdicts,
+                        limit,
+                        evaluation
+                            .overlay
+                            .as_ref()
+                            .is_some_and(|overlay| overlay["version"] == 2),
+                    );
                     entry["reviewers"] = Value::Array(details);
                     entry["reviewers_complete"] = Value::Bool(complete);
                 }
