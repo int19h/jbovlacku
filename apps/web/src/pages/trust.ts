@@ -434,7 +434,11 @@ async function makePublic(
     await import("../components/trustpanel.ts");
   // The preview explains a shun under the profile of the signed view in use,
   // or says that the view did not load.
-  const view = await loadSiteView().catch(() => null);
+  const view = await loadSiteView().catch((error) => ({
+    id: "",
+    body: null,
+    error: describe(error),
+  }));
   const ok = await confirmPublicTrust(
     app,
     subject,

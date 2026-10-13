@@ -148,6 +148,16 @@ async function start() {
     const main = shell.main;
     main.replaceChildren();
     main.className = "";
+    // A focus choice that the reader makes while the page loads is kept: a
+    // key, a pointer, or input in a field after navigation started means that
+    // the heading is not focused when the page finishes. The listeners end
+    // with this render, or earlier when a newer route aborts it.
+    let readerActed = false;
+    const noteReader = () => {
+      readerActed = true;
+    };
+    for (const type of ["keydown", "pointerdown", "input"])
+      document.addEventListener(type, noteReader, { capture: true, signal });
     const context: RenderContext = {
       main,
       live: () => current === revision,
@@ -227,7 +237,15 @@ async function start() {
         main.append(p(describe(error), "notice"));
       }
     } finally {
-      if (current === revision && options.focusHeading) {
+      for (const type of ["keydown", "pointerdown", "input"])
+        document.removeEventListener(type, noteReader, { capture: true });
+      const inDialog = document.activeElement?.closest("dialog[open]");
+      if (
+        current === revision &&
+        options.focusHeading &&
+        !readerActed &&
+        !inDialog
+      ) {
         const heading = main.querySelector<HTMLElement>("h1");
         if (heading) {
           heading.tabIndex = -1;

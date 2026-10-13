@@ -536,7 +536,7 @@ test("Make public and Undo on the Trust page say when delivery is not finished, 
   );
 });
 
-test("the public shun preview says that the signed view did not load and why, on the identity page and the Trust page, for a silent server and for an unavailable body", async ({
+test("the public shun preview says that the signed view did not load and why, on the identity page and the Trust page, for a failed manifest, a silent server, and an unavailable body", async ({
   page,
 }) => {
   const f = await fixture();
@@ -549,6 +549,43 @@ test("the public shun preview says that the signed view did not load and why, on
     .getByRole("button", { name: "Ignore", exact: true })
     .click();
   await expect(shellStatus(page)).toContainText("Saved as a private block");
+  // The manifest request fails. The preview keeps the reason, on both pages.
+  const manifest = "**/api/v1/manifest*";
+  await page.route(manifest, (route) =>
+    route.fulfill({
+      status: 503,
+      json: {
+        code: "resource_unavailable",
+        message: "Root manifest outage",
+        event: null,
+        field: null,
+      },
+    }),
+  );
+  const dialog = page.getByRole("dialog", { name: /Ignore publicly/ });
+  await page.goto(`/identity/${encodeURIComponent(f.identities.curator2)}`);
+  await page.getByRole("button", { name: "Ignore their judgments" }).click();
+  await page.getByRole("radio", { name: /Publicly/ }).check();
+  await page
+    .getByRole("region", { name: /Ignore/ })
+    .getByRole("button", { name: "Ignore", exact: true })
+    .click();
+  await expect(dialog).toContainText(
+    "The signed view in use did not load, so its route rule is unavailable:",
+  );
+  await expect(dialog).toContainText("Root manifest outage");
+  await expect(dialog).not.toContainText("does not know");
+  await expect(dialog).not.toContainText("null");
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await page.goto("/trust");
+  const blockedRow = page
+    .locator("div.row", { hasText: "also blocks trust that passes through" })
+    .filter({ hasText: f.identities.curator2.slice(8, 12) });
+  await blockedRow.getByRole("button", { name: "Make public" }).click();
+  await expect(dialog).toContainText("Root manifest outage");
+  await expect(dialog).not.toContainText("null");
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await page.unroute(manifest);
   // The server does not answer the view probe. The view cannot load.
   const probe = "**/api/v1/words/jvw1%3A0000*";
   await page.route(probe, (route) =>
@@ -562,7 +599,6 @@ test("the public shun preview says that the signed view did not load and why, on
       },
     }),
   );
-  const dialog = page.getByRole("dialog", { name: /Ignore publicly/ });
   await page.goto(`/identity/${encodeURIComponent(f.identities.curator2)}`);
   await page.getByRole("button", { name: "Ignore their judgments" }).click();
   await page.getByRole("radio", { name: /Publicly/ }).check();
@@ -579,9 +615,6 @@ test("the public shun preview says that the signed view did not load and why, on
   );
   await dialog.getByRole("button", { name: "Cancel" }).click();
   await page.goto("/trust");
-  const blockedRow = page
-    .locator("div.row", { hasText: "also blocks trust that passes through" })
-    .filter({ hasText: f.identities.curator2.slice(8, 12) });
   await blockedRow.getByRole("button", { name: "Make public" }).click();
   await expect(dialog).toContainText(
     "The signed view in use did not load, so its route rule is unavailable",

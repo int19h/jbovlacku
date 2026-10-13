@@ -790,11 +790,16 @@ test("judgment controls stop listening after their page is gone", async ({
     };
   });
   const listeners = () => page.evaluate(() => (window as any).__ownListeners);
-  // The Trust page's own subscriptions are the baseline.
+  // The Trust page's own subscriptions are the baseline, measured after the
+  // complete Trust content, including the site view section, is rendered.
+  const trustComplete = async () => {
+    await expect(
+      page.getByRole("radio", { name: "Site view only" }),
+    ).toBeVisible();
+    await expect(page.locator("main")).toContainText("Calculation profile");
+  };
   await page.getByRole("link", { name: /^Trust:/ }).click();
-  await expect(
-    page.getByRole("radio", { name: "Site view only" }),
-  ).toBeVisible();
+  await trustComplete();
   const baseline = await listeners();
   await page.getByLabel("Search words and meanings").fill("cukta");
   await page.getByLabel("Search words and meanings").press("Enter");
@@ -820,9 +825,7 @@ test("judgment controls stop listening after their page is gone", async ({
     .click();
   await expect(page).toHaveTitle("vlacku · jbovlacku");
   await page.getByRole("link", { name: /^Trust:/ }).click();
-  await expect(
-    page.getByRole("radio", { name: "Site view only" }),
-  ).toBeVisible();
+  await trustComplete();
   // The explicit boundary: every subscription from the earlier pages is gone.
   await expect.poll(listeners).toBe(baseline);
   // A session change then reaches no control at all.
@@ -958,4 +961,76 @@ test("a fresh lifetime helper releases a node that joins and leaves before any l
     detachedBeforeAbort: 0,
     detachedAfterAbort: 1,
   });
+});
+
+test("a focus choice made while a page loads is kept, Enter then submits the search, and further input in the focused field after a search starts is kept too", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const field = page.getByLabel("Search words and meanings");
+  // The Trust page waits for the view probe, which the test holds.
+  let releaseProbe = () => {};
+  const probeHeld = new Promise<void>((resolve) => (releaseProbe = resolve));
+  const probe = "**/api/v1/words/jvw1%3A0000*";
+  await page.route(probe, async (route) => {
+    await probeHeld;
+    await route.continue();
+  });
+  await page.getByRole("link", { name: /^Trust:/ }).click();
+  await expect(
+    page.getByRole("radio", { name: "Site view only" }),
+  ).toBeVisible();
+  // The reader moves to the search field while the page still loads.
+  await field.click();
+  await expect(field).toBeFocused();
+  releaseProbe();
+  await expect(page.locator("main")).toContainText("Calculation profile");
+  await expect(field).toBeFocused();
+  await expect(page.locator("main h1")).not.toBeFocused();
+  await field.fill("cukta");
+  await field.press("Enter");
+  await expect(page).toHaveURL(/\/search\?q=cukta&lang=en$/);
+  await expect(
+    page
+      .getByRole("region", { name: "Search results" })
+      .getByRole("link", { name: "cukta", exact: true })
+      .first(),
+  ).toBeVisible();
+  await page.unroute(probe);
+  // A search starts and its request is held. The reader keeps typing in the
+  // same field. The finished page leaves focus and the typed text alone.
+  let releaseSearch = () => {};
+  const searchHeld = new Promise<void>((resolve) => (releaseSearch = resolve));
+  await page.route("**/api/v1/search?**", async (route) => {
+    await searchHeld;
+    await route.continue();
+  });
+  await field.fill("vla");
+  await field.press("Enter");
+  await expect(page).toHaveURL(/\/search\?q=vla&lang=en$/);
+  await expect(field).toBeFocused();
+  await page.keyboard.type("cku");
+  await expect(field).toHaveValue("vlacku");
+  releaseSearch();
+  await expect(
+    page
+      .getByRole("region", { name: "Search results" })
+      .locator("article")
+      .first(),
+  ).toBeVisible();
+  await expect(field).toBeFocused();
+  await expect(field).toHaveValue("vlacku");
+  await expect(page.locator("main h1")).not.toBeFocused();
+  await page.unroute("**/api/v1/search?**");
+  await field.press("Enter");
+  await expect(page).toHaveURL(/\/search\?q=vlacku&lang=en$/);
+  await expect(
+    page
+      .getByRole("region", { name: "Search results" })
+      .getByRole("link", { name: "vlacku", exact: true })
+      .first(),
+  ).toBeVisible();
+  // Without further interaction, navigation still focuses the heading.
+  await page.getByRole("link", { name: /^Trust:/ }).click();
+  await expect(page.locator("main h1")).toBeFocused();
 });

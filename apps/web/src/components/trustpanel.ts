@@ -72,7 +72,7 @@ export function confirmPublicTrust(
   subject: string,
   scope: TrustScope,
   value: "heed" | "shun" | "clear",
-  source: PreviewProfile = { profile: null, loadError: null },
+  source: PreviewProfile,
 ): Promise<boolean> {
   return new Promise((resolve) => {
     const opener = document.activeElement as HTMLElement | null;
@@ -303,7 +303,13 @@ export function trustPanel(app: App, options: TrustPanelOptions): HTMLElement {
           return;
         }
         const value = mode === "trust" ? "heed" : "shun";
-        const site = await loadSiteView().catch(() => null);
+        // A load that throws, such as a failed manifest request, keeps its
+        // reason for the preview.
+        const site = await loadSiteView().catch((error) => ({
+          id: "",
+          body: null,
+          error: describe(error),
+        }));
         if (
           !(await confirmPublicTrust(
             app,
