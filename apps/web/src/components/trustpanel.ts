@@ -2,6 +2,8 @@
 import { el, p, text, button, field, describe, append } from "../lib/dom.ts";
 import { fingerprintText } from "../lib/format.ts";
 import type { App } from "../app/context.ts";
+import { loadSiteView } from "../data/view.ts";
+import { describeProfile } from "../model/profiles.ts";
 import { allScope, type TrustScope } from "../model/types.ts";
 import { scopeKey } from "../data/history.ts";
 import { identityLink } from "./attribution.ts";
@@ -22,6 +24,7 @@ export function confirmPublicTrust(
   subject: string,
   scope: TrustScope,
   value: "heed" | "shun" | "clear",
+  profile?: string | null,
 ): Promise<boolean> {
   return new Promise((resolve) => {
     const opener = document.activeElement as HTMLElement | null;
@@ -62,7 +65,7 @@ export function confirmPublicTrust(
           value === "heed"
             ? "Their judgments count for you, and so do the people they trust within this scope."
             : value === "shun"
-              ? "Your public refusal to heed. Other readers see it as your choice, not a universal veto or an accusation."
+              ? `Your public refusal to heed. In the site view's calculation profile${profile ? ` ${profile}` : ""}: ${describeProfile(profile ?? "").shunRule} In your own personal view it also acts as a block. Other readers see it as your choice, not a universal veto or an accusation.`
               : "Clears your earlier public choice.",
         ),
         p(
@@ -252,7 +255,17 @@ export function trustPanel(app: App, options: TrustPanelOptions): HTMLElement {
           return;
         }
         const value = mode === "trust" ? "heed" : "shun";
-        if (!(await confirmPublicTrust(app, subject, scope, value))) return;
+        const site = await loadSiteView().catch(() => null);
+        if (
+          !(await confirmPublicTrust(
+            app,
+            subject,
+            scope,
+            value,
+            site?.body?.calculation ?? null,
+          ))
+        )
+          return;
         await app.session.requireUnlocked(
           `${mode === "trust" ? "Trusting" : "Ignoring"} ${label} publicly`,
           async () => {

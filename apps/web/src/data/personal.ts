@@ -10,6 +10,7 @@ import {
 } from "../../../../packages/core/src/index.ts";
 import type { LocalStore, Overlay } from "./store.ts";
 import {
+  forgetInventory,
   latestInventory,
   loadRecords,
   RecordsError,
@@ -597,6 +598,14 @@ export class PersonalCalculator {
       });
       worker.postMessage({ type: "rank", id, session, word, reviewers });
     });
+  }
+  /**
+   * Forgets the stored inventory as well, after the reader changed the signed
+   * view. The next calculation syncs again and reads the view in use.
+   */
+  async forgetView() {
+    this.invalidate();
+    await forgetInventory(this.store).catch(() => null);
   }
   /** Forgets the loaded session after private choices or the identity change. */
   invalidate() {

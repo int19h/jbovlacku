@@ -2,6 +2,7 @@
  * Typed HTTP client for one dictionary peer. Every response is bounded,
  * validated, and authenticated where the format permits.
  */
+import { describeProfile } from "../model/profiles.ts";
 import {
   canonicalize,
   contentHash,
@@ -403,7 +404,33 @@ export function validateWord(value: unknown, id: string): WordResponse {
     )
       throw invalid();
   void id;
-  return value as unknown as WordResponse;
+  const word = value as unknown as WordResponse;
+  // A calculation profile this client does not know gives no scores. The
+  // name stays visible, and nothing substitutes another calculation.
+  if (word.calculation && !describeProfile(word.calculation.algorithm).known)
+    return {
+      ...word,
+      scores: [],
+      unavailable_scores: [
+        ...new Set([
+          ...word.unavailable_scores,
+          ...word.scores.map((score) => score.target),
+        ]),
+      ],
+    };
+  return word;
+}
+/**
+ * The signed view the reader chose by event ID, or null for the server's
+ * selected view. Requests that take a view use it unless a caller names one.
+ */
+let preferredView: string | null = null;
+export function setPreferredView(view: string | null) {
+  preferredView = view;
+  wordCache.clear();
+}
+export function getPreferredView(): string | null {
+  return preferredView;
 }
 const wordCache = new Map<string, Promise<WordResponse>>();
 export function getWord(
@@ -417,7 +444,8 @@ export function getWord(
 ) {
   const query = new URLSearchParams();
   if (options.snapshot) query.set("snapshot", options.snapshot);
-  if (options.view) query.set("view", options.view);
+  const view = options.view ?? preferredView;
+  if (view) query.set("view", view);
   if (options.reviewers) query.set("reviewers", "1");
   const key = `${options.peer?.id ?? "self"}|${id}|${query}`;
   if (options.fresh) wordCache.delete(key);
@@ -488,7 +516,7 @@ export async function remoteSearch(
   if (context) {
     params.set("snapshot", context.snapshot);
     params.set("view", context.view);
-  }
+  } else if (preferredView) params.set("view", preferredView);
   if (after) params.set("after", after);
   const result = await api<unknown>(`/search?${params}`, options);
   if (
@@ -551,9 +579,10 @@ export async function getIdentity(
   options: RequestOptions & { snapshot?: string } = {},
 ): Promise<IdentityResponse> {
   if (!identityId(identity)) throw new Error("The identity is invalid.");
-  const query = options.snapshot
-    ? `?snapshot=${encodeURIComponent(options.snapshot)}`
-    : "";
+  const params = new URLSearchParams();
+  if (options.snapshot) params.set("snapshot", options.snapshot);
+  if (preferredView) params.set("view", preferredView);
+  const query = params.size ? `?${params}` : "";
   const value = await api<unknown>(
     `/identities/${encodeURIComponent(identity)}${query}`,
     options,

@@ -13,7 +13,13 @@ import {
   utf8,
   verifyEnvelope,
 } from "../../../../packages/core/src/index.ts";
-import { api, getManifest, objectBytes, type RequestOptions } from "./api.ts";
+import {
+  api,
+  getManifest,
+  objectBytes,
+  type RequestOptions,
+  getPreferredView,
+} from "./api.ts";
 import type { LocalStore } from "./store.ts";
 import { eventId, hashId, type Envelope } from "../model/types.ts";
 
@@ -413,8 +419,9 @@ export async function syncRecords(
       );
     await store.put("selections", hash, prepared.canonical);
   }
+  const chosen = getPreferredView();
   const probe = (await api(
-    `/words/jvw1:${"0".repeat(64)}?snapshot=${encodeURIComponent(snapshot)}`,
+    `/words/jvw1:${"0".repeat(64)}?snapshot=${encodeURIComponent(snapshot)}${chosen ? `&view=${encodeURIComponent(chosen)}` : ""}`,
     options,
   )) as { view?: unknown };
   if (!eventId(probe.view))
@@ -491,8 +498,22 @@ export async function loadRecords(
   }
   return { events, bodies, selections };
 }
+/**
+ * The stored inventory of the last sync. Its records do not depend on the
+ * view, so a view the reader chose by ID rebinds it; a stored inventory from
+ * another chosen view never answers for the chosen one.
+ */
 export async function latestInventory(
   store: LocalStore,
 ): Promise<SnapshotInventory | null> {
-  return (await store.get<SnapshotInventory>("inventory", "latest")) ?? null;
+  const stored = await store.get<SnapshotInventory>("inventory", "latest");
+  if (!stored) return null;
+  const chosen = getPreferredView();
+  return chosen && chosen !== stored.view
+    ? { ...stored, view: chosen }
+    : stored;
+}
+/** Drops the stored inventory, so the next sync reads the server's selected view again. */
+export async function forgetInventory(store: LocalStore): Promise<void> {
+  await store.delete("inventory", "latest");
 }

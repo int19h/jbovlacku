@@ -3,6 +3,7 @@
  * working key stays in memory and locks after 15 idle minutes unless the
  * session setting applies.
  */
+import { setPreferredView } from "../data/api.ts";
 import { el, p, button, field, describe, link, append } from "../lib/dom.ts";
 import { createKey, parseBackup, unlockKey } from "../data/keys.ts";
 import {
@@ -33,6 +34,7 @@ export class Session {
   async load() {
     try {
       this.preferences = await this.store.preferences();
+      setPreferredView(this.preferences.view);
       this.backup = await this.store.get<KeyBackup>("keys", "selected");
       this.keepUnlocked = this.preferences.keepUnlocked;
     } catch {
@@ -73,6 +75,7 @@ export class Session {
   }
   async setPreferences(patch: Partial<Preferences>) {
     this.preferences = await this.store.setPreferences(patch);
+    if ("view" in patch) setPreferredView(this.preferences.view);
     this.changed();
     return this.preferences;
   }

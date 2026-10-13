@@ -25,6 +25,15 @@ export async function buildFixture(origin: string) {
   const delegate = seed(204);
   const author = seed(205);
   const importer = seed(206);
+  // The shun scenario has its own roots and actors, so the two-root view and
+  // the cukta scores above stay exactly as they are.
+  const rootC = seed(207);
+  const rootD = seed(208);
+  const curator2 = seed(209);
+  const delegate2 = seed(210);
+  const outcast = seed(211);
+  const loner = seed(212);
+  const scoped = seed(213);
   const ids = {
     rootA: identityFromSeed(rootA),
     rootB: identityFromSeed(rootB),
@@ -32,6 +41,13 @@ export async function buildFixture(origin: string) {
     delegate: identityFromSeed(delegate),
     author: identityFromSeed(author),
     importer: identityFromSeed(importer),
+    rootC: identityFromSeed(rootC),
+    rootD: identityFromSeed(rootD),
+    curator2: identityFromSeed(curator2),
+    delegate2: identityFromSeed(delegate2),
+    outcast: identityFromSeed(outcast),
+    loner: identityFromSeed(loner),
+    scoped: identityFromSeed(scoped),
   };
   const word = (spelling: string) => ({ language: "jbo" as const, spelling });
   const place = (index: number, gloss: string, description: string) => ({
@@ -423,6 +439,171 @@ export async function buildFixture(origin: string) {
     { kind: "judgment.set", target: cukta3.envelope.id, value: "bless" },
     null,
   );
+  // The shun scenario on the word dunda, under two signed views over the same
+  // graph: one with the route-refusal profile and one with the bounds profile.
+  // Roots C and D, and outcast with a small allowance of its own.
+  const dunda1 = sign(
+    curator2,
+    [],
+    publish("dunda"),
+    body("dunda", [
+      ["Gives something to a recipient, as a transfer of possession."],
+    ]),
+  );
+  const dunda2 = sign(
+    delegate2,
+    [],
+    publish("dunda"),
+    body("dunda", [["Donates a gift to a recipient without payment."]]),
+  );
+  const shunViewBody = (name: string, calculation: string) => ({
+    name,
+    description: [["Shun scenario for browser tests."]],
+    roots: [
+      { identity: ids.rootC, q: { numerator: 1, denominator: 1 } },
+      { identity: ids.rootD, q: { numerator: 1, denominator: 1 } },
+      { identity: ids.outcast, q: { numerator: 1, denominator: 4 } },
+    ].sort((a, b) => (a.identity < b.identity ? -1 : 1)),
+    rafsi_threshold: { numerator: 1, denominator: 1 },
+    H: { numerator: 3, denominator: 1 },
+    alpha: { numerator: 1, denominator: 2 },
+    excluded: [],
+    calculation,
+    work: 10000,
+    import_sets: [],
+    account_witnesses: [],
+    account_authority: false,
+    notes: [],
+  });
+  const shunView = sign(
+    rootC,
+    [],
+    { kind: "view.publish", parents: [] },
+    shunViewBody("Shun scenario view", "simple-routes-shun-v1"),
+  );
+  const boundsView = sign(
+    rootC,
+    [shunView.envelope.id],
+    { kind: "view.publish", parents: [] },
+    shunViewBody(
+      "Shun scenario under the bounds profile",
+      "simple-routes-bounds-v1",
+    ),
+  );
+  const trust = (
+    key: Uint8Array,
+    previous: string[],
+    subject: string,
+    value: "heed" | "shun" | "clear",
+    scope: { kind: string; word: string; language: string } = all,
+  ) => sign(key, previous, { kind: "trust.set", subject, scope, value }, null);
+  // Root C heeds curator2 and shuns delegate2: a root shun.
+  const cHeeds = trust(rootC, [boundsView.envelope.id], ids.curator2, "heed");
+  const cShunsDelegate = trust(
+    rootC,
+    [cHeeds.envelope.id],
+    ids.delegate2,
+    "shun",
+  );
+  // A scoped shun by root C on outcast for rafsi only. Definition routes are unaffected.
+  const cShunsOutcastRafsi = trust(
+    rootC,
+    [cShunsDelegate.envelope.id],
+    ids.outcast,
+    "shun",
+    { kind: "rafsi", word: "*", language: "*" },
+  );
+  // Root D heeds curator2 and outcast directly: an independent surviving route.
+  const dHeedsCurator = trust(rootD, [], ids.curator2, "heed");
+  const dHeedsOutcast = trust(
+    rootD,
+    [dHeedsCurator.envelope.id],
+    ids.outcast,
+    "heed",
+  );
+  // Root D shuns scoped, then clears it: a public clear leaves no refusal.
+  const dShunsScoped = trust(
+    rootD,
+    [dHeedsOutcast.envelope.id],
+    ids.scoped,
+    "shun",
+  );
+  const dClearsScoped = trust(
+    rootD,
+    [dShunsScoped.envelope.id],
+    ids.scoped,
+    "clear",
+  );
+  // Curator2 heeds delegate2 and shuns outcast: an intermediary shun.
+  const c2HeedsDelegate = trust(
+    curator2,
+    [dunda1.envelope.id],
+    ids.delegate2,
+    "heed",
+  );
+  const c2ShunsOutcast = trust(
+    curator2,
+    [c2HeedsDelegate.envelope.id],
+    ids.outcast,
+    "shun",
+  );
+  // Delegate2 heeds outcast and scoped.
+  const d2HeedsOutcast = trust(
+    delegate2,
+    [dunda2.envelope.id],
+    ids.outcast,
+    "heed",
+  );
+  const d2HeedsScoped = trust(
+    delegate2,
+    [d2HeedsOutcast.envelope.id],
+    ids.scoped,
+    "heed",
+  );
+  // Judgments on dunda. Loner has no route: a zero-weight reviewer.
+  const outcastBless = sign(
+    outcast,
+    [],
+    { kind: "judgment.set", target: dunda1.envelope.id, value: "bless" },
+    null,
+  );
+  const outcastCurse = sign(
+    outcast,
+    [outcastBless.envelope.id],
+    { kind: "judgment.set", target: dunda2.envelope.id, value: "curse" },
+    null,
+  );
+  const delegate2Bless = sign(
+    delegate2,
+    [d2HeedsScoped.envelope.id],
+    { kind: "judgment.set", target: dunda1.envelope.id, value: "bless" },
+    null,
+  );
+  const curator2Bless = sign(
+    curator2,
+    [c2ShunsOutcast.envelope.id],
+    { kind: "judgment.set", target: dunda2.envelope.id, value: "bless" },
+    null,
+  );
+  const lonerBless = sign(
+    loner,
+    [],
+    { kind: "judgment.set", target: dunda1.envelope.id, value: "bless" },
+    null,
+  );
+  const scopedBless = sign(
+    scoped,
+    [],
+    { kind: "judgment.set", target: dunda2.envelope.id, value: "bless" },
+    null,
+  );
+  void cShunsOutcastRafsi;
+  void dClearsScoped;
+  void outcastCurse;
+  void delegate2Bless;
+  void curator2Bless;
+  void lonerBless;
+  void scopedBless;
   void heedA;
   void heedB;
   void blessPair;
@@ -432,12 +613,18 @@ export async function buildFixture(origin: string) {
   const fixture = {
     origin,
     view: view.envelope.id,
+    views: {
+      bounds: view.envelope.id,
+      shun: shunView.envelope.id,
+      shunGraphBounds: boundsView.envelope.id,
+    },
     identities: ids,
     words: {
       cukta: wordId(word("cukta")),
       vlacku: wordId(word("vlacku")),
       lo: wordId(word("lo")),
       ckusro: wordId(word("ckusro")),
+      dunda: wordId(word("dunda")),
     },
     definitions: {
       cukta1: cukta1.envelope.id,
@@ -447,6 +634,8 @@ export async function buildFixture(origin: string) {
       vlacku: vlacku.envelope.id,
       lo: lo.envelope.id,
       imported: imported.envelope.id,
+      dunda1: dunda1.envelope.id,
+      dunda2: dunda2.envelope.id,
     },
     pair: pairId,
     claim: claim.envelope.id,

@@ -5,14 +5,37 @@ import { resolve } from "node:path";
 export const corePath = `/@fs${resolve("packages/core/src/index.ts")}`;
 export interface Fixture {
   origin: string;
+  /** The server's selected view: the two-root view under the bounds profile. */
   view: string;
+  /** Every signed view of the fixture. The shun scenario has one view per profile. */
+  views: Record<"bounds" | "shun" | "shunGraphBounds", string>;
   identities: Record<
-    "rootA" | "rootB" | "curator" | "delegate" | "author" | "importer",
+    | "rootA"
+    | "rootB"
+    | "curator"
+    | "delegate"
+    | "author"
+    | "importer"
+    | "rootC"
+    | "rootD"
+    | "curator2"
+    | "delegate2"
+    | "outcast"
+    | "loner"
+    | "scoped",
     string
   >;
-  words: Record<"cukta" | "vlacku" | "lo" | "ckusro", string>;
+  words: Record<"cukta" | "vlacku" | "lo" | "ckusro" | "dunda", string>;
   definitions: Record<
-    "cukta1" | "cukta2" | "cukta3" | "cuktaRev" | "vlacku" | "lo" | "imported",
+    | "cukta1"
+    | "cukta2"
+    | "cukta3"
+    | "cuktaRev"
+    | "vlacku"
+    | "lo"
+    | "imported"
+    | "dunda1"
+    | "dunda2",
     string
   >;
   pair: string;

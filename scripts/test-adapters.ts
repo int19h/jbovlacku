@@ -286,6 +286,51 @@ try {
       );
       const viewResponse = await api(index, "/events", view);
       assert.equal(viewResponse.status, 201, await viewResponse.clone().text());
+      // A second signed view selects the route-refusal profile. Each view
+      // reports its own profile through both adapters.
+      const shunView = createEvent(
+        seed,
+        [view.envelope.id],
+        "e".repeat(32),
+        { kind: "view.publish", parents: [] },
+        {
+          name: "Adapter shun view",
+          description: [],
+          roots: [
+            {
+              identity: entry.envelope.header.issuer,
+              q: { numerator: 1, denominator: 1 },
+            },
+          ],
+          rafsi_threshold: { numerator: 1, denominator: 1 },
+          H: { numerator: 3, denominator: 1 },
+          alpha: { numerator: 1, denominator: 2 },
+          excluded: [],
+          calculation: "simple-routes-shun-v1",
+          work: 1000,
+          import_sets: [],
+          account_witnesses: [],
+          account_authority: false,
+          notes: [],
+        },
+      );
+      const shunResponse = await api(index, "/events", shunView);
+      assert.equal(shunResponse.status, 201, await shunResponse.clone().text());
+      const wordPath = `/words/${encodeURIComponent(wordId(definitionWord))}`;
+      for (const [chosen, algorithm] of [
+        [view, "simple-routes-bounds-v1"],
+        [shunView, "simple-routes-shun-v1"],
+      ] as const) {
+        const ranked: any = await (
+          await api(
+            index,
+            `${wordPath}?view=${encodeURIComponent(chosen.envelope.id)}`,
+          )
+        ).json();
+        assert.equal(ranked.view, chosen.envelope.id);
+        assert.equal(ranked.calculation?.algorithm, algorithm);
+        assert.equal(ranked.calculation?.exact, true);
+      }
       const identity = encodeURIComponent(entry.envelope.header.issuer);
       const withView = `view=${encodeURIComponent(view.envelope.id)}`;
       const personResponse = await api(
@@ -446,7 +491,7 @@ try {
       status: "passed",
       adapters: indexes.map((index) => (index === 0 ? "node" : "worker")),
       checks:
-        "Node/Workers admission, late body, exact old snapshot, duplicate retry, process restart, strict JSON, shared snapshot, same-origin writes, bounded snapshot expiry and restart, package_versions, records, identities and activity reads, 404 suffix, 410 snapshot, version 2 package bytes and parts",
+        "Node/Workers admission, late body, exact old snapshot, duplicate retry, process restart, strict JSON, shared snapshot, same-origin writes, bounded snapshot expiry and restart, package_versions, records, identities and activity reads, 404 suffix, 410 snapshot, version 2 package bytes and parts, both calculation profiles",
       directory,
     }),
   );

@@ -50,6 +50,7 @@ The lujvo builder offers short rafsi, gismu stems, whole gismu, whole-word parts
 The gismu generator offers the CLL 1987, CLL 1995, and Ilmen presets with pinned sources, custom weights, exact scores, tied ranks, per-language contributions, root and rafsi conflicts, and manual forms without fabricated evidence.
 The [morphology profiles](docs/morphology.md) name the rules and versions that the metadata records.
 The status editor, transfer editor, semantic search, AI, and Lensisku cross-posting remain target features.
+The site view is the server's selected signed view, and the Trust page can use another retained signed view by its event ID. A signed view names its calculation profile, `simple-routes-bounds-v1` or `simple-routes-shun-v1`; the pages name the profile of each result and its route rule, and an unknown profile leaves scores unavailable.
 The personal view downloads the snapshot records, verifies each envelope and body in a Web Worker, and ranks words locally with the private overlay.
 It adds the current identity as a root with allocation 1 when the view names no allocation for it, and it applies private blocks and public shuns as local blocks.
 A cancelled or incomplete local calculation keeps personal scores unavailable and offers the site view. "Recompute from records" compares a local site-view calculation with the server scores.

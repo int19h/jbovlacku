@@ -22,6 +22,8 @@ import { isActive } from "../data/delivery.ts";
 import { getWord } from "../data/api.ts";
 import { identityLink } from "./attribution.ts";
 import { onDisconnect } from "../lib/lifetime.ts";
+import { describeProfile } from "../model/profiles.ts";
+import type { TrustScope } from "../model/types.ts";
 
 export interface JudgmentTarget {
   /** Definition event ID or rafsi pair ID. */
@@ -283,6 +285,16 @@ export function scoreDetails(
         body.append(
           p("Ranking for this word is unavailable in this snapshot.", "meta"),
         );
+      else if (
+        options.calculation &&
+        !describeProfile(options.calculation.algorithm).known
+      )
+        body.append(
+          p(
+            `Calculation ${options.calculation.algorithm}. ${describeProfile(options.calculation.algorithm).shunRule} Scores from it are not shown.`,
+            "meta",
+          ),
+        );
       return;
     }
     const exact = scoreHeadline(score).exact;
@@ -319,7 +331,32 @@ export function scoreDetails(
     const privateBlocks = options.personal
       ? (await app.store.overlay()).blocked
       : [];
+    // The current identity's own public shuns act as blocks in the personal
+    // view, as the format specifies. They are labeled apart from private choices.
+    const ownShuns: { identity: string; scope: TrustScope }[] = [];
+    if (options.personal)
+      for (const [key, state] of (await app.own.registers())?.trust ?? [])
+        if (state.known && !state.conflicted && state.value === "shun") {
+          const [subject, kind, word, language] = key.split("|");
+          ownShuns.push({
+            identity: subject,
+            scope: { kind: kind as TrustScope["kind"], word, language },
+          });
+        }
+    const matches = (
+      entries: { identity: string; scope: TrustScope }[],
+      identity: string,
+    ) =>
+      entries.some(
+        (entry) =>
+          entry.identity === identity &&
+          (entry.scope.kind === "*" || entry.scope.kind === "definition") &&
+          (entry.scope.word === "*" || entry.scope.word === target.word) &&
+          entry.scope.language === "*",
+      );
+    const ownShunned = (identity: string) => matches(ownShuns, identity);
     const privatelyBlocked = (identity: string) =>
+      ownShunned(identity) ||
       privateBlocks.some(
         (entry) =>
           entry.identity === identity &&
@@ -438,11 +475,13 @@ export function scoreDetails(
             if (!reviewer.root && !reviewer.incoming.length)
               routeCell.append(
                 text(
-                  privatelyBlocked(reviewer.identity)
-                    ? "blocked by your private choice"
-                    : reviewer.blocked
-                      ? "blocked in this view"
-                      : "no route in this view",
+                  ownShunned(reviewer.identity)
+                    ? "blocked in your personal view by your public shun"
+                    : privatelyBlocked(reviewer.identity)
+                      ? "blocked by your private choice"
+                      : reviewer.blocked
+                        ? "blocked in this view"
+                        : "no route in this view",
                 ),
               );
             if (reviewer.multiple_routes)
@@ -500,7 +539,7 @@ export function scoreDetails(
             slot.append(p("You: not in this view yet.", "meta"));
           slot.append(
             p(
-              "Route shares are not shown. The bounded calculation certifies totals, not per-route amounts.",
+              "Incoming trust lists public declarations. It does not show which routes delivered weight, and route shares are not shown: the bounded calculation certifies totals, not per-route amounts. A reviewer with weight 0 still counts as a reviewer.",
               "meta",
             ),
           );
@@ -524,9 +563,16 @@ export function scoreDetails(
     );
     if (options.calculation) {
       const c = options.calculation;
+      const profile = describeProfile(c.algorithm);
       body.append(
         p(
-          `${c.algorithm}. Work ${c.completed} of ${c.budget}. ${c.exact ? "Every graph completed exactly." : "Some graphs stopped at the budget."}`,
+          `Calculation ${c.algorithm}. Work ${c.completed} of ${c.budget}. ${c.exact ? "Every graph completed exactly." : "Some graphs stopped at the budget."}`,
+          "meta",
+        ),
+        p(
+          profile.known
+            ? `${profile.shunRule}${c.exact ? "" : ` ${profile.upperCaveat}`}`
+            : `${profile.shunRule} Scores from it are not shown.`,
           "meta",
         ),
       );

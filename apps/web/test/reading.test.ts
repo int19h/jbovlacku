@@ -244,7 +244,7 @@ test("the trust page names both roots and the site view settings", async ({
     page.getByRole("radio", { name: "Site view only" }),
   ).toBeChecked();
   await expect(
-    page.getByText("Web UI test view. Published by this server."),
+    page.getByText("Web UI test view. Selected by this server."),
   ).toBeVisible();
   for (const root of [f.identities.rootA, f.identities.rootB])
     await expect(

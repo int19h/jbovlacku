@@ -112,7 +112,77 @@ const delegated = createEvent(
   { kind: "judgment.set", target: first.envelope.id, value: "bless" },
   null,
 );
-const events = [first, second, view, heed, direct, delegated];
+// A second signed view over the same graph selects the route-refusal profile.
+// The reviewer heeds a third key that the root shuns, and that key endorses
+// the first definition. The bounds profile counts that route; the refusal
+// profile refuses it at the root's shun. The smoke service selects this view.
+const third = new Uint8Array(32).fill(123);
+const shunView = createEvent(
+  root,
+  [direct.envelope.id],
+  "7".repeat(32),
+  { kind: "view.publish", parents: [] },
+  {
+    name: "Synthetic trust-weighted ranking with route refusal",
+    description: [],
+    roots: [
+      { identity: identityFromSeed(root), q: { numerator: 1, denominator: 1 } },
+    ],
+    rafsi_threshold: { numerator: 1, denominator: 1 },
+    H: { numerator: 1, denominator: 2 },
+    alpha: { numerator: 1, denominator: 2 },
+    excluded: [],
+    calculation: "simple-routes-shun-v1",
+    work: 1000,
+    import_sets: [],
+    account_witnesses: [],
+    account_authority: false,
+    notes: [],
+  },
+);
+const rootShunsThird = createEvent(
+  root,
+  [shunView.envelope.id],
+  "8".repeat(32),
+  {
+    kind: "trust.set",
+    subject: identityFromSeed(third),
+    scope: { kind: "*", word: "*", language: "*" },
+    value: "shun",
+  },
+  null,
+);
+const reviewerHeedsThird = createEvent(
+  reviewer,
+  [delegated.envelope.id],
+  "9".repeat(32),
+  {
+    kind: "trust.set",
+    subject: identityFromSeed(third),
+    scope: { kind: "*", word: "*", language: "*" },
+    value: "heed",
+  },
+  null,
+);
+const thirdBless = createEvent(
+  third,
+  [],
+  "a".repeat(32),
+  { kind: "judgment.set", target: first.envelope.id, value: "bless" },
+  null,
+);
+const events = [
+  first,
+  second,
+  view,
+  heed,
+  direct,
+  delegated,
+  shunView,
+  rootShunsThird,
+  reviewerHeedsThird,
+  thirdBless,
+];
 await writeFile(
   join(directory, "carriers.jsonl"),
   events.map((event) => canonicalize(utf8(JSON.stringify(event)))).join("\n") +
@@ -121,9 +191,14 @@ await writeFile(
 );
 const expected = {
   view: view.envelope.id,
+  shunView: shunView.envelope.id,
   word: wordId(word),
   layers: [[second.envelope.id], [first.envelope.id]],
-  scores: { [first.envelope.id]: "1/2", [second.envelope.id]: "1/1" },
+  // Under the bounds profile the third key's route through the reviewer adds
+  // 1/4 to the first definition. The refusal profile refuses that route at
+  // the root's shun, so the first definition keeps 1/2.
+  scores: { [first.envelope.id]: "3/4", [second.envelope.id]: "1/1" },
+  shunScores: { [first.envelope.id]: "1/2", [second.envelope.id]: "1/1" },
   note: "Synthetic signed judgments. Imported historical votes remain unauthenticated and are not used.",
 };
 await writeFile(
@@ -136,31 +211,39 @@ console.log(JSON.stringify({ directory, ...expected }));
 const prepared = events.map((event) =>
   prepareAdmission(utf8(JSON.stringify(event))),
 );
-const session = evaluateSession({
-  events: prepared.map((event) => event.envelope),
-  bodies: Object.fromEntries(
-    prepared
-      .filter((event) => event.body !== null)
-      .map((event) => [event.id, event.body!]),
-  ),
-  selected_view: view.envelope.id,
-  import_selections: {},
-});
-try {
-  const ranking = session.rankWord(expected.word);
-  assert.deepEqual(ranking.layers, expected.layers);
-  for (const score of ranking.scores) {
-    assert.deepEqual(score.net[0], score.net[1]);
-    assert.equal(
-      score.net[0].numerator + "/" + score.net[0].denominator,
-      expected.scores[score.target],
-    );
+const verified: Record<string, unknown> = {};
+for (const [name, selected, scores, algorithm] of [
+  ["bounds", view.envelope.id, expected.scores, "simple-routes-bounds-v1"],
+  ["shun", shunView.envelope.id, expected.shunScores, "simple-routes-shun-v1"],
+] as const) {
+  const session = evaluateSession({
+    events: prepared.map((event) => event.envelope),
+    bodies: Object.fromEntries(
+      prepared
+        .filter((event) => event.body !== null)
+        .map((event) => [event.id, event.body!]),
+    ),
+    selected_view: selected,
+    import_selections: {},
+  });
+  try {
+    const ranking = session.rankWord(expected.word);
+    assert.equal(ranking.calculation.algorithm, algorithm);
+    assert.deepEqual(ranking.layers, expected.layers);
+    for (const score of ranking.scores) {
+      assert.deepEqual(score.net[0], score.net[1]);
+      assert.equal(
+        score.net[0].numerator + "/" + score.net[0].denominator,
+        scores[score.target],
+      );
+    }
+    verified[name] = ranking;
+  } finally {
+    session.free();
   }
-  await writeFile(
-    join(directory, "verified-ranking.json"),
-    JSON.stringify(ranking, null, 2) + "\n",
-    { flag: "wx" },
-  );
-} finally {
-  session.free();
 }
+await writeFile(
+  join(directory, "verified-ranking.json"),
+  JSON.stringify(verified, null, 2) + "\n",
+  { flag: "wx" },
+);

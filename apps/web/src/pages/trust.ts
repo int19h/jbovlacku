@@ -1,42 +1,24 @@
 /** Trust: the active view, public decisions, private overrides, and the site view detail. */
 import { el, p, link, text, button, describe, disclosure } from "../lib/dom.ts";
 import { fractionText, plural } from "../lib/format.ts";
-import { routes, type RenderContext, type Route } from "../app/router.ts";
+import {
+  navigate,
+  routes,
+  type RenderContext,
+  type Route,
+} from "../app/router.ts";
 import type { App } from "../app/context.ts";
 import { calculationPanel } from "../components/localview.ts";
-import { getManifest, getWord, loadRecord } from "../data/api.ts";
+import { getManifest, loadRecord } from "../data/api.ts";
+import { loadSiteView } from "../data/view.ts";
 import { eventId, type ViewBody } from "../model/types.ts";
 import { identityLink } from "../components/attribution.ts";
 import { scopeKey } from "../data/history.ts";
 import { renderRichText } from "../model/richtext.ts";
 import { describeScope } from "../components/trustpanel.ts";
+import { describeProfile } from "../model/profiles.ts";
 
-/** Loads the selected public view event of this server. */
-export async function loadSiteView(
-  signal?: AbortSignal,
-): Promise<{ id: string; body: ViewBody | null; error: string | null }> {
-  // The view ID is reported with every word response. A manifest alone does not name it,
-  // so the client reads a search or word response. A zero-word request is cheapest.
-  const manifest = await getManifest({ signal });
-  const probe = await getWord("jvw1:" + "0".repeat(64), {
-    snapshot: manifest.snapshot,
-    signal,
-  }).catch(() => null);
-  if (!probe)
-    return {
-      id: "",
-      body: null,
-      error: "The server did not report its selected view.",
-    };
-  try {
-    const record = await loadRecord<ViewBody>(probe.view, manifest.snapshot, {
-      signal,
-    });
-    return { id: probe.view, body: record.body, error: record.bodyError };
-  } catch (error) {
-    return { id: probe.view, body: null, error: describe(error) };
-  }
-}
+export { loadSiteView };
 export async function trustPage(
   _route: Route,
   context: RenderContext,
@@ -87,7 +69,11 @@ export async function trustPage(
   );
   main.append(
     p(
-      "The site view shows this server's scores. The personal view downloads the snapshot's records, verifies them in this browser, and applies your private choices from this browser. It adds your identity as a root with allocation 1 when the view names no allocation for it, and it applies your public shuns as local blocks. When the local calculation cannot finish, word and search pages show unavailable scores instead of substituting site scores.",
+      "The site view shows this server's scores for the signed view below. The personal view downloads the snapshot's records, verifies them in this browser, and applies your private choices from this browser. It adds your identity as a root with allocation 1 when the view names no allocation for it, and it applies your own public shuns as local blocks. When the local calculation cannot finish, word and search pages show unavailable scores instead of substituting site scores.",
+      "meta",
+    ),
+    p(
+      "A private Ignore or a personal block removes that person and every route through them in your view only. A public shun is a signed declaration. Its effect on routes follows the calculation profile of the signed view, shown below, and it does not remove every influence of that person in every reader's view.",
       "meta",
     ),
     calculationPanel(app, { mode: "personal", label: "Local calculation" }),
@@ -313,6 +299,7 @@ export async function trustPage(
   main.append(el("h2", { class: "section", text: "Site view" }));
   const view = await loadSiteView(context.signal);
   if (!context.live()) return;
+  main.append(viewChooser(app, view.id, context));
   if (!view.body) {
     main.append(
       p(view.error ?? "The site view body is unavailable.", "notice"),
@@ -321,9 +308,16 @@ export async function trustPage(
     return;
   }
   const body = view.body;
+  const profile = describeProfile(body.calculation);
   main.append(
     p(
-      `${body.name}. Published by this server. Trust starts from these roots and spreads to the people they trust.`,
+      `${body.name}. ${prefs.view ? "Chosen by you by its event ID." : "Selected by this server."} Trust starts from these roots and spreads to the people they trust.`,
+      "small",
+    ),
+    p(
+      profile.known
+        ? `Calculation profile ${body.calculation}: ${profile.shunRule}`
+        : `Calculation profile ${body.calculation}: ${profile.shunRule} Scores under this view are unavailable in this client.`,
       "small",
     ),
   );
@@ -457,4 +451,81 @@ async function makePublic(
       }
     },
   );
+}
+
+/**
+ * The signed view the reader uses, by event ID. The server's selected view is
+ * the default. Another retained view can be chosen by its ID; that is the only
+ * way to change the calculation profile, because a view names its profile.
+ */
+function viewChooser(app: App, current: string, context: RenderContext) {
+  const box = el("div", { class: "card small", style: "margin:8px 0 12px" });
+  const prefs = app.session.preferences;
+  box.append(
+    el(
+      "p",
+      {},
+      text("Signed view in use: "),
+      el("span", { class: "fingerprint", text: current || "unknown" }),
+    ),
+    p(
+      prefs.view
+        ? "You chose this view by its event ID. The server's own selected view stays available."
+        : "This is the server's selected view. You can use another retained signed view by its event ID. Each signed view names its calculation profile, so this is how a profile is chosen.",
+      "meta",
+    ),
+  );
+  const input = el("input", {
+    class: "field",
+    "aria-label": "Signed view event ID",
+    placeholder: "jve1:…",
+    style: "width:100%;max-width:40rem;min-height:40px",
+    spellcheck: "false",
+  });
+  const status = el("p", { class: "meta", role: "status" });
+  const apply = async () => {
+    const id = input.value.trim();
+    if (!eventId(id)) {
+      status.textContent =
+        "Enter a view event ID of the form jve1: followed by 64 hex characters.";
+      return;
+    }
+    status.textContent = "Checking the view…";
+    try {
+      const manifest = await getManifest({ signal: context.signal });
+      const record = await loadRecord<ViewBody>(id, manifest.snapshot, {
+        signal: context.signal,
+      });
+      if (record.envelope.header.action.kind !== "view.publish")
+        throw new Error("That record is not a signed view.");
+      if (!record.body)
+        throw new Error(record.bodyError ?? "The view body is unavailable.");
+      const profile = describeProfile(record.body.calculation);
+      await app.session.setPreferences({ view: id });
+      await app.personal.forgetView();
+      status.textContent = `Using "${record.body.name}" with calculation profile ${record.body.calculation}.${profile.known ? "" : " This client does not know that profile, so scores stay unavailable."}`;
+      navigate(routes.trust, { replace: true });
+    } catch (error) {
+      status.textContent = `That view cannot be used: ${describe(error)}`;
+    }
+  };
+  const actions = el(
+    "div",
+    { class: "actions", style: "margin-top:6px" },
+    button("Use this view", apply, { class: "btn" }),
+  );
+  if (prefs.view)
+    actions.append(
+      button(
+        "Back to the server's view",
+        async () => {
+          await app.session.setPreferences({ view: null });
+          await app.personal.forgetView();
+          navigate(routes.trust, { replace: true });
+        },
+        { class: "btn btn-quiet" },
+      ),
+    );
+  box.append(input, actions, status);
+  return box;
 }

@@ -120,6 +120,12 @@ export type Preferences = {
   keepUnlocked: boolean;
   myJudgmentsFirst: boolean;
   viewMode: "personal" | "site";
+  /**
+   * A signed view chosen by its event ID, or null for the server's selected
+   * view. Each view names its own calculation profile. Switching profiles is
+   * this explicit choice of another signed view.
+   */
+  view: string | null;
   orthography: "latin" | "zbalermorna";
   /** Configured delivery recipients. "self" is the serving origin. */
   peers: PeerConfig[];
@@ -139,6 +145,7 @@ export const defaultPreferences: Preferences = {
   keepUnlocked: false,
   myJudgmentsFirst: false,
   viewMode: "site",
+  view: null,
   orthography: "latin",
   peers: [{ id: "self", base: "/api/v1", label: "this server" }],
 };

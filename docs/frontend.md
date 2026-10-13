@@ -512,6 +512,10 @@ Numbers are not percentages, probabilities, or proof that a definition is correc
 Every card also shows the current user's own judgment separately. A personal “My judgments first” toggle applies an explicit local presentation preference.
 
 The details panel shows the view, major sources of influence, and whether the calculation is exact or bounded.
+It names the calculation profile from the result metadata and states that profile's route rule.
+Under `simple-routes-shun-v1`, an unfinished result says that its upper endpoint can include routes that effective shuns forbid. No upper endpoint is called received support.
+Incoming trust in the reviewer list is a list of public declarations. It does not show which routes delivered weight.
+A reviewer with weight 0 counts as a reviewer. A profile the client does not know leaves scores unavailable, with the profile named. Nothing substitutes another calculation or a cached site score.
 A bounded result exposes its interval and unresolved comparisons.
 If a layer contains more than five candidates, show its size and a shared banner. Do not number them as ranked winners. The ordinary card can use “Order unresolved” without presenting mathematical notation first.
 
@@ -539,7 +543,8 @@ It removes that identity and routes through it from the personal view.
 It does not use an `overlay.trust` shun, which only blocks an issuer's edge.
 A separate choice signs `trust.set` with `value: "shun"` to publish an editorial shun.
 Other readers interpret that as this user's refusal to heed, not a universal veto.
-The personal view also applies the current user's public shuns as local blocks, as the format specifies.
+The personal view also applies the current user's public shuns as local blocks, as the format specifies. The reviewer list labels such a block apart from a private choice.
+The public preview explains the effect of a shun under the calculation profile of the signed view in use. It does not claim that a public shun removes every influence of that person in every reader's view.
 The UI never labels an ordinary shun as an allegation of malice.
 
 “Report identity abuse” is a separate action. It requires a category, explanation, and explicit public preview.
@@ -555,6 +560,7 @@ Clearing a public choice does not clear a separate private block.
 Removing a root removes its starting allocation, but independent incoming routes can still supply influence.
 Ignore blocks the identity and routes through it in the personal view.
 The trust page distinguishes public records, private overrides, and the active public view.
+The site view is the server's selected signed view by default. The reader can choose another retained signed view by its event ID, and can return to the server's view. Each signed view names its calculation profile, so this explicit choice is the only way to change the profile. The page names the profile of the view in use and its route rule. No view is rewritten and no view ID changes.
 Private preferences remain local unless the user explicitly exports them. A public publish button never appears as an automatic save for private changes.
 The view detail shows roots, allocations, rafsi_threshold, H, alpha, exclusions, accepted import selections, and the calculation budget.
 It also shows account_authority and the selected account witnesses. A policy change explains its effect on imported status before adoption.
