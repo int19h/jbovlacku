@@ -907,3 +907,50 @@ test("a literal circled character in a search preview stays literal text", async
   await expect(row).toContainText("see ① literally");
   await expect(row.getByRole("img", { name: "place 1" })).toHaveCount(0);
 });
+
+test("a fresh lifetime helper releases a node that joins and leaves before any later change", async ({
+  page,
+}) => {
+  await page.goto("/about");
+  const result = await page.evaluate(async () => {
+    // A fresh module instance, with no observer started by an earlier control.
+    const { onDisconnect } = await import(
+      String(`/src/lib/lifetime.ts?fresh=${Date.now()}`)
+    );
+    const wait = () => new Promise((resolve) => setTimeout(resolve, 50));
+    let cleaned = 0;
+    const node = document.createElement("div");
+    onDisconnect(node, () => cleaned++);
+    document.body.append(node);
+    node.remove();
+    await wait();
+    const afterOwnLifetime = cleaned;
+    const probe = document.createElement("div");
+    document.body.append(probe);
+    probe.remove();
+    await wait();
+    // A node that never joined stays subscribed until its signal ends.
+    let detachedCleaned = 0;
+    const detached = document.createElement("div");
+    const controller = new AbortController();
+    onDisconnect(detached, () => detachedCleaned++, controller.signal);
+    const again = document.createElement("div");
+    document.body.append(again);
+    again.remove();
+    await wait();
+    const detachedBeforeAbort = detachedCleaned;
+    controller.abort();
+    return {
+      afterOwnLifetime,
+      afterLaterChange: cleaned,
+      detachedBeforeAbort,
+      detachedAfterAbort: detachedCleaned,
+    };
+  });
+  expect(result).toEqual({
+    afterOwnLifetime: 1,
+    afterLaterChange: 1,
+    detachedBeforeAbort: 0,
+    detachedAfterAbort: 1,
+  });
+});

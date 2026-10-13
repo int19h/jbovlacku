@@ -73,11 +73,23 @@ export async function personPage(
     );
   else {
     const profile = response.profile;
-    // The server bounds the claim list and its bodies. The page says what this response left out.
-    if (profile.claims_complete === false)
+    // The server bounds the claim list and its bodies. The page states the
+    // returned count and the known total, and names omitted bodies apart.
+    const known = profile.claims_count ?? profile.claims.length;
+    if (profile.claims_complete === false && known > profile.claims.length)
       main.append(
         p(
-          `This response holds ${profile.claims.length} of ${profile.claims_count ?? "an unknown number of"} concurrent profile claims, or left out a claim body, within its size bounds. Open each claim record for the rest.`,
+          `This response holds ${profile.claims.length} of ${known} concurrent profile claims. The IDs of the other ${known - profile.claims.length} are not in this response.`,
+          "notice",
+        ),
+      );
+    const omitted = profile.claims.filter(
+      (c) => !c.body && c.body_status === "omitted",
+    ).length;
+    if (omitted)
+      main.append(
+        p(
+          `This response omitted ${omitted} claim ${omitted === 1 ? "body" : "bodies"} for size. Open those claim records to read them.`,
           "notice",
         ),
       );
@@ -101,7 +113,7 @@ export async function personPage(
     else if (profile.state === "conflicted") {
       main.append(
         p(
-          "This key has concurrent profile claims. Both are shown. Neither is selected as current.",
+          `This key has ${known} concurrent profile claims. ${profile.claims.length === known ? (known === 2 ? "Both are shown." : "All are shown.") : `${profile.claims.length} of them are shown.`} None is selected as current.`,
           "notice",
         ),
       );

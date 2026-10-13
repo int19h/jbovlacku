@@ -471,8 +471,18 @@ test("the identity page says when the claim list or a claim body was cut by the 
   await page.goto(`/identity/${encodeURIComponent(identity)}`);
   const main = page.locator("main");
   await expect(main).toContainText(
-    "This response holds 3 of 20 concurrent profile claims, or left out a claim body, within its size bounds.",
+    "This response holds 3 of 20 concurrent profile claims. The IDs of the other 17 are not in this response.",
   );
+  await expect(main).toContainText(
+    "This response omitted 1 claim body for size. Open those claim records to read them.",
+  );
+  await expect(main).toContainText(
+    "This key has 20 concurrent profile claims. 3 of them are shown. None is selected as current.",
+  );
+  // Record links exist only for the claim IDs this response supplies.
+  await expect(
+    main.locator(".card a.fingerprint[href^='/definition/jve1']"),
+  ).toHaveCount(3);
   await expect(main).toContainText(
     "body omitted by this response for size; open the record",
   );
@@ -509,4 +519,5 @@ test("the identity page says when the claim list or a claim body was cut by the 
   await expect(main).toContainText(
     "The newest profile claim's body was omitted by this response for size",
   );
+  await expect(main).not.toContainText("The IDs of the other");
 });

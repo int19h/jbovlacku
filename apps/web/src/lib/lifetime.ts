@@ -9,7 +9,8 @@
  * and leaves between two checks is released too. A page that builds a
  * control and then waits for data before it appends the control passes its
  * render signal, so navigation away releases the subscription even when the
- * control never joins the document.
+ * control never joins the document. The observer starts at the first
+ * registration, before the caller can append its node.
  */
 interface Entry {
   cleanups: (() => void)[];
@@ -60,10 +61,9 @@ export function onDisconnect(
   entries.set(node, entry);
   signal?.addEventListener("abort", () => release(node), { once: true });
   if (!observer) {
+    // Observation starts now, before the caller can append the node, so a
+    // node that joins and leaves before the next task is still seen.
     observer = new MutationObserver(check);
-    // The node is usually appended after this call. Observe from the next task.
-    queueMicrotask(() =>
-      observer?.observe(document.body, { childList: true, subtree: true }),
-    );
+    observer.observe(document.body, { childList: true, subtree: true });
   }
 }
