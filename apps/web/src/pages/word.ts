@@ -320,7 +320,7 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
   if (unknownProfile)
     main.append(
       p(
-        `Scores and order from the calculation profile ${view.calculation!.algorithm} are not shown, because this client does not know its route rule. Definitions appear in event order.`,
+        `Scores and order from the calculation profile ${view.calculation!.algorithm} are not shown. This client does not know its route rule. Definitions appear in event order.`,
         "small",
       ),
     );

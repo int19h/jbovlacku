@@ -58,7 +58,7 @@ export function previewProfile(
   if (view?.body) return { profile: view.body.calculation, loadError: null };
   return {
     profile: null,
-    loadError: view?.error ?? "The signed view in use could not be loaded.",
+    loadError: view?.error ?? "The signed view in use did not load.",
   };
 }
 function shunRuleText(source: PreviewProfile): string {

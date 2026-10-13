@@ -368,7 +368,7 @@ test("an unknown profile or a resource failure leaves scores unavailable without
     );
   expect(shownOrder).toEqual(eventOrder);
   await expect(page.locator("main")).toContainText(
-    "Scores and order from the calculation profile simple-routes-future-v9 are not shown, because this client does not know its route rule. Definitions appear in event order.",
+    "Scores and order from the calculation profile simple-routes-future-v9 are not shown. This client does not know its route rule. Definitions appear in event order.",
   );
   await expect(page.locator("main")).not.toContainText(
     "No ranking position is available",
