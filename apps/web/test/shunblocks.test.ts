@@ -498,7 +498,8 @@ test("Make public and Undo on the Trust page say when delivery is not finished, 
   await expect(shellStatus(page)).toContainText(
     "A private Ignore stays until you remove it.",
   );
-  expect(await outboxStates(page)).toEqual(["accepted", "unknown"]);
+  // The outbox lists records by ID, so the states are compared as a set.
+  expect((await outboxStates(page)).sort()).toEqual(["accepted", "unknown"]);
   await retryDelivery(page, ["accepted", "accepted"]);
   // Control: an accepted delivery says that others can build on it.
   await page.goto("/trust");
