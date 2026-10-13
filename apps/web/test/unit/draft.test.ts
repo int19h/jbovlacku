@@ -1337,3 +1337,58 @@ test("a revision of an imported parent that already carries the rights reference
   });
   assert.deepEqual(body!.sources[2], LENSISKU_RIGHTS_REFERENCE);
 });
+
+test("a place above 20 keeps one literal form through removal and mode changes", () => {
+  const draft = newDraft({
+    spelling: "broda",
+    kind: "gismu",
+    text: "{place 21} and ① with `{place 21}` and [[cukta|{place 21}]]",
+    frameMode: "context",
+    places: [newPlace(1), newPlace(21)],
+    numberingApproved: true,
+  });
+  assert.deepEqual(draft.text, [
+    [
+      21,
+      " and ",
+      1,
+      " with ",
+      { code: "{place 21}" },
+      " and ",
+      { word: { language: "jbo", spelling: "cukta" }, label: "{place 21}" },
+    ],
+  ]);
+  // Literal mode: the reference becomes the explicit notation as text, and the editor escapes it.
+  switchMode(draft, false);
+  assert.deepEqual(draft.text, [
+    [
+      "{place 21} and ① with ",
+      { code: "{place 21}" },
+      " and ",
+      { word: { language: "jbo", spelling: "cukta" }, label: "{place 21}" },
+    ],
+  ]);
+  assert.equal(
+    editorText(draft.text, false),
+    "{place 21} and ① with {place 21} and {place 21}",
+  );
+  // Structured mode reads the notation back as a reference.
+  switchMode(draft, true);
+  assert.deepEqual(draft.text[0][0], 21);
+  assert.equal(
+    editorText(draft.text, true),
+    "{place 21} and ① with `{place 21}` and [[cukta|{place 21}]]",
+  );
+  // Removal of place 21 makes its reference literal in the same form.
+  draft.places.splice(1, 1);
+  rewriteReferences(draft, (n) => (n === 21 ? "literal" : n));
+  assert.deepEqual(draft.text[0].slice(0, 3), ["{place 21} and ", 1, " with "]);
+  assert.equal(
+    editorText(draft.text, true),
+    "\\{place 21} and ① with `{place 21}` and [[cukta|{place 21}]]",
+  );
+  assert.deepEqual(
+    editorToRichText(editorText(draft.text, true), true),
+    draft.text,
+  );
+});

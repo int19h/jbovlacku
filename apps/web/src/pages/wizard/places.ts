@@ -108,6 +108,7 @@ function insertAtCursor(input: HTMLTextAreaElement, value: string) {
 /** The complete type hint editor, for custom kinds. */
 function hintEditor(
   current: TypeHint | null,
+  structured: boolean,
   onChange: (hint: TypeHint | null) => void,
 ): HTMLElement {
   const box = el("div", { class: "sunk", style: "margin-top:8px" });
@@ -228,13 +229,17 @@ function hintEditor(
         );
       box.append(row);
     });
+    // The note follows the selected mode like every other rich field.
+    // A text area, so a note with paragraphs keeps its blank lines in the editor.
     const noteField = field("Type note", {
-      value: richTextToEditor(note),
+      multiline: true,
+      rows: 2,
+      value: editorText(note, structured),
       wrapperClass: "",
       placeholder: "optional",
     });
     noteField.input.addEventListener("input", () => {
-      note = editorToRichText(noteField.input.value, true);
+      note = editorToRichText(noteField.input.value, structured);
       emit();
     });
     box.append(
@@ -549,7 +554,7 @@ export async function placesPage(
       if (
         lost.length &&
         !confirm(
-          `Literal mode turns the place references in ${lost.join(", ")} into circled characters as text. Links and code stay. Continue?`,
+          `Literal mode turns the place references in ${lost.join(", ")} into circled characters as text, or into {place N} above 20. Links, code, and operands stay. Continue?`,
         )
       ) {
         structured.querySelector("input")!.checked = true;
@@ -798,10 +803,23 @@ export async function placesPage(
       idx.value = String(place.index);
       idx.addEventListener("change", () => {
         const previous = place.index;
-        place.index = Math.max(
+        const next = Math.max(
           1,
-          Math.min(65535, Number(idx.value) || place.index),
+          Math.min(65535, Number(idx.value) || previous),
         );
+        // A number another place holds is refused before anything changes,
+        // so two sets of references never merge.
+        const taken = draft.places.find(
+          (other) => other !== place && other.index === next,
+        );
+        if (taken) {
+          idx.value = String(previous);
+          app.announce(
+            `Place ${next} is already declared (${editorText(taken.description, draft.structured).trim() || "without a description"}). Give that place another number first.`,
+          );
+          return;
+        }
+        place.index = next;
         // References to this place follow its new number.
         if (place.index !== previous) {
           rewriteReferences(draft, (n) => (n === previous ? place.index : n));
@@ -856,10 +874,14 @@ export async function placesPage(
       customSlot.replaceChildren();
       if (place.kind === "custom")
         customSlot.append(
-          hintEditor(place.hint ?? hintForChoice("object"), (hint) => {
-            place.hint = hint;
-            saver.touch();
-          }),
+          hintEditor(
+            place.hint ?? hintForChoice("object"),
+            draft.structured,
+            (hint) => {
+              place.hint = hint;
+              saver.touch();
+            },
+          ),
         );
     };
     kind.input.addEventListener("change", () => {

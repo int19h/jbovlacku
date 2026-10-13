@@ -663,7 +663,14 @@ export function remapRich(
       let next: RichNode = node;
       if (typeof node === "number") {
         const target = map(node);
-        next = target === "literal" ? placeGlyph(node) : target;
+        // The literal text form of a place: the circled character, or the
+        // explicit notation above 20, which the editor escapes as `\{place N}`.
+        next =
+          target === "literal"
+            ? node <= 20
+              ? placeGlyph(node)
+              : `{place ${node}}`
+            : target;
       }
       const last = out[out.length - 1];
       if (typeof next === "string" && typeof last === "string")
@@ -699,16 +706,22 @@ export function literalLoss(draft: Draft): string[] {
     .filter((f) => referencedPlaces(f.get()).size > 0)
     .map((f) => f.label);
 }
-/** Reads the circled numerals inside text nodes as place references. Every other node stays. */
+/**
+ * Reads the place notation inside text nodes as place references: circled
+ * numerals, and `{place N}` above 20. Every other node stays.
+ */
 function structureStrings(value: RichText): RichText {
   return value.map((paragraph) =>
     paragraph.flatMap((node): RichNode[] => {
       if (typeof node !== "string") return [node];
       const out: RichNode[] = [];
-      for (const fragment of node.split(CIRCLED)) {
+      for (const fragment of node.split(/([①-⑳]|\{place \d{1,5}\})/u)) {
         if (!fragment) continue;
+        const explicit = fragment.match(/^\{place (\d{1,5})\}$/u);
         const code = fragment.codePointAt(0)! - 0x245f;
-        if (fragment.length === 1 && code >= 1 && code <= 20) out.push(code);
+        if (explicit) out.push(Number(explicit[1]));
+        else if (fragment.length === 1 && code >= 1 && code <= 20)
+          out.push(code);
         else out.push(fragment);
       }
       return out;

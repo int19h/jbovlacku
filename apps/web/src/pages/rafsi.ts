@@ -127,6 +127,8 @@ async function pairCard(
       reason: view.reason ?? undefined,
       calculation: view.calculation,
       large: true,
+      // The card joins the document after the claim records load.
+      signal: context.signal,
     };
     byline.append(
       judgmentControl(app, target, options),

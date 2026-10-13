@@ -335,3 +335,178 @@ test("changing only the name keeps a rich biography exact, and replacing it need
   });
   expect(last.bio).toEqual([["A plain biography now."]]);
 });
+
+test("a judgment control built before its card joins the page keeps its subscription, and navigation releases it", async ({
+  page,
+}) => {
+  const f = fixture();
+  await createIdentity(page);
+  await page.evaluate(async () => {
+    const { OwnState } = await import(String("/src/app/context.ts"));
+    const original = OwnState.prototype.subscribe;
+    (window as any).__ownListeners = 0;
+    OwnState.prototype.subscribe = function (listener: () => void) {
+      (window as any).__ownListeners++;
+      const unsubscribe = original.call(this, listener);
+      return () => {
+        (window as any).__ownListeners--;
+        return unsubscribe();
+      };
+    };
+  });
+  const listeners = () => page.evaluate(() => (window as any).__ownListeners);
+  await page.getByRole("link", { name: "About", exact: true }).click();
+  const baseline = await listeners();
+  // The claim record of the pair waits until the test releases it.
+  let release: (() => void) | null = null;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route(
+    `**/api/v1/events/${encodeURIComponent(f.claim)}*`,
+    async (route) => {
+      await held;
+      await route.continue();
+    },
+  );
+  const openRafsi = () =>
+    page.evaluate(() => {
+      const anchor = document.createElement("a");
+      anchor.href = "/rafsi/cku";
+      document.body.append(anchor);
+      anchor.click();
+      anchor.remove();
+    });
+  await openRafsi();
+  await expect(page).toHaveURL(/\/rafsi\/cku/);
+  // The waiting card's control exists and subscribed while the card is outside
+  // the document. Other tests can add words with this rafsi, whose cards
+  // attach before this one, so the count is at least one more than the baseline.
+  await expect.poll(listeners).toBeGreaterThanOrEqual(baseline + 1);
+  const during = await listeners();
+  // A DOM change during the wait must not release the subscription.
+  await page.evaluate(() => {
+    const probe = document.createElement("div");
+    document.body.append(probe);
+    probe.remove();
+  });
+  await page.waitForTimeout(200);
+  expect(await listeners()).toBe(during);
+  release!();
+  const card = page.getByRole("region", { name: "cku for cukta" });
+  await expect(card).toBeVisible();
+  // Other tests can add words with this rafsi, so one subscription per card is the rule.
+  const pairCards = await page.getByRole("region", { name: / for / }).count();
+  await expect.poll(listeners).toBe(baseline + pairCards);
+  // The attached control responds to a later own-state change.
+  await card.getByRole("button", { name: "Endorse" }).click();
+  await acceptFirstSignature(page);
+  await expect(card.getByRole("button", { name: "Endorse" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  // Navigation away releases the subscription.
+  await page.getByRole("link", { name: "About", exact: true }).click();
+  await expect.poll(listeners).toBe(baseline);
+  // A card cancelled before it joins the document releases its subscription too.
+  let releaseAgain: (() => void) | null = null;
+  const heldAgain = new Promise<void>((resolve) => {
+    releaseAgain = resolve;
+  });
+  await page.unroute(`**/api/v1/events/${encodeURIComponent(f.claim)}*`);
+  await page.route(
+    `**/api/v1/events/${encodeURIComponent(f.claim)}*`,
+    async (route) => {
+      await heldAgain;
+      await route.continue().catch(() => null);
+    },
+  );
+  await openRafsi();
+  await expect.poll(listeners).toBeGreaterThanOrEqual(baseline + 1);
+  await page.getByRole("link", { name: "About", exact: true }).click();
+  await expect.poll(listeners).toBe(baseline);
+  releaseAgain!();
+});
+
+test("the identity page says when the claim list or a claim body was cut by the response bounds", async ({
+  page,
+}) => {
+  const f = fixture();
+  const identity = f.identities.curator;
+  await page.route(
+    (url) =>
+      url.pathname === `/api/v1/identities/${encodeURIComponent(identity)}`,
+    async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      const claim = body.profile.claims[0] ?? {
+        event: "jve1:" + "1".repeat(64),
+        issuer: identity,
+        body_hash: null,
+        body: null,
+      };
+      body.profile = {
+        state: "conflicted",
+        claims: [
+          { ...claim, body_status: "present" },
+          {
+            ...claim,
+            event: "jve1:" + "2".repeat(64),
+            body: null,
+            body_status: "omitted",
+          },
+          {
+            ...claim,
+            event: "jve1:" + "3".repeat(64),
+            body: null,
+            body_status: "unavailable",
+          },
+        ],
+        claims_count: 20,
+        claims_complete: false,
+      };
+      await route.fulfill({ response, json: body });
+    },
+  );
+  await page.goto(`/identity/${encodeURIComponent(identity)}`);
+  const main = page.locator("main");
+  await expect(main).toContainText(
+    "This response holds 3 of 20 concurrent profile claims, or left out a claim body, within its size bounds.",
+  );
+  await expect(main).toContainText(
+    "body omitted by this response for size; open the record",
+  );
+  await expect(main).toContainText("body unavailable on this server");
+  // The unavailable state names the omitted body as an omission, not as a server gap.
+  await page.unroute(
+    (url) =>
+      url.pathname === `/api/v1/identities/${encodeURIComponent(identity)}`,
+  );
+  await page.route(
+    (url) =>
+      url.pathname === `/api/v1/identities/${encodeURIComponent(identity)}`,
+    async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      body.profile = {
+        state: "unavailable",
+        claims: [
+          {
+            event: "jve1:" + "4".repeat(64),
+            issuer: identity,
+            body_hash: null,
+            body: null,
+            body_status: "omitted",
+          },
+        ],
+        claims_count: 1,
+        claims_complete: false,
+      };
+      await route.fulfill({ response, json: body });
+    },
+  );
+  await page.goto(`/identity/${encodeURIComponent(identity)}`);
+  await expect(main).toContainText(
+    "The newest profile claim's body was omitted by this response for size",
+  );
+});

@@ -44,6 +44,8 @@ export interface JudgmentOptions {
   calculation?: Calculation | null;
   /** Large control for the word page. */
   large?: boolean;
+  /** The render scope, for a control built before it joins the document. */
+  signal?: AbortSignal;
   /** Called after a judgment is signed and the first delivery attempt finished. */
   onChange?: () => void;
 }
@@ -190,6 +192,7 @@ export function judgmentControl(
   onDisconnect(
     wrapper,
     app.own.subscribe(() => void applyOwn()),
+    options.signal,
   );
   const act = (arrow: "bless" | "curse") => async () => {
     const pressed =

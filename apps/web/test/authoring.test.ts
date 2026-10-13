@@ -2351,3 +2351,134 @@ test("a core-only rule shows its exact reason on the publish page and keeps Publ
   ).toBeDisabled();
   await expect(page.getByRole("dialog")).toHaveCount(0);
 });
+
+test("a place number that another place holds is refused before anything changes, and a free number moves the references", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { newDraft, newPlace } = await import(String("/src/model/draft.ts"));
+    await new LocalStore().put(
+      "drafts",
+      "current",
+      newDraft({
+        spelling: "brodku",
+        kind: "gismu",
+        text: "① gives ② away.",
+        frameMode: "context",
+        places: [
+          { ...newPlace(1), description: "the giver" },
+          { ...newPlace(2), description: "the gift" },
+        ],
+        numberingApproved: true,
+      }),
+    );
+  });
+  await page.goto("/new/places");
+  const editor = page.getByRole("textbox", { name: "Definition text" });
+  const stored = () =>
+    page.evaluate(async () => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const d = await new LocalStore().get("drafts", "current");
+      return {
+        text: d.text,
+        places: d.places.map((p: any) => [p.index, p.description]),
+      };
+    });
+  const before = await stored();
+  // Place 1 cannot take number 2 while place 2 holds it.
+  const first = page.getByRole("spinbutton", {
+    name: "Place number 1",
+    exact: true,
+  });
+  await first.fill("2");
+  await first.press("Tab");
+  await expect(page.getByRole("status").last()).toContainText(
+    "Place 2 is already declared (the gift). Give that place another number first.",
+  );
+  await expect(first).toHaveValue("1");
+  await expect(editor).toHaveValue("① gives ② away.");
+  await expect(page.getByLabel("Description for place 1")).toHaveValue(
+    "the giver",
+  );
+  await expect(page.getByLabel("Description for place 2")).toHaveValue(
+    "the gift",
+  );
+  await page.waitForTimeout(600);
+  expect(await stored()).toEqual(before);
+  // A free number moves place 1 and its references, and the other place stays.
+  await first.fill("3");
+  await first.press("Tab");
+  await expect(editor).toHaveValue("③ gives ② away.");
+  await expect(page.getByLabel("Description for place 2")).toHaveValue(
+    "the gift",
+  );
+  await expect(page.getByLabel("Description for place 3")).toHaveValue(
+    "the giver",
+  );
+  await expect
+    .poll(async () => (await stored()).text)
+    .toEqual([[3, " gives ", 2, " away."]]);
+  expect((await stored()).places).toEqual([
+    [2, [["the gift"]]],
+    [3, [["the giver"]]],
+  ]);
+});
+
+test("a type note follows the selected mode and keeps an unchanged rich note through a mode change", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { newDraft, newPlace } = await import(String("/src/model/draft.ts"));
+    await new LocalStore().put(
+      "drafts",
+      "current",
+      newDraft({
+        spelling: "brodno",
+        kind: "gismu",
+        text: "① is noted.",
+        frameMode: "fixed",
+        places: [
+          {
+            ...newPlace(1),
+            kind: "custom",
+            hint: {
+              alternatives: [
+                { tags: ["entity"], abstractor: null, relation_arity: null },
+              ],
+              note: [[{ code: "keep\n\nthis" }, " and ", 1]],
+            },
+          },
+        ],
+        numberingApproved: true,
+      }),
+    );
+  });
+  await page.goto("/new/places");
+  const stored = () =>
+    page.evaluate(async () => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      return (await new LocalStore().get("drafts", "current")).places[0].hint
+        .note;
+    });
+  const note = page.getByLabel("Type note");
+  await expect(note).toHaveValue("`keep\n\nthis` and ①");
+  // Literal mode: the reference in the note becomes a circled character, and the code node stays.
+  page.once("dialog", (dialog) => void dialog.accept());
+  await page.getByLabel("Read circled numbers as place references").uncheck();
+  await expect.poll(stored).toEqual([[{ code: "keep\n\nthis" }, " and ①"]]);
+  await expect(page.getByLabel("Type note")).toHaveValue("keep\n\nthis and ①");
+  // Back to structured mode: the circled character is a reference again, and the code node is still exact.
+  await page.getByLabel("Read circled numbers as place references").check();
+  await expect.poll(stored).toEqual([[{ code: "keep\n\nthis" }, " and ", 1]]);
+  // An edit in literal mode parses as literal text.
+  page.once("dialog", (dialog) => void dialog.accept());
+  await page.getByLabel("Read circled numbers as place references").uncheck();
+  await page.getByLabel("Type note").fill("plain ① note");
+  await expect.poll(stored).toEqual([["plain ① note"]]);
+  await page.getByLabel("Read circled numbers as place references").check();
+  await expect.poll(stored).toEqual([["plain ", 1, " note"]]);
+});

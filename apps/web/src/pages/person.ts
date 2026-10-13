@@ -73,12 +73,28 @@ export async function personPage(
     );
   else {
     const profile = response.profile;
+    // The server bounds the claim list and its bodies. The page says what this response left out.
+    if (profile.claims_complete === false)
+      main.append(
+        p(
+          `This response holds ${profile.claims.length} of ${profile.claims_count ?? "an unknown number of"} concurrent profile claims, or left out a claim body, within its size bounds. Open each claim record for the rest.`,
+          "notice",
+        ),
+      );
+    const bodyNote = (claim: { body_status?: string; body: unknown }) =>
+      claim.body
+        ? null
+        : claim.body_status === "omitted"
+          ? "body omitted by this response for size; open the record"
+          : "body unavailable on this server";
     if (profile.state === "none")
       main.append(p("No signed profile claim is known for this key.", "small"));
     else if (profile.state === "unavailable")
       main.append(
         p(
-          "The newest profile claim's body is unavailable, so no earlier profile is shown as current.",
+          profile.claims[0]?.body_status === "omitted"
+            ? "The newest profile claim's body was omitted by this response for size, so no earlier profile is shown as current. Open the claim record to read it."
+            : "The newest profile claim's body is unavailable on this server, so no earlier profile is shown as current.",
           "notice",
         ),
       );
@@ -94,7 +110,13 @@ export async function personPage(
           el(
             "div",
             { class: "card small", style: "margin-top:8px" },
-            el("p", {}, el("bdi", { text: claim.body?.name ?? "unavailable" })),
+            el(
+              "p",
+              {},
+              el("bdi", {
+                text: claim.body?.name ?? bodyNote(claim) ?? "unavailable",
+              }),
+            ),
             claim.body
               ? renderRichText(claim.body.bio, { placeHref: null })
               : null,
