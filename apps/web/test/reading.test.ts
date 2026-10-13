@@ -1188,3 +1188,117 @@ test("a focus move to the header field without key or pointer events is kept, wh
   await page.getByRole("link", { name: "Settings" }).click();
   await expect(heading).toBeFocused();
 });
+
+test("a scrolling key on the activating footer link that stays focused during the load does not keep the focus there, so the finished Trust page focuses its heading", async ({
+  page,
+}) => {
+  const heading = page.locator("main h1");
+  const trustLink = page.locator("footer").getByRole("link", {
+    name: "Trust: site view",
+  });
+  const probe = "**/api/v1/words/jvw1%3A0000*";
+  // Each pass starts from a fresh page load, so no probe answer is cached,
+  // holds the Trust page's view probe, and activates the footer link.
+  for (const pass of [
+    { activate: "Enter", key: null },
+    { activate: "Enter", key: "ArrowDown" },
+    { activate: "Enter", key: "PageDown" },
+    { activate: "Enter", key: "Space" },
+    { activate: "click", key: "ArrowDown" },
+  ] as const) {
+    await page.goto("/");
+    await expect(trustLink).toBeVisible();
+    let release = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    await page.route(probe, async (route) => {
+      await held;
+      await route.continue();
+    });
+    if (pass.activate === "click") await trustLink.click();
+    else {
+      await trustLink.focus();
+      await page.keyboard.press("Enter");
+    }
+    await expect(page).toHaveURL(/\/trust$/);
+    await expect(
+      page.getByRole("radio", { name: "Site view only" }),
+    ).toBeVisible();
+    await expect(page.locator("main")).not.toContainText("Calculation profile");
+    // The link stays on the page and keeps the focus while the request waits.
+    await expect(trustLink).toBeFocused();
+    if (pass.key) await page.keyboard.press(pass.key);
+    await expect(trustLink).toBeFocused();
+    release();
+    await expect(page.locator("main")).toContainText("Calculation profile");
+    await expect(heading).toHaveText("Trust");
+    await expect(heading).toBeFocused();
+    await page.unroute(probe);
+  }
+});
+
+test("caret movement, selection, and a pointer action in the already focused search field keep the focus there during a held search, while a search without later interaction focuses the results heading", async ({
+  page,
+}) => {
+  const field = page.getByLabel("Search words and meanings");
+  const heading = page.locator("main h1");
+  const search = "**/api/v1/search?**";
+  /** Submits the field's query with Enter while the search request waits. */
+  const heldSearch = async (query: string) => {
+    let release = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    await page.route(search, async (route) => {
+      await held;
+      await route.continue();
+    });
+    await field.fill(query);
+    await field.press("Enter");
+    await expect(page).toHaveURL(new RegExp(`/search\\?q=${query}&lang=en$`));
+    await expect(field).toBeFocused();
+    return async () => {
+      release();
+      await expect(
+        page
+          .getByRole("region", { name: "Search results" })
+          .locator("article")
+          .first(),
+      ).toBeVisible();
+      await page.unroute(search);
+    };
+  };
+  const caret = () =>
+    page.evaluate(() => {
+      const input = document.getElementById("q") as HTMLInputElement;
+      return [input.selectionStart, input.selectionEnd];
+    });
+  await page.goto("/about");
+  await expect(heading).toHaveText(/./);
+  // Control: no interaction after Enter. The results heading gets the focus.
+  let finish = await heldSearch("cukta");
+  await finish();
+  await expect(heading).toBeFocused();
+  // Caret movement in the focused field keeps the focus and the caret.
+  finish = await heldSearch("cukta");
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("ArrowLeft");
+  expect(await caret()).toEqual([3, 3]);
+  await finish();
+  await expect(field).toBeFocused();
+  await expect(heading).not.toBeFocused();
+  expect(await caret()).toEqual([3, 3]);
+  await expect(field).toHaveValue("cukta");
+  // A selection in the focused field keeps the focus and the selection.
+  finish = await heldSearch("vlacku");
+  await page.keyboard.press("Shift+Home");
+  expect(await caret()).toEqual([0, 6]);
+  await finish();
+  await expect(field).toBeFocused();
+  await expect(heading).not.toBeFocused();
+  expect(await caret()).toEqual([0, 6]);
+  // A pointer action in the field that already has the focus keeps it.
+  finish = await heldSearch("cukta");
+  await field.click();
+  await finish();
+  await expect(field).toBeFocused();
+  await expect(heading).not.toBeFocused();
+  await expect(field).toHaveValue("cukta");
+});
