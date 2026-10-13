@@ -187,10 +187,12 @@ fn equal_positive_graphs_different_language_refusals_do_not_reuse_weights() {
     let result = f.rank("scoped-refusals");
     exact_net(&result, &en, "0", "1");
     exact_net(&result, &fr, "3", "4");
+    assert_eq!(result["calculation"]["completed"], 6);
     f.view("simple-routes-bounds-v1", &[1], 1000);
     let result = f.rank("scoped-refusals-old");
     exact_net(&result, &en, "3", "4");
     exact_net(&result, &fr, "3", "4");
+    assert_eq!(result["calculation"]["completed"], 3);
 }
 
 #[test]
@@ -259,4 +261,49 @@ fn unknown_view_profile_never_falls_back_to_invented_scores() {
     assert!(result["calculation"].is_null());
     assert!(result["scores"].as_array().unwrap().is_empty());
     assert_eq!(result["unavailable_scores"], json!([target]));
+}
+
+#[test]
+fn old_profile_keeps_shared_weight_grouping_work_and_correlated_comparisons() {
+    let mut f = Fixture::new();
+    let en = f.definition("en");
+    let fr = f.definition("fr");
+    for (from, to) in [(1, 2), (1, 4), (2, 3), (3, 4)] {
+        f.trust(from, to, "heed", "*");
+    }
+    f.bless(1, &en);
+    f.bless(4, &en);
+    f.bless(4, &fr);
+    f.view("simple-routes-bounds-v1", &[1], 1);
+    let baseline = f.rank("legacy-partial-before-refusal");
+    assert_eq!(baseline["calculation"]["completed"], 0);
+    assert_eq!(baseline["calculation"]["exact"], false);
+    assert_eq!(baseline["layers"], json!([[en], [fr]]));
+    let a = score(&baseline, &en);
+    let b = score(&baseline, &fr);
+    // Separate score intervals overlap. Shared actor uncertainty must cancel.
+    assert_eq!(a["net"][0]["numerator"], "1");
+    assert!(
+        b["net"][1]["numerator"]
+            .as_str()
+            .unwrap()
+            .parse::<u128>()
+            .unwrap()
+            > b["net"][1]["denominator"]
+                .as_str()
+                .unwrap()
+                .parse::<u128>()
+                .unwrap()
+    );
+    f.trust(2, 4, "shun", "en");
+    let old = f.rank("legacy-partial-with-refusal");
+    assert_eq!(old, baseline);
+    let details = f.reviewers();
+    assert_eq!(score(&details, &en)["direct_reviewers"], 2);
+    assert_eq!(score(&details, &fr)["direct_reviewers"], 1);
+    f.view("simple-routes-shun-v1", &[1], 1);
+    let new = f.rank("new-partial-distinct-refusals");
+    let mut unresolved = vec![en, fr];
+    unresolved.sort();
+    assert_eq!(new["layers"], json!([unresolved]));
 }

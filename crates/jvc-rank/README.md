@@ -14,14 +14,15 @@ It also zeroes blocked actors' own allowances and outgoing rows.
 Missing identity or eligibility data must produce an unavailable state in the caller.
 
 `Graph::new` rejects self edges, duplicate destinations, nonpositive shares, and rows whose shares exceed one.
-It selects `Profile::BoundsV1` and supplies empty refusal lists.
+It selects `Profile::BoundsV1` and supplies an empty refusal relation without allocating target lists.
 `Graph::with_refusals` accepts an explicit profile and resolved refusal lists.
 Each target lists the actors whose effective shuns forbid entry.
 The constructor sorts these lists and rejects duplicates or invalid actors.
 Under `Profile::ShunV1`, a route cannot enter a target that any earlier actor on that route shuns.
 The rejected route supplies neither judgment weight nor onward mass. Its share disappears without redistribution.
 The target's own allowance, prior credit, and independent permitted routes remain eligible.
-`Profile::BoundsV1` ignores route refusals and preserves the old expansion rule.
+`Profile::BoundsV1` discards supplied route refusals and preserves the old expansion rule.
+It keeps the existing direct-edge resolution in the state layer.
 `normalize_row` accepts distinct resolved destinations and positive weights.
 It divides weights by the larger of their sum and one.
 It then removes blocked destinations without enlarging surviving shares.
@@ -63,6 +64,7 @@ The caller retains unavailable candidates outside these layers with their visibl
 The work budget ranges from one through ten million.
 It limits expansion attempts, not matrix work or memory.
 The default resource limits appear below.
+The two refusal limits apply only to `Profile::ShunV1`.
 A limit error makes the requested result unavailable.
 It never returns a completed score with an uncertified partial upper endpoint.
 `Graph::with_limits`, `score_with_limits`, and `difference_with_limits` accept explicit replacement limits.
@@ -87,7 +89,9 @@ Refusal membership tests iterate the shorter of the visited set and the target's
 Each element searched in the other sorted list counts as one test. Empty target lists require no tests.
 The test count accumulates across committed stages and resumed work.
 A failed stage leaves that count unchanged along with the lower totals and frontier.
-Graph reuse must also match the selected profile and effective refusal relation.
+Graph reuse must match the selected profile.
+For `Profile::ShunV1`, it must also match the effective refusal relation.
+For `Profile::BoundsV1`, ignored refusal data must not divide otherwise identical weighted graphs.
 The library does not install an operating-system memory or CPU deadline.
 The caller must bound input construction before it allocates an oversized graph.
 

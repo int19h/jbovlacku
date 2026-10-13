@@ -22,6 +22,7 @@ pub struct ContextGraph {
     pub roots: Vec<Rational>,
     pub rows: Vec<Vec<PositiveEdge>>,
     /// Each target lists the resolved actors who effectively shun it.
+    /// The old profile uses an empty relation.
     pub refusals: Vec<Vec<usize>>,
     pub blocked: BTreeSet<usize>,
     pub judgments: BTreeMap<String, BTreeMap<String, Judgment>>,
@@ -285,7 +286,12 @@ fn evaluate_context_with_limit(
         .map(|(i, a)| (a.clone(), i))
         .collect();
     let mut rows = vec![Vec::new(); actors.len()];
-    let mut refusals = vec![Vec::new(); actors.len()];
+    let route_refusals = calculation == "simple-routes-shun-v1";
+    let mut refusals = if route_refusals {
+        vec![Vec::new(); actors.len()]
+    } else {
+        Vec::new()
+    };
     let mut refusal_count = 0;
     let mut reasons = evaluation.reasons.clone();
     let mut available = evaluation.available && evaluation.policy.is_some();
@@ -295,7 +301,7 @@ fn evaluate_context_with_limit(
             .iter()
             .filter(|r| !rules.iter().any(|other| narrower(&other.scope, &r.scope)))
             .collect();
-        if retained.iter().any(|rule| rule.values.contains("shun")) {
+        if route_refusals && retained.iter().any(|rule| rule.values.contains("shun")) {
             if refusal_count == max_refusals {
                 reasons.insert("resource_unavailable".into());
                 available = false;
@@ -536,6 +542,13 @@ mod tests {
         assert!(!refused.available);
         assert!(refused.reasons.contains("resource_unavailable"));
         assert_eq!(refused.refusals.iter().map(Vec::len).sum::<usize>(), 1);
+        evaluation.policy.as_mut().unwrap()["calculation"] = json!("simple-routes-bounds-v1");
+        let old = evaluate_context_with_limit(&evaluation, &context, 0);
+        assert!(old.available);
+        assert!(old.refusals.is_empty());
+        assert_eq!(old.refusals.capacity(), 0);
+        assert!(old.rows.iter().all(Vec::is_empty));
+        assert!(!old.reasons.contains("resource_unavailable"));
         assert_eq!(MAX_CONTEXT_REFUSALS, 100_000);
     }
 }

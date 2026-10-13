@@ -65,6 +65,7 @@ pub struct Graph {
     pub q: Vec<Rational>,
     pub rows: Vec<Vec<Edge>>,
     /// Each target lists the earlier actors whose effective shuns forbid entry.
+    /// The old profile uses an empty relation.
     pub refusals: Vec<Vec<usize>>,
 }
 impl Graph {
@@ -85,8 +86,7 @@ impl Graph {
         if actors.len() > limits.max_actors {
             return Err(RankError::ResourceLimit("actors"));
         }
-        let refusals = vec![Vec::new(); actors.len()];
-        Self::with_refusals(Profile::BoundsV1, actors, q, rows, refusals, limits)
+        Self::with_refusals(Profile::BoundsV1, actors, q, rows, Vec::new(), limits)
     }
     pub fn with_refusals(
         profile: Profile,
@@ -103,7 +103,12 @@ impl Graph {
         if rows.iter().map(Vec::len).sum::<usize>() > limits.max_edges {
             return Err(RankError::ResourceLimit("edges"));
         }
-        if refusals.iter().map(Vec::len).sum::<usize>() > limits.max_refusals {
+        if profile == Profile::BoundsV1 {
+            refusals = Vec::new();
+        }
+        if profile == Profile::ShunV1
+            && refusals.iter().map(Vec::len).sum::<usize>() > limits.max_refusals
+        {
             return Err(RankError::ResourceLimit("refusals"));
         }
         let mut arithmetic_bits = 0;
@@ -113,7 +118,7 @@ impl Graph {
         {
             check(value, limits, &mut arithmetic_bits)?;
         }
-        if q.len() != n || rows.len() != n || refusals.len() != n {
+        if q.len() != n || rows.len() != n || (profile == Profile::ShunV1 && refusals.len() != n) {
             return Err(RankError::InvalidGraph("graph dimensions differ".into()));
         }
         if actors.iter().collect::<BTreeSet<_>>().len() != n {
@@ -344,7 +349,9 @@ impl<'a> Ranker<'a> {
         if graph.rows.iter().map(Vec::len).sum::<usize>() > limits.max_edges {
             return Err(RankError::ResourceLimit("edges"));
         }
-        if graph.refusals.iter().map(Vec::len).sum::<usize>() > limits.max_refusals {
+        if graph.profile == Profile::ShunV1
+            && graph.refusals.iter().map(Vec::len).sum::<usize>() > limits.max_refusals
+        {
             return Err(RankError::ResourceLimit("refusals"));
         }
         let mut max_bits = 0;
@@ -361,10 +368,14 @@ impl<'a> Ranker<'a> {
             graph.actors.clone(),
             graph.q.clone(),
             graph.rows.clone(),
-            graph.refusals.clone(),
+            if graph.profile == Profile::ShunV1 {
+                graph.refusals.clone()
+            } else {
+                Vec::new()
+            },
             &limits,
         )?;
-        if graph.refusals != validated.refusals {
+        if graph.profile == Profile::ShunV1 && graph.refusals != validated.refusals {
             return Err(RankError::InvalidGraph(
                 "refusal lists must be sorted".into(),
             ));

@@ -783,6 +783,7 @@ Incomparable scopes can therefore conflict. A narrow clear falls back to a broad
 
 A public shun prevents its issuer's direct edge in both supported profiles.
 The `simple-routes-bounds-v1` profile applies no further route refusal.
+It stores no route-refusal relation and ignores that data when grouping calculations or comparing candidates.
 The `simple-routes-shun-v1` profile also prevents entry to a target that any earlier actor on that route effectively shuns.
 Resolve scope specificity and identity continuity before constructing these refusals.
 Any retained value set that contains `shun` creates a refusal, including a conflict that contains `shun`.
@@ -906,7 +907,7 @@ Do not rewrite an existing view publication or reinterpret its selected profile.
 The expansion budget does not bound graph construction, memory, rational sizes, or matrix work.
 A server can return a resource-limit error. It cannot label uncertified partial numbers as final scores.
 
-The reference implementation stores at most 100,000 effective refusal pairs in sorted lists indexed by target.
+For `simple-routes-shun-v1`, the reference implementation stores at most 100,000 effective refusal pairs in sorted lists indexed by target.
 For each permitted non-repeat attempt, it searches for a common actor between the visited set and the target's refusal list.
 It iterates the shorter list and searches the other sorted list.
 Each searched element counts as one refusal test. An empty target list requires no tests.
@@ -914,6 +915,8 @@ The limit is 10,000,000 refusal tests across committed stages of one calculation
 No separate exclusion set is copied into each prefix.
 If a refusal limit fails, the implementation returns a resource failure without committing the partial stage.
 These limits bound resources. They do not change signature validity.
+These two refusal limits do not apply to `simple-routes-bounds-v1`.
+Public shuns retain their direct-edge effect under that profile.
 
 For signed judgments, add blessing intervals and subtract curse intervals in the opposite endpoint order.
 If support is `[b0,b1]` and opposition is `[c0,c1]`, net support is `[b0-c1,b1-c0]`.
@@ -937,7 +940,9 @@ Within a layer, use full event ID order for stable presentation. Label this as p
 The client offers more computation and exposes the intervals.
 
 A resumable calculation retains its complete-stage prefixes and lower totals. It never resumes by treating upper-bound contributions as exact credit. It never silently substitutes a hop limit or random estimate.
-Graph comparison, cached weights, and retained prefixes must use the same profile and effective refusal relation.
+Graph comparison, cached weights, and retained prefixes must use the same profile.
+Under `simple-routes-shun-v1`, they must also use the same effective refusal relation.
+Under `simple-routes-bounds-v1`, ignored refusal data must not divide otherwise identical weighted graphs.
 Identical visited sets and endpoints still merge because they imply identical accumulated refusals within that graph.
 
 An effective reviewer with zero influence remains a direct reviewer. It does not become an absence of judgments.

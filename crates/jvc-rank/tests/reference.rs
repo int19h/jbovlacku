@@ -624,6 +624,9 @@ fn coprime_row_denominators_grow_exactly_or_return_a_resource_error() {
 
 fn shun_graph(mut graph: Graph, pairs: &[(usize, usize)], profile: Profile) -> Graph {
     graph.profile = profile;
+    if graph.refusals.is_empty() {
+        graph.refusals = vec![Vec::new(); graph.actors.len()];
+    }
     for &(issuer, target) in pairs {
         graph.refusals[target].push(issuer);
     }
@@ -971,6 +974,8 @@ fn graph_refusal_validation_rejects_invalid_dimensions_ids_and_duplicates() {
         .is_err());
     }
     let mut mutated = graph(&[1, 0, 0], &[&[(1, 1, 1)], &[], &[]]);
+    mutated.profile = Profile::ShunV1;
+    mutated.refusals = vec![Vec::new(); 3];
     mutated.refusals[2] = vec![1, 0];
     assert!(Ranker::new(&mutated, rational(3, 1), rational(1, 2), Limits::default()).is_err());
     assert_eq!(Profile::from_name("unsupported"), None);
@@ -1021,6 +1026,51 @@ fn default_refusal_pair_ceiling_is_inclusive() {
             oversized.rows,
             oversized.refusals,
             &Limits::default()
+        ),
+        Err(RankError::ResourceLimit("refusals"))
+    ));
+}
+
+#[test]
+fn old_profile_ignores_refusal_storage_and_preserves_its_calculation() {
+    let base = graph(&[1, 0, 0], &[&[(1, 1, 1)], &[(2, 1, 1)], &[]]);
+    assert!(base.refusals.is_empty());
+    assert_eq!(base.refusals.capacity(), 0);
+    let limits = Limits {
+        max_refusals: 0,
+        max_refusal_tests: 0,
+        ..Limits::default()
+    };
+    let supplied = vec![vec![usize::MAX; 100_001]];
+    let old = Graph::with_refusals(
+        Profile::BoundsV1,
+        base.actors.clone(),
+        base.q.clone(),
+        base.rows.clone(),
+        supplied.clone(),
+        &limits,
+    )
+    .unwrap();
+    assert!(old.refusals.is_empty());
+    assert_eq!(old.refusals.capacity(), 0);
+    let mut mutated = old;
+    mutated.refusals = supplied;
+    for budget in [1, 1000] {
+        let expected = rank(&base, &params(budget), limits.clone()).unwrap();
+        let actual = rank(&mutated, &params(budget), limits.clone()).unwrap();
+        assert_eq!(actual.weights, expected.weights);
+        assert_eq!(actual.completed_work, expected.completed_work);
+        assert_eq!(actual.complete_stages, expected.complete_stages);
+        assert_eq!(actual.exact, expected.exact);
+    }
+    assert!(matches!(
+        Graph::with_refusals(
+            Profile::ShunV1,
+            base.actors,
+            base.q,
+            base.rows,
+            vec![vec![], vec![], vec![0]],
+            &limits
         ),
         Err(RankError::ResourceLimit("refusals"))
     ));

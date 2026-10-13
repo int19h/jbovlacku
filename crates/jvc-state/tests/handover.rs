@@ -1082,6 +1082,9 @@ fn narrow_clear_falls_back_and_incomparable_shun_blocks() {
     f.event(3,vec![],json!({"kind":"trust.set","subject":key(4),"scope":{"kind":"definition","word":"*","language":"en"},"value":"shun"}),None);
     let graph = jvc_state::evaluate_context(&evaluate_observed(&f.input), &context());
     assert!(graph.rows[i].is_empty());
+    assert!(graph.refusals.is_empty());
+    shun_policy(&mut f);
+    let graph = jvc_state::evaluate_context(&evaluate_observed(&f.input), &context());
     assert_eq!(refusal_pairs(&graph), vec![(key(3), key(4))]);
 }
 #[test]
@@ -1941,10 +1944,22 @@ fn refusal_pairs(graph: &jvc_state::ContextGraph) -> Vec<(String, String)> {
         })
         .collect()
 }
+fn shun_policy(f: &mut Fixture) {
+    let mut body: Value = serde_json::from_slice(&f.input.bodies[&f.input.selected_view]).unwrap();
+    body["calculation"] = json!("simple-routes-shun-v1");
+    let id = f.event(
+        20,
+        vec![],
+        json!({"kind":"view.publish","parents":[f.input.selected_view]}),
+        Some(body),
+    );
+    f.input.selected_view = id;
+}
 
 #[test]
 fn narrow_heed_overrides_broad_shun_and_narrow_clear_restores_it() {
     let mut f = Fixture::new();
+    shun_policy(&mut f);
     let broad = f.event(3, vec![], json!({"kind":"trust.set","subject":key(4),"scope":{"kind":"*","word":"*","language":"*"},"value":"shun"}), None);
     let narrow = f.event(3, vec![broad], json!({"kind":"trust.set","subject":key(4),"scope":{"kind":"definition","word":"*","language":"en"},"value":"heed"}), None);
     let graph = jvc_state::evaluate_context(&evaluate_observed(&f.input), &context());
@@ -1962,6 +1977,7 @@ fn narrow_heed_overrides_broad_shun_and_narrow_clear_restores_it() {
 #[test]
 fn retained_conflict_refuses_only_when_it_contains_shun() {
     let mut f = Fixture::new();
+    shun_policy(&mut f);
     for value in ["heed", "clear"] {
         f.event(3, vec![], json!({"kind":"trust.set","subject":key(4),"scope":{"kind":"*","word":"*","language":"*"},"value":value}), None);
     }
@@ -1976,6 +1992,7 @@ fn retained_conflict_refuses_only_when_it_contains_shun() {
 #[test]
 fn continuity_resolves_both_shun_ends_and_ignores_self_shuns() {
     let mut f = Fixture::new();
+    shun_policy(&mut f);
     let shun = f.event(3, vec![], json!({"kind":"trust.set","subject":key(6),"scope":{"kind":"*","word":"*","language":"*"},"value":"shun"}), None);
     let transfer = f.event(
         3,
@@ -2025,18 +2042,23 @@ fn equal_positive_graphs_keep_distinct_scoped_refusals_and_profiles() {
     assert_eq!(en.actors, fr.actors);
     assert_eq!(en.roots, fr.roots);
     assert_eq!(en.rows, fr.rows);
-    assert_ne!(en.refusals, fr.refusals);
+    assert!(en.refusals.is_empty());
+    assert!(fr.refusals.is_empty());
     assert_eq!(en.calculation, "simple-routes-bounds-v1");
-    let mut body: Value = serde_json::from_slice(&f.input.bodies[&f.input.selected_view]).unwrap();
-    body["calculation"] = json!("simple-routes-shun-v1");
-    let id = f.event(
-        20,
-        vec![],
-        json!({"kind":"view.publish","parents":[f.input.selected_view]}),
-        Some(body),
+    shun_policy(&mut f);
+    let evaluation = evaluate_observed(&f.input);
+    let new = jvc_state::evaluate_context(&evaluation, &context());
+    let new_fr = jvc_state::evaluate_context(
+        &evaluation,
+        &jvc_state::Context {
+            language: Some("fr".into()),
+            ..context()
+        },
     );
-    f.input.selected_view = id;
-    let new = jvc_state::evaluate_context(&evaluate_observed(&f.input), &context());
-    assert_eq!(new.refusals, en.refusals);
+    assert_ne!(new.refusals, new_fr.refusals);
+    assert_eq!(refusal_pairs(&new), vec![(key(3), key(4))]);
+    assert_eq!(new.actors, en.actors);
+    assert_eq!(new.roots, en.roots);
+    assert_eq!(new.rows, en.rows);
     assert_eq!(new.calculation, "simple-routes-shun-v1");
 }

@@ -421,10 +421,11 @@ fn rank_word_state(
             continue;
         }
         // Reuse weights only when the profile and the complete resolved graph match.
-        let graph_key = serde_json::to_string(
-            &json!({"calculation":contextual.calculation,"actors":contextual.actors,"roots":contextual.roots,"rows":contextual.rows,"refusals":contextual.refusals}),
-        )
-        .unwrap();
+        let mut graph_description = json!({"calculation":contextual.calculation,"actors":contextual.actors,"roots":contextual.roots,"rows":contextual.rows});
+        if profile == Some(jvc_rank::Profile::ShunV1) {
+            graph_description["refusals"] = json!(contextual.refusals);
+        }
+        let graph_key = serde_json::to_string(&graph_description).unwrap();
         if !graphs.contains_key(&graph_key) {
             let graph = jvc_rank::Graph::with_refusals(
                 profile.unwrap(),
