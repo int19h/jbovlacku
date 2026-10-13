@@ -213,6 +213,12 @@ The wizard exposes ordinary language and previews. The advanced editor exposes s
 Switching modes preserves every field. It never flattens structured values into prose or discards an unsupported annotation.
 An optional JSON inspector remains read-only until the user deliberately enters a raw-edit mode.
 
+The editor uses the [definition field defaults](format.md#absent-fields-and-compatibility) when it opens a publication or restores a draft.
+An omitted optional field produces its defined empty or unspecified value. The app never fills it from another definition or a parent revision.
+The raw inspector and source export preserve the authenticated body, including its original field presence.
+Before signing, the writer omits optional fields whose interpreted values equal their defaults unless explicit evidence rules require them.
+Receipt retries resend the exact stored record. They never add or remove fields from an already signed body.
+
 A reader can draft before generating an identity. Only publication requires the signing key.
 The step bar reads Meaning, Type, Form, Places, Publish.
 “Skip to the full editor” opens step 4 with every field section open.
@@ -391,7 +397,7 @@ Show the complete spelling, definition, place table, formation evidence, sources
 Signing requires valid structured references and schema fields. Linguistic disagreement alone does not make the record structurally invalid.
 The author can correct a typed reference or convert it to literal text after a preview.
 New native definitions use fixed `license.expression: "CC0-1.0"` and the official CC0 URL.
-Their fixed `license.attribution` is an empty string. The signed header issuer identifies the contributor.
+Their interpreted `license.attribution` is an empty string, so new bodies omit that field. The signed header issuer identifies the contributor.
 These license fields remain read-only. Imported author attribution stays in its separate source evidence and parent references.
 The notice reads: “New definitions use CC0 1.0. By publishing, you release your contribution under CC0 1.0.”
 Link “CC0 1.0” to https://creativecommons.org/publicdomain/zero/1.0/. The Publish action expresses agreement, without a separate checkbox.
@@ -429,7 +435,7 @@ Back navigation, mode changes, reloads, and failed provider calls preserve the d
 ## 6. Revisions, retirement, and rafsi
 
 “Revise” copies a publication into a new local draft with its exact parent ID.
-A reviewed revision uses native origin and legacy null. An imported parent keeps its original legacy evidence unchanged.
+A reviewed revision uses native origin and omits legacy. An imported parent keeps its original legacy evidence unchanged.
 The draft preserves attribution through source references to that imported publication and its source. It does not claim to be the original extraction.
 
 Anyone can propose a revision. The resulting card identifies its signer and whether accepted continuity connects that signer to the original author.
@@ -1432,5 +1438,7 @@ Release scenarios must cover these additional cases:
 15. Select valid optional `y`, `r`, and `n` hyphens under profiles that permit them, including forms with worse construction scores.
 16. Refuse missing required joins and invalid optional joins. Recover the intended components and joins from every accepted spelling.
 17. Preserve optional joins through publication and revision. Require review when a component change invalidates an explicit join choice.
+18. Read and revise definitions with omitted optional fields, including nested place and formation fields, without changing retained signed bodies.
+19. Keep explicit old records readable and preserve their IDs. Refuse invalid present values and missing required evidence.
 
 The [prototype plan](prototype-plan.md) defines implementation stages. The [handover cases](handover-cases.md) define required account-control outcomes.

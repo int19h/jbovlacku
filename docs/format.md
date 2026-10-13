@@ -40,7 +40,8 @@ Transport accepts mathematically integral decimal and exponent forms, such as `1
 Receivers must reject genuine fractions before binary64 rounding can turn them into integers. Stored JSON remains strictly canonical.
 
 Unknown fields are errors for version 1, except explicitly open legacy source objects and derived-profile parameters.
-Missing required fields and additional union variants are errors. An optional field has the exact absence or null rule stated below.
+Missing required fields and additional union variants are errors. Each optional field has the absence rule stated for its object.
+Section 7 defines omitted fields within definition bodies. It does not change the required fields of headers, actions, or other body types.
 
 Identifiers have these forms:
 
@@ -213,7 +214,8 @@ No IANA registry membership test applies. Registry changes must not change the v
 An importer retains unmapped legacy language codes separately. It never silently merges simplified English into English.
 Publication bodies must agree with their action's word and language.
 
-Origin is `native` or `import`. A native body has legacy null, while an imported body requires a legacy object.
+Origin is `native` or `import`. A native definition body omits legacy or sets it to null.
+A native rafsi body still requires explicit legacy null. An imported body requires a legacy object.
 Imported definitions permit import.status through accepted source-author links under section 11. An importer signature alone grants no withdrawal authority.
 Imported rafsi claims retain no author status control. Their word-level eligibility still follows the definition gate below.
 
@@ -367,29 +369,98 @@ Social endorsements can support a new key, but they never forge continuity with 
 
 ### Definition payload
 
-The following fields are required. Optional information uses null or an empty array, as specified.
+The following table lists the definition fields. Required fields have no default.
+For an optional field, the last column gives its meaning when absent. Explicit empty values remain valid wherever their stated type permits them.
 
-| Field | Type and meaning |
-| --- | --- |
-| `word` | Object with `language: "jbo"` and NFC `spelling`. |
-| `language` | Tag for this definition with well-formed BCP 47 syntax, lowercase ASCII, and at most 63 bytes. No registry membership test applies. |
-| `text` | Rich text, defined below. |
-| `frame` | Null, or the place frame below. |
-| `operands` | Array of grammatical operands. |
-| `glosses` | Array of gloss objects. |
-| `notes` | Rich text. |
-| `etymology` | Descriptive text and optional structured formation data. |
-| `examples` | Array of example objects. |
-| `classification` | Object with lexical kind and selmaho claims. |
-| `labels` | Array of text labels, without automatic ranking effects. |
-| `sources` | Array of source references. |
-| `license` | License expression and attribution, or explicit unknown for imports. |
-| `legacy` | Null, or the import provenance below. |
+| Field | Type and meaning | Presence or default |
+| --- | --- | --- |
+| `word` | Object with `language: "jbo"` and NFC `spelling`. | Required. |
+| `language` | Definition language with well-formed BCP 47 syntax, lowercase ASCII, and at most 63 bytes. No registry membership test applies. | Required. |
+| `text` | Rich text, defined below. | Required. |
+| `frame` | Null, or the place frame below. | `null`. |
+| `operands` | Array of grammatical operands. | `[]`. |
+| `glosses` | Array of gloss objects. | `[]`. |
+| `notes` | Rich text. | `[]`. |
+| `etymology` | Descriptive text and optional structured formation data. | `{"text":[],"formation":null,"compound":null}`. |
+| `examples` | Array of example objects. | `[]`. |
+| `classification` | Object with lexical kind and selmaho claims. | Required. |
+| `labels` | Array of text labels, without automatic ranking effects. | `[]`. |
+| `sources` | Array of source references. | `[]`, subject to source-rights requirements below. |
+| `license` | License expression and attribution, or explicit unknown for imports. | Required. |
+| `legacy` | Null, or the import provenance below. | `null` for native publications. Required for imports. |
 
 A lexical kind is an author's classification, not a morphology admission rule.
 The permitted labels are `gismu`, `cmavo`, `lujvo`, `fuivla`, `cmevla`, `compound`, `letteral`, and `other`.
 Experimental and obsolete status belongs in labels. Import mappings retain the original classification in legacy source fields.
 A selmaho is a Lojban grammatical class. Preserve its spelling, including experimental markers.
+
+### Absent fields and compatibility
+
+A field default is the meaning of an absent field. It does not add content to a signed record.
+Readers accept both an omitted optional field and its explicit default value.
+New writers omit optional fields whose interpreted values equal their defaults, unless another requirement needs explicit evidence.
+No default changes the meaning of a present value. A wrong type or invalid present value remains an error.
+In particular, `null` cannot replace an empty array or an object unless that field permits `null`.
+
+Readers authenticate the original body before they interpret absent fields.
+Stored bodies, exports, body hashes, byte counts, signatures, and event IDs always refer to the original canonical JSON.
+Readers apply defaults only to a separate interpreted value. They never replace retained content with that value.
+Two bodies with different field presence can have the same interpretation and different hashes.
+That equivalence never merges publications, transfers endorsements, or changes their exact IDs.
+
+Validation of references, uniqueness, and cross-field requirements uses the interpreted values.
+For example, two type alternatives that differ only by omitted defaults are duplicates.
+The rules never invent place declarations, source evidence, license consent, or algorithm parameters.
+An absent frame remains unspecified. A present fixed frame with count zero still means zero places.
+Each revision supplies a complete definition. An omitted field never inherits its parent's value.
+
+Every future optional field must define its absence meaning when introduced.
+That meaning must preserve the interpretation of records that predate the field.
+A later specification cannot silently change an existing default or make an old optional field mandatory.
+A change that cannot preserve those meanings needs an explicit format version with rules for earlier records.
+This policy lets newer readers handle older records. Unknown fields and unknown union variants still follow section 3.
+The absence policy does not make older readers understand new fields or permit them to discard unknown signed content.
+
+The following defaults apply only within definition content. They do not apply inside `legacy` or other imported source evidence.
+All fields absent from these tables remain required when their containing object exists.
+Object field lists elsewhere in this section name permitted fields. These tables determine which fields can be omitted.
+Removing a field from an object still must satisfy that object's other rules.
+
+| Object | Optional fields and their defaults |
+| --- | --- |
+| Classification | `selmaho: []`. |
+| Frame | `places: []`, `constraints: []`. `tail: null` only in fixed or context mode. |
+| Place | `glosses: []`, `description: []`, `type_hints: []`, `defaults: []`, `constraints: []`, `derivation: []`. |
+| Variadic tail | `description: []`, `type_hints: []`. |
+| Gloss | `sense: null`. |
+| Type hint | `note: []`. |
+| Type alternative | `tags: []`, `abstractor: null`, `relation_arity: null`. At least one must supply information. |
+| Place default | `condition: []`, `explanation: []`. |
+| Derivation | `definition: null`, `explanation: []`. |
+| Operand | `description: []`. |
+| Operand cardinality | `maximum: null`. |
+| Example | `translation: []`, `notes: []`. |
+| Source reference | `url: null`, `event: null`, `locator: null`. |
+| License | `url: null`, `attribution: ""`, subject to the contribution and source-rights rules below. |
+| Etymology | `text: []`, `formation: null`, `compound: null`. |
+| Formation | `algorithm: null`, `sources: []`, `weights_profile: null`, `generated: null`, `selected_score: null`, `selected_rank: null`, `selection_reason: []`, `candidates: []`, `conflicts: []`. |
+| Formation source | `input: null`, `weight: null`, `notes: []`. |
+| Formation algorithm | `implementation: null`. |
+| Weight profile | `name: null`, `source: null`. |
+| Formation candidate | `score: null`, `rank: null`. |
+| Compound | `score: null`, `notes: []`. |
+| Compound component | `definition: null`. |
+
+A variadic frame still requires a non-null tail and enough explicit place declarations for its minimum.
+A fixed frame still requires every place through its declared count.
+Each place still requires its index. Each type hint still requires at least one nonempty alternative.
+Arity modes and their counts remain explicit. A missing operand maximum means no finite upper bound, not zero.
+Word objects, inline rich-text nodes, and algorithm parameters retain all their required fields.
+An empty etymology object is valid. An empty formation object is invalid because its method is required.
+
+The [frontend specification](frontend.md#5-add-a-definition) applies these rules to drafts, revisions, and publication.
+The format still permits an explicit empty `text` value. The reference client requires definition text before publication.
+The [README](../README.md) states whether the implementation accepts omitted fields.
 
 ### Rich text
 
@@ -460,9 +531,10 @@ A tail contains `from`, `description`, and `type_hints`. Its `from` equals one p
 Variable frames declare a contiguous prefix that includes at least the minimum number of places.
 Place references in rich text still require explicit declarations, including illustrative places beyond the minimum.
 A missing upper limit means no finite bound, not that clients must allocate an infinite array.
-Every frame has exactly `role`, `arity`, `places`, `tail`, and `constraints`.
+Frame fields are `role`, `arity`, `places`, `tail`, and `constraints`, with the absence rules above.
 
-Frame constraints are rich-text descriptions of relationships between several places. Place constraints describe that place. The places array is always present, with unique indices in ascending order.
+Frame constraints are rich-text descriptions of relationships between several places. Place constraints describe that place.
+The interpreted places array has unique indices in ascending order.
 For fixed and context modes, tail is null. For variadic mode, tail is required and minimum ranges from 0 through 256.
 
 A context frame can have an empty or noncontiguous place list. Its declarations still need unique indices.
@@ -493,8 +565,8 @@ The `alternatives` array expresses alternatives. Within an alternative, its fiel
 }
 ```
 
-Each hint contains exactly `alternatives` and `note`. Its alternatives array has between 1 and 32 distinct objects.
-Each alternative contains exactly `tags`, `abstractor`, and `relation_arity`. Tags form a sorted, duplicate-free array with at most 32 entries.
+Each hint permits `alternatives` and `note`. Its required alternatives array has between 1 and 32 distinct objects after defaults apply.
+Each alternative permits `tags`, `abstractor`, and `relation_arity`. Tags form a sorted, duplicate-free array with at most 32 entries.
 At least one tag, abstractor, or relation-arity value must supply information. Empty alternatives are invalid.
 
 Standard tags are `entity`, `agent`, `event`, `state`, `process`, `relation`, `proposition`, `number`, `text`, `set`, `mass`, `sequence`, and `tuple`.
@@ -532,12 +604,13 @@ A word-only reference is unresolved evidence. It never asserts a formal identity
 
 ### Etymology and formation evidence
 
-Etymology contains exactly `text`, `formation`, and `compound`. Text is rich text without place or operand references.
+Etymology permits `text`, `formation`, and `compound`. Text is rich text without place or operand references.
 Both structured fields can be null. Free text remains available when structured evidence exists.
 These fields record attributed formation claims, not automatic proof of historical construction.
 A lexical classification never implies that a generation algorithm produced the word.
 
-The formation object contains exactly method, algorithm, sources, weights_profile, generated, selected_score, selected_rank, selection_reason, candidates, and conflicts.
+The formation object requires method.
+It also permits algorithm, sources, weights_profile, generated, selected_score, selected_rank, selection_reason, candidates, and conflicts, with the defaults above.
 Method is algorithmic, non-algorithmic, or unknown. Non-algorithmic requires a null algorithm. These claims can describe roots, borrowings, or names.
 Sources is an ordered array with at most 64 entries. Each entry contains language, word, input, weight, and notes.
 
@@ -558,7 +631,7 @@ Normalize weights over distinct languages, not source rows. Adding another synon
 Different non-null weights for one language make the formation claim inconsistent. The body remains valid, but the client never labels that run reproducible.
 
 A run with unresolved parameters remains descriptive historical evidence. The frontend never labels it reproducible.
-Weights_profile is null or an object containing exactly name and source. Name is a nonempty string or null. Source is a nullable source reference.
+Weights_profile is null or an object permitting name and source. Name is a nonempty string or null. Source is a nullable source reference.
 
 Resolved row weights remain authoritative for the recorded run. A profile name never substitutes for the actual weights or normalization rule.
 
@@ -579,7 +652,7 @@ Conflicts contains acknowledged objects with word, rule, and snapshot. Word is a
 Rule is identical, final-vowel, or similar-consonant. These records identify known acknowledgments, not proof of complete global coverage.
 A source inconsistency or a calculated mismatch produces a visible diagnostic. It does not make otherwise well-formed historical evidence invalid.
 
-The compound object contains exactly components, morphology, scoring, score, and notes.
+The compound object requires components, morphology, and scoring. It also permits score and notes, with the defaults above.
 Components is an ordered array of 2 through 64 objects. Each contains word, definition, and rafsi.
 Word is a word object. Definition is a nullable exact definition event ID.
 Rafsi is the selected nonempty component spelling. It excludes joining characters, whether the algorithm or the author selects them.
@@ -615,7 +688,7 @@ A compact illustrative etymology follows. It does not claim actual historical in
 
 An operand has `id`, `category`, `description`, and `cardinality`.
 Its ID matches `[a-z][a-z0-9_-]{0,31}`. Its category is a descriptive string such as `bridi`, `selbri`, `sumti`, or `number`.
-Cardinality contains exactly `minimum` and nullable `maximum`. Both finite values are integers from 0 through 65,535.
+Cardinality requires `minimum` and permits nullable `maximum`. Both finite values are integers from 0 through 65,535.
 
 A finite maximum cannot be smaller than the minimum. Operand IDs are unique within the definition.
 Cardinality describes the construction, not outer predicate arity.
@@ -635,13 +708,14 @@ A source reference contains `label`, nullable HTTPS `url`, nullable `event`, and
 Its locator is a textual source position. Source references do not fetch content automatically or grant authority.
 A derivation item contains `word`, nullable `definition`, positive `place`, and rich-text `explanation`. Its word field is a word object, not a word ID. Its place index belongs to that source word, not the current frame.
 
-Both frame and place `constraints` fields are arrays of rich-text values. `glosses`, `type_hints`, `defaults`, and `derivation` are arrays, even when empty.
+Both frame and place `constraints` fields are arrays of rich-text values.
+When present, `glosses`, `type_hints`, `defaults`, and `derivation` are arrays. Their absence means an empty array under the rules above.
 
 `license` contains `expression`, nullable `url`, and `attribution` text.
 A license value records a rights claim. Signature acceptance does not establish that claim's legal validity.
 
 The reference client fills new native definitions with `expression: "CC0-1.0"` and `url: "https://creativecommons.org/publicdomain/zero/1.0/"`.
-It sets `license.attribution` to an empty string. The signed header's `issuer` identifies the contributor.
+Its interpreted `license.attribution` is an empty string, so a new writer omits that field. The signed header's `issuer` identifies the contributor.
 The full editor does not expose another author attribution input.
 These are client defaults, not additional schema validity rules. Imported attribution follows the separate rules below.
 The Publish action is explicit agreement to these terms. The client shows the linked notice before that action, without a separate checkbox.
@@ -666,7 +740,7 @@ The notice covers imported dictionary text. It does not establish rights for thi
 Imports without established rights retain `expression: "unknown"` and their available source evidence.
 Existing signed bodies with unknown rights remain immutable. Section 11 defines how an explicit enriched extraction records newly established rights.
 A native revision uses the same CC0 fields for the contributor's own contribution.
-The reference client also sets its `license.attribution` to an empty string.
+The reference client also leaves its interpreted `license.attribution` empty and omits that field from the new body.
 Its parent link retains the imported publication, including the original author attribution and numeric account evidence.
 Its `sources` include two separate references. The first sets `event` to that exact imported publication's ID.
 The second copies the rights reference defined above, including its notice `label`, pinned `url`, null `event`, and `locator: "footer.publicDomainNotice"`.
@@ -676,7 +750,7 @@ Prototype fixtures declare their own rights and do not establish rights for real
 ### Example of a structured definition
 
 This example is new illustrative wording. It is not a claim that a historical author supplied these annotations.
-This complete body includes empty values for its unused fields. Pretty-printed examples become canonical JSON before signing.
+This complete body omits unused optional fields. Pretty-printed examples become canonical JSON before signing.
 
 ```json
 {
@@ -687,21 +761,15 @@ This complete body includes empty values for its unused fields. Pretty-printed e
     "role":"predicate",
     "arity":{"mode":"fixed","count":3},
     "places":[
-      {"index":1,"glosses":[],"description":[],"type_hints":[],"defaults":[],"constraints":[],"derivation":[]},
-      {"index":2,"glosses":[{"language":"en","text":"property","sense":null}],"description":[],
-       "type_hints":[{"alternatives":[{"tags":["relation"],"abstractor":"ka","relation_arity":{"mode":"fixed","count":1}}],"note":[]}],
-       "defaults":[],"constraints":[],"derivation":[]},
-      {"index":3,"glosses":[],"description":[],"type_hints":[],"defaults":[],"constraints":[],"derivation":[]}
-    ],
-    "tail":null,"constraints":[]
+      {"index":1},
+      {"index":2,"glosses":[{"language":"en","text":"property"}],
+       "type_hints":[{"alternatives":[{"tags":["relation"],"abstractor":"ka","relation_arity":{"mode":"fixed","count":1}}]}]},
+      {"index":3}
+    ]
   },
-  "operands":[],
   "glosses":[{"language":"en","text":"great","sense":"in a property"}],
-  "notes":[],"etymology":{"text":[],"formation":null,"compound":null},"examples":[],
-  "classification":{"kind":"gismu","selmaho":[]},
-  "labels":[],"sources":[],
-  "license":{"expression":"CC0-1.0","url":"https://creativecommons.org/publicdomain/zero/1.0/","attribution":""},
-  "legacy":null
+  "classification":{"kind":"gismu"},
+  "license":{"expression":"CC0-1.0","url":"https://creativecommons.org/publicdomain/zero/1.0/"}
 }
 ```
 
@@ -1142,7 +1210,8 @@ Silent provider-side truncation is not a conforming profile. An adapter must det
 A profile alone is a metadata claim. The receiving operator must establish that its query adapter produces compatible vectors.
 
 The reference document recipe is `definition-json-v1`.
-Construct a canonical object containing language, text, glosses, and places from the authenticated definition body.
+Construct a canonical object containing language, text, glosses, and places from the authenticated definition's interpreted values.
+Apply the definition field defaults before constructing this derived input. The original signed body remains unchanged.
 Text is the definition's rich text. Glosses is its top-level gloss array. Places is its frame's place array, or an empty array without a frame.
 Encode that object as canonical UTF-8 JSON, prepend the profile's literal document prefix, and hash the resulting input bytes.
 
@@ -1718,6 +1787,9 @@ Implementation starts with shared fixtures for these cases:
 20. Carried status, stale former-key branches, missing committed history, concurrent status, and source-reversion status reuse.
 21. Certified controller periods, witness-set changes without active fallback, explicit policy resets, and actual-marker observations after stranger-claim lookups.
 22. Repeated A-to-B-to-A claims, historical marker reversal, former-key compromise after carry, and all cases in [handover-cases.md](handover-cases.md).
+23. Omitted and explicit optional fields with equal interpreted values but unchanged, distinct body hashes and event IDs.
+24. Nested defaults, duplicate type alternatives after defaults, required place declarations, missing variadic tails, and invalid present values.
+25. Revisions that omit earlier notes without inheriting them, and imports that cannot omit required source evidence.
 
 The implementations must agree on logical state from the same fixtures. Their certified bounds must contain independently calculated exact small-graph scores.
 Performance measurements must cover the imported dictionary and adversarial trust graphs. The design does not claim completed runtime benchmarks.
