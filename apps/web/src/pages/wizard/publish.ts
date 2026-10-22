@@ -153,8 +153,7 @@ export async function publishPage(
               "display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 12px",
           },
           el("p", {
-            style:
-              "font-size:38px;line-height:1.1;font-weight:680;letter-spacing:-0.02em",
+            class: "builder-form",
             lang: "jbo",
             text: body.word.spelling,
           }),
@@ -423,7 +422,7 @@ export async function publishPage(
     if (!context.live()) return;
     panel.append(
       el(
-        "div",
+        "p",
         { class: "notice", style: "margin-top:12px" },
         text("Your key backup is untested. "),
         link("Test it", routes.localIdentity),
@@ -899,14 +898,13 @@ function renderSavedGroup(app: App, outcome: HTMLElement, items: OutboxItem[]) {
           retry.disabled = false;
         }
       },
-      { class: "btn", style: "min-height:40px" },
+      { class: "btn" },
     );
     actions.append(retry);
   }
   actions.append(
     link("Open the record", routes.definition(definition.id), {
       class: "btn btn-quiet",
-      style: "min-height:40px",
     }),
   );
   box.append(

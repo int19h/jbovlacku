@@ -304,7 +304,7 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
                 if (status.state === "ready") rerender();
               });
           },
-          { class: "btn btn-quiet", style: "min-height:36px" },
+          { class: "btn btn-quiet" },
         ),
       );
     main.append(note);
@@ -514,12 +514,17 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
         ),
       );
       for (const claim of entry.claims) {
-        const row = el("div", { class: "small", style: "margin-top:8px" });
+        const row = el("div", {
+          class: "small claim-source",
+          style: "margin-top:8px",
+        });
         row.append(
           text("Claimed by "),
           identityLink(claim.envelope.header.issuer),
           text(" · "),
-          link("record", routes.definition(claim.envelope.id)),
+          link("record", routes.definition(claim.envelope.id), {
+            class: "touch-link",
+          }),
         );
         if (claim.body?.rationale.length)
           row.append(renderRichText(claim.body.rationale, { placeHref: null }));

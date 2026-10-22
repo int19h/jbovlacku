@@ -155,7 +155,7 @@ export async function trustPage(
             }
           },
         ),
-      { class: "btn btn-quiet", style: "min-height:36px" },
+      { class: "btn btn-quiet" },
     );
   for (const [key, state] of publicRows) {
     const { subject, scope } = parseKey(key);
@@ -251,7 +251,7 @@ export async function trustPage(
             rule.value === "heed" ? "heed" : "shun",
             rerender,
           ),
-        { class: "btn btn-quiet", style: "min-height:36px" },
+        { class: "btn btn-quiet" },
       ),
       button(
         "Remove",
@@ -268,7 +268,7 @@ export async function trustPage(
           await app.store.setOverlay(current);
           rerender();
         },
-        { class: "btn btn-quiet", style: "min-height:36px" },
+        { class: "btn btn-quiet" },
       ),
     );
     (invalid || ineffective
@@ -300,7 +300,7 @@ export async function trustPage(
         "Make public",
         () =>
           makePublic(app, blocked.identity, blocked.scope, "shun", rerender),
-        { class: "btn btn-quiet", style: "min-height:36px" },
+        { class: "btn btn-quiet" },
       ),
       button(
         "Remove",
@@ -316,7 +316,7 @@ export async function trustPage(
           await app.store.setOverlay(current);
           rerender();
         },
-        { class: "btn btn-quiet", style: "min-height:36px" },
+        { class: "btn btn-quiet" },
       ),
     );
     const invalid = scopeError(blocked.scope);
@@ -398,7 +398,7 @@ export async function trustPage(
     main.append(
       renderRichText(body.description, { placeHref: null, className: "small" }),
     );
-  const roots = el("p");
+  const roots = el("p", { class: "trust-roots" });
   if (!body.roots.length)
     roots.append(
       text(
@@ -479,7 +479,9 @@ export async function trustPage(
       );
       row(
         "View event",
-        link(view.id, routes.definition(view.id), { class: "fingerprint" }),
+        link(view.id, routes.definition(view.id), {
+          class: "fingerprint touch-link",
+        }),
       );
       return [
         dl,
@@ -564,7 +566,7 @@ function viewChooser(app: App, current: string, context: RenderContext) {
     class: "field",
     "aria-label": "Signed view event ID",
     placeholder: "jve1:…",
-    style: "width:100%;max-width:40rem;min-height:40px",
+    style: "width:100%;max-width:40rem;",
     spellcheck: "false",
   });
   const status = el("p", { class: "meta", role: "status" });

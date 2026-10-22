@@ -158,7 +158,7 @@ export async function meaningPage(
   conflictReloads = 0;
   const saver = new DraftSaver(app, draft);
   main.append(stepBar(draft, 1));
-  const columns = el("div", { class: "two-col", style: "gap:32px 48px" });
+  const columns = el("div", { class: "two-col" });
   const left = el("section", {
     "aria-labelledby": "h1",
     class: "main-col",
@@ -326,14 +326,16 @@ export async function meaningPage(
           },
           {
             class: "btn btn-quiet",
-            style: "min-height:32px;padding:0 6px;font-size:13px",
+            style: "padding:0 6px;font-size:13px",
           },
         ),
       );
     }
     modeLabel.append(
       text(" · "),
-      link("by meaning: not configured", routes.preferences, { class: "meta" }),
+      link("by meaning: not configured", routes.preferences, {
+        class: "meta touch-link",
+      }),
     );
   };
   renderMode();
@@ -383,19 +385,17 @@ export async function meaningPage(
         actions.append(
           button("Add a definition", () => useWord(hit.word.spelling), {
             class: "btn",
-            style: "min-height:38px",
           }),
           link(
             "Revise this one",
             `/new/editor?revise=${encodeURIComponent(hit.preview?.event ?? hit.definitions[0])}`,
-            { class: "btn btn-quiet", style: "min-height:38px" },
+            { class: "btn btn-quiet" },
           ),
         );
       } else
         actions.append(
           button("Use this word", () => useWord(hit.word.spelling), {
             class: "btn btn-quiet",
-            style: "min-height:38px",
           }),
         );
       item.append(actions);
@@ -571,12 +571,10 @@ function renderLegacyDraft(
         ),
         button("Export the old copy", () => exportDraft(preview, stored), {
           class: "btn btn-quiet",
-          style: "min-height:32px",
         }),
         text(" "),
         button("Show the current draft", reload, {
           class: "btn btn-quiet",
-          style: "min-height:32px",
         }),
       ),
     );

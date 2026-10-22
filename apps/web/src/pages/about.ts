@@ -58,11 +58,13 @@ export async function aboutPage(
       "p",
       { class: "small" },
       link("Source code", "https://github.com/int19h/jbovlacku", {
+        class: "touch-link",
         rel: "noopener noreferrer",
         target: "_blank",
       }),
       text(" · "),
       link("Third-party notices", "/notices/", {
+        class: "touch-link",
         rel: "noopener noreferrer",
         target: "_blank",
       }),

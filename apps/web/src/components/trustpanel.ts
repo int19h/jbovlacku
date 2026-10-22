@@ -273,7 +273,7 @@ export function trustPanel(app: App, options: TrustPanelOptions): HTMLElement {
           scopeForm.hidden = !scopeForm.hidden;
           updateScope();
         },
-        { class: "btn btn-quiet", style: "min-height:32px;padding:0 6px" },
+        { class: "btn btn-quiet", style: "padding:0 6px" },
       ),
     );
   };

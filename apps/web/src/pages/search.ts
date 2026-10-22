@@ -365,7 +365,7 @@ export async function searchPage(
             more.disabled = stopped;
           }
         },
-        { class: "btn btn-quiet", style: "min-height:32px" },
+        { class: "btn btn-quiet" },
       );
       more.disabled = stopped || displayed.length >= RESULT_LIMIT;
       endLine.append(more);

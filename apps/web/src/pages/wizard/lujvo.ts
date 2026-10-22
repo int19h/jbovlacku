@@ -279,7 +279,6 @@ export async function lujvoPage(
           },
           {
             class: "btn btn-quiet",
-            style: "min-height:36px",
             "aria-label": `Add ${hit.word.spelling}`,
           },
         ),
@@ -331,7 +330,6 @@ export async function lujvoPage(
           },
           {
             class: "btn btn-quiet",
-            style: "min-height:36px",
             "aria-label": `Add ${analysis.normalized} as entered`,
           },
         ),
@@ -395,13 +393,11 @@ export async function lujvoPage(
           class: "btn btn-quiet btn-icon",
           "aria-label": `Move ${component.spelling} up`,
           disabled: index === 0 ? true : undefined,
-          style: "min-height:28px",
         }),
         button(icon("down", "", 16), () => move(1), {
           class: "btn btn-quiet btn-icon",
           "aria-label": `Move ${component.spelling} down`,
           disabled: index === state.components.length - 1 ? true : undefined,
-          style: "min-height:28px",
         }),
       );
       const name = el("span", { style: "flex:1 1 160px;min-width:0" });
@@ -419,7 +415,7 @@ export async function lujvoPage(
         const pick = el("select", {
           class: "inline-select",
           "aria-label": `Exact definition of ${component.spelling}`,
-          style: "min-height:32px;max-width:100%",
+          style: "max-width:100%",
         });
         pick.append(
           el("option", {
@@ -520,7 +516,6 @@ export async function lujvoPage(
         spellcheck: false,
         lang: "jbo",
       });
-      known.input.style.minHeight = "36px";
       known.input.style.width = "12rem";
       known.input.addEventListener("change", () => {
         const id = wordId({ language: "jbo", spelling: component.spelling });
@@ -626,7 +621,6 @@ export async function lujvoPage(
                   },
                   {
                     class: "btn btn-quiet",
-                    style: "min-height:36px",
                     "aria-label": `Use ${other.spelling}`,
                   },
                 ),
@@ -686,10 +680,8 @@ export async function lujvoPage(
       return;
     }
     const headline = el("div", {
-      class: "hw",
+      class: "hw builder-form",
       lang: "jbo",
-      style:
-        "font-size:44px;line-height:1.1;letter-spacing:-0.025em;font-weight:680",
       "aria-label": `Form ${candidate.spelling}`,
     });
     for (const token of candidate.tokens)

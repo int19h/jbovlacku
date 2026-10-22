@@ -354,7 +354,6 @@ export async function personPage(
         more.append(
           button("More activity", () => void loadMore(), {
             class: "btn btn-quiet",
-            style: "min-height:36px",
           }),
         );
       else if (list.childElementCount)
