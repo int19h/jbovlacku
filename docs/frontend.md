@@ -743,10 +743,10 @@ It shows only unfinished records after offline delivery, failure, refusal, or an
 An ordinary transient send does not create a header warning. Each visible row states the last attempt and next retry.
 “Try now” follows the same receipt lookup and immutable retry rules.
 Each row also offers “Stop retrying.” It stops future attempts to every still-unfinished selected peer for that record.
-The app retains signed bytes and receipts, then removes the row from the active list and count.
+The app retains signed bytes and receipts. The row stays with the status word “Stopped” in place of the next-retry sentence.
 Stopping does not retract a public record or guarantee that an in-flight request stopped.
 
-A quiet retained-records disclosure within `/outbox` exposes stopped records, export, and “Resume delivery.”
+A stopped record stays on the Not delivered page with Resume, Save as file, and Discard. The page and its header marker exist while any record is waiting or stopped. Discard removes the only copy and asks first.
 Resume uses the same stored bytes, selected recipients, and receipt lookup before retry.
 No new signature or silent recipient change occurs.
 Accepted dependency waits and index lag remain visible where they affect publication, without being mislabeled delivery failures.
