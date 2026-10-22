@@ -1,5 +1,5 @@
 //! Word recognition ported from jbotci 3d9fd41d9ed32de26311ee27ec86b6b165985aa1.
-//! Contract macros and source diagnostics are removed. The parsing rules remain.
+//! Contract macros and source diagnostics are removed. Consonant pairs follow CLL.
 use crate::phonotactics::{is_initial_pair, is_permissible_pair};
 use std::{cell::Cell, ops::Range};
 struct ParsedOnset {
@@ -9,9 +9,6 @@ struct ParsedOnset {
 enum FuhivlaHeadPolicy {
     Standard,
     ExperimentalCgv,
-}
-fn experimental_is_permissible_pair(a: char, b: char) -> bool {
-    is_permissible_pair(a, b) || (a == 'm' && b == 'z')
 }
 #[derive(Clone, Copy)]
 struct LujvoPartRange {
@@ -461,15 +458,9 @@ fn forbidden_consonant_pair_range(chars: &[char]) -> Option<Range<usize>> {
             return None;
         }
         let next = next_non_comma_index(chars, index + 1)?;
-        (is_consonant(chars[next])
-            && !mz_pair(*value, chars[next])
-            && !is_permissible_pair(*value, chars[next]))
-        .then_some(index..next + 1)
+        (is_consonant(chars[next]) && !is_permissible_pair(*value, chars[next]))
+            .then_some(index..next + 1)
     })
-}
-
-fn mz_pair(first: char, second: char) -> bool {
-    first == 'm' && second == 'z'
 }
 
 fn has_digit_followed_by_nucleus(chars: &[char]) -> bool {
@@ -629,7 +620,7 @@ fn is_gismu_chars(chars: &[char]) -> bool {
                 && is_consonant(*c)
                 && is_consonant(*d)
                 && is_vowel(*e)
-                && experimental_is_permissible_pair(*c, *d))
+                && is_permissible_pair(*c, *d))
                 || (is_initial_pair(*a, *b) && is_vowel(*c) && is_consonant(*d) && is_vowel(*e))
         }
         _ => false,
@@ -1308,7 +1299,7 @@ fn is_gismu_slice_for_rafsi_string(
         && is_consonant(chars[start + 2])
         && is_consonant(chars[start + 3])
         && is_vowel(chars[start + 4])
-        && experimental_is_permissible_pair(chars[start + 2], chars[start + 3])
+        && is_permissible_pair(chars[start + 2], chars[start + 3])
     {
         start + 3
     } else {

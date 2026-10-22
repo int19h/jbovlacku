@@ -319,13 +319,41 @@ pub fn validate(
     parts: &[Part],
     tokens: &[String],
 ) -> Result<Vec<RecoveredPart>, String> {
-    validate_checked(profile, parts, tokens, &mut 0).map_err(|e| e.to_string())
+    validate_checked(profile, parts, tokens, &mut RecognitionBudget::default())
+        .map_err(|e| e.to_string())
+}
+#[derive(Default)]
+struct RecognitionBudget {
+    spent: usize,
+    cores: BTreeMap<String, bool>,
+}
+impl RecognitionBudget {
+    fn charge(&mut self, spent: usize) -> Result<(), BuilderError> {
+        self.spent += spent;
+        require_limit("build recognition work", self.spent as u64, 2_000_000)
+    }
+    fn core_is_brivla(&mut self, text: &str) -> Result<bool, BuilderError> {
+        if let Some(valid) = self.cores.get(text) {
+            return Ok(*valid);
+        }
+        let core = crate::recognize::parse(text)?;
+        self.charge(core.spent)?;
+        let valid = !text.contains('y')
+            && matches!(
+                core.kind,
+                crate::recognize::Kind::Gismu
+                    | crate::recognize::Kind::Lujvo
+                    | crate::recognize::Kind::Fuivla
+            );
+        self.cores.insert(text.into(), valid);
+        Ok(valid)
+    }
 }
 fn validate_checked(
     profile: Profile,
     parts: &[Part],
     tokens: &[String],
-    work: &mut usize,
+    budget: &mut RecognitionBudget,
 ) -> Result<Vec<RecoveredPart>, BuilderError> {
     require_limit("validation parts", parts.len() as u64, 64)?;
     require_limit("validation tokens", tokens.len() as u64, 128)?;
@@ -349,17 +377,7 @@ fn validate_checked(
         ));
     }
     for part in parts.iter().filter(|p| p.kind == PartKind::Core) {
-        let core = crate::recognize::parse(&part.text)?;
-        *work += core.spent;
-        require_limit("build recognition work", *work as u64, 2_000_000)?;
-        if part.text.contains('y')
-            || !matches!(
-                core.kind,
-                crate::recognize::Kind::Gismu
-                    | crate::recognize::Kind::Lujvo
-                    | crate::recognize::Kind::Fuivla
-            )
-        {
+        if !budget.core_is_brivla(&part.text)? {
             return Err(invalid("A whole-word component must parse as one brivla."));
         }
     }
@@ -370,8 +388,7 @@ fn validate_checked(
         crate::recognize::MAX_WORD_BYTES as u64,
     )?;
     let reading = crate::recognize::parse(&tokens.concat())?;
-    *work += reading.spent;
-    require_limit("build recognition work", *work as u64, 2_000_000)?;
+    budget.charge(reading.spent)?;
     if reading.kind != crate::recognize::Kind::Lujvo {
         return Err(invalid(
             "The selected profile does not read this form as one lujvo.",
@@ -702,10 +719,10 @@ pub struct Candidate {
 pub struct LujvoResult {
     pub rows: Vec<RowAnalysis>,
     pub candidates: Vec<Candidate>,
-    /// Whether the search covered every combination.
+    /// Whether the builder bonded and scored every combination.
     pub complete: bool,
     pub considered: u64,
-    /// Combinations that bonding or the profile rejected, with reasons.
+    /// The first 64 rejected combinations checked before the window filled.
     pub rejected: Vec<Rejected>,
     pub morphology: Versioned,
     pub scoring: Versioned,
@@ -742,12 +759,18 @@ impl std::fmt::Display for BuilderError {
                 measure,
                 value,
                 limit,
-            } => write!(f, "{measure} is {value}, above the limit of {limit}."),
+            } => {
+                write!(f, "{measure} is {value}, above the limit of {limit}.")?;
+                if measure == "build recognition work" {
+                    f.write_str(" Lock a component form or request fewer results.")?;
+                }
+                Ok(())
+            }
         }
     }
 }
-/// Builds every valid lujvo from the component choices, in ascending score
-/// order, then spelling, then the choice tuple.
+/// Scores every combination, then parses candidates until the result window
+/// fills. Order is ascending score, then spelling, then the choice tuple.
 pub fn build_lujvo(request: &LujvoRequest) -> Result<LujvoResult, BuilderError> {
     build_lujvo_with_detail_budget(request, DetailBudget::default())
 }
@@ -831,7 +854,6 @@ fn build_lujvo_with_detail_budget(
     let mut candidates: Vec<Candidate> = Vec::new();
     let mut rejected = Vec::new();
     let mut considered = 0u64;
-    let mut recognition_work = 0usize;
     let mut failure = None;
     if per_row.iter().all(|r| !r.is_empty()) {
         let mut selected: Vec<&Choice> = Vec::new();
@@ -867,8 +889,8 @@ fn build_lujvo_with_detail_budget(
                 .collect();
             let Some(tokens) = bond(&parts) else { return };
             let spelling: String = tokens.concat();
-            match validate_checked(request.profile, &parts, &tokens, &mut recognition_work) {
-                Ok(recovered_parts) => {
+            match score(&tokens) {
+                Ok(score) => {
                     candidates.push(Candidate {
                         spelling,
                         parts: chosen
@@ -881,9 +903,9 @@ fn build_lujvo_with_detail_budget(
                                 pair: c.pair.clone(),
                             })
                             .collect(),
-                        score: score(&tokens).expect("validated word length bounds its score"),
+                        score,
                         tokens,
-                        recovered: recovered_parts,
+                        recovered: vec![],
                         conflicts: vec![],
                         unlisted: vec![],
                     });
@@ -917,7 +939,48 @@ fn build_lujvo_with_detail_budget(
                     .cmp(b.parts.iter().map(|p| &p.form))
             })
     });
-    candidates.truncate(request.limits.results.min(512));
+    let mut recognition_budget = RecognitionBudget::default();
+    let result_limit = request.limits.results.min(512);
+    let mut validated = Vec::new();
+    for mut candidate in candidates {
+        if validated.len() == result_limit {
+            break;
+        }
+        let parts: Vec<Part> = candidate
+            .parts
+            .iter()
+            .map(|part| Part {
+                text: part.form.clone(),
+                kind: if part.origin == Origin::Core {
+                    PartKind::Core
+                } else {
+                    PartKind::Rafsi
+                },
+            })
+            .collect();
+        match validate_checked(
+            request.profile,
+            &parts,
+            &candidate.tokens,
+            &mut recognition_budget,
+        ) {
+            Ok(recovered) => {
+                candidate.recovered = recovered;
+                validated.push(candidate);
+            }
+            Err(error @ BuilderError::ResourceLimit { .. }) => return Err(error),
+            Err(error) => {
+                if rejected.len() < 64 {
+                    rejected.push(Rejected {
+                        spelling: candidate.spelling,
+                        parts: candidate.parts.into_iter().map(|part| part.form).collect(),
+                        reason: error.to_string(),
+                    });
+                }
+            }
+        }
+    }
+    let mut candidates = validated;
     add_conflict_details(&mut candidates, &request.inventory, &mut detail_budget)?;
     Ok(LujvoResult {
         rows,
@@ -1453,6 +1516,113 @@ mod tests {
         assert_eq!(a.readings[0][1].join_before.as_deref(), Some("y"));
     }
     #[test]
+    fn mz_is_forbidden_under_both_profiles() {
+        for profile in [Profile::Cll, Profile::Extended] {
+            for word in ["cimza'a", "lemzasli", "kamzu", "mamza", "ka,m,zu"] {
+                let analysis = analyze_word(profile, word);
+                assert_eq!(analysis.kind, WordKind::Unknown, "{profile:?} {word}");
+                assert!(analysis.readings.is_empty());
+                assert!(!analysis.diagnostics.is_empty());
+                assert!(!is_brivla_core(word));
+            }
+            let parts = rafsi(&["cim", "za'a"]);
+            let tokens = bond(&parts).unwrap();
+            assert_eq!(tokens, s(&["cim", "y", "za'a"]));
+            assert!(validate(profile, &parts, &tokens).is_ok());
+            assert_eq!(
+                analyze_word(profile, &tokens.concat()).kind,
+                WordKind::Lujvo
+            );
+            let parts = vec![Part::rafsi("kam"), Part::core("kamzu")];
+            assert!(validate(profile, &parts, &bond(&parts).unwrap()).is_err());
+            let row = row_choices(
+                profile,
+                &Component {
+                    id: "mz".into(),
+                    spelling: "kamzu".into(),
+                    kind: "gismu".into(),
+                    definition: None,
+                    claims: vec![],
+                    locked: None,
+                },
+            );
+            assert!(row.choices.is_empty());
+        }
+        assert!(segment_cll("cimza'a").unwrap().is_empty());
+    }
+    #[test]
+    fn six_part_build_returns_a_sorted_parsed_window() {
+        let components: Vec<Component> = [
+            ("sakli", &["sal", "sak", "ska", "sa'i"][..]),
+            ("bridi", &["bri", "bid", "ri'i"][..]),
+            ("klama", &["kla", "lam"][..]),
+            ("blaci", &["bla", "lac", "bai"][..]),
+            ("cukta", &["cku", "cuk"][..]),
+            ("sinxa", &["sni", "sin"][..]),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, (spelling, claims))| Component {
+            id: index.to_string(),
+            spelling: spelling.into(),
+            kind: "gismu".into(),
+            definition: None,
+            claims: claims
+                .iter()
+                .map(|rafsi| Claim {
+                    rafsi: (*rafsi).into(),
+                    pair: format!("pair-{rafsi}"),
+                })
+                .collect(),
+            locked: None,
+        })
+        .collect();
+        for profile in [Profile::Cll, Profile::Extended] {
+            let mut request = LujvoRequest {
+                profile,
+                components: components.clone(),
+                inventory: Inventory::default(),
+                limits: Limits::default(),
+            };
+            let result = build_lujvo(&request).unwrap();
+            assert_eq!(result.considered, 1_440);
+            assert!(result.complete);
+            assert_eq!(result.candidates.len(), 64);
+            let keys = |result: &LujvoResult| {
+                result
+                    .candidates
+                    .iter()
+                    .map(|candidate| {
+                        (
+                            candidate.score,
+                            candidate.spelling.clone(),
+                            candidate
+                                .parts
+                                .iter()
+                                .map(|part| part.form.clone())
+                                .collect::<Vec<_>>(),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let ordered = keys(&result);
+            assert!(ordered.windows(2).all(|pair| pair[0] <= pair[1]));
+            for candidate in &result.candidates {
+                let parts: Vec<Part> = candidate
+                    .parts
+                    .iter()
+                    .map(|part| Part::rafsi(&part.form))
+                    .collect();
+                assert_eq!(
+                    validate(profile, &parts, &candidate.tokens).unwrap(),
+                    candidate.recovered
+                );
+            }
+            request.limits.results = 8;
+            assert_eq!(keys(&build_lujvo(&request).unwrap()), ordered[..8]);
+        }
+    }
+    #[test]
     fn extended_outputs_require_real_parse_back() {
         for parts in [
             vec![Part::rafsi("bau"), Part::core("ismu")],
@@ -1615,9 +1785,13 @@ mod tests {
                 component("b", "ismu", "fuivla", &[]),
             ],
             inventory: Inventory::default(),
-            limits: Limits::default(),
+            limits: Limits {
+                results: 1,
+                ..Limits::default()
+            },
         };
         let result = build_lujvo(&request).unwrap();
+        assert_eq!(result.candidates.len(), 1);
         assert!(result.candidates.iter().any(|c| c.spelling == "bany'ismu"));
         assert!(!result.candidates.iter().any(|c| c.spelling == "baurismu"));
         assert!(result.rejected.iter().any(|c| c.spelling == "baurismu"));
@@ -1635,14 +1809,33 @@ mod tests {
     fn failed_candidate_recognition_counts_toward_total_work() {
         let parts = vec![Part::rafsi("bau"), Part::core("ismu")];
         let tokens = bond(&parts).unwrap();
-        let mut work = 0;
-        assert!(validate_checked(Profile::Extended, &parts, &tokens, &mut work).is_err());
-        assert!(work > 0);
-        work = 2_000_000;
+        let mut budget = RecognitionBudget::default();
+        assert!(validate_checked(Profile::Extended, &parts, &tokens, &mut budget).is_err());
+        assert!(budget.spent > 0);
+        budget.spent = 2_000_000;
         assert!(matches!(
-            validate_checked(Profile::Extended, &parts, &tokens, &mut work),
+            validate_checked(Profile::Extended, &parts, &tokens, &mut budget),
             Err(BuilderError::ResourceLimit { .. })
         ));
+    }
+    #[test]
+    fn extended_core_cache_preserves_work_and_resource_errors() {
+        let mut budget = RecognitionBudget::default();
+        assert!(budget.core_is_brivla("ismu").unwrap());
+        assert!(budget.spent > 0);
+        budget.spent = 2_000_000;
+        assert!(budget.core_is_brivla("ismu").unwrap());
+        assert_eq!(budget.spent, 2_000_000);
+        let error = budget.core_is_brivla("iismu").unwrap_err();
+        assert!(
+            matches!(error, BuilderError::ResourceLimit { ref measure, .. } if measure == "build recognition work")
+        );
+        assert!(error.to_string().contains("Lock a component form"));
+        assert!(!budget.cores.contains_key("iismu"));
+        assert!(
+            matches!(budget.core_is_brivla(&"a".repeat(129)), Err(BuilderError::ResourceLimit { measure, .. }) if measure == "word bytes")
+        );
+        assert!(!budget.cores.contains_key(&"a".repeat(129)));
     }
     #[test]
     fn classic_fuivla_analysis_reports_its_recognition_scope() {
