@@ -920,8 +920,17 @@ export function assistanceAction(
     );
     box.append(panel);
   }
-  async function request(run: Run, path: string, init: RequestInit = {}) {
-    const signal = AbortSignal.any([run.signal, AbortSignal.timeout(30000)]);
+  async function request(
+    run: Run,
+    path: string,
+    init: RequestInit = {},
+    retainCreateResponse = false,
+  ) {
+    const deadline = AbortSignal.timeout(30000);
+    // Finish a bounded create response after Cancel so its exact job can be canceled.
+    const signal = retainCreateResponse
+      ? deadline
+      : AbortSignal.any([run.signal, deadline]);
     const response = await fetch(`${selfPeer.base}${path}`, {
       ...init,
       credentials: "same-origin",
@@ -954,6 +963,8 @@ export function assistanceAction(
         AbortSignal.timeout(15 * 60 * 1000),
       ]),
     };
+    const isCurrent = () =>
+      active === run && context.live() && enabled() && !run.signal.aborted;
     active = run;
     working = true;
     const revision = crypto.randomUUID();
@@ -962,47 +973,51 @@ export function assistanceAction(
     let received = false;
     try {
       await visibility.refresh();
-      if (!enabled()) return;
-      if (
-        !(await consent(app, profile!, run.signal)) ||
-        !enabled() ||
-        !context.live() ||
-        active !== run
-      )
-        return;
+      if (!isCurrent()) return;
+      if (!(await consent(app, profile!, run.signal)) || !isCurrent()) return;
       progress = "The assistant is working.";
       render();
       requested = options.current?.() ?? currentDraft(draft);
       fingerprint = draftFingerprint(draft);
       run.csrf = (await request(run, "/session")).value.csrf;
-      const answer = await request(run, "/assist", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-CSRF-Token": run.csrf,
+      if (!isCurrent()) return;
+      const answer = await request(
+        run,
+        "/assist",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-CSRF-Token": run.csrf,
+          },
+          body: json({
+            operation: options.operation,
+            draft_revision: revision,
+            language: draft.language,
+            meaning: draft.meaning,
+            current: requested,
+            context: [
+              ...new Set([
+                ...(draft.lujvo?.components.flatMap((c) =>
+                  c.definition ? [c.definition] : [],
+                ) ?? []),
+                ...draft.parents,
+              ]),
+            ].slice(0, 32),
+            profile: options.profile ?? "default",
+          }),
         },
-        body: json({
-          operation: options.operation,
-          draft_revision: revision,
-          language: draft.language,
-          meaning: draft.meaning,
-          current: requested,
-          context: [
-            ...new Set([
-              ...(draft.lujvo?.components.flatMap((c) =>
-                c.definition ? [c.definition] : [],
-              ) ?? []),
-              ...draft.parents,
-            ]),
-          ].slice(0, 32),
-          profile: options.profile ?? "default",
-        }),
-      });
+        true,
+      );
       let result: unknown;
       if (answer.response.status === 202) {
         if (typeof answer.value.job !== "string")
           throw new Error("The server returned an invalid job.");
         run.job = answer.value.job;
+        if (!isCurrent()) {
+          await acknowledge(run);
+          return;
+        }
         const polling = Math.max(
           100,
           Math.min(60000, Number(answer.value.poll_after_ms) || 100),
@@ -1023,7 +1038,7 @@ export function assistanceAction(
           const status = (
             await request(run, `/jobs/${encodeURIComponent(run.job!)}`)
           ).value;
-          if (active !== run || !context.live()) return;
+          if (!isCurrent()) return;
           if (status.progress?.attempt > 1) {
             progress = `The first answer had errors, so the assistant is trying again (${status.progress.attempt} of ${status.progress.max_attempts || 3}).`;
             render();
@@ -1046,7 +1061,10 @@ export function assistanceAction(
           )
             throw new DOMException("Canceled", "AbortError");
         }
-      } else result = answer.value;
+      } else {
+        if (!isCurrent()) return;
+        result = answer.value;
+      }
       let checked: Suggestion;
       try {
         checked = validateSuggestion(result, options.operation, revision);

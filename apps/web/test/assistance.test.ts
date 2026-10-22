@@ -233,7 +233,7 @@ async function mockAssistant(page: Page, options: MockOptions = {}) {
       draft_revision: body.draft_revision,
       proposals: options.invalid
         ? [{ path: "/identity", value: "bad" }]
-        : proposals(body),
+        : structuredClone(proposals(body)),
       explanation:
         'A literal explanation <img src=x onerror="window.injected=true">.',
       provenance: {
@@ -1259,3 +1259,112 @@ test("operator-disabled assistance hides saved AI decorations and preserves acce
   await expect(page.locator(".ai-source-note")).toBeVisible();
   await expect(page.locator(".ai-source-sense")).toBeVisible();
 });
+
+for (const mode of ["Cancel", "navigation"] as const) {
+  test(`a delayed create response cancels its exact old job after ${mode} and keeps the restarted request`, async ({
+    page,
+  }) => {
+    await mockAssistant(page);
+    const requests: any[] = [];
+    const deleted: string[] = [];
+    const polled: string[] = [];
+    let releaseOld!: () => void;
+    const oldResponse = new Promise<void>((resolve) => {
+      releaseOld = resolve;
+    });
+    const expires = "2026-10-22T13:00:00Z";
+    await page.route("**/api/v1/assist", async (route) => {
+      const body = route.request().postDataJSON();
+      requests.push(body);
+      const job =
+        requests.length === 1 ? "old-delayed-job" : "new-restarted-job";
+      if (job === "old-delayed-job") await oldResponse;
+      await route.fulfill({
+        status: 202,
+        json: { job, expires_at: expires, poll_after_ms: 100 },
+      });
+    });
+    await page.route("**/api/v1/jobs/*", async (route) => {
+      const job = route.request().url().split("/").at(-1)!;
+      if (route.request().method() === "DELETE") {
+        deleted.push(job);
+        await route.fulfill({
+          json: {
+            state: "canceled",
+            result: null,
+            error: null,
+            expires_at: expires,
+          },
+        });
+        return;
+      }
+      polled.push(job);
+      const body = requests[1];
+      await route.fulfill({
+        json: {
+          state: "completed",
+          error: null,
+          expires_at: expires,
+          result: {
+            operation: body.operation,
+            draft_revision: body.draft_revision,
+            proposals: [{ path: "/word_type", value: "cmavo" }],
+            explanation: "The restarted request stays intact.",
+            provenance: {
+              provider: "Mock provider",
+              model: "new-request-model",
+              revision: null,
+              recipe: "test-v1",
+              seed: null,
+            },
+            usage: null,
+            log,
+          },
+        },
+      });
+    });
+    try {
+      await draft(page);
+      await page
+        .getByRole("button", { name: "Recommend a type", exact: true })
+        .click();
+      await allow(page);
+      await expect.poll(() => requests.length).toBe(1);
+      expect(deleted).toEqual([]);
+      if (mode === "Cancel")
+        await page.getByRole("button", { name: "Cancel", exact: true }).click();
+      else {
+        await page.getByRole("link", { name: "Settings", exact: true }).click();
+        await page
+          .getByRole("link", { name: "Add a word", exact: true })
+          .click();
+        await page.getByRole("link", { name: "Type", exact: true }).click();
+      }
+      await page
+        .getByRole("button", { name: "Recommend a type", exact: true })
+        .click();
+      const panel = page.getByRole("region", {
+        name: "Recommend a type suggestion",
+      });
+      await expect(panel).toContainText("The restarted request stays intact.");
+      expect(requests).toHaveLength(2);
+      expect(requests[0].draft_revision).not.toBe(requests[1].draft_revision);
+      releaseOld();
+      await expect
+        .poll(() => deleted.filter((id) => id === "old-delayed-job").length)
+        .toBe(1);
+      expect(polled).not.toContain("old-delayed-job");
+      await expect(panel).toContainText("new-request-model");
+      const saved = await stored(page);
+      expect(saved.ai.records).toHaveLength(1);
+      expect(saved.ai.records[0].result.draft_revision).toBe(
+        requests[1].draft_revision,
+      );
+      expect(deleted.filter((id) => id === "new-restarted-job")).toHaveLength(
+        1,
+      );
+    } finally {
+      releaseOld();
+    }
+  });
+}
