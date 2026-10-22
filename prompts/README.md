@@ -1,8 +1,9 @@
 # AI prompts
 
 This folder holds the prompts for the optional AI actions that the [frontend specification](../docs/frontend.md) describes.
-No application code uses them yet. AI actions remain target features.
-They were tested in separate studies, not through the application.
+The shared service uses these files for both server adapters.
+The four tasks below retain the studied prompts. Local mock tests cover the application loop and answer checks.
+Provider availability still depends on operator configuration.
 
 ## Tasks
 
@@ -12,6 +13,10 @@ They were tested in separate studies, not through the application.
 | `hints` | "Suggest places and glosses" | The kinds of thing that can fill each place, such as referent, agent, event or number. |
 | `mappings` | "Suggest places and glosses" | For each place of a compound, the component places that it corresponds to. |
 | `sources` | "Suggest source words" | One source word for one language, its stem, its pronunciation, and its scoring letters. |
+
+Additional editor prompts cover type, components, selma'o, definition text, and an initial place structure.
+These prompts use the same tool and retry loop. They do not share the four tasks' study evidence.
+The application checks a proposed lujvo with deterministic construction and segmentation before it returns the spelling.
 
 ## Files
 
@@ -23,10 +28,14 @@ They were tested in separate studies, not through the application.
 | `languages/*.txt` | One block of language rules for each source language. Only `sources` uses them. |
 | `answer-shapes.json` | The JSON shape of an answer for each task. |
 | `explain.txt` | Optional. The server appends it to the system prompt when the operator turns on decision reports. |
+| `type.task.txt`, `components.task.txt`, `cmavo-class.task.txt`, `definition.task.txt`, `places.task.txt` | Rules for the other editor actions. |
+| `build-bundle.mjs` | Rebuilds the runtime copy of the public prompt files. Run it after editing a prompt. |
 
 ## Request
 
 Each request has one system prompt, one user message, and one tool, `submit_answer`.
+Every request uses `tool_choice: "auto"`, which the tested provider requires.
+The application still accepts only one valid `submit_answer` call. A missing call receives correction instructions within the same three-answer limit.
 
 The system prompt joins these files in this order, with a blank line between them:
 
@@ -34,7 +43,7 @@ The system prompt joins these files in this order, with a blank line between the
 2. The task file, such as `hints.task.txt`
 3. For `sources` only: `sound-guide.txt`, then the block of the requested language
 
-When decision reports are on, `explain.txt` follows as the last part. The request then must let the model write text before its tool call, so it does not force the tool call.
+When decision reports are on, `explain.txt` follows as the last part. The model can write its report before the tool call.
 The language block comes last, so that requests for different languages share the longest possible identical prefix.
 Providers can then cache that prefix.
 

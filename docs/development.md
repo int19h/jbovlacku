@@ -276,6 +276,102 @@ Use disposable contributor keys and synthetic account evidence. Do not use real 
 Read imported SQL as data. Do not execute an import dump against a service database.
 Use mocked providers before real inference tests.
 
+## Optional AI assistance
+
+AI assistance is off by default. The shared service implements the same assistance jobs on Node and the local Worker.
+Each action needs an explicit browser request. The provider key stays on the server.
+The provider uses the configured base URL plus `/chat/completions`. Clients cannot supply a provider URL or model.
+The tested configuration uses `meta/muse-spark-1.3-contributor`, the `meta` route only, and `medium` reasoning.
+The service forbids provider redirects and fallback routes. It sends one `submit_answer` tool and checks every answer locally.
+Every request uses `tool_choice: "auto"`. The tested provider supports only that choice.
+The answer still requires one valid `submit_answer` call. A missing call counts as a failed answer and receives correction instructions.
+After three failed answers for one task, that task fails. A provider or transport failure stops the job without an automatic paid retry.
+
+Both local adapters accept these variables:
+
+| Variable | Purpose |
+| --- | --- |
+| `JVC_AI_ENABLED` | Set `enabled` to offer assistance. The default is disabled. |
+| `JVC_AI_BASE_URL` | Provider base URL. The default is `https://openrouter.ai/api/v1`. Use HTTPS, or HTTP on loopback for a local provider. |
+| `JVC_AI_KEY_FILE` | Path to the server-held provider key. Node reads the file for each model turn. The local Worker launcher reads it at startup. |
+| `JVC_AI_PROVIDER_NAME` | Public provider name. The default is `OpenRouter`. Capability metadata uses this name and the route, without the private endpoint URL. |
+| `JVC_AI_MODEL` | Model name. The default is `meta/muse-spark-1.3-contributor`. |
+| `JVC_AI_PROVIDER_ROUTE` | Single permitted route. The default is `meta`. |
+| `JVC_AI_REASONING_EFFORT` | Reasoning level. The default is `medium`. |
+| `JVC_AI_OPERATIONS` | Comma-separated permitted operations. The default contains all six operations below. An empty value disables every operation. |
+| `JVC_AI_DECISION_REPORTS` | Set `enabled` to request a written decision report before the tool call. The default is disabled. |
+| `JVC_AI_MAX_TOKENS` | Maximum output tokens for each provider turn. The default is 16,384. The permitted range is 128 through 32,768. |
+| `JVC_AI_TIMEOUT_MS` | Time limit for the complete job. The default is 120,000 milliseconds. The permitted range is 10 through 900,000. Job expiry also bounds this time. |
+| `JVC_AI_CONCURRENCY` | Maximum active jobs. The default is two. The permitted range is one through four. |
+| `JVC_AI_MAX_COST_USD` | Maximum reserved cost for one job. The default is 2 USD. The permitted range is 0.001 through 10. |
+| `JVC_AI_MAX_PRICE` | Maximum input and output price in USD per million tokens. The default is 10. The permitted range is 0.001 through 100. |
+
+Operations are `type`, `lujvo`, `gismu-sources`, `cmavo-class`, `definition`, and `places-glosses`.
+The `default` profile covers the enabled operations. The `components` profile proposes lujvo components.
+The `lujvo` profile also proposes a spelling. The deterministic builder constructs and recovers that spelling before the service returns it.
+Existing component choices constrain a proposal. An AI answer never assigns a rafsi or publishes a definition.
+Explicit rafsi locks enter construction as draft choices. They do not claim accepted assignment standing or an endorsement.
+A lujvo draft can contain zero or one component before the author completes it. The service preserves those draft constraints during inference.
+Draft metadata still uses the documented HTTPS morphology and scoring identifiers. Empty rafsi values mean unlocked component choices.
+Initial place suggestions contain at most 16 places. Component suggestions contain two through eight components.
+Selma'o suggestions contain at most 16 classes. Larger existing structures remain available through manual editing.
+
+Start the Node source service with the variables above and `npm run start`.
+For the local Worker, use `npx tsx apps/worker/dev-ai.ts` instead of the ordinary Wrangler command.
+Set `JVC_WORKER_DATA_DIR` to its task-specific local storage directory. `HOST` and `PORT` select its listener.
+The launcher reads the named key file into an in-memory Worker binding. It never writes another credential file or passes the key in command arguments.
+It suppresses Wrangler binding output and reports only a fixed startup error on failure.
+The Worker runtime cannot read a host file path. Its provider key binding is `JVC_AI_KEY`.
+The ordinary Wrangler command leaves assistance off unless the operator supplies that binding and enables the configuration.
+Hosted secret setup and deployment remain separate operator work.
+
+The billing reservation uses UTF-8 request bytes as a conservative input-token bound, plus 1,024 tokens for transport overhead.
+It reserves each turn's maximum output tokens at `JVC_AI_MAX_PRICE` before sending that turn.
+It also sends that price ceiling to the provider. Unknown usage stays unknown in the log.
+These bounds require a provider that honors its advertised price ceiling. They do not establish billing behavior for an untested compatible provider.
+
+An individual provider response has a 256 KiB limit. Each job reserves at most 2 MiB for its full inference log.
+Before a provider turn, the service reserves space for that request, the complete bounded response, and its displayed log fields.
+If the next turn cannot fit, the job fails with `log_limit` before it sends that turn.
+At most four private jobs retain logs at once. This reserves at most 8 MiB for logs, in addition to bounded proposals and runtime data.
+A full reservation returns HTTP 429. Saving or dismissing a result releases its reservation through acknowledgment.
+
+`GET /api/v1/session` returns a CSRF token and sets a Secure, HttpOnly, SameSite=Strict session cookie.
+The browser sends the token in `X-CSRF-Token` for `POST /api/v1/assist` and `DELETE /api/v1/jobs/ID`.
+Private requests use the configured `JVC_PUBLIC_ORIGIN` on Node or `PUBLIC_ORIGIN` on the Worker, or the request origin by default.
+Extra origins permitted for public dictionary reads cannot use private jobs.
+Each session can start 12 jobs per hour. Each client network address can start 48 jobs per hour.
+At most 128 sessions exist at once. Sessions expire after one hour. Quota failures include a retry interval.
+
+Accepted work returns HTTP 202 with an opaque job ID, expiry, and polling interval.
+Job reads expose the current task and answer count. Cancel aborts the outbound request and stops further local turns.
+Cancellation cannot reverse an already transmitted request or a provider charge.
+Private jobs expire after at most ten minutes. A service restart or Worker eviction also loses them.
+They use transient memory rather than the dictionary object store, indexes, receipt journal, or ordinary logs.
+
+The browser saves a terminal result with its draft, then sends `DELETE` as an acknowledgment.
+Until acknowledgment or expiry, the service holds the result in transient memory so a lost response can be read again.
+Acknowledgment preserves the terminal state and discards the result and log. It does not cancel a completed action.
+The browser keeps the durable log copy. Publication and peer synchronization omit that log.
+Raw JSON exports preserve the exchanged payload fields, except server credentials and encrypted reasoning.
+The service removes those fields before a response or correction request leaves the inference runner.
+The browser limits each API response to 16 MiB and each response wait to 30 seconds. An action expires after 15 minutes in the browser.
+
+The public [prompt guide](../prompts/README.md) describes the four studied tasks and their answer checks.
+Source suggestions run once per requested language row. Supported short language codes are `en`, `zh`, `hi`, `es`, `ru`, `ar`, `bn`, `pt`, `fr`, `ms`, `de`, and `ja`.
+The preset codes `eng`, `cmn`, `hin`, `spa`, `rus`, `ara`, `ben`, `por`, `fra`, `msa`, `deu`, and `jpn` select the same respective prompts.
+Proposals keep each source row's original language code.
+English gloss suggestions keep language `en` even when the definition uses another language. Existing glosses in other languages remain present.
+Source proposals preserve missing words as empty editable rows. Their notes retain the sense, whole-word IPA, stem, stem IPA, and uncertainty.
+The additional prompts cover type, components, selma'o, definition text, and an initial place structure.
+To update the runtime prompt bundle after editing a prompt, run `node prompts/build-bundle.mjs`.
+The service tests require that the generated bundle matches every public prompt file exactly.
+
+Run the mocked inference checks with `npx tsx --test packages/service/test/assistance.test.ts`.
+The adapter suite runs both hosts against a disposable mocked provider and key file.
+It tests the disabled state, corrected answer, private session, secret redaction, and log acknowledgment.
+Neither test suite reads a real provider key or sends paid inference requests.
+
 Install the Chromium test binary into a task-specific directory, then run the browser tests:
 
 ```sh

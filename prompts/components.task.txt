@@ -1,0 +1,7 @@
+Suggest an ordered list of two through eight Lojban component words for the supplied meaning and component constraints.
+Use supplied source definitions where available.
+Each component has exactly spelling and definition. Its definition is a supplied exact definition event ID or null.
+
+Do not claim a dictionary lookup. Do not invent a short rafsi.
+The application constructs and checks a spelling with deterministic tools.
+Return components and reason.

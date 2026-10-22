@@ -4,6 +4,7 @@ import { DurableObject } from "cloudflare:workers";
 import wasmModule from "../../../packages/core/generated/jvc_runtime_bg.wasm";
 import { initializeCore } from "../../../packages/core/src/index.ts";
 import { DictionaryService } from "../../../packages/service/src/service.ts";
+import { providerConfig } from "../../../packages/service/src/inference.ts";
 import {
   emptyState,
   type State,
@@ -59,6 +60,10 @@ export class AdmissionCoordinator
     this.objects = new R2ObjectStore(env.OBJECTS);
     this.diagnostics = String(env.PROTOTYPE_BATCH) === "enabled";
     this.service = new DictionaryService(this.objects, this, {
+      assistance: {
+        provider: providerConfig(env, async () => env.JVC_AI_KEY ?? ""),
+        waitUntil: (promise) => this.ctx.waitUntil(promise),
+      },
       serverId: env.SERVER_ID,
       index: new D1IndexStore(env.INDEX),
       selectedView: env.SELECTED_VIEW || undefined,
@@ -90,7 +95,10 @@ export class AdmissionCoordinator
         }),
       );
     try {
-      return await this.service.fetch(request);
+      return await this.service.fetch(
+        request,
+        request.headers.get("cf-connecting-ip") ?? "local",
+      );
     } finally {
       if (this.diagnostics)
         console.log(

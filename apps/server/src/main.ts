@@ -1,4 +1,5 @@
 import { BROWSER_HEADERS } from "./security.ts";
+import { nodeAssistance } from "./assistance.ts";
 import { Readable } from "node:stream";
 import { sendResponseBody } from "./response.ts";
 import { createServer } from "node:http";
@@ -31,6 +32,7 @@ const service = new DictionaryService(
   new FileObjectStore(join(directory, "objects")),
   coordinator,
   {
+    assistance: nodeAssistance(process.env),
     index,
     reportError:
       process.env.JVC_LOG_ERRORS === "enabled"
@@ -129,7 +131,10 @@ const server = createServer(async (incoming, outgoing) => {
       });
       init.duplex = "half";
     }
-    const response = await service.fetch(new Request(url, init));
+    const response = await service.fetch(
+      new Request(url, init),
+      incoming.socket.remoteAddress ?? "unknown",
+    );
     if (abandoned) response.headers.set("connection", "close");
     outgoing.writeHead(response.status, Object.fromEntries(response.headers));
     if (response.body) await sendResponseBody(response.body, outgoing);

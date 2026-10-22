@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { createServer } from "node:net";
+import { createServer as createHttpServer } from "node:http";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import {
@@ -17,6 +18,86 @@ const testRoot = resolve(
 );
 await mkdir(testRoot, { recursive: true });
 const directory = await mkdtemp(join(testRoot, "case-"));
+const inferenceKey = "disposable-adapter-inference-canary-1987";
+const inferenceKeyPath = join(directory, "disposable-provider-key.txt");
+await writeFile(inferenceKeyPath, inferenceKey, { mode: 0o600 });
+const inferenceProvider = createHttpServer(async (request, response) => {
+  try {
+    if (
+      request.url !== "/chat/completions" ||
+      request.headers.authorization !== `Bearer ${inferenceKey}`
+    )
+      throw new Error("Unexpected mock provider request.");
+    let raw = "";
+    for await (const chunk of request) {
+      raw += String(chunk);
+      if (raw.length > 262144)
+        throw new Error("Mock request exceeded its limit.");
+    }
+    const body = JSON.parse(raw);
+    if (body.tool_choice !== "auto") {
+      response.writeHead(400, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          error: { message: 'Only "auto" is supported for tool_choice.' },
+        }),
+      );
+      return;
+    }
+    assert.deepEqual(body.provider.only, ["meta"]);
+    assert.equal(body.reasoning.effort, "medium");
+    const answer =
+      body.messages.length === 2
+        ? {}
+        : {
+            word_type: "lujvo",
+            reason: "The meaning combines two component roles.",
+          };
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(
+      JSON.stringify({
+        model: body.model,
+        provider: "mock",
+        choices: [
+          {
+            finish_reason: "tool_calls",
+            message: {
+              content: inferenceKey,
+              reasoning_details: [
+                {
+                  type: "reasoning.summary",
+                  summary: "The supplied meaning describes a compound.",
+                },
+                {
+                  type: "reasoning.encrypted",
+                  data: "encrypted-adapter-canary",
+                },
+              ],
+              tool_calls: [
+                {
+                  id: "mock-call",
+                  type: "function",
+                  function: {
+                    name: "submit_answer",
+                    arguments: JSON.stringify(answer),
+                  },
+                },
+              ],
+            },
+          },
+        ],
+        usage: { prompt_tokens: 40, completion_tokens: 20, cost: 0.001 },
+      }),
+    );
+  } catch {
+    response.writeHead(500);
+    response.end("The local mock rejected the request.");
+  }
+});
+await new Promise<void>((done) =>
+  inferenceProvider.listen(0, "127.0.0.1", done),
+);
+const inferenceUrl = `http://127.0.0.1:${(inferenceProvider.address() as { port: number }).port}`;
 await initializeCore(
   await readFile(join(root, "packages/core/generated/jvc_runtime_bg.wasm")),
 );
@@ -41,27 +122,11 @@ async function unusedPort() {
 const ports = [await unusedPort(), await unusedPort()];
 const children: ChildProcess[] = [];
 const logs: string[] = [];
-async function start(index: number) {
+async function start(index: number, aiEnabled = true) {
   const args =
     index === 0
       ? [join(root, "apps/server/dist/main.js")]
-      : [
-          join(root, "node_modules/wrangler/bin/wrangler.js"),
-          "dev",
-          "--config",
-          "apps/worker/wrangler.jsonc",
-          "--local",
-          "--ip",
-          "127.0.0.1",
-          "--port",
-          String(ports[index]),
-          "--var",
-          "SNAPSHOT_LIMIT:3",
-          "--var",
-          `PROTOTYPE_BATCH:${corpus ? "enabled" : "disabled"}`,
-          "--persist-to",
-          join(directory, "worker"),
-        ];
+      : ["--import", "tsx", join(root, "apps/worker/dev-ai.ts")];
   const child = spawn(process.execPath, args, {
     cwd: root,
     detached: true,
@@ -73,6 +138,19 @@ async function start(index: number) {
       JVC_LOG_ERRORS: "enabled",
       JVC_SNAPSHOT_LIMIT: "3",
       JVC_PROTOTYPE_BATCH: corpus ? "enabled" : "disabled",
+      SNAPSHOT_LIMIT: "3",
+      PROTOTYPE_BATCH: corpus ? "enabled" : "disabled",
+      JVC_WORKER_DATA_DIR: join(directory, "worker"),
+      JVC_AI_ENABLED: aiEnabled ? "enabled" : "disabled",
+      JVC_AI_BASE_URL: inferenceUrl,
+      JVC_AI_KEY_FILE: inferenceKeyPath,
+      JVC_AI_MODEL: "meta/muse-spark-1.3-contributor",
+      JVC_AI_PROVIDER_ROUTE: "meta",
+      JVC_AI_PROVIDER_NAME: "Local test provider",
+      JVC_AI_REASONING_EFFORT: "medium",
+      JVC_AI_DECISION_REPORTS: "disabled",
+      JVC_AI_OPERATIONS:
+        "type,lujvo,gismu-sources,cmavo-class,definition,places-glosses",
       WRANGLER_SEND_METRICS: "false",
     },
     stdio: ["ignore", "pipe", "pipe"],
@@ -130,7 +208,89 @@ try {
         ? [0]
         : [0, 1];
   for (const index of indexes) {
+    await start(index, false);
+    const disabled: any = await (await api(index, "/capabilities")).json();
+    assert.equal(disabled.features.assistance, false);
+    assert.equal((await api(index, "/assist", {})).status, 503);
+    await stop(index);
     await start(index);
+    const capabilities: any = await (await api(index, "/capabilities")).json();
+    assert.equal(capabilities.features.assistance, true);
+    assert.equal(JSON.stringify(capabilities).includes(inferenceKey), false);
+    assert.equal(JSON.stringify(capabilities).includes(inferenceUrl), false);
+    const privateSession = await api(index, "/session");
+    const cookie = privateSession.headers.get("set-cookie")!.split(";")[0];
+    assert.match(
+      privateSession.headers.get("set-cookie")!,
+      /Secure; HttpOnly; SameSite=Strict/,
+    );
+    const csrf = ((await privateSession.json()) as any).csrf;
+    const assist = await fetch(
+      `http://127.0.0.1:${ports[index]}/api/v1/assist`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          origin: `http://127.0.0.1:${ports[index]}`,
+          cookie,
+          "x-csrf-token": csrf,
+        },
+        body: JSON.stringify({
+          operation: "type",
+          draft_revision: "adapter-private",
+          language: "en",
+          meaning: "x1 travels by car.",
+          current: {
+            word_type: null,
+            classification: null,
+            spelling: null,
+            text: [["x1 travels by car."]],
+            frame: null,
+            glosses: [],
+            formation: null,
+            compound: null,
+          },
+          context: [],
+          profile: "default",
+        }),
+      },
+    );
+    assert.equal(assist.status, 202, await assist.clone().text());
+    const accepted = (await assist.json()) as any;
+    assert.match(accepted.expires_at, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/);
+    let result: any;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const poll = await fetch(
+        `http://127.0.0.1:${ports[index]}/api/v1/jobs/${accepted.job}`,
+        { headers: { cookie } },
+      );
+      assert.equal(poll.status, 200);
+      result = await poll.json();
+      if (!["queued", "running"].includes(result.state)) break;
+      await new Promise((done) => setTimeout(done, 50));
+    }
+    assert.equal(result.state, "completed", JSON.stringify(result));
+    assert.equal(result.result.proposals[0].path, "/word_type");
+    assert.equal(result.result.proposals[0].value, "lujvo");
+    assert.equal(result.result.log.answers, 2);
+    assert.equal(result.result.log.corrections, 1);
+    assert.equal(JSON.stringify(result).includes(inferenceKey), false);
+    assert.equal(
+      JSON.stringify(result).includes("encrypted-adapter-canary"),
+      false,
+    );
+    const acknowledged = await fetch(
+      `http://127.0.0.1:${ports[index]}/api/v1/jobs/${accepted.job}`,
+      {
+        method: "DELETE",
+        headers: {
+          cookie,
+          "x-csrf-token": csrf,
+          origin: `http://127.0.0.1:${ports[index]}`,
+        },
+      },
+    );
+    assert.equal(((await acknowledged.json()) as any).result, null);
     if (process.env.JVC_ADAPTER_CORPUS_ONLY !== "enabled") {
       const missing = await api(index, "/events", { ...entry, body: null });
       assert.equal(missing.status, 201);
@@ -512,11 +672,17 @@ try {
       status: "passed",
       adapters: indexes.map((index) => (index === 0 ? "node" : "worker")),
       checks:
-        "Node/Workers admission, late body, exact old snapshot, duplicate retry, process restart, strict JSON, shared snapshot, same-origin writes, bounded snapshot expiry and restart, package_versions, records, identities and activity reads, 404 suffix, 410 snapshot, version 2 package bytes and parts, both calculation profiles",
+        "Node/Workers mocked inference, disabled inference, session and CSRF, retry checks, secret and encrypted-reasoning redaction, log acknowledgment, admission, late body, exact old snapshot, duplicate retry, process restart, strict JSON, shared snapshot, same-origin writes, bounded snapshot expiry and restart, package_versions, records, identities and activity reads, 404 suffix, 410 snapshot, version 2 package bytes and parts, both calculation profiles",
       directory,
     }),
   );
 } finally {
   await Promise.allSettled(children.map((_, index) => stop(index)));
+  await new Promise<void>((done) => inferenceProvider.close(() => done()));
+  assert.equal(
+    logs.join("").includes(inferenceKey),
+    false,
+    "An adapter printed its disposable provider key.",
+  );
   await writeFile(join(directory, "adapters.log"), logs.join(""));
 }
