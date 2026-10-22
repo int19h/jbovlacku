@@ -263,7 +263,12 @@ test("object and package waits expire and oversized streams are cancelled", asyn
             if (stage === "part body" && path.includes("/packages/"))
               return new Response(pkg);
           }
-          if (stage.includes("body"))
+          // The page makes its own background requests, such as the manifest.
+          // Only the request under test gets a counted stream.
+          const target = stage.startsWith("envelope")
+            ? path.includes("/events/")
+            : path.includes("/package-parts/");
+          if (stage.includes("body") && target)
             return new Response(
               new ReadableStream({
                 cancel() {

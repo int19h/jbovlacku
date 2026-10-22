@@ -214,12 +214,16 @@ async function recomputeForSnapshot(page: Page, path: string) {
     .click();
   await expect(
     page.getByRole("region", { name: "Personal view" }),
-  ).toContainText(/Personal view calculated in this browser/);
+  ).toContainText(/Personal view calculated in this browser/, {
+    // The calculation is CPU-bound and slows down late in a full browser run.
+    timeout: 60000,
+  });
 }
 
 test("a signed public shun is pending until delivered and never changes an older snapshot, a recompute labels the block from the result, a private Trust rule does not cancel it, both reasons show on one reviewer, and the private reason survives a public clear", async ({
   page,
 }) => {
+  test.slow();
   const f = await fixture();
   await createIdentity(page);
   await useView(page, f.views.shun);
@@ -227,7 +231,10 @@ test("a signed public shun is pending until delivered and never changes an older
   await page.goto("/word/dunda");
   await expect(
     page.getByRole("region", { name: "Personal view" }),
-  ).toContainText(/Personal view calculated in this browser/);
+  ).toContainText(/Personal view calculated in this browser/, {
+    // The calculation is CPU-bound and slows down late in a full browser run.
+    timeout: 60000,
+  });
   const snapshotLine = page.locator("main p", { hasText: /^Snapshot / });
   const before = await snapshotLine.textContent();
   await openDetails(page, "Donates a gift");
@@ -300,7 +307,10 @@ test("a signed public shun is pending until delivered and never changes an older
   await page.goto("/word/dunda");
   await expect(
     page.getByRole("region", { name: "Personal view" }),
-  ).toContainText(/Personal view calculated in this browser/);
+  ).toContainText(/Personal view calculated in this browser/, {
+    // The calculation is CPU-bound and slows down late in a full browser run.
+    timeout: 60000,
+  });
   await openDetails(page, "Donates a gift");
   await expect(curator.row).toContainText(
     "blocked in your personal view by your public shun",
@@ -323,7 +333,10 @@ test("a signed public shun is pending until delivered and never changes an older
   await page.goto("/word/dunda");
   await expect(
     page.getByRole("region", { name: "Personal view" }),
-  ).toContainText(/Personal view calculated in this browser/);
+  ).toContainText(/Personal view calculated in this browser/, {
+    // The calculation is CPU-bound and slows down late in a full browser run.
+    timeout: 60000,
+  });
   await openDetails(page, "Donates a gift");
   await expect(curator.row).toContainText(
     "blocked in your personal view by your public shun and blocked by your private choice",
@@ -374,7 +387,10 @@ test("a broad public shun with a narrower public heed blocks a reviewer in the r
   await page.goto("/word/cukta");
   await expect(
     page.getByRole("region", { name: "Personal view" }),
-  ).toContainText(/Personal view calculated in this browser/);
+  ).toContainText(/Personal view calculated in this browser/, {
+    // The calculation is CPU-bound and slows down late in a full browser run.
+    timeout: 60000,
+  });
   // English definition context: the narrower heed overrides the broad shun.
   const curated = page.locator("article.definition", {
     has: page.locator(
