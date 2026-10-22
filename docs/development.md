@@ -302,6 +302,26 @@ PLAYWRIGHT_BROWSERS_PATH="$PWD/.cache/playwright" python3 crates/jvc-core/tests/
 
 That harness accepts `CARGO_TARGET_DIR` and `WASM_BINDGEN`. Its binding tool override differs from `JVC_WASM_BINDGEN` in the main build script.
 It records results under the selected Rust target directory.
+
+The state and ranking corpus uses the generated browser bindings from `npm run build:core`.
+Install Chromium as described above. Use new corpus directories for each run so old fixtures cannot enter the comparison:
+
+```sh
+mkdir -p .cache
+export JVC_STATE_PARITY_DIR="$(mktemp -d "$PWD/.cache/state-parity.XXXXXX")"
+export JVC_SHUN_PARITY_DIR="$(mktemp -d "$PWD/.cache/shun-parity.XXXXXX")"
+cargo test -p jvc-state -p jvc-runtime --locked --jobs 2 -- --test-threads=2
+npm run build:core
+node scripts/test-state-parity.mjs
+```
+
+The runner initializes the browser WebAssembly module before it compares complete native state and ranking results.
+Ranking cases compare `rank_word`, session ranking, and `rank_with_reviewers`, including `public_shun_block` and `private_block` details.
+When `JVC_SHUN_PARITY_DIR` is set, the runner requires shun-profile cases and both block reasons, separately and together.
+Without that variable, the runner compares state only. CI sets both corpus variables before the native tests and browser comparison.
+The runner writes `_wasm-report.json` into `JVC_STATE_PARITY_DIR`.
+`JVC_STATE_PARITY_WASM_DIR` selects another directory of browser bindings. `JVC_CHROMIUM` selects another Chromium executable.
+
 The [ranking guide](../crates/jvc-rank/README.md) describes its independent route oracle and eleven measurement scenarios.
 Its measurement script uses `CARGO_TARGET_DIR` or the repository's `target` directory.
 It requires an explicit output file and refuses to replace existing evidence.

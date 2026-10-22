@@ -13,10 +13,48 @@ const wasmDirectory = resolve(
 const directory = resolve(
   process.env.JVC_STATE_PARITY_DIR ?? join(root, ".cache/state-parity"),
 );
-const files = (await readdir(directory))
-  .filter((file) => file.endsWith(".json") && file !== "_wasm-report.json")
-  .sort();
-assert(files.length > 0, "Generate the native state corpus before this test.");
+async function readCorpus(directory, kind) {
+  const files = (await readdir(directory))
+    .filter((file) => file.endsWith(".json") && file !== "_wasm-report.json")
+    .sort();
+  assert(
+    files.length > 0,
+    `Generate the native ${kind} corpus before this test.`,
+  );
+  return files.map((file) => ({ kind, file, path: join(directory, file) }));
+}
+const cases = await readCorpus(directory, "state");
+if (process.env.JVC_SHUN_PARITY_DIR) {
+  const rankings = await readCorpus(
+    resolve(process.env.JVC_SHUN_PARITY_DIR),
+    "ranking",
+  );
+  let shunProfile = false;
+  const blockReasons = new Set();
+  for (const { path } of rankings) {
+    const fixture = JSON.parse(await readFile(path, "utf8"));
+    shunProfile ||=
+      fixture.expected?.calculation?.algorithm === "simple-routes-shun-v1";
+    for (const score of fixture.reviewers?.scores ?? []) {
+      for (const reviewer of score.reviewers ?? []) {
+        blockReasons.add(
+          `${reviewer.public_shun_block === true}/${reviewer.private_block === true}`,
+        );
+      }
+    }
+  }
+  assert(
+    shunProfile,
+    "The native ranking corpus must include the shun profile.",
+  );
+  for (const reasons of ["true/false", "false/true", "true/true"]) {
+    assert(
+      blockReasons.has(reasons),
+      `The native ranking corpus must include public_shun_block/private_block = ${reasons}.`,
+    );
+  }
+  cases.push(...rankings);
+}
 const timeout = Number(process.env.JVC_STATE_PARITY_TIMEOUT_MS ?? 120000);
 assert(
   Number.isSafeInteger(timeout) && timeout > 0,
@@ -28,13 +66,26 @@ const server = createServer(async (request, response) => {
     if (url.pathname === "/") {
       response.setHeader("content-type", "text/html; charset=utf-8");
       response.end(`<!doctype html><script type="module">
-import init, { evaluate_records } from '/jvc_runtime.js';
+import init, { evaluate_records, rank_word, EvaluationSession } from '/jvc_runtime.js';
 await init();
 window.runCase = async (index) => {
-  const { name, input } = await (await fetch('/fixture/' + index)).json();
+  const { kind, input, word } = await (await fetch('/fixture/' + index)).json();
   const start = performance.now();
-  const result = JSON.parse(evaluate_records(new TextEncoder().encode(JSON.stringify(input))));
-  return { name, result, milliseconds: performance.now() - start };
+  const bytes = new TextEncoder().encode(typeof input === 'string' ? input : JSON.stringify(input));
+  if (kind === 'state') {
+    return { result: JSON.parse(evaluate_records(bytes)), milliseconds: performance.now() - start };
+  }
+  const session = new EvaluationSession(bytes);
+  try {
+    return {
+      result: JSON.parse(rank_word(bytes, word)),
+      session: JSON.parse(session.rank(word)),
+      reviewers: JSON.parse(session.rank_with_reviewers(word, 16)),
+      milliseconds: performance.now() - start,
+    };
+  } finally {
+    session.free();
+  }
 };
 </script>`);
       return;
@@ -53,12 +104,11 @@ window.runCase = async (index) => {
       return;
     }
     const match = /^\/fixture\/(\d+)$/.exec(url.pathname);
-    if (match && files[Number(match[1])]) {
-      const { name, input } = JSON.parse(
-        await readFile(join(directory, files[Number(match[1])]), "utf8"),
-      );
+    if (match && cases[Number(match[1])]) {
+      const { kind, path } = cases[Number(match[1])];
+      const { input, word } = JSON.parse(await readFile(path, "utf8"));
       response.setHeader("content-type", "application/json");
-      response.end(JSON.stringify({ name, input }));
+      response.end(JSON.stringify({ kind, input, word }));
       return;
     }
     response.writeHead(404).end();
@@ -84,13 +134,15 @@ try {
   page.on("pageerror", (error) => console.error(String(error)));
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
   await page.waitForFunction(() => typeof window.runCase === "function");
-  for (let index = 0; index < files.length; index++) {
-    const fixture = JSON.parse(
-      await readFile(join(directory, files[index]), "utf8"),
-    );
+  for (let index = 0; index < cases.length; index++) {
+    const { kind, file, path } = cases[index];
+    const fixture = JSON.parse(await readFile(path, "utf8"));
+    const name = fixture.name ?? file;
     assert(
-      fixture.name && fixture.input && fixture.expected,
-      `Invalid native fixture: ${files[index]}`,
+      fixture.input &&
+        fixture.expected &&
+        (kind === "state" ? fixture.name : fixture.word && fixture.reviewers),
+      `Invalid native ${kind} fixture: ${file}`,
     );
     let timer;
     const actual = await Promise.race([
@@ -99,9 +151,7 @@ try {
         timer = setTimeout(
           () =>
             reject(
-              new Error(
-                `State calculation exceeded ${timeout} ms: ${fixture.name}`,
-              ),
+              new Error(`${kind} calculation exceeded ${timeout} ms: ${name}`),
             ),
           timeout,
         );
@@ -109,21 +159,28 @@ try {
     ]).finally(() => clearTimeout(timer));
     try {
       assert.deepStrictEqual(actual.result, fixture.expected);
+      if (kind === "ranking") {
+        assert.deepStrictEqual(actual.session, fixture.expected);
+        assert.deepStrictEqual(actual.reviewers, fixture.reviewers);
+      }
     } catch (error) {
       throw new Error(
-        `Native and browser state differ: ${fixture.name}\n${String(error).slice(0, 3000)}`,
+        `Native and browser ${kind} differ: ${name}\n${String(error).slice(0, 3000)}`,
       );
     }
     report.cases.push({
-      name: fixture.name,
-      file: files[index],
+      name,
+      kind,
+      file,
       milliseconds: actual.milliseconds,
     });
     if ((index + 1) % 20 === 0)
-      console.log(`State parity: ${index + 1}/${files.length} cases passed.`);
+      console.log(
+        `State and ranking parity: ${index + 1}/${cases.length} cases passed.`,
+      );
   }
   report.status = "passed";
-  console.log(`Native and browser state agree for ${files.length} cases.`);
+  console.log(`Native and browser results agree for ${cases.length} cases.`);
 } catch (error) {
   report.error = String(error);
   throw error;

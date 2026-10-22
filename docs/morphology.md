@@ -10,7 +10,7 @@ Identifier: `https://github.com/int19h/jbovlacku/blob/main/docs/morphology.md#cl
 
 The profile follows [CLL chapter 4](https://lojban.github.io/cll/4/1/):
 
-- Consonant pairs and initial pairs follow CLL 3.6 and 3.7.
+- Consonant pairs and initial pairs follow CLL 3.6 and 3.7. The pair `mz` is forbidden, including at a component boundary without `y`.
 - A component form is a short rafsi (CVC, CCV, CVV, CV'V), a four-letter gismu stem (CVCC, CCVC) before another part, or a whole gismu in the last position. A CVC rafsi never ends a lujvo.
 - Joins follow CLL 4.11. A `y` follows a four-letter stem, separates a forbidden consonant pair, and separates `n` from `tc`, `ts`, `dj`, or `dz`. An `r` follows a first CVV rafsi, or `n` when the next part begins with `r`, unless the lujvo has two parts and the second is CCV. The tosmabru test adds one `y` after a leading CVC run that would read as cmavo before a gismu.
 - A constructed candidate must parse as one lujvo and recover the intended parts and joins. Construction uses the required joins from CLL 4.11.
@@ -37,7 +37,11 @@ The extended profile adds the audited jbotci behavior for whole-word parts. It i
 - Every candidate must parse as one lujvo under the pinned recognizer. Its parsed components and joins must equal the intended sequence. Token reconstruction supplies no parse evidence.
 - A join can produce an invalid spelling. For example, bonding `leksiko` and `ismu` produces `leksiko'yismu`. The builder refuses that result after parsing it.
 
-The word recognizer ports the pure recognition functions from jbotci's `segment.rs` and the indicator table from `cmavo.rs`. Contract macros and source diagnostic types do not enter the port. The crate adds work limits around the same parsing rules. It returns spelling spans without jbotci's stress and glide marks.
+Both profiles refuse the pair `mz` in every word kind and whole-word component. The extended profile does not include jbotci's experimental `mz` relaxation.
+
+Extended analysis also accepts the join `'y'`, as in `bangu'y'ismu`. It reports the full token as the join before the next component. A nonfinal whole gismu is a core. A final whole gismu can be a rafsi under the CLL component rules.
+
+The word recognizer ports the pure recognition functions from jbotci's `segment.rs` and the indicator table from `cmavo.rs`. Contract macros and source diagnostic types do not enter the port. The crate adds work limits and uses the CLL consonant-pair restrictions. It returns spelling spans without jbotci's stress and glide marks.
 
 The CLL profile restricts lujvo components and construction joins. General word recognition uses the pinned jbotci lineage for both profiles. This is not full equivalence with gencmu's `cll-ebnf` grammar. For example, jbotci and gencmu `bpfk` recognize `ismu`, while gencmu `cll-ebnf` rejects it. The retained [reference results](../crates/jvc-morphology/evidence/word-parses.json) record this difference. Fu'ivla classification is advisory under the CLL profile. Every such analysis reports that the extended jbotci lineage does not establish CLL validity.
 
@@ -45,15 +49,21 @@ The extended parser recognizes `sakrsakysakli` as `sakrsak + y + sakli`. The CLL
 
 ## Work limits
 
-The recognizer accepts at most 128 input bytes. It permits at most 50,000 calls to recursive recognition functions that share its cache. This counts failed paths and cached calls. Exhaustion invalidates the whole analysis, including any earlier successful branch. Analysis returns `unknown` with a resource diagnostic. Builders return `BuilderError::ResourceLimit` and no partial result.
+The recognizer accepts at most 128 input bytes. It permits at most 50,000 calls to recursive recognition functions that share its cache. This counts failed paths and cached calls. Exhaustion invalidates the whole analysis, including any earlier successful branch. Analysis returns `unknown` with a resource diagnostic. Candidate recognition exhaustion makes builders return `BuilderError::ResourceLimit` and no partial result.
 
-A lujvo request accepts 2 through 64 components, 64 claims per component, and 20,000 inventory claims. A component or claimed rafsi accepts at most 128 bytes. A build permits at most 20,000 choice combinations and 2,000,000 recognition calls across candidate checks. Failed candidate parses count toward that total. A result window permits at most 512 candidates. The builder creates conflict details after it selects that window. Caller limits can reduce these ceilings. The public Rust score function returns an error above 128 bytes, before arithmetic.
+A lujvo request accepts 2 through 64 components, 64 claims per component, and 20,000 inventory claims. A component or claimed rafsi accepts at most 128 bytes. A build permits at most 20,000 choice combinations and 2,000,000 recognition calls across candidate checks. A result window permits at most 512 candidates.
+
+Caller limits can reduce these ceilings. The public Rust score function returns an error above 128 bytes, before arithmetic.
+
+The builder bonds and scores every combination before parsing candidates in score order. It stops parsing when the result window fills. Every returned candidate recovers the intended parts and joins from a full parse. The builder caches each distinct whole-word core check across candidate checks. Failed candidate parses count toward the shared work limit.
+
+The work limit can still stop long or repeatedly rejected forms before the window fills. It does not guarantee 512 results for every input. A resource error suggests a component lock or a smaller result window and returns no partial result. The builder creates conflict details only for returned candidates. A complete result covers every combination for bonding and scoring. Its rejected list covers only candidates parsed before the window fills.
 
 A gismu request accepts 1 through 64 source rows. Each raw scoring input and native source word accepts at most 256 bytes. A normalized scoring input accepts at most 64 letters. A language identifier accepts at most 64 bytes. Each weight part accepts at most 64 decimal digits. Exact weight arithmetic permits at most 4096 bits in its shared denominator and total weight. The search permits at most 60,000,000 candidate-input-letter operations. Each inventory list permits at most 20,000 rows. Caller limits can reduce these ceilings.
 
 Each builder shares one conflict budget across its result. It permits 1,000,000 inventory scans and index references, 20,000 copied conflict rows, and 4,000,000 copied text bytes. Gismu budgets include both ranked candidates and the manual form. Preflight checks cover the later copy pass before that pass allocates conflict strings. A resource error returns no partial result and no incomplete conflict list.
 
-Direct component analysis reports incomplete recognition when the recognizer reaches its work limit. It does not declare the spelling invalid or the whole-word lock obsolete from that incomplete result.
+Direct component analysis reports incomplete recognition when the recognizer reaches its work limit. It does not declare the spelling invalid or the whole-word lock obsolete from that incomplete result. A lujvo build keeps the row's listed rafsi choices and locks when whole-word recognition is incomplete. Each returned candidate still needs a complete parse.
 
 ## Extended lujvo scoring
 
