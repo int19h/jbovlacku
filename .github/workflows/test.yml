@@ -21,6 +21,7 @@ jobs:
       CARGO_TARGET_DIR: /build/jbovlacku/target
       JVC_TEST_ROOT: /build/jbovlacku/tests
       JVC_STATE_PARITY_DIR: /build/jbovlacku/state-parity
+      JVC_SHUN_PARITY_DIR: /build/jbovlacku/shun-parity
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -49,7 +50,7 @@ jobs:
         run: npm run build:core
       - name: Compare native and browser format results
         run: python3 crates/jvc-core/tests/run-browser-parity.py
-      - name: Compare native and browser causal state
+      - name: Compare native and browser causal state and ranking
         run: node scripts/test-state-parity.mjs
       - name: Check TypeScript
         run: npm run typecheck
