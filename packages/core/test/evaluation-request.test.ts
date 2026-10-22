@@ -132,6 +132,25 @@ test("unsupported objects and cycles fail before encoding", () => {
   assert.equal(getterCalls, 0);
 });
 
+test("array subclasses and custom array prototypes fail without invoking inherited toJSON", () => {
+  let calls = 0;
+  class CustomArray extends Array<string> {
+    toJSON() {
+      calls++;
+      return ["replacement"];
+    }
+  }
+  const subclass = new CustomArray("original");
+  assert.equal(JSON.stringify(subclass), '["replacement"]');
+  calls = 0;
+  for (const overlay of [subclass, Object.setPrototypeOf(["value"], null)])
+    assert.throws(
+      () => encodeEvaluationRequest(request({ overlay })),
+      /plain JSON values/,
+    );
+  assert.equal(calls, 0);
+});
+
 before(async () =>
   initializeCore(
     await readFile(

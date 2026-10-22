@@ -23,10 +23,11 @@ function* chunks(
   if (ancestors.has(value))
     throw new TypeError("Evaluation requests cannot contain cyclic values.");
   const array = Array.isArray(value);
+  const prototype = Object.getPrototypeOf(value);
   if (
-    !array &&
-    Object.getPrototypeOf(value) !== Object.prototype &&
-    Object.getPrototypeOf(value) !== null
+    array
+      ? prototype !== Array.prototype
+      : prototype !== Object.prototype && prototype !== null
   )
     throw new TypeError("Evaluation requests must contain plain JSON values.");
   const toJSON = Object.getOwnPropertyDescriptor(value, "toJSON");
