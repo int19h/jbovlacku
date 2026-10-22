@@ -1,11 +1,15 @@
 import type { IndexStore } from "./index-store.ts";
-import { buildPackages, type MaterializedPackages } from "./packages.ts";
+import {
+  buildPackages,
+  type MaterializedPackages,
+  type PackageRecord,
+} from "./packages.ts";
 import {
   canonicalize,
   contentHash,
   prepareAdmission,
   prepareSelection,
-  evaluateSession,
+  createEvaluationSession,
   utf8,
   verifyEnvelope,
   inspectBody,
@@ -160,6 +164,16 @@ export class DictionaryService {
   }
   private packageCache = new Map<string, Promise<MaterializedPackages>>();
   private inFlightPackages = new Set<string>();
+  private packageRecords = new Map<string, PackageRecord[]>();
+  private prunePackageRecords() {
+    const retained = new Set([
+      ...this.packageCache.keys(),
+      ...this.inFlightPackages,
+      ...[...this.sessions.keys()].map((key) => key.split("|")[0]),
+    ]);
+    for (const snapshot of this.packageRecords.keys())
+      if (!retained.has(snapshot)) this.packageRecords.delete(snapshot);
+  }
   private packages(snapshot: Snapshot): Promise<MaterializedPackages> {
     const cached = this.packageCache.get(snapshot.snapshot);
     if (cached) return cached;
@@ -176,10 +190,18 @@ export class DictionaryService {
         (key) => !this.inFlightPackages.has(key),
       )!;
       this.packageCache.delete(evicted);
+      this.prunePackageRecords();
     }
     this.inFlightPackages.add(snapshot.snapshot);
-    const pending = buildPackages(snapshot, this.objects).then(
-      async (built) => {
+    const pending = this.evaluation(snapshot)
+      .then(() =>
+        buildPackages(
+          snapshot,
+          this.objects,
+          this.packageRecords.get(snapshot.snapshot),
+        ),
+      )
+      .then(async (built) => {
         if (this.options.index)
           await this.options.index.replace(snapshot.snapshot, built.entries);
         for (let attempt = 0; attempt < 20; attempt++) {
@@ -199,8 +221,7 @@ export class DictionaryService {
             break;
         }
         return built;
-      },
-    );
+      });
     this.packageCache.set(snapshot.snapshot, pending);
     pending.then(
       () => {
@@ -210,6 +231,7 @@ export class DictionaryService {
         this.inFlightPackages.delete(snapshot.snapshot);
         if (this.packageCache.get(snapshot.snapshot) === pending)
           this.packageCache.delete(snapshot.snapshot);
+        this.prunePackageRecords();
       },
     );
     return pending;
@@ -311,7 +333,10 @@ export class DictionaryService {
   }
   private evaluationCache = new Map<string, Promise<Evaluation>>();
   private inFlightEvaluations = new Set<string>();
-  private sessions = new Map<string, ReturnType<typeof evaluateSession>>();
+  private sessions = new Map<
+    string,
+    ReturnType<ReturnType<typeof createEvaluationSession>["finish"]>
+  >();
   private evaluation(
     snapshot: Snapshot,
     view = this.options.selectedView ?? zeroView,
@@ -348,6 +373,7 @@ export class DictionaryService {
       this.evaluationCache.delete(evicted);
       this.sessions.get(evicted)?.free();
       this.sessions.delete(evicted);
+      this.prunePackageRecords();
     }
     this.inFlightEvaluations.add(key);
     let result: Promise<Evaluation>;
@@ -374,39 +400,49 @@ export class DictionaryService {
     view = this.options.selectedView ?? zeroView,
     ownsEntry: () => boolean = () => true,
   ): Promise<Evaluation> {
-    const events: string[] = [];
-    const bodies: Record<string, string> = {};
     const selections: Record<string, string[]> = {};
-    for (const id of sorted(Object.keys(snapshot.events))) {
-      const event = snapshot.events[id];
-      const raw = await this.objects.get(event.envelope_hash);
-      if (!raw)
-        throw new ApiError(
-          503,
-          "storage_unavailable",
-          "Envelope bytes are unavailable.",
-        );
-      events.push(new TextDecoder().decode(raw));
-      if (event.body_hash) {
-        const body = await this.objects.get(event.body_hash);
-        if (body) bodies[id] = new TextDecoder().decode(body);
-      }
-    }
     for (const hash of snapshot.import_selections) {
       const raw = await this.objects.get(hash);
       if (raw) selections[hash] = prepareSelection(raw).ids;
     }
-    const session = evaluateSession({
-      events,
-      bodies,
+    const builder = createEvaluationSession({
       selected_view: view,
       import_selections: selections,
       limits: this.options.stateLimits,
     });
-    const state = session.state;
-    if (ownsEntry()) this.sessions.set(snapshot.snapshot + "|" + view, session);
-    else session.free();
-    return state;
+    const packageRecords: PackageRecord[] = [];
+    try {
+      for (const id of sorted(Object.keys(snapshot.events))) {
+        const event = snapshot.events[id];
+        const envelope = await this.objects.get(event.envelope_hash);
+        if (!envelope)
+          throw new ApiError(
+            503,
+            "storage_unavailable",
+            "Envelope bytes are unavailable.",
+          );
+        const body = event.body_hash
+          ? await this.objects.get(event.body_hash)
+          : null;
+        const record = builder.addRecord(envelope, body ?? undefined);
+        if (record)
+          packageRecords.push({
+            ...record,
+            envelope_hash: contentHash(envelope),
+            missing: event.body_hash !== null && body === null,
+          });
+      }
+      const session = builder.finish();
+      const state = session.state;
+      if (ownsEntry()) {
+        this.sessions.set(snapshot.snapshot + "|" + view, session);
+        if (!this.packageRecords.has(snapshot.snapshot))
+          this.packageRecords.set(snapshot.snapshot, packageRecords);
+      } else session.free();
+      return state;
+    } finally {
+      builder.free();
+    }
   }
   private async receipt(
     id: string,

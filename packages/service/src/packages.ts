@@ -3,7 +3,7 @@ import {
   contentHash,
   inspectBody,
   utf8,
-  type Header,
+  type EvaluationPackageRecord,
 } from "../../core/src/index.ts";
 import type { ObjectStore, Snapshot } from "./storage.ts";
 /**
@@ -59,6 +59,10 @@ export interface MaterializedPackages {
   /** Version 2 packages by language. */
   packages2: Record<string, MaterializedPackage>;
 }
+export interface PackageRecord extends EvaluationPackageRecord {
+  envelope_hash: string;
+  missing: boolean;
+}
 export function plainDefinitionText(value: unknown): string {
   if (!Array.isArray(value)) return "";
   return value
@@ -88,60 +92,97 @@ const canonical = (value: unknown) =>
 export async function buildPackages(
   snapshot: Snapshot,
   objects: ObjectStore,
+  prepared?: PackageRecord[],
 ): Promise<MaterializedPackages> {
   const entries: SearchEntry[] = [];
   const entries2: SearchEntryV2[] = [];
   // Rafsi spellings from retained claim bodies, by word ID.
   const rafsiByWord = new Map<string, Set<string>>();
   const incompleteRafsi = new Set<string>();
-  for (const id of Object.keys(snapshot.events).sort()) {
-    const event = snapshot.events[id];
-    if (event.header.action.kind !== "rafsi.publish") continue;
-    const word = String(event.header.action.word);
-    if (event.body_hash === null) {
+  async function* records(kind: EvaluationPackageRecord["kind"]) {
+    if (prepared) {
+      for (const record of prepared) {
+        if (record.kind !== kind) continue;
+        const event = snapshot.events[record.id];
+        const envelope = event.body_hash
+          ? await objects.get(event.envelope_hash)
+          : null;
+        const bytes = event.body_hash
+          ? await objects.get(event.body_hash)
+          : null;
+        let body: PackageRecord["body"] = null;
+        if (envelope && bytes) {
+          if (
+            !record.missing &&
+            contentHash(envelope) === record.envelope_hash &&
+            contentHash(bytes) === record.body_hash
+          )
+            body = record.body;
+          else {
+            const checked = inspectBody(envelope, bytes);
+            if (checked.availability === "valid")
+              body = checked.body as Record<string, unknown>;
+          }
+        }
+        yield {
+          ...record,
+          body_hash: event.body_hash,
+          body,
+          missing: event.body_hash !== null && (!envelope || !bytes),
+        };
+      }
+      return;
+    }
+    for (const id of Object.keys(snapshot.events).sort()) {
+      const event = snapshot.events[id];
+      if (event.header.action.kind !== kind) continue;
+      const envelope = event.body_hash
+        ? await objects.get(event.envelope_hash)
+        : null;
+      const bytes = event.body_hash ? await objects.get(event.body_hash) : null;
+      const checked = envelope && bytes ? inspectBody(envelope, bytes) : null;
+      yield {
+        id,
+        kind,
+        issuer: event.header.issuer,
+        word: String(event.header.action.word),
+        body_hash: event.body_hash,
+        envelope_hash: event.envelope_hash,
+        body:
+          checked?.availability === "valid"
+            ? (checked.body as Record<string, unknown>)
+            : null,
+        missing: event.body_hash !== null && (!envelope || !bytes),
+      };
+    }
+  }
+  for await (const record of records("rafsi.publish")) {
+    const word = String(record.word);
+    if (!record.body) {
       incompleteRafsi.add(word);
       continue;
     }
-    const envelope = await objects.get(event.envelope_hash);
-    const bytes = await objects.get(event.body_hash);
-    if (!envelope || !bytes) {
-      incompleteRafsi.add(word);
-      continue;
-    }
-    const availability = inspectBody(envelope, bytes);
-    if (availability.availability !== "valid") {
-      incompleteRafsi.add(word);
-      continue;
-    }
-    const body = availability.body as { rafsi?: unknown };
+    const body = record.body;
     if (typeof word === "string" && typeof body.rafsi === "string") {
       const set = rafsiByWord.get(word) ?? new Set<string>();
       set.add(body.rafsi);
       rafsiByWord.set(word, set);
     }
   }
-  for (const id of Object.keys(snapshot.events).sort()) {
-    const event = snapshot.events[id];
-    if (
-      event.header.action.kind !== "definition.publish" ||
-      event.body_hash === null
-    )
-      continue;
-    const envelope = await objects.get(event.envelope_hash);
-    const bytes = await objects.get(event.body_hash);
-    if (!envelope || !bytes)
+  for await (const record of records("definition.publish")) {
+    if (record.body_hash === null) continue;
+    if (record.missing)
       throw new Error("Retained publication bytes are unavailable.");
-    const availability = inspectBody(envelope, bytes);
-    if (availability.availability !== "valid") continue;
-    const body = availability.body as Record<string, any>;
+    if (!record.body) continue;
+    const body = record.body as Record<string, any>;
     const entry: SearchEntry = {
-      event: id,
+      event: record.id,
       word: body.word,
       language: body.language,
       glosses: body.glosses,
       plain_text: plainDefinitionText(body.text),
       classification: body.classification,
-      body: event.body_hash,
+      body: record.body_hash,
     };
     entries.push(entry);
     const legacy = body.legacy as Record<string, any> | null;
@@ -153,14 +194,14 @@ export async function buildPackages(
       if (typeof value === "string") dates[label] = value;
     entries2.push({
       ...entry,
-      issuer: event.header.issuer,
+      issuer: record.issuer,
       notes: Array.isArray(body.notes) && body.notes.length > 0,
-      rafsi: [...(rafsiByWord.get(String(event.header.action.word)) ?? [])]
+      rafsi: [...(rafsiByWord.get(String(record.word)) ?? [])]
         .sort()
         .slice(0, PACKAGE_RAFSI_LIMIT),
       rafsi_complete:
-        !incompleteRafsi.has(String(event.header.action.word)) &&
-        (rafsiByWord.get(String(event.header.action.word))?.size ?? 0) <=
+        !incompleteRafsi.has(String(record.word)) &&
+        (rafsiByWord.get(String(record.word))?.size ?? 0) <=
           PACKAGE_RAFSI_LIMIT,
       attribution: legacy
         ? {
@@ -190,11 +231,20 @@ export async function buildPackages(
     ].sort()) {
       const selected = all.filter((entry) => entry.language === language);
       const parts: SearchPackage["parts"] = [];
-      let part: T[] = [];
+      let part: Uint8Array[] = [];
       let partBytes = 2;
       async function save() {
         if (!part.length) return;
-        const bytes = canonical(part);
+        // Each entry is already canonical. Array punctuation preserves those bytes.
+        const bytes = new Uint8Array(partBytes);
+        bytes[0] = 91;
+        let offset = 1;
+        for (const [index, entry] of part.entries()) {
+          if (index) bytes[offset++] = 44;
+          bytes.set(entry, offset);
+          offset += entry.length;
+        }
+        bytes[offset] = 93;
         const hash = contentHash(bytes);
         await objects.put(hash, bytes);
         parts.push({ hash, bytes: bytes.length, count: part.length });
@@ -202,14 +252,15 @@ export async function buildPackages(
         partBytes = 2;
       }
       for (const entry of selected) {
-        const entryBytes = canonical(entry).length;
+        const encoded = canonical(entry);
+        const entryBytes = encoded.length;
         if (
           part.length === 2000 ||
           partBytes + entryBytes + (part.length ? 1 : 0) > 4194304
         )
           await save();
         partBytes += entryBytes + (part.length ? 1 : 0);
-        part.push(entry);
+        part.push(encoded);
       }
       await save();
       const manifest: SearchPackage = {
