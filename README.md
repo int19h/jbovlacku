@@ -100,9 +100,11 @@ Local Wrangler success does not prove deployed quota, memory, or CPU compliance.
 The current default state work budget can run out at roughly 4,500 events in a flat history.
 This is an approximate limit. Histories with more edges can reach it sooner, and the requested state also affects the work.
 The Node loader can retain a larger explicit traversal budget for a local import.
-That configuration does not remove memory limits or establish performance for the full corpus.
-The full initial SQL import exceeds WebAssembly's 4 GiB memory limit during evaluation.
-Its signed proposal and loaded objects remain available, but full dictionary reads need a runtime fix.
+The Node adapter serves the pinned SQL import with 59,125 definitions in 44 languages.
+On this VM, readiness took 2.63 seconds and the cold `klama` request took 73.19 seconds.
+Warm word requests took 0.79 to 1.12 seconds. Search took 0.77 to 0.93 seconds across English, French, and Russian.
+Wasm memory reached 763.13 MiB. Peak process memory reached 3.61 GiB.
+The 30-second cold request target remains unmet. The [development guide](docs/development.md#initial-lensisku-data) describes the measured path and its limits.
 
 [Issue 9](https://github.com/int19h/jbovlacku/issues/9) tracks ranking CPU limits.
 [Issue 11](https://github.com/int19h/jbovlacku/issues/11) tracks state evaluation beyond the local corpus.

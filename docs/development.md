@@ -158,11 +158,29 @@ Large imports need a larger explicit state work budget and enough memory.
 The traversal flag changes the work limit only. It does not remove memory or event limits.
 The loader completes admission before the server builds its snapshot, indexes, and search packages.
 Successful admission alone does not establish successful dictionary evaluation.
-Evaluation requests use UTF-8 byte encoding without one combined JSON string.
-The complete request and source bodies still count toward memory use.
-The full initial SQL import exceeds WebAssembly's 4 GiB memory limit during evaluation.
-Admission succeeds, but full dictionary reads need a runtime fix.
-An explicit traversal limit or a larger Node heap does not remove that WebAssembly limit.
+
+The service streams original envelopes and bodies into the shared core, with at most 16 record reads in progress per job.
+The core authenticates each envelope and the complete original body before it retains the fields needed for state.
+These fields include source selection evidence and numeric source-account evidence. Stored bodies and signed identifiers keep their original bytes.
+Sessions retain evaluated state instead of all source bodies. Small ancestor sets use sparse storage.
+Identical history caches share storage when the snapshot contains no acceptance events. Work charges stay unchanged.
+
+Search packages reuse authenticated text and attribution fields when the stored byte hashes still match.
+Missing, changed, or late body bytes retain their separate handling. The verifier caches at most 1,024 validated public keys per builder.
+Every signature still passes the point, scalar, embedded-key, and equation rules.
+The existing combined-request API remains available for smaller browser snapshots. It still allocates the complete request.
+
+The full local measurement used 59,125 definitions, 44 languages, 59,126 events, and the saved 1,000,000,000-unit traversal budget.
+The source ran on `127.0.0.1`. The start command used no Node heap override. Readiness took 2.63 seconds.
+The cold `klama` word request took 73.19 seconds, including 57.97 seconds for evaluation and 14.22 seconds for packages.
+Warm word requests took 0.79 to 1.12 seconds. Search took 0.77 to 0.93 seconds across English, French, and Russian.
+The same run read language packages, package parts, and the original definition bodies successfully.
+Wasm linear memory reached 763.13 MiB. Linux reported peak process memory of 3.61 GiB, including Wasm.
+
+The warm request and memory targets passed. The 30-second cold request target remains unmet.
+Initial evaluation still authenticates every record and builds the complete history state. Packages also reread retained bytes to detect storage failures.
+These single-process measurements use the VM's existing filesystem cache. They do not establish performance on another host or under concurrent full imports.
+The measurements do not establish hosted Worker resource compliance.
 
 ## Browser development
 
