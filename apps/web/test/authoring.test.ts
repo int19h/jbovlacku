@@ -159,9 +159,15 @@ test("structured places keep declared order when prose mentions place 3 first, a
   await editor.fill("③ holds ① read by ②.");
   await page.getByRole("button", { name: "Approve the numbering" }).click();
   await page.getByRole("button", { name: "Review" }).click();
-  await expect(
-    page.locator(".preview-card .place-strip").getByLabel("place 1: the text"),
-  ).toBeVisible();
+  const previewPlaces = page.locator(".preview-card .place-strip > span");
+  await expect(previewPlaces).toHaveText([
+    "1place 1: the text",
+    "2place 2: the reader",
+    "3place 3: the medium",
+  ]);
+  await expect(previewPlaces.first()).toMatchAriaSnapshot(
+    '- text: "place 1: the text"',
+  );
   await page.locator("aside").getByRole("button", { name: "Publish" }).click();
   await acceptFirstSignature(page);
   await expect(page).toHaveTitle("brodyckusni · jbovlacku");

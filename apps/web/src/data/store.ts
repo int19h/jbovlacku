@@ -453,9 +453,25 @@ export class LocalStore {
     return preferences;
   }
   async setPreferences(patch: Partial<Preferences>): Promise<Preferences> {
-    const next = { ...(await this.preferences()), ...patch };
-    await this.put("prefs", "preferences", next);
-    return next;
+    const db = await this.database;
+    return new Promise((resolve, reject) => {
+      // Keep the read and write together so concurrent choices are retained.
+      const tx = db.transaction("prefs", "readwrite");
+      const prefs = tx.objectStore("prefs");
+      const request = prefs.get("preferences");
+      let next: Preferences;
+      request.onsuccess = () => {
+        next = { ...defaultPreferences, ...(request.result ?? {}), ...patch };
+        delete (next as Preferences & { keepUnlocked?: boolean }).keepUnlocked;
+        prefs.put(next, "preferences");
+      };
+      tx.oncomplete = () => resolve(next);
+      tx.onabort = () =>
+        reject(
+          tx.error ?? new Error("Local storage did not save these preferences."),
+        );
+      tx.onerror = () => {};
+    });
   }
   async overlay(): Promise<Overlay> {
     return (await this.get<Overlay>("prefs", "overlay")) ?? emptyOverlay();

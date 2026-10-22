@@ -1056,7 +1056,7 @@ test("an invalid version 2 package falls back to version 1 with a recorded reaso
   const conflicts = page.getByRole("region", { name: "Known conflicts" });
   await expect(conflicts).toContainText("Rafsi claims: rod.");
   await expect(conflicts).toContainText(
-    "The local package carries no rafsi claims, so conflict coverage is unknown.",
+    "The local package carries no rafsi claims, so rafsi conflict coverage is unknown.",
   );
 });
 

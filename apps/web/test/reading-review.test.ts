@@ -176,6 +176,39 @@ test("remote and local-fallback queries name the host before the first request",
   }
 });
 
+test("concurrent preference changes keep both choices and remove the old persistent unlock setting", async ({
+  page,
+}) => {
+  await page.goto("/about");
+  await expect(page.locator("main h1")).toBeAttached();
+  const preferences = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const name = "jbovlacku-concurrent-preferences";
+    const first = new LocalStore(name);
+    const second = new LocalStore(name);
+    await first.put("prefs", "preferences", {
+      theme: "dark",
+      keepUnlocked: true,
+    });
+    await Promise.all([
+      first.setPreferences({ myJudgmentsFirst: true }),
+      second.setPreferences({ orthography: "zbalermorna" }),
+    ]);
+    return {
+      loaded: await second.preferences(),
+      stored: await first.get("prefs", "preferences"),
+    };
+  });
+  for (const value of [preferences.loaded, preferences.stored]) {
+    expect(value).toMatchObject({
+      theme: "dark",
+      myJudgmentsFirst: true,
+      orthography: "zbalermorna",
+    });
+    expect(value).not.toHaveProperty("keepUnlocked");
+  }
+});
+
 test("reading preferences change orthography and put own judgments first without changing scores", async ({
   page,
 }) => {
