@@ -1,5 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { fixture } from "./helpers.ts";
+import type { RafsiInventoryClaim } from "../../../packages/core/src/index.ts";
 
 async function downloadPackage(page: Page) {
   await page.goto("/preferences");
@@ -33,7 +34,24 @@ async function currentDraft(page: Page) {
 test("the lujvo builder offers long forms beside listed rafsi, recovers parts, honors locks, and needs acknowledgment of competing claims", async ({
   page,
 }) => {
+  const f = fixture();
   await downloadPackage(page);
+  const competingWords = await page.evaluate(async (ownWord) => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { cachedPackage, inventoryFromPackage } = await import(
+      String("/src/model/builders.ts")
+    );
+    const inventory = inventoryFromPackage(
+      await cachedPackage(new LocalStore()),
+    );
+    return inventory.claims
+      .filter(
+        (claim: RafsiInventoryClaim) =>
+          claim.rafsi === "cku" && claim.word !== ownWord,
+      )
+      .map((claim: RafsiInventoryClaim) => claim.spelling)
+      .sort();
+  }, f.words.cukta);
   await startDraft(page, "lujvo");
   await expect(
     page.getByRole("heading", { name: "Build the lujvo" }),
@@ -107,8 +125,20 @@ test("the lujvo builder offers long forms beside listed rafsi, recovers parts, h
   // same run can publish other words that claim cku, and each of those
   // package claims needs its own acknowledgment for this form.
   const boxes = await result.getByRole("checkbox").all();
-  for (const box of boxes)
-    await expect(box).toHaveAccessibleName(/^cku is also claimed by /);
+  await expect(result.getByRole("checkbox")).toHaveCount(competingWords.length);
+  for (const word of competingWords)
+    await expect(
+      result.getByRole("checkbox", {
+        name: `cku is also claimed by ${word}. I keep this form.`,
+        exact: true,
+      }),
+    ).toBeVisible();
+  await expect(
+    result.getByRole("checkbox", {
+      name: "cku is also claimed by cukta. I keep this form.",
+      exact: true,
+    }),
+  ).toHaveCount(0);
   if (boxes.length) await expect(primary).toBeDisabled();
   for (const box of boxes) await box.check();
   await expect(primary).toBeEnabled();
@@ -368,7 +398,7 @@ test("a custom profile needs a positive weight and an unfinished row never gets 
 });
 
 for (const measure of ["recognition work", "build recognition work"]) {
-  test(`the wizard gives lock advice for ${measure} from WebAssembly`, async ({
+  test(`the wizard limits lock advice to shared build work for ${measure} from WebAssembly`, async ({
     page,
   }) => {
     await page.route(
@@ -399,8 +429,84 @@ for (const measure of ["recognition work", "build recognition work"]) {
     await expect(result).toContainText(
       `The builder stopped: ${measure} is 50001, above the limit of 50000.`,
     );
-    await expect(result).toContainText(
-      "Lock a component form or request fewer results.",
-    );
+    if (measure === "build recognition work")
+      await expect(result).toContainText("Lock a component form.");
+    else await expect(result).not.toContainText("Lock a component form");
+    await expect(result).not.toContainText("fewer results");
   });
 }
+
+for (const profile of ["cll", "extended"]) {
+  test(`an exhausted whole-word lock stays visible under ${profile}`, async ({
+    page,
+  }) => {
+    await startDraft(page, "lujvo");
+    const spelling = "tca".repeat(26);
+    await page.evaluate(
+      async ({ spelling, profile }) => {
+        const { LocalStore } = await import(String("/src/data/store.ts"));
+        const store = new LocalStore();
+        const draft: any = await store.get("drafts", "current");
+        draft.lujvo = {
+          profile,
+          selected: null,
+          acknowledged: [],
+          components: [
+            {
+              id: "long",
+              spelling,
+              kind: "lujvo",
+              definition: null,
+              gloss: "",
+              claims: [{ rafsi: "bau", pair: "pair-bau" }],
+              locked: spelling,
+            },
+            {
+              id: "short",
+              spelling: "sinxa",
+              kind: "gismu",
+              definition: null,
+              gloss: "",
+              claims: [{ rafsi: "sni", pair: "pair-sni" }],
+              locked: "sni",
+            },
+          ],
+        };
+        await store.put("drafts", "current", draft);
+      },
+      { spelling, profile },
+    );
+    await page.reload();
+    const row = page.getByRole("group", { name: `Rafsi for ${spelling}` });
+    const locked = row.getByRole("radio", { name: spelling, exact: true });
+    await expect(locked).toBeChecked();
+    await expect(locked.locator("..")).toHaveAttribute(
+      "title",
+      /Candidates use the listed rafsi until recognition finishes/,
+    );
+    await expect(page.locator("main")).toContainText(
+      profile === "cll"
+        ? "The whole-word lock is invalid under the CLL profile."
+        : "The whole-word lock waits for complete recognition.",
+    );
+    await expect(page.getByRole("region", { name: "Result" })).toContainText(
+      "bausni",
+    );
+    await expect(
+      row.getByRole("radio", { name: "automatic", exact: true }),
+    ).not.toBeChecked();
+  });
+}
+
+test("single-word recognition gives no component-lock or result-count advice", async ({
+  page,
+}) => {
+  await startDraft(page, "lujvo");
+  await page.getByLabel("Add a part").fill("tca".repeat(26));
+  const matches = page.getByRole("list", { name: "Matching words" });
+  await expect(matches).toContainText(
+    "recognition work is 50001, above the limit of 50000.",
+  );
+  await expect(matches).not.toContainText("Lock a component form");
+  await expect(matches).not.toContainText("fewer results");
+});

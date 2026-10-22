@@ -57,13 +57,20 @@ Caller limits can reduce these ceilings. The public Rust score function returns 
 
 The builder bonds and scores every combination before parsing candidates in score order. It stops parsing when the result window fills. Every returned candidate recovers the intended parts and joins from a full parse. The builder caches each distinct whole-word core check across candidate checks. Failed candidate parses count toward the shared work limit.
 
-The work limit can still stop long or repeatedly rejected forms before the window fills. It does not guarantee 512 results for every input. A resource error suggests a component lock or a smaller result window and returns no partial result. The builder creates conflict details only for returned candidates. A complete result covers every combination for bonding and scoring. Its rejected list covers only candidates parsed before the window fills.
+The work limit can still stop long or repeatedly rejected forms before the window fills. It does not guarantee 512 results for every input. A shared build recognition error suggests a component lock. Per-word recognition errors give no lock advice. Resource errors return no partial result.
+
+The builder creates conflict details only for returned candidates. A complete result covers every combination for bonding and scoring. Its rejected list covers only candidates parsed before the window fills.
 
 A gismu request accepts 1 through 64 source rows. Each raw scoring input and native source word accepts at most 256 bytes. A normalized scoring input accepts at most 64 letters. A language identifier accepts at most 64 bytes. Each weight part accepts at most 64 decimal digits. Exact weight arithmetic permits at most 4096 bits in its shared denominator and total weight. The search permits at most 60,000,000 candidate-input-letter operations. Each inventory list permits at most 20,000 rows. Caller limits can reduce these ceilings.
 
 Each builder shares one conflict budget across its result. It permits 1,000,000 inventory scans and index references, 20,000 copied conflict rows, and 4,000,000 copied text bytes. Gismu budgets include both ranked candidates and the manual form. Preflight checks cover the later copy pass before that pass allocates conflict strings. A resource error returns no partial result and no incomplete conflict list.
 
-Direct component analysis reports incomplete recognition when the recognizer reaches its work limit. It does not declare the spelling invalid or the whole-word lock obsolete from that incomplete result. A lujvo build keeps the row's listed rafsi choices and locks when whole-word recognition is incomplete. Each returned candidate still needs a complete parse.
+Direct component analysis reports incomplete recognition when the recognizer reaches its work limit. It does not declare the spelling invalid from that incomplete result. The row reports `recognition_incomplete: true` and keeps its listed rafsi choices.
+
+An extended whole-word lock stays valid but pending until recognition finishes. For a non-gismu component, a CLL whole-word lock is invalid.
+Both cases preserve the saved lock and explain that candidates use listed rafsi while recognition remains incomplete.
+The interface shows that lock even when it is absent from the choices. Other invalid locks and locks in an invalid position still prevent candidates.
+Each returned candidate still needs a complete parse.
 
 ## Extended lujvo scoring
 

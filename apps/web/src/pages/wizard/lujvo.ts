@@ -495,12 +495,18 @@ export async function lujvoPage(
           );
         chips.append(chip);
       }
-      if (component.locked && row && !row.lock_valid)
+      if (
+        component.locked &&
+        row &&
+        !row.choices.some((choice) => choice.form === component.locked)
+      )
         chips.append(
           choiceChip(
             component.locked,
             component.locked,
-            "This lock is not among the choices.",
+            ["This lock is not among the choices.", ...row.diagnostics].join(
+              " ",
+            ),
           ),
         );
       const known = field("Other rafsi you know", {

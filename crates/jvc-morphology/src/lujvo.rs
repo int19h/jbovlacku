@@ -474,8 +474,11 @@ pub struct RowAnalysis {
     pub id: String,
     pub normalized: String,
     pub choices: Vec<Choice>,
-    /// Whether the locked form is one of the choices.
+    /// Whether the lock is a choice or an extended whole-word lock awaiting recognition.
     pub lock_valid: bool,
+    /// The whole-word check exhausted its work limit. Listed rafsi remain available.
+    #[serde(default)]
+    pub recognition_incomplete: bool,
     pub diagnostics: Vec<String>,
 }
 /// The choices of one component under the profile.
@@ -497,6 +500,7 @@ fn row_choices_with_parser(
             normalized: String::new(),
             choices: vec![],
             lock_valid: false,
+            recognition_incomplete: false,
             diagnostics: vec!["The component exceeds the limit of 128 bytes or 64 claims.".into()],
         };
     }
@@ -507,6 +511,7 @@ fn row_choices_with_parser(
             normalized: String::new(),
             choices,
             lock_valid: component.locked.is_none(),
+            recognition_incomplete: false,
             diagnostics: vec!["The spelling uses characters outside Lojban letters.".into()],
         };
     };
@@ -580,14 +585,32 @@ fn row_choices_with_parser(
                 Ok(reading) => reading,
                 Err(error) => {
                     diagnostics.push(format!("Whole-word recognition is incomplete: {error}"));
+                    let whole_word_lock = component.locked.as_ref() == Some(&normalized);
                     let lock_valid = component.locked.as_ref().is_none_or(|locked| {
-                        locked == &normalized || choices.iter().any(|c| &c.form == locked)
+                        (profile == Profile::Extended && whole_word_lock)
+                            || choices.iter().any(|c| &c.form == locked)
                     });
+                    if whole_word_lock {
+                        let policy = if profile == Profile::Extended {
+                            "The whole-word lock waits for complete recognition."
+                        } else {
+                            "The whole-word lock is invalid under the CLL profile."
+                        };
+                        diagnostics.push(format!(
+                            "{policy} Candidates use the listed rafsi until recognition finishes."
+                        ));
+                    } else if !lock_valid {
+                        diagnostics.push(format!(
+                            "The locked form \"{}\" is not one of this component's choices.",
+                            component.locked.as_deref().unwrap_or_default()
+                        ));
+                    }
                     return RowAnalysis {
                         id: component.id.clone(),
                         normalized,
                         choices,
                         lock_valid,
+                        recognition_incomplete: true,
                         diagnostics,
                     };
                 }
@@ -636,6 +659,7 @@ fn row_choices_with_parser(
         normalized,
         choices,
         lock_valid,
+        recognition_incomplete: false,
         diagnostics,
     }
 }
@@ -762,8 +786,8 @@ impl std::fmt::Display for BuilderError {
                 limit,
             } => {
                 write!(f, "{measure} is {value}, above the limit of {limit}.")?;
-                if measure == "build recognition work" || measure == "recognition work" {
-                    f.write_str(" Lock a component form or request fewer results.")?;
+                if measure == "build recognition work" {
+                    f.write_str(" Lock a component form.")?;
                 }
                 Ok(())
             }
@@ -816,18 +840,17 @@ fn build_lujvo_with_detail_budget(
             })
             .collect();
         if let Some(locked) = &component.locked {
-            if row.lock_valid {
-                // An unconfirmed whole-word lock keeps the listed rafsi available.
-                // Recognition must finish before that whole word becomes a choice.
-                if row.choices.iter().any(|c| &c.form == locked) {
-                    options.retain(|c| &c.form == locked);
-                    if options.is_empty() {
-                        diagnostics.push(format!(
-                            "The locked form \"{locked}\" of \"{}\" cannot stand in position {}.",
-                            component.spelling,
-                            index + 1
-                        ));
-                    }
+            if row.recognition_incomplete && locked == &row.normalized {
+                // The row reports the invalid CLL or pending extended lock explicitly.
+                // Keep listed rafsi until recognition can establish a whole-word choice.
+            } else if row.lock_valid {
+                options.retain(|c| &c.form == locked);
+                if options.is_empty() {
+                    diagnostics.push(format!(
+                        "The locked form \"{locked}\" of \"{}\" cannot stand in position {}.",
+                        component.spelling,
+                        index + 1
+                    ));
                 }
             } else {
                 options.clear();
@@ -1955,7 +1978,7 @@ mod tests {
     fn whole_word_lock_on_exhausted_recognition_keeps_listed_rafsi() {
         for profile in [Profile::Cll, Profile::Extended] {
             let spelling = "tca".repeat(26);
-            let request = LujvoRequest {
+            let mut request = LujvoRequest {
                 profile,
                 components: vec![
                     Component {
@@ -1985,7 +2008,26 @@ mod tests {
                 limits: Limits::default(),
             };
             let result = build_lujvo(&request).unwrap();
-            assert!(result.rows[0].lock_valid);
+            assert_eq!(result.rows[0].lock_valid, profile == Profile::Extended);
+            assert!(result.rows[0].recognition_incomplete);
+            let fallback = "Candidates use the listed rafsi until recognition finishes.";
+            assert!(
+                result.rows[0]
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.contains(fallback))
+            );
+            let policy = if profile == Profile::Extended {
+                "The whole-word lock waits for complete recognition."
+            } else {
+                "The whole-word lock is invalid under the CLL profile."
+            };
+            assert!(
+                result.rows[0]
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.contains(policy))
+            );
             assert!(
                 result.rows[0]
                     .choices
@@ -2012,17 +2054,38 @@ mod tests {
                     .collect::<Vec<_>>(),
                 vec!["bau", "sni"]
             );
+            request.components[0].locked = Some("zzz".into());
+            let invalid = build_lujvo(&request).unwrap();
+            assert!(!invalid.rows[0].lock_valid);
+            assert!(invalid.candidates.is_empty());
+            assert!(
+                invalid.rows[0]
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.contains("not one of this component's choices"))
+            );
+            request.components[0].locked = Some(spelling);
+            request.components[1].locked = Some("sinx".into());
+            let misplaced = build_lujvo(&request).unwrap();
+            assert!(misplaced.rows[1].lock_valid);
+            assert!(misplaced.candidates.is_empty());
+            assert!(
+                misplaced
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.contains("cannot stand in position 2"))
+            );
         }
     }
     #[test]
-    fn recognition_work_errors_give_lock_advice() {
+    fn only_shared_build_recognition_errors_give_lock_advice() {
         for measure in ["recognition work", "build recognition work"] {
-            let error = resource(measure, 2, 1);
-            assert!(
-                error
-                    .to_string()
-                    .contains("Lock a component form or request fewer results.")
+            let message = resource(measure, 2, 1).to_string();
+            assert_eq!(
+                message.contains("Lock a component form."),
+                measure == "build recognition work"
             );
+            assert!(!message.contains("fewer results"));
         }
     }
     #[test]
