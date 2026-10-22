@@ -1,4 +1,5 @@
 /** Public identity: fingerprint, profile when known, trust actions, and this server's evidence. */
+import { deliveryAccepted } from "../data/delivery.ts";
 import {
   el,
   p,
@@ -441,7 +442,7 @@ function activityRow(
       el("span", {
         class: "meta",
         title: `Receipt position ${item.seen} on this server`,
-        text: `Seen ${item.seen.split(".").at(-1)}`,
+        text: `Receipt position ${item.seen.split(".").at(-1)} on ${item.seen.slice(0, item.seen.lastIndexOf(".")) || location.host}`,
       }),
     );
   return li;
@@ -795,7 +796,7 @@ function reportDialog(app: App, subject: string) {
           async () => {
             if (!(await app.session.firstSignatureDisclosure())) return;
             try {
-              await app.signer.publish([
+              const results = await app.signer.publish([
                 {
                   action: {
                     kind: "report.set",
@@ -808,7 +809,9 @@ function reportDialog(app: App, subject: string) {
               ]);
               app.own.invalidate();
               app.announce(
-                "The report is signed and published as an allegation.",
+                deliveryAccepted(results)
+                  ? "The report is signed and published as an allegation."
+                  : "The report is signed and saved here as an allegation. Delivery is not finished. See Not delivered.",
               );
             } catch (error) {
               app.announce(describe(error));

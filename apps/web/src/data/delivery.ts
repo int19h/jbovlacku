@@ -50,6 +50,37 @@ export function isActive(item: OutboxItem): boolean {
 export function isFinished(item: OutboxItem): boolean {
   return Object.values(item.peers).every((p) => p.state === "accepted");
 }
+/** Visible failures exclude a first online send that still has no outcome. */
+export function isNotDelivered(
+  item: OutboxItem,
+  online = navigator.onLine,
+): boolean {
+  return (
+    isActive(item) &&
+    (!online ||
+      Object.values(item.peers).some(
+        (peer) =>
+          peer.state !== "accepted" &&
+          (peer.state !== "queued" ||
+            peer.attempts > 0 ||
+            peer.failure !== null),
+      ))
+  );
+}
+/** True only when every record reached every selected recipient. */
+export function deliveryAccepted(
+  items: { peers: Record<string, { state: string }> }[],
+): boolean {
+  return (
+    items.length > 0 &&
+    items.every((item) => {
+      const peers = Object.values(item.peers);
+      return (
+        peers.length > 0 && peers.every((peer) => peer.state === "accepted")
+      );
+    })
+  );
+}
 export function unfinishedPeers(item: OutboxItem): string[] {
   return Object.entries(item.peers)
     .filter(([, p]) => p.state !== "accepted")
@@ -237,7 +268,14 @@ export class DeliveryEngine {
   private listeners = new Set<DeliveryListener>();
   private inFlight = new Map<string, Promise<OutboxItem | undefined>>();
   constructor(private store: LocalStore) {
-    window.addEventListener("online", () => void this.tick());
+    window.addEventListener("online", () => {
+      void this.notify();
+      void this.tick();
+    });
+    window.addEventListener("offline", () => {
+      clearTimeout(this.timer);
+      void this.notify();
+    });
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible") void this.tick();
     });
@@ -286,7 +324,9 @@ export class DeliveryEngine {
   }
   private schedule() {
     clearTimeout(this.timer);
+    if (!navigator.onLine) return;
     void this.items().then((items) => {
+      if (!navigator.onLine) return;
       let next = Infinity;
       for (const item of items) {
         if (!isActive(item)) continue;
@@ -314,7 +354,7 @@ export class DeliveryEngine {
   /** Sends every record with a due peer, in group order. */
   async tick() {
     if (!navigator.onLine) {
-      this.schedule();
+      clearTimeout(this.timer);
       return;
     }
     const now = Date.now();
