@@ -2,6 +2,13 @@ import { test, expect, type Page } from "@playwright/test";
 import { fixture } from "./helpers.ts";
 import type { RafsiInventoryClaim } from "../../../packages/core/src/index.ts";
 
+function claimCheckboxName(spelling: string): RegExp {
+  const escaped = spelling.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(
+    `^cku is also claimed by ${escaped}\\s*\\. I keep this form\\.$`,
+  );
+}
+
 async function downloadPackage(page: Page) {
   await page.goto("/preferences");
   await page.getByRole("button", { name: "Download", exact: true }).click();
@@ -129,14 +136,12 @@ test("the lujvo builder offers long forms beside listed rafsi, recovers parts, h
   for (const word of competingWords)
     await expect(
       result.getByRole("checkbox", {
-        name: `cku is also claimed by ${word}. I keep this form.`,
-        exact: true,
+        name: claimCheckboxName(word),
       }),
     ).toBeVisible();
   await expect(
     result.getByRole("checkbox", {
-      name: "cku is also claimed by cukta. I keep this form.",
-      exact: true,
+      name: claimCheckboxName("cukta"),
     }),
   ).toHaveCount(0);
   if (boxes.length) await expect(primary).toBeDisabled();
