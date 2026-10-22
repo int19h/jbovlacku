@@ -223,6 +223,11 @@ export interface Draft {
   review: string[];
   /** Whether the author approved the current place numbering. */
   numberingApproved: boolean;
+  /** Draft-only values for unchanged fields during a literal-mode cycle. */
+  literalModeRestore?: Record<
+    string,
+    { literal: RichText; structured: RichText }
+  >;
 }
 /** A rich field given as editor text or as rich text. */
 type RichInput = string | RichText;
@@ -276,9 +281,11 @@ export type PlaceInput = Omit<
 export function rich(
   value: RichInput | undefined,
   structured: boolean,
+  local = true,
 ): RichText {
   if (value === undefined) return [];
-  if (typeof value === "string") return editorToRichText(value, structured);
+  if (typeof value === "string")
+    return editorToRichText(value, structured, local);
   return value;
 }
 function richPlace(place: PlaceInput, structured: boolean): DraftPlace {
@@ -293,7 +300,7 @@ function richPlace(place: PlaceInput, structured: boolean): DraftPlace {
     })),
     derivations: (place.derivations ?? []).map((d) => ({
       ...d,
-      explanation: rich(d.explanation, structured),
+      explanation: rich(d.explanation, structured, false),
     })),
   };
 }
@@ -317,7 +324,6 @@ export function newDraft(patch: DraftInput = {}): Draft {
     frameMode: "none",
     frameRole: "predicate",
     variadicMinimum: 0,
-    glosses: [],
     formation: null,
     compound: null,
     evidenceForm: null,
@@ -331,20 +337,30 @@ export function newDraft(patch: DraftInput = {}): Draft {
     review: [],
     numberingApproved: false,
     ...patch,
+    glosses: (patch.glosses ?? []).map((g) => ({
+      ...g,
+      language: g.language || patch.language || "en",
+    })),
     text: rich(patch.text, structured),
     notes: rich(patch.notes, structured),
-    etymologyText: rich(patch.etymologyText, structured),
+    etymologyText: rich(patch.etymologyText, structured, false),
     frameConstraints: (patch.frameConstraints ?? []).map((c) =>
       rich(c, structured),
     ),
     tail: patch.tail
       ? { ...patch.tail, description: rich(patch.tail.description, structured) }
       : null,
-    places: (patch.places ?? []).map((pl) => richPlace(pl, structured)),
+    places: (patch.places ?? []).map((pl) => ({
+      ...richPlace(pl, structured),
+      glosses: pl.glosses.map((g) => ({
+        ...g,
+        language: g.language || patch.language || "en",
+      })),
+    })),
     examples: (patch.examples ?? []).map((e) => ({
       ...e,
-      translation: rich(e.translation, structured),
-      notes: rich(e.notes, structured),
+      translation: rich(e.translation, structured, false),
+      notes: rich(e.notes, structured, false),
     })),
     operands: (patch.operands ?? []).map((o) => ({
       ...o,
@@ -417,7 +433,7 @@ export function numberPlaceholders(meaning: string): {
   count: number;
 } {
   let count = 0;
-  const text = meaning.replace(/_{2,}/g, () => {
+  const text = escapeLiteral(meaning).replace(/_{2,}/g, () => {
     count++;
     return count <= 20
       ? String.fromCodePoint(0x245f + count)
@@ -446,12 +462,14 @@ const lojbanWord = /^[a-z',.]+(?: [a-z',.]+)*$/u;
  *   that character as literal text.
  */
 const TOKEN =
-  /\\([\s\S])|([①-⑳])|\{place (\d{1,5})\}|\{operand ([a-z][a-z0-9_-]{0,31})\}|`((?:\\.|[^`])*)`|\[\[((?:\\.|[^\]|])+)(?:\|((?:\\.|[^\]])*))?\]\]/gu;
-const unescape = (value: string) => value.replace(/\\([\s\S])/gu, "$1");
+  /\\([\\`[{①-⑳])|([①-⑳])|\{place (\d{1,5})\}|\{operand ([a-z][a-z0-9_-]{0,31})\}|`((?:\\.|[^`])*)`|\[\[((?:\\.|[^\]|])+)(?:\|((?:\\.|[^\]])*))?\]\]/gu;
+const unescape = (value: string, code = false) =>
+  value.replace(code ? /\\([\\`])/gu : /\\([\\\]|`])/gu, "$1");
 /** Editor text to rich text. Structured mode reads the token syntax. */
 export function editorToRichText(
   source: string,
   structured: boolean,
+  local = true,
 ): RichText {
   if (!structured) return textToRichText(source, false);
   const paragraphs = source
@@ -475,11 +493,15 @@ export function editorToRichText(
         pending += escaped;
         continue;
       }
+      if (!local && (circled || placeNumber || operand)) {
+        pending += match[0];
+        continue;
+      }
       flush();
       if (circled) nodes.push(circled.codePointAt(0)! - 0x245f);
       else if (placeNumber) nodes.push(Number(placeNumber));
       else if (operand) nodes.push({ operand });
-      else if (code !== undefined) nodes.push({ code: unescape(code) });
+      else if (code !== undefined) nodes.push({ code: unescape(code, true) });
       else {
         const spelling = unescape(target).trim().normalize("NFC");
         const shown = label === undefined ? spelling : unescape(label).trim();
@@ -564,23 +586,38 @@ export function literalize(text: string): string {
 /** One rich text field of the draft that can hold a place reference, with a label. */
 export interface ReferenceField {
   label: string;
+  key?: string;
   get: () => RichText;
   set: (value: RichText) => void;
 }
 /**
- * Every field of a draft that permits local place references. Fields that
- * the format keeps free of references, such as derivation explanations and
- * examples, are not listed.
+ * Rich fields with stable draft-only identities. Nonlocal fields are included
+ * only for conversion of invalid saved references into literal text.
  */
-export function referenceFields(draft: Draft): ReferenceField[] {
+export function referenceFields(
+  draft: Draft,
+  includeNonlocal = false,
+): ReferenceField[] {
+  const keyFor = (owner: object, property: string) => {
+    const metadata = owner as { richFieldIds?: Record<string, string> };
+    metadata.richFieldIds ??= {};
+    return (metadata.richFieldIds[property] ??= crypto.randomUUID());
+  };
+  const constraintKey = (owner: object, i: number) => {
+    const metadata = owner as { constraintIds?: string[] };
+    metadata.constraintIds ??= [];
+    return (metadata.constraintIds[i] ??= crypto.randomUUID());
+  };
   const fields: ReferenceField[] = [
     {
       label: "the definition",
+      key: keyFor(draft, "text"),
       get: () => draft.text,
       set: (v) => (draft.text = v),
     },
     {
       label: "the notes",
+      key: keyFor(draft, "notes"),
       get: () => draft.notes,
       set: (v) => (draft.notes = v),
     },
@@ -588,18 +625,21 @@ export function referenceFields(draft: Draft): ReferenceField[] {
   for (const place of draft.places) {
     fields.push({
       label: `the description of place ${place.index}`,
+      key: keyFor(place, "description"),
       get: () => place.description,
       set: (v) => (place.description = v),
     });
     if (place.kind === "custom" && place.hint)
       fields.push({
         label: `the type note of place ${place.index}`,
+        key: keyFor(place, "hintNote"),
         get: () => place.hint!.note,
         set: (v) => (place.hint!.note = v),
       });
     place.constraints.forEach((_, i) =>
       fields.push({
         label: `constraint ${i + 1} of place ${place.index}`,
+        key: constraintKey(place, i),
         get: () => place.constraints[i],
         set: (v) => (place.constraints[i] = v),
       }),
@@ -608,11 +648,13 @@ export function referenceFields(draft: Draft): ReferenceField[] {
       fields.push(
         {
           label: `the condition of default ${i + 1} of place ${place.index}`,
+          key: keyFor(d, "condition"),
           get: () => d.condition,
           set: (v) => (d.condition = v),
         },
         {
           label: `the explanation of default ${i + 1} of place ${place.index}`,
+          key: keyFor(d, "explanation"),
           get: () => d.explanation,
           set: (v) => (d.explanation = v),
         },
@@ -622,12 +664,14 @@ export function referenceFields(draft: Draft): ReferenceField[] {
   if (draft.tail) {
     fields.push({
       label: "the description of the repeated places",
+      key: keyFor(draft.tail, "description"),
       get: () => draft.tail!.description,
       set: (v) => (draft.tail!.description = v),
     });
     if (draft.tail.kind === "custom" && draft.tail.hint)
       fields.push({
         label: "the type note of the repeated places",
+        key: keyFor(draft.tail, "hintNote"),
         get: () => draft.tail!.hint!.note,
         set: (v) => (draft.tail!.hint!.note = v),
       });
@@ -635,6 +679,7 @@ export function referenceFields(draft: Draft): ReferenceField[] {
   draft.frameConstraints.forEach((_, i) =>
     fields.push({
       label: `frame constraint ${i + 1}`,
+      key: constraintKey(draft, i),
       get: () => draft.frameConstraints[i],
       set: (v) => (draft.frameConstraints[i] = v),
     }),
@@ -642,10 +687,41 @@ export function referenceFields(draft: Draft): ReferenceField[] {
   draft.operands.forEach((o) =>
     fields.push({
       label: `the description of operand ${o.id || "without ID"}`,
+      key: keyFor(o, "description"),
       get: () => o.description,
       set: (v) => (o.description = v),
     }),
   );
+  if (includeNonlocal) {
+    fields.push({
+      label: "the etymology",
+      get: () => draft.etymologyText,
+      set: (v) => (draft.etymologyText = v),
+    });
+    draft.examples.forEach((example, i) =>
+      fields.push(
+        {
+          label: `the translation of example ${i + 1}`,
+          get: () => example.translation,
+          set: (v) => (example.translation = v),
+        },
+        {
+          label: `the notes of example ${i + 1}`,
+          get: () => example.notes,
+          set: (v) => (example.notes = v),
+        },
+      ),
+    );
+    draft.places.forEach((place) =>
+      place.derivations.forEach((derivation, i) =>
+        fields.push({
+          label: `the explanation of derivation ${i + 1} of place ${place.index}`,
+          get: () => derivation.explanation,
+          set: (v) => (derivation.explanation = v),
+        }),
+      ),
+    );
+  }
   return fields;
 }
 /**
@@ -690,19 +766,27 @@ export function fieldsReferencing(draft: Draft, index: number): string[] {
 export function rewriteReferences(
   draft: Draft,
   map: (index: number) => number | "literal",
+  includeNonlocal = false,
 ) {
-  for (const f of referenceFields(draft)) {
+  for (const f of referenceFields(draft, includeNonlocal)) {
     const value = f.get();
-    if (referencedPlaces(value).size) f.set(remapRich(value, map));
+    const saved = draft.literalModeRestore?.[f.key!];
+    if (!draft.structured && saved && sameRich(value, saved.literal)) {
+      saved.structured = remapRich(saved.structured, map);
+      saved.literal = remapRich(saved.structured, () => "literal");
+      f.set(structuredClone(saved.literal));
+    } else if (referencedPlaces(value).size) f.set(remapRich(value, map));
   }
 }
+const sameRich = (a: RichText, b: RichText) =>
+  JSON.stringify(a) === JSON.stringify(b);
 /** The text form of a rich value for the editor in the given mode. */
 export function editorText(value: RichText, structured: boolean): string {
   return structured ? richTextToEditor(value) : richTextToText(value);
 }
 /** The fields whose place references literal mode turns into circled characters. */
 export function literalLoss(draft: Draft): string[] {
-  return referenceFields(draft)
+  return referenceFields(draft, true)
     .filter((f) => referencedPlaces(f.get()).size > 0)
     .map((f) => f.label);
 }
@@ -715,40 +799,64 @@ function structureStrings(value: RichText): RichText {
     paragraph.flatMap((node): RichNode[] => {
       if (typeof node !== "string") return [node];
       const out: RichNode[] = [];
-      for (const fragment of node.split(/([①-⑳]|\{place \d{1,5}\})/u)) {
-        if (!fragment) continue;
-        const explicit = fragment.match(/^\{place (\d{1,5})\}$/u);
-        const code = fragment.codePointAt(0)! - 0x245f;
-        if (explicit) out.push(Number(explicit[1]));
-        else if (fragment.length === 1 && code >= 1 && code <= 20)
-          out.push(code);
-        else out.push(fragment);
+      let index = 0;
+      const pattern =
+        /\\([①-⑳]|\{place \d{1,5}\})|([①-⑳])|\{place (\d{1,5})\}/gu;
+      for (const match of node.matchAll(pattern)) {
+        if (match.index! > index) out.push(node.slice(index, match.index));
+        if (match[1]) out.push(match[1]);
+        else
+          out.push(
+            match[2] ? match[2].codePointAt(0)! - 0x245f : Number(match[3]),
+          );
+        index = match.index! + match[0].length;
       }
+      if (index < node.length) out.push(node.slice(index));
       return out;
     }),
   );
 }
 /**
- * Changes how circled numerals are read in every field that permits place
- * references. Literal mode turns each reference into the circled character
- * as text. Structured mode reads circled characters in text as references.
- * Links, code, and operands stay as they are in both directions.
+ * Literal mode turns place nodes into text in every rich field. An unchanged
+ * local field keeps its exact value when structured mode returns. Edited
+ * literal fields read circled characters as references. Nonlocal fields keep
+ * their literal characters. Draft-only snapshots never enter the body.
  */
 export function switchMode(draft: Draft, structured: boolean) {
   if (draft.structured === structured) return;
-  for (const f of referenceFields(draft))
-    f.set(
-      structured
-        ? structureStrings(f.get())
-        : remapRich(f.get(), () => "literal"),
-    );
+  if (!structured) {
+    draft.literalModeRestore = {};
+    for (const f of referenceFields(draft)) {
+      const original = structuredClone(f.get());
+      const literal = remapRich(original, () => "literal");
+      draft.literalModeRestore[f.key!] = {
+        structured: original,
+        literal: structuredClone(literal),
+      };
+      f.set(literal);
+    }
+    for (const f of referenceFields(draft, true))
+      if (referencedPlaces(f.get()).size)
+        f.set(remapRich(f.get(), () => "literal"));
+  } else {
+    for (const f of referenceFields(draft)) {
+      const saved = draft.literalModeRestore?.[f.key!];
+      f.set(
+        saved && sameRich(f.get(), saved.literal)
+          ? structuredClone(saved.structured)
+          : structureStrings(f.get()),
+      );
+    }
+    delete draft.literalModeRestore;
+  }
   draft.structured = structured;
+  draft.numberingApproved = false;
 }
 /** A copy of the draft with every place reference as literal text. */
 function literalView(draft: Draft): Draft {
   const copy = structuredClone(draft);
   copy.structured = true;
-  rewriteReferences(copy, () => "literal");
+  rewriteReferences(copy, () => "literal", true);
   copy.structured = false;
   return copy;
 }
@@ -997,7 +1105,7 @@ function buildFrame(draft: Draft, problems: DraftProblem[], rich: RichField[]) {
       });
     const derivation = place.derivations
       .filter((d) => d.word.trim() || d.definition || countNodes(d.explanation))
-      .map((d, i) => {
+      .flatMap((d, i) => {
         const word = d.word.trim().normalize("NFC");
         const which = `${label}'s derivation ${i + 1}`;
         if (!word)
@@ -1037,12 +1145,21 @@ function buildFrame(draft: Draft, problems: DraftProblem[], rich: RichField[]) {
           value: explanation,
           local: false,
         });
-        return {
-          word: { language: "jbo" as const, spelling: word },
-          definition,
-          place: d.place ?? 1,
-          explanation,
-        };
+        if (
+          d.place === null ||
+          !Number.isInteger(d.place) ||
+          d.place < 1 ||
+          d.place > 65535
+        )
+          return [];
+        return [
+          {
+            word: { language: "jbo" as const, spelling: word },
+            definition,
+            place: d.place,
+            explanation,
+          },
+        ];
       });
     return {
       index: place.index,
@@ -1055,25 +1172,19 @@ function buildFrame(draft: Draft, problems: DraftProblem[], rich: RichField[]) {
     };
   });
   places.sort((a, b) => a.index - b.index);
-  // Every frame mode declares places 1 through N in order.
-  places.forEach((place, i) => {
-    if (place.index !== i + 1)
-      problems.push({
-        field: "places",
-        message: `A frame declares places 1 through ${places.length} in order. Place ${place.index} is out of sequence.`,
-        blocking: true,
-      });
-  });
+  // Fixed and variable frames declare a contiguous prefix.
+  if (draft.frameMode !== "context")
+    places.forEach((place, i) => {
+      if (place.index !== i + 1)
+        problems.push({
+          field: "places",
+          message: `A frame declares places 1 through ${places.length} in order. Place ${place.index} is out of sequence.`,
+          blocking: true,
+        });
+    });
   let arity: Arity;
   if (draft.frameMode === "fixed") {
     arity = { mode: "fixed", count: places.length };
-    if (!places.length)
-      problems.push({
-        field: "places",
-        message:
-          "A fixed structure needs at least one place. Add a place, or choose no structure.",
-        blocking: true,
-      });
   } else if (draft.frameMode === "variadic") {
     arity = { mode: "variadic", minimum: draft.variadicMinimum };
     if (!draft.tail)
@@ -1689,6 +1800,5 @@ export function formationFieldsFor(
   if (kind !== "lujvo" && draft.compound) fields.push("compound evidence");
   if (kind !== "gismu" && draft.formation)
     fields.push("gismu generation evidence");
-  if (kind !== "cmavo" && draft.selmaho.length) fields.push("selma'o");
   return fields;
 }
