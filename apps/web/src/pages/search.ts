@@ -35,6 +35,7 @@ import {
   getWord,
   loadDefinition,
   remoteSearch,
+  selfPeer,
   TransportError,
 } from "../data/api.ts";
 import type {
@@ -43,16 +44,18 @@ import type {
   WordResponse,
 } from "../model/types.ts";
 import { calculationPanel, viewScores } from "../components/localview.ts";
-import { judgmentControl } from "../components/judgment.ts";
+import { judgmentControl, scoreDetails } from "../components/judgment.ts";
 import {
   attribution,
   identityLink,
   sourceDate,
 } from "../components/attribution.ts";
+import { zbalermorna } from "../lib/zbalermorna.ts";
 import { placeMarker } from "../model/richtext.ts";
 
 const PAGE_SIZE = 20;
 const RESULT_LIMIT = 1000;
+const disclosedSearchSessions = new WeakSet<App["session"]>();
 interface SearchState {
   query: string;
   language: string;
@@ -241,6 +244,29 @@ export async function searchPage(
     );
     return;
   }
+  const remoteSource = p(`Searched on ${selfPeer.label}.`, "meta");
+  if (!cached) results.before(remoteSource);
+  let disclosed =
+    app.session.preferences.remoteSearchDisclosed ||
+    disclosedSearchSessions.has(app.session);
+  const discloseRemote = async () => {
+    if (disclosed) return;
+    remoteSource.textContent = `Search sends this query to ${selfPeer.label}.`;
+    // Let the visible statement reach the screen before the first query leaves.
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+    );
+    if (!context.live()) return;
+    disclosed = true;
+    disclosedSearchSessions.add(app.session);
+    if (app.session.storageAvailable) {
+      try {
+        await app.session.setPreferences({ remoteSearchDisclosed: true });
+      } catch {
+        // Reading stays available when this preference cannot be saved.
+      }
+    }
+  };
   const displayed: SearchHit[] = [];
   const seen = new Set<string>();
   const cursors = new Set<string>();
@@ -374,6 +400,8 @@ export async function searchPage(
         ),
       );
     } else {
+      await discloseRemote();
+      if (!context.live()) return;
       const page = await remoteSearch(
         query,
         language,
@@ -398,6 +426,7 @@ export async function searchPage(
           "Search pagination repeated a cursor or result. Start a new search to retry.",
         );
       }
+      remoteSource.textContent = `Searched on ${selfPeer.label}.`;
       snapshot = page.snapshot;
       view = page.view;
       next = page.next;
@@ -494,6 +523,14 @@ function hitRow(
     { class: "hw", lang: "jbo" },
   );
   line1.append(headword);
+  const zb =
+    app.session.preferences.orthography === "zbalermorna"
+      ? zbalermorna(hit.word.spelling)
+      : null;
+  if (zb)
+    line1.append(
+      el("span", { class: "zbalermorna", "aria-hidden": "true", text: zb }),
+    );
   const kind = hit.preview?.word_kind;
   const rafsiSpan = el("span", { class: "rafsi", lang: "jbo" });
   rafsiSpan.hidden = true;
@@ -561,14 +598,16 @@ function hitRow(
         view.calculation === null ||
         view.unavailable_scores.includes(previewId) ||
         !score;
+      const judgmentOptions = {
+        score,
+        unavailable,
+        personal: view?.personal,
+        reason: view?.reason ?? undefined,
+        calculation: view?.calculation,
+      };
       controlSlot.replaceChildren(
-        judgmentControl(app, target, {
-          score,
-          unavailable,
-          personal: view?.personal,
-          reason: view?.reason ?? undefined,
-          calculation: view?.calculation,
-        }),
+        judgmentControl(app, target, judgmentOptions),
+        scoreDetails(app, target, judgmentOptions),
       );
       if (word?.assignments.length) {
         void loadRafsiSpellings(word, remote.snapshot, context).then(

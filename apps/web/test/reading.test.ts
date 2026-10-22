@@ -143,7 +143,9 @@ test("the word page orders definitions by the two-root view and exposes the scor
   );
   // Place strip and place links.
   const strip = first.locator(".place-strip");
-  await expect(strip.getByLabel("place 1: book")).toBeVisible();
+  await expect(
+    strip.locator("span").filter({ hasText: /^1place 1: book$/ }),
+  ).toBeVisible();
   await expect(
     first.getByRole("link", { name: "place 3", exact: true }),
   ).toHaveAttribute("href", /#place-[0-9a-f]+-3$/);

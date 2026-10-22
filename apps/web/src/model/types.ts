@@ -358,6 +358,7 @@ export interface SearchHit {
 export type MatchKind =
   | "headword"
   | "gloss"
+  | "alias"
   | "headword-prefix"
   | "gloss-prefix"
   | "token";
