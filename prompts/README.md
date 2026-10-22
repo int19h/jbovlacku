@@ -22,6 +22,7 @@ They were tested in separate studies, not through the application.
 | `sound-guide.txt` | The conversion from IPA to the Lojban scoring letters. Only `sources` uses it. |
 | `languages/*.txt` | One block of language rules for each source language. Only `sources` uses them. |
 | `answer-shapes.json` | The JSON shape of an answer for each task. |
+| `explain.txt` | Optional. The server appends it to the system prompt when the operator turns on decision reports. |
 
 ## Request
 
@@ -33,6 +34,7 @@ The system prompt joins these files in this order, with a blank line between the
 2. The task file, such as `hints.task.txt`
 3. For `sources` only: `sound-guide.txt`, then the block of the requested language
 
+When decision reports are on, `explain.txt` follows as the last part. The request then must let the model write text before its tool call, so it does not force the tool call.
 The language block comes last, so that requests for different languages share the longest possible identical prefix.
 Providers can then cache that prefix.
 

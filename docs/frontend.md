@@ -1240,6 +1240,7 @@ The operator's trusted producer list remains inspectable service policy, separat
 Every AI action is optional, including type, component, source-word, definition, selma'o, place, and gloss suggestions.
 Operators can disable all generation, disable individual tasks, or disable remote providers while retaining local models.
 Capabilities report those decisions. Disabled or failed AI never prevents manual authoring, signing, reading, or synchronization.
+Operators can turn on a decision report, which is off by default. Each request then asks the model to write one detailed report before its tool call. The report recounts the arguments behind every decision as one connected text. The inference log shows it as text that the assistant wrote. The setting costs more tokens. It exists to collect material for prompt tuning.
 
 The Assistance group of Settings has one checkbox, “Use AI assistance”. It is on by default when the server offers assistance.
 When it is off, the app hides every AI tagged button, every suggestion panel and its notes, the consent dialog, the “by meaning” search mode, and every AI hint line. Nothing else moves, and every manual path stays complete. The app sends nothing to a provider.
