@@ -635,7 +635,13 @@ The fields are independent. A missing stem does not discard a known whole-word p
 These fields stay in the signed body when supplied. They do not replace `input` or affect the generation score.
 
 For the seven source columns, Word uses `word`, Said uses `word_ipa`, Stem uses `stem`, and Stem said uses `ipa`.
-Letters uses `input` with `format: "lojbanized"`. Language and Weight use `language` and `weight`.
+Language and Weight use `language` and `weight`. If `input` is null, Letters stays empty.
+For `format: "lojbanized"`, Letters shows the exact `input.text`.
+
+For `format: "ipa"`, Letters shows a preview from the recorded versioned conversion rule when the app supports that rule.
+Otherwise, Letters stays empty and the UI shows that conversion is unavailable. The UI keeps the original IPA algorithm input visible beside Letters.
+That input stays distinct from the stem pronunciation `ipa`. The UI never guesses or fills `ipa` from it.
+The preview preserves the original stored `input` bytes.
 
 An input contains exactly format and text. Format is `lojbanized` or `ipa`, and text is nonempty.
 IPA input requires a versioned conversion rule before a letter-based generator can use it.
