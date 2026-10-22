@@ -2661,10 +2661,11 @@ test("nonlocal editor fields keep typed place notation literal and convert saved
       newDraft({
         spelling: "broda",
         kind: "gismu",
-        text: "plain",
+        text: [[1, " gives ", 2]],
+        numberingApproved: true,
         etymologyText: [["from ", 1]],
         frameMode: "fixed",
-        places: [newPlace(1)],
+        places: [newPlace(1), newPlace(2)],
       }),
     );
   });
@@ -2673,6 +2674,12 @@ test("nonlocal editor fields keep typed place notation literal and convert saved
     .getByRole("button", { name: "Convert references to literal text" })
     .click();
   await expect(page.getByText(/The etymology cannot refer/)).toHaveCount(0);
+  const converted = JSON.parse(await page.locator("pre.json").innerText());
+  expect(converted.text).toEqual([[1, " gives ", 2]]);
+  expect(converted.etymology.text).toEqual([["from ①"]]);
+  await expect(
+    page.getByRole("textbox", { name: "Definition text" }),
+  ).toHaveValue("① gives ②");
   await page
     .getByRole("textbox", { name: "Etymology", exact: true })
     .fill("from ① and `code`");
@@ -2769,3 +2776,98 @@ for (const structured of [true, false]) {
     );
   });
 }
+
+test("N2 removing an added last place keeps the structure unspecified until an explicit zero choice", async ({
+  page,
+}) => {
+  await page.goto("/new/meaning");
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { newDraft } = await import(String("/src/model/draft.ts"));
+    await new LocalStore().put(
+      "drafts",
+      "current",
+      newDraft({ spelling: "broda", kind: "gismu", text: "plain" }),
+    );
+  });
+  await page.goto("/new/editor");
+  await page
+    .getByRole("button", { name: "+ Add a place", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Remove place 1", exact: true })
+    .click();
+  await expect(page.getByLabel("Number of places")).toHaveValue("none");
+  expect(
+    JSON.parse(await page.locator("pre.json").innerText()).frame,
+  ).toBeNull();
+  await page.getByLabel("Number of places").selectOption("fixed");
+  expect(
+    JSON.parse(await page.locator("pre.json").innerText()).frame.arity,
+  ).toEqual({ mode: "fixed", count: 0 });
+});
+
+test("N5 closed defaults and constraints reopen with current references before the next edit", async ({
+  page,
+}) => {
+  await page.goto("/new/meaning");
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { newDraft, newPlace } = await import(String("/src/model/draft.ts"));
+    const places = [1, 2, 3, 4].map((index) => newPlace(index));
+    places[1].constraints = [[[2, " stays near ", 3]]];
+    places[1].defaults = [
+      {
+        kind: "suggested",
+        format: "prose",
+        language: "en",
+        text: "one",
+        condition: [[3]],
+        explanation: [["see ", 2]],
+      },
+    ];
+    await new LocalStore().put(
+      "drafts",
+      "current",
+      newDraft({
+        spelling: "broda",
+        kind: "gismu",
+        text: "plain",
+        frameMode: "fixed",
+        places,
+        frameConstraints: [[[2, " is inside ", 3]]],
+      }),
+    );
+  });
+  await page.goto("/new/editor");
+  const details = page
+    .locator("details")
+    .filter({
+      has: page.locator("summary", { hasText: /^Defaults and constraints$/ }),
+    });
+  await expect(page.getByLabel("Constraint 1 between places")).toHaveValue(
+    "② is inside ③",
+  );
+  await details.locator("summary").click();
+  await expect(details).not.toHaveAttribute("open");
+  await page
+    .getByRole("button", { name: "Remove place 1", exact: true })
+    .click();
+  await details.locator("summary").click();
+  await expect(page.getByLabel("Constraint 1 between places")).toHaveValue(
+    "① is inside ②",
+  );
+  await expect(page.getByLabel("Constraint 1 for place 1")).toHaveValue(
+    "① stays near ②",
+  );
+  await expect(page.getByLabel("Condition 1 for place 1")).toHaveValue("②");
+  await expect(
+    page.getByLabel("Explanation of default 1 for place 1"),
+  ).toHaveValue("see ①");
+  await page
+    .getByLabel("Constraint 1 between places")
+    .fill("① is inside ② fully");
+  expect(
+    JSON.parse(await page.locator("pre.json").innerText()).frame.constraints,
+  ).toEqual([[[1, " is inside ", 2, " fully"]]]);
+});
