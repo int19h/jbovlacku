@@ -430,6 +430,54 @@ fn standard_type_tags_use_referent_and_drop_mass_and_tuple() {
 }
 
 #[test]
+fn formation_source_evidence_is_optional_and_preserves_original_bytes() {
+    let mut body = parse_stored_json(include_bytes!("fixtures/definition.json")).unwrap();
+    body["etymology"]["formation"] = json!({
+        "method":"unknown", "algorithm":null,
+        "sources":[{"language":"en", "word":"running", "input":{"format":"lojbanized","text":"ran"}, "weight":null, "notes":[]}],
+        "weights_profile":null, "generated":null, "selected_score":null,
+        "selected_rank":null, "selection_reason":[], "candidates":[], "conflicts":[]
+    });
+    let make = |body: &Value| {
+        header(
+            json!({"kind":"definition.publish","word":word_id(&body["word"]).unwrap(),"language":"en","parents":[],"origin":"native"}),
+            Some(body_descriptor(&canonical_value(body).unwrap()).unwrap()),
+        )
+    };
+    let older = canonical_value(&body).unwrap();
+    assert!(validate_body(&make(&body), &body).is_ok());
+    assert_eq!(canonical_value(&body).unwrap(), older);
+    let fields = [("word_ipa", "ˈrʌnɪŋ"), ("stem", "run"), ("ipa", "rʌn")];
+    for (field, value) in fields {
+        let mut single = body.clone();
+        single["etymology"]["formation"]["sources"][0][field] = json!(value);
+        assert!(validate_body(&make(&single), &single).is_ok(), "{field}");
+        assert_ne!(canonical_value(&single).unwrap(), older);
+        for invalid in [json!(""), json!(false), json!(1), json!([]), json!({})] {
+            single["etymology"]["formation"]["sources"][0][field] = invalid;
+            assert!(validate_body(&make(&single), &single).is_err(), "{field}");
+        }
+        single["etymology"]["formation"]["sources"][0][field] = Value::Null;
+        assert!(
+            validate_body(&make(&single), &single).is_ok(),
+            "{field}: null"
+        );
+    }
+    for (field, value) in fields {
+        body["etymology"]["formation"]["sources"][0][field] = json!(value);
+    }
+    let with_evidence = canonical_value(&body).unwrap();
+    assert!(validate_body(&make(&body), &body).is_ok());
+    assert_eq!(canonical_value(&body).unwrap(), with_evidence);
+    assert_ne!(
+        body_descriptor(&older).unwrap().hash,
+        body_descriptor(&with_evidence).unwrap().hash
+    );
+    body["etymology"]["formation"]["sources"][0]["pronunciation"] = json!("rʌn");
+    assert!(validate_body(&make(&body), &body).is_err());
+}
+
+#[test]
 fn structured_definition_variants_and_schema_boundaries() {
     let mut body = parse_stored_json(include_bytes!("fixtures/definition.json")).unwrap();
     let make = |body: &Value| {

@@ -44,6 +44,9 @@ export interface GismuRowState {
   language: string;
   name: string;
   word: string;
+  word_ipa?: string | null;
+  stem?: string | null;
+  ipa?: string | null;
   input: string;
   weight: { numerator: string; denominator: string } | null;
 }
@@ -284,6 +287,22 @@ function rational(value: { numerator: string; denominator: string }) {
   }
   return { numerator: Number(a), denominator: Number(b) };
 }
+/** Keep source evidence separate from the letters used for scoring. */
+function formationSource(row: GismuRowState): FormationSource {
+  const source: FormationSource = {
+    language: row.language,
+    word: row.word,
+    input: row.input.trim()
+      ? { format: "lojbanized", text: row.input.trim().toLowerCase() }
+      : null,
+    weight: row.weight ? rational(row.weight) : null,
+    notes: [],
+  };
+  for (const field of ["word_ipa", "stem", "ipa"] as const) {
+    if (row[field] != null) source[field] = row[field];
+  }
+  return source;
+}
 /** Formation metadata for a generated or manual gismu under the recorded run. */
 export function formationMetadata(options: {
   result: GismuResult;
@@ -299,15 +318,7 @@ export function formationMetadata(options: {
   /** True when the form is the candidate the author chose from the run or entered under it. */
 }): Formation {
   const { result, candidate, rows, preset } = options;
-  const sources: FormationSource[] = rows.map((row) => ({
-    language: row.language,
-    word: row.word,
-    input: row.input.trim()
-      ? { format: "lojbanized", text: row.input.trim().toLowerCase() }
-      : null,
-    weight: row.weight ? rational(row.weight) : null,
-    notes: [],
-  }));
+  const sources = rows.map(formationSource);
   return {
     method: "algorithmic",
     algorithm: {
@@ -352,16 +363,12 @@ export function manualFormation(
   reason: string,
 ): Formation | null {
   const sources: FormationSource[] = rows
-    .filter((row) => row.word.trim() || row.input.trim())
-    .map((row) => ({
-      language: row.language,
-      word: row.word,
-      input: row.input.trim()
-        ? { format: "lojbanized", text: row.input.trim().toLowerCase() }
-        : null,
-      weight: row.weight ? rational(row.weight) : null,
-      notes: [],
-    }));
+    .filter((row) =>
+      [row.word, row.input, row.word_ipa, row.stem, row.ipa].some((value) =>
+        value?.trim(),
+      ),
+    )
+    .map(formationSource);
   if (!sources.length && !reason.trim()) return null;
   return {
     method: "non-algorithmic",
