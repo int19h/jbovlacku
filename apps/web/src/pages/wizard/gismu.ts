@@ -675,6 +675,13 @@ export async function gismuPage(
         "meta",
       ),
     );
+    if (inventory.snapshot)
+      selectedCard.append(
+        p(
+          `Root inventory: local package of snapshot ${inventory.snapshot.slice(7, 19)}….`,
+          "meta",
+        ),
+      );
     const coverage = inventoryCoverage(inventory);
     selectedCard.append(p(coverage, "meta"));
     if (candidate.conflicts.length) {

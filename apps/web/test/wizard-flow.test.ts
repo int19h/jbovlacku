@@ -246,7 +246,7 @@ test("Grok 4 an invalid restored lujvo stays visible until a current form is cho
   await expect(page.locator(".action-bar .btn-primary")).toBeEnabled();
 });
 
-test("F6 F7 manual gismu conflicts persist and enter the signed body after spelling trim", async ({
+test("N3 manual root reviews stay private without a formation method claim", async ({
   page,
 }) => {
   await createIdentity(page);
@@ -265,6 +265,22 @@ test("F6 F7 manual gismu conflicts persist and enter the signed body after spell
     )
     .check();
   await expect(publish).toBeEnabled();
+  await expect(page.locator("aside")).toContainText(
+    "This acknowledgment stays in your private draft. It adds no signed formation evidence.",
+  );
+  await expect.poll(async () => (await stored(page)).formation).toBeNull();
+  await page
+    .getByLabel(/I publish cukta although the refreshed package shows/)
+    .uncheck();
+  await expect(publish).toBeDisabled();
+  await expect
+    .poll(async () => (await stored(page)).publishAcknowledged.length)
+    .toBe(0);
+  expect((await stored(page)).formation).toBeNull();
+  expect((await stored(page)).evidenceForm).toBeNull();
+  await page
+    .getByLabel(/I publish cukta although the refreshed package shows/)
+    .check();
   await open(page, "/new/places");
   await open(page, "/new/publish");
   await expect(
@@ -293,13 +309,7 @@ test("F6 F7 manual gismu conflicts persist and enter the signed body after spell
     return JSON.parse(items.find((item: any) => item.order === 0).transport)
       .body.etymology.formation;
   });
-  expect(formation.algorithm).toBeNull();
-  expect(formation.selected_score ?? null).toBeNull();
-  expect(formation.conflicts).toHaveLength(1);
-  expect(formation.conflicts[0]).toMatchObject({
-    rule: "identical",
-    snapshot: "sha256:" + "a".repeat(64),
-  });
+  expect(formation ?? null).toBeNull();
 });
 
 test("F7 Grok 7 Publish reviews saved compound conflicts and rejects changed coverage", async ({
@@ -611,3 +621,75 @@ test("F7 a new current root acknowledgment appends to historical formation evide
     ],
   });
 });
+
+test("Publish refuses a package change during the current review before it signs", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await seed(page, { spelling: "broda" });
+  await open(page, "/new/publish");
+  const publish = page
+    .locator("aside")
+    .getByRole("button", { name: "Publish", exact: true });
+  await expect(publish).toBeEnabled();
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore();
+    const cached = await store.get("packages", "en");
+    cached.snapshot = "sha256:" + "b".repeat(64);
+    await store.put("packages", "en", cached);
+  });
+  await publish.click();
+  await acceptFirstSignature(page);
+  await expect(page.locator("main")).toContainText(
+    "The local package changed during review.",
+  );
+  await expect(
+    page.getByRole("link", { name: "Review updated conflicts" }),
+  ).toBeVisible();
+  await expect(page).toHaveURL(/\/new\/publish$/);
+  expect(
+    await page.evaluate(async () => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      return (await new LocalStore().list("outbox")).length;
+    }),
+  ).toBe(0);
+  expect((await stored(page)).spelling).toBe("broda");
+});
+
+for (const spelling of ["cukte", "broda"]) {
+  test(`Grok N2 the gismu card names a v1 root inventory for ${spelling}`, async ({
+    page,
+  }) => {
+    await createIdentity(page);
+    await seed(page, { selected: spelling, formation: true });
+    await page.evaluate(async (spelling) => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const store = new LocalStore();
+      const cached = await store.get("packages", "en");
+      cached.version = 1;
+      for (const entry of cached.entries) {
+        delete entry.rafsi;
+        delete entry.rafsi_complete;
+      }
+      await store.put("packages", "en", cached);
+      const draft = await store.get("drafts", "current");
+      draft.gismu.manual = spelling;
+      draft.gismu.selected = spelling;
+      await store.put("drafts", "current", draft);
+    }, spelling);
+    await open(page, "/new/gismu");
+    const card = page.getByRole("region", { name: "Selected form" });
+    await expect(card).toContainText(
+      "Root inventory: local package of snapshot aaaaaaaaaaaa….",
+    );
+    if (spelling === "cukte")
+      await expect(
+        card.getByRole("group", { name: "Root conflicts" }),
+      ).toContainText("cukta");
+    else
+      await expect(
+        card.getByRole("group", { name: "Root conflicts" }),
+      ).toHaveCount(0);
+  });
+}
