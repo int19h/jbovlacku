@@ -56,6 +56,8 @@ type Listener = (status: PersonalStatus) => void;
 /** What the effective overlay needs from the session: the current identity, or null when anonymous. */
 export interface OverlayContext {
   identity: string | null;
+  /** Accepted continuity from this calculation snapshot only. */
+  actors?: Record<string, string>;
 }
 /**
  * The effective input of one personal calculation: a version 2 overlay. It
@@ -80,9 +82,9 @@ function sortedUnique<T>(items: T[], key: (item: T) => string): T[] {
 }
 /**
  * The overlay as the core expects it for a personal calculation. The current
- * identity becomes a root with q=1 only when the view names no allocation for
- * it, and it is the `public_shun_issuer` whose effective public shuns the core
- * turns into personal blocks. An anonymous session names no issuer. Private
+ * identity becomes a root with q=1 only when its snapshot continuity group has
+ * no view allocation or private root change. It is the `public_shun_issuer`
+ * whose effective public shuns the core turns into personal blocks. An anonymous session names no issuer. Private
  * blocks are copied as saved. No public shun is derived here.
  */
 export function effectiveOverlay(
@@ -96,10 +98,11 @@ export function effectiveOverlay(
     q: r.q,
   }));
   const { identity } = context;
+  const actor = (key: string) => context.actors?.[key] ?? key;
   if (
     identity &&
-    !viewRoots.includes(identity) &&
-    !rootChanges.some((r) => r.identity === identity)
+    !viewRoots.some((root) => actor(root) === actor(identity)) &&
+    !rootChanges.some((r) => actor(r.identity) === actor(identity))
   )
     rootChanges.push({ identity, q: { numerator: 1, denominator: 1 } });
   const blocked = overlay.blocked.map((entry) => ({
@@ -115,7 +118,12 @@ export function effectiveOverlay(
     root_changes: sortedUnique(rootChanges, (r) => r.identity),
     trust: sortedUnique(
       overlay.trust
-        .filter((rule) => /^ed25519:/.test(rule.issuer))
+        .filter(
+          (rule) =>
+            /^ed25519:/.test(rule.issuer) &&
+            identity !== null &&
+            actor(rule.issuer) === actor(identity),
+        )
         .map((rule) => ({
           issuer: rule.issuer,
           subject: rule.subject,
@@ -173,6 +181,11 @@ export class PersonalCalculator {
     null;
   /** Rankings by session key and word. A ranking never outlives its session. */
   private rankCache = new Map<string, LocalRanking>();
+  private continuity: {
+    snapshot: string;
+    view: string;
+    actors: Record<string, string>;
+  } | null = null;
   /**
    * True after Cancel until the user asks for a calculation again. An
    * automatic call from a page never restarts a cancelled calculation.
@@ -402,6 +415,33 @@ export class PersonalCalculator {
         inventory = cached;
       }
       live();
+      const records = await loadRecords(this.store, inventory, {
+        signal: run.abort.signal,
+      });
+      live();
+      if (
+        mode === "personal" &&
+        (this.continuity?.snapshot !== inventory.snapshot ||
+          this.continuity?.view !== inventory.view)
+      ) {
+        const response = await this.request(run, {
+          type: "actors",
+          input: {
+            events: records.events,
+            bodies: records.bodies,
+            selected_view: inventory.view,
+            import_selections: records.selections,
+          },
+        });
+        live();
+        if (response.type !== "actors")
+          throw new Error("Unexpected worker reply.");
+        this.continuity = {
+          snapshot: inventory.snapshot,
+          view: inventory.view,
+          actors: response.actors,
+        };
+      }
       // One overlay per run. The digest is derived from the exact overlay
       // that enters the worker, so a result never carries another digest.
       const overlay = await this.overlayFor(inventory, mode);
@@ -410,10 +450,6 @@ export class PersonalCalculator {
       const key = `${inventory.snapshot}|${inventory.view}|${digest}|${mode}`;
       if (this.loadedKey === key && this.status.state === "ready")
         return this.status;
-      const records = await loadRecords(this.store, inventory, {
-        signal: run.abort.signal,
-      });
-      live();
       this.loadedKey = null;
       this.rankCache.clear();
       this.set({
@@ -502,7 +538,14 @@ export class PersonalCalculator {
     return effectiveOverlay(
       await this.store.overlay(),
       inventory.view,
-      await this.context(),
+      {
+        ...(await this.context()),
+        actors:
+          this.continuity?.snapshot === inventory.snapshot &&
+          this.continuity.view === inventory.view
+            ? this.continuity.actors
+            : {},
+      },
       viewRoots,
     );
   }
