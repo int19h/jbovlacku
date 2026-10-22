@@ -605,6 +605,44 @@ for (const viewport of [
       ).toContainText("ckusinxa");
       await expandDetails(page);
       await check("lujvo-two-parts");
+      // The baseline package claims cku for cukta. Entering it for sinxa
+      // creates a conflict without relying on records from earlier tests.
+      await page.getByLabel("Other rafsi you know").nth(1).fill("cku");
+      await page.getByLabel("Other rafsi you know").nth(1).press("Tab");
+      const competing = page.getByRole("group", {
+        name: "Competing rafsi claims",
+        exact: true,
+      });
+      await expect(
+        competing.getByRole("link", { name: "cukta", exact: true }),
+      ).toBeVisible();
+      for (const label of await competing.locator("label.check").all()) {
+        const anchor = label.getByRole("link");
+        const spelling = (await anchor.textContent())!.trim();
+        await expect
+          .soft(label)
+          .toHaveText(`cku is also claimed by ${spelling}. I keep this form.`);
+        expect
+          .soft(
+            await label.locator(":scope > .inline-prose").count(),
+            "The acknowledgment sentence has one prose container",
+          )
+          .toBe(1);
+        await expect.soft(anchor).toHaveCSS("display", "inline");
+        const labelBox = (await label.boundingBox())!;
+        const anchorBox = (await anchor.boundingBox())!;
+        expect.soft(labelBox.width).toBeGreaterThanOrEqual(44);
+        expect.soft(labelBox.height).toBeGreaterThanOrEqual(44);
+        expect.soft(anchorBox.x).toBeGreaterThanOrEqual(labelBox.x);
+        expect.soft(anchorBox.y).toBeGreaterThanOrEqual(labelBox.y);
+        expect
+          .soft(anchorBox.x + anchorBox.width)
+          .toBeLessThanOrEqual(labelBox.x + labelBox.width);
+        expect
+          .soft(anchorBox.y + anchorBox.height)
+          .toBeLessThanOrEqual(labelBox.y + labelBox.height);
+      }
+      await check("lujvo-competing-claims");
       await open(page, "/new/gismu");
       await populateGismu(page);
       await expandDetails(page);
@@ -629,7 +667,7 @@ for (const viewport of [
       await open(page, "/new/publish");
       await expandDetails(page);
       await check("publish");
-      expect(manifest.length).toBe(20);
+      expect(manifest.length).toBe(21);
       await artifact(info, `manifest-${viewport.name}`, manifest);
     });
   });
