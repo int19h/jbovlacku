@@ -608,12 +608,14 @@ export async function placesPage(
         { class: "notice", style: "margin-top:6px" },
         text(problem.message + " "),
       );
-      if (/referenced|cannot refer to a place/.test(problem.message))
+      if (problem.richFieldKey)
         note.append(
           button(
             "Convert references to literal text",
             () => {
-              rewriteReferences(draft, () => "literal", true);
+              rewriteReferences(draft, () => "literal", true, [
+                problem.richFieldKey!,
+              ]);
               syncMirrors();
               renderPlaces();
               saver.touch();
@@ -677,6 +679,7 @@ export async function placesPage(
               newPlace(i + 1),
             );
             if (draft.frameMode === "none") draft.frameMode = "fixed";
+            draft.fixedZeroApproved = false;
           }
           saver.touch();
           refreshPreview();
@@ -741,6 +744,8 @@ export async function placesPage(
   };
   arity.addEventListener("change", () => {
     draft.frameMode = arity.value as FrameMode;
+    draft.fixedZeroApproved =
+      draft.frameMode === "fixed" && draft.places.length === 0;
     if (draft.frameMode === "variadic") {
       draft.tail ??= { description: [], kind: "unspecified", hint: null };
     }
@@ -788,6 +793,7 @@ export async function placesPage(
       return;
     }
     draft.places.push(newPlace(nextPlaceNumber()));
+    draft.fixedZeroApproved = false;
     if (draft.frameMode === "none") draft.frameMode = "fixed";
     draft.numberingApproved = false;
     saver.touch();
@@ -1003,6 +1009,8 @@ export async function placesPage(
               n === removed ? "literal" : n > removed ? n - 1 : n,
             );
             draft.places = renumber(draft.places);
+            if (!draft.places.length && !draft.fixedZeroApproved)
+              draft.frameMode = "none";
           } else
             rewriteReferences(draft, (n) => (n === removed ? "literal" : n));
           syncMirrors();
@@ -1358,13 +1366,11 @@ export async function placesPage(
     return box;
   });
   const rebuildDefaults = () => {
-    if (!defaultsDetails.open) return;
     const body = defaultsDetails.querySelector(":scope > .body");
     if (!body) return;
     body.replaceChildren();
-    defaultsDetails.open = false;
-    defaultsDetails.open = true;
-    defaultsDetails.dispatchEvent(new Event("toggle"));
+    if (defaultsDetails.open)
+      defaultsDetails.dispatchEvent(new Event("toggle"));
   };
   rebuildHooks.push(rebuildDefaults);
   open("Notes", () => {

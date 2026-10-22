@@ -505,22 +505,6 @@ export async function publishPage(
     )
       return false;
     const before = JSON.stringify(draft.formation);
-    if (value && !draft.formation) {
-      // This records a manual choice and its conflicts, without invented scores or inputs.
-      draft.formation = {
-        method: "non-algorithmic",
-        algorithm: null,
-        sources: [],
-        weights_profile: null,
-        generated: null,
-        selected_score: null,
-        selected_rank: null,
-        selection_reason: [],
-        candidates: [],
-        conflicts: [],
-      };
-      draft.evidenceForm = reviewedSpelling;
-    }
     if (!draft.formation) return false;
     if (value) {
       for (const c of foundRoots)
@@ -565,6 +549,12 @@ export async function publishPage(
             refreshPreview();
             refreshPublish();
           },
+        ),
+        p(
+          draft.formation
+            ? "This acknowledgment enters the signed formation evidence. It keeps the formation method already in the draft."
+            : "This acknowledgment stays in your private draft. It adds no signed formation evidence.",
+          "small",
         ),
       ),
     );

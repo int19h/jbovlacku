@@ -170,6 +170,12 @@ export interface DraftOperand {
   maximum: number | null;
 }
 export type FrameMode = "none" | "fixed" | "variadic" | "context";
+interface LiteralModeSnapshot {
+  literal: RichText;
+  structured: RichText;
+  /** Earlier visible values that an undo can restore after renumbering. */
+  previousLiterals?: RichText[];
+}
 export interface Draft {
   version: 2;
   id: string;
@@ -190,6 +196,8 @@ export interface Draft {
   text: RichText;
   structured: boolean;
   frameMode: FrameMode;
+  /** True only after an explicit zero-place choice or a copy of that frame. */
+  fixedZeroApproved: boolean;
   /** The frame role of the format. Revise keeps the parent's role. */
   frameRole: "predicate" | "constructed-predicate";
   variadicMinimum: number;
@@ -226,10 +234,7 @@ export interface Draft {
   /** Whether the author approved the current place numbering. */
   numberingApproved: boolean;
   /** Draft-only values for unchanged fields during a literal-mode cycle. */
-  literalModeRestore?: Record<
-    string,
-    { literal: RichText; structured: RichText }
-  >;
+  literalModeRestore?: Record<string, LiteralModeSnapshot>;
 }
 /** A rich field given as editor text or as rich text. */
 type RichInput = string | RichText;
@@ -324,6 +329,7 @@ export function newDraft(patch: DraftInput = {}): Draft {
     formNotes: "",
     structured,
     frameMode: "none",
+    fixedZeroApproved: false,
     frameRole: "predicate",
     variadicMinimum: 0,
     formation: null,
@@ -447,6 +453,8 @@ export function numberPlaceholders(meaning: string): {
 export interface DraftProblem {
   field: string;
   message: string;
+  /** The exact rich field that a place-reference conversion can change. */
+  richFieldKey?: string;
   /** Problems that block signing. Warnings do not. */
   blocking: boolean;
 }
@@ -589,9 +597,19 @@ export function literalize(text: string): string {
 /** One rich text field of the draft that can hold a place reference, with a label. */
 export interface ReferenceField {
   label: string;
-  key?: string;
+  key: string;
   get: () => RichText;
   set: (value: RichText) => void;
+}
+function richFieldKey(owner: object, property: string): string {
+  const metadata = owner as { richFieldIds?: Record<string, string> };
+  metadata.richFieldIds ??= {};
+  return (metadata.richFieldIds[property] ??= crypto.randomUUID());
+}
+function constraintKey(owner: object, index: number): string {
+  const metadata = owner as { constraintIds?: string[] };
+  metadata.constraintIds ??= [];
+  return (metadata.constraintIds[index] ??= crypto.randomUUID());
 }
 /**
  * Rich fields with stable draft-only identities. Nonlocal fields are included
@@ -601,26 +619,16 @@ export function referenceFields(
   draft: Draft,
   includeNonlocal = false,
 ): ReferenceField[] {
-  const keyFor = (owner: object, property: string) => {
-    const metadata = owner as { richFieldIds?: Record<string, string> };
-    metadata.richFieldIds ??= {};
-    return (metadata.richFieldIds[property] ??= crypto.randomUUID());
-  };
-  const constraintKey = (owner: object, i: number) => {
-    const metadata = owner as { constraintIds?: string[] };
-    metadata.constraintIds ??= [];
-    return (metadata.constraintIds[i] ??= crypto.randomUUID());
-  };
   const fields: ReferenceField[] = [
     {
       label: "the definition",
-      key: keyFor(draft, "text"),
+      key: richFieldKey(draft, "text"),
       get: () => draft.text,
       set: (v) => (draft.text = v),
     },
     {
       label: "the notes",
-      key: keyFor(draft, "notes"),
+      key: richFieldKey(draft, "notes"),
       get: () => draft.notes,
       set: (v) => (draft.notes = v),
     },
@@ -628,14 +636,14 @@ export function referenceFields(
   for (const place of draft.places) {
     fields.push({
       label: `the description of place ${place.index}`,
-      key: keyFor(place, "description"),
+      key: richFieldKey(place, "description"),
       get: () => place.description,
       set: (v) => (place.description = v),
     });
     if (place.kind === "custom" && place.hint)
       fields.push({
         label: `the type note of place ${place.index}`,
-        key: keyFor(place, "hintNote"),
+        key: richFieldKey(place, "hintNote"),
         get: () => place.hint!.note,
         set: (v) => (place.hint!.note = v),
       });
@@ -651,13 +659,13 @@ export function referenceFields(
       fields.push(
         {
           label: `the condition of default ${i + 1} of place ${place.index}`,
-          key: keyFor(d, "condition"),
+          key: richFieldKey(d, "condition"),
           get: () => d.condition,
           set: (v) => (d.condition = v),
         },
         {
           label: `the explanation of default ${i + 1} of place ${place.index}`,
-          key: keyFor(d, "explanation"),
+          key: richFieldKey(d, "explanation"),
           get: () => d.explanation,
           set: (v) => (d.explanation = v),
         },
@@ -667,14 +675,14 @@ export function referenceFields(
   if (draft.tail) {
     fields.push({
       label: "the description of the repeated places",
-      key: keyFor(draft.tail, "description"),
+      key: richFieldKey(draft.tail, "description"),
       get: () => draft.tail!.description,
       set: (v) => (draft.tail!.description = v),
     });
     if (draft.tail.kind === "custom" && draft.tail.hint)
       fields.push({
         label: "the type note of the repeated places",
-        key: keyFor(draft.tail, "hintNote"),
+        key: richFieldKey(draft.tail, "hintNote"),
         get: () => draft.tail!.hint!.note,
         set: (v) => (draft.tail!.hint!.note = v),
       });
@@ -690,7 +698,7 @@ export function referenceFields(
   draft.operands.forEach((o) =>
     fields.push({
       label: `the description of operand ${o.id || "without ID"}`,
-      key: keyFor(o, "description"),
+      key: richFieldKey(o, "description"),
       get: () => o.description,
       set: (v) => (o.description = v),
     }),
@@ -698,6 +706,7 @@ export function referenceFields(
   if (includeNonlocal) {
     fields.push({
       label: "the etymology",
+      key: richFieldKey(draft, "etymologyText"),
       get: () => draft.etymologyText,
       set: (v) => (draft.etymologyText = v),
     });
@@ -705,11 +714,13 @@ export function referenceFields(
       fields.push(
         {
           label: `the translation of example ${i + 1}`,
+          key: richFieldKey(example, "translation"),
           get: () => example.translation,
           set: (v) => (example.translation = v),
         },
         {
           label: `the notes of example ${i + 1}`,
+          key: richFieldKey(example, "notes"),
           get: () => example.notes,
           set: (v) => (example.notes = v),
         },
@@ -719,6 +730,7 @@ export function referenceFields(
       place.derivations.forEach((derivation, i) =>
         fields.push({
           label: `the explanation of derivation ${i + 1} of place ${place.index}`,
+          key: richFieldKey(derivation, "explanation"),
           get: () => derivation.explanation,
           set: (v) => (derivation.explanation = v),
         }),
@@ -765,24 +777,51 @@ export function fieldsReferencing(draft: Draft, index: number): string[] {
     .filter((f) => referencedPlaces(f.get()).has(index))
     .map((f) => f.label);
 }
-/** Rewrites every place reference in every field. Every other node stays. */
+/** Rewrites place references in every field, or in the selected field keys. */
 export function rewriteReferences(
   draft: Draft,
   map: (index: number) => number | "literal",
   includeNonlocal = false,
+  fieldKeys?: readonly string[],
 ) {
   for (const f of referenceFields(draft, includeNonlocal)) {
+    if (fieldKeys && !fieldKeys.includes(f.key)) continue;
     const value = f.get();
-    const saved = draft.literalModeRestore?.[f.key!];
-    if (!draft.structured && saved && sameRich(value, saved.literal)) {
+    const saved = draft.literalModeRestore?.[f.key];
+    const unchanged =
+      !draft.structured && saved && matchesLiteral(value, saved);
+    if (!draft.structured && saved) {
+      const previousLiteral = saved.literal;
       saved.structured = remapRich(saved.structured, map);
       saved.literal = remapRich(saved.structured, () => "literal");
-      f.set(structuredClone(saved.literal));
-    } else if (referencedPlaces(value).size) f.set(remapRich(value, map));
+      if (
+        !sameRich(previousLiteral, saved.literal) &&
+        !saved.previousLiterals?.some((literal) =>
+          sameRich(literal, previousLiteral),
+        )
+      ) {
+        saved.previousLiterals ??= [];
+        saved.previousLiterals.push(structuredClone(previousLiteral));
+      }
+      if (unchanged) f.set(structuredClone(saved.literal));
+    }
+    if (!unchanged && referencedPlaces(value).size)
+      f.set(remapRich(value, map));
   }
 }
 const sameRich = (a: RichText, b: RichText) =>
   JSON.stringify(a) === JSON.stringify(b);
+function matchesLiteral(
+  value: RichText,
+  snapshot: LiteralModeSnapshot,
+): boolean {
+  return (
+    sameRich(value, snapshot.literal) ||
+    Boolean(
+      snapshot.previousLiterals?.some((literal) => sameRich(value, literal)),
+    )
+  );
+}
 /** The text form of a rich value for the editor in the given mode. */
 export function editorText(value: RichText, structured: boolean): string {
   return structured ? richTextToEditor(value) : richTextToText(value);
@@ -803,15 +842,12 @@ function structureStrings(value: RichText): RichText {
       if (typeof node !== "string") return [node];
       const out: RichNode[] = [];
       let index = 0;
-      const pattern =
-        /\\([①-⑳]|\{place \d{1,5}\})|([①-⑳])|\{place (\d{1,5})\}/gu;
+      const pattern = /([①-⑳])|\{place (\d{1,5})\}/gu;
       for (const match of node.matchAll(pattern)) {
         if (match.index! > index) out.push(node.slice(index, match.index));
-        if (match[1]) out.push(match[1]);
-        else
-          out.push(
-            match[2] ? match[2].codePointAt(0)! - 0x245f : Number(match[3]),
-          );
+        out.push(
+          match[1] ? match[1].codePointAt(0)! - 0x245f : Number(match[2]),
+        );
         index = match.index! + match[0].length;
       }
       if (index < node.length) out.push(node.slice(index));
@@ -845,7 +881,7 @@ export function switchMode(draft: Draft, structured: boolean) {
     for (const f of referenceFields(draft)) {
       const saved = draft.literalModeRestore?.[f.key!];
       f.set(
-        saved && sameRich(f.get(), saved.literal)
+        saved && matchesLiteral(f.get(), saved)
           ? structuredClone(saved.structured)
           : structureStrings(f.get()),
       );
@@ -869,6 +905,7 @@ function plainRich(text: string): RichText {
 /** Every rich text field of the body, with its field name and whether place references are allowed. */
 interface RichField {
   field: string;
+  key: string;
   label: string;
   value: RichText;
   local: boolean;
@@ -880,11 +917,16 @@ function richProblems(
   problems: DraftProblem[],
 ) {
   const seen = new Set<string>();
-  const report = (message: string) => {
+  const report = (message: string, convertPlaceReference = false) => {
     const key = `${entry.field}:${message}`;
     if (seen.has(key)) return;
     seen.add(key);
-    problems.push({ field: entry.field, message, blocking: true });
+    problems.push({
+      field: entry.field,
+      message,
+      blocking: true,
+      ...(convertPlaceReference ? { richFieldKey: entry.key } : {}),
+    });
   };
   for (const paragraph of entry.value)
     for (const node of paragraph) {
@@ -893,6 +935,7 @@ function richProblems(
         if (!entry.local)
           report(
             `${entry.label} cannot refer to a place. Convert the reference to literal text.`,
+            true,
           );
         continue;
       }
@@ -1030,6 +1073,7 @@ function buildFrame(draft: Draft, problems: DraftProblem[], rich: RichField[]) {
     const description = place.description;
     rich.push({
       field,
+      key: richFieldKey(place, "description"),
       label: `${label}'s description`,
       value: description,
       local: true,
@@ -1038,6 +1082,7 @@ function buildFrame(draft: Draft, problems: DraftProblem[], rich: RichField[]) {
     if (hint)
       rich.push({
         field,
+        key: richFieldKey(place, "hintNote"),
         label: `${label}'s type note`,
         value: hintNote,
         local: true,
@@ -1066,12 +1111,14 @@ function buildFrame(draft: Draft, problems: DraftProblem[], rich: RichField[]) {
         rich.push(
           {
             field,
+            key: richFieldKey(d, "condition"),
             label: `${label}'s default ${i + 1} condition`,
             value: condition,
             local: true,
           },
           {
             field,
+            key: richFieldKey(d, "explanation"),
             label: `${label}'s default ${i + 1} explanation`,
             value: explanation,
             local: true,
@@ -1094,18 +1141,18 @@ function buildFrame(draft: Draft, problems: DraftProblem[], rich: RichField[]) {
           explanation,
         };
       });
-    const constraints = place.constraints
-      .filter((c) => countNodes(c))
-      .map((c, i) => {
-        const value = c;
-        rich.push({
-          field,
-          label: `${label}'s constraint ${i + 1}`,
-          value,
-          local: true,
-        });
-        return value;
+    const constraints = place.constraints.flatMap((c, i) => {
+      if (!countNodes(c)) return [];
+      const value = c;
+      rich.push({
+        field,
+        key: constraintKey(place, i),
+        label: `${label}'s constraint ${i + 1}`,
+        value,
+        local: true,
       });
+      return [value];
+    });
     const derivation = place.derivations
       .filter((d) => d.word.trim() || d.definition || countNodes(d.explanation))
       .flatMap((d, i) => {
@@ -1144,6 +1191,7 @@ function buildFrame(draft: Draft, problems: DraftProblem[], rich: RichField[]) {
         const explanation = d.explanation;
         rich.push({
           field,
+          key: richFieldKey(d, "explanation"),
           label: `${which}'s explanation`,
           value: explanation,
           local: false,
@@ -1187,6 +1235,13 @@ function buildFrame(draft: Draft, problems: DraftProblem[], rich: RichField[]) {
     });
   let arity: Arity;
   if (draft.frameMode === "fixed") {
+    if (!places.length && !draft.fixedZeroApproved)
+      problems.push({
+        field: "places",
+        message:
+          "Make an explicit zero-place choice, or choose an unspecified place structure.",
+        blocking: true,
+      });
     arity = { mode: "fixed", count: places.length };
   } else if (draft.frameMode === "variadic") {
     arity = { mode: "variadic", minimum: draft.variadicMinimum };
@@ -1228,6 +1283,7 @@ function buildFrame(draft: Draft, problems: DraftProblem[], rich: RichField[]) {
   if (tailDescription)
     rich.push({
       field: "tail",
+      key: richFieldKey(draft.tail!, "description"),
       label: "The repeated places' description",
       value: tailDescription,
       local: true,
@@ -1235,22 +1291,23 @@ function buildFrame(draft: Draft, problems: DraftProblem[], rich: RichField[]) {
   if (tailHint && draft.frameMode === "variadic")
     rich.push({
       field: "tail",
+      key: richFieldKey(draft.tail!, "hintNote"),
       label: "The repeated places' type note",
       value: tailHint.note,
       local: true,
     });
-  const constraints = draft.frameConstraints
-    .filter((c) => countNodes(c))
-    .map((c, i) => {
-      const value = c;
-      rich.push({
-        field: "frame",
-        label: `Frame constraint ${i + 1}`,
-        value,
-        local: true,
-      });
-      return value;
+  const constraints = draft.frameConstraints.flatMap((c, i) => {
+    if (!countNodes(c)) return [];
+    const value = c;
+    rich.push({
+      field: "frame",
+      key: constraintKey(draft, i),
+      label: `Frame constraint ${i + 1}`,
+      value,
+      local: true,
     });
+    return [value];
+  });
   return {
     role: draft.frameRole,
     arity,
@@ -1369,6 +1426,7 @@ export function draftToBody(input: Draft): {
   const text = draft.text;
   rich.push({
     field: "text",
+    key: richFieldKey(draft, "text"),
     label: "The definition",
     value: text,
     local: true,
@@ -1416,6 +1474,7 @@ export function draftToBody(input: Draft): {
       const description = o.description;
       rich.push({
         field: "operands",
+        key: richFieldKey(o, "description"),
         label: `Operand "${id}"'s description`,
         value: description,
         local: true,
@@ -1429,10 +1488,17 @@ export function draftToBody(input: Draft): {
     });
   const frame = buildFrame(draft, problems, rich);
   const notes = draft.notes;
-  rich.push({ field: "notes", label: "The notes", value: notes, local: true });
+  rich.push({
+    field: "notes",
+    key: richFieldKey(draft, "notes"),
+    label: "The notes",
+    value: notes,
+    local: true,
+  });
   const etymologyText = [...draft.etymologyText, ...plainRich(draft.formNotes)];
   rich.push({
     field: "etymology",
+    key: richFieldKey(draft, "etymologyText"),
     label: "The etymology",
     value: etymologyText,
     local: false,
@@ -1445,12 +1511,14 @@ export function draftToBody(input: Draft): {
       rich.push(
         {
           field: "examples",
+          key: richFieldKey(e, "translation"),
           label: `Example ${i + 1}'s translation`,
           value: translation,
           local: false,
         },
         {
           field: "examples",
+          key: richFieldKey(e, "notes"),
           label: `Example ${i + 1}'s notes`,
           value: exampleNotes,
           local: false,
@@ -1472,28 +1540,32 @@ export function draftToBody(input: Draft): {
     });
   // References in every local field need a declared place.
   const declared = new Set(frame?.places.map((p) => p.index) ?? []);
-  const referenced = new Map<number, string>();
+  const referenced = new Map<number, RichField[]>();
   for (const entry of rich) {
     richProblems(entry, operandIds, problems);
     if (entry.local)
       for (const n of referencedPlaces(entry.value))
-        if (!referenced.has(n)) referenced.set(n, entry.label);
+        referenced.set(n, [...(referenced.get(n) ?? []), entry]);
   }
-  for (const [n, label] of [...referenced].sort((a, b) => a[0] - b[0])) {
-    if (!declared.has(n))
-      problems.push({
-        field: "text",
-        message: frame
-          ? `Place ${n} is referenced in ${label.toLowerCase()} but not declared. Add the place, change the number, or convert it to literal text.`
-          : `Place ${n} is referenced in ${label.toLowerCase()} but the definition declares no places. Choose a place structure or convert the reference to literal text.`,
-        blocking: true,
-      });
-    if (n > 65535)
-      problems.push({
-        field: "text",
-        message: `Place ${n} exceeds the limit of 65,535.`,
-        blocking: true,
-      });
+  for (const [n, entries] of [...referenced].sort((a, b) => a[0] - b[0])) {
+    for (const entry of entries) {
+      if (!declared.has(n))
+        problems.push({
+          field: entry.field,
+          richFieldKey: entry.key,
+          message: frame
+            ? `Place ${n} is referenced in ${entry.label.toLowerCase()} but not declared. Add the place, change the number, or convert it to literal text.`
+            : `Place ${n} is referenced in ${entry.label.toLowerCase()} but the definition declares no places. Choose a place structure or convert the reference to literal text.`,
+          blocking: true,
+        });
+      if (n > 65535)
+        problems.push({
+          field: entry.field,
+          richFieldKey: entry.key,
+          message: `Place ${n} exceeds the limit of 65,535.`,
+          blocking: true,
+        });
+    }
   }
   if (frame && draft.structured && referenced.size && !draft.numberingApproved)
     problems.push({
@@ -1727,6 +1799,7 @@ export function draftFromBody(
     text: structuredClone(body.text),
     structured: true,
     frameMode: frame ? frame.arity.mode : "none",
+    fixedZeroApproved: frame?.arity.mode === "fixed" && frame.arity.count === 0,
     frameRole: frame?.role ?? "predicate",
     variadicMinimum: frame?.arity.mode === "variadic" ? frame.arity.minimum : 0,
     places: frame ? frame.places.map(placeText) : [],

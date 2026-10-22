@@ -382,6 +382,7 @@ In structured editing, typed circled numerals insert integer place references. P
 Every rich text node has a text form in structured editing, so a published body converts to editor text and back without loss: `①` or `{place N}` is a place reference, `{operand ID}` an operand reference, `[[spelling|label]]` a word link, `[[https://host/path|label]]` a web link, and `` `text` `` code. A backslash before `\`, `[`, `{`, `` ` ``, or a circled numeral keeps that character as literal text.
 The draft holds each rich text field as its exact rich text value. The editor shows a field in its text form and parses the text back only when the author edits that field, so an untouched value never changes. Literal mode turns the place references of every field into circled characters after a confirmation, and structured mode reads circled characters in text as references again. Links and code stay in both modes; a field edited in literal mode becomes plain text.
 Literal mode preserves circled characters and underscores as text. Both modes produce the same compact rich-text schema.
+In literal mode, removing a place updates the visible circled characters in unchanged fields to keep their saved references aligned.
 Removing a declared place requires removal, replacement, or literalization of every reference to it.
 
 A null frame means unspecified structure. The wizard never substitutes a guessed zero-place frame.
