@@ -580,10 +580,9 @@ fn row_choices_with_parser(
                 Ok(reading) => reading,
                 Err(error) => {
                     diagnostics.push(format!("Whole-word recognition is incomplete: {error}"));
-                    let lock_valid = component
-                        .locked
-                        .as_ref()
-                        .is_none_or(|locked| choices.iter().any(|c| &c.form == locked));
+                    let lock_valid = component.locked.as_ref().is_none_or(|locked| {
+                        locked == &normalized || choices.iter().any(|c| &c.form == locked)
+                    });
                     return RowAnalysis {
                         id: component.id.clone(),
                         normalized,
@@ -763,7 +762,7 @@ impl std::fmt::Display for BuilderError {
                 limit,
             } => {
                 write!(f, "{measure} is {value}, above the limit of {limit}.")?;
-                if measure == "build recognition work" {
+                if measure == "build recognition work" || measure == "recognition work" {
                     f.write_str(" Lock a component form or request fewer results.")?;
                 }
                 Ok(())
@@ -818,13 +817,17 @@ fn build_lujvo_with_detail_budget(
             .collect();
         if let Some(locked) = &component.locked {
             if row.lock_valid {
-                options.retain(|c| &c.form == locked);
-                if options.is_empty() {
-                    diagnostics.push(format!(
-                        "The locked form \"{locked}\" of \"{}\" cannot stand in position {}.",
-                        component.spelling,
-                        index + 1
-                    ));
+                // An unconfirmed whole-word lock keeps the listed rafsi available.
+                // Recognition must finish before that whole word becomes a choice.
+                if row.choices.iter().any(|c| &c.form == locked) {
+                    options.retain(|c| &c.form == locked);
+                    if options.is_empty() {
+                        diagnostics.push(format!(
+                            "The locked form \"{locked}\" of \"{}\" cannot stand in position {}.",
+                            component.spelling,
+                            index + 1
+                        ));
+                    }
                 }
             } else {
                 options.clear();
@@ -1871,6 +1874,7 @@ mod tests {
             Err(resource("recognition work", 2, 1))
         });
         assert!(row.choices.is_empty());
+        assert!(row.lock_valid);
         assert!(
             row.diagnostics
                 .iter()
@@ -1944,6 +1948,80 @@ mod tests {
                     .map(|part| part.text.as_str())
                     .collect::<Vec<_>>(),
                 vec!["bau", "sni"]
+            );
+        }
+    }
+    #[test]
+    fn whole_word_lock_on_exhausted_recognition_keeps_listed_rafsi() {
+        for profile in [Profile::Cll, Profile::Extended] {
+            let spelling = "tca".repeat(26);
+            let request = LujvoRequest {
+                profile,
+                components: vec![
+                    Component {
+                        id: "a".into(),
+                        spelling: spelling.clone(),
+                        kind: "lujvo".into(),
+                        definition: None,
+                        claims: vec![Claim {
+                            rafsi: "bau".into(),
+                            pair: "pair-bau".into(),
+                        }],
+                        locked: Some(spelling.clone()),
+                    },
+                    Component {
+                        id: "b".into(),
+                        spelling: "sinxa".into(),
+                        kind: "gismu".into(),
+                        definition: None,
+                        claims: vec![Claim {
+                            rafsi: "sni".into(),
+                            pair: "pair-sni".into(),
+                        }],
+                        locked: Some("sni".into()),
+                    },
+                ],
+                inventory: Inventory::default(),
+                limits: Limits::default(),
+            };
+            let result = build_lujvo(&request).unwrap();
+            assert!(result.rows[0].lock_valid);
+            assert!(
+                result.rows[0]
+                    .choices
+                    .iter()
+                    .all(|choice| choice.form != spelling)
+            );
+            assert!(
+                result.rows[0]
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.contains("recognition is incomplete"))
+            );
+            assert_eq!(
+                request.components[0].locked.as_deref(),
+                Some(spelling.as_str())
+            );
+            assert_eq!(result.candidates.len(), 1);
+            assert_eq!(result.candidates[0].spelling, "bausni");
+            assert_eq!(
+                result.candidates[0]
+                    .recovered
+                    .iter()
+                    .map(|part| part.text.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["bau", "sni"]
+            );
+        }
+    }
+    #[test]
+    fn recognition_work_errors_give_lock_advice() {
+        for measure in ["recognition work", "build recognition work"] {
+            let error = resource(measure, 2, 1);
+            assert!(
+                error
+                    .to_string()
+                    .contains("Lock a component form or request fewer results.")
             );
         }
     }

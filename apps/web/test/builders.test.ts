@@ -359,3 +359,41 @@ test("a custom profile needs a positive weight and an unfinished row never gets 
     page.getByRole("region", { name: "Selected form" }),
   ).toContainText("0.800 of 1.000");
 });
+
+for (const measure of ["recognition work", "build recognition work"]) {
+  test(`the wizard gives lock advice for ${measure} from WebAssembly`, async ({
+    page,
+  }) => {
+    await page.route(
+      "**/packages/core/generated/jvc_runtime.js",
+      async (route) => {
+        const response = await route.fetch();
+        const failure = JSON.stringify({
+          kind: "resource-limit",
+          measure,
+          value: 50001,
+          limit: 50000,
+        });
+        const body = (await response.text()).replace(
+          "export function build_lujvo(bytes) {",
+          `export function build_lujvo(bytes) { throw ${JSON.stringify(failure)};`,
+        );
+        await route.fulfill({ response, body });
+      },
+    );
+    await startDraft(page, "lujvo");
+    for (const spelling of ["bangu", "sinxa"]) {
+      await page.getByLabel("Add a part").fill(spelling);
+      await page
+        .getByRole("button", { name: `Add ${spelling} as entered` })
+        .click();
+    }
+    const result = page.getByRole("region", { name: "Result" });
+    await expect(result).toContainText(
+      `The builder stopped: ${measure} is 50001, above the limit of 50000.`,
+    );
+    await expect(result).toContainText(
+      "Lock a component form or request fewer results.",
+    );
+  });
+}

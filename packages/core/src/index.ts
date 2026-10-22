@@ -223,7 +223,7 @@ export class BuilderError extends Error {
   constructor(public failure: BuilderFailure) {
     super(
       failure.kind === "resource-limit"
-        ? `${failure.measure} is ${failure.value}, above the limit of ${failure.limit}.`
+        ? `${failure.measure} is ${failure.value}, above the limit of ${failure.limit}.${failure.measure === "recognition work" || failure.measure === "build recognition work" ? " Lock a component form or request fewer results." : ""}`
         : (failure.message ?? "The builder request failed."),
     );
   }
