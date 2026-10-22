@@ -1894,3 +1894,31 @@ test("structured code and link labels keep ordinary backslashes", () => {
     ],
   );
 });
+
+for (const change of ["move", "remove"]) {
+  test(`typing the old literal text after a place ${change} keeps the new reading`, () => {
+    const draft = newDraft({
+      spelling: "broda",
+      kind: "gismu",
+      text: [[1, " gives ", 2, " to ", 3]],
+      frameMode: "fixed",
+      places: [newPlace(1), newPlace(2), newPlace(3)],
+    });
+    switchMode(draft, false);
+    if (change === "move") {
+      rewriteReferences(draft, (n) => (n === 1 ? 2 : n === 2 ? 1 : n));
+      [draft.places[0], draft.places[1]] = [draft.places[1], draft.places[0]];
+    } else {
+      draft.places.shift();
+      rewriteReferences(draft, (n) => (n === 1 ? "literal" : n - 1));
+    }
+    draft.places.forEach((place, index) => {
+      place.index = index + 1;
+    });
+    assert.notEqual(editorText(draft.text, false), "① gives ② to ③");
+    draft.text = editorToRichText("① gives ② to ③", false);
+    switchMode(draft, true);
+    assert.deepEqual(draft.text, [[1, " gives ", 2, " to ", 3]]);
+    assert.equal(draft.numberingApproved, false);
+  });
+}

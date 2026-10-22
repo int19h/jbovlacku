@@ -795,6 +795,7 @@ export function rewriteReferences(
       saved.structured = remapRich(saved.structured, map);
       saved.literal = remapRich(saved.structured, () => "literal");
       if (
+        !unchanged &&
         !sameRich(previousLiteral, saved.literal) &&
         !saved.previousLiterals?.some((literal) =>
           sameRich(literal, previousLiteral),
