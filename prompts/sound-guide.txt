@@ -1,0 +1,80 @@
+Sound guide: IPA to Lojban scoring letters.
+The scoring letters are these Lojban letters: a b c d e f g i j k l m n o p r s t u v x z. No other letter is a scoring letter.
+Each row below gives IPA sounds on the left and the scoring letter or letters on the right. Square brackets enclose IPA.
+The same row applies in every language, unless the language block gives another rule for that sound.
+Use the row, not the shape of the symbol. Some IPA symbols look like scoring letters but have other values: IPA [j] is i, IPA [c] is k, IPA [y] is i. The scoring letter j is the sound [ʒ], and the scoring letter c is the sound [ʃ].
+
+Vowels
+[a], [ɑ], [ɐ], [ʌ], [ä] : a
+[æ] : a
+[e], [ɛ], [ə], [ɜ], [ɘ], [ø], [œ] : e
+[i], [ɪ], [ɨ], [y] : i
+[o], [ɔ], [ɤ], [ɵ] : o
+[u], [ʊ], [ɯ], [ʉ] : u
+[ɒ] : o
+A long vowel is written once. [aː] : a.
+A diphthong is written as two vowels: [eɪ] ei, [aɪ] ai, [ɔɪ] oi, [aʊ] au, [oʊ] ou, [ei] ei.
+A nasal vowel is written as its oral vowel. Add n only when a nasal consonant is pronounced. [ɛ̃] : e. [ɐ̃w̃] : au. Polish ręka [ˈrɛŋka] gives renka, because [ŋ] is pronounced. Polish są [sɔ̃w̃] gives sou.
+A devoiced vowel that is still present is written as its vowel: Japanese 好き [sɯ̥ki] gives suki.
+Where a language block says to write a reduced vowel from a stressed form, that rule wins in sounds.
+
+Glides
+[j], including the glide at the start of a rising diphthong such as [ja], [jo], [ju] : i
+[w], [ʍ], including the glide at the start of [wa], [wo], [wi] : u
+The vowel after the glide keeps its own row: [ja] gives ia, [wo] gives uo.
+[ɥ] : i
+Secondary palatalization, written as a small ʲ after a consonant, is not a glide. Write nothing for it. [rʲ] : r. [lʲ] : l. Russian мясо [ˈmʲasə] gives mase.
+A separate palatal glide after a consonant is a glide. Japanese きゃ [kja] : kia. Japanese りょ [ɾjo] : rio.
+
+Stops
+[p], [pʰ], [p̚] : p
+[b] : b
+[t], [tʰ], [t̪], [ʈ], [ʈʰ], [t̚] : t
+[d], [d̪], [ɖ], [dʱ] : d
+[k], [kʰ], [c], [q], [k̚] : k
+[ɡ], [ɢ], [ɟ], [ɡʱ] : g
+An unaspirated voiceless stop is p, t, k. Mandarin b d g are [p t k] and are written p t k. Never write b, d, g for a voiceless sound.
+[ʔ] : nothing
+A long or geminate consonant is written once. [kː], [kk] : k.
+
+Fricatives
+[f], [ɸ] : f
+[v], [β], [ʋ] : v
+[s], [s̪] : s
+[z] : z
+[ʃ], [ʂ], [ɕ], [ç] : c
+[ʒ], [ʐ], [ʑ] : j
+[x], [χ], [ħ], [h], [ɦ] : x
+[ɣ] : g
+[θ] : s
+[ð] : z
+[ʕ] : nothing. Say in note that the pharyngeal was dropped.
+[h] is x. Do not drop it, unless the language block says that h is silent.
+
+Affricates
+[tʃ], [tɕ], [ʈʂ], [tʃʰ], [tɕʰ], [ʈʂʰ] : tc
+[dʒ], [dʑ], [ɖʐ] : dj
+[ts], [tsʰ] : ts
+[dz] : dz
+[pf] : pf
+Never reduce an affricate to one letter. A tie bar does not change the row: [t͡ʃ] is tc.
+
+Nasals
+[m], [ɱ] : m
+[n], [n̪], [ɳ], [ɲ], [ŋ], [ɴ] : n
+[ɲ] in a language that pronounces an audible glide after it, such as Malay ny before a vowel, : ni.
+A syllabic nasal is written as the nasal alone, with no added vowel: German Garten [ˈɡaʁtn̩] gives gartn.
+
+Liquids
+[r], [ɾ], [ɹ], [ɻ], [ɽ], [ʀ], [ʁ] as a rhotic, and a non-syllabic vocalized r such as German [ɐ̯] : r
+A syllabic [ɐ] is a vowel and gives a: Portuguese casa [ˈkazɐ] gives kaza.
+[l], [ɫ], [ɭ], [ʎ], [ɬ], [ɮ] : l
+[ʎ] in a language that pronounces an audible glide after it : li.
+A syllabic liquid is written as the liquid alone: Czech vlk [vl̩k] gives vlk.
+
+Marks
+Stress, tone, length, syllable breaks, and breathy or creaky voice are not written.
+Aspiration is not written. Retroflexion is not written. Dentalization is not written. Pharyngealization is not written.
+Every other symbol in ipa must map to one of the rows above or to a scoring rule in the language block. If a symbol is in neither, choose the nearest row by place and manner, and name that choice in note.
+
+The language block comes after this guide. Where its rule for a sound differs from a row of this guide, the language block wins for that language.

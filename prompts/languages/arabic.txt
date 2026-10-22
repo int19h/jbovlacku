@@ -1,0 +1,40 @@
+Language rules: Arabic
+
+Choose a Modern Standard Arabic word, not a dialect word: for bread, خُبْز, not عَيْش.
+Work from the fully vowelled form. Identify the root and the pattern, but cut only the parts listed below. Never cut the word down to its root.
+Write word and stem in the same style: both with full vowel marks, or both without them.
+
+Choose the form.
+- For a verb, choose the perfect third-person masculine singular: كَتَبَ, not يَكْتُبُ.
+- Choose the singular, never a plural. A broken plural has no removable ending: choose كِتَاب, not كُتُب.
+- Choose the verbal noun when the target is a process or property. Choose the verb when the target is an action that x1 deliberately does to x2. Say which in note. For teaching as a process, تَعْلِيم stays whole. For the act of a teacher on a pupil, عَلَّمَ gives عَلَّم.
+- For a property, choose its noun: for ease, سُهُولَة, not the adjective سَهْل.
+
+Remove these parts.
+- The definite article ال: الكتاب gives كتاب, الشمس gives شمس. Remove ال only when it is the article. أَلَم, "pain", stays أَلَم.
+- Case endings and nunation, including the alif of accusative nunation: كِتَابٌ gives كِتَاب, كِتَابًا gives كِتَاب, بَيْتِ gives بَيْت.
+- Person endings on a verb: كَتَبَ gives كَتَب, عَقَّمَ gives عَقَّم, كَتَبَتْ and كَتَبُوا give كَتَب. In a hollow verb, the long vowel is part of the root and stays: قَالَ gives قَال.
+- Attached pronoun suffixes: كِتَابِي gives كِتَاب, سَيَّارَتِي gives سَيَّارَة.
+- Sound plural endings -ون/-ين/-ات and the dual, if a plural was given anyway: مُعَلِّمُون and مُعَلِّمِينَ give مُعَلِّم, كِتَابَان gives كِتَاب.
+- Feminine agreement ة on an adjective or participle, when the masculine form carries the same meaning: كَبِيرَة gives كَبِير, مَكْتُوبَة gives مَكْتُوب. Keep ة when the word with ة is a noun with its own meaning: تُفَّاحَة, "an apple", stays تُفَّاحَة.
+- The nisba ending -ِيّ/-ِيَّة of an adjective, when the target is the noun relation: تَارِيخِيّ gives تَارِيخ, عِلْمِيّ gives عِلْم. -ِيَّة that makes the abstract noun of a property or a noun goes too: حُرِّيَّة gives حُرّ, إِنْسَانِيَّة gives إِنْسَان. Keep -ِيَّة when the noun names a different thing: جَمْعِيَّة, an association, stays whole. -ِيَّة is a short [i] and a doubled [jj]: حُرِّيَّة is [ħurˈrijja].
+
+Keep these parts.
+- Every pattern vowel and every derivational consonant of the chosen form. مَدْرَسَة stays مَدْرَسَة, never درس. مَكْتَب stays مَكْتَب, never كتب.
+- The ة that belongs to a noun pattern. It is part of the pattern, not an ending: مُفَاعَلَة as in معايرة, فُعُولَة as in سُهُولَة [suˈhuːla], تَفْعِلَة as in تَجْرِبَة [ˈtadʒriba], and from a root that ends in a weak letter, with a short i and a consonant y: تَرْبِيَة [ˈtarbija], تَوْصِيَة [ˈtawsˤija], فَعَالَة as in نَظَافَة [naˈðˤaːfa]. All of them stay whole.
+- All the material of a derived form, II through X: a doubled middle consonant, a long ā, and a prefix such as أَ, تَ, اِنْ or اِسْتَ, and the inserted تَ of Form VIII. تَعْقِيم, تَعَوُّد, تَبَخُّر, اِجْتِمَاع and اِسْتِخْدَام stay whole, because the pattern carries the causative, reflexive or process meaning.
+- The verbal noun تَفْعِيل of a Form II verb has no doubled consonant, although the verb has one: عَقَّمَ, but تَعْقِيم [taʕˈqiːm]. عَلَّمَ, but تَعْلِيم [taʕˈliːm].
+
+Pronunciation.
+Use Modern Standard Arabic without case endings or nunation. Transcribe ة at the end of a word as a, with no [h]: مَدْرَسَة is [ˈmadrasa], مَعْرِفَة is [ˈmaʕrifa].
+After removing ال, transcribe the stem as a word of its own, without the assimilation to the article: الشَّمْس has word_ipa [ʔaʃˈʃams], and the stem شَمْس has ipa [ʃams].
+Write ج as [dʒ] in word_ipa and ipa: جَبَل is [ˈdʒabal].
+In word_ipa, stress the last syllable if it has a long vowel and a consonant, or two consonants: كِتَاب [kiˈtaːb]. Otherwise stress the second-last syllable if it has a long vowel or ends in a consonant: مُعَلِّم [muˈʕallim]. Otherwise stress the third-last: مَدْرَسَة [ˈmadrasa].
+
+Scoring.
+Write ع [ʕ] as nothing in every position, and keep the vowels on both sides. Say in note that it was dropped. عَمَل gives amal. سَاعَة [ˈsaːʕa] gives saa. مَعْرِفَة gives marifa.
+Write ء and any glottal stop [ʔ] as nothing, whatever letter carries it, and keep the vowels around it. رَأْس [raʔs] gives ras. سُؤَال [suˈʔaːl] gives sual.
+Write ح [ħ] and خ [x] as x: حَرْب gives xarb, خُبْز gives xubz. Write غ [ɣ] as g: غَرْب gives garb, لُغَة gives luga. Write ق [q] as k: قَلَم gives kalam, قَمَر gives kamar. Write ه [h] as x: نَهْر gives naxr, هَرَم gives xaram.
+Write ث as s: ثَلْج gives saldj. Write ذ as z: ذَهَب gives zaxab. Write ص as s: صَبْر gives sabr. Write ض as d: ضَوْء gives dau. Write ط as t: طِفْل gives tifl. Write ظ as z: نَظَافَة gives nazafa. Write ش as c: شَمْس gives cams. Write ج as dj: جَبَل gives djabal.
+Write consonantal ي [j] as i and consonantal و [w] as u: يَوْم gives iaum, وَرَق gives uarak.
+Write a long vowel once and a geminate consonant once: كِتَاب gives kitab, عَلَّم gives alam. Alif maqsura ى is a long a: هُدَى gives xuda. Write short a i u as a i u.

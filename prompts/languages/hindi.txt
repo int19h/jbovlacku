@@ -1,0 +1,42 @@
+Language rules: Hindi
+
+Choose the citation form in step 1: the direct singular of a noun, the masculine direct singular of an adjective, and the infinitive of a verb. Do not choose an oblique, plural or feminine form such as लड़कों or बड़ी. Keep the final -ा of the citation form: कमरा stays कमरा, लचीला stays लचीला.
+A postposition is a separate word. In किताब में or घर से, choose किताब or घर alone.
+
+Remove these parts.
+- Infinitive -ना, only from a verb: पढ़ना gives पढ़, लिखना gives लिख, बदलना gives बदल. A noun in -ना stays whole: खाना meaning food stays खाना, गाना meaning a song stays गाना.
+- Property-noun -ता/-त्व and -पन: सुंदरता gives सुंदर, प्रत्यास्थता gives प्रत्यास्थ, मनुष्यत्व gives मनुष्य, गुरुत्व gives गुरु, लचीलापन gives लचीला, पागलपन gives पागल. A -ता that is not this suffix stays: नेता, माता and पता stay whole.
+- Action-noun -न/-अन when the rest is the verb stem of the same relation. -अन includes its vowel: मिलन [mɪlən] gives मिल [mɪl], sounds mil. चलन gives चल.
+- Action-noun -आव and -आई when the base alone names the relation: लगाव gives लग, बहाव gives बह, दबाव gives दब, पढ़ाई gives पढ़, लड़ाई gives लड़.
+- Property-noun -आई on an adjective: ऊँचाई gives ऊँच and चौड़ाई gives चौड़. Note names ऊँचा or चौड़ा. Keep -आई when the word names a thing: मिठाई stays whole.
+- Adjective -ई/-ीय when the rest is a noun of the same relation: भारतीय gives भारत, राष्ट्रीय gives राष्ट्र, शहरी gives शहर, सरकारी gives सरकार. A final -ई that is not an adjective ending stays: पानी and रोटी stay whole.
+- In a loanword, the English ending through its base alternation, when the English base is attested: कैलिब्रेशन gives कैलिब्रेट [kɛːlɪbreːʈ], sounds kelibret, as calibration gives calibrate. इन्फ़ेक्शन gives इन्फ़ेक्ट, as infection gives infect. Write the restored consonant in stem too. This replaces the step 5 rule that the stem is a piece of the word. Other loanwords stay whole: कंप्यूटर and हॉस्पिटल stay whole.
+
+Keep these parts.
+- -ीकरण and -करण, "making into", when the target is a process of making or becoming and the base alone names only the substance or state. -करण is one unit, so do not remove its -न. वाष्पीकरण stays whole, because वाष्प alone is "vapor". निर्जर्मीकरण stays whole, because निर्जर्मी alone is "germ-free". शुद्धीकरण stays whole, because शुद्ध alone is "pure".
+- A causative -आ-/-वा- when the target requires causation: सिखाना gives सिखा, पिलाना gives पिला, बनवाना gives बनवा, करवाना gives करवा. For "show", दिखाना gives दिखा, not दिख, because दिखना is "appear".
+- A negative prefix अ-/अन-/निर्- when the target requires negation: असंभव keeps अ-, अनजान keeps अन-, निर्भय keeps निर्-, निर्बल keeps निर्-. A word that only starts with the same letters has no prefix: अनार stays whole.
+- Both halves of a compound: रसोईघर stays रसोईघर, जलयान stays जलयान.
+
+Pronunciation.
+A word-final inherent vowel after a consonant is silent: राम is [raːm] and gives ram. घर is [ɡʱər] and gives gar. नमक is [nəmək] and gives namak.
+A consonant with a halant (्) has no vowel: धर्म is [dʱərm] and gives darm.
+A medial inherent vowel follows the ordinary schwa-deletion pattern of standard Hindi. The inherent vowel of the first syllable is pronounced. Transcribe each pronounced [ə] and give it the letter a. In sounds, [ə] is a, not e as in the sound guide. A deleted vowel gets no letter. Say in note when a medial inherent vowel was treated as silent.
+Example: कमरा is [kəmraː], with a silent medial vowel after म, and gives kamra, not kemra.
+Example: सपना is [səpnaː] and gives sapna. अपना is [əpnaː] and gives apna.
+Example: सड़क is [səɽək] and gives sarak. The inherent vowels after स and ड़ are pronounced. The final one after क is silent.
+Example: कमल is [kəməl] and gives kamal. धड़कन is [dʱəɽkən] and gives darkan.
+A schwa next to ह can sound like [ɛ]. Write it as [ə] in ipa and as a in sounds: शहर [ʃəɦər] gives caxar. कहना gives कह, sounds kax.
+
+Scoring.
+Aspiration and breathy voice are not written: भ gives b, ख gives k, ध gives d, फ [pʰ] gives p. भारत gives barat. खेत [kʰeːt] gives ket. फल gives pal.
+A dot under a letter changes the sound. Score that sound: फ़ [f] gives f, ज़ [z] gives z, ख़ [x] gives x, ग़ [ɣ] gives g, क़ [q] gives k. फ़ोन gives fon. ज़मीन gives zamin.
+Write retroflex ट ठ ड ढ as t t d d, ण as n, ड़ ढ़ as r. ठंडा gives tanda. पढ़ gives par. गणित [ɡəɳɪt] gives ganit. बड़ा [bəɽaː] gives bara. पेड़ gives per.
+Write श and ष as c, स as s: शाल gives cal, कष्ट [kəʃʈ] gives kact, साल gives sal.
+Write च and छ as tc, ज and झ as dj: चाय [tʃaːj] gives tcai. छत gives tcat. जाल gives djal. झील gives djil.
+Write य as i and व as v: याद gives iad, वन gives van.
+ह is usually [ɦ]. Write it as x: हार [ɦaːr] gives xar, हाथ gives xat.
+ज्ञ is [ɡj]: ज्ञान [ɡjaːn] gives gian. ऋ is [rɪ]: कृपा [krɪpaː] gives kripa.
+Write ए as e, ऐ [ɛː] as e, ओ as o, औ [ɔː] as o, and long vowels once. ऐ and औ are single vowels, not diphthongs. केला gives kela. कैसा [kɛːsaː] gives kesa. मोर gives mor. मौसम [mɔːsəm] gives mosam.
+Vowel nasalization is not written: हाँ gives xa, माँ gives ma, चाँद [tʃãːd] gives tcad.
+अं and a dot above a letter before a consonant are a nasal consonant. Write n, but write m before प फ ब भ म. अंक gives ank. गंगा gives ganga. संत gives sant. खंभा [kʰəmbʱaː] gives kamba. अंबर gives ambar.
