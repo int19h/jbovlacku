@@ -18,6 +18,7 @@ import {
   formationMetadata,
   manualFormation,
   newGismuState,
+  type GismuRowState,
 } from "../../src/model/builders.ts";
 import {
   draftFromBody,
@@ -456,6 +457,90 @@ test("builder metadata for a chosen lujvo and a generated gismu satisfies the bo
       ).body,
     ),
   );
+});
+
+test("builders omit blank source evidence and preserve meaningful values before admission", () => {
+  const row: GismuRowState = {
+    language: "en",
+    name: "English",
+    word: "running",
+    word_ipa: " ˈrʌnɪŋ ",
+    stem: " run\t",
+    ipa: "\trʌn\n",
+    input: "makru",
+    weight: { numerator: "1", denominator: "1" },
+  };
+  const result = generateGismu({
+    sources: [
+      {
+        language: row.language,
+        word: row.word,
+        input: row.input,
+        weight: row.weight,
+      },
+    ],
+    window: 1,
+    manual: "makru",
+  });
+  const builders = [
+    {
+      name: "manual",
+      build: (source: GismuRowState) =>
+        manualFormation([source], "A manual root.")!,
+    },
+    {
+      name: "generated",
+      build: (source: GismuRowState) =>
+        formationMetadata({
+          result,
+          candidate: result.manual!,
+          rows: [source],
+          preset: null,
+          acknowledged: [],
+          reason: "A generated root.",
+        }),
+    },
+  ];
+  const fields = ["word_ipa", "stem", "ipa"] as const;
+  for (const builder of builders) {
+    for (const field of fields) {
+      for (const value of [null, "", " ", "\t", " \t\n "]) {
+        const context = `${builder.name}: ${field} = ${JSON.stringify(value)}`;
+        const formation = builder.build({ ...row, [field]: value });
+        const source = formation.sources[0];
+        assert.equal(Object.hasOwn(source, field), false, context);
+        for (const other of fields) {
+          if (other !== field) assert.equal(source[other], row[other], context);
+        }
+        const built = draftToBody(
+          newDraft({
+            spelling: "makru",
+            kind: "gismu",
+            text: "A fixture meaning.",
+            formation,
+            evidenceForm: "makru",
+          }),
+        );
+        assert.deepEqual(built.problems, [], context);
+        assert.ok(admissible(built.body), context);
+      }
+    }
+    const formation = builder.build(row);
+    for (const field of fields) {
+      assert.equal(formation.sources[0][field], row[field], builder.name);
+    }
+    const built = draftToBody(
+      newDraft({
+        spelling: "makru",
+        kind: "gismu",
+        text: "A fixture meaning.",
+        formation,
+        evidenceForm: "makru",
+      }),
+    );
+    assert.deepEqual(built.problems, [], builder.name);
+    assert.ok(admissible(built.body), builder.name);
+  }
 });
 
 test("source pronunciations and stems survive draft reload, publication, and revision", () => {

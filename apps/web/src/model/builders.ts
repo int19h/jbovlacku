@@ -299,7 +299,8 @@ function formationSource(row: GismuRowState): FormationSource {
     notes: [],
   };
   for (const field of ["word_ipa", "stem", "ipa"] as const) {
-    if (row[field] != null) source[field] = row[field];
+    const value = row[field];
+    if (value?.trim()) source[field] = value;
   }
   return source;
 }
