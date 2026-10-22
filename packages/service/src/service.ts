@@ -64,7 +64,7 @@ export interface ServiceOptions {
    * Lower response bounds, for tests of the cut states. A value above the
    * documented bound is ignored, so the contract never widens.
    */
-  limits?: { reviewers?: number; profileClaims?: number };
+  limits?: { reviewers?: number; profileClaims?: number; recordBytes?: number };
 }
 /** Reviewer details listed per score when a word request asks for them. */
 const REVIEWER_LIMIT = 64;
@@ -573,7 +573,7 @@ export class DictionaryService {
   }
   /** A configured bound, never above the documented one. */
   private bound(
-    name: "reviewers" | "profileClaims",
+    name: "reviewers" | "profileClaims" | "recordBytes",
     documented: number,
   ): number {
     const configured = this.options.limits?.[name];
@@ -765,7 +765,61 @@ export class DictionaryService {
       }
       throw new ApiError(503, "busy", "Selection admission is busy.");
     }
-    if (request.method !== "GET")
+    if (request.method === "POST" && path === "/search") {
+      if (url.search)
+        throw new ApiError(
+          400,
+          "query",
+          "POST search fields belong in the JSON body.",
+        );
+      let fields: unknown;
+      try {
+        fields = JSON.parse(
+          new TextDecoder("utf-8", { fatal: true }).decode(
+            await this.requestBytes(request, 131072),
+          ),
+        );
+      } catch (error) {
+        if (error instanceof ApiError) throw error;
+        throw new ApiError(
+          400,
+          "transport",
+          "Search body must contain a JSON object.",
+        );
+      }
+      const names = [
+        "q",
+        "language",
+        "snapshot",
+        "view",
+        "limit",
+        "after",
+        "retired",
+      ];
+      if (!fields || typeof fields !== "object" || Array.isArray(fields))
+        throw new ApiError(
+          400,
+          "query",
+          "Search body must contain a JSON object.",
+        );
+      for (const [name, value] of Object.entries(fields)) {
+        if (
+          !names.includes(name) ||
+          (typeof value !== "string" &&
+            !(name === "limit" && Number.isSafeInteger(value)))
+        )
+          throw new ApiError(
+            400,
+            "query",
+            "Search body contains an invalid field.",
+          );
+        url.searchParams.set(name, String(value));
+      }
+    }
+    if (
+      request.method !== "GET" &&
+      !(request.method === "POST" && path === "/search")
+    )
       throw new ApiError(405, "method", "Method is not supported.");
     if (path === "/capabilities")
       return json({
@@ -1063,6 +1117,7 @@ export class DictionaryService {
         language,
         snapshot: snapshot.snapshot,
         view,
+        retired: includeRetired,
       }).slice(7);
       const after = url.searchParams.get("after");
       let offset = 0;
@@ -1209,7 +1264,8 @@ export class DictionaryService {
         (id) => after === null || id > after,
       );
       const items: unknown[] = [];
-      let bytes = 0;
+      let bytes = 2;
+      const byteLimit = this.bound("recordBytes", RECORD_PAGE_BYTES);
       let truncated = false;
       for (const id of ids) {
         if (items.length >= limit) {
@@ -1243,8 +1299,8 @@ export class DictionaryService {
                 : "none",
         };
         // The page bound counts the encoded item bytes as the response carries them.
-        const size = utf8(JSON.stringify(item)).length;
-        if (items.length && bytes + size > RECORD_PAGE_BYTES) {
+        const size = utf8(JSON.stringify(item)).length + (items.length ? 1 : 0);
+        if (items.length && bytes + size >= byteLimit) {
           truncated = true;
           break;
         }
@@ -1270,13 +1326,22 @@ export class DictionaryService {
         url.searchParams.get("view") ?? this.options.selectedView ?? zeroView;
       this.identifier(view, "jve1:");
       await this.requireView(snapshot, view);
-      const evaluation = await this.evaluation(snapshot, view);
       const own = sorted(
         Object.entries(snapshot.events)
           .filter(([, e]) => e.header.issuer === identity)
           .map(([id]) => id),
       );
       if (section === "activity") {
+        let evaluation: Evaluation | null = null;
+        try {
+          evaluation = await this.evaluation(snapshot, view);
+        } catch (error) {
+          if (
+            !(error instanceof ApiError) ||
+            error.code !== "resource_unavailable"
+          )
+            throw error;
+        }
         const after = url.searchParams.get("after");
         if (after !== null) this.identifier(after, "jve1:");
         const remaining = own.filter((id) => after === null || id > after);
@@ -1289,8 +1354,9 @@ export class DictionaryService {
           items: page.map((id) => ({
             id,
             action: snapshot.events[id].header.action,
-            interpretation:
-              evaluation.receipts[id]?.interpretation ?? "unavailable",
+            interpretation: evaluation?.available
+              ? (evaluation.receipts[id]?.interpretation ?? "unavailable")
+              : "unavailable",
             seen: state.events[id]
               ? this.cursor(state.events[id].position)
               : null,
@@ -1299,6 +1365,7 @@ export class DictionaryService {
         });
       }
       // Without an evaluation, no definite profile, handover, or compromise state exists.
+      const evaluation = await this.evaluation(snapshot, view);
       if (!evaluation.available)
         throw new ApiError(
           503,
@@ -1336,7 +1403,12 @@ export class DictionaryService {
           ? await this.objects.get(event.body_hash)
           : null;
         let body: unknown = null;
-        let bodyStatus: "present" | "unavailable" | "omitted" = "unavailable";
+        let bodyStatus:
+          | "present"
+          | "missing"
+          | "invalid"
+          | "unavailable"
+          | "omitted" = event?.body_hash ? "unavailable" : "missing";
         if (bytes) {
           const envelope = await this.objects.get(event!.envelope_hash);
           if (
@@ -1350,7 +1422,7 @@ export class DictionaryService {
               body = JSON.parse(new TextDecoder().decode(bytes));
               bodyStatus = "present";
             }
-          }
+          } else if (envelope) bodyStatus = "invalid";
         }
         if (bodyStatus === "unavailable") unavailable = true;
         claims.push({

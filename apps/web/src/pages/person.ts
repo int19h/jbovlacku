@@ -98,7 +98,11 @@ export async function personPage(
         ? null
         : claim.body_status === "omitted"
           ? "body omitted by this response for size; open the record"
-          : "body unavailable on this server";
+          : claim.body_status === "missing"
+            ? "body absent from this snapshot"
+            : claim.body_status === "invalid"
+              ? "body failed validation"
+              : "body unavailable on this server";
     if (profile.state === "none")
       main.append(p("No signed profile claim is known for this key.", "small"));
     else if (profile.state === "unavailable")
@@ -155,6 +159,8 @@ export async function personPage(
             link(url, url, { rel: "noopener noreferrer", target: "_blank" }),
           );
         main.append(line);
+      } else if (profile.claims[0]) {
+        main.append(p(bodyNote(profile.claims[0]) ?? "", "notice"));
       }
     }
     if (response.actor !== identity)
