@@ -154,8 +154,10 @@ function hintEditor(
         value: alt.tags.join(", "),
         placeholder: standardTags.slice(0, 4).join(", ") + "…",
         wrapperClass: "",
-        hint: `Standard: ${standardTags.join(", ")}`,
       });
+      const tagsHint = p(`Standard: ${standardTags.join(", ")}`, "hint");
+      tagsHint.id = `${tags.input.id}-hint`;
+      tags.input.setAttribute("aria-describedby", tagsHint.id);
       tags.input.addEventListener("input", () => {
         alt.tags = tags.input.value
           .split(",")
@@ -230,7 +232,7 @@ function hintEditor(
             { class: "btn btn-quiet" },
           ),
         );
-      box.append(row);
+      box.append(el("div", {}, row, tagsHint));
     });
     // The note follows the selected mode like every other rich field.
     // A text area, so a note with paragraphs keeps its blank lines in the editor.

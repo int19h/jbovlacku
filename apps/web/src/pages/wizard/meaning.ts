@@ -214,7 +214,7 @@ export async function meaningPage(
   });
   const row = el("div", {
     style:
-      "margin-top:16px;display:flex;flex-wrap:wrap;gap:12px 16px;align-items:flex-end",
+      "margin-top:16px;display:flex;flex-wrap:wrap;gap:12px 16px;align-items:flex-start",
   });
   for (const f of [language, custom, word]) {
     f.wrapper.style.flex = "1 1 160px";
