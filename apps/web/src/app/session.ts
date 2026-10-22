@@ -28,7 +28,7 @@ export class Session {
   pending: { description: string; run: () => Promise<void> } | null = null;
   constructor(public store: LocalStore) {
     window.addEventListener("pagehide", () => {
-      this.workingKey = undefined;
+      this.lock();
     });
   }
   async load() {
@@ -36,7 +36,6 @@ export class Session {
       this.preferences = await this.store.preferences();
       setPreferredView(this.preferences.view);
       this.backup = await this.store.get<KeyBackup>("keys", "selected");
-      this.keepUnlocked = this.preferences.keepUnlocked;
     } catch {
       this.storageAvailable = false;
       this.preferences = (await import("../data/store.ts")).defaultPreferences;
@@ -63,13 +62,13 @@ export class Session {
   }
   lock(reason: "idle" | "user" = "user") {
     this.workingKey = undefined;
+    this.keepUnlocked = false;
     clearTimeout(this.lockTimer);
     this.changed();
     void reason;
   }
   async setKeepUnlocked(value: boolean) {
     this.keepUnlocked = value;
-    this.preferences = await this.store.setPreferences({ keepUnlocked: value });
     this.touch();
     this.changed();
   }
@@ -110,7 +109,10 @@ export class Session {
   async signingDisabled(identity: string): Promise<string | null> {
     if (await this.store.get("keys", `compromised:${identity}`))
       return "This key published a compromise notice. Ordinary actions from it are disabled.";
-    if (await this.store.get("keys", `handover:${identity}`))
+    if (
+      (await this.store.get("keys", `handover:${identity}`)) ||
+      (await this.store.get("keys", `transfer-known:${identity}`))
+    )
       return "This key signed a handover and is retired. Ordinary actions from it are disabled.";
     return null;
   }
@@ -124,10 +126,11 @@ export class Session {
       await this.store.installIdentity(candidate, mode);
     } catch (error) {
       if (error instanceof IdentityConflictError) {
-        this.backup = await this.store.get<KeyBackup>("keys", "selected");
-        this.workingKey = undefined;
-        clearTimeout(this.lockTimer);
-        this.changed();
+        const selected = await this.store.get<KeyBackup>("keys", "selected");
+        if (selected?.identity !== this.backup?.identity) {
+          this.backup = selected;
+          this.lock();
+        }
       }
       throw error;
     }
@@ -148,6 +151,10 @@ export class Session {
   async importBackup(file: File, passphrase: string) {
     if (file.size > 16384) throw new Error("The backup exceeds 16 KiB.");
     const imported = parseBackup(await file.text());
+    if (this.identity && imported.identity !== this.identity)
+      throw new Error(
+        "This backup belongs to another identity. This browser keeps its selected key.",
+      );
     const opened = await unlockKey(imported, passphrase);
     await this.install(imported, "restore");
     this.workingKey = opened;

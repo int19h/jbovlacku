@@ -44,7 +44,9 @@ export async function identityPage(
     );
     return;
   }
+  let unsubscribePage = () => {};
   const rerender = () => {
+    unsubscribePage();
     if (!context.live()) return;
     main.replaceChildren();
     void identityPage(route, context, app);
@@ -174,74 +176,95 @@ export async function identityPage(
   const rows = el("div", { style: "margin-top:24px" });
   // Lock state.
   const lockRow = el("div", { class: "row" });
-  lockRow.append(
-    icon(session.unlocked ? "unlock" : "lock", "", 20),
-    el(
-      "span",
-      { class: "t" },
-      el("span", {
-        class: "lock-state",
-        text: session.unlocked ? "Unlocked" : "Locked",
-      }),
-      el("small", {
-        text: session.unlocked
-          ? session.keepUnlocked
-            ? "Stays unlocked until you lock it or close the tab."
-            : "Locks after 15 minutes without a signing action, or when you close the tab."
-          : "Unlock with your passphrase to sign.",
-      }),
-    ),
-  );
-  if (session.unlocked)
+  const renderLock = () => {
+    lockRow.replaceChildren();
     lockRow.append(
-      button(
-        "Lock",
-        () => {
-          session.lock();
-          rerender();
-        },
-        { class: "btn", style: "min-height:40px" },
+      icon(session.unlocked ? "unlock" : "lock", "", 20),
+      el(
+        "span",
+        { class: "t" },
+        el("span", {
+          class: "lock-state",
+          text: session.unlocked ? "Unlocked" : "Locked",
+        }),
+        el("small", {
+          text: session.unlocked
+            ? session.keepUnlocked
+              ? "Stays unlocked until you lock it or close the tab."
+              : "Locks after 15 minutes without a signing action, or when you close the tab."
+            : "Unlock with your passphrase to sign.",
+        }),
       ),
     );
-  else {
-    const form = el("form", {
-      style: "display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end",
-    });
-    const pass = field("Passphrase", {
-      type: "password",
-      autocomplete: "current-password",
-      required: true,
-      wrapperClass: "",
-    });
-    pass.wrapper.style.flex = "1 1 200px";
-    const submit = el("button", {
-      type: "submit",
-      class: "btn",
-      text: "Unlock",
-    });
-    form.append(pass.wrapper, submit);
-    form.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      submit.disabled = true;
-      try {
-        await session.unlock(pass.input.value);
-        pass.input.value = "";
-        app.announce("Your key is unlocked for this session.");
-        if (session.pending) {
-          try {
-            await session.resumePending();
-          } catch (error) {
-            app.announce(describe(error));
+    if (session.unlocked)
+      lockRow.append(
+        button(
+          "Lock",
+          () => {
+            session.lock();
+          },
+          { class: "btn", style: "min-height:40px" },
+        ),
+      );
+    else {
+      const form = el("form", {
+        style: "display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end",
+      });
+      const pass = field("Passphrase", {
+        type: "password",
+        autocomplete: "current-password",
+        required: true,
+        wrapperClass: "",
+      });
+      pass.wrapper.style.flex = "1 1 200px";
+      const submit = el("button", {
+        type: "submit",
+        class: "btn",
+        text: "Unlock",
+      });
+      form.append(pass.wrapper, submit);
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        submit.disabled = true;
+        try {
+          await session.unlock(pass.input.value);
+          pass.input.value = "";
+          app.announce("Your key is unlocked for this session.");
+          if (session.pending) {
+            try {
+              await session.resumePending();
+            } catch (error) {
+              app.announce(describe(error));
+            }
           }
+        } catch (error) {
+          app.announce(describe(error));
+          submit.disabled = false;
         }
-        rerender();
-      } catch (error) {
-        app.announce(describe(error));
-        submit.disabled = false;
-      }
-    });
-    lockRow.append(form);
-  }
+      });
+      lockRow.append(form);
+    }
+  };
+  renderLock();
+  let shownLock = `${session.unlocked}|${session.keepUnlocked}`;
+  const unsubscribeLock = (unsubscribePage = session.subscribe(() => {
+    const next = `${session.unlocked}|${session.keepUnlocked}`;
+    if (!context.live() || next === shownLock) return;
+    shownLock = next;
+    renderLock();
+    stayUnlocked.setAttribute("aria-checked", String(session.keepUnlocked));
+    stayUnlocked.querySelector(".state")!.textContent = session.keepUnlocked
+      ? "On"
+      : "Off";
+  }));
+  context.signal.addEventListener("abort", unsubscribeLock, { once: true });
+  const stayUnlocked = switchControl(
+    "Stay unlocked this session",
+    session.keepUnlocked,
+    async (value) => {
+      await session.setKeepUnlocked(value);
+    },
+  );
   rows.append(lockRow);
   rows.append(
     el(
@@ -252,14 +275,7 @@ export async function identityPage(
         { class: "t", style: "padding-left:36px" },
         text("Stay unlocked this session"),
       ),
-      switchControl(
-        "Stay unlocked this session",
-        session.keepUnlocked,
-        async (value) => {
-          await session.setKeepUnlocked(value);
-          rerender();
-        },
-      ),
+      stayUnlocked,
     ),
   );
   rows.append(

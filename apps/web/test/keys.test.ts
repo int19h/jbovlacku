@@ -322,3 +322,63 @@ test("backup validation rejects extra headers and large files before password wo
   expect(results[0]).toContain("not supported");
   expect(results[1]).toContain("exceeds 16 KiB");
 });
+
+test("stay unlocked ends on reload and lock changes update the key page", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await page
+    .getByRole("switch", { name: "Stay unlocked this session" })
+    .click();
+  await page.reload();
+  await expect(
+    page.getByRole("switch", { name: "Stay unlocked this session" }),
+  ).toHaveAttribute("aria-checked", "false");
+  await page.getByLabel("Passphrase", { exact: true }).fill(PASSPHRASE);
+  await page.getByRole("button", { name: "Unlock", exact: true }).click();
+  await page.clock.install();
+  await page.clock.fastForward(15 * 60 * 1000 + 100);
+  await expect(page.getByText("Locked", { exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: /key locked/ })).toBeVisible();
+});
+
+test("a page hide clears the key and updates the shown lock state", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  const toggle = page.getByRole("switch", {
+    name: "Stay unlocked this session",
+  });
+  await toggle.click();
+  await page.evaluate(() => window.dispatchEvent(new Event("pagehide")));
+  await expect(toggle).toHaveAttribute("aria-checked", "false");
+  await expect(toggle.locator(".state")).toHaveText("Off");
+  await expect(page.getByRole("link", { name: /key locked/ })).toBeVisible();
+  await expect(page.getByText("Locked", { exact: true })).toBeVisible();
+});
+
+test("another identity backup in this tab keeps the selected key unlocked", async ({
+  page,
+}) => {
+  const original = await createIdentity(page);
+  const candidate = await page.evaluate(async () => {
+    const { createKey } = await import(String("/src/data/keys.ts"));
+    return (await createKey("another passphrase")).backup;
+  });
+  await page.getByRole("button", { name: "Import", exact: true }).click();
+  const form = page.getByRole("form", { name: "Import an encrypted backup" });
+  await form.getByLabel("Backup file").setInputFiles({
+    name: "other.json",
+    mimeType: "application/json",
+    buffer: Buffer.from(JSON.stringify(candidate)),
+  });
+  await form.getByLabel("Backup passphrase").fill("another passphrase");
+  await form.getByRole("button", { name: "Open backup locally" }).click();
+  await expect(page.getByRole("status")).toContainText(
+    "This backup belongs to another identity. This browser keeps its selected key.",
+  );
+  await expect(page.getByRole("link", { name: /key unlocked/ })).toBeVisible();
+  await expect(
+    page.getByText(fingerprintText(original.identity), { exact: true }),
+  ).toBeVisible();
+});
