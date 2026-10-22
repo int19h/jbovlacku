@@ -558,3 +558,56 @@ test("Grok 3 Publish does not reuse conflicts of a different historical generate
     .toBe(1);
   expect((await stored(page)).formation).toEqual(historical);
 });
+
+test("F7 a new current root acknowledgment appends to historical formation evidence", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await seed(page, {
+    formation: true,
+    spelling: "cukti",
+    competitors: ["sukti"],
+  });
+  const historical = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore();
+    const draft = await store.get("drafts", "current");
+    draft.formation.generated = "cukte";
+    draft.formation.conflicts = [
+      {
+        word: core.wordId({ language: "jbo", spelling: "cukta" }),
+        rule: "final-vowel",
+        snapshot: "sha256:" + "a".repeat(64),
+      },
+    ];
+    await store.put("drafts", "current", draft);
+    return draft.formation;
+  }, corePath);
+  await open(page, "/new/publish");
+  await page
+    .getByLabel(/I publish cukti although the refreshed package shows/)
+    .check();
+  await expect
+    .poll(async () => (await stored(page)).formation.conflicts.length)
+    .toBe(2);
+  const formation = (await stored(page)).formation;
+  expect(formation).toEqual({
+    ...historical,
+    conflicts: [
+      historical.conflicts[0],
+      {
+        word: await page.evaluate(
+          async (corePath) =>
+            (await import(corePath)).wordId({
+              language: "jbo",
+              spelling: "sukti",
+            }),
+          corePath,
+        ),
+        rule: "similar-consonant",
+        snapshot: "sha256:" + "a".repeat(64),
+      },
+    ],
+  });
+});

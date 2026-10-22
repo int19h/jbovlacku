@@ -496,8 +496,10 @@ export async function publishPage(
   };
   const recordRoots = (value: boolean) => {
     if (!inventory.snapshot || !foundRoots.length) return false;
-    // Historical evidence for another generated form keeps its original conflicts.
+    if (!value && draft.gismu) draft.gismu.acknowledged = [];
+    // Removing a current review keeps the conflicts of another historical form.
     if (
+      !value &&
       draft.formation?.generated &&
       draft.formation.generated !== reviewedSpelling
     )
@@ -546,7 +548,6 @@ export async function publishPage(
           ),
       );
     }
-    if (!value && draft.gismu) draft.gismu.acknowledged = [];
     return before !== JSON.stringify(draft.formation);
   };
   if (foundRoots.length)
