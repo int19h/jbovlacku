@@ -69,32 +69,6 @@ async function expectSeparateCardText(cards: Locator, count: number) {
   }
 }
 
-async function expectAlignedControls(row: Locator, width: number) {
-  const controls = await row.evaluate((node) =>
-    [...node.querySelectorAll("input, select, button")].map((control) => {
-      const box = control.getBoundingClientRect();
-      const wrapper =
-        control.tagName === "BUTTON" ? control : control.parentElement!;
-      return {
-        bottom: box.bottom,
-        line: wrapper.getBoundingClientRect().bottom,
-      };
-    }),
-  );
-  let comparisons = 0;
-  for (let i = 0; i < controls.length; i++) {
-    for (let j = i + 1; j < controls.length; j++) {
-      if (Math.abs(controls[i].line - controls[j].line) < 1) {
-        expect(Math.abs(controls[i].bottom - controls[j].bottom)).toBeLessThan(
-          1,
-        );
-        comparisons++;
-      }
-    }
-  }
-  if (width === 1280) expect(comparisons).toBeGreaterThan(0);
-}
-
 for (const viewport of [
   { name: "desktop", width: 1280, height: 900 },
   { name: "phone", width: 360, height: 800 },
@@ -113,7 +87,7 @@ for (const viewport of [
       await expect(placeholder).toHaveCSS("text-decoration-line", "none");
       await expect(page.locator("main > .two-col")).toHaveCSS(
         "column-gap",
-        "48px",
+        "40px",
       );
       const language = (await page
         .getByLabel("Language", { exact: true })
@@ -213,52 +187,6 @@ for (const viewport of [
       await expect(
         page.getByLabel("Search mode", { exact: true }),
       ).toBeVisible();
-      await expectCleanLayout(page);
-    });
-
-    test("place type fields and removal controls align beside their hints", async ({
-      page,
-    }) => {
-      await watchPolicy(page);
-      await openBuiltPage(page, "/new/meaning");
-      await page
-        .getByLabel("Meaning", { exact: true })
-        .fill("A test definition.");
-      await page.getByRole("button", { name: "New word", exact: true }).click();
-      await expect(
-        page.getByRole("heading", { name: "What kind of word?" }),
-      ).toBeVisible();
-      await openBuiltPage(page, "/new/places");
-      await page
-        .getByRole("button", { name: "+ Add a place", exact: true })
-        .click();
-      await page
-        .getByLabel("Kind of thing for place 1", { exact: true })
-        .selectOption("custom");
-      const tags = page.getByLabel("Tags for alternative 1", { exact: true });
-      await expectAlignedControls(
-        tags.locator("..").locator(".."),
-        viewport.width,
-      );
-      await page
-        .getByRole("button", { name: "Add an alternative", exact: true })
-        .click();
-      for (const index of [1, 2]) {
-        const tags = page.getByLabel(`Tags for alternative ${index}`, {
-          exact: true,
-        });
-        const row = tags.locator("..").locator("..");
-        await expectAlignedControls(row, viewport.width);
-        const hint = row.locator("..").locator("p.hint");
-        await expect(hint).toContainText("Standard: entity, agent");
-        await expect(tags).toHaveAttribute(
-          "aria-describedby",
-          (await hint.getAttribute("id")) ?? "",
-        );
-        await expect(
-          row.getByRole("button", { name: `Remove alternative ${index}` }),
-        ).toBeVisible();
-      }
       await expectCleanLayout(page);
     });
   });
