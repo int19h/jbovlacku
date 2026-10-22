@@ -159,9 +159,15 @@ test("structured places keep declared order when prose mentions place 3 first, a
   await editor.fill("③ holds ① read by ②.");
   await page.getByRole("button", { name: "Approve the numbering" }).click();
   await page.getByRole("button", { name: "Review" }).click();
-  await expect(
-    page.locator(".preview-card .place-strip").getByLabel("place 1: the text"),
-  ).toBeVisible();
+  const previewPlaces = page.locator(".preview-card .place-strip > span");
+  await expect(previewPlaces).toHaveText([
+    "1place 1: the text",
+    "2place 2: the reader",
+    "3place 3: the medium",
+  ]);
+  await expect(previewPlaces.first()).toMatchAriaSnapshot(
+    '- text: "place 1: the text"',
+  );
   await page.locator("aside").getByRole("button", { name: "Publish" }).click();
   await acceptFirstSignature(page);
   await expect(page).toHaveTitle("brodyckusni · jbovlacku");
@@ -228,12 +234,8 @@ test("the draft survives reload and browser back at every step and exports as a 
   expect(exported.spelling).toBe("brodo");
   expect(exported.selmaho).toEqual(["UI"]);
   expect(exported.meaning).toBe("A draft that must survive.");
-  // Changing the type with incompatible fields asks first and keeps the prose.
+  // Selma'o is a classification claim and remains valid for another type.
   await page.goto("/new/type");
-  page.once("dialog", (dialog) => dialog.dismiss());
-  await page.getByRole("radio", { name: /^gismu/ }).click();
-  await expect(page.getByRole("radio", { name: /^cmavo/ })).toBeChecked();
-  page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("radio", { name: /^gismu/ }).check();
   await expect(page.getByRole("radio", { name: /^gismu/ })).toBeChecked();
   await expect
@@ -279,7 +281,10 @@ test("the full editor preserves every structured field and supports manual headw
   await page.getByRole("button", { name: "Add a default for place 1" }).click();
   await page.getByLabel("Default value 1 for place 1").fill("li pa");
   await page.getByLabel("Condition 1 for place 1").fill("when unspecified");
-  await page.getByLabel("Constraints between places").fill("① differs from ②");
+  await page
+    .getByRole("button", { name: "Add a constraint between places" })
+    .click();
+  await page.getByLabel("Constraint 1 between places").fill("① differs from ②");
   await page
     .getByRole("textbox", { name: "Notes" })
     .fill("A note mentioning ①.");
@@ -699,6 +704,13 @@ test("a requested rafsi claim is signed even when every lookup fails, and a know
     .getByRole("button", { name: "Publish", exact: true });
   await expect(publish).toBeDisabled();
   await page.getByRole("checkbox", { name: /I keep the claim cku/ }).check();
+  // Earlier tests can add a root that now conflicts with this manual spelling.
+  for (const root of await page
+    .getByRole("checkbox", {
+      name: /I publish brodi although the refreshed package shows/,
+    })
+    .all())
+    await root.check();
   await expect(publish).toBeEnabled();
 });
 
@@ -1761,7 +1773,7 @@ test("a draft from the old prototype's version 1 database opens a choice instead
   expect(stored.notes).toEqual([["old notes"]]);
 });
 
-test("the full editor keeps referents on removal, saves type notes and derivations, confirms a type change, and offers a paste choice", async ({
+test("the full editor keeps referents on removal, saves type notes and derivations, retains classification, and offers a paste choice", async ({
   page,
 }) => {
   await createIdentity(page);
@@ -1777,15 +1789,10 @@ test("the full editor keeps referents on removal, saves type notes and derivatio
       return new LocalStore().get("drafts", "current");
     });
   const status = page.getByRole("status").last();
-  // A type change that drops fields asks first. Cancel keeps the selma'o.
-  page.once("dialog", (dialog) => void dialog.dismiss());
-  await page.getByLabel("Type", { exact: true }).selectOption("gismu");
-  await expect(page.getByLabel("Type", { exact: true })).toHaveValue("cmavo");
-  await expect(page.getByLabel("selma'o")).toHaveValue("UI");
-  page.once("dialog", (dialog) => void dialog.accept());
+  // A type change retains the independent selma'o claim.
   await page.getByLabel("Type", { exact: true }).selectOption("gismu");
   await expect(page.getByLabel("Type", { exact: true })).toHaveValue("gismu");
-  await expect.poll(async () => (await stored()).selmaho).toEqual([]);
+  await expect.poll(async () => (await stored()).selmaho).toEqual(["UI"]);
   // Three places, references to all of them, then removal of the second.
   for (let i = 0; i < 3; i++)
     await page.getByRole("button", { name: "+ Add a place" }).click();
@@ -1832,7 +1839,23 @@ test("the full editor keeps referents on removal, saves type notes and derivatio
   await expect(rendered).not.toContainText("needs the source place number");
   await expect
     .poll(async () => (await stored()).places[0].derivations)
-    .toEqual([{ word: "sinxa", definition: null, place: 2, explanation: [] }]);
+    .toMatchObject([
+      { word: "sinxa", definition: null, place: 2, explanation: [] },
+    ]);
+  const derivation = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { draftToBody } = await import(String("/src/model/draft.ts"));
+    const draft = await new LocalStore().get("drafts", "current");
+    return draftToBody(draft).body.frame.places[0].derivation;
+  });
+  expect(derivation).toEqual([
+    {
+      word: { language: "jbo", spelling: "sinxa" },
+      definition: null,
+      place: 2,
+      explanation: [],
+    },
+  ]);
   // Pasted circled numbers stay literal unless the author chooses references.
   const paste = (value: string) =>
     page
@@ -2053,6 +2076,12 @@ test("Revise of an independently signed rich parent with compound evidence publi
   await page.getByRole("button", { name: "Review" }).click();
   await expect(page.locator("aside")).toContainText("Publish as");
   await expect(page.getByText(/problems? block signing/)).toHaveCount(0);
+  // The revised compound keeps its evidence and needs a current conflict review.
+  await page
+    .getByRole("checkbox", {
+      name: /although other words claim its component rafsi/,
+    })
+    .check();
   await page
     .locator("aside")
     .getByRole("button", { name: "Publish", exact: true })
@@ -2124,7 +2153,11 @@ test("moving a place keeps every referent, and a language change keeps each plac
   await expect
     .poll(async () => (await stored()).places.map((p: any) => p.description))
     .toEqual([[["third"]], [["second, after ", 3]], [["first"]]]);
-  // A definition language change does not relabel place glosses.
+  // Glosses without a prefix keep the language in use when they were added.
+  await page.getByLabel("Add a gloss for place 3").fill("first");
+  await page.getByLabel("Add a gloss for place 3").press("Enter");
+  await page.getByLabel("Add a gloss", { exact: true }).fill("give");
+  await page.getByLabel("Add a gloss", { exact: true }).press("Enter");
   await page.getByLabel("Definition language").fill("de");
   await expect.poll(async () => (await stored()).language).toBe("de");
   expect((await stored()).places[2].glosses[0]).toEqual({
@@ -2132,6 +2165,11 @@ test("moving a place keeps every referent, and a language change keeps each plac
     text: "premier",
     sense: "ordinal",
   });
+  expect((await stored()).places[2].glosses[1].language).toBe("en");
+  expect((await stored()).glosses[0].language).toBe("en");
+  await expect(
+    page.locator(".gloss-chip").filter({ hasText: "give" }),
+  ).toContainText("en");
 });
 
 test("root conflicts of a gismu are checked again against the current package before publication", async ({
@@ -2485,4 +2523,369 @@ test("a type note follows the selected mode and keeps an unchanged rich note thr
   await expect.poll(stored).toEqual([["plain ① note"]]);
   await page.getByLabel("Read circled numbers as place references").check();
   await expect.poll(stored).toEqual([["plain ", 1, " note"]]);
+});
+
+test("the full editor edits complete defaults, tail hints, examples, and live inspection", async ({
+  page,
+}) => {
+  await page.goto("/new/meaning");
+  await page.getByRole("link", { name: "Skip to the full editor" }).click();
+  await page.getByLabel("Headword").fill("broda");
+  await page.getByLabel("Type", { exact: true }).selectOption("gismu");
+  const inspector = page.locator("details", {
+    has: page.locator("summary", { hasText: /^JSON inspector$/ }),
+  });
+  const json = async () =>
+    JSON.parse(await inspector.locator("pre").innerText());
+  await page.getByRole("button", { name: "+ Add a place" }).click();
+  await page.getByRole("textbox", { name: "Definition text" }).fill("① acts");
+  await expect.poll(async () => (await json()).text).toEqual([[1, " acts"]]);
+  await expect.poll(async () => (await json()).frame.places.length).toBe(1);
+  await page.getByLabel("Add a gloss", { exact: true }).fill("actor");
+  await page.getByLabel("Add a gloss", { exact: true }).press("Enter");
+  await expect
+    .poll(async () => (await json()).glosses)
+    .toEqual([{ language: "en", text: "actor", sense: null }]);
+  await expect(
+    page.getByText(/Word ID and event ID are derived/),
+  ).toContainText("exactly 1");
+  await page.getByRole("button", { name: "Add a default for place 1" }).click();
+  await page.getByLabel("Default format 1 for place 1").selectOption("prose");
+  await page.getByLabel("Default language 1 for place 1").fill("fr");
+  await page.getByLabel("Default value 1 for place 1").fill("une personne");
+  await page
+    .getByLabel("Explanation of default 1 for place 1")
+    .fill("usually ①\n\nthe speaker");
+  await page.getByRole("button", { name: "Add an example" }).click();
+  await page.getByLabel("Language of example 1").fill("en");
+  await page.getByLabel("Example 1", { exact: true }).fill("a sample");
+  await page.getByLabel("Number of places").selectOption("variadic");
+  await page.getByLabel("Minimum number of places").fill("0");
+  await expect(
+    page.getByLabel("Number of places").locator("option:checked"),
+  ).toHaveText("0 or more");
+  await page
+    .getByLabel("Kind of thing for the repeated places")
+    .selectOption("custom");
+  await page
+    .getByLabel("Tags for alternative 1")
+    .fill("https://example.invalid/type");
+  await page.getByLabel("Type note").fill("tail for ①");
+  await expect
+    .poll(
+      async () => (await json()).frame.tail.type_hints[0].alternatives[0].tags,
+    )
+    .toEqual(["https://example.invalid/type"]);
+  await expect.poll(async () => (await json()).examples[0].language).toBe("en");
+  await inspector.locator("summary").click();
+  await page.getByLabel("Default language 1 for place 1").fill("de");
+  await inspector.locator("summary").click();
+  await expect
+    .poll(async () => (await json()).frame.places[0].defaults[0].value.language)
+    .toBe("de");
+  await page.getByRole("button", { name: "Approve the numbering" }).click();
+  await page.getByRole("button", { name: "Review" }).click();
+  await page.getByText("Places in detail", { exact: true }).click();
+  await expect(page.locator("main")).toContainText("usually ①");
+  await expect(page.locator("main")).toContainText("the speaker");
+});
+
+test("editing constraints keeps each multi-paragraph value and reference rewrites", async ({
+  page,
+}) => {
+  await page.goto("/new/meaning");
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { newDraft, newPlace } = await import(String("/src/model/draft.ts"));
+    await new LocalStore().put(
+      "drafts",
+      "current",
+      newDraft({
+        spelling: "broda",
+        kind: "gismu",
+        text: "① sees ②",
+        frameMode: "fixed",
+        places: [
+          {
+            ...newPlace(1),
+            constraints: [[["keep ", 1], ["the book stays"]]],
+            defaults: [
+              {
+                kind: "suggested",
+                format: "lojban",
+                language: "",
+                text: "zo'e",
+                condition: [[2]],
+                explanation: [["see ", 2]],
+              },
+            ],
+          },
+          newPlace(2),
+        ],
+        frameConstraints: [
+          [
+            ["first ", 1],
+            ["then ", 2],
+          ],
+        ],
+        numberingApproved: true,
+      }),
+    );
+  });
+  await page.goto("/new/editor");
+  await expect(page.getByLabel("Constraint 1 for place 1")).toHaveValue(
+    "keep ①\n\nthe book stays",
+  );
+  await page
+    .getByLabel("Constraint 1 for place 1")
+    .fill("keep ①\n\nthe book stays here");
+  await page
+    .getByLabel("Constraint 1 between places")
+    .fill("first ①\n\nthen ② again");
+  await page.getByRole("button", { name: "Move place 2 up" }).click();
+  await expect(page.getByLabel("Constraint 1 for place 2")).toHaveValue(
+    "keep ②\n\nthe book stays here",
+  );
+  await expect(page.getByLabel("Constraint 1 between places")).toHaveValue(
+    "first ②\n\nthen ① again",
+  );
+  await expect(page.getByLabel("Condition 1 for place 2")).toHaveValue("①");
+  await expect(
+    page.getByLabel("Explanation of default 1 for place 2"),
+  ).toHaveValue("see ①");
+  await page
+    .getByLabel("Constraint 1 between places")
+    .fill("first ②\n\nthen ① edited");
+  const json = JSON.parse(await page.locator("pre.json").innerText());
+  expect(json.frame.constraints).toEqual([
+    [
+      ["first ", 2],
+      ["then ", 1, " edited"],
+    ],
+  ]);
+  expect(json.frame.places[1].constraints).toEqual([
+    [["keep ", 2], ["the book stays here"]],
+  ]);
+});
+
+test("nonlocal editor fields keep typed place notation literal and convert saved invalid nodes", async ({
+  page,
+}) => {
+  await page.goto("/new/meaning");
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { newDraft, newPlace } = await import(String("/src/model/draft.ts"));
+    await new LocalStore().put(
+      "drafts",
+      "current",
+      newDraft({
+        spelling: "broda",
+        kind: "gismu",
+        text: [[1, " gives ", 2]],
+        numberingApproved: true,
+        etymologyText: [["from ", 1]],
+        frameMode: "fixed",
+        places: [newPlace(1), newPlace(2)],
+      }),
+    );
+  });
+  await page.goto("/new/editor");
+  await page
+    .getByRole("button", { name: "Convert references to literal text" })
+    .click();
+  await expect(page.getByText(/The etymology cannot refer/)).toHaveCount(0);
+  const converted = JSON.parse(await page.locator("pre.json").innerText());
+  expect(converted.text).toEqual([[1, " gives ", 2]]);
+  expect(converted.etymology.text).toEqual([["from ①"]]);
+  await expect(
+    page.getByRole("textbox", { name: "Definition text" }),
+  ).toHaveValue("① gives ②");
+  await page
+    .getByRole("textbox", { name: "Etymology", exact: true })
+    .fill("from ① and `code`");
+  await page.getByRole("button", { name: "Add an example" }).click();
+  await page.getByLabel("Example 1", { exact: true }).fill("literal ①");
+  await page.getByLabel("Translation of example 1").fill("translation ①");
+  await page.getByLabel("Notes for example 1").fill("note ①");
+  await page
+    .getByRole("button", { name: "Add a derivation for place 1" })
+    .click();
+  await page
+    .getByLabel("Source word of derivation 1 for place 1")
+    .fill("sinxa");
+  await page
+    .getByLabel("Explanation of derivation 1 for place 1")
+    .fill("source ①");
+  let json = JSON.parse(await page.locator("pre.json").innerText());
+  expect(json.frame.places[0].derivation).toEqual([]);
+  await page.getByLabel("Source place of derivation 1 for place 1").fill("2");
+  json = JSON.parse(await page.locator("pre.json").innerText());
+  expect(json.etymology.text).toEqual([["from ① and ", { code: "code" }]]);
+  expect(json.examples[0].translation).toEqual([["translation ①"]]);
+  expect(json.examples[0].notes).toEqual([["note ①"]]);
+  expect(json.frame.places[0].derivation[0].explanation).toEqual([
+    ["source ①"],
+  ]);
+});
+
+test("selmaho stays independent of word type and removed formation evidence", async ({
+  page,
+}) => {
+  await page.goto("/new/meaning");
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { newDraft } = await import(String("/src/model/draft.ts"));
+    await new LocalStore().put(
+      "drafts",
+      "current",
+      newDraft({
+        spelling: "by",
+        kind: "letteral",
+        text: "a letter",
+        selmaho: ["BY"],
+        compound: { components: [], method: "manual", score: null, notes: [] },
+        evidenceForm: "by",
+      }),
+    );
+  });
+  await page.goto("/new/form");
+  await expect(page.getByLabel("selma'o")).toHaveValue("BY");
+  await page.goto("/new/editor");
+  page.once("dialog", (dialog) => void dialog.accept());
+  await page.getByLabel("Type", { exact: true }).selectOption("compound");
+  await expect(page.getByLabel("selma'o")).toHaveValue("BY");
+  await expect
+    .poll(
+      async () =>
+        JSON.parse(await page.locator("pre.json").innerText()).etymology
+          .compound,
+    )
+    .toBe(null);
+  await page.goto("/new/form");
+  await expect(page.getByLabel("selma'o")).toHaveValue("BY");
+});
+
+for (const structured of [true, false]) {
+  test(`using the meaning preserves token characters in ${structured ? "structured" : "literal"} mode`, async ({
+    page,
+  }) => {
+    const meaning =
+      "___ is C:\\temp `x` [[cukta]] {place 5} {operand x} ② of ___";
+    await page.goto("/new/meaning");
+    await page.getByRole("textbox", { name: "Meaning" }).fill(meaning);
+    await expect(page.getByText("Saved in this browser")).toBeVisible();
+    await page.getByRole("link", { name: "Skip to the full editor" }).click();
+    await page.getByLabel("Headword").fill("broda");
+    await page.getByLabel("Type", { exact: true }).selectOption("gismu");
+    if (!structured)
+      await page
+        .getByLabel("Read circled numbers as place references")
+        .uncheck();
+    await page
+      .getByRole("button", { name: "Use the meaning with numbered places" })
+      .click();
+    const json = JSON.parse(await page.locator("pre.json").innerText());
+    const middle = " is C:\\temp `x` [[cukta]] {place 5} {operand x} ② of ";
+    expect(json.text).toEqual(
+      structured ? [[1, middle, 2]] : [[`①${middle}②`]],
+    );
+    expect(json.frame.places.map((p: any) => p.index)).toEqual([1, 2]);
+    await page.locator('.steps a[href="/new/meaning"]').click();
+    await expect(page.getByRole("textbox", { name: "Meaning" })).toHaveValue(
+      meaning,
+    );
+  });
+}
+
+test("N2 removing an added last place keeps the structure unspecified until an explicit zero choice", async ({
+  page,
+}) => {
+  await page.goto("/new/meaning");
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { newDraft } = await import(String("/src/model/draft.ts"));
+    await new LocalStore().put(
+      "drafts",
+      "current",
+      newDraft({ spelling: "broda", kind: "gismu", text: "plain" }),
+    );
+  });
+  await page.goto("/new/editor");
+  await page
+    .getByRole("button", { name: "+ Add a place", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Remove place 1", exact: true })
+    .click();
+  await expect(page.getByLabel("Number of places")).toHaveValue("none");
+  expect(
+    JSON.parse(await page.locator("pre.json").innerText()).frame,
+  ).toBeNull();
+  await page.getByLabel("Number of places").selectOption("fixed");
+  expect(
+    JSON.parse(await page.locator("pre.json").innerText()).frame.arity,
+  ).toEqual({ mode: "fixed", count: 0 });
+});
+
+test("N5 closed defaults and constraints reopen with current references before the next edit", async ({
+  page,
+}) => {
+  await page.goto("/new/meaning");
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { newDraft, newPlace } = await import(String("/src/model/draft.ts"));
+    const places = [1, 2, 3, 4].map((index) => newPlace(index));
+    places[1].constraints = [[[2, " stays near ", 3]]];
+    places[1].defaults = [
+      {
+        kind: "suggested",
+        format: "prose",
+        language: "en",
+        text: "one",
+        condition: [[3]],
+        explanation: [["see ", 2]],
+      },
+    ];
+    await new LocalStore().put(
+      "drafts",
+      "current",
+      newDraft({
+        spelling: "broda",
+        kind: "gismu",
+        text: "plain",
+        frameMode: "fixed",
+        places,
+        frameConstraints: [[[2, " is inside ", 3]]],
+      }),
+    );
+  });
+  await page.goto("/new/editor");
+  const details = page.locator("details").filter({
+    has: page.locator("summary", { hasText: /^Defaults and constraints$/ }),
+  });
+  await expect(page.getByLabel("Constraint 1 between places")).toHaveValue(
+    "② is inside ③",
+  );
+  await details.locator("summary").click();
+  await expect(details).not.toHaveAttribute("open");
+  await page
+    .getByRole("button", { name: "Remove place 1", exact: true })
+    .click();
+  await details.locator("summary").click();
+  await expect(page.getByLabel("Constraint 1 between places")).toHaveValue(
+    "① is inside ②",
+  );
+  await expect(page.getByLabel("Constraint 1 for place 1")).toHaveValue(
+    "① stays near ②",
+  );
+  await expect(page.getByLabel("Condition 1 for place 1")).toHaveValue("②");
+  await expect(
+    page.getByLabel("Explanation of default 1 for place 1"),
+  ).toHaveValue("see ①");
+  await page
+    .getByLabel("Constraint 1 between places")
+    .fill("① is inside ② fully");
+  expect(
+    JSON.parse(await page.locator("pre.json").innerText()).frame.constraints,
+  ).toEqual([[[1, " is inside ", 2, " fully"]]]);
 });

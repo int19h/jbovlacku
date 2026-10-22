@@ -34,6 +34,7 @@ import {
   literalize,
   newPlace,
   rewriteReferences,
+  remapRich,
   richTextToEditor,
   switchMode,
   type DraftGloss,
@@ -61,6 +62,8 @@ import type { RichText } from "../../model/types.ts";
 import {
   actionBar,
   confirmKindChange,
+  formPath,
+  removeFormationEvidence,
   DraftSaver,
   loadDraft,
   startDraft,
@@ -456,7 +459,7 @@ export async function placesPage(
     const selmaho = field("selma'o", {
       value: draft.selmaho.join(", "),
       wrapperClass: "",
-      placeholder: "cmavo only",
+      placeholder: "for example BY",
     });
     selmaho.input.addEventListener("input", () => {
       draft.selmaho = selmaho.input.value
@@ -561,6 +564,7 @@ export async function placesPage(
       switchMode(draft, value);
       syncMirrors();
       renderPlaces();
+      refreshNumbering();
       saver.touch();
       refreshPreview();
     },
@@ -602,12 +606,14 @@ export async function placesPage(
         { class: "notice", style: "margin-top:6px" },
         text(problem.message + " "),
       );
-      if (problem.field === "text" && /referenced/.test(problem.message))
+      if (problem.richFieldKey)
         note.append(
           button(
             "Convert references to literal text",
             () => {
-              rewriteReferences(draft, () => "literal");
+              rewriteReferences(draft, () => "literal", true, [
+                problem.richFieldKey!,
+              ]);
               syncMirrors();
               renderPlaces();
               saver.touch();
@@ -662,13 +668,16 @@ export async function placesPage(
           ? "Use the meaning with numbered places"
           : "Use the meaning as the definition",
         () => {
-          draft.text = editorToRichText(proposal.text, draft.structured);
+          draft.text = editorToRichText(proposal.text, true);
+          if (!draft.structured)
+            draft.text = remapRich(draft.text, () => "literal");
           editor.input.value = editorText(draft.text, draft.structured);
           if (proposal.count && !draft.places.length) {
             draft.places = Array.from({ length: proposal.count }, (_, i) =>
               newPlace(i + 1),
             );
             if (draft.frameMode === "none") draft.frameMode = "fixed";
+            draft.fixedZeroApproved = false;
           }
           saver.touch();
           refreshPreview();
@@ -682,7 +691,12 @@ export async function placesPage(
     defSection.append(suggest);
   }
   // Glosses. Each gloss keeps its own language and sense.
-  const glossRow = glossChips(draft.glosses, "", () => saver.touch());
+  const glossRow = glossChips(
+    draft.glosses,
+    "",
+    () => saver.touch(),
+    () => draft.language,
+  );
   defSection.append(glossRow);
   main.append(defSection);
   // Places.
@@ -710,7 +724,7 @@ export async function placesPage(
     { value: "fixed", label: `exactly ${draft.places.length}` },
     {
       value: "variadic",
-      label: `${draft.variadicMinimum || draft.places.length} or more`,
+      label: `${draft.variadicMinimum} or more`,
     },
     { value: "context", label: "depends on context" },
     { value: "none", label: "unspecified structure" },
@@ -728,8 +742,9 @@ export async function placesPage(
   };
   arity.addEventListener("change", () => {
     draft.frameMode = arity.value as FrameMode;
+    draft.fixedZeroApproved =
+      draft.frameMode === "fixed" && draft.places.length === 0;
     if (draft.frameMode === "variadic") {
-      draft.variadicMinimum = draft.variadicMinimum || draft.places.length;
       draft.tail ??= { description: [], kind: "unspecified", hint: null };
     }
     saver.touch();
@@ -776,6 +791,7 @@ export async function placesPage(
       return;
     }
     draft.places.push(newPlace(nextPlaceNumber()));
+    draft.fixedZeroApproved = false;
     if (draft.frameMode === "none") draft.frameMode = "fixed";
     draft.numberingApproved = false;
     saver.touch();
@@ -852,10 +868,15 @@ export async function placesPage(
       wrapper: el(
         "div",
         { class: "span-3" },
-        glossChips(place.glosses, ` for place ${place.index}`, () => {
-          saver.touch();
-          refreshPreview();
-        }),
+        glossChips(
+          place.glosses,
+          ` for place ${place.index}`,
+          () => {
+            saver.touch();
+            refreshPreview();
+          },
+          () => draft.language,
+        ),
       ),
     };
     const kind = field(`Kind of thing for place ${place.index}`, {
@@ -986,6 +1007,8 @@ export async function placesPage(
               n === removed ? "literal" : n > removed ? n - 1 : n,
             );
             draft.places = renumber(draft.places);
+            if (!draft.places.length && !draft.fixedZeroApproved)
+              draft.frameMode = "none";
           } else
             rewriteReferences(draft, (n) => (n === removed ? "literal" : n));
           syncMirrors();
@@ -1079,6 +1102,7 @@ export async function placesPage(
       );
       tailDescription.input.addEventListener("input", () => {
         draft.tail = {
+          ...draft.tail,
           description: editorToRichText(
             tailDescription.input.value,
             draft.structured,
@@ -1089,18 +1113,35 @@ export async function placesPage(
         saver.touch();
       });
       const tailKind = field("Kind of thing for the repeated places", {
-        options: kindChoices.filter((c) => c.value !== "custom"),
+        options: kindChoices,
         value: draft.tail?.kind ?? "unspecified",
         wrapperClass: "",
       });
       tailKind.input.addEventListener("change", () => {
         draft.tail = {
+          ...draft.tail,
           description: draft.tail?.description ?? [],
           kind: tailKind.input.value as KindChoice,
-          hint: null,
+          hint:
+            tailKind.input.value === "custom"
+              ? (draft.tail?.hint ?? hintForChoice("object"))
+              : null,
         };
         saver.touch();
+        renderTailCustom();
       });
+      const custom = el("div");
+      const renderTailCustom = () => {
+        custom.replaceChildren();
+        if (draft.tail?.kind === "custom")
+          custom.append(
+            hintEditor(draft.tail.hint, draft.structured, (hint) => {
+              draft.tail!.hint = hint;
+              saver.touch();
+            }),
+          );
+      };
+      renderTailCustom();
       const row = el("div", {
         style: "display:flex;flex-wrap:wrap;gap:12px 16px;margin-top:8px",
       });
@@ -1108,7 +1149,7 @@ export async function placesPage(
         f.wrapper.style.flex = "1 1 160px";
         row.append(f.wrapper);
       }
-      tailBox.append(row);
+      tailBox.append(row, custom);
     }
     refreshNumbering();
   };
@@ -1195,6 +1236,16 @@ export async function placesPage(
           format.input.addEventListener("change", () => {
             d.format = format.input.value as DraftDefault["format"];
             saver.touch();
+            renderDefaults();
+          });
+          const language = field(
+            `Default language ${i + 1} for place ${place.index}`,
+            { value: d.language, wrapperClass: "" },
+          );
+          language.wrapper.hidden = d.format !== "prose";
+          language.input.addEventListener("input", () => {
+            d.language = language.input.value;
+            saver.touch();
           });
           const value = field(
             `Default value ${i + 1} for place ${place.index}`,
@@ -1207,6 +1258,8 @@ export async function placesPage(
           const condition = field(
             `Condition ${i + 1} for place ${place.index}`,
             {
+              multiline: true,
+              rows: 2,
               value: editorText(d.condition, draft.structured),
               wrapperClass: "",
               placeholder: "when…",
@@ -1219,7 +1272,30 @@ export async function placesPage(
             );
             saver.touch();
           });
-          for (const f of [kind, format, value, condition]) {
+          const explanation = field(
+            `Explanation of default ${i + 1} for place ${place.index}`,
+            {
+              multiline: true,
+              rows: 2,
+              value: editorText(d.explanation, draft.structured),
+              wrapperClass: "",
+            },
+          );
+          explanation.input.addEventListener("input", () => {
+            d.explanation = editorToRichText(
+              explanation.input.value,
+              draft.structured,
+            );
+            saver.touch();
+          });
+          for (const f of [
+            kind,
+            format,
+            language,
+            value,
+            condition,
+            explanation,
+          ]) {
             f.wrapper.style.flex = "1 1 140px";
             row.append(f.wrapper);
           }
@@ -1239,22 +1315,13 @@ export async function placesPage(
         block.append(holder);
       };
       renderDefaults();
-      const constraints = field(`Constraints for place ${place.index}`, {
-        multiline: true,
-        rows: 2,
-        value: place.constraints
-          .map((c) => editorText(c, draft.structured))
-          .join("\n"),
-        wrapperClass: "",
-        hint: "One per line. Descriptions, not executable rules.",
-      });
-      constraints.input.addEventListener("input", () => {
-        place.constraints = constraints.input.value
-          .split("\n")
-          .filter((c) => c.trim())
-          .map((c) => editorToRichText(c, draft.structured));
-        saver.touch();
-      });
+      const constraints = constraintEditor(
+        place.constraints,
+        `for place ${place.index}`,
+        draft,
+        () => saver.touch(),
+        place,
+      );
       block.append(
         el(
           "div",
@@ -1276,33 +1343,19 @@ export async function placesPage(
             { class: "btn btn-quiet" },
           ),
         ),
-        constraints.wrapper,
+        constraints,
       );
       box.append(block);
     }
-    const frameConstraints = field("Constraints between places", {
-      multiline: true,
-      rows: 2,
-      value: draft.frameConstraints
-        .map((c) => editorText(c, draft.structured))
-        .join("\n"),
-      wrapperClass: "",
-      hint: "One per line.",
-    });
-    mirrors.add(() => {
-      frameConstraints.input.value = draft.frameConstraints
-        .map((c) => editorText(c, draft.structured))
-        .join("\n");
-    });
-    frameConstraints.input.addEventListener("input", () => {
-      draft.frameConstraints = frameConstraints.input.value
-        .split("\n")
-        .filter((c) => c.trim())
-        .map((c) => editorToRichText(c, draft.structured));
-      saver.touch();
-    });
+    const frameConstraints = constraintEditor(
+      draft.frameConstraints,
+      "between places",
+      draft,
+      () => saver.touch(),
+      draft,
+    );
     box.append(
-      frameConstraints.wrapper,
+      frameConstraints,
       p(
         "A missing default does not mean zo'e or an empty value. Version 1 does not execute conditions.",
         "meta",
@@ -1311,13 +1364,11 @@ export async function placesPage(
     return box;
   });
   const rebuildDefaults = () => {
-    if (!defaultsDetails.open) return;
     const body = defaultsDetails.querySelector(":scope > .body");
     if (!body) return;
     body.replaceChildren();
-    defaultsDetails.open = false;
-    defaultsDetails.open = true;
-    defaultsDetails.dispatchEvent(new Event("toggle"));
+    if (defaultsDetails.open)
+      defaultsDetails.dispatchEvent(new Event("toggle"));
   };
   rebuildHooks.push(rebuildDefaults);
   open("Notes", () => {
@@ -1353,6 +1404,14 @@ export async function placesPage(
           class: "sunk",
           style: "display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end",
         });
+        const language = field(`Language of example ${i + 1}`, {
+          value: example.language,
+          wrapperClass: "",
+        });
+        language.input.addEventListener("input", () => {
+          example.language = language.input.value;
+          saver.touch();
+        });
         const textField = field(`Example ${i + 1}`, {
           value: example.text,
           wrapperClass: "",
@@ -1367,10 +1426,17 @@ export async function placesPage(
           value: editorText(example.translation, draft.structured),
           wrapperClass: "",
         });
+        mirrors.add(() => {
+          translation.input.value = editorText(
+            example.translation,
+            draft.structured,
+          );
+        });
         translation.input.addEventListener("input", () => {
           example.translation = editorToRichText(
             translation.input.value,
             draft.structured,
+            false,
           );
           saver.touch();
         });
@@ -1378,14 +1444,18 @@ export async function placesPage(
           value: editorText(example.notes, draft.structured),
           wrapperClass: "",
         });
+        mirrors.add(() => {
+          notesField.input.value = editorText(example.notes, draft.structured);
+        });
         notesField.input.addEventListener("input", () => {
           example.notes = editorToRichText(
             notesField.input.value,
             draft.structured,
+            false,
           );
           saver.touch();
         });
-        for (const f of [textField, translation, notesField]) {
+        for (const f of [language, textField, translation, notesField]) {
           f.wrapper.style.flex = "1 1 180px";
           row.append(f.wrapper);
         }
@@ -1437,10 +1507,14 @@ export async function placesPage(
         wrapperClass: "",
         hint: "Descriptive text without place references. Morphology notes from the Form step are added after it.",
       });
+      mirrors.add(() => {
+        etym.input.value = editorText(draft.etymologyText, draft.structured);
+      });
       etym.input.addEventListener("input", () => {
         draft.etymologyText = editorToRichText(
           etym.input.value,
           draft.structured,
+          false,
         );
         saver.touch();
       });
@@ -1459,10 +1533,31 @@ export async function placesPage(
             "small",
           ),
         );
+      if (draft.compound || draft.formation) {
+        const evidence = el("div", {}, ...nodes);
+        evidence.append(
+          button(
+            "Remove formation evidence",
+            () => {
+              if (!removeFormationEvidence(draft)) return;
+              saver.touch();
+              evidence.replaceChildren(
+                etym.wrapper,
+                p(
+                  'No structured formation evidence in this draft. "Use" in a builder saves it. Manual entry adds none.',
+                  "meta",
+                ),
+              );
+            },
+            { class: "btn btn-quiet" },
+          ),
+        );
+        return evidence;
+      }
       if (!draft.compound && !draft.formation)
         nodes.push(
           p(
-            "No structured formation evidence. The builders add it in a later stage. A manual word carries none.",
+            'No structured formation evidence in this draft. "Use" in a builder saves it. Manual entry adds none.',
             "meta",
           ),
         );
@@ -1697,7 +1792,7 @@ export async function placesPage(
       const render = () => {
         box.replaceChildren(
           p(
-            "Each claim is a separate signed record with its own author blessing of the word and rafsi pair. Conflicts with other words are shown on the Publish step when the server reports them.",
+            "Each claim is a separate signed record with its own author blessing of the word and rafsi pair. Publish compares claims with the downloaded package and names that snapshot. Missing package coverage is unknown.",
             "meta",
           ),
         );
@@ -1760,7 +1855,7 @@ export async function placesPage(
       render();
       return box;
     });
-    open("Fixed fields", () => [
+    const fixedFields = open("Fixed fields", () => [
       p(
         "License: CC0-1.0, https://creativecommons.org/publicdomain/zero/1.0/, attribution empty. The signed issuer identifies the contributor.",
         "small",
@@ -1774,10 +1869,24 @@ export async function placesPage(
         "small",
       ),
     ]);
-    open("JSON inspector", () => {
+    const inspector = open("JSON inspector", () => {
       const { body } = draftToBody(draft);
       return el("pre", { class: "json", text: JSON.stringify(body, null, 2) });
     });
+    const refreshInspection = () => {
+      const pre = inspector.querySelector("pre");
+      if (pre)
+        pre.textContent = JSON.stringify(draftToBody(draft).body, null, 2);
+      const frame = fixedFields.querySelector(".body p:last-child");
+      if (frame)
+        frame.textContent = `Word ID and event ID are derived at signing. Frame: ${draft.frameMode === "none" ? "null" : describeArity(draft.frameMode === "fixed" ? { mode: "fixed", count: draft.places.length } : draft.frameMode === "variadic" ? { mode: "variadic", minimum: draft.variadicMinimum } : { mode: "context" })}.`;
+    };
+    main.addEventListener("input", refreshInspection);
+    main.addEventListener("change", refreshInspection);
+    main.addEventListener("keydown", refreshInspection);
+    main.addEventListener("click", refreshInspection);
+    inspector.addEventListener("toggle", refreshInspection);
+    fixedFields.addEventListener("toggle", refreshInspection);
   }
   main.append(sections);
   for (const details of sections.querySelectorAll<HTMLDetailsElement>(
@@ -1791,8 +1900,8 @@ export async function placesPage(
         href: full
           ? draft.parents.length
             ? routes.definition(draft.parents[0])
-            : "/new/form"
-          : "/new/form",
+            : formPath(draft)
+          : formPath(draft),
       },
       primary: {
         label: "Review",
@@ -1814,6 +1923,7 @@ function glossChips(
   glosses: DraftGloss[],
   suffix: string,
   changed: () => void,
+  definitionLanguage: () => string,
 ): HTMLElement {
   const row = el("div", {
     style:
@@ -1861,7 +1971,7 @@ function glossChips(
       const languageMatch = value.match(
         /^([a-z]{2,8}(?:-[a-z0-9]{1,8})*):\s*(.+)$/u,
       );
-      const language = languageMatch ? languageMatch[1] : "";
+      const language = languageMatch ? languageMatch[1] : definitionLanguage();
       const rest = languageMatch ? languageMatch[2] : value;
       const [textPart, sense] = rest.split(/\s*\(([^)]*)\)\s*$/);
       glosses.push({
@@ -1876,7 +1986,7 @@ function glossChips(
     row.append(
       add,
       text(
-        "A sense in parentheses, such as great (in a property), is optional. A language prefix, such as fr: grand, sets the gloss language. Without one the definition language applies.",
+        "A sense in parentheses, such as great (in a property), is optional. A language prefix, such as fr: grand, sets the gloss language. Without one, the gloss keeps the current definition language.",
         "meta",
       ),
     );
@@ -1983,6 +2093,7 @@ function derivationEditor(
         derivation.explanation = editorToRichText(
           explanation.input.value,
           structured,
+          false,
         );
         changed();
       });
@@ -2026,6 +2137,58 @@ function derivationEditor(
           "aria-label": `Add a derivation for place ${place.index}`,
           style: "margin-top:6px;min-height:36px",
         },
+      ),
+    );
+  };
+  render();
+  return box;
+}
+
+/** Each constraint keeps its paragraphs and rich nodes in a separate editor. */
+function constraintEditor(
+  values: RichText[],
+  suffix: string,
+  draft: Draft,
+  changed: () => void,
+  owner: object,
+): HTMLElement {
+  const box = el("div");
+  const render = () => {
+    box.replaceChildren();
+    values.forEach((value, i) => {
+      const input = field(`Constraint ${i + 1} ${suffix}`, {
+        multiline: true,
+        rows: 2,
+        value: editorText(value, draft.structured),
+        wrapperClass: "",
+      });
+      input.input.addEventListener("input", () => {
+        values[i] = editorToRichText(input.input.value, draft.structured);
+        changed();
+      });
+      box.append(
+        input.wrapper,
+        button(
+          `Remove constraint ${i + 1} ${suffix}`,
+          () => {
+            values.splice(i, 1);
+            (owner as { constraintIds?: string[] }).constraintIds?.splice(i, 1);
+            changed();
+            render();
+          },
+          { class: "btn btn-quiet" },
+        ),
+      );
+    });
+    box.append(
+      button(
+        `Add a constraint ${suffix}`,
+        () => {
+          values.push([]);
+          changed();
+          render();
+        },
+        { class: "btn btn-quiet" },
       ),
     );
   };

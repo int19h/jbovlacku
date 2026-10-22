@@ -17,6 +17,7 @@ import { attribution, identityLink } from "./attribution.ts";
 import { judgmentControl, scoreDetails } from "./judgment.ts";
 import type { App } from "../app/context.ts";
 import { routes } from "../app/router.ts";
+import { getIdentity } from "../data/api.ts";
 import type { LoadedRecord } from "../data/api.ts";
 
 export interface DefinitionBlockOptions {
@@ -61,10 +62,10 @@ export function placeStrip(
       "aria-hidden": "true",
       text: String(place.index),
     });
-    item.append(marker, text(label ?? "no description", label ? "" : "meta"));
-    item.setAttribute(
-      "aria-label",
-      `place ${place.index}${label ? `: ${label}` : ", no description"}`,
+    item.append(
+      marker,
+      el("span", { class: "sr", text: `place ${place.index}: ` }),
+      text(label ?? "no description", label ? "" : "meta"),
     );
     strip.append(item);
   }
@@ -419,13 +420,34 @@ export function definitionBlock(
     for (const child of children) {
       const notice = el("div", { class: "revision-notice" });
       const same = child.envelope.header.issuer === envelope.header.issuer;
+      const authorNote = text(same ? ", the author." : ", a different key.");
+      const snapshot = options.word?.snapshot;
+      if (!same && snapshot) {
+        void Promise.all([
+          getIdentity(envelope.header.issuer, { snapshot }),
+          getIdentity(child.envelope.header.issuer, { snapshot }),
+        ])
+          .then(([original, revision]) => {
+            if (
+              original.snapshot !== snapshot ||
+              revision.snapshot !== snapshot ||
+              original.suspended ||
+              revision.suspended
+            )
+              return;
+            if (original.actor === revision.actor)
+              authorNote.textContent =
+                ", the author through accepted key continuity.";
+          })
+          .catch(() => {});
+      }
       notice.append(
         el(
           "span",
           {},
           text("Revision proposed by "),
           identityLink(child.envelope.header.issuer),
-          text(same ? ", the author." : ", not the author."),
+          authorNote,
         ),
         link(
           "Compare",
@@ -434,9 +456,23 @@ export function definitionBlock(
       );
       article.append(notice);
     }
+    const source = disclosure(
+      "Source",
+      () => sourceDisclosureBody(envelope, body),
+      { id: `source-${id}` },
+    );
+    if (
+      location.hash === `#source-${id}` ||
+      location.hash === `#${encodeURIComponent(`source-${id}`)}`
+    ) {
+      source.open = true;
+      requestAnimationFrame(() => {
+        if (source.isConnected) source.scrollIntoView();
+      });
+    }
     const tools = el("div", { class: "tools" });
     tools.append(
-      disclosure("Source", () => sourceDisclosureBody(envelope, body)),
+      source,
       disclosure("History", () => historyBody(envelope, options.revisions)),
       disclosure("Signed record", () =>
         el("pre", { class: "json", text: visibleJson({ envelope, body }) }),
@@ -514,7 +550,7 @@ export function placeTable(body: DefinitionBody, prefix: string): HTMLElement {
           {},
           ...place.defaults.map((d) =>
             el("p", {
-              text: `${d.kind} default: ${d.value.text}${plainText(d.condition) ? ` when ${plainText(d.condition)}` : ""}`,
+              text: `${d.kind} default: ${d.value.text}${d.value.format === "prose" ? ` (${d.value.language})` : ""}${plainText(d.condition) ? ` when ${plainText(d.condition)}` : ""}${plainText(d.explanation) ? `. ${plainText(d.explanation)}` : ""}`,
             }),
           ),
         ),

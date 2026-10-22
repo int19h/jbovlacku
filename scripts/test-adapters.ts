@@ -331,6 +331,27 @@ try {
         assert.equal(ranked.calculation?.algorithm, algorithm);
         assert.equal(ranked.calculation?.exact, true);
       }
+      const searchFields = {
+        q: "go",
+        language: "en",
+        view: view.envelope.id,
+        limit: 1,
+        retired: "1",
+      };
+      const postSearch = await api(index, "/search", searchFields);
+      assert.equal(postSearch.status, 200, await postSearch.clone().text());
+      const getSearch = await api(
+        index,
+        `/search?${new URLSearchParams(Object.entries(searchFields).map(([name, value]) => [name, String(value)]))}`,
+      );
+      assert.equal(getSearch.status, 200);
+      const searched: any = await postSearch.json();
+      assert.deepEqual(searched, await getSearch.json());
+      assert.equal(searched.query, searchFields.q);
+      assert.equal(
+        (await api(index, "/search", { ...searchFields, q: null })).status,
+        400,
+      );
       const identity = encodeURIComponent(entry.envelope.header.issuer);
       const withView = `view=${encodeURIComponent(view.envelope.id)}`;
       const personResponse = await api(

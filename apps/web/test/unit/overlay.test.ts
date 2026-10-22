@@ -134,3 +134,35 @@ test("route notes follow the reasons that the result supplies, and nothing else"
   assert.equal(influenceText(reviewer({ blocked: true })), "0");
   assert.equal(influenceText(reviewer({})), "unavailable");
 });
+
+test("an allocation or removal for a continuity group prevents an automatic personal root", () => {
+  const predecessor = other;
+  const context = {
+    identity: me,
+    actors: { [me]: predecessor, [predecessor]: predecessor },
+  };
+  assert.deepEqual(
+    effectiveOverlay(saved(), view, context, [predecessor]).root_changes,
+    [],
+  );
+  for (const q of [
+    null,
+    { numerator: 0, denominator: 1 },
+    { numerator: 1, denominator: 2 },
+  ]) {
+    const overlay = {
+      ...saved(),
+      root_changes: [{ identity: predecessor, q }],
+    };
+    assert.deepEqual(
+      effectiveOverlay(overlay, view, context, []).root_changes,
+      overlay.root_changes,
+    );
+  }
+  // A later snapshot without accepted continuity treats the keys separately.
+  assert.equal(
+    effectiveOverlay(saved(), view, { identity: me, actors: {} }, [predecessor])
+      .root_changes.length,
+    1,
+  );
+});

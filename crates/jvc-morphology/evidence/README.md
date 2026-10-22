@@ -14,6 +14,6 @@ Before a comparison, make sure that gencmu's embedded grammars match its source 
 
 The Ilmen 8 README credits its eight-language configuration to Ilmen. It states no source population or transformation from twelve languages. The evidence makes no claim about such a transformation.
 
-The recognizer port retains the parsing functions needed for word recognition and lujvo part ranges. It removes contract macros and external diagnostic types. It replaces the UI and CAI lookup with their pinned indicator table. It adds work accounting to functions that share the recognition cache. The notices for the source are in [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md).
+The recognizer port retains the parsing functions needed for word recognition and lujvo part ranges. It removes contract macros and external diagnostic types. It replaces the UI and CAI lookup with their pinned indicator table. It adds work accounting to functions that share the recognition cache. The port uses the CLL consonant-pair table and refuses `mz`, which jbotci accepts as an experimental relaxation. The notices for the source are in [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md).
 
 This evidence records representative cases. It does not establish full equivalence between the two reference grammars or between either grammar and Jbovlacku. For example, the CLL lujvo profile restricts components, while general fu'ivla recognition follows the pinned jbotci rules.

@@ -478,9 +478,23 @@ export function confirmKindChange(
     if (!ok) return false;
     if (kind !== "lujvo") draft.compound = null;
     if (kind !== "gismu") draft.formation = null;
-    if (kind !== "cmavo") draft.selmaho = [];
     if (!draft.compound && !draft.formation) draft.evidenceForm = null;
   }
   draft.kind = kind;
+  return true;
+}
+/** Removes structured evidence only after the author confirms the exact loss. */
+export function removeFormationEvidence(draft: Draft): boolean {
+  if (!draft.compound && !draft.formation) return false;
+  if (
+    !confirm(
+      "Remove the compound and generation evidence from this draft? The spelling, builder inputs, prose, and annotations stay.",
+    )
+  )
+    return false;
+  draft.compound = null;
+  draft.formation = null;
+  draft.evidenceForm = null;
+  draft.publishAcknowledged = [];
   return true;
 }

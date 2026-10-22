@@ -223,7 +223,7 @@ export class BuilderError extends Error {
   constructor(public failure: BuilderFailure) {
     super(
       failure.kind === "resource-limit"
-        ? `${failure.measure} is ${failure.value}, above the limit of ${failure.limit}.`
+        ? `${failure.measure} is ${failure.value}, above the limit of ${failure.limit}.${failure.measure === "build recognition work" ? " Lock a component form." : ""}`
         : (failure.message ?? "The builder request failed."),
     );
   }
@@ -316,7 +316,10 @@ export interface LujvoResult {
     id: string;
     normalized: string;
     choices: LujvoChoice[];
+    /** A listed choice or an extended whole-word lock awaiting recognition. */
     lock_valid: boolean;
+    /** The whole-word check exhausted its work limit. Listed rafsi remain available. */
+    recognition_incomplete: boolean;
     diagnostics: string[];
   }[];
   candidates: LujvoCandidate[];

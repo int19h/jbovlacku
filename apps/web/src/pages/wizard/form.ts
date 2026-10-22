@@ -3,11 +3,17 @@
  * selma'o for cmavo. The lujvo builder and the gismu generator have their own
  * pages and link back here for manual entry.
  */
-import { el, p, text, field, link } from "../../lib/dom.ts";
+import { el, p, text, field, link, button } from "../../lib/dom.ts";
 import { navigate, type RenderContext, type Route } from "../../app/router.ts";
 import type { App } from "../../app/context.ts";
 import type { Draft } from "../../model/draft.ts";
-import { actionBar, DraftSaver, loadDraft, stepBar } from "./common.ts";
+import {
+  actionBar,
+  DraftSaver,
+  loadDraft,
+  stepBar,
+  removeFormationEvidence,
+} from "./common.ts";
 
 export async function formPage(route: Route, context: RenderContext, app: App) {
   const { main } = context;
@@ -35,6 +41,26 @@ export async function formPage(route: Route, context: RenderContext, app: App) {
           ? "Enter the gismu"
           : "Enter the form";
   section.append(el("h1", { id: "h1", class: "page", text: title }));
+  const evidenceNotice = el("div");
+  const renderEvidence = () => {
+    evidenceNotice.replaceChildren();
+    if (!draft.compound && !draft.formation) return;
+    evidenceNotice.append(
+      p(
+        `This draft keeps ${draft.compound ? "construction" : "generation"} evidence for ${draft.evidenceForm ?? draft.spelling}. Manual entry does not remove it.`,
+        "small",
+      ),
+      button(
+        "Remove formation evidence",
+        () => {
+          if (!removeFormationEvidence(draft)) return;
+          saver.touch();
+          renderEvidence();
+        },
+        { class: "btn btn-quiet" },
+      ),
+    );
+  };
   if (kind === "lujvo" || kind === "gismu")
     section.append(
       el(
@@ -42,8 +68,8 @@ export async function formPage(route: Route, context: RenderContext, app: App) {
         { class: "small" },
         text(
           kind === "lujvo"
-            ? "Manual entry. A lujvo entered here carries no construction evidence. "
-            : "Manual entry. A gismu entered here carries no fabricated generation evidence. ",
+            ? "Manual entry adds no construction evidence. "
+            : "Manual entry adds no generation evidence. ",
         ),
         link(
           kind === "lujvo"
@@ -60,6 +86,8 @@ export async function formPage(route: Route, context: RenderContext, app: App) {
         "small",
       ),
     );
+  renderEvidence();
+  section.append(evidenceNotice);
   const spelling = field("Spelling", {
     value: draft.spelling,
     spellcheck: false,
@@ -68,12 +96,13 @@ export async function formPage(route: Route, context: RenderContext, app: App) {
   });
   spelling.input.style.fontSize = "24px";
   spelling.input.addEventListener("input", () => {
+    if (draft.spelling !== spelling.input.value) draft.publishAcknowledged = [];
     draft.spelling = spelling.input.value;
     saver.touch();
     refresh();
   });
   section.append(spelling.wrapper);
-  if (kind === "cmavo") {
+  if (kind === "cmavo" || kind === "compound" || kind === "letteral") {
     const selmaho = field("selma'o", {
       value: draft.selmaho.join(", "),
       placeholder: "for example UI, or BAI*",

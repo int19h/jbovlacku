@@ -25,6 +25,7 @@ The [carrier guide](crates/jvc-carrier/README.md) describes canonical files, imp
 The browser supports anonymous lookup, verified definition pages, encrypted key backups with a recovery test, and signed delivery with per-server receipts.
 Search sits in the header of every page. Result rows show the headword, rafsi, type, highlighted definition text, attribution, and a net score with Endorse and Oppose arrows.
 Word pages show every definition under the selected view, with place strips, revision notices, comparisons, source evidence, rafsi pair cards, and reviewer details.
+Settings can show Zbalermorna beside Latin headwords on word and search pages. A local preference puts definitions with your judgments first without changing scores.
 Public identity pages show the signed profile, counts, and activity. Trust actions offer a private rule or a public signed record.
 The local key edits its public profile, with a signed preview of the name, biography, and HTTPS links under the format limits. A rafsi pair link opens the pair's word and rafsi from the local search packages.
 The browser keeps the key's own records that it fetched from a server, so later signatures read them locally. It handles at most 4,096 own events per key and 64 concurrent branches. Above those limits it refuses to sign in this browser and says so.
@@ -53,7 +54,8 @@ The [morphology profiles](docs/morphology.md) name the rules and versions that t
 The status editor, transfer editor, semantic search, AI, and Lensisku cross-posting remain target features.
 The site view is the server's selected signed view, and the Trust page can use another retained signed view by its event ID. A signed view names its calculation profile, `simple-routes-bounds-v1` or `simple-routes-shun-v1`; the pages name the profile of each result and its route rule, and an unknown profile leaves scores unavailable.
 The personal view downloads the snapshot records, verifies each envelope and body in a Web Worker, and ranks words locally with the private overlay.
-It adds the current identity as a root with allocation 1 when the view names no allocation for it, and it applies private blocks and public shuns as local blocks.
+It adds the current identity with allocation 1 only when its continuity group has no allocation or private root change.
+Zero allocations and removals also prevent that addition. It applies private blocks and public shuns as local blocks.
 A cancelled or incomplete local calculation keeps personal scores unavailable and offers the site view. "Recompute from records" compares a local site-view calculation with the server scores.
 A planned handover creates and tests a successor key, shows the old key's heads from every configured peer, searches for an existing transfer, and saves the transfer, the acceptance, and the encrypted successor key in one transaction before upload. Partial upload reads "Old key retired, acceptance waiting", and retries reuse the stored events.
 A compromise notice previews the retained and excluded records of a chosen causal frontier, blocks on missing history, and needs explicit approval for an empty frontier. Ordinary signing from a retired or compromised key is refused.

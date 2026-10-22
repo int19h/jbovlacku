@@ -93,7 +93,13 @@ async function start() {
     identity: session.identity ?? null,
   }));
   store.onOverlayChange = () => personal.invalidate();
-  own.subscribe(() => personal.invalidate());
+  let calculationIdentity = session.identity;
+  session.subscribe(() => {
+    if (session.identity !== calculationIdentity) {
+      calculationIdentity = session.identity;
+      personal.invalidate();
+    }
+  });
   const app: App = {
     store,
     personal,

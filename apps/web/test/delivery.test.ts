@@ -192,7 +192,7 @@ test("header-only acceptance stays unfinished until the matching body is confirm
     .getByRole("button", { name: "Sign and publish the report" })
     .click();
   await acceptFirstSignature(page);
-  // The marker also counts a queued record. Wait for the stored missing-body state.
+  // Wait for the stored missing-body outcome of the first delivery.
   await expect
     .poll(async () => {
       const items = await outboxItems(page);
@@ -206,6 +206,9 @@ test("header-only acceptance stays unfinished until the matching body is confirm
         : (peer?.state ?? "none");
     })
     .toBe("missing-body");
+  await expect(page.getByRole("status")).toHaveText(
+    "The report is signed and saved here as an allegation. Delivery is not finished. See Not delivered.",
+  );
   const original = (await outboxItems(page))[0];
   expect(requests).toEqual([{ kind: "post", withBody: true }]);
   // The interface shows the missing body while uploads still lose it.

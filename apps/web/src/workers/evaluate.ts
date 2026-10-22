@@ -7,11 +7,13 @@
  */
 import {
   evaluateSession,
+  evaluate,
   initializeCore,
   type EvaluationRequest,
 } from "../../../../packages/core/src/index.ts";
 
 export type WorkerRequest =
+  | { type: "actors"; id: number; input: EvaluationRequest }
   | { type: "load"; id: number; session: string; input: EvaluationRequest }
   | {
       type: "rank";
@@ -22,6 +24,7 @@ export type WorkerRequest =
       reviewers?: number;
     };
 export type WorkerResponse =
+  | { type: "actors"; id: number; actors: Record<string, string> }
   | {
       type: "loaded";
       id: number;
@@ -41,7 +44,13 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
   const reply = (response: WorkerResponse) => self.postMessage(response);
   try {
     await ready;
-    if (message.type === "load") {
+    if (message.type === "actors") {
+      const state = evaluate(message.input);
+      const lifecycle = state.lifecycle as {
+        key_actor: Record<string, string>;
+      };
+      reply({ type: "actors", id: message.id, actors: lifecycle.key_actor });
+    } else if (message.type === "load") {
       session?.free();
       session = null;
       sessionKey = null;

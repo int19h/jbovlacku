@@ -143,13 +143,15 @@ test("the word page orders definitions by the two-root view and exposes the scor
   );
   // Place strip and place links.
   const strip = first.locator(".place-strip");
-  await expect(strip.getByLabel("place 1: book")).toBeVisible();
+  await expect(
+    strip.locator("span").filter({ hasText: /^1place 1: book$/ }),
+  ).toBeVisible();
   await expect(
     first.getByRole("link", { name: "place 3", exact: true }),
   ).toHaveAttribute("href", /#place-[0-9a-f]+-3$/);
   // Revision notice from the delegate.
   await expect(first.locator(".revision-notice")).toContainText(
-    "not the author.",
+    "a different key.",
   );
   await first.getByRole("link", { name: "Compare" }).click();
   await expect(page).toHaveURL(
@@ -244,7 +246,7 @@ test("every page fits a 360 pixel screen in both themes with header search and f
   }
 });
 
-test("the trust page names both roots and the site view settings", async ({
+test("the trust page names the publisher, both roots, and the site view settings", async ({
   page,
 }) => {
   const f = fixture();
@@ -255,12 +257,35 @@ test("the trust page names both roots and the site view settings", async ({
   await expect(
     page.getByText("Web UI test view. Selected by this server."),
   ).toBeVisible();
-  for (const root of [f.identities.rootA, f.identities.rootB])
-    await expect(
-      page.getByRole("link", {
-        name: root.slice(8, 12) + "…" + root.slice(-4),
-      }),
-    ).toBeVisible();
+  const publisher = await page.evaluate(async (view) => {
+    const { getEnvelope } = await import(String("/src/data/api.ts"));
+    return (await getEnvelope(view)).header.issuer;
+  }, f.view);
+  const publisherRow = page
+    .locator("main > p")
+    .filter({ hasText: /^Published by / });
+  await expect(publisherRow).toHaveCount(1);
+  await expect(publisherRow.getByRole("link")).toHaveAttribute(
+    "href",
+    `/identity/${encodeURIComponent(publisher)}`,
+  );
+  await expect(publisherRow.getByRole("link")).toHaveAttribute(
+    "title",
+    fingerprintText(publisher),
+  );
+  const roots = page.locator("main > p").filter({ hasText: /q=/ });
+  await expect(roots).toHaveCount(1);
+  await expect(roots.getByRole("link")).toHaveCount(2);
+  for (const root of [f.identities.rootA, f.identities.rootB]) {
+    const identity = roots.getByRole("link", {
+      name: root.slice(8, 12) + "…" + root.slice(-4),
+    });
+    await expect(identity).toBeVisible();
+    await expect(identity).toHaveAttribute(
+      "href",
+      `/identity/${encodeURIComponent(root)}`,
+    );
+  }
   await page.getByText("Settings and history").click();
   await expect(page.getByText("Outward allowance (H)")).toBeVisible();
   await expect(

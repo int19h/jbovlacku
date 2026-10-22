@@ -28,6 +28,7 @@ import {
   newPlace,
   normalizeDraft,
   numberPlaceholders,
+  referenceFields,
   remapPlaces,
   rewriteReferences,
   richTextToEditor,
@@ -798,10 +799,17 @@ test("the editor and the core agree on every reviewed invalid draft", () => {
     ).join("\n"),
     /rich text nodes across every field/,
   );
-  // P12: a fixed frame with zero places is not a guessed structure.
-  assert.match(
-    blocking(newDraft({ ...base, frameMode: "fixed", places: [] })).join("\n"),
-    /needs at least one place/,
+  // P12: an explicit fixed frame with zero places is not a guessed structure.
+  assert.deepEqual(
+    blocking(
+      newDraft({
+        ...base,
+        frameMode: "fixed",
+        fixedZeroApproved: true,
+        places: [],
+      }),
+    ),
+    [],
   );
   // Evidence for another form blocks publication.
   assert.match(
@@ -1392,3 +1400,525 @@ test("a place above 20 keeps one literal form through removal and mode changes",
     draft.text,
   );
 });
+
+test("context gaps and an explicit zero-place fixed frame survive revision", () => {
+  for (const patch of [
+    {
+      frameMode: "context" as const,
+      places: [newPlace(5), newPlace(2)],
+      text: "② and ⑤",
+    },
+    {
+      frameMode: "fixed" as const,
+      fixedZeroApproved: true,
+      places: [],
+      text: "no places",
+    },
+  ]) {
+    const draft = newDraft({
+      spelling: "broda",
+      kind: "gismu",
+      numberingApproved: true,
+      ...patch,
+    });
+    const { body, problems } = draftToBody(draft);
+    assert.deepEqual(
+      problems.filter((p) => p.blocking),
+      [],
+    );
+    assert.ok(admissible(body));
+    assert.deepEqual(
+      body!.frame!.places.map((p) => p.index),
+      patch.places.map((p) => p.index).sort((a, b) => a - b),
+    );
+    const revised = draftFromBody(body!, "jve1:" + "a".repeat(64), "native");
+    assert.deepEqual(
+      draftToBody(revised).problems.filter((p) => p.blocking),
+      [],
+    );
+    assert.deepEqual(draftToBody(revised).body!.frame, body!.frame);
+  }
+  assert.equal(
+    draftToBody(newDraft({ spelling: "broda", kind: "gismu", text: "plain" }))
+      .body!.frame,
+    null,
+  );
+});
+
+test("a zero-place fixed frame needs an explicit author choice", () => {
+  const draft = newDraft({
+    spelling: "broda",
+    kind: "gismu",
+    text: "plain",
+    frameMode: "fixed",
+    places: [newPlace(1)],
+  });
+  draft.places.pop();
+  assert.ok(
+    draftToBody(draft).problems.some(
+      (problem) =>
+        problem.blocking && /explicit.*zero-place/.test(problem.message),
+    ),
+  );
+  draft.fixedZeroApproved = true;
+  const built = draftToBody(draft);
+  assert.deepEqual(
+    built.problems.filter((problem) => problem.blocking),
+    [],
+  );
+  const revised = draftFromBody(
+    built.body!,
+    "jve1:" + "a".repeat(64),
+    "native",
+  );
+  assert.equal(revised.fixedZeroApproved, true);
+  assert.deepEqual(
+    draftToBody(revised).problems.filter((problem) => problem.blocking),
+    [],
+  );
+});
+
+test("converting one invalid rich field keeps every other field and definition reference", () => {
+  const draft = newDraft({
+    spelling: "broda",
+    kind: "gismu",
+    text: [[1, " gives ", 2]],
+    frameMode: "fixed",
+    places: [newPlace(1), newPlace(2)],
+    numberingApproved: true,
+    etymologyText: [["from ", 1]],
+    examples: [
+      { language: "jbo", text: "broda", translation: [[2]], notes: [[1]] },
+    ],
+  });
+  const problems = draftToBody(draft).problems;
+  const etymology = problems.find((problem) =>
+    /etymology cannot refer/.test(problem.message),
+  )!;
+  assert.ok(etymology.richFieldKey);
+  rewriteReferences(draft, () => "literal", true, [etymology.richFieldKey]);
+  assert.deepEqual(draft.etymologyText, [["from ①"]]);
+  assert.deepEqual(draft.text, [[1, " gives ", 2]]);
+  assert.deepEqual(draft.examples[0].translation, [[2]]);
+  assert.deepEqual(draft.examples[0].notes, [[1]]);
+  const remaining = draftToBody(draft).problems;
+  assert.equal(
+    remaining.some((problem) => /etymology cannot refer/.test(problem.message)),
+    false,
+  );
+  assert.equal(remaining.filter((problem) => problem.richFieldKey).length, 2);
+  assert.equal(
+    new Set(remaining.map((problem) => problem.richFieldKey)).size,
+    2,
+  );
+});
+
+test("undeclared references name their exact rich fields for conversion", () => {
+  const draft = newDraft({
+    spelling: "broda",
+    kind: "gismu",
+    text: [[1]],
+    notes: [[2]],
+    frameMode: "fixed",
+    places: [newPlace(1)],
+    numberingApproved: true,
+    frameConstraints: [[], [[2]]],
+  });
+  const problems = draftToBody(draft).problems.filter((problem) =>
+    /not declared/.test(problem.message),
+  );
+  assert.equal(problems.length, 2);
+  for (const problem of problems) {
+    assert.ok(problem.richFieldKey);
+    rewriteReferences(draft, () => "literal", true, [problem.richFieldKey]);
+  }
+  assert.deepEqual(draft.text, [[1]]);
+  assert.deepEqual(draft.notes, [["②"]]);
+  assert.deepEqual(draft.frameConstraints, [[], [["②"]]]);
+  assert.deepEqual(draftToBody(draft).problems, []);
+});
+
+test("every rich-reference problem selects its own current field after empty rows", () => {
+  const draft = newDraft({
+    spelling: "broda",
+    kind: "gismu",
+    text: [[1]],
+    notes: [[2]],
+    frameMode: "variadic",
+    variadicMinimum: 1,
+    places: [
+      {
+        ...newPlace(1),
+        description: [[2]],
+        kind: "custom",
+        hint: {
+          alternatives: [
+            { tags: ["entity"], abstractor: null, relation_arity: null },
+          ],
+          note: [[2]],
+        },
+        constraints: [[], [[2]]],
+        defaults: [
+          {
+            kind: "suggested",
+            format: "lojban",
+            language: "",
+            text: "x",
+            condition: [[2]],
+            explanation: [[2]],
+          },
+        ],
+        derivations: [
+          { word: "sinxa", definition: null, place: 1, explanation: [[2]] },
+        ],
+      },
+    ],
+    tail: {
+      kind: "custom",
+      description: [[2]],
+      hint: {
+        alternatives: [
+          { tags: ["entity"], abstractor: null, relation_arity: null },
+        ],
+        note: [[2]],
+      },
+    },
+    frameConstraints: [[], [[2]]],
+    etymologyText: [[2]],
+    examples: [
+      { language: "jbo", text: "", translation: [], notes: [] },
+      { language: "jbo", text: "broda", translation: [[2]], notes: [[2]] },
+    ],
+    operands: [
+      {
+        id: "x",
+        category: "sumti",
+        minimum: 0,
+        maximum: 1,
+        description: [[2]],
+      },
+    ],
+    numberingApproved: true,
+  });
+  const problems = draftToBody(draft).problems;
+  assert.equal(problems.length, 14);
+  assert.equal(
+    new Set(problems.map((problem) => problem.richFieldKey)).size,
+    14,
+  );
+  for (const problem of problems) {
+    assert.ok(problem.richFieldKey);
+    const fields = referenceFields(draft, true);
+    const before = fields.map((field) => structuredClone(field.get()));
+    rewriteReferences(draft, () => "literal", true, [problem.richFieldKey]);
+    fields.forEach((field, index) => {
+      assert.deepEqual(
+        field.get(),
+        field.key === problem.richFieldKey ? [["②"]] : before[index],
+      );
+    });
+  }
+  assert.deepEqual(draft.text, [[1]]);
+  assert.deepEqual(draftToBody(draft).problems, []);
+});
+
+test("literal edits keep backslashes before place notation when references return", () => {
+  for (const [literal, expected] of [
+    ["path C:\\①", [["path C:\\", 1]]],
+    ["see \\{place 21} end", [["see \\", 21, " end"]]],
+    ["C:\\temp", [["C:\\temp"]]],
+  ] as const) {
+    const draft = newDraft({ spelling: "broda", kind: "gismu", text: "note" });
+    switchMode(draft, false);
+    draft.text = editorToRichText(literal, false);
+    switchMode(draft, true);
+    assert.deepEqual(draft.text, expected);
+    switchMode(draft, false);
+    assert.equal(editorText(draft.text, false), literal);
+  }
+});
+
+test("renumbering updates literal snapshots while their fields contain an edit", () => {
+  const draft = newDraft({
+    spelling: "broda",
+    kind: "gismu",
+    text: [[1, " gives ", 2, " to ", 3]],
+    frameMode: "fixed",
+    places: [newPlace(1), newPlace(2), newPlace(3), newPlace(4)],
+  });
+  switchMode(draft, false);
+  const fieldKey = referenceFields(draft).find(
+    (field) => field.label === "the definition",
+  )!.key!;
+  draft.text = editorToRichText("① gives ② to ③ edited", false);
+  draft.places.shift();
+  rewriteReferences(draft, (n) => (n === 1 ? "literal" : n - 1));
+  draft.places.forEach((place, index) => {
+    place.index = index + 1;
+  });
+  assert.deepEqual(draft.literalModeRestore![fieldKey].structured, [
+    ["① gives ", 1, " to ", 2],
+  ]);
+  assert.deepEqual(draft.literalModeRestore![fieldKey].literal, [
+    ["① gives ① to ②"],
+  ]);
+  draft.text = editorToRichText("① gives ① to ②", false);
+  switchMode(draft, true);
+  assert.deepEqual(draft.text, [["① gives ", 1, " to ", 2]]);
+});
+
+test("an undone literal edit keeps removed and renumbered references after reload", () => {
+  let draft = newDraft({
+    spelling: "broda",
+    kind: "gismu",
+    text: [[1, " gives ", 2, " to ", 3]],
+    frameMode: "fixed",
+    places: [newPlace(1), newPlace(2), newPlace(3), newPlace(4)],
+  });
+  switchMode(draft, false);
+  draft.text = editorToRichText("① gives ② to ③ edited", false);
+  draft.places.shift();
+  rewriteReferences(draft, (n) => (n === 1 ? "literal" : n - 1));
+  draft.places.forEach((place, index) => {
+    place.index = index + 1;
+  });
+  draft = normalizeDraft(JSON.parse(JSON.stringify(draft)));
+  draft.text = editorToRichText("① gives ② to ③", false);
+  switchMode(draft, true);
+  assert.deepEqual(draft.text, [["① gives ", 1, " to ", 2]]);
+  assert.equal(draft.numberingApproved, false);
+  draft.numberingApproved = true;
+  const built = draftToBody(draft);
+  assert.deepEqual(built.problems, []);
+  assert.deepEqual(built.body!.text, [["① gives ", 1, " to ", 2]]);
+  assert.equal("literalModeRestore" in built.body!, false);
+});
+
+test("numbering meaning placeholders preserves all other literal characters", () => {
+  const meaning =
+    "___ is C:\\temp `x` [[cukta]] {place 5} {operand x} ② of ___";
+  const proposal = numberPlaceholders(meaning);
+  assert.deepEqual(editorToRichText(proposal.text, true), [
+    [1, " is C:\\temp `x` [[cukta]] {place 5} {operand x} ② of ", 2],
+  ]);
+});
+
+test("structured text keeps ordinary and trailing backslashes", () => {
+  const slash = String.fromCharCode(92);
+  const text = `Use C:${slash}temp and x${slash}y and ${slash}`;
+  assert.deepEqual(editorToRichText(text, true), [[text]]);
+  assert.deepEqual(
+    editorToRichText(
+      `${slash}① ${slash}{place 2} ${slash}\`x${slash}\` ${slash}[x ${slash}${slash}`,
+      true,
+    ),
+    [[`① {place 2} \`x\` [x ${slash}`]],
+  );
+});
+
+test("a removed reference stays literal after mode changes and a saved draft reload", () => {
+  let draft = newDraft({
+    spelling: "broda",
+    kind: "gismu",
+    text: "① gives ② to ③",
+    frameMode: "fixed",
+    places: [newPlace(1), newPlace(2), newPlace(3)],
+    numberingApproved: true,
+  });
+  draft.places.splice(1, 1);
+  rewriteReferences(draft, (n) => (n === 2 ? "literal" : n > 2 ? n - 1 : n));
+  draft.places[1].index = 2;
+  switchMode(draft, false);
+  assert.equal(draft.numberingApproved, false);
+  draft = normalizeDraft(JSON.parse(JSON.stringify(draft)))!;
+  switchMode(draft, true);
+  assert.deepEqual(draft.text, [[1, " gives ② to ", 2]]);
+  assert.equal(draft.numberingApproved, false);
+  draft.numberingApproved = true;
+  assert.deepEqual(draftToBody(draft).body!.text, [[1, " gives ② to ", 2]]);
+});
+
+test("literal conversion covers invalid references in all nonlocal fields", () => {
+  const draft = newDraft({
+    spelling: "broda",
+    kind: "gismu",
+    text: "plain",
+    etymologyText: [["from ", 1]],
+    examples: [
+      { language: "jbo", text: "broda", translation: [[2]], notes: [[3]] },
+    ],
+    frameMode: "fixed",
+    places: [
+      {
+        ...newPlace(1),
+        derivations: [
+          { word: "sinxa", definition: null, place: 1, explanation: [[4]] },
+        ],
+      },
+    ],
+  });
+  switchMode(draft, false);
+  assert.deepEqual(draft.etymologyText, [["from ①"]]);
+  assert.deepEqual(draft.examples[0].translation, [["②"]]);
+  assert.deepEqual(draft.examples[0].notes, [["③"]]);
+  assert.deepEqual(draft.places[0].derivations[0].explanation, [["④"]]);
+  assert.deepEqual(
+    draftToBody(draft).problems.filter((p) => p.blocking),
+    [],
+  );
+  switchMode(draft, true);
+  assert.deepEqual(draft.etymologyText, [["from ①"]]);
+});
+
+test("an incomplete derivation never invents source place one in the preview", () => {
+  for (const sourcePlace of [null, 0, 1.5, 65536]) {
+    const draft = newDraft({
+      spelling: "broda",
+      kind: "gismu",
+      text: "plain",
+      frameMode: "fixed",
+      places: [
+        {
+          ...newPlace(1),
+          derivations: [
+            {
+              word: "sinxa",
+              definition: null,
+              place: sourcePlace,
+              explanation: [],
+            },
+          ],
+        },
+      ],
+    });
+    const built = draftToBody(draft);
+    assert.ok(
+      built.problems.some(
+        (p) => p.blocking && /source place number/.test(p.message),
+      ),
+    );
+    assert.deepEqual(built.body!.frame!.places[0].derivation, []);
+  }
+});
+
+test("literal-mode removal keeps stable field ownership when literal values match", () => {
+  const draft = newDraft({
+    spelling: "broda",
+    kind: "gismu",
+    text: "① gives ② to ③",
+    frameMode: "fixed",
+    places: [
+      {
+        ...newPlace(1),
+        description: [[2]],
+        constraints: [[[3]]],
+        kind: "custom",
+        hint: {
+          alternatives: [
+            { tags: ["entity"], abstractor: null, relation_arity: null },
+          ],
+          note: [[3]],
+        },
+      },
+      newPlace(2),
+      { ...newPlace(3), description: [["②"]] },
+    ],
+    numberingApproved: true,
+  });
+  switchMode(draft, false);
+  draft.places.splice(1, 1);
+  rewriteReferences(draft, (n) => (n === 2 ? "literal" : n > 2 ? n - 1 : n));
+  draft.places = draft.places.map((p, i) => ({ ...p, index: i + 1 }));
+  switchMode(draft, true);
+  assert.deepEqual(draft.text, [[1, " gives ② to ", 2]]);
+  assert.deepEqual(draft.places[0].description, [["②"]]);
+  assert.deepEqual(draft.places[1].description, [["②"]]);
+  assert.deepEqual(draft.places[0].hint!.note, [[2]]);
+  draft.numberingApproved = true;
+  assert.ok(admissible(draftToBody(draft).body));
+});
+
+test("glosses without a stored language bind when the draft loads", () => {
+  const draft = newDraft({
+    spelling: "broda",
+    kind: "gismu",
+    language: "en",
+    text: "plain",
+    frameMode: "fixed",
+    places: [
+      { ...newPlace(1), glosses: [{ language: "", text: "dog", sense: "" }] },
+    ],
+    glosses: [{ language: "", text: "canine", sense: "" }],
+  });
+  draft.language = "fr";
+  assert.equal(draftToBody(draft).body!.glosses[0].language, "en");
+  assert.equal(
+    draftToBody(draft).body!.frame!.places[0].glosses[0].language,
+    "en",
+  );
+});
+
+test("literal-mode moves keep distinct owners with identical visible descriptions", () => {
+  const draft = newDraft({
+    spelling: "broda",
+    kind: "gismu",
+    text: "① sees ②",
+    frameMode: "fixed",
+    places: [
+      { ...newPlace(1), description: [[2]] },
+      { ...newPlace(2), description: [["②"]] },
+    ],
+  });
+  switchMode(draft, false);
+  rewriteReferences(draft, (n) => (n === 1 ? 2 : 1));
+  draft.places.reverse();
+  draft.places.forEach((p, i) => {
+    p.index = i + 1;
+  });
+  const loaded = normalizeDraft(JSON.parse(JSON.stringify(draft)));
+  switchMode(loaded, true);
+  assert.deepEqual(loaded.places[0].description, [["②"]]);
+  assert.deepEqual(loaded.places[1].description, [[1]]);
+});
+
+test("structured code and link labels keep ordinary backslashes", () => {
+  const slash = String.fromCharCode(92);
+  assert.deepEqual(
+    editorToRichText(`\`C:${slash}temp\` [[cukta|x${slash}y]]`, true),
+    [
+      [
+        { code: `C:${slash}temp` },
+        " ",
+        { word: { language: "jbo", spelling: "cukta" }, label: `x${slash}y` },
+      ],
+    ],
+  );
+});
+
+for (const change of ["move", "remove"]) {
+  test(`typing the old literal text after a place ${change} keeps the new reading`, () => {
+    const draft = newDraft({
+      spelling: "broda",
+      kind: "gismu",
+      text: [[1, " gives ", 2, " to ", 3]],
+      frameMode: "fixed",
+      places: [newPlace(1), newPlace(2), newPlace(3)],
+    });
+    switchMode(draft, false);
+    if (change === "move") {
+      rewriteReferences(draft, (n) => (n === 1 ? 2 : n === 2 ? 1 : n));
+      [draft.places[0], draft.places[1]] = [draft.places[1], draft.places[0]];
+    } else {
+      draft.places.shift();
+      rewriteReferences(draft, (n) => (n === 1 ? "literal" : n - 1));
+    }
+    draft.places.forEach((place, index) => {
+      place.index = index + 1;
+    });
+    assert.notEqual(editorText(draft.text, false), "① gives ② to ③");
+    draft.text = editorToRichText("① gives ② to ③", false);
+    switchMode(draft, true);
+    assert.deepEqual(draft.text, [[1, " gives ", 2, " to ", 3]]);
+    assert.equal(draft.numberingApproved, false);
+  });
+}

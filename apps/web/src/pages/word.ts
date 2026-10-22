@@ -91,7 +91,10 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
   const head = el("div", { class: "word-head" });
   const h1 = el("h1", { lang: "jbo", text: spelling });
   head.append(h1);
-  const zb = zbalermorna(spelling);
+  const zb =
+    app.session.preferences.orthography === "zbalermorna"
+      ? zbalermorna(spelling)
+      : null;
   if (zb)
     head.append(
       el("span", { class: "zbalermorna", "aria-hidden": "true", text: zb }),
@@ -257,7 +260,7 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
     class: "tab",
     "aria-current": active === "all" ? "true" : undefined,
   });
-  allTab.append(text("All"), text(String(records.size), "meta"));
+  allTab.append(text("All"), text(String(word.definitions.length), "meta"));
   tabs.append(allTab);
   main.append(tabs);
   const personal = app.session.preferences.viewMode === "personal";
@@ -279,9 +282,14 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
   // Scores under the selected view. The personal view waits for the local calculation.
   const view = await viewScores(app, id, word);
   if (!context.live()) return;
+  const own = app.session.preferences.myJudgmentsFirst
+    ? await app.own.registers()
+    : null;
+  if (!context.live()) return;
+  const myJudgmentsFirst = Boolean(own);
   if (view.personal && view.reason) {
     const note = p(
-      `Personal scores are unavailable: ${view.reason} Definitions appear in event order. No numeric score is assumed.`,
+      `Personal scores are unavailable: ${view.reason} ${myJudgmentsFirst ? "Your judgments appear first, followed by event order." : "Definitions appear in event order."} No numeric score is assumed.`,
       "small",
     );
     if (view.stale)
@@ -320,7 +328,7 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
   if (unknownProfile)
     main.append(
       p(
-        `Scores and order from the calculation profile ${view.calculation!.algorithm} are not shown. This client does not know its route rule. Definitions appear in event order.`,
+        `Scores and order from the calculation profile ${view.calculation!.algorithm} are not shown. This client does not know its route rule. ${myJudgmentsFirst ? "Your judgments appear first, followed by event order." : "Definitions appear in event order."}`,
         "small",
       ),
     );
@@ -333,6 +341,35 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
   for (const definition of word.definitions)
     if (visible.has(definition) && !shown.has(definition))
       ordered.push({ id: definition, layer: null });
+  if (app.session.preferences.myJudgmentsFirst) {
+    if (own) {
+      const hasJudgment = (definition: string): boolean => {
+        const state = own?.judgments.get(definition);
+        return Boolean(
+          state?.known &&
+          (state.conflicted || (state.value && state.value !== "clear")),
+        );
+      };
+      ordered.sort(
+        (a, b) =>
+          (a.layer ?? rankedLayers.length) - (b.layer ?? rankedLayers.length) ||
+          Number(hasJudgment(b.id)) - Number(hasJudgment(a.id)),
+      );
+      main.append(
+        p(
+          "Definitions with your judgments appear first within each ranking layer and within the unranked group. Scores and ranking layers stay the same.",
+          "meta",
+        ),
+      );
+    } else {
+      main.append(
+        p(
+          "Your judgments could not be loaded. Definitions follow ranking layers, then event order.",
+          "meta",
+        ),
+      );
+    }
+  }
   const allRecords = [...records.values()];
   const statusOf = (definition: string) =>
     word.statuses.find((s) => s?.event === definition)?.state;
@@ -364,7 +401,7 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
       const size = rankedLayers[layer].filter((d) => visible.has(d)).length;
       main.append(
         p(
-          `${plural(size, "alternative")} with unresolved order. Presentation order follows event IDs.`,
+          `${plural(size, "alternative")} with unresolved order. ${myJudgmentsFirst ? "Your judgments appear first within this layer." : "Presentation order follows event IDs."}`,
           "meta",
         ),
       );
@@ -393,17 +430,16 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
       );
   }
   for (const [definition, failure] of failures)
-    if (visible.has(definition) || active === "all")
-      main.append(
-        el(
-          "div",
-          { class: "definition" },
-          p(
-            `Definition ${definition.slice(0, 20)}… is unavailable: ${failure}`,
-            "notice",
-          ),
+    main.append(
+      el(
+        "div",
+        { class: "definition" },
+        p(
+          `Definition ${definition.slice(0, 20)}… is unavailable: ${failure}`,
+          "notice",
         ),
-      );
+      ),
+    );
   const after = el("div", { class: "after-definitions" });
   after.append(
     text("Know this word better?"),

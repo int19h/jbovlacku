@@ -13,9 +13,10 @@ import { getManifest, loadRecord } from "../data/api.ts";
 import { loadSiteView } from "../data/view.ts";
 import { eventId, type ViewBody } from "../model/types.ts";
 import { identityLink } from "../components/attribution.ts";
-import { scopeKey } from "../data/history.ts";
+import { loadOwnHistory, scopeKey } from "../data/history.ts";
 import { renderRichText } from "../model/richtext.ts";
 import { describeScope } from "../components/trustpanel.ts";
+import { scopeError } from "../data/scope.ts";
 import { describeProfile } from "../model/profiles.ts";
 
 export { loadSiteView };
@@ -27,6 +28,11 @@ export async function trustPage(
   const { main } = context;
   context.title("Trust");
   main.className = "";
+  const rerender = () => {
+    if (!context.live()) return;
+    main.replaceChildren();
+    void trustPage(_route, context, app);
+  };
   main.append(
     el("h1", { class: "page", text: "Trust" }),
     p("Whose judgments order the definitions you see.", "muted"),
@@ -69,22 +75,37 @@ export async function trustPage(
   );
   main.append(
     p(
-      "The site view shows this server's scores for the signed view below. The personal view downloads the snapshot's records, verifies them in this browser, and applies your private choices from this browser. It adds your identity as a root with allocation 1 when the view names no allocation for it, and it applies your own effective public shuns as local blocks, as the format specifies: the core resolves their scopes and identity continuity in the calculation's snapshot, so a narrower public heed or a public clear can lift such a block. A private Trust rule does not cancel that block. A private Ignore stays until you remove it, also after a public clear. When the local calculation cannot finish, word and search pages show unavailable scores instead of substituting site scores.",
+      "The site view shows this server's scores for the signed view below. The personal view downloads the snapshot's records, verifies them in this browser, and applies your private choices from this browser. It adds your identity as a root with allocation 1 only if its continuity group has no allocation or private root change. A zero allocation or removal also prevents that addition. The personal view applies your own effective public shuns as local blocks, as the format specifies: the core resolves their scopes and identity continuity in the calculation's snapshot, so a narrower public heed or a public clear can lift such a block. A private Trust rule does not cancel that block. A private Ignore stays until you remove it, also after a public clear. When the local calculation cannot finish, word and search pages show unavailable scores instead of substituting site scores.",
       "meta",
     ),
     p(
       "A private Ignore or a personal block removes that person and every route through them in your view only. A public shun is a signed declaration. Its effect on routes follows the calculation profile of the signed view, shown below, and it does not remove every influence of that person in every reader's view.",
       "meta",
     ),
-    calculationPanel(app, { mode: "personal", label: "Local calculation" }),
+    calculationPanel(app, {
+      mode: "personal",
+      label: "Local calculation",
+      onRefresh: rerender,
+    }),
   );
   const overlay = await app.store.overlay().catch(() => null);
   const registers = await app.own.registers();
   if (!context.live()) return;
+  const continuity = app.personal.loadedContinuity;
+  const actor = (key: string) => continuity?.actors[key] ?? key;
+  if (continuity && overlay?.trust.some((rule) => rule.value !== "clear"))
+    main.append(
+      p(
+        `Private rule labels use personal calculation snapshot ${continuity.snapshot} and view ${continuity.view}.`,
+        "meta",
+      ),
+    );
   // People I trust.
   main.append(el("h2", { class: "section", text: "People I trust" }));
   const trusted = el("div");
   const ignored = el("div");
+  const conflicted = el("div");
+  const inactive = el("div");
   const publicRows = registers
     ? [...registers.trust.entries()].filter(
         ([, state]) =>
@@ -136,11 +157,6 @@ export async function trustPage(
         ),
       { class: "btn btn-quiet", style: "min-height:36px" },
     );
-  const rerender = () => {
-    if (!context.live()) return;
-    main.replaceChildren();
-    void trustPage(_route, context, app);
-  };
   for (const [key, state] of publicRows) {
     const { subject, scope } = parseKey(key);
     if (!state.known || state.conflicted) continue;
@@ -161,7 +177,17 @@ export async function trustPage(
     );
     (state.value === "heed" ? trusted : ignored).append(row);
   }
-  for (const [key] of conflicts) {
+  const conflictHistory =
+    conflicts.length && app.session.identity
+      ? await loadOwnHistory(app.store, app.session.identity, {
+          offline: app.offlineSigning.value,
+        }).catch(() => null)
+      : null;
+  for (const [key, state] of conflicts) {
+    if (!state.known) continue;
+    const values = state.events.map((id) =>
+      String(conflictHistory?.events.get(id)?.header.action.value ?? "unknown"),
+    );
     const { subject, scope } = parseKey(key);
     const row = el("div", { class: "row" });
     row.append(
@@ -174,20 +200,34 @@ export async function trustPage(
           {},
           identityLink(subject),
           text(
-            ` ${describeScope(scope)} · your devices disagree. State the value again to resolve it.`,
+            ` ${describeScope(scope)} · your devices disagree. Values: ${values.join(", ")}. ${values.includes("shun") ? "Under simple-routes-shun-v1, a conflict that contains shun refuses this issuer route. " : ""}State the value again to resolve it.`,
             "meta",
           ),
         ),
       ),
       undoPublic(subject, scope),
     );
-    trusted.append(row);
+    conflicted.append(row);
   }
   for (const rule of overlay?.trust ?? []) {
     if (rule.value === "clear") continue;
+    const invalid = scopeError(rule.scope);
+    const sameActor = Boolean(
+      app.session.identity &&
+      actor(rule.issuer) === actor(app.session.identity),
+    );
+    const ineffective =
+      !/^ed25519:[0-9a-f]{64}$/.test(rule.issuer) || !sameActor;
+    const effect = ineffective
+      ? !/^ed25519:[0-9a-f]{64}$/.test(rule.issuer)
+        ? "This rule has no valid issuer. Remove it or save a rule with your current key."
+        : continuity
+          ? "This rule does not apply in the loaded personal calculation. Its snapshot does not connect the issuer to your key."
+          : "No personal calculation is loaded. This rule depends on accepted continuity in the next calculation snapshot."
+      : "";
     const row = el("div", { class: "row" });
     row.append(
-      el("span", { class: "k", text: "private" }),
+      el("span", { class: "k", text: invalid ? "invalid" : "private" }),
       el(
         "span",
         { class: "t" },
@@ -196,7 +236,7 @@ export async function trustPage(
           {},
           identityLink(rule.subject),
           text(
-            ` ${describeScope(rule.scope)}${rule.weight ? ` · weight ${fractionText(rule.weight)}` : ""}`,
+            ` ${describeScope(rule.scope)}${rule.weight ? ` · weight ${fractionText(rule.weight)}` : ""}${invalid ? ` · Invalid saved scope. ${invalid} Remove this rule to repair the personal view.` : effect ? ` · ${effect}` : ""}`,
             "meta",
           ),
         ),
@@ -220,6 +260,7 @@ export async function trustPage(
           current.trust = current.trust.filter(
             (r) =>
               !(
+                r.issuer === rule.issuer &&
                 r.subject === rule.subject &&
                 scopeKey(r.scope) === scopeKey(rule.scope)
               ),
@@ -230,7 +271,12 @@ export async function trustPage(
         { class: "btn btn-quiet", style: "min-height:36px" },
       ),
     );
-    (rule.value === "heed" ? trusted : ignored).append(row);
+    (invalid || ineffective
+      ? inactive
+      : rule.value === "heed"
+        ? trusted
+        : ignored
+    ).append(row);
   }
   for (const blocked of overlay?.blocked ?? []) {
     const row = el("div", { class: "row" });
@@ -273,7 +319,15 @@ export async function trustPage(
         { class: "btn btn-quiet", style: "min-height:36px" },
       ),
     );
-    ignored.append(row);
+    const invalid = scopeError(blocked.scope);
+    if (invalid)
+      row.append(
+        p(
+          `Invalid saved scope. ${invalid} Remove this block to repair the personal view.`,
+          "notice",
+        ),
+      );
+    (invalid ? inactive : ignored).append(row);
   }
   if (!trusted.childElementCount)
     trusted.append(
@@ -295,6 +349,16 @@ export async function trustPage(
       "meta",
     ),
   );
+  if (conflicted.childElementCount)
+    main.append(
+      el("h2", { class: "section", text: "Conflicting public choices" }),
+      conflicted,
+    );
+  if (inactive.childElementCount)
+    main.append(
+      el("h2", { class: "section", text: "Private rules that need attention" }),
+      inactive,
+    );
   // Site view.
   main.append(el("h2", { class: "section", text: "Site view" }));
   const view = await loadSiteView(context.signal);
@@ -308,6 +372,15 @@ export async function trustPage(
     return;
   }
   const body = view.body;
+  if (view.issuer)
+    main.append(
+      el(
+        "p",
+        { class: "small" },
+        text("Published by "),
+        identityLink(view.issuer),
+      ),
+    );
   const profile = describeProfile(body.calculation);
   main.append(
     p(

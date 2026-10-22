@@ -117,7 +117,6 @@ export type Preferences = {
   remoteSearchDisclosed: boolean;
   theme: "system" | "light" | "dark";
   firstSignatureAcknowledged: boolean;
-  keepUnlocked: boolean;
   myJudgmentsFirst: boolean;
   viewMode: "personal" | "site";
   /**
@@ -142,7 +141,6 @@ export const defaultPreferences: Preferences = {
   remoteSearchDisclosed: false,
   theme: "system",
   firstSignatureAcknowledged: false,
-  keepUnlocked: false,
   myJudgmentsFirst: false,
   viewMode: "site",
   view: null,
@@ -449,12 +447,31 @@ export class LocalStore {
   }
   async preferences(): Promise<Preferences> {
     const stored = await this.get<Partial<Preferences>>("prefs", "preferences");
-    return { ...defaultPreferences, ...(stored ?? {}) };
+    const preferences = { ...defaultPreferences, ...(stored ?? {}) };
+    delete (preferences as Preferences & { keepUnlocked?: boolean })
+      .keepUnlocked;
+    return preferences;
   }
   async setPreferences(patch: Partial<Preferences>): Promise<Preferences> {
-    const next = { ...(await this.preferences()), ...patch };
-    await this.put("prefs", "preferences", next);
-    return next;
+    const db = await this.database;
+    return new Promise((resolve, reject) => {
+      // Keep the read and write together so concurrent choices are retained.
+      const tx = db.transaction("prefs", "readwrite");
+      const prefs = tx.objectStore("prefs");
+      const request = prefs.get("preferences");
+      let next: Preferences;
+      request.onsuccess = () => {
+        next = { ...defaultPreferences, ...(request.result ?? {}), ...patch };
+        delete (next as Preferences & { keepUnlocked?: boolean }).keepUnlocked;
+        prefs.put(next, "preferences");
+      };
+      tx.oncomplete = () => resolve(next);
+      tx.onabort = () =>
+        reject(
+          tx.error ?? new Error("Local storage did not save these preferences."),
+        );
+      tx.onerror = () => {};
+    });
   }
   async overlay(): Promise<Overlay> {
     return (await this.get<Overlay>("prefs", "overlay")) ?? emptyOverlay();
@@ -471,8 +488,9 @@ export class LocalStore {
     mode: "create" | "restore" = "create",
   ): Promise<void> {
     const db = await this.database;
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction("keys", "readwrite");
+    let migrated = false;
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(["keys", "prefs"], "readwrite");
       const keys = tx.objectStore("keys");
       let failure: Error | undefined;
       const request = keys.get("selected");
@@ -488,6 +506,32 @@ export class LocalStore {
         }
         keys.put(backup, "selected");
         if (mode === "restore") keys.put(true, `tested:${backup.identity}`);
+        const prefs = tx.objectStore("prefs");
+        const overlayRequest = prefs.get("overlay");
+        overlayRequest.onsuccess = () => {
+          const overlay: Overlay | undefined = overlayRequest.result;
+          if (!overlay?.trust.some((rule) => rule.issuer === "local")) return;
+          // A rule already saved with this key takes priority over a legacy copy.
+          overlay.trust = overlay.trust
+            .filter(
+              (rule) =>
+                rule.issuer !== "local" ||
+                !overlay.trust.some(
+                  (current) =>
+                    current.issuer === backup.identity &&
+                    current.subject === rule.subject &&
+                    JSON.stringify(current.scope) ===
+                      JSON.stringify(rule.scope),
+                ),
+            )
+            .map((rule) =>
+              rule.issuer === "local"
+                ? { ...rule, issuer: backup.identity }
+                : rule,
+            );
+          prefs.put(overlay, "overlay");
+          migrated = true;
+        };
       };
       tx.oncomplete = () => resolve();
       tx.onabort = () =>
@@ -498,6 +542,7 @@ export class LocalStore {
         );
       tx.onerror = () => {};
     });
+    if (migrated) this.onOverlayChange?.();
   }
   /**
    * Saves a signed group and advances the remembered heads in one transaction.
@@ -547,12 +592,13 @@ export class LocalStore {
       const recordRequest = publication
         ? drafts.get(`published:${publication.revision}`)
         : null;
-      let remaining = 3 + (publication ? 2 : 0);
+      const knownTransfer = keys.get(`transfer-known:${identity}`);
+      let remaining = 4 + (publication ? 2 : 0);
       const proceed = () => {
         if (--remaining) return;
-        if (retired.result || compromised.result) {
+        if (retired.result || knownTransfer.result || compromised.result) {
           failure = new Error(
-            retired.result
+            retired.result || knownTransfer.result
               ? "This key signed a handover and is retired. The group was not saved or sent."
               : "This key published a compromise notice. The group was not saved or sent.",
           );
@@ -607,6 +653,7 @@ export class LocalStore {
           identity,
         );
       };
+      knownTransfer.onsuccess = proceed;
       retired.onsuccess = proceed;
       compromised.onsuccess = proceed;
       request.onsuccess = proceed;

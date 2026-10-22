@@ -48,6 +48,11 @@ async function createSuccessor(page: Page) {
   return "ed25519:" + fingerprint.replace(/^ed25519/, "");
 }
 
+// Mirror routes fetch from the page. A route handler that is still running
+// when the test ends must not fail the test after the browser closes.
+test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: "ignoreErrors" });
+});
 test("a planned handover persists both events and the new key before upload, survives a partial upload, and retries without a new signature", async ({
   page,
 }) => {

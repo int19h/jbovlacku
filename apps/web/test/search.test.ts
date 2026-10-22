@@ -368,13 +368,7 @@ test("local search ranks match classes, keeps the strongest match, and sends not
           entry(4, "brodi", ["input"], "a prefix match"),
         ],
       });
-      return ["broda", "brode"]
-        .sort((a, b) =>
-          core
-            .wordId({ language: "jbo", spelling: a })
-            .localeCompare(core.wordId({ language: "jbo", spelling: b }), "en"),
-        )
-        .concat("brodi");
+      return ["broda", "brode", "brodi"];
     }, corePath);
     let requests = 0;
     await page.route("**/api/v1/**", (route) => {
@@ -684,22 +678,73 @@ test("a failed package download through Settings keeps the cache and leaves serv
 test("the retired-results filter asks the server for retired publications and shows their status", async ({
   page,
 }) => {
+  await page.goto("/");
+  await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    const seed = new Uint8Array(32).fill(219);
+    const word = { language: "jbo", spelling: "blanu" };
+    const body = {
+      word,
+      language: "en",
+      text: [["retirementprobe"]],
+      frame: null,
+      operands: [],
+      glosses: [],
+      notes: [],
+      etymology: { text: [], formation: null, compound: null },
+      examples: [],
+      classification: { kind: "gismu", selmaho: [] },
+      labels: [],
+      sources: [],
+      license: {
+        expression: "CC0-1.0",
+        url: "https://creativecommons.org/publicdomain/zero/1.0/",
+        attribution: "",
+      },
+      legacy: null,
+    };
+    const definition = core.createEvent(
+      seed,
+      [],
+      "21".repeat(16),
+      {
+        kind: "definition.publish",
+        word: core.wordId(word),
+        language: "en",
+        parents: [],
+        origin: "native",
+      },
+      body,
+    );
+    const retired = core.createEvent(
+      seed,
+      [definition.envelope.id],
+      "22".repeat(16),
+      {
+        kind: "status.set",
+        target: definition.envelope.id,
+        value: "deprecated",
+      },
+      null,
+    );
+    for (const event of [definition, retired]) {
+      const response = await fetch("/api/v1/events", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(event),
+      });
+      if (!response.ok) throw new Error(await response.text());
+    }
+  }, corePath);
   const requests: string[] = [];
   await page.route("**/api/v1/search?**", async (route) => {
-    const url = new URL(route.request().url());
-    requests.push(url.search);
-    const response = await route.fetch();
-    const body = await response.json();
-    if (url.searchParams.get("retired") === "1" && body.hits[0])
-      body.hits[0].preview.status = "deprecated";
-    await route.fulfill({ response, json: body });
+    requests.push(new URL(route.request().url()).search);
+    await route.continue();
   });
-  await page.goto("/search?q=book&lang=en");
+  await page.goto("/search?q=retirementprobe&lang=en");
   await expect(
-    page
-      .getByRole("region", { name: "Search results" })
-      .locator("article.hit")
-      .first(),
+    page.getByText("No matching definitions on this server.", { exact: true }),
   ).toBeVisible();
   expect(requests.at(-1)).not.toContain("retired=");
   await expect(
@@ -711,8 +756,16 @@ test("the retired-results filter asks the server for retired publications and sh
     page.locator("article.hit").getByText("status: deprecated").first(),
   ).toBeVisible();
   expect(requests.at(-1)).toContain("retired=1");
+  await expect(
+    page
+      .locator("article.hit")
+      .getByRole("link", { name: "blanu", exact: true }),
+  ).toBeVisible();
   await page.getByLabel("Include retired results").uncheck();
   await expect(page).not.toHaveURL(/retired=1/);
+  await expect(
+    page.getByText("No matching definitions on this server.", { exact: true }),
+  ).toBeVisible();
   expect(requests.at(-1)).not.toContain("retired=");
 });
 
@@ -1003,7 +1056,7 @@ test("an invalid version 2 package falls back to version 1 with a recorded reaso
   const conflicts = page.getByRole("region", { name: "Known conflicts" });
   await expect(conflicts).toContainText("Rafsi claims: rod.");
   await expect(conflicts).toContainText(
-    "The local package carries no rafsi claims, so conflict coverage is unknown.",
+    "The local package carries no rafsi claims, so rafsi conflict coverage is unknown.",
   );
 });
 
