@@ -13,6 +13,7 @@ const destination = join(root, "apps", application, "dist", "notices");
 const sources = [
   ["docs/dependencies.md", "dependencies.md"],
   ["docs/third-party-notices.md", "third-party-notices.md"],
+  ["crates/jvc-morphology/THIRD-PARTY-NOTICES.md", "morphology-notices.md"],
   [
     "packages/core/generated/rust-standard-library-notices.html",
     "rust-standard-library-notices.html",
@@ -39,6 +40,7 @@ await writeFile(
 <ul>
 <li><a href="dependencies.md">Dependency guide</a></li>
 <li><a href="third-party-notices.md">Full dependency notices</a></li>
+<li><a href="morphology-notices.md">Morphology notices</a></li>
 <li><a href="rust-standard-library-notices.html">Rust standard library notices</a></li>
 <li><a href="font-notices.txt">Font attribution</a></li>
 <li><a href="font-license.txt">Font license</a></li>

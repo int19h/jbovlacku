@@ -65,9 +65,10 @@ fi
 "$jvc_engine" exec --interactive "$jvc_container_id" node --input-type=module <<'JS'
 import assert from 'node:assert/strict';
 import { readFile, stat } from 'node:fs/promises';
-for (const name of ['dependencies.md', 'third-party-notices.md', 'rust-standard-library-notices.html']) {
+for (const name of ['dependencies.md', 'third-party-notices.md', 'rust-standard-library-notices.html', 'morphology-notices.md']) {
   assert((await stat('/app/docs/' + name)).size > 0, 'The image lacks a dependency notice: ' + name);
   assert.deepEqual(await readFile('/app/docs/' + name), await readFile('/app/apps/web/dist/notices/' + name), 'The browser notice differs: ' + name);
+  assert.deepEqual(await readFile('/app/docs/' + name), await readFile('/app/apps/server/dist/notices/' + name), 'The server notice differs: ' + name);
 }
 JS
 curl --silent --show-error --fail "$jvc_base/" >"$jvc_scratch/index.html"
@@ -110,6 +111,7 @@ assert load('first.json')['snapshot'] == load('retry.json')['snapshot'], 'Retry 
 assert len(load('changes.json')['items']) == 1, 'The journal contains duplicate entries.'
 assert 'html' in (root / 'index.html').read_text().lower(), 'The image did not serve the browser.'
 assert 'third-party-notices.md' in (root / 'notices-index.html').read_text(), 'The notice index is not accessible.'
+assert 'morphology-notices.md' in (root / 'notices-index.html').read_text(), 'The morphology notice is not linked.'
 PY
 stop_container
 echo "Container persistence and clean shutdown passed. Test files: $jvc_scratch"
