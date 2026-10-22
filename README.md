@@ -50,6 +50,8 @@ The rafsi page lists known assignments across words from version 2 packages, and
 The lujvo builder offers short rafsi, gismu stems, whole gismu, whole-word parts under the extended profile, locks, CLL scores, recovered parts, and every competing rafsi claim from the local package.
 Choosing [optional hyphens](docs/morphology.md) in the lujvo builder remains a target change. The builder adds only the required hyphens.
 The gismu generator offers the CLL 1987, CLL 1995, and Ilmen presets with pinned sources, custom weights, exact scores, tied ranks, per-language contributions, root and rafsi conflicts, and manual forms without fabricated evidence.
+The core and draft model keep the optional word pronunciation, stem, and stem pronunciation in signed formation sources.
+The gismu source editor with seven columns remains a target feature.
 The [morphology profiles](docs/morphology.md) name the rules and versions that the metadata records.
 Optional AI assistance offers suggestions for type, components, lujvo, cmavo class, source words, definition text, places, and glosses.
 The browser asks for consent before it sends draft fields. Suggestions need manual acceptance and support undo.

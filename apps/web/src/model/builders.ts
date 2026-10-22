@@ -43,12 +43,14 @@ export interface LujvoState {
 export interface GismuRowState {
   sense?: string;
   wordIpa?: string;
-  stem?: string;
   stemIpa?: string;
   note?: string;
   language: string;
   name: string;
   word: string;
+  word_ipa?: string | null;
+  stem?: string | null;
+  ipa?: string | null;
   input: string;
   weight: { numerator: string; denominator: string } | null;
 }
@@ -305,6 +307,27 @@ export function sourceNotes(row: GismuRowState) {
     false,
   );
 }
+/** Keep source evidence separate from the letters used for scoring. */
+function formationSource(row: GismuRowState): FormationSource {
+  const source: FormationSource = {
+    language: row.language,
+    word: row.word,
+    input: row.input.trim()
+      ? { format: "lojbanized", text: row.input.trim().toLowerCase() }
+      : null,
+    weight: row.weight ? rational(row.weight) : null,
+    notes: sourceNotes(row),
+  };
+  const evidence = {
+    word_ipa: Object.hasOwn(row, "word_ipa") ? row.word_ipa : row.wordIpa,
+    stem: row.stem,
+    ipa: Object.hasOwn(row, "ipa") ? row.ipa : row.stemIpa,
+  };
+  for (const field of ["word_ipa", "stem", "ipa"] as const) {
+    if (evidence[field] != null) source[field] = evidence[field];
+  }
+  return source;
+}
 /** Formation metadata for a generated or manual gismu under the recorded run. */
 export function formationMetadata(options: {
   result: GismuResult;
@@ -320,15 +343,7 @@ export function formationMetadata(options: {
   /** True when the form is the candidate the author chose from the run or entered under it. */
 }): Formation {
   const { result, candidate, rows, preset } = options;
-  const sources: FormationSource[] = rows.map((row) => ({
-    language: row.language,
-    word: row.word,
-    input: row.input.trim()
-      ? { format: "lojbanized", text: row.input.trim().toLowerCase() }
-      : null,
-    weight: row.weight ? rational(row.weight) : null,
-    notes: sourceNotes(row),
-  }));
+  const sources = rows.map(formationSource);
   return {
     method: "algorithmic",
     algorithm: {
@@ -373,16 +388,20 @@ export function manualFormation(
   reason: string,
 ): Formation | null {
   const sources: FormationSource[] = rows
-    .filter((row) => row.word.trim() || row.input.trim())
-    .map((row) => ({
-      language: row.language,
-      word: row.word,
-      input: row.input.trim()
-        ? { format: "lojbanized", text: row.input.trim().toLowerCase() }
-        : null,
-      weight: row.weight ? rational(row.weight) : null,
-      notes: sourceNotes(row),
-    }));
+    .filter((row) =>
+      [
+        row.word,
+        row.input,
+        row.word_ipa,
+        row.stem,
+        row.ipa,
+        row.sense,
+        row.wordIpa,
+        row.stemIpa,
+        row.note,
+      ].some((value) => value?.trim()),
+    )
+    .map(formationSource);
   if (!sources.length && !reason.trim()) return null;
   return {
     method: "non-algorithmic",

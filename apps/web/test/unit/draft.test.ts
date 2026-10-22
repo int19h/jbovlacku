@@ -17,6 +17,7 @@ import {
   compoundMetadata,
   formationMetadata,
   manualFormation,
+  newGismuState,
 } from "../../src/model/builders.ts";
 import {
   draftFromBody,
@@ -373,6 +374,9 @@ test("builder metadata for a chosen lujvo and a generated gismu satisfies the bo
     language: l.language,
     name: l.name,
     word: l.language,
+    word_ipa: "ˈmakru",
+    stem: "makr",
+    ipa: "makr",
     input: "makru",
     weight: {
       numerator: String(l.numerator),
@@ -412,6 +416,9 @@ test("builder metadata for a chosen lujvo and a generated gismu satisfies the bo
   });
   assert.equal(formation.selected_score!.numerator, "1");
   assert.equal(formation.selected_rank, 1);
+  assert.equal(formation.sources[0].word_ipa, "ˈmakru");
+  assert.equal(formation.sources[0].stem, "makr");
+  assert.equal(formation.sources[0].ipa, "makr");
   assert.equal(formation.weights_profile!.name, "CLL 1995");
   assert.equal(
     formation.algorithm!.parameters.weighting,
@@ -449,6 +456,72 @@ test("builder metadata for a chosen lujvo and a generated gismu satisfies the bo
       ).body,
     ),
   );
+});
+
+test("source pronunciations and stems survive draft reload, publication, and revision", () => {
+  const row = {
+    language: "en",
+    name: "English",
+    word: "running",
+    word_ipa: "ˈrʌnɪŋ",
+    stem: "run",
+    ipa: "rʌn",
+    input: "ran",
+    weight: null,
+  };
+  const formation = manualFormation([row], "A manual root.")!;
+  assert.deepEqual(formation.sources[0], {
+    language: "en",
+    word: "running",
+    word_ipa: "ˈrʌnɪŋ",
+    stem: "run",
+    ipa: "rʌn",
+    input: { format: "lojbanized", text: "ran" },
+    weight: null,
+    notes: [],
+  });
+  const draft = newDraft({
+    spelling: "broda",
+    kind: "gismu",
+    text: "A running thing.",
+    formation,
+    evidenceForm: "broda",
+    gismu: { ...newGismuState(), rows: [row] },
+  });
+  const restored = normalizeDraft(JSON.parse(JSON.stringify(draft)));
+  assert.deepEqual(restored.gismu!.rows[0], row);
+  const built = draftToBody(restored);
+  assert.deepEqual(built.problems, []);
+  assert.deepEqual(built.body!.etymology.formation, formation);
+  assert.ok(admissible(built.body));
+  const parent = "jve1:" + "1".repeat(64);
+  const revision = draftToBody(draftFromBody(built.body!, parent, "native"));
+  assert.deepEqual(revision.problems, []);
+  assert.deepEqual(revision.body!.etymology.formation, formation);
+  assert.ok(admissible(revision.body, [parent]));
+
+  const { word_ipa, stem, ipa, ...older } = row;
+  assert.equal(word_ipa, "ˈrʌnɪŋ");
+  assert.equal(stem, "run");
+  assert.equal(ipa, "rʌn");
+  const unknown = manualFormation([older], "Older evidence.")!;
+  for (const field of ["word_ipa", "stem", "ipa"] as const) {
+    assert.equal(Object.hasOwn(unknown.sources[0], field), false);
+  }
+  const nulls = manualFormation(
+    [{ ...older, word_ipa: null, stem: null, ipa: null }],
+    "Unknown evidence.",
+  )!;
+  assert.deepEqual(nulls.sources, unknown.sources);
+  const evidenceOnly = manualFormation(
+    [{ ...row, word: "", input: "" }],
+    "Partial historical evidence.",
+  )!;
+  assert.equal(evidenceOnly.sources.length, 1);
+  assert.equal(evidenceOnly.sources[0].word_ipa, row.word_ipa);
+  assert.equal(evidenceOnly.sources[0].stem, row.stem);
+  assert.equal(evidenceOnly.sources[0].ipa, row.ipa);
+  assert.equal(evidenceOnly.sources[0].input, null);
 });
 
 /** An independent body that uses every field the format offers, not one the draft serializer made. */
