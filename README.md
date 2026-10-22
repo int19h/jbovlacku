@@ -36,6 +36,7 @@ Signing needs localhost or HTTPS. A plain HTTP Tailscale address supports readin
 The importer prepares signed proposals from pinned local Lensisku JSON captures and SQL snapshots. Repeat imports reuse signed records and retain source evidence.
 It keeps definitions literal and preserves unknown fields as unknown. It does not infer places or individual votes.
 The current importer records unknown rights. The source-notice convention below remains a target change.
+
 The committed adapter comparison uses one signed profile event. Importer tests include a two-row fixture derived from a pinned 2,429-row API capture.
 
 The SQL fixture retains four source definitions in English, French, and Russian, with available version history and numbered keywords.
@@ -100,6 +101,8 @@ The current default state work budget can run out at roughly 4,500 events in a f
 This is an approximate limit. Histories with more edges can reach it sooner, and the requested state also affects the work.
 The Node loader can retain a larger explicit traversal budget for a local import.
 That configuration does not remove memory limits or establish performance for the full corpus.
+The full initial SQL import exceeds WebAssembly's 4 GiB memory limit during evaluation.
+Its signed proposal and loaded objects remain available, but full dictionary reads need a runtime fix.
 
 [Issue 9](https://github.com/int19h/jbovlacku/issues/9) tracks ranking CPU limits.
 [Issue 11](https://github.com/int19h/jbovlacku/issues/11) tracks state evaluation beyond the local corpus.

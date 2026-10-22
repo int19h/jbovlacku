@@ -158,6 +158,11 @@ Large imports need a larger explicit state work budget and enough memory.
 The traversal flag changes the work limit only. It does not remove memory or event limits.
 The loader completes admission before the server builds its snapshot, indexes, and search packages.
 Successful admission alone does not establish successful dictionary evaluation.
+Evaluation requests use UTF-8 byte encoding without one combined JSON string.
+The complete request and source bodies still count toward memory use.
+The full initial SQL import exceeds WebAssembly's 4 GiB memory limit during evaluation.
+Admission succeeds, but full dictionary reads need a runtime fix.
+An explicit traversal limit or a larger Node heap does not remove that WebAssembly limit.
 
 ## Browser development
 
@@ -283,6 +288,7 @@ npm run typecheck
 npm run test:service
 JVC_TEST_ROOT="$PWD/.cache/adapter-tests" npm run test:adapters
 npx tsx --test packages/importer/test/*.test.ts
+npx tsx --test packages/core/test/evaluation-request.test.ts
 ```
 
 The adapter tests start a built Node server and local Wrangler on available loopback ports.
