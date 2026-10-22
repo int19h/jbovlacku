@@ -258,10 +258,11 @@ The source and candidate column uses a 520px basis. The selected-form column use
 Source rows show seven columns: Language, Weight, Word, Said, Stem, Stem said, and Letters.
 Language and Weight show the language and resolved weight. Word shows the native spelling, and Said shows its pronunciation with stress.
 Stem shows the part that supplies the letters. Stem said shows its pronunciation. Letters is the editable scoring input.
-The signed source fields are `language`, `weight`, `word`, `word_ipa`, `stem`, `ipa`, and `input`, respectively.
 
+The signed source fields are `language`, `weight`, `word`, `word_ipa`, `stem`, `ipa`, and `input`, respectively.
 Letters uses the `lojbanized` input format. The pronunciation and stem fields remain published and do not affect the score.
 An absent or null pronunciation or stem field means unknown and stays empty for an older record.
+
 The preset select offers documented CLL 1995, CLL 1987, twelve-language, and custom profiles when their sourced parameters exist.
 Every named preset exposes pinned source evidence, resolved weights, normalization, and rule versions.
 The screen's sample numerical results do not establish those parameters.

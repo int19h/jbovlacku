@@ -328,13 +328,16 @@ The structured metadata retains the entered weights, the normalization rule, and
 Historical profiles preserve their own normalization semantics. The UI never compares differently scaled raw scores without a label.
 
 Each source row separates native spelling from the Lojbanized input used by the letter scorer.
+
 The table shows these columns: Language, Weight, Word, Said, Stem, Stem said, and Letters. Word is the native spelling. Said is the pronunciation of the whole word with its stress. Stem is the part of the word that the letters come from. Stem said is the pronunciation of the stem. Letters is the scoring input.
+
 The pronunciation is there so that speakers of the language can check the word later and propose a better one. Only the letters count toward the score. Stress is shown and is never scored.
 
 The signed formation source keeps Word as `word`, Said as `word_ipa`, Stem as `stem`, and Stem said as `ipa`.
 Letters uses `input` with `format: "lojbanized"`. Language and Weight use `language` and `weight`.
 The pronunciation and stem fields are optional. An absent or null field means unknown and stays empty when an older record opens.
 The app never guesses a missing stem or pronunciation from the scoring input.
+
 IPA input requires an explicit, versioned conversion and a preview of the resulting scoring input.
 One source word per language is the simple-mode default. Advanced mode can add alternatives under an explicitly selected aggregation rule.
 An unfinished row does not acquire an invented source word or weight.
@@ -760,9 +763,12 @@ Stopping does not retract a public record or guarantee that an in-flight request
 
 A stopped record stays on the Not delivered page with Resume, Save as file, and Discard.
 The header marker counts waiting and stopped records and stays while either exists.
+
 Discard asks first, then deletes the local signed bytes and receipts. It does not retract a copy that a server already holds.
+
 Resume uses the same stored bytes, selected recipients, and receipt lookup before retry.
 No new signature or silent recipient change occurs.
+
 Accepted dependency waits and index lag remain visible where they affect publication, without being mislabeled delivery failures.
 When no waiting or stopped records remain, remove the header marker. A direct visit to `/outbox` shows a short empty state.
 Keep delivered records and receipts after the page empties. “Save them as a file” exports waiting and stopped records with their bodies.
