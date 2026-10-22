@@ -484,3 +484,18 @@ export function confirmKindChange(
   draft.kind = kind;
   return true;
 }
+/** Removes structured evidence only after the author confirms the exact loss. */
+export function removeFormationEvidence(draft: Draft): boolean {
+  if (!draft.compound && !draft.formation) return false;
+  if (
+    !confirm(
+      "Remove the compound and generation evidence from this draft? The spelling, builder inputs, prose, and annotations stay.",
+    )
+  )
+    return false;
+  draft.compound = null;
+  draft.formation = null;
+  draft.evidenceForm = null;
+  draft.publishAcknowledged = [];
+  return true;
+}

@@ -34,11 +34,19 @@ import {
   componentId,
   compoundMetadata,
   inventoryFromPackage,
+  inventoryCoverage,
+  lujvoConflictKey,
   newLujvoState,
   type LujvoComponentState,
   type PackageInventory,
 } from "../../model/builders.ts";
-import { actionBar, DraftSaver, loadDraft, stepBar } from "./common.ts";
+import {
+  actionBar,
+  confirmKindChange,
+  DraftSaver,
+  loadDraft,
+  stepBar,
+} from "./common.ts";
 import { editorText, editorToRichText } from "../../model/draft.ts";
 
 function originLabel(origin: string): string | null {
@@ -70,7 +78,10 @@ export async function lujvoPage(
   const saver = new DraftSaver(app, draft);
   // Changes made while opening the builder are saved like any other edit.
   if (draft.kind !== "lujvo") {
-    draft.kind = "lujvo";
+    if (!confirmKindChange(draft, "lujvo")) {
+      navigate("/new/type", { replace: true });
+      return;
+    }
     saver.touch();
   }
   const state = (draft.lujvo ??= newLujvoState());
@@ -343,13 +354,19 @@ export async function lujvoPage(
   let failure: string | null = null;
   const chosenCandidate = (): LujvoCandidate | null => {
     if (!result?.candidates.length) return null;
-    return (
-      result.candidates.find((c) => c.spelling === state.selected) ??
-      result.candidates[0]
-    );
+    return state.selected
+      ? (result.candidates.find((c) => c.spelling === state.selected) ?? null)
+      : result.candidates[0];
   };
   const conflictKeys = (candidate: LujvoCandidate) =>
-    candidate.conflicts.map((c) => `${c.rafsi}|${c.pair}`);
+    candidate.conflicts.map((c) =>
+      lujvoConflictKey(
+        candidate.spelling,
+        c,
+        candidate.conflicts,
+        inventory.snapshot,
+      ),
+    );
   const renderRows = () => {
     list.replaceChildren();
     state.components.forEach((component, index) => {
@@ -547,25 +564,118 @@ export async function lujvoPage(
         el("li", { class: "meta", text: "No parts yet. Add at least two." }),
       );
   };
+  const renderAlternatives = (candidate: LujvoCandidate | null) => {
+    // Alternatives.
+    if (
+      result &&
+      result.candidates.length &&
+      (!candidate || result.candidates.length > 1)
+    ) {
+      const table = el("table", { class: "small" });
+      table.append(
+        el(
+          "thead",
+          {},
+          el(
+            "tr",
+            {},
+            el("th", { scope: "col", text: "Form" }),
+            el("th", { scope: "col", text: "Parts" }),
+            el("th", { scope: "col", class: "right", text: "Score" }),
+            el("th", { scope: "col", text: "" }),
+          ),
+        ),
+      );
+      const tbody = el("tbody");
+      for (const other of result.candidates) {
+        const row = el("tr", {
+          style:
+            other.spelling === candidate?.spelling
+              ? "background:var(--accent-soft)"
+              : undefined,
+        });
+        row.append(
+          el("td", {
+            lang: "jbo",
+            style: "font-weight:650",
+            text: other.spelling,
+          }),
+          el("td", { lang: "jbo", text: other.tokens.join(" + ") }),
+          el("td", { class: "right num", text: String(other.score) }),
+          el(
+            "td",
+            { class: "right" },
+            other.spelling === candidate?.spelling
+              ? text("chosen", "meta")
+              : button(
+                  "Use",
+                  () => {
+                    if (state.selected !== other.spelling) {
+                      state.acknowledged = [];
+                      draft.publishAcknowledged = [];
+                    }
+                    state.selected = other.spelling;
+                    saver.touch();
+                    renderResult();
+                  },
+                  {
+                    class: "btn btn-quiet",
+                    style: "min-height:36px",
+                    "aria-label": `Use ${other.spelling}`,
+                  },
+                ),
+          ),
+        );
+        tbody.append(row);
+      }
+      table.append(tbody);
+      alternatives.append(
+        el("h2", { class: "section", text: "Other forms from these parts" }),
+        el(
+          "div",
+          {
+            class: "table-scroll",
+            tabindex: "0",
+            role: "region",
+            "aria-label": "Other forms",
+          },
+          table,
+        ),
+      );
+      if (result.candidates.length >= 64)
+        alternatives.append(p("Only the first 64 forms are listed.", "meta"));
+    }
+  };
   const renderResult = () => {
     resultCard.replaceChildren();
     alternatives.replaceChildren();
+    if (state.selected && !chosenCandidate())
+      resultCard.append(
+        p(
+          `${state.selected} is no longer a candidate. Choose a current form before you continue.`,
+          "notice",
+        ),
+      );
     if (failure) {
+      refreshPrimary();
       resultCard.append(p(failure, "notice"));
       return;
     }
     if (!result) {
       resultCard.append(p("Add at least two parts to build a lujvo.", "small"));
+      refreshPrimary();
       return;
     }
     for (const line of result.diagnostics) resultCard.append(p(line, "small"));
     const candidate = chosenCandidate();
     if (!candidate) {
-      resultCard.append(
-        p("No valid lujvo comes from these parts and choices.", "small"),
-      );
+      if (!result.candidates.length)
+        resultCard.append(
+          p("No valid lujvo comes from these parts and choices.", "small"),
+        );
       for (const r of result.rejected.slice(0, 6))
         resultCard.append(p(`${r.spelling}: ${r.reason}`, "meta"));
+      renderAlternatives(null);
       refreshPrimary();
       return;
     }
@@ -633,11 +743,7 @@ export async function lujvoPage(
           "small",
         ),
       );
-    const coverage = inventory.snapshot
-      ? inventory.hasClaims
-        ? `Conflicts come from the local package of snapshot ${inventory.snapshot.slice(7, 19)}…. They cover retained claims in that package only.`
-        : "The local package carries no rafsi claims, so conflict coverage is unknown."
-      : "No local package is downloaded, so conflict coverage is unknown.";
+    const coverage = inventoryCoverage(inventory);
     resultCard.append(p(coverage, "meta"));
     if (candidate.conflicts.length) {
       const box = el("div", {
@@ -647,12 +753,17 @@ export async function lujvoPage(
       });
       box.append(
         p(
-          "Competing claims for the selected rafsi. Every known claim is listed, whatever its standing. Acknowledge each one to keep this form, choose another form, or change the parts.",
+          "Competing claims for the selected rafsi. Every retained claim in the package is listed, whatever its standing. Acknowledge each one to keep this form, choose another form, or change the parts.",
           "small",
         ),
       );
       for (const conflict of candidate.conflicts) {
-        const key = `${conflict.rafsi}|${conflict.pair}`;
+        const key = lujvoConflictKey(
+          candidate.spelling,
+          conflict,
+          candidate.conflicts,
+          inventory.snapshot,
+        );
         const box2 = el("input", {
           type: "checkbox",
           id: `ack-${key.replace(/[^a-z0-9]/gi, "")}`,
@@ -682,78 +793,7 @@ export async function lujvoPage(
       }
       resultCard.append(box);
     }
-    // Alternatives.
-    if (result.candidates.length > 1) {
-      const table = el("table", { class: "small" });
-      table.append(
-        el(
-          "thead",
-          {},
-          el(
-            "tr",
-            {},
-            el("th", { scope: "col", text: "Form" }),
-            el("th", { scope: "col", text: "Parts" }),
-            el("th", { scope: "col", class: "right", text: "Score" }),
-            el("th", { scope: "col", text: "" }),
-          ),
-        ),
-      );
-      const tbody = el("tbody");
-      for (const other of result.candidates) {
-        const row = el("tr", {
-          style:
-            other.spelling === candidate.spelling
-              ? "background:var(--accent-soft)"
-              : undefined,
-        });
-        row.append(
-          el("td", {
-            lang: "jbo",
-            style: "font-weight:650",
-            text: other.spelling,
-          }),
-          el("td", { lang: "jbo", text: other.tokens.join(" + ") }),
-          el("td", { class: "right num", text: String(other.score) }),
-          el(
-            "td",
-            { class: "right" },
-            other.spelling === candidate.spelling
-              ? text("chosen", "meta")
-              : button(
-                  "Use",
-                  () => {
-                    state.selected = other.spelling;
-                    saver.touch();
-                    renderResult();
-                  },
-                  {
-                    class: "btn btn-quiet",
-                    style: "min-height:36px",
-                    "aria-label": `Use ${other.spelling}`,
-                  },
-                ),
-          ),
-        );
-        tbody.append(row);
-      }
-      table.append(tbody);
-      alternatives.append(
-        el("h2", { class: "section", text: "Other forms from these parts" }),
-        el(
-          "div",
-          {
-            class: "table-scroll",
-            tabindex: "0",
-            role: "region",
-            "aria-label": "Other forms",
-          },
-          table,
-        ),
-      );
-      if (result.candidates.length >= 64)
-        alternatives.append(p("Only the first 64 forms are listed.", "meta"));
-    }
+    renderAlternatives(candidate);
     refreshPrimary();
   };
   const rebuild = () => {
@@ -781,12 +821,6 @@ export async function lujvoPage(
             : describe(error);
       }
     }
-    if (
-      result &&
-      state.selected &&
-      !result.candidates.some((c) => c.spelling === state.selected)
-    )
-      state.selected = null;
     renderRows();
     renderResult();
   };
@@ -817,6 +851,16 @@ export async function lujvoPage(
       action: async () => {
         const candidate = chosenCandidate();
         if (!candidate || !result || unacknowledged(candidate).length) return;
+        if (
+          draft.formation &&
+          !confirm(
+            "Use this lujvo and remove the previous generation evidence? The prose and annotations stay.",
+          )
+        )
+          return;
+        draft.formation = null;
+        if (draft.spelling !== candidate.spelling)
+          draft.publishAcknowledged = [];
         draft.spelling = candidate.spelling;
         draft.evidenceForm = candidate.spelling;
         draft.compound = compoundMetadata(

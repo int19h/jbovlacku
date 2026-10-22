@@ -61,6 +61,8 @@ import type { RichText } from "../../model/types.ts";
 import {
   actionBar,
   confirmKindChange,
+  formPath,
+  removeFormationEvidence,
   DraftSaver,
   loadDraft,
   startDraft,
@@ -1461,10 +1463,31 @@ export async function placesPage(
             "small",
           ),
         );
+      if (draft.compound || draft.formation) {
+        const evidence = el("div", {}, ...nodes);
+        evidence.append(
+          button(
+            "Remove formation evidence",
+            () => {
+              if (!removeFormationEvidence(draft)) return;
+              saver.touch();
+              evidence.replaceChildren(
+                etym.wrapper,
+                p(
+                  'No structured formation evidence in this draft. "Use" in a builder saves it. Manual entry adds none.',
+                  "meta",
+                ),
+              );
+            },
+            { class: "btn btn-quiet" },
+          ),
+        );
+        return evidence;
+      }
       if (!draft.compound && !draft.formation)
         nodes.push(
           p(
-            "No structured formation evidence. The builders add it in a later stage. A manual word carries none.",
+            'No structured formation evidence in this draft. "Use" in a builder saves it. Manual entry adds none.',
             "meta",
           ),
         );
@@ -1699,7 +1722,7 @@ export async function placesPage(
       const render = () => {
         box.replaceChildren(
           p(
-            "Each claim is a separate signed record with its own author blessing of the word and rafsi pair. Conflicts with other words are shown on the Publish step when the server reports them.",
+            "Each claim is a separate signed record with its own author blessing of the word and rafsi pair. Publish compares claims with the downloaded package and names that snapshot. Missing package coverage is unknown.",
             "meta",
           ),
         );
@@ -1793,8 +1816,8 @@ export async function placesPage(
         href: full
           ? draft.parents.length
             ? routes.definition(draft.parents[0])
-            : "/new/form"
-          : "/new/form",
+            : formPath(draft)
+          : formPath(draft),
       },
       primary: {
         label: "Review",

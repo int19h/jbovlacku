@@ -219,6 +219,8 @@ export interface Draft {
   lujvo: LujvoState | null;
   /** Gismu generator state, when the author opened the generator. */
   gismu: GismuState | null;
+  /** Publish reviews bound to the spelling, package snapshot, and known conflict group. */
+  publishAcknowledged: string[];
   /** Fields marked for review after a type or language change. */
   review: string[];
   /** Whether the author approved the current place numbering. */
@@ -328,6 +330,7 @@ export function newDraft(patch: DraftInput = {}): Draft {
     rafsiClaims: [],
     lujvo: null,
     gismu: null,
+    publishAcknowledged: [],
     review: [],
     numberingApproved: false,
     ...patch,
