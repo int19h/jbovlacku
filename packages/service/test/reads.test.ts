@@ -70,7 +70,11 @@ const body = (text: string, notes: unknown[] = []) => ({
 });
 async function fixture(
   options: {
-    limits?: { reviewers?: number; profileClaims?: number };
+    limits?: {
+      reviewers?: number;
+      profileClaims?: number;
+      recordBytes?: number;
+    };
     extra?: ReturnType<typeof createEvent>[];
   } = {},
 ) {
@@ -624,6 +628,18 @@ test("identity profiles report conflicted, unavailable, and cut claim states", a
 
 test("records keep unretained and unreadable bodies apart, and new routes return 410 for an unknown snapshot", async () => {
   const { service, directory, profile, definition } = await fixture();
+  const missing = createEvent(
+    author,
+    [profile.envelope.id],
+    "e".repeat(32),
+    { kind: "identity.profile" },
+    { name: "Unretained", bio: [], links: [] },
+  );
+  assert.equal(
+    (await service.fetch(request("/events", { ...missing, body: null })))
+      .status,
+    201,
+  );
   const hash = profile.envelope.header.content!.hash;
   await rm(join(directory, "objects", hash.replaceAll(":", "-")));
   const records = await read(await service.fetch(request("/records")));
@@ -631,6 +647,16 @@ test("records keep unretained and unreadable bodies apart, and new routes return
   assert.equal(byId[profile.envelope.id].body_status, "unavailable");
   assert.equal(byId[profile.envelope.id].body, null);
   assert.equal(byId[definition.envelope.id].body_status, "present");
+  assert.equal(byId[missing.envelope.id].body_status, "missing");
+  assert.equal(byId[missing.envelope.id].body, null);
+  const identity = await read(
+    await service.fetch(request(`/identities/${identityFromSeed(author)}`)),
+  );
+  assert.equal(identity.profile.state, "known");
+  assert.equal(identity.profile.claims[0].event, missing.envelope.id);
+  assert.equal(identity.profile.claims[0].body_status, "missing");
+  assert.equal(identity.profile.claims[0].body_hash, null);
+  assert.equal(identity.profile.claims[0].body, null);
   const expired = "sha256:" + "0".repeat(64);
   for (const path of [
     `/records?snapshot=${expired}`,
@@ -650,11 +676,20 @@ test("an identity read without an evaluation is 503, not a definite absence", as
   // The evaluation helper reports an unavailable evaluation, as it does when
   // the core hits its resource limit.
   const original = (service as any).evaluation;
-  (service as any).evaluation = async (...args: unknown[]) => ({
-    ...(await original.apply(service, args)),
-    available: false,
-    receipts: {},
-  });
+  (service as any).evaluation = async (...args: unknown[]) => {
+    const evaluation = await original.apply(service, args);
+    return {
+      ...evaluation,
+      available: false,
+      // Resource exhaustion can retain inert receipts in the core result.
+      receipts: Object.fromEntries(
+        Object.keys(evaluation.receipts).map((id) => [
+          id,
+          { interpretation: "inert" },
+        ]),
+      ),
+    };
+  };
   const identity = encodeURIComponent(identityFromSeed(author));
   const response = await service.fetch(request(`/identities/${identity}`));
   assert.equal(response.status, 503);
@@ -669,4 +704,211 @@ test("an identity read without an evaluation is 503, not a definite absence", as
   const items = (await read(activity)).items;
   assert.ok(items.length > 0);
   assert.ok(items.every((i: any) => i.interpretation === "unavailable"));
+});
+
+test("identity claims separate invalid bytes from storage failures", async () => {
+  const { service, objects, profile } = await fixture();
+  const path = `/identities/${identityFromSeed(author)}`;
+  assert.equal((await service.fetch(request(path))).status, 200);
+  const get = objects.get.bind(objects);
+  objects.get = async (hash) =>
+    hash === profile.envelope.header.content!.hash ? utf8("{}") : get(hash);
+  const value = await read(await service.fetch(request(path)));
+  assert.equal(value.profile.state, "known");
+  assert.equal(value.profile.claims[0].body_status, "invalid");
+  assert.equal(value.profile.claims[0].body, null);
+});
+
+test("activity survives busy evaluation slots without hiding storage errors", async () => {
+  const { service } = await fixture();
+  const path = `/identities/${identityFromSeed(author)}`;
+  (service as any).evaluationCache.clear();
+  (service as any).inFlightEvaluations = new Set(["busy-a", "busy-b"]);
+  assert.equal((await service.fetch(request(path))).status, 503);
+  const response = await service.fetch(request(`${path}/activity`));
+  assert.equal(response.status, 200);
+  const activity = await read(response);
+  assert.ok(activity.items.length > 0);
+  assert.ok(
+    activity.items.every((item: any) => item.interpretation === "unavailable"),
+  );
+  (service as any).evaluation = async () => {
+    throw new Error("storage failed");
+  };
+  assert.equal((await service.fetch(request(`${path}/activity`))).status, 503);
+});
+
+test("records count brackets and commas and keep pages strictly below the byte bound", async () => {
+  const { service } = await fixture();
+  const full = await read(await service.fetch(request("/records")));
+  const firstTwoBytes = utf8(JSON.stringify(full.items.slice(0, 2))).length;
+  // A sum of item sizes misses three array bytes. Equality also requires a cut.
+  for (const bound of [firstTwoBytes - 1, firstTwoBytes]) {
+    service.options.limits = { recordBytes: bound };
+    const page = await read(await service.fetch(request("/records")));
+    assert.equal(page.items.length, 1);
+    assert.equal(page.next, full.items[0].id);
+    assert.ok(utf8(JSON.stringify(page.items)).length < bound);
+    const rest = await read(
+      await service.fetch(request(`/records?after=${page.next}`)),
+    );
+    assert.equal(rest.items[0].id, full.items[1].id);
+  }
+  service.options.limits = { recordBytes: 1 };
+  assert.equal(
+    (await read(await service.fetch(request("/records")))).items.length,
+    1,
+  );
+});
+
+test("search cursors bind the retired filter in both directions", async () => {
+  const another = createEvent(
+    author,
+    [],
+    "f".repeat(32),
+    {
+      kind: "definition.publish",
+      word: wordId({ ...word, spelling: "klaku" }),
+      language: "en",
+      parents: [],
+      origin: "native",
+    },
+    { ...body("go"), word: { ...word, spelling: "klaku" } },
+  );
+  const { service } = await fixture({ extra: [another] });
+  for (const retired of [false, true]) {
+    const page = await read(
+      await service.fetch(
+        request(
+          `/search?q=go&language=en&limit=1${retired ? "&retired=1" : ""}`,
+        ),
+      ),
+    );
+    assert.ok(page.next);
+    const response = await service.fetch(
+      request(
+        `/search?q=go&language=en&after=${page.next}${retired ? "" : "&retired=1"}`,
+      ),
+    );
+    assert.equal(response.status, 400);
+    assert.equal((await read(response)).code, "bad_cursor");
+  }
+});
+
+test("version 2 rafsi inventories mark unreadable claims incomplete and recover after rebuilding", async () => {
+  const { service, objects, claim, definition } = await fixture();
+  const get = objects.get.bind(objects);
+  let blocked = true;
+  objects.get = async (hash) =>
+    blocked && hash === claim.envelope.header.content!.hash ? null : get(hash);
+  const entries = async () => {
+    const pkg = await read(
+      await service.fetch(request("/packages/en?version=2")),
+    );
+    return read(
+      await service.fetch(request(`/package-parts/${pkg.parts[0].hash}`)),
+    );
+  };
+  const partial = (await entries()).find(
+    (entry: any) => entry.event === definition.envelope.id,
+  );
+  assert.deepEqual(partial.rafsi, []);
+  assert.equal(partial.rafsi_complete, false);
+  blocked = false;
+  // A cached partial inventory must never claim completeness after a retry.
+  assert.equal(
+    (await entries()).find(
+      (entry: any) => entry.event === definition.envelope.id,
+    ).rafsi_complete,
+    false,
+  );
+  (service as any).packageCache.clear();
+  const complete = (await entries()).find(
+    (entry: any) => entry.event === definition.envelope.id,
+  );
+  assert.deepEqual(complete.rafsi, ["kla"]);
+  assert.equal(complete.rafsi_complete, true);
+  (service as any).packageCache.clear();
+  objects.get = async (hash) =>
+    hash === claim.envelope.header.content!.hash ? utf8("{}") : get(hash);
+  assert.equal(
+    (await entries()).find(
+      (entry: any) => entry.event === definition.envelope.id,
+    ).rafsi_complete,
+    false,
+  );
+});
+
+test("POST search uses the same fields, results, validation, and cursors as GET", async () => {
+  const secondWord = { ...word, spelling: "blanu" };
+  const second = createEvent(
+    author,
+    [],
+    "ab".repeat(16),
+    {
+      kind: "definition.publish",
+      word: wordId(secondWord),
+      language: "en",
+      parents: [],
+      origin: "native",
+    },
+    { ...body("go"), word: secondWord },
+  );
+  const { service } = await fixture({ extra: [second] });
+  const query = { q: "go", language: "en", limit: 1, retired: "1" };
+  const get = await read(
+    await service.fetch(request("/search?q=go&language=en&limit=1&retired=1")),
+  );
+  const post = await service.fetch(request("/search", query));
+  assert.equal(post.status, 200);
+  assert.deepEqual(await read(post), get);
+  assert.ok(get.next);
+  const continuation = {
+    ...query,
+    snapshot: get.snapshot,
+    view: get.view,
+    after: get.next,
+  };
+  const nextPost = await service.fetch(request("/search", continuation));
+  assert.equal(nextPost.status, 200);
+  const nextGet = await service.fetch(
+    request(
+      `/search?${new URLSearchParams(Object.entries(continuation).map(([key, value]) => [key, String(value)]))}`,
+    ),
+  );
+  const next = await read(nextPost);
+  assert.deepEqual(next, await read(nextGet));
+  assert.notEqual(next.hits[0].word_id, get.hits[0].word_id);
+  assert.equal(next.next, null);
+  assert.equal(
+    (await service.fetch(request("/search?q=private", query))).status,
+    400,
+  );
+  for (const invalid of [
+    null,
+    [],
+    { ...query, q: 3 },
+    { ...query, retired: true },
+    { ...query, limit: 0 },
+    { ...query, surprise: "text" },
+  ]) {
+    assert.equal(
+      (await service.fetch(request("/search", invalid))).status,
+      400,
+    );
+  }
+  const malformed = new Request("http://localhost/api/v1/search", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{",
+  });
+  assert.equal((await service.fetch(malformed)).status, 400);
+  assert.equal(
+    (
+      await service.fetch(
+        request("/search", { ...query, q: "a".repeat(16385) }),
+      )
+    ).status,
+    400,
+  );
 });

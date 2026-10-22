@@ -270,8 +270,13 @@ export interface IdentityResponse {
       issuer: string | null;
       body_hash: string | null;
       body: ProfileBody | null;
-      /** Present, unavailable from storage, or omitted by this response for size. */
-      body_status?: "present" | "unavailable" | "omitted";
+      /** Distinguishes snapshot absence, invalid bytes, storage failure, and size cuts. */
+      body_status?:
+        | "present"
+        | "missing"
+        | "invalid"
+        | "unavailable"
+        | "omitted";
     }[];
     /** The number of concurrent claims the server knows. */
     claims_count?: number;

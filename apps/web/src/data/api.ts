@@ -499,6 +499,15 @@ export function validateHits(hits: unknown, pageLimit: number): SearchHit[] {
     );
   return hits as SearchHit[];
 }
+/** Sends a disclosed draft query in a JSON body. */
+export async function remoteDraftSearch(
+  query: string,
+  language: string,
+  pageLimit: number,
+  options: RequestOptions = {},
+): Promise<SearchResponse> {
+  return remoteSearch(query, language, pageLimit, null, null, options, true);
+}
 export async function remoteSearch(
   query: string,
   language: string,
@@ -506,6 +515,7 @@ export async function remoteSearch(
   context: { snapshot: string; view: string } | null,
   after: string | null,
   options: RequestOptions & { retired?: boolean } = {},
+  draftBody = false,
 ): Promise<SearchResponse> {
   const params = new URLSearchParams({
     q: query,
@@ -519,7 +529,17 @@ export async function remoteSearch(
     params.set("view", context.view);
   } else if (preferredView) params.set("view", preferredView);
   if (after) params.set("after", after);
-  const result = await api<unknown>(`/search?${params}`, options);
+  const result = draftBody
+    ? await api<unknown>("/search", {
+        ...options,
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          ...Object.fromEntries(params),
+          limit: pageLimit,
+        }),
+      })
+    : await api<unknown>(`/search?${params}`, options);
   if (
     !isObject(result) ||
     !hashId(result.snapshot) ||

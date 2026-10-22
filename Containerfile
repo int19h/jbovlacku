@@ -20,6 +20,7 @@ COPY packages/ packages/
 COPY apps/ apps/
 COPY docs/dependencies.md docs/third-party-notices.md docs/
 COPY scripts/copy-notices.mjs scripts/copy-notices.mjs
+COPY crates/jvc-morphology/THIRD-PARTY-NOTICES.md crates/jvc-morphology/THIRD-PARTY-NOTICES.md
 COPY --from=core /source/packages/core/generated/ packages/core/generated/
 RUN npm run build:server && npm run build:web
 
@@ -34,6 +35,7 @@ RUN mkdir -p /var/lib/jbovlacku && chown node:node /var/lib/jbovlacku
 COPY package.json ./
 COPY docs/dependencies.md docs/third-party-notices.md docs/
 COPY --from=core /source/packages/core/generated/rust-standard-library-notices.html docs/rust-standard-library-notices.html
+COPY --from=application /source/apps/server/dist/notices/morphology-notices.md docs/morphology-notices.md
 COPY --from=application --chown=node:node /source/apps/server/dist/ apps/server/dist/
 COPY --from=application --chown=node:node /source/apps/web/dist/ apps/web/dist/
 COPY --from=core --chown=node:node /source/packages/core/generated/ packages/core/generated/

@@ -7,11 +7,17 @@ const webPort = process.env.JVC_WEB_PORT ?? "5177";
 // The fixture server's readiness listener. It answers 200 only after every
 // fixture record is admitted and the fixture file is written.
 const readyPort = process.env.JVC_READY_PORT ?? String(Number(apiPort) + 1000);
-import { rmSync } from "node:fs";
-const testRoot = resolve(process.env.JVC_TEST_ROOT ?? tmpdir(), "browser-run");
-// The runner process clears the previous run. Worker processes reuse the same paths.
-if (process.env.TEST_WORKER_INDEX === undefined)
-  rmSync(testRoot, { recursive: true, force: true });
+import { mkdirSync, mkdtempSync } from "node:fs";
+// The runner creates one directory. Workers inherit its exact path.
+const parent = resolve(process.env.JVC_TEST_ROOT ?? tmpdir());
+if (process.env.TEST_WORKER_INDEX === undefined) {
+  mkdirSync(parent, { recursive: true });
+  process.env.JVC_PLAYWRIGHT_RUN_ROOT = mkdtempSync(
+    resolve(parent, "browser-run-"),
+  );
+}
+const testRoot = process.env.JVC_PLAYWRIGHT_RUN_ROOT;
+if (!testRoot) throw new Error("The Playwright worker has no run directory.");
 process.env.JVC_FIXTURE_FILE = resolve(testRoot, "fixture.json");
 export default defineConfig({
   testDir: "./test",

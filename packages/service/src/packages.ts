@@ -93,20 +93,27 @@ export async function buildPackages(
   const entries2: SearchEntryV2[] = [];
   // Rafsi spellings from retained claim bodies, by word ID.
   const rafsiByWord = new Map<string, Set<string>>();
+  const incompleteRafsi = new Set<string>();
   for (const id of Object.keys(snapshot.events).sort()) {
     const event = snapshot.events[id];
-    if (
-      event.header.action.kind !== "rafsi.publish" ||
-      event.body_hash === null
-    )
+    if (event.header.action.kind !== "rafsi.publish") continue;
+    const word = String(event.header.action.word);
+    if (event.body_hash === null) {
+      incompleteRafsi.add(word);
       continue;
+    }
     const envelope = await objects.get(event.envelope_hash);
     const bytes = await objects.get(event.body_hash);
-    if (!envelope || !bytes) continue;
+    if (!envelope || !bytes) {
+      incompleteRafsi.add(word);
+      continue;
+    }
     const availability = inspectBody(envelope, bytes);
-    if (availability.availability !== "valid") continue;
+    if (availability.availability !== "valid") {
+      incompleteRafsi.add(word);
+      continue;
+    }
     const body = availability.body as { rafsi?: unknown };
-    const word = event.header.action.word;
     if (typeof word === "string" && typeof body.rafsi === "string") {
       const set = rafsiByWord.get(word) ?? new Set<string>();
       set.add(body.rafsi);
@@ -152,8 +159,9 @@ export async function buildPackages(
         .sort()
         .slice(0, PACKAGE_RAFSI_LIMIT),
       rafsi_complete:
+        !incompleteRafsi.has(String(event.header.action.word)) &&
         (rafsiByWord.get(String(event.header.action.word))?.size ?? 0) <=
-        PACKAGE_RAFSI_LIMIT,
+          PACKAGE_RAFSI_LIMIT,
       attribution: legacy
         ? {
             source: String(legacy.source),

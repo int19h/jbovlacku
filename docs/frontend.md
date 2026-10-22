@@ -803,11 +803,18 @@ Public reads need no account. Public event admission follows published quotas an
 | `GET /receipts/ID` | This server's receipt and interpretation outcome for that event. |
 | `GET /package-parts/HASH` | Canonical derived search-part bytes, with a 4 MiB uncompressed limit. |
 | `GET /packages/LANGUAGE?snapshot=S&version=N` | Search package manifest and content hashes. Version 1 is the default. Version 2 adds row metadata. |
+| `POST /search` | Remote draft search. The JSON body carries the GET search fields and returns the same `SearchResponse`. |
 | `GET /search?q=Q&language=L&view=V&snapshot=S&retired=1` | Optional remote results with view and snapshot metadata. Without `retired=1` the results hold active publications only. With it, each preview carries the publication status. Any other `retired` value is HTTP 400. |
 | `GET /words/WORD_ID?view=V&snapshot=S&reviewers=1` | Candidate IDs, rafsi claims, and attributed ranking summary. `reviewers=1` adds bounded reviewer details to each score. Any other `reviewers` value is HTTP 400. |
 | `GET /identities/KEY?view=V&snapshot=S` | Effective profile claims, continuity state, and activity counts for one signing key. |
 | `GET /identities/KEY/activity?view=V&snapshot=S&after=ID&limit=N` | Events signed by that key in event-ID order, with their interpretation and local receipt position. |
 | `GET /records?snapshot=S&after=ID&limit=N` | Snapshot records for local calculation: envelope, body, and body status, bounded by count and bytes. The limit ranges from 1 through 200. |
+
+The `POST /search` body requires string fields `q` and `language`.
+Optional fields are `snapshot`, `view`, `after`, `retired`, and `limit`.
+The first four use the same strings as GET. `limit` accepts a positive integer or its decimal string.
+Unknown fields and query parameters on a POST search return HTTP 400.
+Both search methods apply the same bounds, cursor rules, and result selection. Draft text stays in the POST body.
 
 The POST /events body contains exactly `envelope` and `body`. Canonicalize the enclosed body and compare its hash and byte length before acceptance.
 Transport whitespace outside canonical objects does not alter signed bytes. The server preserves canonical signed meaning and never changes a field to make a signature pass.
@@ -941,7 +948,7 @@ IdentityResponse = {
   successor: identity-string | null, retired: boolean, compromised: boolean, suspended: boolean,
   profile: {state: "none" | "known" | "conflicted" | "unavailable",
             claims: [{event: event-ID, issuer: identity-string | null, body_hash: ID | null,
-                      body: ProfileBody | null, body_status: "present" | "unavailable" | "omitted"}],
+                      body: ProfileBody | null, body_status: "present" | "missing" | "invalid" | "unavailable" | "omitted"}],
             claims_count: integer, claims_complete: boolean},
   counts: {definitions: integer, rafsi: integer, judgments: integer, trust: integer, reports: integer, other: integer}
 }
@@ -988,7 +995,10 @@ The shared core materializes the details only for a request that asks for them, 
 An older server omits the field. A client distinguishes that omission from an empty list, which means that no reviewer exists.
 
 Identity responses resolve the profile register under the effective continuity rules. Concurrent profile claims appear together with state `conflicted`.
-A response lists at most 16 claims in event-ID order with at most 1 MiB of claim bodies in total. `claims_count` is the number of concurrent heads, and `claims_complete` is false when the list or a body was cut. A cut body has `body_status` `omitted`. A retained body that storage did not return has `unavailable`, and the profile state is `unavailable` only in that case.
+A response lists at most 16 claims in event-ID order with at most 1 MiB of claim bodies in total. `claims_count` is the number of concurrent heads, and `claims_complete` is false when the list or a body was cut. A cut body has `body_status` `omitted`.
+
+A body absent from the snapshot has `missing`. Returned bytes that fail body validation have `invalid`. These claims keep state `known` unless concurrent heads conflict. A retained body or envelope that storage did not return has `unavailable`. Only that storage failure sets profile state `unavailable`.
+
 If the selected view cannot be evaluated, the identity route returns HTTP 503 with code `resource_unavailable`, like the search and word routes. It never asserts that an identity has no profile, successor, or compromise notice without an evaluation. The activity route still answers, with interpretation `unavailable` per item.
 `/identities/KEY` and `/identities/KEY/activity` are the only identity paths. A longer path is HTTP 404.
 The counts describe events signed by that exact key in the snapshot. They are raw authorship, not imported source attribution.
@@ -1065,7 +1075,7 @@ Inventory `after` is exclusive and must use the requested identifier family. Its
 Changes cursors are server-specific and never transferable between peers. Empty changes pages retain the supplied cursor and set caught_up appropriately.
 
 An empty-string cursor is invalid. A request without a changes cursor starts from that server's earliest retained receipt. An empty initial log returns its opaque initial cursor. Retention gaps require snapshot reconciliation through HTTP 410.
-Search accepts an optional `after` cursor tied to the same query, language, view, and snapshot.
+Search accepts an optional `after` cursor tied to the same query, language, retired flag, view, and snapshot.
 
 Match kinds are `headword`, `gloss`, `headword-prefix`, `gloss-prefix`, and `token`, in that relevance order.
 Search responses identify candidates but carry no unqualified quality score. The word response supplies ranking when requested.
@@ -1085,7 +1095,7 @@ An entry contains `event`, `word`, `language`, `glosses`, `plain_text`, `classif
 Event is the publication ID. Word is its word object. Body is its body hash or null.
 A version 2 entry adds `issuer`, `notes`, `rafsi`, `rafsi_complete`, and `attribution`.
 Issuer is the signing key, which is the importer for an import. Notes is true when the definition has notes.
-Rafsi lists the spellings of retained rafsi claim bodies for the word, sorted, at most 64 of them. `rafsi_complete` is false when the word has more claims than the list holds. A client never treats a cut list as a complete conflict inventory. The exact claims of a word are the `rafsi` event IDs of the word route and their claim bodies.
+Rafsi lists the spellings of retained rafsi claim bodies for the word, sorted, at most 64 of them. `rafsi_complete` is false when the word has more claims than the list holds. Missing, unreadable, or invalid claim bytes also set `rafsi_complete` to false. A client never treats a cut list as a complete conflict inventory. The exact claims of a word are the `rafsi` event IDs of the word route and their claim bodies.
 Attribution is null for a native publication.
 If an advertised version 2 package fails its checks, the client uses the version 1 package instead and records the reason with the cached package. It shows that state wherever it describes the package. It never falls back without that record.
 For an import it contains `source`, nullable `author`, nullable `account` with `origin` and `account`, and `dates`, a map of source date labels to source strings.
