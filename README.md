@@ -51,7 +51,13 @@ The lujvo builder offers short rafsi, gismu stems, whole gismu, whole-word parts
 Choosing [optional hyphens](docs/morphology.md) in the lujvo builder remains a target change. The builder adds only the required hyphens.
 The gismu generator offers the CLL 1987, CLL 1995, and Ilmen presets with pinned sources, custom weights, exact scores, tied ranks, per-language contributions, root and rafsi conflicts, and manual forms without fabricated evidence.
 The [morphology profiles](docs/morphology.md) name the rules and versions that the metadata records.
-The status editor, transfer editor, semantic search, AI, and Lensisku cross-posting remain target features.
+Optional AI assistance offers suggestions for type, components, lujvo, cmavo class, source words, definition text, places, and glosses.
+The browser asks for consent before it sends draft fields. Suggestions need manual acceptance and support undo.
+The private attempt log offers Markdown and JSON export. Signed publications omit AI logs.
+Both local adapters offer operator-controlled assistance, off by default, with server-held keys and bounded private jobs.
+Mocked providers cover the request and correction loop. These tests do not establish live model accuracy.
+The [development guide](docs/development.md#optional-ai-assistance) gives the configuration and retention limits.
+The status editor, transfer editor, semantic search, and Lensisku cross-posting remain target features.
 The site view is the server's selected signed view, and the Trust page can use another retained signed view by its event ID. A signed view names its calculation profile, `simple-routes-bounds-v1` or `simple-routes-shun-v1`; the pages name the profile of each result and its route rule, and an unknown profile leaves scores unavailable.
 The personal view downloads the snapshot records, verifies each envelope and body in a Web Worker, and ranks words locally with the private overlay.
 It adds the current identity with allocation 1 only when its continuity group has no allocation or private root change.
@@ -104,7 +110,7 @@ The documentation defines the product, its records, and the development process:
 - [Format specification](docs/format.md): Target signed records, causal state, identities, imports, and ranking.
 - [Frontend specification](docs/frontend.md): Target browser behavior, server contracts, authoring, and optional inference.
 - [Web UI design](docs/ui-design.md): Target screens, visual rules, and publication flow.
-- [AI prompts](prompts/README.md): Draft prompts for the optional AI actions. No application code uses them yet.
+- [AI prompts](prompts/README.md): Public prompts, answer rules, and the correction loop for the optional AI actions.
 - [Prototype plan](docs/prototype-plan.md): Required implementation stages and demonstrations.
 - [Handover cases](docs/handover-cases.md): Required account-control outcomes.
 - [Development guide](docs/development.md): Local builds, tests, shared VM work, and review requirements.
