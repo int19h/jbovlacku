@@ -779,13 +779,17 @@ export async function lujvoPage(
             "label",
             { class: "check", for: box2.id },
             box2,
-            text(` ${conflict.rafsi} is also claimed by `),
-            link(
-              conflict.spelling,
-              `/word/${encodeURIComponent(conflict.spelling)}`,
-              { lang: "jbo" },
+            el(
+              "span",
+              { class: "inline-prose" },
+              text(`${conflict.rafsi} is also claimed by `),
+              link(
+                conflict.spelling,
+                `/word/${encodeURIComponent(conflict.spelling)}`,
+                { lang: "jbo" },
+              ),
+              text(". I keep this form."),
             ),
-            text(". I keep this form."),
           ),
         );
       }

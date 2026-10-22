@@ -190,7 +190,7 @@ async function inventory(page: Page) {
         !node.matches(".btn") &&
         !node.closest("header,footer,nav")
       ) {
-        const prose = node.closest("p,.rich-text,.text");
+        const prose = node.closest("p,.rich-text,.text,.inline-prose");
         if (
           prose &&
           [...prose.childNodes].some(
