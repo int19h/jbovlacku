@@ -193,7 +193,9 @@ test("the Trust page names the publisher and isolates invalid or unrelated priva
     page.getByText("Invalid saved scope", { exact: false }),
   ).toHaveCount(0);
   await expect(
-    page.getByText(/This rule names another identity/),
+    page.getByText(
+      /This rule depends on accepted continuity in the next calculation snapshot/,
+    ),
   ).toBeVisible();
 });
 

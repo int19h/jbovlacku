@@ -209,7 +209,7 @@ test("concurrent preference changes keep both choices and remove the old persist
   }
 });
 
-test("reading preferences change orthography and put own judgments first without changing scores", async ({
+test("reading preferences change orthography and preserve scores and singleton layers", async ({
   page,
 }) => {
   await createIdentity(page);
@@ -224,10 +224,9 @@ test("reading preferences change orthography and put own judgments first without
   await expect(page.getByRole("status")).toHaveText(
     "Your opposition is published.",
   );
-  const lastId = await articles
-    .last()
+  const originalOrder = await articles
     .locator(".byline a[href^='/definition/']")
-    .getAttribute("href");
+    .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("href")));
   await page.getByRole("link", { name: "Settings", exact: true }).click();
   await page.getByLabel("Show my judgments first on word pages").check();
   await page
@@ -235,9 +234,15 @@ test("reading preferences change orthography and put own judgments first without
     .selectOption("zbalermorna");
   await openWord(page, "cukta");
   await expect(page.locator(".word-head .zbalermorna")).toBeVisible();
+  // Each fixture layer holds one definition, so the preference preserves their order.
+  expect(
+    await articles
+      .locator(".byline a[href^='/definition/']")
+      .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("href"))),
+  ).toEqual(originalOrder);
   await expect(
-    articles.first().locator(".byline a[href^='/definition/']"),
-  ).toHaveAttribute("href", lastId!);
+    articles.last().getByRole("button", { name: "Oppose", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
   expect(
     (await articles.locator(".judgment .score").allTextContents()).sort(),
   ).toEqual([...originalScores].sort());
