@@ -1,4 +1,5 @@
 import type { IndexStore } from "./index-store.ts";
+import { orderedPrefetch, readRecordBytes } from "./record-reads.ts";
 import {
   buildPackages,
   type MaterializedPackages,
@@ -412,18 +413,27 @@ export class DictionaryService {
     });
     const packageRecords: PackageRecord[] = [];
     try {
-      for (const id of sorted(Object.keys(snapshot.events))) {
+      for await (const { value: id, result: loaded } of orderedPrefetch(
+        sorted(Object.keys(snapshot.events)),
+        (id) => {
+          const event = snapshot.events[id];
+          return readRecordBytes(
+            this.objects,
+            event.envelope_hash,
+            event.body_hash,
+          );
+        },
+      )) {
         const event = snapshot.events[id];
-        const envelope = await this.objects.get(event.envelope_hash);
+        const { envelope } = loaded;
         if (!envelope)
           throw new ApiError(
             503,
             "storage_unavailable",
             "Envelope bytes are unavailable.",
           );
-        const body = event.body_hash
-          ? await this.objects.get(event.body_hash)
-          : null;
+        if (loaded.body.status === "rejected") throw loaded.body.reason;
+        const body = loaded.body.value;
         const record = builder.addRecord(envelope, body ?? undefined);
         if (record)
           packageRecords.push({

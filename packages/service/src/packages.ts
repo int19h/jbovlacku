@@ -6,6 +6,7 @@ import {
   type EvaluationPackageRecord,
 } from "../../core/src/index.ts";
 import type { ObjectStore, Snapshot } from "./storage.ts";
+import { orderedPrefetch, readRecordBytes } from "./record-reads.ts";
 /**
  * Rafsi spellings listed per version 2 entry. The browser applies the same
  * bound. A longer list is cut, and the entry says so. The exact claims of a
@@ -101,15 +102,21 @@ export async function buildPackages(
   const incompleteRafsi = new Set<string>();
   async function* records(kind: EvaluationPackageRecord["kind"]) {
     if (prepared) {
-      for (const record of prepared) {
-        if (record.kind !== kind) continue;
+      for await (const { value: record, result: loaded } of orderedPrefetch(
+        prepared.filter((record) => record.kind === kind),
+        (record) => {
+          const event = snapshot.events[record.id];
+          return readRecordBytes(
+            objects,
+            event.body_hash ? event.envelope_hash : null,
+            event.body_hash,
+          );
+        },
+      )) {
         const event = snapshot.events[record.id];
-        const envelope = event.body_hash
-          ? await objects.get(event.envelope_hash)
-          : null;
-        const bytes = event.body_hash
-          ? await objects.get(event.body_hash)
-          : null;
+        const { envelope } = loaded;
+        if (loaded.body.status === "rejected") throw loaded.body.reason;
+        const bytes = loaded.body.value;
         let body: PackageRecord["body"] = null;
         if (envelope && bytes) {
           if (
@@ -133,13 +140,23 @@ export async function buildPackages(
       }
       return;
     }
-    for (const id of Object.keys(snapshot.events).sort()) {
+    for await (const { value: id, result: loaded } of orderedPrefetch(
+      Object.keys(snapshot.events)
+        .sort()
+        .filter((id) => snapshot.events[id].header.action.kind === kind),
+      (id) => {
+        const event = snapshot.events[id];
+        return readRecordBytes(
+          objects,
+          event.body_hash ? event.envelope_hash : null,
+          event.body_hash,
+        );
+      },
+    )) {
       const event = snapshot.events[id];
-      if (event.header.action.kind !== kind) continue;
-      const envelope = event.body_hash
-        ? await objects.get(event.envelope_hash)
-        : null;
-      const bytes = event.body_hash ? await objects.get(event.body_hash) : null;
+      const { envelope } = loaded;
+      if (loaded.body.status === "rejected") throw loaded.body.reason;
+      const bytes = loaded.body.value;
       const checked = envelope && bytes ? inspectBody(envelope, bytes) : null;
       yield {
         id,
