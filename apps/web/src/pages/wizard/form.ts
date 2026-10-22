@@ -73,7 +73,7 @@ export async function formPage(route: Route, context: RenderContext, app: App) {
     refresh();
   });
   section.append(spelling.wrapper);
-  if (kind === "cmavo") {
+  if (kind === "cmavo" || kind === "compound" || kind === "letteral") {
     const selmaho = field("selma'o", {
       value: draft.selmaho.join(", "),
       placeholder: "for example UI, or BAI*",

@@ -478,7 +478,6 @@ export function confirmKindChange(
     if (!ok) return false;
     if (kind !== "lujvo") draft.compound = null;
     if (kind !== "gismu") draft.formation = null;
-    if (kind !== "cmavo") draft.selmaho = [];
     if (!draft.compound && !draft.formation) draft.evidenceForm = null;
   }
   draft.kind = kind;
