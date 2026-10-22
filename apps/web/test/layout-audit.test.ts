@@ -15,6 +15,10 @@ test.beforeAll(async () => {
   });
 });
 
+test.beforeEach(({ page }) => {
+  page.on("dialog", (dialog) => void dialog.accept());
+});
+
 async function open(page: Page, path: string) {
   const response = await page.goto(`${fixture().origin}${path}`);
   expect(response?.headers()["content-security-policy"]).toBe(
@@ -25,8 +29,6 @@ async function open(page: Page, path: string) {
 }
 
 async function beginDraft(page: Page, kind?: "lujvo" | "gismu") {
-  if (!page.listenerCount("dialog"))
-    page.on("dialog", (dialog) => void dialog.accept());
   await open(page, "/new/meaning");
   await page
     .getByLabel("Meaning", { exact: true })
@@ -103,7 +105,16 @@ async function expandDetails(page: Page) {
       .locator("details:not([open]) > summary:visible")
       .first();
     if (!(await closed.count())) break;
+    const toggled = closed.evaluate(
+      (summary) =>
+        new Promise<void>((resolve) => {
+          summary.parentElement!.addEventListener("toggle", () => resolve(), {
+            once: true,
+          });
+        }),
+    );
     await closed.click();
+    await toggled;
     await page.waitForLoadState("networkidle");
   }
 }
@@ -322,6 +333,11 @@ for (const viewport of [
         const tags = page.getByLabel(`Tags for alternative ${index}`, {
           exact: true,
         });
+        const group = page.getByRole("group", {
+          name: `Alternative ${index}`,
+          exact: true,
+        });
+        await expect(group).toBeVisible();
         const hintId = await tags.getAttribute("aria-describedby");
         const hint = page.locator(`[id="${hintId}"]`);
         const controls = [
@@ -341,6 +357,18 @@ for (const viewport of [
         const boxes = await Promise.all(
           controls.map(async (control) => (await control.boundingBox())!),
         );
+        const groupBox = (await group.boundingBox())!;
+        for (const box of boxes) {
+          expect
+            .soft(box.x, `Alternative ${index} control stays inside its group`)
+            .toBeGreaterThanOrEqual(groupBox.x);
+          expect
+            .soft(
+              box.x + box.width,
+              `Alternative ${index} control stays inside its group`,
+            )
+            .toBeLessThanOrEqual(groupBox.x + groupBox.width);
+        }
         const hintBox = (await hint.boundingBox())!;
         rows.push({ index, boxes, hint: hintBox });
         expect
@@ -412,7 +440,6 @@ for (const viewport of [
       page,
     }, info) => {
       test.setTimeout(240000);
-      page.on("dialog", (dialog) => void dialog.accept());
       const manifest: {
         state: string;
         count: number;
@@ -541,7 +568,16 @@ for (const viewport of [
         .getByRole("button", { name: "Stop retrying", exact: true })
         .first()
         .click();
+      await expect(
+        page.getByRole("button", { name: "Try now", exact: true }),
+      ).toHaveCount(0);
+      await expect(
+        page.locator("summary").filter({ hasText: "1 stopped" }),
+      ).toBeVisible();
       await expandDetails(page);
+      await expect(
+        page.getByRole("button", { name: "Resume delivery", exact: true }),
+      ).toBeVisible();
       await check("outbox-stopped");
       await open(page, "/about");
       await check("about");
