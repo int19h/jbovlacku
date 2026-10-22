@@ -9,7 +9,7 @@ import {
 } from "../../app/router.ts";
 import type { App } from "../../app/context.ts";
 import { localSearch, type CachedPackage } from "../../data/search.ts";
-import { remoteSearch } from "../../data/api.ts";
+import { remoteDraftSearch } from "../../data/api.ts";
 import { placeholderCount, type Draft } from "../../model/draft.ts";
 import { countNodes, placeMarker } from "../../model/richtext.ts";
 import {
@@ -241,6 +241,7 @@ export async function meaningPage(
       draft.language = tag;
     }
     saver.touch();
+    scheduleNearby();
   };
   language.input.addEventListener("change", syncLanguage);
   custom.input.addEventListener("input", syncLanguage);
@@ -284,7 +285,17 @@ export async function meaningPage(
       (await app.store.get<CachedPackage>("packages", draft.language)) ?? null;
   } catch {}
   if (!context.live()) return;
-  let remoteConsent = false;
+  // Consent covers one exact query and its definition language.
+  let remoteConsent: string | null = null;
+  const nearbyQuery = () =>
+    meaning.input.value
+      .trim()
+      .split(/\s+/)
+      .filter((word) => word.length > 2 && !/^_+$/.test(word))
+      .slice(0, 6)
+      .join(" ");
+  const remoteQuery = () => nearbyQuery().split(" ")[0];
+  const consentKey = () => JSON.stringify([remoteQuery(), draft.language]);
   const renderMode = () => {
     modeLabel.replaceChildren();
     if (cached) modeLabel.append(text("by words, from the downloaded package"));
@@ -292,13 +303,20 @@ export async function meaningPage(
       modeLabel.append(text("no local package · "));
       modeLabel.append(
         button(
-          remoteConsent ? "searching this server" : "search this server",
+          remoteConsent === consentKey()
+            ? "searching this server"
+            : "search this server",
           async () => {
-            if (!remoteConsent) {
-              remoteConsent = confirm(
-                `Searching this server sends the text you typed here to ${location.host}. Continue?`,
-              );
-              if (!remoteConsent) return;
+            if (remoteConsent !== consentKey()) {
+              const query = remoteQuery();
+              if (!query) return;
+              if (
+                !confirm(
+                  `Search ${location.host} for ${JSON.stringify(query)} in definition language ${JSON.stringify(draft.language)}? The request sends this query and language.`,
+                )
+              )
+                return;
+              remoteConsent = consentKey();
               renderMode();
               await nearby();
             }
@@ -318,6 +336,8 @@ export async function meaningPage(
   renderMode();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const scheduleNearby = () => {
+    if (remoteConsent !== consentKey()) remoteConsent = null;
+    renderMode();
     clearTimeout(timer);
     timer = setTimeout(() => void nearby(), 400);
   };
@@ -388,12 +408,7 @@ export async function meaningPage(
     );
   };
   const nearby = async () => {
-    const query = meaning.input.value
-      .trim()
-      .split(/\s+/)
-      .filter((w) => w.length > 2 && !/^_+$/.test(w))
-      .slice(0, 6)
-      .join(" ");
+    const query = nearbyQuery();
     if (!query) {
       renderHits([], "local");
       return;
@@ -416,18 +431,16 @@ export async function meaningPage(
       );
       return;
     }
-    if (!remoteConsent) {
+    if (remoteConsent !== consentKey()) {
       note.textContent =
         "Download a search package in Settings for local nearby search, or allow a search on this server.";
       return;
     }
     try {
-      const result = await remoteSearch(
-        words0(query),
+      const result = await remoteDraftSearch(
+        remoteQuery(),
         draft.language,
         10,
-        null,
-        null,
         { signal: context.signal },
       );
       if (context.live()) renderHits(result.hits, "remote");
@@ -435,7 +448,6 @@ export async function meaningPage(
       if (context.live()) note.textContent = describe(error);
     }
   };
-  const words0 = (query: string) => query.split(" ")[0];
   void nearby();
   columns.append(left, right);
   main.append(columns);
