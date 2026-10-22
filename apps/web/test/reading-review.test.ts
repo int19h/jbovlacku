@@ -528,6 +528,19 @@ for (const tail of [false, true]) {
 test("missing own judgments disclose the failure and keep ranking order", async ({
   page,
 }) => {
+  const f = fixture();
+  const ids = [
+    f.definitions.cukta1,
+    f.definitions.cukta2,
+    f.definitions.cukta3,
+    f.definitions.cuktaRev,
+  ];
+  await page.route("**/api/v1/words/**", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.layers = [[ids[1], ids[0]], [ids[2]]];
+    await route.fulfill({ response, json: body });
+  });
   await page.goto("/preferences");
   await page.getByLabel("Show my judgments first on word pages").check();
   await page.evaluate(async () => {
@@ -535,6 +548,17 @@ test("missing own judgments disclose the failure and keep ranking order", async 
     OwnState.prototype.registers = async () => null;
   });
   await openWord(page, "cukta");
+  await page.getByRole("link", { name: /^All/ }).click();
+  const articles = page.locator("article.definition");
+  await expect(articles).toHaveCount(4);
+  const links = await articles
+    .locator(".byline a[href^='/definition/']")
+    .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("href")));
+  expect(links).toEqual(
+    [ids[1], ids[0], ids[2], ids[3]].map(
+      (id) => `/definition/${encodeURIComponent(id)}`,
+    ),
+  );
   await expect(
     page.getByText(
       "Your judgments could not be loaded. Definitions follow ranking layers, then event order.",
