@@ -115,8 +115,8 @@ No modal dialog is required for ordinary reading, expanding notes, or switching 
 Every page includes the wordmark, labeled search field, “Add a word,” delivery marker when needed, and local identity link.
 With an existing key, the identity link shows the lock state with an accessible label.
 Without a key, it reads “Your key” and opens `/identity` for creation or import. Navigation alone never generates a key.
-The delivery marker counts distinct unfinished records listed on Not delivered, never attempts or network requests.
-The list includes active offline failure, refusal, and unknown delivery. Stopped records remain retained but leave the list and count.
+The delivery marker counts distinct waiting and stopped records listed on Not delivered, never attempts or network requests.
+Waiting records include offline failure, refusal, and unknown delivery. Stopped records stay in the list and count.
 Ordinary transient sends and accepted index lag remain excluded.
 One record with unfinished delivery at several peers counts once. Its per-peer outcomes remain separately visible.
 The footer links to the active trust view, Settings, About, and Source. Settings opens `/preferences`.
@@ -137,7 +137,7 @@ The app provides these addressable routes:
 | `/review` | Optional review queue. |
 | `/trust` | Public decisions and private view controls. |
 | `/identity` | Local key, backup, transfer, and loss controls. |
-| `/outbox` | “Not delivered,” with the records that have not reached a server. The page and its header marker exist only while such records exist. |
+| `/outbox` | “Not delivered,” with waiting and stopped records. The header marker counts both. A direct visit shows an empty state when neither exists. |
 | `/preferences` | Settings, in groups: Languages, Assistance, Search, Appearance, Servers, and Your data. |
 
 Every route preserves browser back and forward behavior. Query changes use replace-state while typing, then a stable navigation state when selected.
@@ -330,6 +330,11 @@ Historical profiles preserve their own normalization semantics. The UI never com
 Each source row separates native spelling from the Lojbanized input used by the letter scorer.
 The table shows these columns: Language, Weight, Word, Said, Stem, Stem said, and Letters. Word is the native spelling. Said is the pronunciation of the whole word with its stress. Stem is the part of the word that the letters come from. Stem said is the pronunciation of the stem. Letters is the scoring input.
 The pronunciation is there so that speakers of the language can check the word later and propose a better one. Only the letters count toward the score. Stress is shown and is never scored.
+
+The signed formation source keeps Word as `word`, Said as `word_ipa`, Stem as `stem`, and Stem said as `ipa`.
+Letters uses `input` with `format: "lojbanized"`. Language and Weight use `language` and `weight`.
+The pronunciation and stem fields are optional. An absent or null field means unknown and stays empty when an older record opens.
+The app never guesses a missing stem or pronunciation from the scoring input.
 IPA input requires an explicit, versioned conversion and a preview of the resulting scoring input.
 One source word per language is the simple-mode default. Advanced mode can add alternatives under an explicitly selected aggregation rule.
 An unfinished row does not acquire an invented source word or weight.
@@ -395,7 +400,13 @@ A null frame means unspecified structure. The wizard never substitutes a guessed
 The result proposes typed fields and identifies unresolved mappings. The author reviews the rendered text and table before accepting changes.
 The definition of the whole word decides the meaning and the types. Component definitions only identify which role a place plays. Any word form that follows the selected morphology rules is accepted, including lower-scoring rafsi and optional hyphens.
 A type suggestion gives one to three alternatives for a place, each with a short reason. A line under the row lists each alternative and its reason. `unclear` means that the definition does not describe the place. The field then reads “unspecified”.
-A mapping suggestion lists, for each place, the component places that it corresponds to. Each has a kind and a one-sentence reason. The kinds are direct, merged, distributed, and functional. The From field shows the kind, such as “klama 2 · direct”. The line under the row offers Add for a component place that the row does not name yet.
+A mapping suggestion lists, for each place, the component places that it corresponds to. Each has a kind and a one-sentence reason.
+The `reason` must start with `direct: `, `merged: `, `distributed: `, or `functional: `, followed by its explanation.
+The `none` and `unclear` sentinels instead require `none: ` and `unclear: `.
+
+The answer check requires this prefix to match the entry. There is no separate `kind` field.
+The From field reads the prefix and shows the kind, such as “klama 2 · direct”.
+The line under the row offers Add for a component place that the row does not name yet.
 AI suggestions never manufacture historical source attribution, exact quotations, accepted rafsi, or endorsements.
 Accepted suggestions remain ordinary author-controlled draft data. The app does not assign them automatic trust weight.
 
@@ -740,19 +751,21 @@ The outbox records independent receipts for each peer.
 Internal delivery states distinguish signed and queued, accepted, accepted pending dependencies, refused by this server, and delivery unknown.
 Unsigned drafts remain separate local draft state.
 The page title is “Not delivered,” and its path remains `/outbox`.
-It shows only unfinished records after offline delivery, failure, refusal, or an unknown outcome.
-An ordinary transient send does not create a header warning. Each visible row states the last attempt and next retry.
+It shows waiting records after offline delivery, failure, refusal, or an unknown outcome, together with stopped records.
+An ordinary transient send does not create a header warning. Each waiting row states the last attempt and next retry.
 “Try now” follows the same receipt lookup and immutable retry rules.
-Each row also offers “Stop retrying.” It stops future attempts to every still-unfinished selected peer for that record.
+Each waiting row also offers “Stop retrying.” It stops future attempts to every still-unfinished selected peer for that record.
 The app retains signed bytes and receipts. The row stays with the status word “Stopped” in place of the next-retry sentence.
 Stopping does not retract a public record or guarantee that an in-flight request stopped.
 
-A stopped record stays on the Not delivered page with Resume, Save as file, and Discard. The page and its header marker exist while any record is waiting or stopped. Discard removes the only copy and asks first.
+A stopped record stays on the Not delivered page with Resume, Save as file, and Discard.
+The header marker counts waiting and stopped records and stays while either exists.
+Discard asks first, then deletes the local signed bytes and receipts. It does not retract a copy that a server already holds.
 Resume uses the same stored bytes, selected recipients, and receipt lookup before retry.
 No new signature or silent recipient change occurs.
 Accepted dependency waits and index lag remain visible where they affect publication, without being mislabeled delivery failures.
-When no listed unfinished records remain, remove the header marker and show a sensible empty state at the direct route.
-Keep stored records and receipts after the page empties. “Save them as a file” exports unfinished records and their bodies.
+When no waiting or stopped records remain, remove the header marker. A direct visit to `/outbox` shows a short empty state.
+Keep delivered records and receipts after the page empties. “Save them as a file” exports waiting and stopped records with their bodies.
 
 A timeout means delivery unknown. The client queries by ID before retrying and can safely resend identical bytes.
 Delivery completes only when the peer receipt confirms the submitted envelope and every required submitted body with matching hash.
@@ -1181,7 +1194,7 @@ The implementer must demonstrate these end-to-end cases before public release:
 15. Judgment arrows create or unlock a key, resume the exact target, and clear a selected judgment on repeated activation.
 16. Every public publish group persists before dispatch, including definition and rafsi blessings, and survives partial delivery or reload.
 17. A timeout queries the receipt by ID before immutable retry. Normal sends and index lag never create false failure markers.
-18. “Not delivered” clears finished rows while retaining records and receipts. Its direct route shows an empty state.
+18. “Not delivered” clears delivered rows while retaining records and receipts. With no waiting or stopped records, its marker disappears. Its direct route then shows an empty state.
 19. Net scores expose support, opposition, reviewer count, exact values, ranges, and unavailable state through keyboard and touch.
 20. Search rows expose rafsi, notes, matching alternatives, more results, retired results, and immediate judgment actions.
 21. New native definitions contain the fixed CC0 expression, URL, and empty attribution. Imported records retain source rights and author attribution.
@@ -1193,7 +1206,7 @@ The implementer must demonstrate these end-to-end cases before public release:
 27. A nonzero exact score never displays as zero. “No judgments yet” requires known zero direct reviewers.
 28. First-signature copy explains public history before direct judgments or trust actions without adding per-action confirmation.
 29. Manual Form preserves spelling, classification, and notes, and private Ignore writes the scoped blocked entry.
-30. Stop retrying removes one record from the active list and count while retaining its bytes, receipts, and export.
+30. Stop retrying keeps the record listed as “Stopped”, with Resume, Save as file, and Discard. The marker still counts it.
 31. Resume delivery retrieves receipt state and retries identical bytes to the original recipients, including after reload.
 32. Permanent refusal stays auto-paused. Stopping neither retracts public records nor promises cancellation of an in-flight request.
 33. Outlined control boundaries meet 3:1 contrast in every enabled state in both themes.
@@ -1252,6 +1265,8 @@ Every AI action is optional, including type, component, source-word, definition,
 Operators can disable all generation, disable individual tasks, or disable remote providers while retaining local models.
 Capabilities report those decisions. Disabled or failed AI never prevents manual authoring, signing, reading, or synchronization.
 Operators can turn on a decision report, which is off by default. Each request then asks the model to write one detailed report before its tool call. The report recounts the arguments behind every decision as one connected text. The inference log shows it as text that the assistant wrote. The setting costs more tokens. It exists to collect material for prompt tuning.
+The system prompt puts `explain.txt` after the task file. For `sources`, it follows `sound-guide.txt` and precedes the language block.
+The language block stays last. Without a language block, `explain.txt` is last.
 
 The Assistance group of Settings has one checkbox, “Use AI assistance”. It is on by default when the server offers assistance.
 When it is off, the app hides every AI tagged button, every suggestion panel and its notes, the consent dialog, the “by meaning” search mode, and every AI hint line. Nothing else moves, and every manual path stays complete. The app sends nothing to a provider.
@@ -1265,12 +1280,16 @@ Required model parameters, structured-output support, and context limits are dis
 
 A provider without enforced JSON Schema output can still supply proposals after strict local parsing and validation.
 The model answers through one tool call. The app checks the answer. If the answer fails a check, the app returns the exact problems as the tool result, and the model sends a corrected answer. After three failed answers, the suggestion fails.
+A response without a `submit_answer` call counts as one failed answer and gets no tool result.
+After three failed answers, including responses without that call, show the same failed state.
 Invalid output never enters a signed body automatically.
 
 Every AI action has four states. Idle is the AI tagged button. Working replaces the button with one status line, a spinner, and Cancel. A retry says so with its count, such as “The first answer had errors, so the assistant is trying again (2 of 3).” Done is the suggestion panel. Failed is one line in the button's place, such as “No usable answer after 3 tries. Try again or fill the rows in by hand.” The failed line never blocks the manual path.
 
 Every suggestion panel, note, and failed line links to the inference log with “How the assistant decided”. The log is a modal that shows the whole exchange that produced the suggestion.
-Its header names the task, the model and reasoning level, the provider, the prompt version with a link to the public prompt file, the time and duration, the number of answers and corrections, and the tokens and cost.
+Its header names the task, the model and reasoning level, and the provider. It links the prompt version to the public prompt file.
+It shows the time and duration, and the number of answers and corrections.
+It shows tokens and cost only when the provider sent those figures. Omit each missing figure.
 One line says that the provider does not make the assistant's private reasoning available, and that the log holds the shared reasoning summary and everything that the assistant wrote.
 The rows are the system prompt, collapsed, and the app's request. Each answer then has its reasoning summary or the line “No reasoning summary was shared for this answer.”, any text that the assistant wrote, the tool call with its tokens, and the app's check. A failed check lists each problem that the app sent back to the assistant.
 “Export as Markdown” saves the log as shown. “Export raw JSON” saves every request and response exactly as sent and received.

@@ -24,8 +24,8 @@ It includes the wordmark, search, “Add a word,” the conditional “Not deliv
 The search field has a persistent accessible label, a search icon, and an accessible clear button.
 With an existing key, the identity link includes a lock icon and an accessible description of its lock state.
 Without a key, “Your key” opens `/identity` for creation or import. Navigation alone never generates a key.
-The delivery marker counts distinct unfinished records listed on Not delivered, not requests, retries, or peers.
-Listed records include active offline failure, refusal, and unknown delivery. Stopped records remain retained but leave the list and count.
+The delivery marker counts distinct waiting and stopped records listed on Not delivered, not requests, retries, or peers.
+Waiting records include offline failure, refusal, and unknown delivery. Stopped records stay in the list and count.
 Normal transient sends and accepted index lag remain excluded.
 Its details show independent outcomes for each peer. An ordinary transient send does not display it.
 
@@ -254,7 +254,14 @@ The bottom actions are Back and “Use <form>.”
 ## Gismu screen, step 3B
 
 The source and candidate column uses a 520px basis. The selected-form column uses a 280px basis, with a 40px gap.
-Source rows show language, resolved weight, native word, transliteration when supplied, and editable scoring input.
+
+Source rows show seven columns: Language, Weight, Word, Said, Stem, Stem said, and Letters.
+Language and Weight show the language and resolved weight. Word shows the native spelling, and Said shows its pronunciation with stress.
+Stem shows the part that supplies the letters. Stem said shows its pronunciation. Letters is the editable scoring input.
+The signed source fields are `language`, `weight`, `word`, `word_ipa`, `stem`, `ipa`, and `input`, respectively.
+
+Letters uses the `lojbanized` input format. The pronunciation and stem fields remain published and do not affect the score.
+An absent or null pronunciation or stem field means unknown and stays empty for an older record.
 The preset select offers documented CLL 1995, CLL 1987, twelve-language, and custom profiles when their sourced parameters exist.
 Every named preset exposes pinned source evidence, resolved weights, normalization, and rule versions.
 The screen's sample numerical results do not establish those parameters.
@@ -379,10 +386,15 @@ Pin this version, Use another view, and Earlier versions retain the adoption and
 
 The page title is “Not delivered” and its route remains `/outbox`.
 Its opening paragraph describes retained local records and automatic retry, qualified by the actual failure or refusal.
-Each listed unfinished record names its target and action, last attempt, next retry, Try now, and Stop retrying.
+Each waiting record names its target and action, last attempt, next retry, Try now, and Stop retrying.
+
 Stop retrying stops future attempts to all still-unfinished selected peers for that record.
-The app retains signed bytes and receipts, then removes the row from the active list and count.
-It does not retract a public record or guarantee that an in-flight request stopped.
+The app retains signed bytes and receipts. The row stays listed with “Stopped” in place of the next-retry sentence.
+It offers Resume, Save as file, and Discard. The header marker counts waiting and stopped records and stays while either exists.
+Stopping does not retract a public record or guarantee that an in-flight request stopped.
+
+Discard asks first, then deletes the local signed bytes and receipts. It does not retract a copy that a server already holds.
+
 Unknown delivery states explain that the client asks whether the record arrived before it sends the same bytes again.
 The app stores bounded retry and backoff state. Connectivity return and reload resume eligible retries while the app is active.
 The client respects Retry-After. A closed browser does not guarantee background delivery.
@@ -392,9 +404,8 @@ The page offers “Save them as a file” and states that browser clearing can l
 Delivery completes only when the receipt confirms the submitted envelope and, when required, its matching submitted body.
 Header-only acceptance retains a missing-body row. After lookup, an identical complete submission can supply that body.
 Body refusal remains an unfinished delivery outcome. Accepted bodies with interpretation dependencies or index lag are delivered.
-Finished rows disappear and the header marker clears when no listed unfinished records remain.
-The direct route remains valid and shows an empty state. Stored records and independent peer receipts remain retained.
-A quiet retained-records disclosure exposes stopped records, export, and Resume delivery within `/outbox`.
+Delivered rows disappear. The header marker clears when no waiting or stopped records remain.
+A direct visit to `/outbox` then shows a short empty state. Delivered records and independent peer receipts remain retained.
 Resume uses the same bytes, selected recipients, and receipt lookup before retry, including after reload.
 It never creates a new signature or silently changes recipients. Acceptance scenarios in the frontend specification cover this flow.
 Normal transient sends do not appear here. Accepted pending dependencies and index lag remain accurate publication states elsewhere.

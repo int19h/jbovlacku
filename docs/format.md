@@ -444,7 +444,7 @@ Removing a field from an object still must satisfy that object's other rules.
 | License | `url: null`, `attribution: ""`, subject to the contribution and source-rights rules below. |
 | Etymology | `text: []`, `formation: null`, `compound: null`. |
 | Formation | `algorithm: null`, `sources: []`, `weights_profile: null`, `generated: null`, `selected_score: null`, `selected_rank: null`, `selection_reason: []`, `candidates: []`, `conflicts: []`. |
-| Formation source | `input: null`, `weight: null`, `notes: []`. |
+| Formation source | `input: null`, `weight: null`, `notes: []`, `word_ipa: null`, `stem: null`, `ipa: null`. |
 | Formation algorithm | `implementation: null`. |
 | Weight profile | `name: null`, `source: null`. |
 | Formation candidate | `score: null`, `rank: null`. |
@@ -576,7 +576,10 @@ Every place takes a plural reference: one thing, several things, or some stuff. 
 `number` is a numerical value or a measured amount. The dimension of a measurement is a `relation`, and a system of units is a `referent`.
 `text` is a linguistic expression itself, such as a quotation or a `sedu'u` abstraction. An object that holds words, such as a book or a sign, is a `referent`.
 `set` is a set as an object in its own right, as `lo'i` forms it. `sequence` is an ordered collection whose order the filler supplies. An order that comes from the members or from another place does not make a sequence.
-An alternative whose only tag is narrower than the only tag of another alternative of the same hint adds no information. Validation accepts it, and an AI suggestion check merges it into the broader alternative.
+In the AI type list, each entry has one tag and a reason. If a broader entry exists, keep it with its own reason.
+Drop the narrower entry and its reason from that AI list.
+This rule does not merge signed type alternatives. An alternative with its own abstractor or relation arity keeps that information, even beside a broader tag.
+Validation accepts broader and narrower alternatives together when their interpreted objects are distinct.
 `abstractor` names a suggested Lojban abstraction form, or null.
 Standard abstractors are `nu`, `du'u`, `ka`, `ni`, `jei`, `li'i`, `si'o`, `su'u`, `mu'e`, `pu'u`, `za'i`, and `zu'o`.
 A relation arity describes the value in one place. It does not change the outer definition's place count.
@@ -619,10 +622,20 @@ A lexical classification never implies that a generation algorithm produced the 
 The formation object requires method.
 It also permits algorithm, sources, weights_profile, generated, selected_score, selected_rank, selection_reason, candidates, and conflicts, with the defaults above.
 Method is algorithmic, non-algorithmic, or unknown. Non-algorithmic requires a null algorithm. These claims can describe roots, borrowings, or names.
-Sources is an ordered array with at most 64 entries. Each entry contains language, word, input, weight, and notes.
+Sources is an ordered array with at most 64 entries. Each entry permits language, word, input, weight, notes, word_ipa, stem, and ipa.
 
 Language is a definition-language tag. Word preserves the original source spelling. Input is the exact algorithm input, or null when unknown.
 Weight is a nonnegative rational under section 8, or null when historical evidence supplies none. Notes is rich text.
+
+`word_ipa` is the whole-word pronunciation in IPA, with stress where known. `stem` is the source part that supplies the scoring letters.
+`ipa` is the pronunciation of that stem in IPA. Each of these three fields is a nonempty string or null.
+An omitted or null field means unknown. Older records keep that meaning and never acquire a guessed stem or pronunciation.
+
+The fields are independent. A missing stem does not discard a known whole-word pronunciation or scoring input.
+These fields stay in the signed body when supplied. They do not replace `input` or affect the generation score.
+
+For the seven source columns, Word uses `word`, Said uses `word_ipa`, Stem uses `stem`, and Stem said uses `ipa`.
+Letters uses `input` with `format: "lojbanized"`. Language and Weight use `language` and `weight`.
 
 An input contains exactly format and text. Format is `lojbanized` or `ipa`, and text is nonempty.
 IPA input requires a versioned conversion rule before a letter-based generator can use it.

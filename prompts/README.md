@@ -22,7 +22,7 @@ They were tested in separate studies, not through the application.
 | `sound-guide.txt` | The conversion from IPA to the Lojban scoring letters. Only `sources` uses it. |
 | `languages/*.txt` | One block of language rules for each source language. Only `sources` uses them. |
 | `answer-shapes.json` | The JSON shape of an answer for each task. |
-| `explain.txt` | Optional. The server appends it to the system prompt when the operator turns on decision reports. |
+| `explain.txt` | Optional. The server adds it before any language block when the operator turns on decision reports. |
 
 ## Request
 
@@ -32,9 +32,13 @@ The system prompt joins these files in this order, with a blank line between the
 
 1. `common.system.txt`
 2. The task file, such as `hints.task.txt`
-3. For `sources` only: `sound-guide.txt`, then the block of the requested language
+3. For `sources` only: `sound-guide.txt`
+4. When decision reports are on: `explain.txt`
+5. For `sources` only: the block of the requested language
 
-When decision reports are on, `explain.txt` follows as the last part. The request then must let the model write text before its tool call, so it does not force the tool call.
+When decision reports are on, `explain.txt` follows the task file, or `sound-guide.txt` for `sources`.
+Without a language block, `explain.txt` is last.
+The request then must let the model write text before its tool call, so it does not force the tool call.
 The language block comes last, so that requests for different languages share the longest possible identical prefix.
 Providers can then cache that prefix.
 
@@ -49,12 +53,14 @@ Some providers drop a schema that defines its keys only through `additionalPrope
 ## Checks on an answer
 
 The application checks every answer before it shows the suggestion. If the answer fails, the application returns the list of problems as the tool result, and the model sends a corrected answer. After three failed answers, the suggestion fails.
+A response without a `submit_answer` call counts as one failed answer and gets no tool result.
+After three failed answers, including responses without that call, the suggestion shows the same failed state.
 These checks apply:
 
 - The answer has exactly the requested keys, with the shape in `answer-shapes.json`.
 - `glosses`: each gloss is nonempty, a sense does not repeat its gloss, and the whole-word sense is nonempty.
-- `hints`: each place has one to three alternatives, each with a known type and a reason. `unclear` stands alone. A type listed beside a broader type, such as `event` beside `referent`, merges into the broader type.
-- `mappings`: each entry names a supplied component place, `none` or `unclear`. A place does not list the same component place twice. `none` and `unclear` stand alone.
+- `hints`: each place has one to three alternatives, each with a known type and a reason. `unclear` stands alone. If a narrower type appears beside a broader type, keep only the broader entry and its own reason. For example, keep `referent` over `event`. This rule applies only to the AI type list, not to signed alternatives with abstractors or relation arity.
+- `mappings`: each entry names a supplied component place, `none` or `unclear`. A place does not list the same component place twice. `none` and `unclear` stand alone. A link's `reason` must start with `direct: `, `merged: `, `distributed: `, or `functional: `, followed by its explanation. A sentinel's reason must instead start with its matching `none: ` or `unclear: `. The check rejects a missing or mismatched prefix. There is no separate `kind` field.
 - `sources`: a null field makes every later field null, and the note then says what is unknown. `word` is one word. `word_ipa` and `ipa` contain no space or dot. `sounds` has 1 to 64 letters from `a b c d e f g i j k l m n o p r s t u v x z`. A stem equal to the whole word needs a reason in the note.
 
 ## Rules that the application keeps
