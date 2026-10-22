@@ -6,6 +6,12 @@ import { readFile, stat } from "node:fs/promises";
 import { resolve, join, extname } from "node:path";
 import { initializeCore } from "../../../packages/core/src/index.ts";
 import { DictionaryService } from "../../../packages/service/src/service.ts";
+import { lockDataDirectory } from "../../../packages/importer/src/load-lock.ts";
+import {
+  checkLoadedView,
+  readLoadedView,
+  stateTraversalLimit,
+} from "../../../packages/importer/src/load-config.ts";
 import {
   durableDirectory,
   FileObjectStore,
@@ -13,47 +19,72 @@ import {
   SqliteIndexStore,
 } from "./storage.ts";
 const directory = resolve(process.env.JVC_DATA_DIR ?? "data/node");
-await durableDirectory(directory);
-await initializeCore(
-  await readFile(
-    new URL(
-      "../../../packages/core/generated/jvc_runtime_bg.wasm",
-      import.meta.url,
-    ),
-  ),
-);
-const index = new SqliteIndexStore(join(directory, "indexes.sqlite"));
-const coordinator = new SqliteCoordinator(
-  join(directory, "coordinator.sqlite"),
-  Number(process.env.JVC_SNAPSHOT_LIMIT ?? 16),
-);
-const service = new DictionaryService(
-  new FileObjectStore(join(directory, "objects")),
-  coordinator,
-  {
-    index,
-    reportError:
-      process.env.JVC_LOG_ERRORS === "enabled"
-        ? (error) =>
-            console.error(
-              JSON.stringify({
-                event: "service_failure",
-                error: String(error),
-              }),
-            )
-        : undefined,
-    serverId: process.env.JVC_SERVER_ID ?? "local-node",
-    selectedView: process.env.JVC_VIEW,
-    allowPrototypeBatch: process.env.JVC_PROTOTYPE_BATCH === "enabled",
-    policyUrl:
-      process.env.JVC_POLICY_URL ??
-      "https://example.invalid/jbovlacku-prototype-policy",
-    publicOrigin: process.env.JVC_PUBLIC_ORIGIN,
-    corsOrigins: (process.env.JVC_CORS_ORIGINS ?? "")
-      .split(",")
-      .filter(Boolean),
-  },
-);
+async function initializeService() {
+  await durableDirectory(directory);
+  const release = await lockDataDirectory(directory, "node-server");
+  let index: SqliteIndexStore | undefined;
+  let coordinator: SqliteCoordinator | undefined;
+  try {
+    await initializeCore(
+      await readFile(
+        new URL(
+          "../../../packages/core/generated/jvc_runtime_bg.wasm",
+          import.meta.url,
+        ),
+      ),
+    );
+    index = new SqliteIndexStore(join(directory, "indexes.sqlite"));
+    coordinator = new SqliteCoordinator(
+      join(directory, "coordinator.sqlite"),
+      Number(process.env.JVC_SNAPSHOT_LIMIT ?? 16),
+    );
+    const objects = new FileObjectStore(join(directory, "objects"));
+    const loadedView = await readLoadedView(directory);
+    if (loadedView) await checkLoadedView(loadedView, coordinator, objects);
+    const traversal = stateTraversalLimit(
+      process.env.JVC_STATE_TRAVERSAL_LIMIT ??
+        loadedView?.state_traversal_limit,
+    );
+    const service = new DictionaryService(objects, coordinator, {
+      index,
+      reportError:
+        process.env.JVC_LOG_ERRORS === "enabled"
+          ? (error) =>
+              console.error(
+                JSON.stringify({
+                  event: "service_failure",
+                  error: String(error),
+                }),
+              )
+          : undefined,
+      serverId: process.env.JVC_SERVER_ID ?? "local-node",
+      selectedView: process.env.JVC_VIEW ?? loadedView?.view,
+      stateLimits:
+        traversal === undefined
+          ? undefined
+          : {
+              events: 200_000,
+              traversal,
+              claim_depth: 1024,
+            },
+      allowPrototypeBatch: process.env.JVC_PROTOTYPE_BATCH === "enabled",
+      policyUrl:
+        process.env.JVC_POLICY_URL ??
+        "https://example.invalid/jbovlacku-prototype-policy",
+      publicOrigin: process.env.JVC_PUBLIC_ORIGIN,
+      corsOrigins: (process.env.JVC_CORS_ORIGINS ?? "")
+        .split(",")
+        .filter(Boolean),
+    });
+    return { service, index, coordinator, release };
+  } catch (error) {
+    coordinator?.close();
+    index?.close();
+    await release();
+    throw error;
+  }
+}
+const { service, index, coordinator, release } = await initializeService();
 const assets = resolve(process.env.JVC_ASSETS_DIR ?? "apps/web/dist");
 const mime: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -144,6 +175,13 @@ const server = createServer(async (incoming, outgoing) => {
     outgoing.end();
   }
 });
+server.once("error", async (error) => {
+  coordinator.close();
+  index.close();
+  await release();
+  console.error(String(error));
+  process.exitCode = 1;
+});
 server.listen(
   Number(process.env.PORT ?? 8789),
   process.env.HOST ?? "127.0.0.1",
@@ -159,9 +197,10 @@ server.listen(
 
 for (const signal of ["SIGTERM", "SIGINT"] as const)
   process.once(signal, () =>
-    server.close(() => {
+    server.close(async () => {
       coordinator.close();
       index.close();
+      await release();
       process.exit(0);
     }),
   );

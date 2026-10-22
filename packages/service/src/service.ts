@@ -10,6 +10,7 @@ import {
   verifyEnvelope,
   inspectBody,
   type Evaluation,
+  type EvaluationRequest,
 } from "../../core/src/index.ts";
 import {
   type ObjectStore,
@@ -53,6 +54,7 @@ const compareBytes = (a: number[], b: number[]): number => {
 export interface ServiceOptions {
   serverId: string;
   selectedView?: string;
+  stateLimits?: EvaluationRequest["limits"];
   policyUrl: string;
   publicOrigin?: string;
   corsOrigins?: string[];
@@ -399,6 +401,7 @@ export class DictionaryService {
       bodies,
       selected_view: view,
       import_selections: selections,
+      limits: this.options.stateLimits,
     });
     const state = session.state;
     if (ownsEntry()) this.sessions.set(snapshot.snapshot + "|" + view, session);
