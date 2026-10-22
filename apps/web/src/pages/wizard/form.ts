@@ -1,3 +1,4 @@
+import { assistanceAction } from "../../components/assistance.ts";
 /**
  * Step 3C: the manual Form screen. Spelling, attributed morphology notes, and
  * selma'o for cmavo. The lujvo builder and the gismu generator have their own
@@ -117,7 +118,13 @@ export async function formPage(route: Route, context: RenderContext, app: App) {
     });
     section.append(
       selmaho.wrapper,
-      p("A selma'o suggestion by AI is not configured on this server.", "meta"),
+      kind === "cmavo"
+        ? assistanceAction(app, draft, saver, context, {
+            key: "cmavo-class",
+            label: "Suggest a selma'o",
+            operation: "cmavo-class",
+          })
+        : el("span", { hidden: true }),
     );
   }
   const notes = field("Morphology notes", {

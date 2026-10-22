@@ -177,6 +177,8 @@ interface LiteralModeSnapshot {
   previousLiterals?: RichText[];
 }
 export interface Draft {
+  /** Private suggestions, logs, and undo records. These fields never enter a signed body. */
+  ai?: import("./assistance.ts").AssistanceData;
   version: 2;
   id: string;
   /** Changes with every save. A publication commits one exact revision. */

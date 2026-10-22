@@ -1,3 +1,9 @@
+import { hintLabel, mappingKind } from "../../model/assistance.ts";
+import {
+  assistanceAction,
+  inferenceLog,
+  assistanceVisibility,
+} from "../../components/assistance.ts";
 /**
  * Step 4 and the full editor. The definition, glosses, places, and the named
  * disclosures edit one draft. The full editor opens every section and also
@@ -374,10 +380,10 @@ export async function placesPage(
   headline.append(
     h1,
     kindTag,
-    el("span", {
-      class: "meta",
-      style: "margin-left:auto",
-      text: "AI fill-in is not configured on this server",
+    assistanceAction(app, draft, saver, context, {
+      key: "places-glosses",
+      label: "Suggest places and glosses",
+      operation: "places-glosses",
     }),
   );
   main.append(headline);
@@ -884,6 +890,10 @@ export async function placesPage(
       value: place.kind,
       wrapperClass: "",
     });
+    if (place.kind === "custom" && place.hint)
+      kind.input.querySelector<HTMLOptionElement>(
+        'option[value="custom"]',
+      )!.textContent = hintLabel(place.hint);
     kind.label.textContent = "Kind of thing";
     kind.label.append(
       el("span", { class: "sr", text: ` for place ${place.index}` }),
@@ -927,6 +937,25 @@ export async function placesPage(
       customSlot,
     );
     renderCustom();
+    if (place.hint?.note.length) {
+      const reason = el(
+        "div",
+        { class: "span-3 ai-hint-line" },
+        renderRichText(place.hint.note, { placeHref: null }),
+      );
+      const aiRecord = draft.ai?.records.findLast(
+        (r) => r.key === "places-glosses" && r.state === "accepted",
+      );
+      if (aiRecord)
+        reason.append(
+          button("How the assistant decided", () => inferenceLog(aiRecord), {
+            class: "btn btn-quiet small",
+          }),
+        );
+      const unsubscribe = assistanceVisibility(app, context).bind(reason);
+      context.signal.addEventListener("abort", unsubscribe, { once: true });
+      grid.append(reason);
+    }
     const tools = el("div", {
       style: "display:flex;flex-direction:column;gap:2px;flex:none",
     });
@@ -2097,7 +2126,12 @@ function derivationEditor(
         );
         changed();
       });
+      const mapping = el("p", {
+        class: "meta span-3",
+        text: `${derivation.word} ${derivation.place ?? "?"}${mappingKind(derivation.explanation) ? ` · ${mappingKind(derivation.explanation)}` : ""}`,
+      });
       row.append(
+        mapping,
         word.wrapper,
         number.wrapper,
         definition.wrapper,

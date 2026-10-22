@@ -988,3 +988,65 @@ dialog.sheet h2 {
 .native {
   font-family: var(--font-native, inherit);
 }
+
+/* Assistance remains separate from editable and published content. */
+.ai-action[hidden],
+.ai-source-actions[hidden] {
+  display: none;
+}
+.ai-action {
+  margin-block: 8px;
+  min-width: 0;
+}
+.ai-tag {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+.ai-working,
+.ai-accepted {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.ai-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: ai-spin 1s linear infinite;
+}
+@keyframes ai-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ai-spinner {
+    animation: none;
+  }
+}
+.ai-suggestion {
+  overflow-wrap: anywhere;
+}
+.ai-action pre,
+.ai-log pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-width: 100%;
+  font-size: 13px;
+}
+.ai-log {
+  width: min(60rem, calc(100vw - 2rem));
+}
+.ai-written {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

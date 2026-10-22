@@ -41,6 +41,11 @@ export interface LujvoState {
   acknowledged: string[];
 }
 export interface GismuRowState {
+  sense?: string;
+  wordIpa?: string;
+  stem?: string;
+  stemIpa?: string;
+  note?: string;
   language: string;
   name: string;
   word: string;
@@ -272,7 +277,7 @@ export function compoundMetadata(
   };
 }
 /** A section 8 rational in lowest terms, as the body rules require. */
-function rational(value: { numerator: string; denominator: string }) {
+export function rational(value: { numerator: string; denominator: string }) {
   let a = BigInt(value.numerator);
   let b = BigInt(value.denominator);
   let x = a;
@@ -283,6 +288,22 @@ function rational(value: { numerator: string; denominator: string }) {
     b /= x;
   }
   return { numerator: Number(a), denominator: Number(b) };
+}
+/** Native source details remain editable and travel as attributed source notes. */
+export function sourceNotes(row: GismuRowState) {
+  return textToRichText(
+    [
+      ["Sense", row.sense],
+      ["Word IPA", row.wordIpa],
+      ["Stem", row.stem],
+      ["Stem IPA", row.stemIpa],
+      ["Note", row.note],
+    ]
+      .filter(([, value]) => value)
+      .map(([label, value]) => `${label}: ${value}`)
+      .join("\n"),
+    false,
+  );
 }
 /** Formation metadata for a generated or manual gismu under the recorded run. */
 export function formationMetadata(options: {
@@ -306,7 +327,7 @@ export function formationMetadata(options: {
       ? { format: "lojbanized", text: row.input.trim().toLowerCase() }
       : null,
     weight: row.weight ? rational(row.weight) : null,
-    notes: [],
+    notes: sourceNotes(row),
   }));
   return {
     method: "algorithmic",
@@ -360,7 +381,7 @@ export function manualFormation(
         ? { format: "lojbanized", text: row.input.trim().toLowerCase() }
         : null,
       weight: row.weight ? rational(row.weight) : null,
-      notes: [],
+      notes: sourceNotes(row),
     }));
   if (!sources.length && !reason.trim()) return null;
   return {

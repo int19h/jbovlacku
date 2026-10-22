@@ -1,3 +1,4 @@
+import { assistanceProfiles } from "../components/assistance.ts";
 /** Settings: languages, search mode, delivery peers, storage, export, and appearance. */
 import {
   el,
@@ -54,6 +55,23 @@ export async function preferencesPage(
     el("h2", { class: "section", text: "Languages" }),
     languageField.wrapper,
   );
+  main.append(el("h2", { class: "section", text: "Assistance" }));
+  try {
+    const capabilities = await getCapabilities({ signal: context.signal });
+    if (!context.live()) return;
+    main.append(
+      assistanceProfiles(capabilities).length
+        ? checkbox(
+            "Use AI assistance",
+            prefs.useAiAssistance !== false,
+            (value) => void session.setPreferences({ useAiAssistance: value }),
+          )
+        : p("Not available on this server.", "small"),
+    );
+  } catch {
+    if (context.live())
+      main.append(p("Not available on this server.", "small"));
+  }
   // Search mode.
   main.append(el("h2", { class: "section", text: "Search" }));
   const modeField = field("Search mode", {

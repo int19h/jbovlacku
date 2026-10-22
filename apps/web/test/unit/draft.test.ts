@@ -1553,7 +1553,7 @@ test("every rich-reference problem selects its own current field after empty row
         kind: "custom",
         hint: {
           alternatives: [
-            { tags: ["entity"], abstractor: null, relation_arity: null },
+            { tags: ["referent"], abstractor: null, relation_arity: null },
           ],
           note: [[2]],
         },
@@ -1578,7 +1578,7 @@ test("every rich-reference problem selects its own current field after empty row
       description: [[2]],
       hint: {
         alternatives: [
-          { tags: ["entity"], abstractor: null, relation_arity: null },
+          { tags: ["referent"], abstractor: null, relation_arity: null },
         ],
         note: [[2]],
       },
@@ -1815,7 +1815,7 @@ test("literal-mode removal keeps stable field ownership when literal values matc
         kind: "custom",
         hint: {
           alternatives: [
-            { tags: ["entity"], abstractor: null, relation_arity: null },
+            { tags: ["referent"], abstractor: null, relation_arity: null },
           ],
           note: [[3]],
         },

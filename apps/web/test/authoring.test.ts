@@ -213,12 +213,12 @@ test("the draft survives reload and browser back at every step and exports as a 
   await page.getByRole("button", { name: "New word" }).click();
   await page.getByRole("radio", { name: /^cmavo/ }).check();
   await page.getByRole("button", { name: "Enter the cmavo" }).click();
-  await page.getByLabel("selma'o").fill("UI");
+  await page.getByLabel("selma'o", { exact: true }).fill("UI");
   await page.getByLabel("Morphology notes").fill("Attributed note.");
   await page.goBack();
   await expect(page.getByRole("radio", { name: /^cmavo/ })).toBeChecked();
   await page.goForward();
-  await expect(page.getByLabel("selma'o")).toHaveValue("UI");
+  await expect(page.getByLabel("selma'o", { exact: true })).toHaveValue("UI");
   await page.reload();
   await expect(page.getByLabel("Morphology notes")).toHaveValue(
     "Attributed note.",
@@ -247,7 +247,7 @@ test("the draft survives reload and browser back at every step and exports as a 
     )
     .toBe("gismu");
   await page.goto("/new/form");
-  await expect(page.getByLabel("selma'o")).toHaveCount(0);
+  await expect(page.getByLabel("selma'o", { exact: true })).toHaveCount(0);
   await expect(page.getByLabel("Morphology notes")).toHaveValue(
     "Attributed note.",
   );
@@ -262,7 +262,7 @@ test("the full editor preserves every structured field and supports manual headw
   await expect(page).toHaveTitle("Full editor · jbovlacku");
   await page.getByLabel("Headword").fill("brodi");
   await page.getByLabel("Type", { exact: true }).selectOption("cmavo");
-  await page.getByLabel("selma'o").fill("BAI");
+  await page.getByLabel("selma'o", { exact: true }).fill("BAI");
   await page
     .getByRole("textbox", { name: "Definition text" })
     .fill("① is the operand ② of [[brodi]].");
@@ -1781,7 +1781,7 @@ test("the full editor keeps referents on removal, saves type notes and derivatio
   await page.getByRole("link", { name: "Skip to the full editor" }).click();
   await page.getByLabel("Headword").fill("brodfa");
   await page.getByLabel("Type", { exact: true }).selectOption("cmavo");
-  await page.getByLabel("selma'o").fill("UI");
+  await page.getByLabel("selma'o", { exact: true }).fill("UI");
   const editor = page.getByRole("textbox", { name: "Definition text" });
   const stored = () =>
     page.evaluate(async () => {
@@ -2749,11 +2749,11 @@ test("selmaho stays independent of word type and removed formation evidence", as
     );
   });
   await page.goto("/new/form");
-  await expect(page.getByLabel("selma'o")).toHaveValue("BY");
+  await expect(page.getByLabel("selma'o", { exact: true })).toHaveValue("BY");
   await page.goto("/new/editor");
   page.once("dialog", (dialog) => void dialog.accept());
   await page.getByLabel("Type", { exact: true }).selectOption("compound");
-  await expect(page.getByLabel("selma'o")).toHaveValue("BY");
+  await expect(page.getByLabel("selma'o", { exact: true })).toHaveValue("BY");
   await expect
     .poll(
       async () =>
@@ -2762,7 +2762,7 @@ test("selmaho stays independent of word type and removed formation evidence", as
     )
     .toBe(null);
   await page.goto("/new/form");
-  await expect(page.getByLabel("selma'o")).toHaveValue("BY");
+  await expect(page.getByLabel("selma'o", { exact: true })).toHaveValue("BY");
 });
 
 for (const structured of [true, false]) {

@@ -112,6 +112,13 @@ export interface OutboxItem {
   signedAt: number;
 }
 export type Preferences = {
+  useAiAssistance: boolean;
+  aiConsents: {
+    provider: string;
+    scope: string;
+    tasks: string[];
+    dataScope: string[];
+  }[];
   definitionLanguage: string;
   searchMode: "local" | "remote";
   remoteSearchDisclosed: boolean;
@@ -136,6 +143,8 @@ export interface PeerConfig {
   label: string;
 }
 export const defaultPreferences: Preferences = {
+  useAiAssistance: true,
+  aiConsents: [],
   definitionLanguage: "en",
   searchMode: "local",
   remoteSearchDisclosed: false,
@@ -468,7 +477,8 @@ export class LocalStore {
       tx.oncomplete = () => resolve(next);
       tx.onabort = () =>
         reject(
-          tx.error ?? new Error("Local storage did not save these preferences."),
+          tx.error ??
+            new Error("Local storage did not save these preferences."),
         );
       tx.onerror = () => {};
     });

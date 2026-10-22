@@ -1,3 +1,10 @@
+import {
+  assistanceAction,
+  inferenceLog,
+  assistanceVisibility,
+  runAssistance,
+} from "../../components/assistance.ts";
+import { sourceCurrent, applySource } from "../../model/assistance.ts";
 /**
  * Step 3B: the gismu generator. Documented presets with pinned sources or
  * custom languages and weights, editable source rows, exact scores from the
@@ -53,6 +60,7 @@ function presetRows(
   return preset.languages.map((language) => {
     const old = previous.find((r) => r.language === language.language);
     return {
+      ...old,
       language: language.language,
       name: language.name,
       word: old?.word ?? "",
@@ -169,15 +177,25 @@ export async function gismuPage(
   const rowButtons = el("div", {
     style: "margin-top:10px;display:flex;flex-wrap:wrap;gap:8px",
   });
-  section.append(
-    presetNote,
-    rowsBox,
-    rowButtons,
-    p(
-      "Source word suggestions by AI are not configured on this server.",
-      "meta",
-    ),
+  const sourceActions = el("div", { class: "ai-source-actions" });
+  const sourceControls = new Map<string, HTMLElement>();
+  const fillSources = button(
+    el("span", {}, text("AI", "ai-tag"), text(" Suggest source words")),
+    async () => {
+      for (const control of sourceControls.values()) {
+        if (
+          !context.live() ||
+          app.session.preferences.useAiAssistance === false
+        )
+          break;
+        await runAssistance(control);
+      }
+    },
+    { class: "btn btn-quiet", "aria-label": "Suggest source words" },
   );
+  sourceActions.append(fillSources);
+  sourceActions.hidden = true;
+  section.append(presetNote, rowsBox, rowButtons, sourceActions);
   const recipeField = field("Candidate letters", {
     value: state.candidates,
     options: [
@@ -242,6 +260,15 @@ export async function gismuPage(
     state.rows.length > 0 &&
     state.rows.every((r) => r.input.trim() && r.weight && r.language.trim());
   const renderRows = () => {
+    const activeKeys = new Set(
+      state.rows.map((row, index) => `source-${index}-${row.language}`),
+    );
+    for (const [key, control] of sourceControls)
+      if (!activeKeys.has(key)) {
+        control.dispatchEvent(new Event("assist-cancel"));
+        sourceControls.delete(key);
+        control.remove();
+      }
     const preset = presets.find((pr) => pr.id === state.preset) ?? null;
     presetNote.replaceChildren();
     if (preset) {
@@ -278,8 +305,11 @@ export async function gismuPage(
           {},
           el("th", { scope: "col", text: "Language" }),
           el("th", { scope: "col", class: "right", text: "Weight" }),
-          el("th", { scope: "col", text: "Native word" }),
-          el("th", { scope: "col", text: "Scoring letters" }),
+          el("th", { scope: "col", text: "Word" }),
+          el("th", { scope: "col", text: "Said" }),
+          el("th", { scope: "col", text: "Stem" }),
+          el("th", { scope: "col", text: "Stem said" }),
+          el("th", { scope: "col", text: "Letters" }),
           el("th", { scope: "col", text: "" }),
         ),
       ),
@@ -409,8 +439,74 @@ export async function gismuPage(
           },
         ),
       );
-      tr.append(languageCell, weightCell, nativeCell, inputCell, tools);
+      const detailCell = (
+        label: string,
+        key: "wordIpa" | "stem" | "stemIpa",
+      ) => {
+        const input = el("input", {
+          class: "field",
+          "aria-label": `${label} for ${row.name || row.language}`,
+          value: row[key] ?? "",
+          style: "width:8rem;min-height:36px",
+        });
+        input.addEventListener("input", () => {
+          row[key] = input.value;
+          saver.touch();
+        });
+        return el("td", {}, input);
+      };
+      tr.append(
+        languageCell,
+        weightCell,
+        nativeCell,
+        detailCell("Said", "wordIpa"),
+        detailCell("Stem", "stem"),
+        detailCell("Stem said", "stemIpa"),
+        inputCell,
+        tools,
+      );
       tbody.append(tr);
+      const sourceKey = `source-${index}-${row.language}`;
+      let control = sourceControls.get(sourceKey);
+      if (!control) {
+        control = assistanceAction(app, draft, saver, context, {
+          key: sourceKey,
+          label: `Suggest source for ${row.name || row.language}`,
+          operation: "gismu-sources",
+          current: () => sourceCurrent(draft, index),
+          apply: (d, r) => applySource(d, index, r),
+        });
+        sourceControls.set(sourceKey, control);
+        new MutationObserver(() => {
+          sourceActions.hidden = ![...sourceControls.values()].some(
+            (c) => !c.hidden,
+          );
+        }).observe(control, { attributes: true, attributeFilter: ["hidden"] });
+      }
+      const details = el("td", { colspan: "8" });
+      if (row.sense) {
+        const sense = p(`Sense: ${row.sense}`, "meta ai-source-sense");
+        const unsubscribe = assistanceVisibility(app, context).bind(sense);
+        context.signal.addEventListener("abort", unsubscribe, { once: true });
+        details.append(sense);
+      }
+      if (row.note) {
+        const note = el("div", { class: "meta ai-source-note" }, p(row.note));
+        const aiRecord = draft.ai?.records.findLast(
+          (r) => r.key === sourceKey && r.state === "accepted",
+        );
+        if (aiRecord)
+          note.append(
+            button("How the assistant decided", () => inferenceLog(aiRecord), {
+              class: "btn btn-quiet small",
+            }),
+          );
+        const unsubscribe = assistanceVisibility(app, context).bind(note);
+        context.signal.addEventListener("abort", unsubscribe, { once: true });
+        details.append(note);
+      }
+      details.append(control);
+      tbody.append(el("tr", {}, details));
     });
     table.append(tbody);
     rowsBox.append(table);

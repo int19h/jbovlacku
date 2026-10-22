@@ -3,8 +3,9 @@
  * JVC_FIXTURE=seeded publishes the synthetic two-root fixture from seed.ts.
  * Otherwise it publishes an empty-root view, as the earlier tests expect.
  */
-import { readFile, rename, writeFile } from "node:fs/promises";
+import { readFile, rename, writeFile, mkdir } from "node:fs/promises";
 import { createServer } from "node:http";
+import { dirname, resolve } from "node:path";
 import {
   initializeCore,
   createEvent,
@@ -83,6 +84,128 @@ if (seeded) {
   );
   fixtureSeed.fill(0);
 }
+/** The browser fixture uses a disposable provider on loopback. It never uses an operator key. */
+const provider = createServer(async (request, response) => {
+  if (request.url !== "/chat/completions" || request.method !== "POST") {
+    response.writeHead(404).end();
+    return;
+  }
+  let raw = "";
+  for await (const chunk of request) {
+    raw += String(chunk);
+    if (raw.length > 1024 * 1024) {
+      response.writeHead(413).end();
+      return;
+    }
+  }
+  const body = JSON.parse(raw);
+  const corrected = body.messages.some(
+    (m: { role: string }) => m.role === "tool",
+  );
+  const componentTask = Object.hasOwn(
+    body.tools?.[0]?.function?.parameters?.properties ?? {},
+    "components",
+  );
+  const sourceTask = Object.hasOwn(
+    body.tools?.[0]?.function?.parameters?.properties ?? {},
+    "word_ipa",
+  );
+  const supplied =
+    componentTask || sourceTask
+      ? JSON.parse(
+          body.messages.find(
+            (message: { role: string }) => message.role === "user",
+          ).content,
+        )
+      : null;
+  const answer = sourceTask
+    ? {
+        word: "book",
+        sense: "written work",
+        stem: "book",
+        word_ipa: "bʊk",
+        ipa: "bʊk",
+        sounds: "buk",
+        note: "The whole word is the stem because nothing can be removed.",
+      }
+    : componentTask
+      ? {
+          components: [
+            {
+              spelling: "cukta",
+              definition:
+                supplied.current.compound?.components.find(
+                  (component: { word: { spelling: string } }) =>
+                    component.word.spelling === "cukta",
+                )?.definition ?? null,
+            },
+            { spelling: "sinxa", definition: null },
+          ],
+          reason: "Keep the selected book component and add a sign component.",
+        }
+      : corrected
+        ? { word_type: "cmavo", reason: "A grammar word fits this meaning." }
+        : {};
+  response.writeHead(200, { "content-type": "application/json" });
+  response.end(
+    JSON.stringify({
+      model: "mock-browser-model",
+      choices: [
+        {
+          finish_reason: "tool_calls",
+          message: {
+            role: "assistant",
+            content: sourceTask
+              ? "The local fixture checked the source fields."
+              : componentTask
+                ? "The local fixture kept the supplied component constraint."
+                : "The local fixture considered the word type.",
+            reasoning_details: [
+              {
+                type: "reasoning.summary",
+                summary: "Shared local mock reasoning.",
+              },
+            ],
+            tool_calls: [
+              {
+                id: "fixture-answer",
+                type: "function",
+                function: {
+                  name: "submit_answer",
+                  arguments: JSON.stringify(answer),
+                },
+              },
+            ],
+          },
+        },
+      ],
+      usage: { prompt_tokens: 20, completion_tokens: 10, cost: 0.0001 },
+    }),
+  );
+});
+provider.unref();
+await new Promise<void>((resolve, reject) => {
+  provider.once("error", reject);
+  provider.listen(0, "127.0.0.1", resolve);
+});
+const providerPort = (provider.address() as { port: number }).port;
+const keyPath = resolve(
+  dirname(
+    process.env.JVC_FIXTURE_OUT ??
+      resolve(
+        process.env.JVC_DATA_DIR ?? ".cache/browser-tests",
+        "fixture.json",
+      ),
+  ),
+  "mock-provider-key",
+);
+await mkdir(dirname(keyPath), { recursive: true });
+await writeFile(keyPath, "browser-fixture-only", { mode: 0o600 });
+process.env.JVC_AI_ENABLED = "enabled";
+process.env.JVC_AI_BASE_URL = `http://127.0.0.1:${providerPort}`;
+process.env.JVC_AI_KEY_FILE = keyPath;
+process.env.JVC_AI_PROVIDER_NAME = "Local browser fixture";
+process.env.JVC_AI_MODEL = "mock-browser-model";
 process.env.JVC_VIEW = view.envelope.id;
 await import("../../../apps/server/src/main.ts");
 for (let attempt = 0; attempt < 200; attempt++) {
