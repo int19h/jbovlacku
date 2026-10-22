@@ -103,9 +103,15 @@ test("the lujvo builder offers long forms beside listed rafsi, recovers parts, h
   // Choose the listed alternative instead and continue.
   await page.getByRole("button", { name: "Use ckusinxa" }).click();
   await expect(primary).toHaveText("Use ckusinxa");
-  // This form uses sinxa itself, so it needs no acknowledgment for its unused cku claim.
+  // The hand-entered cku claim of sinxa is unused here. Earlier tests in the
+  // same run can publish other words that claim cku, and each of those
+  // package claims needs its own acknowledgment for this form.
+  const boxes = await result.getByRole("checkbox").all();
+  for (const box of boxes)
+    await expect(box).toHaveAccessibleName(/^cku is also claimed by /);
+  if (boxes.length) await expect(primary).toBeDisabled();
+  for (const box of boxes) await box.check();
   await expect(primary).toBeEnabled();
-  await expect(result.getByRole("checkbox")).toHaveCount(0);
   await primary.click();
   await expect(page).toHaveURL(/\/new\/places$/);
   const draft = await currentDraft(page);
