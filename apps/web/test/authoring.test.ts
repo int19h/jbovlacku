@@ -1839,7 +1839,23 @@ test("the full editor keeps referents on removal, saves type notes and derivatio
   await expect(rendered).not.toContainText("needs the source place number");
   await expect
     .poll(async () => (await stored()).places[0].derivations)
-    .toEqual([{ word: "sinxa", definition: null, place: 2, explanation: [] }]);
+    .toMatchObject([
+      { word: "sinxa", definition: null, place: 2, explanation: [] },
+    ]);
+  const derivation = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { draftToBody } = await import(String("/src/model/draft.ts"));
+    const draft = await new LocalStore().get("drafts", "current");
+    return draftToBody(draft).body.frame.places[0].derivation;
+  });
+  expect(derivation).toEqual([
+    {
+      word: { language: "jbo", spelling: "sinxa" },
+      definition: null,
+      place: 2,
+      explanation: [],
+    },
+  ]);
   // Pasted circled numbers stay literal unless the author chooses references.
   const paste = (value: string) =>
     page
@@ -2840,11 +2856,9 @@ test("N5 closed defaults and constraints reopen with current references before t
     );
   });
   await page.goto("/new/editor");
-  const details = page
-    .locator("details")
-    .filter({
-      has: page.locator("summary", { hasText: /^Defaults and constraints$/ }),
-    });
+  const details = page.locator("details").filter({
+    has: page.locator("summary", { hasText: /^Defaults and constraints$/ }),
+  });
   await expect(page.getByLabel("Constraint 1 between places")).toHaveValue(
     "② is inside ③",
   );
