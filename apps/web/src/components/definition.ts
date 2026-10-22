@@ -17,6 +17,7 @@ import { attribution, identityLink } from "./attribution.ts";
 import { judgmentControl, scoreDetails } from "./judgment.ts";
 import type { App } from "../app/context.ts";
 import { routes } from "../app/router.ts";
+import { getIdentity } from "../data/api.ts";
 import type { LoadedRecord } from "../data/api.ts";
 
 export interface DefinitionBlockOptions {
@@ -419,13 +420,34 @@ export function definitionBlock(
     for (const child of children) {
       const notice = el("div", { class: "revision-notice" });
       const same = child.envelope.header.issuer === envelope.header.issuer;
+      const authorNote = text(same ? ", the author." : ", a different key.");
+      const snapshot = options.word?.snapshot;
+      if (!same && snapshot) {
+        void Promise.all([
+          getIdentity(envelope.header.issuer, { snapshot }),
+          getIdentity(child.envelope.header.issuer, { snapshot }),
+        ])
+          .then(([original, revision]) => {
+            if (
+              original.snapshot !== snapshot ||
+              revision.snapshot !== snapshot ||
+              original.suspended ||
+              revision.suspended
+            )
+              return;
+            if (original.actor === revision.actor)
+              authorNote.textContent =
+                ", the author through accepted key continuity.";
+          })
+          .catch(() => {});
+      }
       notice.append(
         el(
           "span",
           {},
           text("Revision proposed by "),
           identityLink(child.envelope.header.issuer),
-          text(same ? ", the author." : ", not the author."),
+          authorNote,
         ),
         link(
           "Compare",

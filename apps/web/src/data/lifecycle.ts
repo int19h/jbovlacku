@@ -111,6 +111,8 @@ export interface PeerKnowledge {
   compromises: string[];
   /** Authenticated acceptance events by the successor identity that name a transfer. */
   acceptances: { id: string; transfer: string }[];
+  /** All successor records listed by the complete activity scan. */
+  successorEvents: string[];
   /** Listed lifecycle claims that failed authentication. */
   unverified: UnverifiedClaim[];
 }
@@ -143,6 +145,7 @@ export async function askPeers(
         transfers: [],
         compromises: [],
         acceptances: [],
+        successorEvents: [],
         unverified: [],
       };
       const deadline = AbortSignal.timeout(SCAN_LIMITS.millis);
@@ -264,6 +267,7 @@ export async function askPeers(
         };
         const ownItems = await scan(identity);
         const successorItems = successor ? await scan(successor) : [];
+        knowledge.successorEvents = successorItems.map((item) => item.id);
         stage = "claims";
         for (const item of ownItems) {
           if (item.action.kind === "identity.transfer") {
@@ -462,6 +466,7 @@ export async function queueHandover(
       heads.get(old.identity),
       heads.get(successor.identity),
       keys.get(`handover-of:${successor.identity}`),
+      keys.get(`transfer-known:${old.identity}`),
     ] as IDBRequest[];
     let remaining = reads.length;
     const results: unknown[] = [];
@@ -476,6 +481,7 @@ export async function queueHandover(
           oldHeads,
           successorHeads,
           successorRecord,
+          knownTransfer,
         ] = results as [
           KeyBackup | undefined,
           unknown,
@@ -483,12 +489,13 @@ export async function queueHandover(
           string[] | undefined,
           string[] | undefined,
           unknown,
+          unknown,
         ];
         if (selected?.identity !== old.identity)
           return stop(
             "Another tab changed the selected key. Nothing was saved or sent. Reload and review the handover again.",
           );
-        if (handover || compromised)
+        if (handover || compromised || knownTransfer)
           return stop(
             "This key was retired or reported stolen meanwhile. Nothing was saved or sent.",
           );
@@ -518,6 +525,112 @@ export async function queueHandover(
         failure ??
           tx.error ??
           new Error("Local storage did not save the handover."),
+      );
+    tx.onerror = () => {};
+  });
+  return record;
+}
+/** Saves one recovery acceptance and retires the old key before any send. */
+export async function queueRecoveryAcceptance(
+  store: LocalStore,
+  transfer: Envelope,
+  accept: OutboxItem,
+  old: KeyBackup,
+  successor: KeyBackup,
+): Promise<HandoverRecord> {
+  verifyEnvelope(utf8(JSON.stringify(transfer)));
+  const acceptance = (JSON.parse(accept.transport) as Transport).envelope;
+  verifyEnvelope(utf8(JSON.stringify(acceptance)));
+  if (
+    transfer.header.issuer !== old.identity ||
+    transfer.header.action.kind !== "identity.transfer" ||
+    transfer.header.action.successor !== successor.identity ||
+    acceptance.header.issuer !== successor.identity ||
+    acceptance.header.action.kind !== "identity.accept" ||
+    acceptance.header.action.transfer !== transfer.id ||
+    acceptance.header.previous.length !== 0
+  )
+    throw new Error(
+      "The recovery acceptance does not match the transfer and keys.",
+    );
+  const transferItem = outboxItem(
+    { envelope: transfer, body: null },
+    accept.group,
+    0,
+    accept.recipients ?? {},
+  );
+  accept = { ...accept, order: 1 };
+  const record: HandoverRecord = {
+    old: old.identity,
+    successor: successor.identity,
+    transfer: transfer.id,
+    accept: accept.id,
+    signedAt: Date.now(),
+  };
+  const db = await store.database;
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(
+      ["keys", "outbox", "heads", "ownhistory"],
+      "readwrite",
+    );
+    const keys = tx.objectStore("keys");
+    const heads = tx.objectStore("heads");
+    const reads = [
+      keys.get("selected"),
+      keys.get(`handover:${old.identity}`),
+      keys.get(`recovery:${transfer.id}`),
+      keys.get(`compromised:${old.identity}`),
+      heads.get(successor.identity),
+      keys.get(`handover-of:${successor.identity}`),
+      keys.get(`transfer-known:${old.identity}`),
+      heads.get(old.identity),
+    ];
+    let remaining = reads.length;
+    let failure: Error | undefined;
+    for (const read of reads)
+      read.onsuccess = () => {
+        if (--remaining) return;
+        if (
+          (reads[0].result as KeyBackup | undefined)?.identity !==
+            old.identity ||
+          reads.slice(1, 4).some((r) => r.result) ||
+          (reads[4].result as string[] | undefined)?.length ||
+          reads[5].result ||
+          reads[6].result !== transfer.id
+        ) {
+          failure = new LifecycleConflictError(
+            "The recovery state changed or an acceptance is already saved. Nothing was saved or sent. Reload and search again.",
+          );
+          tx.abort();
+          return;
+        }
+        keys.put(accept.id, `recovery:${transfer.id}`);
+        keys.put(record, `handover:${old.identity}`);
+        keys.put(record, `handover-of:${successor.identity}`);
+        keys.put(old, `retired:${old.identity}`);
+        keys.put(successor, "selected");
+        keys.put(true, `tested:${successor.identity}`);
+        tx.objectStore("outbox").put(transferItem, transferItem.id);
+        tx.objectStore("outbox").put(accept, accept.id);
+        tx.objectStore("ownhistory").put(transfer, transfer.id);
+        // Keep every remembered old branch and add the original transfer as a known reference.
+        heads.put(
+          [
+            ...new Set([
+              ...((reads[7].result as string[] | undefined) ?? []),
+              transfer.id,
+            ]),
+          ].sort(),
+          old.identity,
+        );
+        heads.put([accept.id], successor.identity);
+      };
+    tx.oncomplete = () => resolve();
+    tx.onabort = () =>
+      reject(
+        failure ??
+          tx.error ??
+          new Error("Local storage did not save the recovery acceptance."),
       );
     tx.onerror = () => {};
   });
@@ -575,46 +688,49 @@ export async function queueCompromise(
 }
 /** A lifecycle write that found a different stored state than its preview. */
 export class LifecycleConflictError extends Error {}
-/** The own events of a history in causal order, oldest first, with their ancestors. */
-export function causalOrder(history: OwnHistory): {
-  order: Envelope[];
-  ancestors: Map<string, Set<string>>;
-} {
-  const events = history.events;
-  const ancestors = new Map<string, Set<string>>();
+/** The own events in causal order, oldest first, without recursive traversal. */
+export function causalOrder(history: OwnHistory): { order: Envelope[] } {
+  const done = new Set<string>();
+  const active = new Set<string>();
   const order: Envelope[] = [];
-  const visiting = new Set<string>();
-  const visit = (id: string) => {
-    if (ancestors.has(id) || visiting.has(id)) return;
-    const envelope = events.get(id);
-    if (!envelope) return;
-    visiting.add(id);
-    const set = new Set<string>();
-    for (const previous of envelope.header.previous) {
-      visit(previous);
-      if (events.has(previous)) {
-        set.add(previous);
-        for (const a of ancestors.get(previous) ?? []) set.add(a);
+  for (const id of [...history.events.keys()].sort()) {
+    const stack: { id: string; exit: boolean }[] = [{ id, exit: false }];
+    while (stack.length) {
+      const next = stack.pop()!;
+      if (done.has(next.id)) continue;
+      const envelope = history.events.get(next.id);
+      if (!envelope) continue;
+      if (next.exit) {
+        active.delete(next.id);
+        done.add(next.id);
+        order.push(envelope);
+        continue;
       }
+      if (active.has(next.id))
+        throw new Error("The known history contains a causal cycle.");
+      active.add(next.id);
+      stack.push({ id: next.id, exit: true });
+      for (const previous of [...envelope.header.previous].reverse())
+        stack.push({ id: previous, exit: false });
     }
-    ancestors.set(id, set);
-    visiting.delete(id);
-    order.push(envelope);
-  };
-  for (const id of [...events.keys()].sort()) visit(id);
-  return { order, ancestors };
+  }
+  return { order };
 }
 /** The retained and excluded sets for a chosen safe frontier. */
 export function cutoffPreview(
   history: OwnHistory,
   safe: string[],
 ): { retained: string[]; excluded: string[] } {
-  const { order, ancestors } = causalOrder(history);
+  const { order } = causalOrder(history);
   const retained = new Set<string>();
-  for (const id of safe) {
-    if (!history.events.has(id)) continue;
+  const pending = [...safe];
+  while (pending.length) {
+    const id = pending.pop()!;
+    if (retained.has(id)) continue;
+    const event = history.events.get(id);
+    if (!event) continue;
     retained.add(id);
-    for (const a of ancestors.get(id) ?? []) retained.add(a);
+    pending.push(...event.header.previous);
   }
   return {
     retained: order.map((e) => e.id).filter((id) => retained.has(id)),

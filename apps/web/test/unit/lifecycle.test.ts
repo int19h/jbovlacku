@@ -288,3 +288,34 @@ test("transport failures and unreadable pages after the heads arrived are partia
     assert.match(knowledge.status, status, name);
   }
 });
+
+test("the compromise preview handles a 4096 event chain without recursion", async () => {
+  const { causalOrder, cutoffPreview } =
+    await import("../../src/data/lifecycle.ts");
+  const events = new Map();
+  let previous: string[] = [];
+  for (let n = 4096; n > 0; n--) {
+    const id = "jve1:" + n.toString(16).padStart(64, "0");
+    events.set(id, {
+      id,
+      header: {
+        issuer: identity(),
+        previous,
+        action: { kind: "judgment.set" },
+      },
+    });
+    previous = [id];
+  }
+  const history = {
+    identity: identity(),
+    events,
+    frontier: previous,
+    complete: true,
+  } as any;
+  assert.equal(causalOrder(history).order.length, 4096);
+  const preview = cutoffPreview(history, [
+    "jve1:" + (2049).toString(16).padStart(64, "0"),
+  ]);
+  assert.equal(preview.retained.length, 2048);
+  assert.equal(preview.excluded.length, 2048);
+});

@@ -28,13 +28,16 @@ import {
   LifecycleConflictError,
   outboxItem,
   queueHandover,
+  queueRecoveryAcceptance,
   signWith,
   type HandoverRecord,
   type PeerKnowledge,
 } from "../data/lifecycle.ts";
 import { savedPeer } from "../data/delivery.ts";
+import { utf8, verifyEnvelope } from "../../../../packages/core/src/index.ts";
+import type { Envelope } from "../model/types.ts";
 import type { KeyBackup, OutboxItem, SavedRecipient } from "../data/store.ts";
-import type { Peer } from "../data/api.ts";
+import { getEnvelope, type Peer } from "../data/api.ts";
 
 /** The configured peers as saved addresses and request peers. */
 export function configuredPeers(app: App): {
@@ -91,6 +94,9 @@ interface Gathered {
   storedHeads: string[];
   existingTransfer: { id: string; successor: string; peer: string } | null;
   compromised: string | null;
+  transfer: Envelope | null;
+  acceptances: { id: string; peer: string }[];
+  recoveryBlocked: string | null;
   /** Why the ordinary handover is blocked, or null. */
   blocked: string | null;
   digest: string;
@@ -359,7 +365,7 @@ export async function handoverPage(
     let existingTransfer: Gathered["existingTransfer"] = null;
     let compromised: string | null = null;
     const { peers } = configuredPeers(app);
-    const knowledge = await askPeers(peers, old.identity, null, context.signal);
+    let knowledge = await askPeers(peers, old.identity, null, context.signal);
     let blocked: string | null = null;
     let fetched = 0;
     if (!history.complete)
@@ -397,12 +403,115 @@ export async function handoverPage(
         };
       if (k.compromises.length) compromised ??= k.peer.label;
     }
+    const transferIds = new Set([
+      ...[...history.events.values()]
+        .filter((event) => event.header.action.kind === "identity.transfer")
+        .map((event) => event.id),
+      ...knowledge.flatMap((k) => k.transfers.map((t) => t.id)),
+    ]);
+    let transfer: Envelope | null = null;
+    let recoveryBlocked: string | null = null;
+    const acceptances: Gathered["acceptances"] = [];
+    if (existingTransfer) {
+      // A discovered transfer retires ordinary signing even if its acceptance is lost.
+      const db = await app.store.database;
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction("keys", "readwrite");
+        const keys = tx.objectStore("keys");
+        const request = keys.get(`transfer-known:${old.identity}`);
+        request.onsuccess = () =>
+          keys.put(
+            transferIds.size !== 1 ||
+              (request.result && request.result !== existingTransfer!.id)
+              ? "conflicting-transfers"
+              : existingTransfer!.id,
+            `transfer-known:${old.identity}`,
+          );
+        tx.oncomplete = () => resolve();
+        tx.onabort = () => reject(tx.error);
+      });
+      knowledge = await askPeers(
+        peers,
+        old.identity,
+        existingTransfer.successor,
+        context.signal,
+      );
+      for (const k of knowledge) {
+        for (const t of k.transfers) transferIds.add(t.id);
+        if (k.compromises.length) compromised ??= k.peer.label;
+        for (const a of k.acceptances)
+          if (a.transfer === existingTransfer.id)
+            acceptances.push({ id: a.id, peer: k.peer.label });
+      }
+      if (
+        !peers.length ||
+        knowledge.some(
+          (k) => k.outcome !== "complete" || !k.complete || k.unverified.length,
+        )
+      )
+        recoveryBlocked =
+          "Recovery needs a complete answer from every configured peer. An unanswered or incomplete peer blocks it.";
+      if (transferIds.size !== 1)
+        recoveryBlocked =
+          "Conflicting transfers block recovery. No acceptance can be signed here.";
+      if (blocked || compromised)
+        recoveryBlocked ??=
+          "The old key's history or compromise state blocks recovery.";
+      transfer = history.events.get(existingTransfer.id) ?? null;
+      if (!transfer) {
+        const source = knowledge.find((k) =>
+          k.transfers.some((t) => t.id === existingTransfer!.id),
+        );
+        if (source?.snapshot) {
+          transfer = await getEnvelope(existingTransfer.id, source.snapshot, {
+            peer: source.peer,
+            signal: context.signal,
+          });
+          verifyEnvelope(utf8(JSON.stringify(transfer)));
+        }
+      }
+      if (
+        !transfer ||
+        transfer.id !== existingTransfer.id ||
+        transfer.header.issuer !== old.identity ||
+        transfer.header.action.kind !== "identity.transfer" ||
+        transfer.header.action.successor !== existingTransfer.successor
+      )
+        recoveryBlocked =
+          "The transfer could not be authenticated. Recovery is blocked.";
+      const successorHistory = await loadOwnHistory(
+        app.store,
+        existingTransfer.successor,
+        { signal: context.signal },
+      );
+      for (const event of successorHistory.events.values())
+        if (
+          event.header.action.kind === "identity.accept" &&
+          event.header.action.transfer === existingTransfer.id
+        )
+          acceptances.push({
+            id: event.id,
+            peer: "this browser and its server",
+          });
+      if (
+        !successorHistory.complete ||
+        successorHistory.events.size ||
+        knowledge.some((k) => k.successorEvents.length)
+      )
+        recoveryBlocked ??=
+          "The successor already has history or an acceptance. Reuse its signed records. Recovery cannot sign another first event.";
+      if (acceptances.length)
+        recoveryBlocked =
+          "An authenticated acceptance exists. Reuse that record. Do not sign another acceptance.";
+    }
     const heads = [...history.frontier].sort();
     const digest = JSON.stringify({
       heads,
       existingTransfer,
       compromised,
       blocked,
+      recoveryBlocked,
+      acceptances,
       peers: knowledge.map((k) => [k.peer.id, k.outcome, k.status, k.heads]),
     });
     return {
@@ -414,6 +523,9 @@ export async function handoverPage(
       existingTransfer,
       compromised,
       blocked,
+      transfer,
+      acceptances,
+      recoveryBlocked,
       digest,
     };
   };
@@ -494,10 +606,145 @@ export async function handoverPage(
     if (g.existingTransfer)
       historyBox.append(
         p(
-          `A transfer by this key already exists on ${g.existingTransfer.peer} (${g.existingTransfer.id.slice(0, 20)}…, to ${shortIdentity(g.existingTransfer.successor)}). A second transfer would freeze continuity. This page offers no new transfer. If you hold that successor key, restore it in this browser and search for its acceptance.`,
+          `A transfer by this key already exists on ${g.existingTransfer.peer} (${g.existingTransfer.id.slice(0, 20)}…, to ${shortIdentity(g.existingTransfer.successor)}). A second transfer would freeze continuity. This page offers no new transfer. The acceptance search below names any authenticated result. Use the successor backup only for the recovery flow below.`,
           "notice",
         ),
       );
+  };
+  const renderRecovery = () => {
+    const g = gathered;
+    if (!g?.existingTransfer) return;
+    const box = el("section", {
+      class: "card",
+      "aria-label": "Acceptance recovery",
+    });
+    historyBox.append(box);
+    box.append(
+      el("h3", { text: "Acceptance search" }),
+      p(`Transfer ${g.existingTransfer.id}`, "fingerprint"),
+    );
+    for (const found of g.acceptances)
+      box.append(
+        el(
+          "p",
+          { class: "small" },
+          text(`${found.peer}: authenticated acceptance `),
+          link(found.id, `/definition/${encodeURIComponent(found.id)}`),
+        ),
+      );
+    if (g.recoveryBlocked) {
+      box.append(p(g.recoveryBlocked, "notice"));
+      return;
+    }
+    box.append(
+      p(
+        "Every configured peer answered. No acceptance for this transfer was found. Negative answers do not prove global absence.",
+        "small",
+      ),
+    );
+    const form = el("form", { "aria-label": "Recover a lost acceptance" });
+    const file = field("Successor backup file", {
+      type: "file",
+      required: true,
+    });
+    const pass = field("Successor backup passphrase", {
+      type: "password",
+      autocomplete: "off",
+      required: true,
+    });
+    let fingerprint = false;
+    let hidden = false;
+    const submit = el("button", {
+      type: "submit",
+      class: "btn btn-primary",
+      text: "Sign one recovery acceptance",
+    });
+    submit.disabled = true;
+    const refresh = () => {
+      submit.disabled = !fingerprint || !hidden || signing;
+    };
+    form.append(
+      file.wrapper,
+      pass.wrapper,
+      checkbox(
+        `I checked the successor fingerprint ${fingerprintText(g.existingTransfer.successor)}.`,
+        false,
+        (v) => {
+          fingerprint = v;
+          refresh();
+        },
+      ),
+      checkbox(
+        "I understand that an undiscovered acceptance can later freeze continuity. This signs one new acceptance, not a safe retry. No new transfer is signed, and the old key stays retired.",
+        false,
+        (v) => {
+          hidden = v;
+          refresh();
+        },
+      ),
+      submit,
+    );
+    box.append(form);
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (signing || !fingerprint || !hidden) return;
+      signing = true;
+      submit.disabled = true;
+      try {
+        const chosen = file.input.files?.[0];
+        if (!chosen) throw new Error("Choose the successor backup file.");
+        if (chosen.size > 16384) throw new Error("The backup exceeds 16 KiB.");
+        const backup = parseBackup(await chosen.text());
+        if (backup.identity !== g.existingTransfer!.successor)
+          throw new Error(
+            "This backup does not recover the transfer's successor key.",
+          );
+        const key = await unlockKey(backup, pass.input.value);
+        pass.input.value = "";
+        const fresh = await gather();
+        if (!context.live()) return;
+        if (
+          fresh.digest !== g.digest ||
+          fresh.recoveryBlocked ||
+          !fresh.transfer
+        ) {
+          gathered = fresh;
+          renderHistory();
+          renderRecovery();
+          app.announce(
+            "The acceptance search changed. Review the new result before recovery.",
+          );
+          return;
+        }
+        const transport = await signWith(key, backup.identity, [], {
+          kind: "identity.accept",
+          transfer: fresh.transfer.id,
+        });
+        const { recipients } = configuredPeers(app);
+        const record = await queueRecoveryAcceptance(
+          app.store,
+          fresh.transfer,
+          outboxItem(transport, crypto.randomUUID(), 0, recipients),
+          old,
+          backup,
+        );
+        session.adoptSuccessor(backup, key);
+        app.own.invalidate();
+        await app.delivery.invalidate();
+        void app.delivery
+          .deliver(record.transfer, true)
+          .then(() => app.delivery.deliver(record.accept, true));
+        navigate("/identity");
+        app.announce(
+          "One recovery acceptance is saved and uploading. The old key stays retired.",
+        );
+      } catch (error) {
+        app.announce(describe(error));
+      } finally {
+        signing = false;
+        refresh();
+      }
+    });
   };
   const acknowledgments = { fingerprint: false, retire: false, unseen: false };
   let approvedDigest: string | null = null;
@@ -595,32 +842,34 @@ export async function handoverPage(
     sign.disabled = true;
     sign.textContent = "Checking the known history…";
     try {
-      // Refresh the frontier. A changed preview needs renewed approval.
-      let fresh: Gathered;
-      try {
-        fresh = await gather();
-      } catch (error) {
-        gatherFailure = describe(error);
-        gathered = null;
-        renderHistory();
-        renderApprove();
-        return;
-      }
-      if (!context.live()) return;
-      if (fresh.digest !== approvedDigest) {
-        gathered = fresh;
-        gatherFailure = null;
-        resetApproval();
-        renderHistory();
-        renderApprove();
-        app.announce(
-          "The known history changed. Review the updated preview and approve again.",
-        );
-        return;
-      }
-      gathered = fresh;
-      sign.textContent = "Signing…";
       await session.requireUnlocked("The handover", async () => {
+        // Refresh the frontier. A changed preview needs renewed approval.
+        let fresh: Gathered;
+        try {
+          fresh = await gather();
+        } catch (error) {
+          gatherFailure = describe(error);
+          gathered = null;
+          renderHistory();
+          renderRecovery();
+          renderApprove();
+          return;
+        }
+        if (!context.live()) return;
+        if (fresh.digest !== approvedDigest) {
+          gathered = fresh;
+          gatherFailure = null;
+          resetApproval();
+          renderHistory();
+          renderRecovery();
+          renderApprove();
+          app.announce(
+            "The known history changed. Review the updated preview and approve again.",
+          );
+          return;
+        }
+        gathered = fresh;
+        sign.textContent = "Signing…";
         const oldKey = session.workingKey!;
         if (session.backup?.identity !== old.identity)
           throw new Error("The selected key changed. Reload and start again.");
@@ -666,6 +915,7 @@ export async function handoverPage(
         }
         if (!context.live()) return;
         renderHistory();
+        renderRecovery();
         renderApprove();
       }
     } finally {
@@ -683,6 +933,7 @@ export async function handoverPage(
   };
   renderKey();
   renderHistory();
+  renderRecovery();
   renderApprove();
   try {
     gathered = await gather();
@@ -691,6 +942,7 @@ export async function handoverPage(
   }
   if (!context.live()) return;
   renderHistory();
+  renderRecovery();
   renderApprove();
 }
 /** The status of a stored handover, for the key page and this page. */

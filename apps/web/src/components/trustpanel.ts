@@ -1,11 +1,21 @@
 /** The trust panel on a public identity page, and the public-decision preview. */
-import { el, p, text, button, field, describe, append } from "../lib/dom.ts";
+import {
+  el,
+  p,
+  text,
+  button,
+  field,
+  describe,
+  append,
+  link,
+} from "../lib/dom.ts";
 import { fingerprintText } from "../lib/format.ts";
 import type { App } from "../app/context.ts";
 import { loadSiteView } from "../data/view.ts";
 import { describeProfile } from "../model/profiles.ts";
 import { allScope, type TrustScope } from "../model/types.ts";
 import { scopeKey } from "../data/history.ts";
+import { checkedScope } from "../data/scope.ts";
 import { identityLink } from "./attribution.ts";
 import { deliveryAccepted } from "../data/delivery.ts";
 
@@ -209,6 +219,15 @@ export function trustPanel(app: App, options: TrustPanelOptions): HTMLElement {
     visibility.append(card);
   }
   panel.append(visibility);
+  if (mode === "trust" && !app.session.identity)
+    panel.append(
+      el(
+        "p",
+        { class: "notice" },
+        text("Private trust needs a key. "),
+        link("Create or restore your key", "/identity"),
+      ),
+    );
   let scope: TrustScope = { ...allScope };
   const scopeLine = el("p", { class: "small", style: "margin-top:12px" });
   const scopeForm = el("div", {
@@ -234,6 +253,7 @@ export function trustPanel(app: App, options: TrustPanelOptions): HTMLElement {
     value: "",
     placeholder: "any",
     wrapperClass: "",
+    hint: "Enter a Lojban spelling or a jvw1: word ID.",
   });
   scopeForm.append(kind.wrapper, language.wrapper, word.wrapper);
   const updateScope = () => {
@@ -267,7 +287,14 @@ export function trustPanel(app: App, options: TrustPanelOptions): HTMLElement {
     async () => {
       go.disabled = true;
       try {
+        scope = checkedScope(scope);
         if (chosen === "private") {
+          if (mode === "trust" && !app.session.identity) {
+            app.announce(
+              "Create or restore a key on Your key before saving private trust.",
+            );
+            return;
+          }
           const overlay = await app.store.overlay();
           if (mode === "trust") {
             overlay.trust = overlay.trust.filter(
@@ -277,7 +304,7 @@ export function trustPanel(app: App, options: TrustPanelOptions): HTMLElement {
                 ),
             );
             overlay.trust.push({
-              issuer: app.session.identity ?? "local",
+              issuer: app.session.identity!,
               subject,
               scope,
               value: "heed",
