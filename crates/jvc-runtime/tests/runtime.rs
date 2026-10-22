@@ -130,18 +130,45 @@ impl Fixture {
         let bytes = self.bytes();
         let result = jvc_runtime::rank_word_bytes(&bytes, &self.word).unwrap();
         let session = jvc_runtime::EvaluationSession::new(&bytes).unwrap();
+        let streamed = self.streamed_session();
+        assert_eq!(streamed.state().unwrap(), session.state().unwrap());
+        assert_eq!(
+            streamed.rank(&self.word).unwrap(),
+            session.rank(&self.word).unwrap()
+        );
+        assert_eq!(
+            streamed.rank_with_reviewers(&self.word, 16).unwrap(),
+            session.rank_with_reviewers(&self.word, 16).unwrap()
+        );
         let details: Value =
             serde_json::from_str(&session.rank_with_reviewers(&self.word, 16).unwrap()).unwrap();
         if let Ok(directory) = std::env::var("JVC_SHUN_PARITY_DIR") {
             std::fs::create_dir_all(&directory).unwrap();
             let path = std::path::Path::new(&directory).join(format!("{name}.json"));
-            std::fs::write(path, serde_json::to_vec(&json!({"input":String::from_utf8(bytes).unwrap(),"word":self.word,"expected":result,"reviewers":details})).unwrap()).unwrap();
+            let expected_state: Value = serde_json::from_str(&session.state().unwrap()).unwrap();
+            std::fs::write(path, serde_json::to_vec(&json!({"input":String::from_utf8(bytes).unwrap(),"word":self.word,"expected":result,"reviewers":details,"expected_state":expected_state})).unwrap()).unwrap();
         }
         result
     }
     fn reviewers(&self) -> Value {
         let session = jvc_runtime::EvaluationSession::new(&self.bytes()).unwrap();
         serde_json::from_str(&session.rank_with_reviewers(&self.word, 16).unwrap()).unwrap()
+    }
+    fn streamed_session(&self) -> jvc_runtime::EvaluationSession {
+        let options = canonical_value(&json!({"selected_view":self.selected_view,"import_selections":{},"overlay":self.overlay})).unwrap();
+        let mut builder = jvc_runtime::EvaluationSessionBuilder::new(&options).unwrap();
+        for envelope in &self.events {
+            let event = jvc_core::verify_envelope(envelope.as_bytes()).unwrap();
+            builder
+                .add_record(
+                    envelope.as_bytes(),
+                    self.bodies
+                        .get(event.id())
+                        .map(|body| body.as_bytes().to_vec()),
+                )
+                .unwrap();
+        }
+        builder.finish()
     }
 }
 fn score<'a>(result: &'a Value, target: &str) -> &'a Value {
@@ -767,4 +794,67 @@ fn personal_shun_blocks_remove_own_and_onward_credit_without_redistribution() {
     );
     reasons(&details, &target, &key(4), true, false);
     reasons(&details, &target, &key(7), false, false);
+}
+
+#[test]
+fn streamed_search_projection_uses_original_body_authentication() {
+    let mut fixture = Fixture::new();
+    let id = fixture.definition("en");
+    fixture.view("simple-routes-bounds-v1", &[1], 1000);
+    let body = fixture.bodies[&id].as_bytes();
+    let envelope = fixture
+        .events
+        .iter()
+        .find(|envelope| jvc_core::verify_envelope(envelope.as_bytes()).unwrap().id() == id)
+        .unwrap();
+    let options =
+        canonical_value(&json!({"selected_view":fixture.selected_view,"import_selections":{}}))
+            .unwrap();
+    let mut builder = jvc_runtime::EvaluationSessionBuilder::new(&options).unwrap();
+    let projection: Value = serde_json::from_str(
+        &builder
+            .add_record(envelope.as_bytes(), Some(body.to_vec()))
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(projection["id"], id);
+    let source: Value = serde_json::from_slice(body).unwrap();
+    for field in [
+        "word",
+        "language",
+        "text",
+        "glosses",
+        "classification",
+        "notes",
+        "legacy",
+    ] {
+        assert_eq!(projection["body"][field], source[field]);
+    }
+    assert!(projection["body"].get("frame").is_none());
+    let limited_options = canonical_value(&json!({"selected_view":fixture.selected_view,"import_selections":{},"limits":{"events":0,"traversal":1000,"claim_depth":10}})).unwrap();
+    let mut limited = jvc_runtime::EvaluationSessionBuilder::new(&limited_options).unwrap();
+    let limited_projection: Value = serde_json::from_str(
+        &limited
+            .add_record(envelope.as_bytes(), Some(body.to_vec()))
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(limited_projection, projection);
+    let limited_state: Value = serde_json::from_str(&limited.finish().state().unwrap()).unwrap();
+    assert_eq!(limited_state["available"], false);
+    assert_eq!(limited_state["reasons"], json!(["resource_unavailable"]));
+    let compact = canonical_value(&projection["body"]).unwrap();
+    let malformed = b"{broken".to_vec();
+    let mut changed = body.to_vec();
+    let at = changed.iter().position(|b| *b == b'b').unwrap();
+    changed[at] = b'c';
+    for bytes in [None, Some(compact), Some(malformed), Some(changed)] {
+        let mut builder = jvc_runtime::EvaluationSessionBuilder::new(&options).unwrap();
+        let projection: Value =
+            serde_json::from_str(&builder.add_record(envelope.as_bytes(), bytes).unwrap()).unwrap();
+        assert!(projection["body"].is_null());
+        let state: Value = serde_json::from_str(&builder.finish().state().unwrap()).unwrap();
+        assert_eq!(state["publications"][&id]["content_available"], false);
+        assert_ne!(state["receipts"][&id]["body"], "valid");
+    }
 }

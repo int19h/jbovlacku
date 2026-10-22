@@ -2,7 +2,10 @@ use jvc_core::{
     Header, body_descriptor, canonical_value, hash_id, identity_from_seed, sign_header,
     validate_action, validate_body, word_id,
 };
-use jvc_state::{Evaluation, EvaluationInput, Limits, Status, evaluate};
+use jvc_state::{
+    Evaluation, EvaluationInput, EvaluationOptions, Limits, PreparedEvaluationInput, Status,
+    evaluate,
+};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 const ORIGIN: &str = "https://source.example";
@@ -1474,6 +1477,16 @@ fn missing_selected_policy_makes_account_status_actions_unavailable() {
 
 fn evaluate_observed(input: &EvaluationInput) -> Evaluation {
     let result = evaluate(input);
+    let mut prepared = PreparedEvaluationInput::new(EvaluationOptions {
+        selected_view: input.selected_view.clone(),
+        import_selections: input.import_selections.clone(),
+        overlay: input.overlay.clone(),
+        limits: input.limits.clone(),
+    });
+    for event in &input.events {
+        prepared.add_record(event, input.bodies.get(event.id()).map(Vec::as_slice));
+    }
+    assert_eq!(prepared.evaluate(), result);
     if let Ok(directory) = std::env::var("JVC_STATE_PARITY_DIR") {
         let events: Vec<String> = input
             .events

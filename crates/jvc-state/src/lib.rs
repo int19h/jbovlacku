@@ -26,6 +26,59 @@ pub struct EvaluationInput {
     pub import_selections: BTreeMap<String, Vec<String>>,
     pub limits: Limits,
 }
+/// State configuration without record payloads.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EvaluationOptions {
+    pub selected_view: String,
+    pub import_selections: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    pub overlay: Option<Value>,
+    #[serde(default)]
+    pub limits: Limits,
+}
+/// Authenticated records with only the content that state evaluation needs.
+/// Fields stay private so callers cannot supply an unvalidated projection.
+pub struct PreparedEvaluationInput {
+    options: EvaluationOptions,
+    nodes: BTreeMap<String, graph::Node>,
+    event_limit_exceeded: bool,
+}
+impl PreparedEvaluationInput {
+    pub fn new(options: EvaluationOptions) -> Self {
+        Self {
+            options,
+            nodes: BTreeMap::new(),
+            event_limit_exceeded: false,
+        }
+    }
+    /// Inspect the original body before retaining its state fields.
+    /// Duplicate event IDs keep their first record, as in ordinary evaluation.
+    pub fn add_record(&mut self, event: &VerifiedEnvelope, body: Option<&[u8]>) {
+        self.add_record_with(event, body, |_| ());
+    }
+    /// Read the complete body-validation result before its state projection.
+    /// This callback cannot change the validation result or stored fields.
+    pub fn add_record_with<T>(
+        &mut self,
+        event: &VerifiedEnvelope,
+        body: Option<&[u8]>,
+        inspect: impl FnOnce(&BodyAvailability) -> T,
+    ) -> T {
+        let (node, content) = graph::Node::new_with(event, body, inspect);
+        if !self.nodes.contains_key(event.id()) {
+            if self.nodes.len() >= self.options.limits.events {
+                self.event_limit_exceeded = true;
+            } else {
+                self.nodes.insert(event.id().into(), node);
+            }
+        }
+        content
+    }
+    pub fn evaluate(self) -> Evaluation {
+        evaluate_prepared(self)
+    }
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Limits {
@@ -182,6 +235,23 @@ pub(crate) struct TrustRule {
 }
 
 pub fn evaluate(input: &EvaluationInput) -> Evaluation {
+    let mut prepared = PreparedEvaluationInput::new(EvaluationOptions {
+        selected_view: input.selected_view.clone(),
+        import_selections: input.import_selections.clone(),
+        overlay: input.overlay.clone(),
+        limits: input.limits.clone(),
+    });
+    for event in &input.events {
+        prepared.add_record(event, input.bodies.get(event.id()).map(Vec::as_slice));
+    }
+    prepared.evaluate()
+}
+fn evaluate_prepared(prepared: PreparedEvaluationInput) -> Evaluation {
+    let PreparedEvaluationInput {
+        options: input,
+        nodes,
+        event_limit_exceeded,
+    } = prepared;
     let mut result = Evaluation {
         selected_view: input.selected_view.clone(),
         available: true,
@@ -206,19 +276,12 @@ pub fn evaluate(input: &EvaluationInput) -> Evaluation {
         selections: BTreeMap::new(),
         trust: Vec::new(),
     };
-    if input
-        .events
-        .iter()
-        .map(|e| e.id())
-        .collect::<BTreeSet<_>>()
-        .len()
-        > input.limits.events
-    {
+    if event_limit_exceeded {
         result.available = false;
         result.reasons.insert("resource_unavailable".into());
         return result;
     }
-    let graph = graph::Graph::new(input);
+    let graph = graph::Graph::new(nodes, &input.limits);
     if graph.resource.get() {
         resource_unavailable(&mut result);
         return result;
@@ -258,7 +321,7 @@ pub fn evaluate(input: &EvaluationInput) -> Evaluation {
             },
         );
     }
-    policy::select(&graph, input, &mut result);
+    policy::select(&graph, &input, &mut result);
     if result.reasons.contains("resource_unavailable") {
         resource_unavailable(&mut result);
         return result;
@@ -281,9 +344,9 @@ pub fn evaluate(input: &EvaluationInput) -> Evaluation {
             .reasons
             .insert("public_shun_issuer_unavailable".into());
     }
-    publications(&graph, input, &mut result);
+    publications(&graph, &mut result);
     reconcile_selections(&graph, &mut result);
-    accounts::evaluate(&graph, input, &mut result);
+    accounts::evaluate(&graph, &input, &mut result);
     if graph.resource.get() {
         resource_unavailable(&mut result);
         return result;
@@ -324,7 +387,7 @@ fn resource_unavailable(result: &mut Evaluation) {
     }
 }
 
-fn publications(graph: &graph::Graph, _input: &EvaluationInput, result: &mut Evaluation) {
+fn publications(graph: &graph::Graph, result: &mut Evaluation) {
     for (id, node) in &graph.nodes {
         if !node.semantic || !matches!(node.kind.as_str(), "definition.publish" | "rafsi.publish") {
             continue;
@@ -429,6 +492,16 @@ fn publications(graph: &graph::Graph, _input: &EvaluationInput, result: &mut Eva
     }
 }
 fn native_status(graph: &graph::Graph, result: &mut Evaluation) {
+    let mut status_records: BTreeMap<&str, Vec<&graph::Node>> = BTreeMap::new();
+    for node in graph
+        .nodes
+        .values()
+        .filter(|n| n.semantic && n.kind == "status.set")
+    {
+        if let Some(target) = node.action["target"].as_str() {
+            status_records.entry(target).or_default().push(node);
+        }
+    }
     for publication in result.publications.values_mut().filter(|p| !p.imported) {
         let actor = graph.actor(&publication.issuer);
         let keys = graph.downstream(&publication.issuer);
@@ -447,14 +520,13 @@ fn native_status(graph: &graph::Graph, result: &mut Evaluation) {
             publication.reasons.insert("incomplete_group".into());
             continue;
         }
-        let records: Vec<_> = graph
-            .nodes
-            .values()
+        let records: Vec<_> = status_records
+            .get(publication.id.as_str())
+            .into_iter()
+            .flatten()
+            .copied()
             .filter(|n| {
-                n.semantic
-                    && n.kind == "status.set"
-                    && n.action["target"].as_str() == Some(&publication.id)
-                    && graph.structurally_connected(&publication.issuer, &n.issuer, &n.id)
+                graph.structurally_connected(&publication.issuer, &n.issuer, &n.id)
                     && graph.transfers.get(&n.issuer).is_none_or(|ts| {
                         ts.iter()
                             .all(|t| t != &n.id && graph.own[t].ids.contains(&n.id))
@@ -592,7 +664,17 @@ fn rafsi_gate(result: &mut Evaluation) {
         p.kind == "definition.publish" && p.word.is_empty() && p.eligible == Eligibility::Unknown
     });
     let mut assignments: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut definition_gates: BTreeMap<String, (bool, bool)> = BTreeMap::new();
     for (id, p) in &result.publications {
+        if p.kind == "definition.publish" && p.eligible != Eligibility::NotSelected {
+            let (active, deprecated) = definition_gates
+                .entry(p.word.clone())
+                .or_insert((false, true));
+            *active |= p.eligible == Eligibility::Eligible
+                && p.content_available
+                && p.status == Status::Active;
+            *deprecated &= p.eligible == Eligibility::Eligible && p.status == Status::Deprecated;
+        }
         if p.kind == "rafsi.publish" {
             if let Some(a) = &p.assignment {
                 assignments.entry(a.clone()).or_default().push(id.clone());
@@ -601,24 +683,9 @@ fn rafsi_gate(result: &mut Evaluation) {
     }
     for ids in assignments.values() {
         let word = &result.publications[&ids[0]].word;
-        let definitions: Vec<_> = result
-            .publications
-            .values()
-            .filter(|p| {
-                p.kind == "definition.publish"
-                    && p.word == *word
-                    && p.eligible != Eligibility::NotSelected
-            })
-            .collect();
-        let active_definition = definitions.iter().any(|p| {
-            p.eligible == Eligibility::Eligible && p.content_available && p.status == Status::Active
-        });
-        let all_deprecated = !definitions.is_empty()
-            && definitions
-                .iter()
-                .all(|p| p.eligible == Eligibility::Eligible && p.status == Status::Deprecated)
-            && !missing_selection
-            && !unknown_word;
+        let (active_definition, deprecated) =
+            definition_gates.get(word).copied().unwrap_or_default();
+        let all_deprecated = deprecated && !missing_selection && !unknown_word;
         let active_claim = ids.iter().any(|id| {
             let p = &result.publications[id];
             p.content_available && p.eligible == Eligibility::Eligible && p.status == Status::Active

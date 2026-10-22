@@ -278,7 +278,7 @@ struct PolicyGroups {
     id: String,
     groups: Vec<BTreeSet<String>>,
 }
-pub(crate) fn evaluate(graph: &Graph, input: &EvaluationInput, result: &mut Evaluation) {
+pub(crate) fn evaluate(graph: &Graph, input: &EvaluationOptions, result: &mut Evaluation) {
     let Some(policy) = result.policy.clone() else {
         for p in result
             .publications
@@ -332,9 +332,17 @@ pub(crate) fn evaluate(graph: &Graph, input: &EvaluationInput, result: &mut Eval
         }
     }
     let mut all_accounts: BTreeMap<String, AccountKey> = BTreeMap::new();
+    let mut account_publications: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for p in result.publications.values() {
         if let Some(a) = &p.account {
-            all_accounts.insert(a.token(), a.clone());
+            let token = a.token();
+            all_accounts.insert(token.clone(), a.clone());
+            if status_authority && p.imported && p.kind == "definition.publish" {
+                account_publications
+                    .entry(token)
+                    .or_default()
+                    .push(p.id.clone());
+            }
         }
     }
     for n in graph
@@ -627,12 +635,8 @@ pub(crate) fn evaluate(graph: &Graph, input: &EvaluationInput, result: &mut Eval
             reasons,
             missing,
         };
-        for p in result.publications.values_mut().filter(|p| {
-            status_authority
-                && p.imported
-                && p.kind == "definition.publish"
-                && p.account.as_ref() == Some(&a)
-        }) {
+        for id in account_publications.get(&token).into_iter().flatten() {
+            let p = result.publications.get_mut(id).unwrap();
             p.controller_candidates = state.candidates.clone();
             p.witness_contributions = state.contributions.clone();
             p.claim = state.controller.clone();

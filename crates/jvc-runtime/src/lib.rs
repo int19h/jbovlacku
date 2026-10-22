@@ -318,15 +318,13 @@ pub fn rank_word_bytes(bytes: &[u8], word: &str) -> Result<Value> {
     if !jvc_core::valid_id(word, "jvw1:") {
         return Err(Error::new("word", "word identifier is invalid"));
     }
-    let input = evaluation_input(bytes)?;
-    let evaluation = jvc_state::evaluate(&input);
-    rank_word_state(&input, &evaluation, word, None)
+    let evaluation = jvc_state::evaluate(&evaluation_input(bytes)?);
+    rank_word_state(&evaluation, word, None)
 }
 /// Ranks one word. `reviewers_limit` asks for bounded reviewer details per
 /// score. Without it, the aggregate lookup does no reviewer-detail work and
 /// the scores carry no `reviewers` field.
 fn rank_word_state(
-    input: &jvc_state::EvaluationInput,
     evaluation: &jvc_state::Evaluation,
     word: &str,
     reviewers_limit: Option<usize>,
@@ -399,7 +397,7 @@ fn rank_word_state(
             Ok(jvc_rank::Parameters {
                 h: configuration_ratio(&p["H"])?,
                 alpha: configuration_ratio(&p["alpha"])?,
-                work: input
+                work: evaluation
                     .overlay
                     .as_ref()
                     .and_then(|v| v["work"].as_u64())
@@ -603,8 +601,8 @@ fn rank_word_state(
     let calculation = if graphs.is_empty() {
         Value::Null
     } else {
-        let default_overlay = json!({"version":1,"base_view":input.selected_view,"root_changes":[],"trust":[],"blocked":[],"work":null});
-        let overlay = input.overlay.as_ref().unwrap_or(&default_overlay);
+        let default_overlay = json!({"version":1,"base_view":evaluation.selected_view,"root_changes":[],"trust":[],"blocked":[],"work":null});
+        let overlay = evaluation.overlay.as_ref().unwrap_or(&default_overlay);
         let suspensions=evaluation.lifecycle.suspended.iter().flat_map(|(identity,causes)|causes.iter().map(move|cause|json!({"identity":identity,"cause":cause,"reason":"incomplete_history"}))).collect::<Vec<_>>();
         json!({"algorithm":profile.unwrap().name(),"budget":params.as_ref().unwrap().work,"completed":graphs.values().map(|r|r.completed_work).sum::<u64>(),"exact":exact,"overlay":jvc_core::hash_id("sha256:",b"",&canonical_value(overlay)?),"incomplete_identities":evaluation.lifecycle.suspended.keys().collect::<Vec<_>>(),"suspensions":suspensions})
     };
@@ -619,16 +617,118 @@ pub fn rank_word(bytes: &[u8], word: &str) -> std::result::Result<String, JsValu
 
 #[wasm_bindgen]
 pub struct EvaluationSession {
-    input: jvc_state::EvaluationInput,
     evaluation: jvc_state::Evaluation,
+}
+/// Build a session from original records without one combined request.
+#[wasm_bindgen]
+pub struct EvaluationSessionBuilder {
+    prepared: jvc_state::PreparedEvaluationInput,
+    verifier: jvc_core::EnvelopeVerifier,
+}
+fn search_projection(
+    event: &jvc_core::VerifiedEnvelope,
+    availability: &jvc_core::BodyAvailability,
+) -> Value {
+    let header = event.header();
+    let kind = header.action["kind"].as_str().unwrap_or_default();
+    if !matches!(kind, "definition.publish" | "rafsi.publish") {
+        return Value::Null;
+    }
+    let body = if let jvc_core::BodyAvailability::Valid { body } = availability {
+        let selected = if kind == "definition.publish" {
+            &[
+                "word",
+                "language",
+                "text",
+                "glosses",
+                "classification",
+                "notes",
+            ][..]
+        } else {
+            &["rafsi"][..]
+        };
+        let mut fields: serde_json::Map<String, Value> = body
+            .as_object()
+            .unwrap()
+            .iter()
+            .filter(|(key, _)| selected.contains(&key.as_str()))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        if kind == "definition.publish" {
+            if let Some(legacy) = body.get("legacy") {
+                let legacy = if let Some(legacy) = legacy.as_object() {
+                    let mut result = serde_json::Map::new();
+                    if let Some(source) = legacy.get("source") {
+                        result.insert("source".into(), source.clone());
+                    }
+                    if let Some(attribution) = legacy.get("attribution") {
+                        let attribution = if let Some(fields) = attribution.as_object() {
+                            Value::Object(
+                                fields
+                                    .iter()
+                                    .filter(|(key, _)| {
+                                        matches!(
+                                            key.as_str(),
+                                            "author" | "author_account" | "dates"
+                                        )
+                                    })
+                                    .map(|(key, value)| (key.clone(), value.clone()))
+                                    .collect(),
+                            )
+                        } else {
+                            attribution.clone()
+                        };
+                        result.insert("attribution".into(), attribution);
+                    }
+                    Value::Object(result)
+                } else {
+                    legacy.clone()
+                };
+                fields.insert("legacy".into(), legacy);
+            }
+        }
+        Value::Object(fields)
+    } else {
+        Value::Null
+    };
+    json!({"id":event.id(),"issuer":header.issuer,"kind":kind,"word":header.action["word"],"body_hash":header.content.as_ref().map(|c| &c.hash),"body":body})
+}
+#[wasm_bindgen]
+impl EvaluationSessionBuilder {
+    #[wasm_bindgen(constructor)]
+    pub fn new(options: &[u8]) -> std::result::Result<Self, JsValue> {
+        let options = serde_json::from_value(parse_json(options).map_err(fail)?)
+            .map_err(|e| fail(Error::new("evaluation", e.to_string())))?;
+        Ok(Self {
+            prepared: jvc_state::PreparedEvaluationInput::new(options),
+            verifier: jvc_core::EnvelopeVerifier::default(),
+        })
+    }
+    pub fn add_record(
+        &mut self,
+        envelope: &[u8],
+        body: Option<Vec<u8>>,
+    ) -> std::result::Result<String, JsValue> {
+        let event = self.verifier.verify(envelope).map_err(fail)?;
+        let content = self
+            .prepared
+            .add_record_with(&event, body.as_deref(), |availability| {
+                search_projection(&event, availability)
+            });
+        output(content)
+    }
+    pub fn finish(self) -> EvaluationSession {
+        EvaluationSession {
+            evaluation: self.prepared.evaluate(),
+        }
+    }
 }
 #[wasm_bindgen]
 impl EvaluationSession {
     #[wasm_bindgen(constructor)]
     pub fn new(bytes: &[u8]) -> std::result::Result<EvaluationSession, JsValue> {
-        let input = evaluation_input(bytes).map_err(fail)?;
-        let evaluation = jvc_state::evaluate(&input);
-        Ok(Self { input, evaluation })
+        let evaluation = jvc_state::evaluate(&evaluation_input(bytes).map_err(fail)?);
+        Ok(Self { evaluation })
     }
     pub fn state(&self) -> std::result::Result<String, JsValue> {
         let mut value = serde_json::to_value(&self.evaluation).unwrap();
@@ -658,7 +758,7 @@ impl EvaluationSession {
         output(value)
     }
     pub fn rank(&self, word: &str) -> std::result::Result<String, JsValue> {
-        output(rank_word_state(&self.input, &self.evaluation, word, None).map_err(fail)?)
+        output(rank_word_state(&self.evaluation, word, None).map_err(fail)?)
     }
     /// Ranks one word with at most `reviewers` reviewer details per score.
     pub fn rank_with_reviewers(
@@ -666,7 +766,7 @@ impl EvaluationSession {
         word: &str,
         reviewers: usize,
     ) -> std::result::Result<String, JsValue> {
-        output(rank_word_state(&self.input, &self.evaluation, word, Some(reviewers)).map_err(fail)?)
+        output(rank_word_state(&self.evaluation, word, Some(reviewers)).map_err(fail)?)
     }
 }
 
