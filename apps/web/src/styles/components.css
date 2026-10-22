@@ -909,7 +909,6 @@ dialog.sheet h2 {
 .blank {
   display: inline-block;
   min-width: 2.2em;
-  border-bottom: 2px solid var(--accent);
   color: var(--accent);
   font-weight: 600;
   text-align: center;

@@ -12,6 +12,8 @@ export function el<K extends keyof HTMLElementTagNameMap>(
     if (name === "class") node.className = String(value);
     else if (name === "text") node.textContent = String(value);
     else if (name === "html") throw new Error("Raw HTML is not permitted.");
+    // Apply trusted app styles through the style API. The browser policy blocks style attributes.
+    else if (name === "style") node.style.cssText = String(value);
     else if (value === true) node.setAttribute(name, "");
     else node.setAttribute(name, String(value));
   }
