@@ -3,6 +3,7 @@
  * the formation and compound metadata that a chosen form records.
  */
 import {
+  generateGismu,
   rafsiPairId,
   wordId,
   type BuilderPreset,
@@ -36,7 +37,7 @@ export interface LujvoState {
   components: LujvoComponentState[];
   /** The chosen candidate spelling, when the author chose one. */
   selected: string | null;
-  /** Rafsi conflicts the author acknowledged, as "rafsi|pair" keys. */
+  /** Conflict keys bound to the chosen spelling, snapshot, and competing claims. */
   acknowledged: string[];
 }
 export interface GismuRowState {
@@ -52,7 +53,7 @@ export interface GismuState {
   candidates: "source-letters" | "all-letters";
   selected: string | null;
   manual: string;
-  /** Acknowledged conflicts, as "word|rule|snapshot" keys. */
+  /** Root conflict keys bound to the chosen spelling and snapshot. */
   acknowledged: string[];
   reason: string;
   window: number;
@@ -156,6 +157,97 @@ export function inventoryFromPackage(
     })),
     complete: incomplete.size === 0,
   };
+}
+/** The limits of the downloaded rafsi inventory, shared by builders and Publish. */
+export function inventoryCoverage(inventory: PackageInventory): string {
+  if (!inventory.snapshot)
+    return "No local package is downloaded, so conflict coverage is unknown.";
+  if (!inventory.hasClaims)
+    return "The local package carries no rafsi claims, so rafsi conflict coverage is unknown.";
+  return `Competing claims come from the local package of snapshot ${inventory.snapshot.slice(7, 19)}…. They cover retained claims in that package only.${
+    inventory.complete
+      ? ""
+      : ` The package lists at most 64 claims per word, so coverage is incomplete for ${inventory.incompleteWords.map((w) => w.spelling).join(", ")}. Missing claims are unknown. The word page of each lists every claim.`
+  }`;
+}
+/** A review belongs to one spelling, snapshot, and complete group of known conflicts. */
+export function conflictReviewKey(
+  spelling: string,
+  snapshot: string | null,
+  group: string,
+  conflicts: string[],
+): string {
+  return JSON.stringify([
+    spelling,
+    snapshot,
+    group,
+    [...new Set(conflicts)].sort(),
+  ]);
+}
+export function rootConflictKey(
+  spelling: string,
+  conflict: { word: string; rule: string },
+  snapshot: string | null,
+): string {
+  return conflictReviewKey(spelling, snapshot, "root", [
+    `${conflict.word}|${conflict.rule}`,
+  ]);
+}
+export function lujvoConflictKey(
+  spelling: string,
+  conflict: { rafsi: string; pair: string },
+  conflicts: { rafsi: string; pair: string }[],
+  snapshot: string | null,
+): string {
+  return conflictReviewKey(
+    spelling,
+    snapshot,
+    `component:${conflict.rafsi}:${conflict.pair}`,
+    conflicts.filter((c) => c.rafsi === conflict.rafsi).map((c) => c.pair),
+  );
+}
+/** Checks roots without source evidence. The synthetic scoring run is never saved. */
+export function currentRootConflicts(
+  spelling: string,
+  inventory: PackageInventory,
+) {
+  return (
+    generateGismu({
+      sources: [
+        {
+          language: "jbo",
+          word: spelling,
+          input: spelling,
+          weight: { numerator: "1", denominator: "1" },
+        },
+      ],
+      candidates: "source-letters",
+      inventory: {
+        snapshot: inventory.snapshot,
+        gismu: inventory.gismu,
+        claims: [],
+      },
+      window: 1,
+      manual: spelling,
+      limits: { work: 60_000_000 },
+    }).manual?.conflicts ?? []
+  );
+}
+/** Compare the saved compound, including revisions that have no builder state. */
+export function currentCompoundConflicts(
+  compound: Compound,
+  inventory: PackageInventory,
+) {
+  return inventory.claims.filter((claim) =>
+    compound.components.some(
+      (component) =>
+        // The core offers only short assigned rafsi. Long forms are automatic morphology.
+        (component.rafsi.length === 3 ||
+          /^[bcdfgjklmnprstvxz][aeiou]'[aeiou]$/.test(component.rafsi)) &&
+        component.rafsi === claim.rafsi &&
+        wordId(component.word) !== claim.word,
+    ),
+  );
 }
 /** Compound metadata for a chosen lujvo candidate. Joins stay out of the rafsi fields. */
 export function compoundMetadata(

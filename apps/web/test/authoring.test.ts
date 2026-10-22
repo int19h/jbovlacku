@@ -698,6 +698,13 @@ test("a requested rafsi claim is signed even when every lookup fails, and a know
     .getByRole("button", { name: "Publish", exact: true });
   await expect(publish).toBeDisabled();
   await page.getByRole("checkbox", { name: /I keep the claim cku/ }).check();
+  // Earlier tests can add a root that now conflicts with this manual spelling.
+  for (const root of await page
+    .getByRole("checkbox", {
+      name: /I publish brodi although the refreshed package shows/,
+    })
+    .all())
+    await root.check();
   await expect(publish).toBeEnabled();
 });
 
@@ -2043,6 +2050,12 @@ test("Revise of an independently signed rich parent with compound evidence publi
   await page.getByRole("button", { name: "Review" }).click();
   await expect(page.locator("aside")).toContainText("Publish as");
   await expect(page.getByText(/problems? block signing/)).toHaveCount(0);
+  // The revised compound keeps its evidence and needs a current conflict review.
+  await page
+    .getByRole("checkbox", {
+      name: /although other words claim its component rafsi/,
+    })
+    .check();
   await page
     .locator("aside")
     .getByRole("button", { name: "Publish", exact: true })

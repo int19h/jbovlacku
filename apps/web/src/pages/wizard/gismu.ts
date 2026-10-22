@@ -31,12 +31,20 @@ import {
   decimal,
   formationMetadata,
   inventoryFromPackage,
+  inventoryCoverage,
+  rootConflictKey,
   manualFormation,
   newGismuState,
   type GismuRowState,
   type PackageInventory,
 } from "../../model/builders.ts";
-import { actionBar, DraftSaver, loadDraft, stepBar } from "./common.ts";
+import {
+  actionBar,
+  confirmKindChange,
+  DraftSaver,
+  loadDraft,
+  stepBar,
+} from "./common.ts";
 
 function presetRows(
   preset: BuilderPreset,
@@ -73,7 +81,10 @@ export async function gismuPage(
   const saver = new DraftSaver(app, draft);
   // Changes made while opening the generator are saved like any other edit.
   if (draft.kind !== "gismu") {
-    draft.kind = "gismu";
+    if (!confirmKindChange(draft, "gismu")) {
+      navigate("/new/type", { replace: true });
+      return;
+    }
     saver.touch();
   }
   const state = (draft.gismu ??= newGismuState());
@@ -203,6 +214,10 @@ export async function gismuPage(
     hint: "A manual form is scored under the same run. Outside the generated letters it has no rank. Without a run it carries no generation evidence.",
   });
   manualField.input.addEventListener("input", () => {
+    if (state.manual !== manualField.input.value) {
+      state.acknowledged = [];
+      draft.publishAcknowledged = [];
+    }
     state.manual = manualField.input.value;
     saver.touch();
     schedule();
@@ -435,8 +450,10 @@ export async function gismuPage(
     }
     return null;
   };
-  const conflictKey = (c: { word: string; rule: string }) =>
-    `${c.word}|${c.rule}|${inventory.snapshot ?? "none"}`;
+  const conflictKey = (
+    candidate: GismuCandidate,
+    c: { word: string; rule: string },
+  ) => rootConflictKey(candidate.form, c, inventory.snapshot);
   const renderCandidates = () => {
     candidatesBox.replaceChildren();
     more.replaceChildren();
@@ -532,6 +549,10 @@ export async function gismuPage(
             : button(
                 "Choose",
                 () => {
+                  if (state.selected !== candidate.form) {
+                    state.acknowledged = [];
+                    draft.publishAcknowledged = [];
+                  }
                   state.selected = candidate.form;
                   saver.touch();
                   renderCandidates();
@@ -654,9 +675,7 @@ export async function gismuPage(
         "meta",
       ),
     );
-    const coverage = inventory.snapshot
-      ? `Conflicts come from the local package of snapshot ${inventory.snapshot.slice(7, 19)}…${inventory.hasClaims ? "" : ", which carries no rafsi claims"}.`
-      : "No local package is downloaded, so conflict coverage is unknown.";
+    const coverage = inventoryCoverage(inventory);
     selectedCard.append(p(coverage, "meta"));
     if (candidate.conflicts.length) {
       const box = el("div", {
@@ -671,7 +690,7 @@ export async function gismuPage(
         ),
       );
       for (const conflict of candidate.conflicts) {
-        const key = conflictKey(conflict);
+        const key = conflictKey(candidate, conflict);
         const input = el("input", { type: "checkbox" });
         input.checked = state.acknowledged.includes(key);
         input.addEventListener("change", () => {
@@ -779,7 +798,7 @@ export async function gismuPage(
   let bar: HTMLElement;
   const unacknowledged = (candidate: GismuCandidate) =>
     candidate.conflicts.filter(
-      (c) => !state.acknowledged.includes(conflictKey(c)),
+      (c) => !state.acknowledged.includes(conflictKey(candidate, c)),
     );
   /**
    * The form to use: the chosen candidate, or the manual form as the run
@@ -829,6 +848,15 @@ export async function gismuPage(
         const { candidate } = usable();
         if (candidate && result) {
           if (unacknowledged(candidate).length) return;
+          if (
+            draft.compound &&
+            !confirm(
+              "Use this gismu and remove the previous compound evidence? The prose and annotations stay.",
+            )
+          )
+            return;
+          draft.compound = null;
+          if (draft.spelling !== candidate.form) draft.publishAcknowledged = [];
           draft.spelling = candidate.form;
           draft.evidenceForm = candidate.form;
           const preset = presets.find((pr) => pr.id === state.preset) ?? null;
@@ -838,7 +866,9 @@ export async function gismuPage(
             rows: state.rows,
             preset,
             acknowledged: candidate.conflicts
-              .filter((c) => state.acknowledged.includes(conflictKey(c)))
+              .filter((c) =>
+                state.acknowledged.includes(conflictKey(candidate, c)),
+              )
               .map((c) => ({
                 word: c.word,
                 rule: c.rule as

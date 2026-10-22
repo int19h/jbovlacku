@@ -14,6 +14,7 @@ import { placeholderCount, type Draft } from "../../model/draft.ts";
 import { countNodes, placeMarker } from "../../model/richtext.ts";
 import {
   actionBar,
+  formPath,
   DraftSaver,
   loadDraft,
   startDraft,
@@ -119,7 +120,9 @@ export async function meaningPage(
         { class: "actions", style: "margin-top:14px" },
         link(
           "Continue the saved draft",
-          `/new/${["meaning", "type", "form", "places", "publish"][draft.step - 1]}`,
+          draft.step === 3
+            ? formPath(draft)
+            : `/new/${["meaning", "type", "form", "places", "publish"][draft.step - 1]}`,
           { class: "btn btn-primary" },
         ),
         button(
