@@ -103,6 +103,8 @@ test("the lujvo builder offers long forms beside listed rafsi, recovers parts, h
   // Choose the listed alternative instead and continue.
   await page.getByRole("button", { name: "Use ckusinxa" }).click();
   await expect(primary).toHaveText("Use ckusinxa");
+  await expect(primary).toBeDisabled();
+  for (const box of await result.getByRole("checkbox").all()) await box.check();
   await primary.click();
   await expect(page).toHaveURL(/\/new\/places$/);
   const draft = await currentDraft(page);
