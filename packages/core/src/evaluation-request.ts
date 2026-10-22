@@ -1,4 +1,4 @@
-import type { EvaluationRequest } from "./index.ts";
+import type { EvaluationRequest, EvaluationSessionOptions } from "./index.ts";
 
 const encoder = new TextEncoder();
 
@@ -75,7 +75,9 @@ function* chunks(
 }
 
 /** Two passes avoid both an aggregate JSON string and a retained chunk list. */
-export function encodeEvaluationRequest(input: EvaluationRequest): Uint8Array {
+export function encodeEvaluationRequest(
+  input: EvaluationRequest | EvaluationSessionOptions,
+): Uint8Array {
   let size = 0;
   for (const chunk of chunks(input)) size += encoder.encode(chunk).byteLength;
   const bytes = new Uint8Array(size);

@@ -175,10 +175,29 @@ export function finishSigning(
 }
 
 export type EvaluationRequest = Parameters<typeof evaluate>[0];
-export function evaluateSession(input: EvaluationRequest) {
-  const session = new wasm.EvaluationSession(encodeEvaluationRequest(input));
+export type EvaluationSessionOptions = Omit<
+  EvaluationRequest,
+  "events" | "bodies"
+>;
+/** Search fields copied from an authenticated record and its checked body. */
+export interface EvaluationPackageRecord {
+  id: string;
+  issuer: string;
+  kind: "definition.publish" | "rafsi.publish";
+  word: string;
+  body_hash: string | null;
+  body: Record<string, unknown> | null;
+}
+function wrapEvaluationSession(session: wasm.EvaluationSession) {
+  let state: Evaluation;
+  try {
+    state = JSON.parse(session.state()) as Evaluation;
+  } catch (error) {
+    session.free();
+    throw error;
+  }
   return {
-    state: JSON.parse(session.state()) as Evaluation,
+    state,
     /**
      * Ranks one word. `reviewers` asks for at most that many reviewer details
      * per score, bounded inside the core. Without it the aggregate lookup does
@@ -191,6 +210,40 @@ export function evaluateSession(input: EvaluationRequest) {
           : session.rank_with_reviewers(word, reviewers),
       ),
     free: () => session.free(),
+  };
+}
+export function evaluateSession(input: EvaluationRequest) {
+  return wrapEvaluationSession(
+    new wasm.EvaluationSession(encodeEvaluationRequest(input)),
+  );
+}
+/** Authenticate original record bytes before the core retains their state fields. */
+export function createEvaluationSession(options: EvaluationSessionOptions) {
+  const builder = new wasm.EvaluationSessionBuilder(
+    encodeEvaluationRequest(options),
+  );
+  let closed = false;
+  function requireOpen() {
+    if (closed) throw new Error("The evaluation builder is closed.");
+  }
+  return {
+    addRecord(envelope: Uint8Array, body?: Uint8Array) {
+      requireOpen();
+      return JSON.parse(
+        builder.add_record(envelope, body),
+      ) as EvaluationPackageRecord | null;
+    },
+    finish() {
+      requireOpen();
+      closed = true;
+      return wrapEvaluationSession(builder.finish());
+    },
+    free() {
+      if (!closed) {
+        closed = true;
+        builder.free();
+      }
+    },
   };
 }
 export const rankWord = (input: EvaluationRequest, word: string) =>

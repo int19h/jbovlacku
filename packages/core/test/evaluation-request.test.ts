@@ -5,6 +5,8 @@ import { encodeEvaluationRequest } from "../src/evaluation-request.ts";
 import {
   evaluate,
   evaluateSession,
+  createEvaluationSession,
+  createEvent,
   initializeCore,
   rankWord,
   utf8,
@@ -196,8 +198,19 @@ test("evaluation, sessions, and ranking preserve the original core wire results"
   assert.deepEqual(evaluate(input), expected);
   const original = new wasm.EvaluationSession(originalBytes);
   const session = evaluateSession(input);
+  const builder = createEvaluationSession({
+    selected_view: input.selected_view,
+    import_selections: input.import_selections,
+    limits: input.limits,
+  });
+  for (const envelope of input.events) {
+    const { id } = JSON.parse(envelope);
+    builder.addRecord(utf8(envelope), utf8(input.bodies[id]));
+  }
+  const streamed = builder.finish();
   try {
     assert.deepEqual(session.state, JSON.parse(original.state()));
+    assert.deepEqual(streamed.state, session.state);
     const word = Object.values(expected.publications)[0] as { word: string };
     assert.deepEqual(
       rankWord(input, word.word),
@@ -207,8 +220,80 @@ test("evaluation, sessions, and ranking preserve the original core wire results"
       session.rankWord(word.word),
       JSON.parse(original.rank(word.word)),
     );
+    assert.deepEqual(streamed.rankWord(word.word), session.rankWord(word.word));
+    assert.deepEqual(
+      streamed.rankWord(word.word, 4),
+      session.rankWord(word.word, 4),
+    );
+    assert.throws(() => builder.finish(), /builder is closed/);
+    assert.throws(
+      () => builder.addRecord(utf8(input.events[0])),
+      /builder is closed/,
+    );
   } finally {
     original.free();
     session.free();
+    streamed.free();
+    builder.free();
   }
+});
+
+test("streamed original bodies preserve absent and invalid body outcomes", () => {
+  const entry = createEvent(
+    new Uint8Array(32).fill(33),
+    [],
+    "f".repeat(32),
+    { kind: "identity.profile" },
+    { name: "Original profile", bio: [], links: [] },
+  );
+  const envelope = canonical(entry.envelope);
+  for (const body of [
+    undefined,
+    canonical(entry.body),
+    '{"name":"tampered"}',
+  ]) {
+    const input = request({
+      events: [envelope],
+      bodies: body === undefined ? {} : { [entry.envelope.id]: body },
+    });
+    const expected = evaluateSession(input);
+    const builder = createEvaluationSession({
+      selected_view: input.selected_view,
+      import_selections: {},
+    });
+    builder.addRecord(
+      utf8(envelope),
+      body === undefined ? undefined : utf8(body),
+    );
+    const actual = builder.finish();
+    try {
+      assert.deepEqual(actual.state, expected.state);
+    } finally {
+      expected.free();
+      actual.free();
+      builder.free();
+    }
+  }
+});
+
+test("streaming rejects a changed signed envelope and releases unfinished builders", () => {
+  const entry = createEvent(
+    new Uint8Array(32).fill(34),
+    [],
+    "e".repeat(32),
+    { kind: "identity.merge" },
+    null,
+  );
+  entry.envelope.header.nonce = "d".repeat(32);
+  const builder = createEvaluationSession({
+    selected_view: view,
+    import_selections: {},
+  });
+  try {
+    assert.throws(() => builder.addRecord(utf8(canonical(entry.envelope))));
+  } finally {
+    builder.free();
+    builder.free();
+  }
+  assert.throws(() => builder.finish(), /builder is closed/);
 });
