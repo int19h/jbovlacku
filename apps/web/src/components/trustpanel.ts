@@ -7,6 +7,7 @@ import { describeProfile } from "../model/profiles.ts";
 import { allScope, type TrustScope } from "../model/types.ts";
 import { scopeKey } from "../data/history.ts";
 import { identityLink } from "./attribution.ts";
+import { deliveryAccepted } from "../data/delivery.ts";
 
 export function describeScope(scope: TrustScope): string {
   if (scope.kind === "*" && scope.word === "*" && scope.language === "*")
@@ -23,8 +24,7 @@ export const PENDING_NOTE =
   " Your personal view includes it after delivery, when you recompute for the snapshot that holds it.";
 type Delivered = { peers: Record<string, { state: string }> }[];
 /** True when the first delivery of the signed record was accepted. */
-const accepted = (results: Delivered) =>
-  results[0]?.peers.self?.state === "accepted";
+const accepted = (results: Delivered) => deliveryAccepted(results);
 /** The status after a public trust signature, by the first delivery outcome. */
 export function publicTrustOutcome(results: Delivered): string {
   return (

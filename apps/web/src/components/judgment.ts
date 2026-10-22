@@ -11,6 +11,7 @@ import {
 } from "../lib/format.ts";
 import type { App } from "../app/context.ts";
 import type {
+  Envelope,
   JudgmentValue,
   ScoreRecord,
   Calculation,
@@ -18,8 +19,8 @@ import type {
 } from "../model/types.ts";
 import type { RegisterState } from "../data/history.ts";
 import type { OutboxItem } from "../data/store.ts";
-import { isActive } from "../data/delivery.ts";
-import { getWord } from "../data/api.ts";
+import { deliveryAccepted, isActive } from "../data/delivery.ts";
+import { getEnvelope, getWord } from "../data/api.ts";
 import { identityLink } from "./attribution.ts";
 import { onDisconnect } from "../lib/lifetime.ts";
 import { describeProfile } from "../model/profiles.ts";
@@ -180,7 +181,10 @@ export function judgmentControl(
         return;
       }
       if (state.conflicted) {
-        ownNote.textContent = "Your judgment conflicts between devices";
+        ownNote.append(
+          text("Your judgment conflicts between devices. "),
+          await conflictBranches(app, state.events),
+        );
         return;
       }
       endorse.setAttribute("aria-pressed", String(state.value === "bless"));
@@ -212,8 +216,7 @@ export function judgmentControl(
           },
         ]);
         app.own.invalidate();
-        const peer = results[0]?.peers.self;
-        if (peer?.state === "accepted")
+        if (deliveryAccepted(results))
           app.announce(
             value === "clear"
               ? "Your judgment is cleared."
@@ -260,6 +263,11 @@ export function scoreDetails(
   details.addEventListener("toggle", async () => {
     if (!details.open) return;
     body.replaceChildren();
+    const ownActions = el("div");
+    body.append(ownActions);
+    void renderOwnActions(app, target, options).then((node) =>
+      ownActions.replaceChildren(node),
+    );
     if (options.personal && !score) {
       body.append(
         p(
@@ -393,12 +401,16 @@ export function scoreDetails(
                     : `trusted by ${reviewer.incoming_count} identities, including `,
                 ),
               );
-              reviewer.incoming.slice(0, 3).forEach((from, i) => {
+              reviewer.incoming.forEach((from, i) => {
                 if (i) routeCell.append(text(", "));
                 routeCell.append(identityLink(from));
               });
               if (!reviewer.incoming_complete)
-                routeCell.append(text(" and more"));
+                routeCell.append(
+                  text(
+                    `. The server lists ${reviewer.incoming.length} of ${reviewer.incoming_count} incoming identities.`,
+                  ),
+                );
             }
             if (!reviewer.root && !reviewer.incoming.length)
               routeCell.append(text(routeNote(reviewer)));
@@ -500,47 +512,109 @@ export function scoreDetails(
           ),
         );
     }
-    const own = await app.own.registers();
-    const state = own?.judgments.get(target.id);
-    if (state?.known && state.value && state.value !== "clear")
-      body.append(
-        el(
-          "div",
-          { class: "actions", style: "margin-top:8px" },
-          button(
-            "Clear my judgment",
-            () =>
-              app.session.requireUnlocked(
-                target.describe("clear"),
-                async () => {
-                  if (!(await app.session.firstSignatureDisclosure())) return;
-                  try {
-                    await app.signer.publish([
-                      {
-                        action: {
-                          kind: "judgment.set",
-                          target: target.id,
-                          value: "clear",
-                        },
-                        body: null,
-                      },
-                    ]);
-                    app.own.invalidate();
-                    app.announce(
-                      "Your judgment is cleared. The earlier public record stays in history.",
-                    );
-                    options.onChange?.();
-                  } catch (error) {
-                    app.announce(describe(error));
-                  }
-                },
-              ),
-            { class: "btn btn-quiet" },
-          ),
-        ),
-      );
   });
   append(details);
   void sr;
   return details;
+}
+
+/** Links each known conflicting branch to its exact public record. */
+async function conflictBranches(
+  app: App,
+  events: string[],
+): Promise<HTMLElement> {
+  const list = el("span");
+  for (const [index, id] of events.entries()) {
+    if (index) list.append(text(", "));
+    let label = "Judgment value unavailable";
+    try {
+      const local = await app.store.get<OutboxItem>("outbox", id);
+      const envelope = local
+        ? (JSON.parse(local.transport).envelope as Envelope)
+        : ((await app.store.get<Envelope>("ownhistory", id)) ??
+          (await getEnvelope(id)));
+      const value = envelope.header.action.value;
+      label =
+        value === "bless"
+          ? "Endorsement"
+          : value === "curse"
+            ? "Opposition"
+            : value === "clear"
+              ? "Clear"
+              : label;
+    } catch {}
+    list.append(
+      el("a", {
+        href: `/definition/${encodeURIComponent(id)}`,
+        text: label,
+        title: id,
+      }),
+    );
+  }
+  return list;
+}
+async function renderOwnActions(
+  app: App,
+  target: JudgmentTarget,
+  options: JudgmentOptions,
+): Promise<HTMLElement> {
+  const slot = el("div", { class: "small" });
+  const own = await app.own.registers();
+  const state = own?.judgments.get(target.id);
+  if (!state?.known) return slot;
+  if (state.conflicted) {
+    slot.append(
+      p(
+        "Your judgment conflicts between devices. Choose Endorse, Oppose, or Clear to resolve both records.",
+      ),
+      await conflictBranches(app, state.events),
+    );
+  }
+  if (!state.conflicted && (!state.value || state.value === "clear"))
+    return slot;
+  const actions = el("div", { class: "actions", style: "margin-top:8px" });
+  const choices: [string, JudgmentValue][] = state.conflicted
+    ? [
+        ["Endorse", "bless"],
+        ["Oppose", "curse"],
+        ["Clear my judgment", "clear"],
+      ]
+    : [["Clear my judgment", "clear"]];
+  for (const [label, value] of choices)
+    actions.append(
+      button(
+        label,
+        () =>
+          app.session.requireUnlocked(target.describe(value), async () => {
+            if (!(await app.session.firstSignatureDisclosure())) return;
+            try {
+              const results = await app.signer.publish([
+                {
+                  action: { kind: "judgment.set", target: target.id, value },
+                  body: null,
+                },
+              ]);
+              app.own.invalidate();
+              app.announce(
+                deliveryAccepted(results)
+                  ? value === "clear"
+                    ? "Your judgment is cleared. The earlier public record stays in history."
+                    : value === "bless"
+                      ? "Your endorsement is published."
+                      : "Your opposition is published."
+                  : "Your judgment is signed and saved here. Delivery is not finished. See Not delivered.",
+              );
+              options.onChange?.();
+              slot.replaceChildren(
+                await renderOwnActions(app, target, options),
+              );
+            } catch (error) {
+              app.announce(describe(error));
+            }
+          }),
+        { class: "btn btn-quiet" },
+      ),
+    );
+  slot.append(actions);
+  return slot;
 }

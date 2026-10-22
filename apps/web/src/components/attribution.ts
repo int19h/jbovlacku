@@ -67,7 +67,7 @@ interface LegacyShape {
     author_account?: {
       origin?: string;
       account?: number;
-      evidence?: { kind?: string };
+      evidence?: { kind?: string; source?: { url?: string | null } };
     } | null;
     dates?: Record<string, string | null>;
   };
@@ -111,21 +111,32 @@ export function attribution(
     const account = legacy.attribution?.author_account;
     if (author) {
       const label = el("bdi", { text: author });
-      if (
-        account &&
-        typeof account.origin === "string" &&
-        Number.isSafeInteger(account.account)
-      ) {
-        const anchor = link(label, `${account.origin}/`, {
-          rel: "noopener noreferrer",
-          target: "_blank",
-        });
-        anchor.title = `${legacy.source ?? "Imported"} account ${account.account} at ${account.origin}`;
-        node.append(anchor);
-      } else {
-        label.title = `${legacy.source ?? "Imported"} source author, without account evidence`;
-        node.append(label);
+      const evidenceUrl = account?.evidence?.source?.url;
+      let external = false;
+      if (typeof evidenceUrl === "string") {
+        try {
+          external = new URL(evidenceUrl).protocol === "https:";
+        } catch {}
       }
+      const anchor = link(
+        label,
+        external
+          ? evidenceUrl!
+          : `/definition/${encodeURIComponent(envelope.id)}#source-${envelope.id}`,
+        external ? { rel: "noopener noreferrer", target: "_blank" } : {},
+      );
+      const weak = account?.evidence?.kind === "username-lookup";
+      anchor.title = weak
+        ? "Username lookup only. This evidence does not establish source authorship."
+        : account
+          ? `${legacy.source ?? "Imported"} account ${account.account} evidence`
+          : `${legacy.source ?? "Imported"} source author, without account evidence`;
+      if (!external)
+        anchor.addEventListener("click", () => {
+          const source = document.getElementById(`source-${envelope.id}`);
+          if (source instanceof HTMLDetailsElement) source.open = true;
+        });
+      node.append(anchor);
     } else node.append(text(`${legacy.source ?? "Imported"} author unknown`));
     node.append(
       text(" · imported by "),

@@ -61,10 +61,10 @@ export function placeStrip(
       "aria-hidden": "true",
       text: String(place.index),
     });
-    item.append(marker, text(label ?? "no description", label ? "" : "meta"));
-    item.setAttribute(
-      "aria-label",
-      `place ${place.index}${label ? `: ${label}` : ", no description"}`,
+    item.append(
+      marker,
+      el("span", { class: "sr", text: `place ${place.index}: ` }),
+      text(label ?? "no description", label ? "" : "meta"),
     );
     strip.append(item);
   }
@@ -434,9 +434,23 @@ export function definitionBlock(
       );
       article.append(notice);
     }
+    const source = disclosure(
+      "Source",
+      () => sourceDisclosureBody(envelope, body),
+      { id: `source-${id}` },
+    );
+    if (
+      location.hash === `#source-${id}` ||
+      location.hash === `#${encodeURIComponent(`source-${id}`)}`
+    ) {
+      source.open = true;
+      requestAnimationFrame(() => {
+        if (source.isConnected) source.scrollIntoView();
+      });
+    }
     const tools = el("div", { class: "tools" });
     tools.append(
-      disclosure("Source", () => sourceDisclosureBody(envelope, body)),
+      source,
       disclosure("History", () => historyBody(envelope, options.revisions)),
       disclosure("Signed record", () =>
         el("pre", { class: "json", text: visibleJson({ envelope, body }) }),

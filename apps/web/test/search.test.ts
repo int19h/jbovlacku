@@ -368,13 +368,7 @@ test("local search ranks match classes, keeps the strongest match, and sends not
           entry(4, "brodi", ["input"], "a prefix match"),
         ],
       });
-      return ["broda", "brode"]
-        .sort((a, b) =>
-          core
-            .wordId({ language: "jbo", spelling: a })
-            .localeCompare(core.wordId({ language: "jbo", spelling: b }), "en"),
-        )
-        .concat("brodi");
+      return ["broda", "brode", "brodi"];
     }, corePath);
     let requests = 0;
     await page.route("**/api/v1/**", (route) => {

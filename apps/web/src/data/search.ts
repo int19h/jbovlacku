@@ -19,13 +19,22 @@ import {
   hashId,
   languageTag,
   lexicalKinds,
-  matchKinds,
   identityId,
   type MatchKind,
   type PackageEntry,
   type PackageEntryV2,
   type SearchHit,
 } from "../model/types.ts";
+
+// Alias matches belong to the local index. The API keeps its wire classes.
+const localMatchKinds: MatchKind[] = [
+  "headword",
+  "gloss",
+  "alias",
+  "headword-prefix",
+  "gloss-prefix",
+  "token",
+];
 
 export interface CachedPackage {
   snapshot: string;
@@ -365,10 +374,14 @@ export function normalizeQuery(value: string): string {
     .trim();
 }
 export function matchKind(entry: PackageEntry, q: string): MatchKind | null {
+  const exact = q.normalize("NFC").trim();
+  if (entry.word.spelling.normalize("NFC") === exact) return "headword";
+  if (entry.glosses.some((gloss) => gloss.text.normalize("NFC") === exact))
+    return "gloss";
+  q = normalizeQuery(q);
   const spelling = normalizeQuery(entry.word.spelling);
   const glosses = entry.glosses.map((gloss) => normalizeQuery(gloss.text));
-  if (spelling === q) return "headword";
-  if (glosses.includes(q)) return "gloss";
+  if (spelling === q || glosses.includes(q)) return "alias";
   if (spelling.startsWith(q)) return "headword-prefix";
   if (glosses.some((gloss) => gloss.startsWith(q))) return "gloss-prefix";
   if (normalizeQuery(entry.plain_text).includes(q)) return "token";
@@ -387,7 +400,7 @@ export function localSearch(
   if (!q) return [];
   const grouped = new Map<string, LocalHit>();
   for (const entry of entries) {
-    const match = matchKind(entry, q);
+    const match = matchKind(entry, query);
     if (!match) continue;
     const id = wordId({ language: "jbo", spelling: entry.word.spelling });
     const preview = {
@@ -401,7 +414,7 @@ export function localSearch(
       old.definitions.push(entry.event);
       old.entries.push(entry);
       if (
-        matchKinds.indexOf(match) < matchKinds.indexOf(old.match) ||
+        localMatchKinds.indexOf(match) < localMatchKinds.indexOf(old.match) ||
         (match === old.match && entry.event < old.preview!.event)
       ) {
         old.match = match;
@@ -422,7 +435,7 @@ export function localSearch(
   }
   return [...grouped.values()].sort(
     (a, b) =>
-      matchKinds.indexOf(a.match) - matchKinds.indexOf(b.match) ||
+      localMatchKinds.indexOf(a.match) - localMatchKinds.indexOf(b.match) ||
       a.word_id.localeCompare(b.word_id, "en"),
   );
 }

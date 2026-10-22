@@ -6,7 +6,7 @@ import { el, link, icon, sr, text, append } from "../lib/dom.ts";
 import { navigate, routes, type Route } from "./router.ts";
 import type { Session } from "./session.ts";
 import type { DeliveryEngine } from "../data/delivery.ts";
-import { isActive } from "../data/delivery.ts";
+import { isNotDelivered } from "../data/delivery.ts";
 import { shortIdentity } from "../lib/format.ts";
 import type { OutboxItem } from "../data/store.ts";
 
@@ -126,7 +126,7 @@ export function buildShell(
   session.subscribe(renderIdentity);
   renderIdentity();
   const renderMarker = (items: OutboxItem[]) => {
-    const count = items.filter(isActive).length;
+    const count = items.filter((item) => isNotDelivered(item)).length;
     marker.hidden = count === 0;
     marker.replaceChildren(
       icon("warn", "", 20),
