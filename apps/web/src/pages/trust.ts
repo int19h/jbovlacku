@@ -9,7 +9,7 @@ import {
 } from "../app/router.ts";
 import type { App } from "../app/context.ts";
 import { calculationPanel } from "../components/localview.ts";
-import { getManifest, getIdentity, loadRecord } from "../data/api.ts";
+import { getManifest, loadRecord } from "../data/api.ts";
 import { loadSiteView } from "../data/view.ts";
 import { eventId, type ViewBody } from "../model/types.ts";
 import { identityLink } from "../components/attribution.ts";
@@ -28,6 +28,11 @@ export async function trustPage(
   const { main } = context;
   context.title("Trust");
   main.className = "";
+  const rerender = () => {
+    if (!context.live()) return;
+    main.replaceChildren();
+    void trustPage(_route, context, app);
+  };
   main.append(
     el("h1", { class: "page", text: "Trust" }),
     p("Whose judgments order the definitions you see.", "muted"),
@@ -77,11 +82,24 @@ export async function trustPage(
       "A private Ignore or a personal block removes that person and every route through them in your view only. A public shun is a signed declaration. Its effect on routes follows the calculation profile of the signed view, shown below, and it does not remove every influence of that person in every reader's view.",
       "meta",
     ),
-    calculationPanel(app, { mode: "personal", label: "Local calculation" }),
+    calculationPanel(app, {
+      mode: "personal",
+      label: "Local calculation",
+      onRefresh: rerender,
+    }),
   );
   const overlay = await app.store.overlay().catch(() => null);
   const registers = await app.own.registers();
   if (!context.live()) return;
+  const continuity = app.personal.loadedContinuity;
+  const actor = (key: string) => continuity?.actors[key] ?? key;
+  if (continuity && overlay?.trust.some((rule) => rule.value !== "clear"))
+    main.append(
+      p(
+        `Private rule labels use personal calculation snapshot ${continuity.snapshot} and view ${continuity.view}.`,
+        "meta",
+      ),
+    );
   // People I trust.
   main.append(el("h2", { class: "section", text: "People I trust" }));
   const trusted = el("div");
@@ -139,11 +157,6 @@ export async function trustPage(
         ),
       { class: "btn btn-quiet", style: "min-height:36px" },
     );
-  const rerender = () => {
-    if (!context.live()) return;
-    main.replaceChildren();
-    void trustPage(_route, context, app);
-  };
   for (const [key, state] of publicRows) {
     const { subject, scope } = parseKey(key);
     if (!state.known || state.conflicted) continue;
@@ -196,40 +209,22 @@ export async function trustPage(
     );
     conflicted.append(row);
   }
-  const privateSnapshot = overlay?.trust.some(
-    (rule) => rule.issuer !== app.session.identity,
-  )
-    ? (await getManifest({ signal: context.signal }).catch(() => null))
-        ?.snapshot
-    : null;
-  const privateActors = new Map<string, string>();
-  if (privateSnapshot && app.session.identity) {
-    await Promise.all(
-      [
-        ...new Set([
-          app.session.identity,
-          ...(overlay?.trust.map((r) => r.issuer) ?? []),
-        ]),
-      ].map(async (key) => {
-        const response = await getIdentity(key, {
-          snapshot: privateSnapshot,
-          signal: context.signal,
-        }).catch(() => null);
-        if (response?.snapshot === privateSnapshot)
-          privateActors.set(key, response.actor);
-      }),
-    );
-  }
   for (const rule of overlay?.trust ?? []) {
     if (rule.value === "clear") continue;
     const invalid = scopeError(rule.scope);
-    const sameActor =
-      rule.issuer === app.session.identity ||
-      (privateActors.has(rule.issuer) &&
-        privateActors.get(rule.issuer) ===
-          privateActors.get(app.session.identity ?? ""));
+    const sameActor = Boolean(
+      app.session.identity &&
+      actor(rule.issuer) === actor(app.session.identity),
+    );
     const ineffective =
       !/^ed25519:[0-9a-f]{64}$/.test(rule.issuer) || !sameActor;
+    const effect = ineffective
+      ? !/^ed25519:[0-9a-f]{64}$/.test(rule.issuer)
+        ? "This rule has no valid issuer. Remove it or save a rule with your current key."
+        : continuity
+          ? "This rule does not apply in the loaded personal calculation. Its snapshot does not connect the issuer to your key."
+          : "No personal calculation is loaded. This rule depends on accepted continuity in the next calculation snapshot."
+      : "";
     const row = el("div", { class: "row" });
     row.append(
       el("span", { class: "k", text: invalid ? "invalid" : "private" }),
@@ -241,7 +236,7 @@ export async function trustPage(
           {},
           identityLink(rule.subject),
           text(
-            ` ${describeScope(rule.scope)}${rule.weight ? ` · weight ${fractionText(rule.weight)}` : ""}${invalid ? ` · Invalid saved scope. ${invalid} Remove this rule to repair the personal view.` : ineffective ? " · This rule names another identity or unknown continuity. It has no effect unless accepted continuity connects it to your key in the calculation snapshot. Remove it or save a rule with your current key." : ""}`,
+            ` ${describeScope(rule.scope)}${rule.weight ? ` · weight ${fractionText(rule.weight)}` : ""}${invalid ? ` · Invalid saved scope. ${invalid} Remove this rule to repair the personal view.` : effect ? ` · ${effect}` : ""}`,
             "meta",
           ),
         ),

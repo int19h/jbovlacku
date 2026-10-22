@@ -282,9 +282,14 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
   // Scores under the selected view. The personal view waits for the local calculation.
   const view = await viewScores(app, id, word);
   if (!context.live()) return;
+  const own = app.session.preferences.myJudgmentsFirst
+    ? await app.own.registers()
+    : null;
+  if (!context.live()) return;
+  const myJudgmentsFirst = Boolean(own);
   if (view.personal && view.reason) {
     const note = p(
-      `Personal scores are unavailable: ${view.reason} ${app.session.preferences.myJudgmentsFirst ? "Your judgments appear first, followed by event order." : "Definitions appear in event order."} No numeric score is assumed.`,
+      `Personal scores are unavailable: ${view.reason} ${myJudgmentsFirst ? "Your judgments appear first, followed by event order." : "Definitions appear in event order."} No numeric score is assumed.`,
       "small",
     );
     if (view.stale)
@@ -323,7 +328,7 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
   if (unknownProfile)
     main.append(
       p(
-        `Scores and order from the calculation profile ${view.calculation!.algorithm} are not shown. This client does not know its route rule. ${app.session.preferences.myJudgmentsFirst ? "Your judgments appear first, followed by event order." : "Definitions appear in event order."}`,
+        `Scores and order from the calculation profile ${view.calculation!.algorithm} are not shown. This client does not know its route rule. ${myJudgmentsFirst ? "Your judgments appear first, followed by event order." : "Definitions appear in event order."}`,
         "small",
       ),
     );
@@ -336,26 +341,34 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
   for (const definition of word.definitions)
     if (visible.has(definition) && !shown.has(definition))
       ordered.push({ id: definition, layer: null });
-  const myJudgmentsFirst = app.session.preferences.myJudgmentsFirst;
-  if (myJudgmentsFirst) {
-    const own = await app.own.registers();
-    if (!context.live()) return;
-    const hasJudgment = (definition: string): boolean => {
-      const state = own?.judgments.get(definition);
-      return Boolean(
-        state?.known &&
-        (state.conflicted || (state.value && state.value !== "clear")),
+  if (app.session.preferences.myJudgmentsFirst) {
+    if (own) {
+      const hasJudgment = (definition: string): boolean => {
+        const state = own?.judgments.get(definition);
+        return Boolean(
+          state?.known &&
+          (state.conflicted || (state.value && state.value !== "clear")),
+        );
+      };
+      ordered.sort(
+        (a, b) =>
+          (a.layer ?? rankedLayers.length) - (b.layer ?? rankedLayers.length) ||
+          Number(hasJudgment(b.id)) - Number(hasJudgment(a.id)),
       );
-    };
-    ordered.sort(
-      (a, b) => Number(hasJudgment(b.id)) - Number(hasJudgment(a.id)),
-    );
-    main.append(
-      p(
-        "Definitions with your judgments appear first. Scores and ranking layers stay the same.",
-        "meta",
-      ),
-    );
+      main.append(
+        p(
+          "Definitions with your judgments appear first within each ranking layer and within the unranked group. Scores and ranking layers stay the same.",
+          "meta",
+        ),
+      );
+    } else {
+      main.append(
+        p(
+          "Your judgments could not be loaded. Definitions follow ranking layers, then event order.",
+          "meta",
+        ),
+      );
+    }
   }
   const allRecords = [...records.values()];
   const statusOf = (definition: string) =>
@@ -388,7 +401,7 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
       const size = rankedLayers[layer].filter((d) => visible.has(d)).length;
       main.append(
         p(
-          `${plural(size, "alternative")} with unresolved order. ${myJudgmentsFirst ? "Your judgments appear first within the presentation." : "Presentation order follows event IDs."}`,
+          `${plural(size, "alternative")} with unresolved order. ${myJudgmentsFirst ? "Your judgments appear first within this layer." : "Presentation order follows event IDs."}`,
           "meta",
         ),
       );

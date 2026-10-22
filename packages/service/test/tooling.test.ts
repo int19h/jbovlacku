@@ -51,18 +51,30 @@ test("both build outputs carry the exact morphology notice and an index link", a
   const notice = await readFile(
     join(root, "crates/jvc-morphology/THIRD-PARTY-NOTICES.md"),
   );
-  for (const application of ["web", "server"]) {
-    await exec(process.execPath, ["scripts/copy-notices.mjs", application], {
-      cwd: root,
-    });
-    const directory = join(root, "apps", application, "dist", "notices");
-    assert.deepEqual(
-      await readFile(join(directory, "morphology-notices.md")),
-      notice,
-    );
-    assert.match(
-      await readFile(join(directory, "index.html"), "utf8"),
-      /href="morphology-notices\.md"/,
-    );
+  const parent = process.env.JVC_TEST_ROOT ?? tmpdir();
+  await mkdir(parent, { recursive: true });
+  const output = await mkdtemp(join(parent, "notice-case-"));
+  try {
+    for (const application of ["web", "server"]) {
+      const build = join(output, application);
+      await exec(
+        process.execPath,
+        ["scripts/copy-notices.mjs", application, build],
+        {
+          cwd: root,
+        },
+      );
+      const directory = join(build, "notices");
+      assert.deepEqual(
+        await readFile(join(directory, "morphology-notices.md")),
+        notice,
+      );
+      assert.match(
+        await readFile(join(directory, "index.html"), "utf8"),
+        /href="morphology-notices\.md"/,
+      );
+    }
+  } finally {
+    await rm(output, { recursive: true, force: true });
   }
 });

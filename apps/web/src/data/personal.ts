@@ -202,6 +202,26 @@ export class PersonalCalculator {
     private store: LocalStore,
     private context: () => Promise<OverlayContext>,
   ) {}
+  /** Accepted continuity for the loaded personal calculation only. */
+  get loadedContinuity(): {
+    snapshot: string;
+    view: string;
+    actors: Readonly<Record<string, string>>;
+  } | null {
+    if (
+      !this.loadedKey ||
+      this.status.state !== "ready" ||
+      this.status.mode !== "personal" ||
+      this.continuity?.snapshot !== this.status.snapshot ||
+      this.continuity.view !== this.status.view
+    )
+      return null;
+    return {
+      snapshot: this.continuity.snapshot,
+      view: this.continuity.view,
+      actors: { ...this.continuity.actors },
+    };
+  }
   subscribe(listener: Listener) {
     this.listeners.add(listener);
     listener(this.status);

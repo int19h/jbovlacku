@@ -209,7 +209,7 @@ test("concurrent preference changes keep both choices and remove the old persist
   }
 });
 
-test("reading preferences change orthography and put own judgments first without changing scores", async ({
+test("reading preferences change orthography and preserve scores and singleton layers", async ({
   page,
 }) => {
   await createIdentity(page);
@@ -224,10 +224,9 @@ test("reading preferences change orthography and put own judgments first without
   await expect(page.getByRole("status")).toHaveText(
     "Your opposition is published.",
   );
-  const lastId = await articles
-    .last()
+  const originalOrder = await articles
     .locator(".byline a[href^='/definition/']")
-    .getAttribute("href");
+    .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("href")));
   await page.getByRole("link", { name: "Settings", exact: true }).click();
   await page.getByLabel("Show my judgments first on word pages").check();
   await page
@@ -235,9 +234,15 @@ test("reading preferences change orthography and put own judgments first without
     .selectOption("zbalermorna");
   await openWord(page, "cukta");
   await expect(page.locator(".word-head .zbalermorna")).toBeVisible();
+  // Each fixture layer holds one definition, so the preference preserves their order.
+  expect(
+    await articles
+      .locator(".byline a[href^='/definition/']")
+      .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("href"))),
+  ).toEqual(originalOrder);
   await expect(
-    articles.first().locator(".byline a[href^='/definition/']"),
-  ).toHaveAttribute("href", lastId!);
+    articles.last().getByRole("button", { name: "Oppose", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
   expect(
     (await articles.locator(".judgment .score").allTextContents()).sort(),
   ).toEqual([...originalScores].sort());
@@ -457,4 +462,89 @@ test("failed disclosure persistence keeps remote reading and the session acknowl
   await expect(page.locator("main")).not.toContainText(
     "Preference storage failed",
   );
+});
+
+for (const tail of [false, true]) {
+  test(`own judgments stay within ranking layers${tail ? " and before no ranked definition in the tail" : " with one note per layer"}`, async ({
+    page,
+  }) => {
+    const f = fixture();
+    const ids = [
+      f.definitions.cukta1,
+      f.definitions.cukta2,
+      f.definitions.cukta3,
+      f.definitions.cuktaRev,
+    ];
+    await page.route("**/api/v1/words/**", async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      body.layers = tail
+        ? [[ids[0], ids[1]], [ids[2]]]
+        : [
+            [ids[0], ids[1]],
+            [ids[2], ids[3]],
+          ];
+      await route.fulfill({ response, json: body });
+    });
+    await page.goto("/preferences");
+    await page.getByLabel("Show my judgments first on word pages").check();
+    await page.evaluate(
+      async (judged) => {
+        const { OwnState } = await import(String("/src/app/context.ts"));
+        OwnState.prototype.registers = async () =>
+          ({
+            complete: true,
+            trust: new Map(),
+            judgments: new Map(
+              judged.map((id: string) => [
+                id,
+                { known: true, value: "bless", conflicted: false, events: [] },
+              ]),
+            ),
+          }) as any;
+      },
+      [ids[1], ids[3]],
+    );
+    await openWord(page, "cukta");
+    await page.getByRole("link", { name: /^All/ }).click();
+    const articles = page.locator("article.definition");
+    await expect(articles).toHaveCount(4);
+    const links = await articles
+      .locator(".byline a[href^='/definition/']")
+      .evaluateAll((nodes) => nodes.map((n) => n.getAttribute("href")));
+    const expected = tail
+      ? [ids[1], ids[0], ids[2], ids[3]]
+      : [ids[1], ids[0], ids[3], ids[2]];
+    expect(links).toEqual(
+      expected.map((id) => `/definition/${encodeURIComponent(id)}`),
+    );
+    await expect(
+      page.getByText(/^2 alternatives with unresolved order\./),
+    ).toHaveCount(tail ? 1 : 2);
+  });
+}
+
+test("missing own judgments disclose the failure and keep ranking order", async ({
+  page,
+}) => {
+  await page.goto("/preferences");
+  await page.getByLabel("Show my judgments first on word pages").check();
+  await page.evaluate(async () => {
+    const { OwnState } = await import(String("/src/app/context.ts"));
+    OwnState.prototype.registers = async () => null;
+  });
+  await openWord(page, "cukta");
+  await expect(
+    page.getByText(
+      "Your judgments could not be loaded. Definitions follow ranking layers, then event order.",
+    ),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Definitions with your judgments appear first.", {
+      exact: false,
+    }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByText("Your judgments appear first", { exact: false }),
+  ).toHaveCount(0);
 });

@@ -193,7 +193,9 @@ test("the Trust page names the publisher and isolates invalid or unrelated priva
     page.getByText("Invalid saved scope", { exact: false }),
   ).toHaveCount(0);
   await expect(
-    page.getByText(/This rule names another identity/),
+    page.getByText(
+      /This rule depends on accepted continuity in the next calculation snapshot/,
+    ),
   ).toBeVisible();
 });
 
@@ -851,4 +853,123 @@ test("concurrent recovery writes save one acceptance and finish delivery with th
   await expect(
     page.getByRole("region", { name: "Handover status" }),
   ).toContainText("Handover complete");
+});
+
+test("private rule labels use the loaded calculation continuity across a newer accepted handover", async ({
+  page,
+}) => {
+  const transfer = await transferFixture(page);
+  const result = await page.evaluate(
+    async ({ transfer, corePath, passphrase, subject }) => {
+      const core = await import(corePath);
+      const { LocalStore, emptyOverlay } = await import(
+        String("/src/data/store.ts")
+      );
+      const { syncRecords } = await import(String("/src/data/records.ts"));
+      const { PersonalCalculator } = await import(
+        String("/src/data/personal.ts")
+      );
+      const { trustPage } = await import(String("/src/pages/trust.ts"));
+      const { signWith } = await import(String("/src/data/lifecycle.ts"));
+      const { unlockKey } = await import(String("/src/data/keys.ts"));
+      const store = new LocalStore(`trust-snapshot-${crypto.randomUUID()}`);
+      const overlay = emptyOverlay();
+      overlay.trust.push({
+        issuer: transfer.old.identity,
+        subject,
+        scope: { kind: "*", word: "*", language: "*" },
+        value: "heed",
+        weight: { numerator: 1, denominator: 1 },
+      });
+      await store.setOverlay(overlay);
+      const cached = await syncRecords(store);
+      const personal = new PersonalCalculator(store, async () => ({
+        identity: transfer.successor.identity,
+      }));
+      const initial = await personal.ensure();
+      if (initial.state !== "ready") throw new Error(JSON.stringify(initial));
+      const acceptance = await signWith(
+        await unlockKey(transfer.successor, passphrase),
+        transfer.successor.identity,
+        [],
+        { kind: "identity.accept", transfer: transfer.transfer.id },
+      );
+      const response = await fetch("/api/v1/events", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(acceptance),
+      });
+      if (!response.ok) throw new Error(await response.text());
+      const main = document.createElement("main");
+      const app = {
+        store,
+        personal,
+        session: {
+          identity: transfer.successor.identity,
+          preferences: { viewMode: "personal" },
+        },
+        own: { registers: async () => null },
+      };
+      const render = async () => {
+        main.replaceChildren();
+        await trustPage(
+          {} as any,
+          {
+            main,
+            title() {},
+            live: () => true,
+            signal: new AbortController().signal,
+          } as any,
+          app as any,
+        );
+        const trusted = [...main.querySelectorAll("h2")].find(
+          (node) => node.textContent === "People I trust",
+        )!.nextElementSibling!;
+        return {
+          trusted: Boolean(
+            trusted.querySelector(
+              `a[href='/identity/${encodeURIComponent(subject)}']`,
+            ),
+          ),
+          text: main.textContent,
+        };
+      };
+      const beforeRefresh = await render();
+      const refreshed = await personal.ensure({ refresh: true });
+      if (refreshed.state !== "ready")
+        throw new Error(JSON.stringify(refreshed));
+      const afterRefresh = await render();
+      personal.invalidate();
+      const withoutCalculation = await render();
+      personal.cancel();
+      const db = await store.database;
+      db.close();
+      indexedDB.deleteDatabase(db.name);
+      return {
+        cached: cached.snapshot,
+        refreshed: refreshed.snapshot,
+        beforeRefresh,
+        afterRefresh,
+        withoutCalculation,
+      };
+    },
+    {
+      transfer,
+      corePath,
+      passphrase: PASSPHRASE,
+      subject: fixture().identities.curator,
+    },
+  );
+  expect(result.cached).not.toBe(result.refreshed);
+  expect(result.beforeRefresh.trusted).toBe(false);
+  expect(result.beforeRefresh.text).toContain(result.cached);
+  expect(result.beforeRefresh.text).toContain(
+    "This rule does not apply in the loaded personal calculation.",
+  );
+  expect(result.afterRefresh.trusted).toBe(true);
+  expect(result.afterRefresh.text).toContain(result.refreshed);
+  expect(result.withoutCalculation.trusted).toBe(false);
+  expect(result.withoutCalculation.text).toContain(
+    "No personal calculation is loaded. This rule depends on accepted continuity in the next calculation snapshot.",
+  );
 });
