@@ -234,6 +234,7 @@ test("reading preferences change orthography and preserve scores and singleton l
     .selectOption("zbalermorna");
   await openWord(page, "cukta");
   await expect(page.locator(".word-head .zbalermorna")).toBeVisible();
+  await expect(articles).toHaveCount(4);
   // Each fixture layer holds one definition, so the preference preserves their order.
   expect(
     await articles
