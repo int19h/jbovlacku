@@ -514,7 +514,7 @@ export function placeTable(body: DefinitionBody, prefix: string): HTMLElement {
           {},
           ...place.defaults.map((d) =>
             el("p", {
-              text: `${d.kind} default: ${d.value.text}${plainText(d.condition) ? ` when ${plainText(d.condition)}` : ""}`,
+              text: `${d.kind} default: ${d.value.text}${d.value.format === "prose" ? ` (${d.value.language})` : ""}${plainText(d.condition) ? ` when ${plainText(d.condition)}` : ""}${plainText(d.explanation) ? `. ${plainText(d.explanation)}` : ""}`,
             }),
           ),
         ),
