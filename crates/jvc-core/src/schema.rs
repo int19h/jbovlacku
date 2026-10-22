@@ -960,7 +960,10 @@ fn view(b: &Value, r: &mut Rich) -> Result<()> {
     if 10 * n > 9 * d {
         return Err(bad("alpha exceeds 9/10"));
     }
-    oneof(&b["calculation"], &["simple-routes-bounds-v1"])?;
+    oneof(
+        &b["calculation"],
+        &["simple-routes-bounds-v1", "simple-routes-shun-v1"],
+    )?;
     integer(&b["work"], 1, 10_000_000)?;
     ids(&b["account_witnesses"], "ed25519:", 64)?;
     for i in b["account_witnesses"].as_array().unwrap() {

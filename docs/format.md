@@ -40,7 +40,8 @@ Transport accepts mathematically integral decimal and exponent forms, such as `1
 Receivers must reject genuine fractions before binary64 rounding can turn them into integers. Stored JSON remains strictly canonical.
 
 Unknown fields are errors for version 1, except explicitly open legacy source objects and derived-profile parameters.
-Missing required fields and additional union variants are errors. An optional field has the exact absence or null rule stated below.
+Missing required fields and additional union variants are errors. Each optional field has the absence rule stated for its object.
+Section 7 defines omitted fields within definition bodies. It does not change the required fields of headers, actions, or other body types.
 
 Identifiers have these forms:
 
@@ -213,7 +214,8 @@ No IANA registry membership test applies. Registry changes must not change the v
 An importer retains unmapped legacy language codes separately. It never silently merges simplified English into English.
 Publication bodies must agree with their action's word and language.
 
-Origin is `native` or `import`. A native body has legacy null, while an imported body requires a legacy object.
+Origin is `native` or `import`. A native definition body omits legacy or sets it to null.
+A native rafsi body still requires explicit legacy null. An imported body requires a legacy object.
 Imported definitions permit import.status through accepted source-author links under section 11. An importer signature alone grants no withdrawal authority.
 Imported rafsi claims retain no author status control. Their word-level eligibility still follows the definition gate below.
 
@@ -367,29 +369,98 @@ Social endorsements can support a new key, but they never forge continuity with 
 
 ### Definition payload
 
-The following fields are required. Optional information uses null or an empty array, as specified.
+The following table lists the definition fields. Required fields have no default.
+For an optional field, the last column gives its meaning when absent. Explicit empty values remain valid wherever their stated type permits them.
 
-| Field | Type and meaning |
-| --- | --- |
-| `word` | Object with `language: "jbo"` and NFC `spelling`. |
-| `language` | Tag for this definition with well-formed BCP 47 syntax, lowercase ASCII, and at most 63 bytes. No registry membership test applies. |
-| `text` | Rich text, defined below. |
-| `frame` | Null, or the place frame below. |
-| `operands` | Array of grammatical operands. |
-| `glosses` | Array of gloss objects. |
-| `notes` | Rich text. |
-| `etymology` | Descriptive text and optional structured formation data. |
-| `examples` | Array of example objects. |
-| `classification` | Object with lexical kind and selmaho claims. |
-| `labels` | Array of text labels, without automatic ranking effects. |
-| `sources` | Array of source references. |
-| `license` | License expression and attribution, or explicit unknown for imports. |
-| `legacy` | Null, or the import provenance below. |
+| Field | Type and meaning | Presence or default |
+| --- | --- | --- |
+| `word` | Object with `language: "jbo"` and NFC `spelling`. | Required. |
+| `language` | Definition language with well-formed BCP 47 syntax, lowercase ASCII, and at most 63 bytes. No registry membership test applies. | Required. |
+| `text` | Rich text, defined below. | Required. |
+| `frame` | Null, or the place frame below. | `null`. |
+| `operands` | Array of grammatical operands. | `[]`. |
+| `glosses` | Array of gloss objects. | `[]`. |
+| `notes` | Rich text. | `[]`. |
+| `etymology` | Descriptive text and optional structured formation data. | `{"text":[],"formation":null,"compound":null}`. |
+| `examples` | Array of example objects. | `[]`. |
+| `classification` | Object with lexical kind and selmaho claims. | Required. |
+| `labels` | Array of text labels, without automatic ranking effects. | `[]`. |
+| `sources` | Array of source references. | `[]`, subject to source-rights requirements below. |
+| `license` | License expression and attribution, or explicit unknown for imports. | Required. |
+| `legacy` | Null, or the import provenance below. | `null` for native publications. Required for imports. |
 
 A lexical kind is an author's classification, not a morphology admission rule.
 The permitted labels are `gismu`, `cmavo`, `lujvo`, `fuivla`, `cmevla`, `compound`, `letteral`, and `other`.
 Experimental and obsolete status belongs in labels. Import mappings retain the original classification in legacy source fields.
 A selmaho is a Lojban grammatical class. Preserve its spelling, including experimental markers.
+
+### Absent fields and compatibility
+
+A field default is the meaning of an absent field. It does not add content to a signed record.
+Readers accept both an omitted optional field and its explicit default value.
+New writers omit optional fields whose interpreted values equal their defaults, unless another requirement needs explicit evidence.
+No default changes the meaning of a present value. A wrong type or invalid present value remains an error.
+In particular, `null` cannot replace an empty array or an object unless that field permits `null`.
+
+Readers authenticate the original body before they interpret absent fields.
+Stored bodies, exports, body hashes, byte counts, signatures, and event IDs always refer to the original canonical JSON.
+Readers apply defaults only to a separate interpreted value. They never replace retained content with that value.
+Two bodies with different field presence can have the same interpretation and different hashes.
+That equivalence never merges publications, transfers endorsements, or changes their exact IDs.
+
+Validation of references, uniqueness, and cross-field requirements uses the interpreted values.
+For example, two type alternatives that differ only by omitted defaults are duplicates.
+The rules never invent place declarations, source evidence, license consent, or algorithm parameters.
+An absent frame remains unspecified. A present fixed frame with count zero still means zero places.
+Each revision supplies a complete definition. An omitted field never inherits its parent's value.
+
+Every future optional field must define its absence meaning when introduced.
+That meaning must preserve the interpretation of records that predate the field.
+A later specification cannot silently change an existing default or make an old optional field mandatory.
+A change that cannot preserve those meanings needs an explicit format version with rules for earlier records.
+This policy lets newer readers handle older records. Unknown fields and unknown union variants still follow section 3.
+The absence policy does not make older readers understand new fields or permit them to discard unknown signed content.
+
+The following defaults apply only within definition content. They do not apply inside `legacy` or other imported source evidence.
+All fields absent from these tables remain required when their containing object exists.
+Object field lists elsewhere in this section name permitted fields. These tables determine which fields can be omitted.
+Removing a field from an object still must satisfy that object's other rules.
+
+| Object | Optional fields and their defaults |
+| --- | --- |
+| Classification | `selmaho: []`. |
+| Frame | `places: []`, `constraints: []`. `tail: null` only in fixed or context mode. |
+| Place | `glosses: []`, `description: []`, `type_hints: []`, `defaults: []`, `constraints: []`, `derivation: []`. |
+| Variadic tail | `description: []`, `type_hints: []`. |
+| Gloss | `sense: null`. |
+| Type hint | `note: []`. |
+| Type alternative | `tags: []`, `abstractor: null`, `relation_arity: null`. At least one must supply information. |
+| Place default | `condition: []`, `explanation: []`. |
+| Derivation | `definition: null`, `explanation: []`. |
+| Operand | `description: []`. |
+| Operand cardinality | `maximum: null`. |
+| Example | `translation: []`, `notes: []`. |
+| Source reference | `url: null`, `event: null`, `locator: null`. |
+| License | `url: null`, `attribution: ""`, subject to the contribution and source-rights rules below. |
+| Etymology | `text: []`, `formation: null`, `compound: null`. |
+| Formation | `algorithm: null`, `sources: []`, `weights_profile: null`, `generated: null`, `selected_score: null`, `selected_rank: null`, `selection_reason: []`, `candidates: []`, `conflicts: []`. |
+| Formation source | `input: null`, `weight: null`, `notes: []`. |
+| Formation algorithm | `implementation: null`. |
+| Weight profile | `name: null`, `source: null`. |
+| Formation candidate | `score: null`, `rank: null`. |
+| Compound | `score: null`, `notes: []`. |
+| Compound component | `definition: null`. |
+
+A variadic frame still requires a non-null tail and enough explicit place declarations for its minimum.
+A fixed frame still requires every place through its declared count.
+Each place still requires its index. Each type hint still requires at least one nonempty alternative.
+Arity modes and their counts remain explicit. A missing operand maximum means no finite upper bound, not zero.
+Word objects, inline rich-text nodes, and algorithm parameters retain all their required fields.
+An empty etymology object is valid. An empty formation object is invalid because its method is required.
+
+The [frontend specification](frontend.md#5-add-a-definition) applies these rules to drafts, revisions, and publication.
+The format still permits an explicit empty `text` value. The reference client requires definition text before publication.
+The [README](../README.md) states whether the implementation accepts omitted fields.
 
 ### Rich text
 
@@ -460,9 +531,10 @@ A tail contains `from`, `description`, and `type_hints`. Its `from` equals one p
 Variable frames declare a contiguous prefix that includes at least the minimum number of places.
 Place references in rich text still require explicit declarations, including illustrative places beyond the minimum.
 A missing upper limit means no finite bound, not that clients must allocate an infinite array.
-Every frame has exactly `role`, `arity`, `places`, `tail`, and `constraints`.
+Frame fields are `role`, `arity`, `places`, `tail`, and `constraints`, with the absence rules above.
 
-Frame constraints are rich-text descriptions of relationships between several places. Place constraints describe that place. The places array is always present, with unique indices in ascending order.
+Frame constraints are rich-text descriptions of relationships between several places. Place constraints describe that place.
+The interpreted places array has unique indices in ascending order.
 For fixed and context modes, tail is null. For variadic mode, tail is required and minimum ranges from 0 through 256.
 
 A context frame can have an empty or noncontiguous place list. Its declarations still need unique indices.
@@ -493,8 +565,8 @@ The `alternatives` array expresses alternatives. Within an alternative, its fiel
 }
 ```
 
-Each hint contains exactly `alternatives` and `note`. Its alternatives array has between 1 and 32 distinct objects.
-Each alternative contains exactly `tags`, `abstractor`, and `relation_arity`. Tags form a sorted, duplicate-free array with at most 32 entries.
+Each hint permits `alternatives` and `note`. Its required alternatives array has between 1 and 32 distinct objects after defaults apply.
+Each alternative permits `tags`, `abstractor`, and `relation_arity`. Tags form a sorted, duplicate-free array with at most 32 entries.
 At least one tag, abstractor, or relation-arity value must supply information. Empty alternatives are invalid.
 
 Standard tags are `entity`, `agent`, `event`, `state`, `process`, `relation`, `proposition`, `number`, `text`, `set`, `mass`, `sequence`, and `tuple`.
@@ -532,12 +604,13 @@ A word-only reference is unresolved evidence. It never asserts a formal identity
 
 ### Etymology and formation evidence
 
-Etymology contains exactly `text`, `formation`, and `compound`. Text is rich text without place or operand references.
+Etymology permits `text`, `formation`, and `compound`. Text is rich text without place or operand references.
 Both structured fields can be null. Free text remains available when structured evidence exists.
 These fields record attributed formation claims, not automatic proof of historical construction.
 A lexical classification never implies that a generation algorithm produced the word.
 
-The formation object contains exactly method, algorithm, sources, weights_profile, generated, selected_score, selected_rank, selection_reason, candidates, and conflicts.
+The formation object requires method.
+It also permits algorithm, sources, weights_profile, generated, selected_score, selected_rank, selection_reason, candidates, and conflicts, with the defaults above.
 Method is algorithmic, non-algorithmic, or unknown. Non-algorithmic requires a null algorithm. These claims can describe roots, borrowings, or names.
 Sources is an ordered array with at most 64 entries. Each entry contains language, word, input, weight, and notes.
 
@@ -558,7 +631,7 @@ Normalize weights over distinct languages, not source rows. Adding another synon
 Different non-null weights for one language make the formation claim inconsistent. The body remains valid, but the client never labels that run reproducible.
 
 A run with unresolved parameters remains descriptive historical evidence. The frontend never labels it reproducible.
-Weights_profile is null or an object containing exactly name and source. Name is a nonempty string or null. Source is a nullable source reference.
+Weights_profile is null or an object permitting name and source. Name is a nonempty string or null. Source is a nullable source reference.
 
 Resolved row weights remain authoritative for the recorded run. A profile name never substitutes for the actual weights or normalization rule.
 
@@ -579,12 +652,20 @@ Conflicts contains acknowledged objects with word, rule, and snapshot. Word is a
 Rule is identical, final-vowel, or similar-consonant. These records identify known acknowledgments, not proof of complete global coverage.
 A source inconsistency or a calculated mismatch produces a visible diagnostic. It does not make otherwise well-formed historical evidence invalid.
 
-The compound object contains exactly components, morphology, scoring, score, and notes.
+The compound object requires components, morphology, and scoring. It also permits score and notes, with the defaults above.
 Components is an ordered array of 2 through 64 objects. Each contains word, definition, and rafsi.
-Word is a word object. Definition is a nullable exact definition event ID. Rafsi is the selected nonempty spelling, without automatically inserted joining characters.
+Word is a word object. Definition is a nullable exact definition event ID.
+Rafsi is the selected nonempty component spelling. It excludes joining characters, whether the algorithm or the author selects them.
 
 Morphology and scoring are objects with exactly id and version. Id is an HTTPS identifier, and version is nonempty.
 Score is null or a safe integer. Notes is rich text. This metadata does not itself assign or endorse any rafsi.
+
+The definition's `word.spelling` preserves its exact compound spelling, including optional hyphens.
+The morphology identifier and version determine which joins that spelling permits.
+A client must use that spelling when it recovers joins and calculates the recorded construction score.
+It must not reconstruct the spelling from component rafsi with a default joining algorithm, because that can remove the author's optional hyphens.
+An optional hyphen or a worse construction score never invalidates otherwise well-formed compound metadata.
+The [frontend specification](frontend.md#step-3a-lujvo-builder) defines author controls and the distinction between parser acceptance and default construction.
 
 The author can record both structured formation fields when that reflects the word's history. Neither field overrides its classification.
 
@@ -607,7 +688,7 @@ A compact illustrative etymology follows. It does not claim actual historical in
 
 An operand has `id`, `category`, `description`, and `cardinality`.
 Its ID matches `[a-z][a-z0-9_-]{0,31}`. Its category is a descriptive string such as `bridi`, `selbri`, `sumti`, or `number`.
-Cardinality contains exactly `minimum` and nullable `maximum`. Both finite values are integers from 0 through 65,535.
+Cardinality requires `minimum` and permits nullable `maximum`. Both finite values are integers from 0 through 65,535.
 
 A finite maximum cannot be smaller than the minimum. Operand IDs are unique within the definition.
 Cardinality describes the construction, not outer predicate arity.
@@ -627,13 +708,14 @@ A source reference contains `label`, nullable HTTPS `url`, nullable `event`, and
 Its locator is a textual source position. Source references do not fetch content automatically or grant authority.
 A derivation item contains `word`, nullable `definition`, positive `place`, and rich-text `explanation`. Its word field is a word object, not a word ID. Its place index belongs to that source word, not the current frame.
 
-Both frame and place `constraints` fields are arrays of rich-text values. `glosses`, `type_hints`, `defaults`, and `derivation` are arrays, even when empty.
+Both frame and place `constraints` fields are arrays of rich-text values.
+When present, `glosses`, `type_hints`, `defaults`, and `derivation` are arrays. Their absence means an empty array under the rules above.
 
 `license` contains `expression`, nullable `url`, and `attribution` text.
 A license value records a rights claim. Signature acceptance does not establish that claim's legal validity.
 
 The reference client fills new native definitions with `expression: "CC0-1.0"` and `url: "https://creativecommons.org/publicdomain/zero/1.0/"`.
-It sets `license.attribution` to an empty string. The signed header's `issuer` identifies the contributor.
+Its interpreted `license.attribution` is an empty string, so a new writer omits that field. The signed header's `issuer` identifies the contributor.
 The full editor does not expose another author attribution input.
 These are client defaults, not additional schema validity rules. Imported attribution follows the separate rules below.
 The Publish action is explicit agreement to these terms. The client shows the linked notice before that action, without a separate checkbox.
@@ -658,7 +740,7 @@ The notice covers imported dictionary text. It does not establish rights for thi
 Imports without established rights retain `expression: "unknown"` and their available source evidence.
 Existing signed bodies with unknown rights remain immutable. Section 11 defines how an explicit enriched extraction records newly established rights.
 A native revision uses the same CC0 fields for the contributor's own contribution.
-The reference client also sets its `license.attribution` to an empty string.
+The reference client also leaves its interpreted `license.attribution` empty and omits that field from the new body.
 Its parent link retains the imported publication, including the original author attribution and numeric account evidence.
 Its `sources` include two separate references. The first sets `event` to that exact imported publication's ID.
 The second copies the rights reference defined above, including its notice `label`, pinned `url`, null `event`, and `locator: "footer.publicDomainNotice"`.
@@ -668,7 +750,7 @@ Prototype fixtures declare their own rights and do not establish rights for real
 ### Example of a structured definition
 
 This example is new illustrative wording. It is not a claim that a historical author supplied these annotations.
-This complete body includes empty values for its unused fields. Pretty-printed examples become canonical JSON before signing.
+This complete body omits unused optional fields. Pretty-printed examples become canonical JSON before signing.
 
 ```json
 {
@@ -679,21 +761,15 @@ This complete body includes empty values for its unused fields. Pretty-printed e
     "role":"predicate",
     "arity":{"mode":"fixed","count":3},
     "places":[
-      {"index":1,"glosses":[],"description":[],"type_hints":[],"defaults":[],"constraints":[],"derivation":[]},
-      {"index":2,"glosses":[{"language":"en","text":"property","sense":null}],"description":[],
-       "type_hints":[{"alternatives":[{"tags":["relation"],"abstractor":"ka","relation_arity":{"mode":"fixed","count":1}}],"note":[]}],
-       "defaults":[],"constraints":[],"derivation":[]},
-      {"index":3,"glosses":[],"description":[],"type_hints":[],"defaults":[],"constraints":[],"derivation":[]}
-    ],
-    "tail":null,"constraints":[]
+      {"index":1},
+      {"index":2,"glosses":[{"language":"en","text":"property"}],
+       "type_hints":[{"alternatives":[{"tags":["relation"],"abstractor":"ka","relation_arity":{"mode":"fixed","count":1}}]}]},
+      {"index":3}
+    ]
   },
-  "operands":[],
   "glosses":[{"language":"en","text":"great","sense":"in a property"}],
-  "notes":[],"etymology":{"text":[],"formation":null,"compound":null},"examples":[],
-  "classification":{"kind":"gismu","selmaho":[]},
-  "labels":[],"sources":[],
-  "license":{"expression":"CC0-1.0","url":"https://creativecommons.org/publicdomain/zero/1.0/","attribution":""},
-  "legacy":null
+  "classification":{"kind":"gismu"},
+  "license":{"expression":"CC0-1.0","url":"https://creativecommons.org/publicdomain/zero/1.0/"}
 }
 ```
 
@@ -716,7 +792,7 @@ A `view.publish` body contains these fields:
 | `H` | Rational outward multiplier. Reference value `3/1`. |
 | `alpha` | Rational onward fraction. Reference value `1/2`. |
 | `excluded` | Sorted objects containing `identity` and `evidence`, an array of event IDs. |
-| `calculation` | `simple-routes-bounds-v1`. |
+| `calculation` | `simple-routes-bounds-v1` or `simple-routes-shun-v1`. |
 | `work` | Positive integer expansion budget. Reference value 1,000,000. |
 | `import_sets` | Sorted objects containing `source`, `importer`, and `selection`. |
 | `account_witnesses` | Sorted identity keys trusted for external-account observations, without duplicates. |
@@ -752,18 +828,29 @@ Public view adoption is outside event validity. A client never adopts a view mer
 A view update is a new publication with parent links. Its changed allocations remain inspectable and reversible by choosing another view.
 Private roots, scopes, weights, and exclusions form an unsigned local overlay. The client includes its digest in result metadata.
 
-The overlay has exactly `version`, `base_view`, `root_changes`, `trust`, `blocked`, and `work`.
-Version is 1. Base view is the public view event ID. Work is null or a permitted replacement expansion budget.
+Overlay version 1 has exactly `version`, `base_view`, `root_changes`, `trust`, `blocked`, and `work`.
+Overlay version 2 has those fields plus required `public_shun_issuer`.
+That field is one valid `ed25519:` identity key or null. Missing, malformed, or unknown fields make the overlay invalid.
+Base view is the public view event ID. Work is null or a permitted replacement expansion budget.
 Each root change has `identity` and `q`, where null removes that root and a rational replaces its allocation.
 Each private trust rule has `issuer`, `subject`, `scope`, `value`, and nullable rational `weight`.
 
-Values are `heed`, `shun`, and `clear`. A private exact-scope rule replaces the corresponding public rule before specificity resolution.
+Values are `heed`, `shun`, and `clear`.
+A private exact-scope rule replaces the corresponding public rule before specificity resolution for edges and route refusals.
+It does not change the separate public-shun blocks that version 2 derives below.
 A clear removes the exact public rule and permits broader fallback. A weight is permitted only with heed and must be positive.
 Unweighted effective heeds receive relative weight 1. Conflicting retained private heed weights block that edge until the user resolves them.
 
 Blocked entries contain `identity` and `scope`. Their local reason text is stored separately and has no scoring effect.
 Arrays sort by their canonical object bytes and contain no duplicate register keys. The overlay digest hashes the canonical complete object.
+The digest includes the version and, for version 2, the issuer field.
 A null overlay uses the digest of canonical JSON null. Private preferences never become signed records through ordinary synchronization.
+
+`public_shun_issuer` is an unsigned local preference. It proves no control of the named key and grants no public authority.
+A custom client can select any issuer for its own local calculation.
+The reference frontend supplies the current session identity, or null for an anonymous session, when it builds a personal calculation.
+Saved private preferences remain version 1. The frontend builds version 2 for calculation and saves no derived blocks or selected issuer there.
+Site calculations use a null overlay. Version 1 keeps its existing interpretation.
 
 ### Scope and shuns
 
@@ -781,13 +868,52 @@ If every retained value is `heed`, an edge exists. Any shun or conflict blocks t
 
 Incomparable scopes can therefore conflict. A narrow clear falls back to a broader heed, but a narrow shun blocks it.
 
-A public shun prevents its issuer's direct edge. It does not cancel independent routes from other people.
+A public shun prevents its issuer's direct edge in both supported profiles.
+The `simple-routes-bounds-v1` profile applies no further route refusal.
+It stores no route-refusal relation and ignores that data when grouping calculations or comparing candidates.
+The `simple-routes-shun-v1` profile also prevents entry to a target that any earlier actor on that route effectively shuns.
+Resolve scope specificity and identity continuity before constructing these refusals.
+Any retained value set that contains `shun` creates a refusal, including a conflict that contains `shun`.
+A conflict without `shun`, a clear alone, and missing trust create no refusal.
+Self-shuns create no refusal.
+
+A refused entry gives the target no judgment weight or onward mass from that route.
+Independent routes, credit from other permitted routes, and the target's own starting allocation remain eligible.
+For `R -> A -> B -> C`, an effective `A shuns C` rejects entry to C under `simple-routes-shun-v1`.
+An independent `X -> C` route remains eligible when X does not shun C.
+The refusal never redistributes the rejected share.
+
 A reader's local shun removes the target and all routes through it in that reader's view.
 A view exclusion has that same graph effect within the named view.
 
 A block naming any key in a continuity group blocks the whole group. Its own q becomes zero as well as its incident routes. Neither action reverses curses into blessings.
 The reference frontend also treats its current user's effective public shuns as local blocks in that user's personal view.
 This personal behavior does not impose a veto on the public view.
+
+For a version 2 overlay with a non-null issuer, derive those blocks from authenticated public trust rules in the same snapshot.
+Resolve the issuer and subjects through accepted continuity before grouping rules.
+Use the matching scopes, narrowest scopes, clear fallback, conflict values, and self-shun rule defined above.
+Any retained value set containing shun creates a personal block, including a conflict containing shun.
+A conflict without shun creates none. A narrower public heed overrides a broader public shun in its matching context.
+
+Resolve this public source before private trust replacement. Private heeds, clears, and trust shuns neither remove nor create these public blocks.
+While the public source stands, a private heed cannot restore influence through that actor in the personal calculation.
+A public clear or a narrower public heed can remove that source in the relevant context.
+An explicit private block remains separate and survives a public clear.
+Add both block sources before final graph filtering under either signed public calculation profile.
+
+Only records in the named authenticated snapshot affect these public blocks.
+Undelivered or unindexed public actions remain pending until a later snapshot includes them and the client recalculates.
+A receipt alone does not prove that the calculation includes a newly signed public action.
+Unavailable issuer history makes the personal calculation unavailable. It does not produce an empty successful block result.
+
+Version 2 reviewer details can include optional `public_shun_block` and `private_block` fields.
+Each is absent or the literal true. Absence supplies no such reason.
+The first names a block derived from `public_shun_issuer`. The second names a matching explicit `overlay.blocked` entry.
+Resolve both reasons against the exact comparison context and continuity group. Both can apply to the same reviewer.
+Neither reason represents a view exclusion or a suspension. Keep the existing generic `blocked` field.
+These reasons add no reviewers without judgments and preserve the existing response bounds.
+Version 1 and site reviewer response shapes remain unchanged.
 
 Build each positive outgoing row before applying view exclusions and local blocks. Divide it equally among its resolved heeds.
 Private weights can replace equal weights. Let s be their positive sum.
@@ -810,7 +936,9 @@ The contribution along route `(r,v1,...,vk)` is:
 H * q_r * alpha^(k-1) * p[r,v1] * ... * p[v(k-1),vk]
 ```
 
-An actor's weight equals its own `q` plus all simple-route contributions that end there.
+An actor's weight equals its own `q` plus all permitted simple-route contributions that end there.
+Under `simple-routes-shun-v1`, each entry must also pass every earlier actor's effective shuns.
+Under `simple-routes-bounds-v1`, every simple route in the positive graph remains permitted.
 An actor retains every received contribution for its judgments and forwards the alpha fraction onward.
 Its own outward pool is `H*q`, independent of its own judgment allowance.
 Changing only its outgoing heeds cannot increase its own weight. No route can return through proxies and pay it again.
@@ -842,18 +970,22 @@ Initialize each actor's lower weight to its q.
 Before costing a stage, merge prefixes with identical visited actor sets and identical endpoints. Sum their outgoing masses exactly.
 Visited sets contain continuity-group actor IDs. Prefix order does not affect merging or cost.
 
-A stage attempts every positive-share edge of every merged current prefix. Outgoing degree counts positive entries in the effective matrix P. Its cost is the sum of those outgoing degrees, including repeated-actor attempts.
+A stage attempts every positive-share edge of every merged current prefix.
+Outgoing degree counts positive entries in the effective matrix P.
+Its cost is the sum of those outgoing degrees, including attempts that repeat an actor or encounter a route refusal.
 Compute that cost before expansion. If it exceeds the remaining budget, stop before the complete stage.
 
 A prefix holds outgoing mass m before edge shares. An allowed edge of share p adds m*p to the destination's lower weight.
 Queue outgoing mass alpha*m*p for the next stage. These operations place alpha after the first hop, as the route formula requires.
 
-Discard repeated-actor edges and zero masses. Do not redistribute them. If no prefixes remain, the result is exact.
+Discard repeated-actor edges, forbidden entries under the selected profile, and zero masses.
+Do not redistribute them. If no prefixes remain, the result is exact.
 Identity order determines stable serialization only. It never selects a partial stage for deeper expansion.
 
 At the limit, aggregate every unexpanded prefix's outgoing mass by endpoint into vector b.
 This aggregation scans prefixes once. It does not enumerate their neighbors again.
-Set `f = Pᵀ*b`. This first relaxed step ignores visited-set restrictions, so it supplies an upper bound, not additional lower credit.
+Set `f = Pᵀ*b`.
+This first relaxed step ignores visited-set restrictions and route refusals, so it supplies an upper bound, not additional lower credit.
 The lower result remains the completed-stage totals L. For the upper result, add these vectors to L:
 
 ```text
@@ -867,6 +999,9 @@ alpha^65 * sum(f) / (1-alpha)
 ```
 
 Each allowed continuation occurs in this nonnegative relaxed walk sum. Extra repeated routes only enlarge the upper bound.
+Under `simple-routes-shun-v1`, unfinished upper bounds can also include routes that effective shuns forbid.
+The result's algorithm name identifies that profile. Its `exact` flag identifies whether exploration completed.
+An unfinished upper endpoint does not measure received influence.
 Rows sum to at most one, so the stated tail contains every remaining contribution. Empty b gives exact bounds.
 The largest useful complete stage depends on the graph. A high-degree graph can stop before its first stage.
 
@@ -877,10 +1012,23 @@ An implementation with outward rounding must identify a derived calculation prof
 It cannot claim an ordering that the reference bounds do not establish. More complete exact stages use a larger declared budget.
 Implementations that prove tighter bounds through another method also need a distinct profile name.
 
-The format's mathematical target remains unchanged across these calculation profiles.
+Derived arithmetic profiles must preserve the route rule of the profile they name as their reference.
+The two supported profiles have different route rules. A new signed view selects a different rule.
+Do not rewrite an existing view publication or reinterpret its selected profile.
 
 The expansion budget does not bound graph construction, memory, rational sizes, or matrix work.
 A server can return a resource-limit error. It cannot label uncertified partial numbers as final scores.
+
+For `simple-routes-shun-v1`, the reference implementation stores at most 100,000 effective refusal pairs in sorted lists indexed by target.
+For each permitted non-repeat attempt, it searches for a common actor between the visited set and the target's refusal list.
+It iterates the shorter list and searches the other sorted list.
+Each searched element counts as one refusal test. An empty target list requires no tests.
+The limit is 10,000,000 refusal tests across committed stages of one calculation.
+No separate exclusion set is copied into each prefix.
+If a refusal limit fails, the implementation returns a resource failure without committing the partial stage.
+These limits bound resources. They do not change signature validity.
+These two refusal limits do not apply to `simple-routes-bounds-v1`.
+Public shuns retain their direct-edge effect under that profile.
 
 For signed judgments, add blessing intervals and subtract curse intervals in the opposite endpoint order.
 If support is `[b0,b1]` and opposition is `[c0,c1]`, net support is `[b0-c1,b1-c0]`.
@@ -904,6 +1052,14 @@ Within a layer, use full event ID order for stable presentation. Label this as p
 The client offers more computation and exposes the intervals.
 
 A resumable calculation retains its complete-stage prefixes and lower totals. It never resumes by treating upper-bound contributions as exact credit. It never silently substitutes a hop limit or random estimate.
+Graph comparison, cached weights, and retained prefixes must use the same profile.
+Under `simple-routes-shun-v1`, they must also use the same effective refusal relation.
+Under `simple-routes-bounds-v1`, ignored refusal data must not divide otherwise identical weighted graphs.
+Identical visited sets and endpoints still merge because they imply identical accumulated refusals within that graph.
+
+An effective reviewer with zero influence remains a direct reviewer. It does not become an absence of judgments.
+Declared incoming heeds show potential sources. They do not prove that a route delivered a measured amount.
+A list of shunners alone does not prove that those actors occurred on a route that supplied a reviewer.
 
 ### Rafsi decisions and future edits
 
@@ -1090,7 +1246,8 @@ Silent provider-side truncation is not a conforming profile. An adapter must det
 A profile alone is a metadata claim. The receiving operator must establish that its query adapter produces compatible vectors.
 
 The reference document recipe is `definition-json-v1`.
-Construct a canonical object containing language, text, glosses, and places from the authenticated definition body.
+Construct a canonical object containing language, text, glosses, and places from the authenticated definition's interpreted values.
+Apply the definition field defaults before constructing this derived input. The original signed body remains unchanged.
 Text is the definition's rich text. Glosses is its top-level gloss array. Places is its frame's place array, or an empty array without a frame.
 Encode that object as canonical UTF-8 JSON, prepend the profile's literal document prefix, and hash the resulting input bytes.
 
@@ -1666,6 +1823,9 @@ Implementation starts with shared fixtures for these cases:
 20. Carried status, stale former-key branches, missing committed history, concurrent status, and source-reversion status reuse.
 21. Certified controller periods, witness-set changes without active fallback, explicit policy resets, and actual-marker observations after stranger-claim lookups.
 22. Repeated A-to-B-to-A claims, historical marker reversal, former-key compromise after carry, and all cases in [handover-cases.md](handover-cases.md).
+23. Omitted and explicit optional fields with equal interpreted values but unchanged, distinct body hashes and event IDs.
+24. Nested defaults, duplicate type alternatives after defaults, required place declarations, missing variadic tails, and invalid present values.
+25. Revisions that omit earlier notes without inheriting them, and imports that cannot omit required source evidence.
 
 The implementations must agree on logical state from the same fixtures. Their certified bounds must contain independently calculated exact small-graph scores.
 Performance measurements must cover the imported dictionary and adversarial trust graphs. The design does not claim completed runtime benchmarks.

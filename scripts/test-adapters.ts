@@ -4,7 +4,12 @@ import { once } from "node:events";
 import { createServer } from "node:net";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { resolve, join } from "node:path";
-import { initializeCore, createEvent } from "../packages/core/src/index.ts";
+import {
+  initializeCore,
+  createEvent,
+  contentHash,
+  wordId,
+} from "../packages/core/src/index.ts";
 
 const root = resolve(import.meta.dirname, "..");
 const testRoot = resolve(
@@ -157,6 +162,224 @@ try {
         (await api(index, `/events/${entry.envelope.id}`)).status,
         200,
       );
+      // A definition makes the adapter build search packages in both versions.
+      const definitionWord = { language: "jbo" as const, spelling: "klama" };
+      const definition = createEvent(
+        seed,
+        [],
+        "12".repeat(16),
+        {
+          kind: "definition.publish",
+          word: wordId(definitionWord),
+          language: "en",
+          parents: [],
+          origin: "native",
+        },
+        {
+          word: definitionWord,
+          language: "en",
+          text: [["x1 goes to x2."]],
+          frame: null,
+          operands: [],
+          glosses: [{ language: "en", text: "go", sense: null }],
+          notes: [],
+          etymology: { text: [], formation: null, compound: null },
+          examples: [],
+          classification: { kind: "gismu", selmaho: [] },
+          labels: [],
+          sources: [],
+          license: {
+            expression: "CC0-1.0",
+            url: "https://creativecommons.org/publicdomain/zero/1.0/",
+            attribution: "",
+          },
+          legacy: null,
+        },
+      );
+      const published = await api(index, "/events", definition);
+      assert.equal(published.status, 201, await published.clone().text());
+      // The newer read routes answer on both adapters with the same shapes.
+      const manifest: any = await (await api(index, "/manifest")).json();
+      assert.ok(Array.isArray(manifest.package_versions));
+      // Version 2 package bytes match their descriptor, and their entry carries the row fields.
+      const descriptor = manifest.package_versions.find(
+        (p: any) => p.language === "en" && p.version === 2,
+      );
+      assert.ok(
+        descriptor,
+        "manifest advertises the English version 2 package",
+      );
+      const packageResponse = await api(
+        index,
+        `/packages/en?version=2&snapshot=${encodeURIComponent(manifest.snapshot)}`,
+      );
+      assert.equal(packageResponse.status, 200);
+      const packageBytes = new Uint8Array(await packageResponse.arrayBuffer());
+      assert.equal(packageBytes.length, descriptor.bytes);
+      assert.equal(contentHash(packageBytes), descriptor.hash);
+      const pkg = JSON.parse(new TextDecoder().decode(packageBytes));
+      assert.equal(pkg.version, 2);
+      assert.equal(pkg.language, "en");
+      assert.equal(pkg.snapshot, manifest.snapshot);
+      assert.equal(pkg.parts.length, 1);
+      const partResponse = await api(
+        index,
+        `/package-parts/${encodeURIComponent(pkg.parts[0].hash)}`,
+      );
+      assert.equal(partResponse.status, 200);
+      const partBytes = new Uint8Array(await partResponse.arrayBuffer());
+      assert.equal(partBytes.length, pkg.parts[0].bytes);
+      assert.equal(contentHash(partBytes), pkg.parts[0].hash);
+      const entries = JSON.parse(new TextDecoder().decode(partBytes));
+      assert.equal(entries.length, pkg.parts[0].count);
+      const row = entries.find((e: any) => e.event === definition.envelope.id);
+      assert.ok(row, "version 2 part lists the published definition");
+      assert.equal(row.issuer, entry.envelope.header.issuer);
+      assert.equal(row.notes, false);
+      assert.deepEqual(row.rafsi, []);
+      assert.equal(row.rafsi_complete, true);
+      assert.equal(row.attribution, null);
+      assert.equal(row.body, definition.envelope.header.content!.hash);
+      const v1Descriptor = manifest.packages.find(
+        (p: any) => p.language === "en",
+      );
+      assert.ok(v1Descriptor, "manifest lists the English version 1 package");
+      const v1Bytes = new Uint8Array(
+        await (await api(index, "/packages/en")).arrayBuffer(),
+      );
+      assert.equal(contentHash(v1Bytes), v1Descriptor.hash);
+      assert.equal(JSON.parse(new TextDecoder().decode(v1Bytes)).version, 1);
+      const records: any = await (
+        await api(index, "/records?limit=200")
+      ).json();
+      const record = records.items.find((i: any) => i.id === entry.envelope.id);
+      assert.ok(record, "records route lists the fixture event");
+      assert.equal(record.body_status, "present");
+      assert.equal(record.body.name, "Adapter fixture");
+      assert.equal(records.snapshot, manifest.snapshot);
+      // Identity reads need a retained view. The fixture key publishes one.
+      const view = createEvent(
+        seed,
+        [],
+        "f".repeat(32),
+        { kind: "view.publish", parents: [] },
+        {
+          name: "Adapter view",
+          description: [],
+          roots: [
+            {
+              identity: entry.envelope.header.issuer,
+              q: { numerator: 1, denominator: 1 },
+            },
+          ],
+          rafsi_threshold: { numerator: 1, denominator: 1 },
+          H: { numerator: 3, denominator: 1 },
+          alpha: { numerator: 1, denominator: 2 },
+          excluded: [],
+          calculation: "simple-routes-bounds-v1",
+          work: 1000,
+          import_sets: [],
+          account_witnesses: [],
+          account_authority: false,
+          notes: [],
+        },
+      );
+      const viewResponse = await api(index, "/events", view);
+      assert.equal(viewResponse.status, 201, await viewResponse.clone().text());
+      // A second signed view selects the route-refusal profile. Each view
+      // reports its own profile through both adapters.
+      const shunView = createEvent(
+        seed,
+        [view.envelope.id],
+        "e".repeat(32),
+        { kind: "view.publish", parents: [] },
+        {
+          name: "Adapter shun view",
+          description: [],
+          roots: [
+            {
+              identity: entry.envelope.header.issuer,
+              q: { numerator: 1, denominator: 1 },
+            },
+          ],
+          rafsi_threshold: { numerator: 1, denominator: 1 },
+          H: { numerator: 3, denominator: 1 },
+          alpha: { numerator: 1, denominator: 2 },
+          excluded: [],
+          calculation: "simple-routes-shun-v1",
+          work: 1000,
+          import_sets: [],
+          account_witnesses: [],
+          account_authority: false,
+          notes: [],
+        },
+      );
+      const shunResponse = await api(index, "/events", shunView);
+      assert.equal(shunResponse.status, 201, await shunResponse.clone().text());
+      const wordPath = `/words/${encodeURIComponent(wordId(definitionWord))}`;
+      for (const [chosen, algorithm] of [
+        [view, "simple-routes-bounds-v1"],
+        [shunView, "simple-routes-shun-v1"],
+      ] as const) {
+        const ranked: any = await (
+          await api(
+            index,
+            `${wordPath}?view=${encodeURIComponent(chosen.envelope.id)}`,
+          )
+        ).json();
+        assert.equal(ranked.view, chosen.envelope.id);
+        assert.equal(ranked.calculation?.algorithm, algorithm);
+        assert.equal(ranked.calculation?.exact, true);
+      }
+      const searchFields = {
+        q: "go",
+        language: "en",
+        view: view.envelope.id,
+        limit: 1,
+        retired: "1",
+      };
+      const postSearch = await api(index, "/search", searchFields);
+      assert.equal(postSearch.status, 200, await postSearch.clone().text());
+      const getSearch = await api(
+        index,
+        `/search?${new URLSearchParams(Object.entries(searchFields).map(([name, value]) => [name, String(value)]))}`,
+      );
+      assert.equal(getSearch.status, 200);
+      const searched: any = await postSearch.json();
+      assert.deepEqual(searched, await getSearch.json());
+      assert.equal(searched.query, searchFields.q);
+      assert.equal(
+        (await api(index, "/search", { ...searchFields, q: null })).status,
+        400,
+      );
+      const identity = encodeURIComponent(entry.envelope.header.issuer);
+      const withView = `view=${encodeURIComponent(view.envelope.id)}`;
+      const personResponse = await api(
+        index,
+        `/identities/${identity}?${withView}`,
+      );
+      assert.equal(
+        personResponse.status,
+        200,
+        await personResponse.clone().text(),
+      );
+      const person: any = await personResponse.json();
+      assert.equal(person.profile.state, "known");
+      assert.equal(person.profile.claims_complete, true);
+      assert.equal(person.profile.claims[0].body_status, "present");
+      assert.equal(person.profile.claims[0].body.name, "Adapter fixture");
+      const activity: any = await (
+        await api(index, `/identities/${identity}/activity?limit=5&${withView}`)
+      ).json();
+      assert.ok(activity.items.some((i: any) => i.id === entry.envelope.id));
+      assert.equal(
+        (await api(index, `/identities/${identity}/activity/extra`)).status,
+        404,
+      );
+      assert.equal(
+        (await api(index, `/records?snapshot=sha256:${"0".repeat(64)}`)).status,
+        410,
+      );
       const invalid = await fetch(
         `http://127.0.0.1:${ports[index]}/api/v1/events`,
         {
@@ -289,7 +512,7 @@ try {
       status: "passed",
       adapters: indexes.map((index) => (index === 0 ? "node" : "worker")),
       checks:
-        "Node/Workers admission, late body, exact old snapshot, duplicate retry, process restart, strict JSON, shared snapshot, same-origin writes, bounded snapshot expiry and restart",
+        "Node/Workers admission, late body, exact old snapshot, duplicate retry, process restart, strict JSON, shared snapshot, same-origin writes, bounded snapshot expiry and restart, package_versions, records, identities and activity reads, 404 suffix, 410 snapshot, version 2 package bytes and parts, both calculation profiles",
       directory,
     }),
   );

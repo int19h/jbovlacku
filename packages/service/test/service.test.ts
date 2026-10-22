@@ -861,6 +861,22 @@ test("search preview uses strongest lexical entry with stable ties and active-vi
   );
   assert.equal(later.hits[0].preview.status, "active");
   assert.equal(later.hits[0].definitions.includes(expected), false);
+  // The retired-results filter includes the deprecated definition with its status.
+  const withRetired: any = await (
+    await service.fetch(request("/search?q=movement&language=en&retired=1"))
+  ).json();
+  assert.equal(withRetired.hits[0].definitions.includes(expected), true);
+  assert.ok(withRetired.hits[0].definitions.length >= 2);
+  assert.ok(
+    withRetired.hits.every((hit: any) =>
+      ["active", "deprecated"].includes(hit.preview.status),
+    ),
+  );
+  const bad = await service.fetch(
+    request("/search?q=movement&language=en&retired=2"),
+  );
+  assert.equal(bad.status, 400);
+  assert.equal(((await bad.json()) as { code: string }).code, "retired");
   coordinator.close();
 });
 test("search text preserves place markers and readable rich nodes without metadata", async () => {
@@ -1385,4 +1401,92 @@ test("all early request rejections cancel unread uploads without touching consum
   } as RequestInit);
   assert.equal((await service.fetch(value)).status, 400);
   assert.equal(cancelled, false);
+});
+
+test("a signed view selects its calculation profile, and the bounds view keeps its results beside a refusal view over the same graph", async () => {
+  const { buildFixture } = await import("../../../apps/web/test/seed.ts");
+  const { service } = await instance(64);
+  const { events, view, fixture, selection } =
+    await buildFixture("http://localhost");
+  const selectionResponse = await service.fetch(
+    new Request("http://localhost/api/v1/import-selections", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: selection,
+    }),
+  );
+  assert.ok(selectionResponse.ok, await selectionResponse.text());
+  assert.ok((await service.fetch(request("/events", view))).ok);
+  for (const admitted of events)
+    if (admitted !== view) {
+      const response = await service.fetch(request("/events", admitted));
+      assert.ok(response.ok, await response.text());
+    }
+  const rank = async (chosen: string): Promise<any> =>
+    (
+      await service.fetch(
+        request(
+          `/words/${encodeURIComponent(fixture.words.dunda)}?view=${encodeURIComponent(chosen)}&reviewers=1`,
+        ),
+      )
+    ).json();
+  const fraction = (value: { numerator: string; denominator: string }) =>
+    `${value.numerator}/${value.denominator}`;
+  const weights = (word: any, target: string) =>
+    Object.fromEntries(
+      word.scores
+        .find((s: any) => s.target === target)
+        .reviewers.map((r: any) => [
+          Object.entries(fixture.identities).find(
+            ([, id]) => id === r.identity,
+          )?.[0],
+          r.weight ? fraction(r.weight[0]) : null,
+        ]),
+    );
+  const shun = await rank(fixture.views.shun);
+  const bounds = await rank(fixture.views.shunGraphBounds);
+  assert.equal(shun.calculation.algorithm, "simple-routes-shun-v1");
+  assert.equal(bounds.calculation.algorithm, "simple-routes-bounds-v1");
+  assert.equal(shun.calculation.exact, true);
+  assert.equal(bounds.calculation.exact, true);
+  // Root C shuns delegate2: the route C -> curator2 -> delegate2 is refused,
+  // and D -> curator2 -> delegate2 survives. Curator2 shuns outcast: the route
+  // through delegate2 is refused, while D's direct heed and outcast's own
+  // allowance survive. Scoped is reached through delegate2 only, and D's
+  // cleared shun leaves no refusal. Loner has no route and weight 0.
+  assert.deepEqual(weights(shun, fixture.definitions.dunda1), {
+    delegate2: "3/4",
+    outcast: "7/4",
+    loner: "0/1",
+  });
+  assert.deepEqual(weights(bounds, fixture.definitions.dunda1), {
+    delegate2: "9/4",
+    outcast: "37/16",
+    loner: "0/1",
+  });
+  assert.deepEqual(weights(shun, fixture.definitions.dunda2), {
+    curator2: "9/2",
+    scoped: "3/16",
+    outcast: "7/4",
+  });
+  assert.deepEqual(weights(bounds, fixture.definitions.dunda2), {
+    curator2: "9/2",
+    scoped: "9/16",
+    outcast: "37/16",
+  });
+  for (const word of [shun, bounds])
+    for (const score of word.scores) assert.equal(score.direct_reviewers, 3);
+  // The server's selected bounds view is unchanged by the scenario.
+  const cukta: any = await (
+    await service.fetch(
+      request(
+        `/words/${encodeURIComponent(fixture.words.cukta)}?view=${encodeURIComponent(fixture.views.bounds)}`,
+      ),
+    )
+  ).json();
+  assert.equal(cukta.calculation.algorithm, "simple-routes-bounds-v1");
+  assert.deepEqual(
+    cukta.scores.map((s: any) => fraction(s.net[0])),
+    ["3/1", "-3/1", "6/1", "0/1", "6/1"],
+  );
 });

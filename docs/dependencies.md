@@ -29,6 +29,8 @@ The notices use each package's local license, copyright, and notice files withou
 Identical files share one text block. Each block lists every corresponding source package and file.
 The SHA-256 digest identifies the original UTF-8 text. A dependency change requires a new inventory and the matching source notices.
 
+`crates/jvc-morphology` ports word-form rules from jbotci under the MIT License. Its `THIRD-PARTY-NOTICES.md` keeps that notice and the preset citations. The crate adds no new external package to `Cargo.lock`. Both build outputs retain the exact notice as `notices/morphology-notices.md`. The container also retains it as `/app/docs/morphology-notices.md`.
+
 The Rust standard library also contributes code outside `Cargo.lock`.
 Its toolchain provides `share/doc/rust/COPYRIGHT-library.html` under the path from `rustc --print sysroot`.
 The core build copies that upstream file into `packages/core/generated/rust-standard-library-notices.html` without changing its bytes.
@@ -76,7 +78,8 @@ Before a font changes, make sure that its replacement license and attribution tr
 
 ## Packaging
 
-The server and browser builds copy the dependency guide, full notices, Rust standard library notice, and font notices into their `dist/notices` directories.
+The server and browser builds copy the dependency guide and full notices into their `dist/notices` directories.
+They also copy the Rust standard library notice, morphology notice, and font notices.
 Each directory includes an HTML index that links to every notice file. Keep this directory with redistributed build output.
 The standalone app serves the browser notice index at `/notices/`.
 

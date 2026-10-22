@@ -60,7 +60,22 @@ export interface ServiceOptions {
   reportError?: (error: unknown) => void;
   allowPrototypeBatch?: boolean;
   beforeCommit?: (state: State) => Promise<void>;
+  /**
+   * Lower response bounds, for tests of the cut states. A value above the
+   * documented bound is ignored, so the contract never widens.
+   */
+  limits?: { reviewers?: number; profileClaims?: number; recordBytes?: number };
 }
+/** Reviewer details listed per score when a word request asks for them. */
+const REVIEWER_LIMIT = 64;
+/** Concurrent profile claims listed in an identity response. */
+const PROFILE_CLAIM_LIMIT = 16;
+/** Total encoded bytes of profile claim bodies in one identity response. */
+const PROFILE_CLAIM_BYTES = 1048576;
+
+/** Records transport page bounds. */
+const RECORD_PAGE_LIMIT = 200;
+const RECORD_PAGE_BYTES = 4194304;
 export class DictionaryService {
   constructor(
     public objects: ObjectStore,
@@ -556,6 +571,16 @@ export class DictionaryService {
     }
     throw new ApiError(503, "busy", "Admission is busy.");
   }
+  /** A configured bound, never above the documented one. */
+  private bound(
+    name: "reviewers" | "profileClaims" | "recordBytes",
+    documented: number,
+  ): number {
+    const configured = this.options.limits?.[name];
+    return Number.isSafeInteger(configured) && configured! >= 1
+      ? Math.min(configured!, documented)
+      : documented;
+  }
   private limit(url: URL, max = 1000): number {
     const raw = url.searchParams.get("limit");
     if (raw === null) return Math.min(200, max);
@@ -740,7 +765,61 @@ export class DictionaryService {
       }
       throw new ApiError(503, "busy", "Selection admission is busy.");
     }
-    if (request.method !== "GET")
+    if (request.method === "POST" && path === "/search") {
+      if (url.search)
+        throw new ApiError(
+          400,
+          "query",
+          "POST search fields belong in the JSON body.",
+        );
+      let fields: unknown;
+      try {
+        fields = JSON.parse(
+          new TextDecoder("utf-8", { fatal: true }).decode(
+            await this.requestBytes(request, 131072),
+          ),
+        );
+      } catch (error) {
+        if (error instanceof ApiError) throw error;
+        throw new ApiError(
+          400,
+          "transport",
+          "Search body must contain a JSON object.",
+        );
+      }
+      const names = [
+        "q",
+        "language",
+        "snapshot",
+        "view",
+        "limit",
+        "after",
+        "retired",
+      ];
+      if (!fields || typeof fields !== "object" || Array.isArray(fields))
+        throw new ApiError(
+          400,
+          "query",
+          "Search body must contain a JSON object.",
+        );
+      for (const [name, value] of Object.entries(fields)) {
+        if (
+          !names.includes(name) ||
+          (typeof value !== "string" &&
+            !(name === "limit" && Number.isSafeInteger(value)))
+        )
+          throw new ApiError(
+            400,
+            "query",
+            "Search body contains an invalid field.",
+          );
+        url.searchParams.set(name, String(value));
+      }
+    }
+    if (
+      request.method !== "GET" &&
+      !(request.method === "POST" && path === "/search")
+    )
       throw new ApiError(405, "method", "Method is not supported.");
     if (path === "/capabilities")
       return json({
@@ -784,6 +863,14 @@ export class DictionaryService {
           hash: p.hash,
           bytes: p.bytes,
         })),
+        package_versions: Object.entries(packages.packages2).map(
+          ([language, p]) => ({
+            language,
+            version: 2,
+            hash: p.hash,
+            bytes: p.bytes,
+          }),
+        ),
       });
     }
     if (path === "/inventory") {
@@ -876,7 +963,13 @@ export class DictionaryService {
     if (path.startsWith("/packages/")) {
       const language = this.language(decodeURIComponent(path.slice(10)));
       const snapshot = await this.snapshot(url.searchParams.get("snapshot"));
-      const pkg = (await this.packages(snapshot)).packages[language];
+      const version = url.searchParams.get("version") ?? "1";
+      if (version !== "1" && version !== "2")
+        throw new ApiError(400, "version", "Package version must be 1 or 2.");
+      const built = await this.packages(snapshot);
+      const pkg = (version === "2" ? built.packages2 : built.packages)[
+        language
+      ];
       if (!pkg)
         throw new ApiError(404, "missing", "Language package is unavailable.");
       return this.objectResponse(pkg.hash);
@@ -923,6 +1016,11 @@ export class DictionaryService {
           "resource_unavailable",
           "Selected view cannot be evaluated.",
         );
+      // Retired results are excluded unless the caller asks for them with retired=1.
+      const retiredFlag = url.searchParams.get("retired");
+      if (retiredFlag !== null && retiredFlag !== "1")
+        throw new ApiError(400, "retired", "retired must be 1 when present.");
+      const includeRetired = retiredFlag === "1";
       const q = query.toLocaleLowerCase("en");
       const kinds = [
         "headword",
@@ -942,7 +1040,7 @@ export class DictionaryService {
             event: string;
             word_kind: string;
             plain_text: string;
-            status: "active";
+            status: string;
           };
         }
       >();
@@ -952,7 +1050,7 @@ export class DictionaryService {
           entry.language !== language ||
           !publication ||
           publication.eligible !== "eligible" ||
-          publication.status !== "active"
+          (publication.status !== "active" && !includeRetired)
         )
           continue;
         const spelling = entry.word.spelling.toLocaleLowerCase("en");
@@ -988,7 +1086,7 @@ export class DictionaryService {
             characters.length > 240
               ? characters.slice(0, 239).join("") + "…"
               : plainText,
-          status: "active" as const,
+          status: publication.status,
         };
         const old = hits.get(wordId);
         if (old) {
@@ -1019,6 +1117,7 @@ export class DictionaryService {
         language,
         snapshot: snapshot.snapshot,
         view,
+        retired: includeRetired,
       }).slice(7);
       const after = url.searchParams.get("after");
       let offset = 0;
@@ -1115,10 +1214,24 @@ export class DictionaryService {
             .map((a) => a.id),
         ].sort(),
       };
+      const reviewersFlag = url.searchParams.get("reviewers");
+      if (reviewersFlag !== null && reviewersFlag !== "1")
+        throw new ApiError(
+          400,
+          "reviewers",
+          "The reviewers flag must be 1 when present.",
+        );
+      // The core materializes reviewer details only on request, bounded there.
+      const withReviewers = reviewersFlag === "1";
       try {
         const session = this.sessions.get(snapshot.snapshot + "|" + view);
-        if (session) ranking = session.rankWord(id);
+        if (session)
+          ranking = session.rankWord(
+            id,
+            withReviewers ? this.bound("reviewers", REVIEWER_LIMIT) : undefined,
+          );
       } catch {}
+      const scores = ranking.scores as Record<string, unknown>[];
       return json({
         snapshot: snapshot.snapshot,
         view,
@@ -1134,12 +1247,236 @@ export class DictionaryService {
         definitions,
         rafsi,
         assignments,
-        scores: ranking.scores,
+        scores,
         statuses: definitions.map(
           (event) => evaluation.publication_statuses[event],
         ),
         layers: ranking.layers,
         unavailable_scores: ranking.unavailable_scores,
+      });
+    }
+    if (path === "/records") {
+      const snapshot = await this.snapshot(url.searchParams.get("snapshot"));
+      const after = url.searchParams.get("after");
+      if (after !== null) this.identifier(after, "jve1:");
+      const limit = this.limit(url, RECORD_PAGE_LIMIT);
+      const ids = sorted(Object.keys(snapshot.events)).filter(
+        (id) => after === null || id > after,
+      );
+      const items: unknown[] = [];
+      let bytes = 2;
+      const byteLimit = this.bound("recordBytes", RECORD_PAGE_BYTES);
+      let truncated = false;
+      for (const id of ids) {
+        if (items.length >= limit) {
+          truncated = true;
+          break;
+        }
+        const event = snapshot.events[id];
+        const envelope = await this.objects.get(event.envelope_hash);
+        if (!envelope)
+          throw new ApiError(
+            503,
+            "storage_unavailable",
+            "Envelope bytes are unavailable.",
+            id,
+          );
+        const body = event.body_hash
+          ? await this.objects.get(event.body_hash)
+          : null;
+        // "missing" means the snapshot never retained the body. "unavailable"
+        // means the snapshot retained it and storage did not return it now.
+        const item = {
+          id,
+          envelope: JSON.parse(new TextDecoder().decode(envelope)),
+          body: body ? JSON.parse(new TextDecoder().decode(body)) : null,
+          body_status: body
+            ? "present"
+            : event.body_hash
+              ? "unavailable"
+              : event.header.content
+                ? "missing"
+                : "none",
+        };
+        // The page bound counts the encoded item bytes as the response carries them.
+        const size = utf8(JSON.stringify(item)).length + (items.length ? 1 : 0);
+        if (items.length && bytes + size >= byteLimit) {
+          truncated = true;
+          break;
+        }
+        bytes += size;
+        items.push(item);
+      }
+      return json({
+        snapshot: snapshot.snapshot,
+        logical_inventory: snapshot.logical_inventory,
+        items,
+        next: truncated ? (items.at(-1) as { id: string }).id : null,
+      });
+    }
+    if (path.startsWith("/identities/")) {
+      const rest = decodeURIComponent(path.slice(12));
+      const parts = rest.split("/");
+      const [identity, section] = parts;
+      this.identifier(identity, "ed25519:");
+      if (parts.length > 2 || (section !== undefined && section !== "activity"))
+        throw new ApiError(404, "missing", "API route is unavailable.");
+      const snapshot = await this.snapshot(url.searchParams.get("snapshot"));
+      const view =
+        url.searchParams.get("view") ?? this.options.selectedView ?? zeroView;
+      this.identifier(view, "jve1:");
+      await this.requireView(snapshot, view);
+      const own = sorted(
+        Object.entries(snapshot.events)
+          .filter(([, e]) => e.header.issuer === identity)
+          .map(([id]) => id),
+      );
+      if (section === "activity") {
+        let evaluation: Evaluation | null = null;
+        try {
+          evaluation = await this.evaluation(snapshot, view);
+        } catch (error) {
+          if (
+            !(error instanceof ApiError) ||
+            error.code !== "resource_unavailable"
+          )
+            throw error;
+        }
+        const after = url.searchParams.get("after");
+        if (after !== null) this.identifier(after, "jve1:");
+        const remaining = own.filter((id) => after === null || id > after);
+        const page = remaining.slice(0, this.limit(url));
+        const state = await this.coordinator.load();
+        return json({
+          snapshot: snapshot.snapshot,
+          view,
+          identity,
+          items: page.map((id) => ({
+            id,
+            action: snapshot.events[id].header.action,
+            interpretation: evaluation?.available
+              ? (evaluation.receipts[id]?.interpretation ?? "unavailable")
+              : "unavailable",
+            seen: state.events[id]
+              ? this.cursor(state.events[id].position)
+              : null,
+          })),
+          next: remaining.length > page.length ? page.at(-1) : null,
+        });
+      }
+      // Without an evaluation, no definite profile, handover, or compromise state exists.
+      const evaluation = await this.evaluation(snapshot, view);
+      if (!evaluation.available)
+        throw new ApiError(
+          503,
+          "resource_unavailable",
+          "Selected view cannot be evaluated.",
+        );
+      const lifecycle = evaluation.lifecycle as {
+        key_actor: Record<string, string>;
+        successor: Record<string, string>;
+        suspended: Record<string, unknown>;
+        retired: string[];
+        compromised: string[];
+      };
+      const actor = lifecycle.key_actor[identity] ?? identity;
+      const registers = evaluation.registers as Record<
+        string,
+        {
+          actor: string;
+          heads: string[];
+          conflicted: boolean;
+          values: string[];
+        }
+      >;
+      const register = registers[`${actor}|profile`];
+      // Concurrent claims are bounded by count and by total body bytes. A
+      // claim past the byte budget keeps its event and hash with no body.
+      const heads = sorted(register?.heads ?? []);
+      const claims: unknown[] = [];
+      let unavailable = false;
+      let claimBytes = 0;
+      const claimLimit = this.bound("profileClaims", PROFILE_CLAIM_LIMIT);
+      for (const head of heads.slice(0, claimLimit)) {
+        const event = snapshot.events[head];
+        const bytes = event?.body_hash
+          ? await this.objects.get(event.body_hash)
+          : null;
+        let body: unknown = null;
+        let bodyStatus:
+          | "present"
+          | "missing"
+          | "invalid"
+          | "unavailable"
+          | "omitted" = event?.body_hash ? "unavailable" : "missing";
+        if (bytes) {
+          const envelope = await this.objects.get(event!.envelope_hash);
+          if (
+            envelope &&
+            inspectBody(envelope, bytes).availability === "valid"
+          ) {
+            if (claimBytes + bytes.length > PROFILE_CLAIM_BYTES)
+              bodyStatus = "omitted";
+            else {
+              claimBytes += bytes.length;
+              body = JSON.parse(new TextDecoder().decode(bytes));
+              bodyStatus = "present";
+            }
+          } else if (envelope) bodyStatus = "invalid";
+        }
+        if (bodyStatus === "unavailable") unavailable = true;
+        claims.push({
+          event: head,
+          issuer: event?.header.issuer ?? null,
+          body_hash: event?.body_hash ?? null,
+          body,
+          body_status: bodyStatus,
+        });
+      }
+      const counts = {
+        definitions: 0,
+        rafsi: 0,
+        judgments: 0,
+        trust: 0,
+        reports: 0,
+        other: 0,
+      };
+      for (const id of own) {
+        const kind = snapshot.events[id].header.action.kind;
+        if (kind === "definition.publish") counts.definitions++;
+        else if (kind === "rafsi.publish") counts.rafsi++;
+        else if (kind === "judgment.set") counts.judgments++;
+        else if (kind === "trust.set") counts.trust++;
+        else if (kind === "report.set") counts.reports++;
+        else counts.other++;
+      }
+      return json({
+        snapshot: snapshot.snapshot,
+        view,
+        identity,
+        actor,
+        successor: lifecycle.successor?.[identity] ?? null,
+        retired: lifecycle.retired?.includes(identity) ?? false,
+        compromised: lifecycle.compromised?.includes(identity) ?? false,
+        suspended: Object.hasOwn(lifecycle.suspended ?? {}, actor),
+        profile: {
+          state: !register
+            ? "none"
+            : register.conflicted
+              ? "conflicted"
+              : unavailable
+                ? "unavailable"
+                : "known",
+          claims,
+          claims_count: heads.length,
+          claims_complete:
+            heads.length <= claimLimit &&
+            claims.every(
+              (claim) =>
+                (claim as { body_status: string }).body_status !== "omitted",
+            ),
+        },
+        counts,
       });
     }
     if (path === "/account-control") {

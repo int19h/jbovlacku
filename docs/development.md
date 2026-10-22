@@ -284,7 +284,16 @@ PLAYWRIGHT_BROWSERS_PATH="$PWD/.cache/playwright" JVC_TEST_ROOT="$PWD/.cache/bro
 ```
 
 The browser tests start their own API and Vite processes. Ports `8797` and `5177` must be free.
-Their fixture data uses a separate directory for each process. `JVC_TEST_ROOT` selects its parent directory.
+`JVC_TEST_API_PORT` and `JVC_WEB_PORT` select other ports. `JVC_TEST_ROOT` selects the parent directory of the run data. Each run creates a separate `browser-run-*` directory. Workers reuse that directory through `JVC_PLAYWRIGHT_RUN_ROOT`. Runs retain their fixtures and results.
+
+The fixture server opens a readiness listener on `JVC_READY_PORT`. The default is the API port plus 1000. That port must be free before a run starts. The listener answers 200 only after every fixture record is admitted and the fixture file is written. The runner waits for that answer. `JVC_FIXTURE_DELAY_MS` delays the preparation, for readiness tests only.
+The server fixture publishes a seeded two-root view with synthetic definitions, an import selection, and a rafsi claim. Its record IDs are written to `fixture.json` in that directory.
+The draft model and the builder metadata have Node unit tests:
+
+```sh
+npx tsx --test apps/web/test/unit/*.test.ts
+```
+
 On this VM, place browser binaries and test data under a task-specific `/build/jbovlacku` directory.
 
 The shared format corpus also supports native and Chromium comparison:
@@ -295,6 +304,26 @@ PLAYWRIGHT_BROWSERS_PATH="$PWD/.cache/playwright" python3 crates/jvc-core/tests/
 
 That harness accepts `CARGO_TARGET_DIR` and `WASM_BINDGEN`. Its binding tool override differs from `JVC_WASM_BINDGEN` in the main build script.
 It records results under the selected Rust target directory.
+
+The state and ranking corpus uses the generated browser bindings from `npm run build:core`.
+Install Chromium as described above. Use new corpus directories for each run so old fixtures cannot enter the comparison:
+
+```sh
+mkdir -p .cache
+export JVC_STATE_PARITY_DIR="$(mktemp -d "$PWD/.cache/state-parity.XXXXXX")"
+export JVC_SHUN_PARITY_DIR="$(mktemp -d "$PWD/.cache/shun-parity.XXXXXX")"
+cargo test -p jvc-state -p jvc-runtime --locked --jobs 2 -- --test-threads=2
+npm run build:core
+node scripts/test-state-parity.mjs
+```
+
+The runner initializes the browser WebAssembly module before it compares complete native state and ranking results.
+Ranking cases compare `rank_word`, session ranking, and `rank_with_reviewers`, including `public_shun_block` and `private_block` details.
+When `JVC_SHUN_PARITY_DIR` is set, the runner requires shun-profile cases and both block reasons, separately and together.
+Without that variable, the runner compares state only. CI sets both corpus variables before the native tests and browser comparison.
+The runner writes `_wasm-report.json` into `JVC_STATE_PARITY_DIR`.
+`JVC_STATE_PARITY_WASM_DIR` selects another directory of browser bindings. `JVC_CHROMIUM` selects another Chromium executable.
+
 The [ranking guide](../crates/jvc-rank/README.md) describes its independent route oracle and eleven measurement scenarios.
 Its measurement script uses `CARGO_TARGET_DIR` or the repository's `target` directory.
 It requires an explicit output file and refuses to replace existing evidence.

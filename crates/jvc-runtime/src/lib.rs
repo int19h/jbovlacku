@@ -238,6 +238,69 @@ pub fn finish_signing(bytes: &[u8], signature: &[u8]) -> std::result::Result<Str
 fn ratio_value(value: &jvc_rank::Rational) -> Value {
     json!({"numerator":value.numer().to_string(),"denominator":value.denom().to_string()})
 }
+/// Bounded incoming-edge explanations listed with each reviewer.
+const REVIEWER_INCOMING_LIMIT: usize = 16;
+/// Reviewer details for one target: every actor with an effective verdict,
+/// its influence interval, and a bounded list of potential incoming sources.
+/// The list does not measure the credit that any route supplies.
+/// At most `limit` entries are materialized, in actor order. The second
+/// value says whether the list holds every reviewer.
+fn reviewer_details(
+    graph: &jvc_state::ContextGraph,
+    ranking: &jvc_rank::Ranking,
+    verdicts: &[jvc_rank::Verdict],
+    limit: usize,
+    block_reasons: bool,
+) -> (Vec<Value>, bool) {
+    let zero = jvc_rank::rational(0, 1);
+    let mut incoming: Vec<Vec<usize>> = vec![Vec::new(); graph.actors.len()];
+    for (from, row) in graph.rows.iter().enumerate() {
+        for edge in row {
+            if edge.to < incoming.len() {
+                incoming[edge.to].push(from);
+            }
+        }
+    }
+    let total = verdicts
+        .iter()
+        .filter(|verdict| **verdict != jvc_rank::Verdict::Absent)
+        .count();
+    let listed = verdicts
+        .iter()
+        .enumerate()
+        .filter(|(_, verdict)| **verdict != jvc_rank::Verdict::Absent)
+        .take(limit)
+        .map(|(index, verdict)| {
+            let root = graph.roots.get(index).filter(|q| **q > zero);
+            let sources = &incoming[index];
+            let listed = sources
+                .iter()
+                .take(REVIEWER_INCOMING_LIMIT)
+                .map(|from| json!(graph.actors[*from]))
+                .collect::<Vec<_>>();
+            let route_count = sources.len() + usize::from(root.is_some());
+            let mut detail = json!({
+                "identity": graph.actors[index],
+                "verdict": match verdict { jvc_rank::Verdict::Bless => "bless", jvc_rank::Verdict::Curse => "curse", jvc_rank::Verdict::Absent => "absent" },
+                "weight": ranking.weights.get(index).map(interval_value).unwrap_or(Value::Null),
+                "root": root.map(ratio_value),
+                "blocked": graph.blocked.contains(&index),
+                "incoming": listed,
+                "incoming_count": sources.len(),
+                "incoming_complete": sources.len() <= REVIEWER_INCOMING_LIMIT,
+                "multiple_routes": route_count > 1,
+            });
+            if block_reasons && graph.public_shun_blocked.contains(&index) {
+                detail["public_shun_block"] = json!(true);
+            }
+            if block_reasons && graph.private_blocked.contains(&index) {
+                detail["private_block"] = json!(true);
+            }
+            detail
+        })
+        .collect();
+    (listed, total <= limit)
+}
 fn interval_value(interval: &jvc_rank::Interval) -> Value {
     json!([ratio_value(&interval.lower), ratio_value(&interval.upper)])
 }
@@ -257,12 +320,16 @@ pub fn rank_word_bytes(bytes: &[u8], word: &str) -> Result<Value> {
     }
     let input = evaluation_input(bytes)?;
     let evaluation = jvc_state::evaluate(&input);
-    rank_word_state(&input, &evaluation, word)
+    rank_word_state(&input, &evaluation, word, None)
 }
+/// Ranks one word. `reviewers_limit` asks for bounded reviewer details per
+/// score. Without it, the aggregate lookup does no reviewer-detail work and
+/// the scores carry no `reviewers` field.
 fn rank_word_state(
     input: &jvc_state::EvaluationInput,
     evaluation: &jvc_state::Evaluation,
     word: &str,
+    reviewers_limit: Option<usize>,
 ) -> Result<Value> {
     let mut targets: BTreeMap<String, (jvc_state::Context, bool, String, bool)> = BTreeMap::new();
     for publication in evaluation
@@ -316,6 +383,17 @@ fn rank_word_state(
         }
     }
     let policy = evaluation.policy.as_ref();
+    let profile = policy
+        .map(|policy| {
+            jvc_rank::Profile::from_name(policy["calculation"].as_str().unwrap_or_default())
+                .ok_or_else(|| {
+                    Error::new(
+                        "unsupported_calculation",
+                        "view calculation profile is unsupported",
+                    )
+                })
+        })
+        .transpose()?;
     let params = policy
         .map(|p| {
             Ok(jvc_rank::Parameters {
@@ -330,8 +408,7 @@ fn rank_word_state(
         })
         .transpose()?;
     let limits = jvc_rank::Limits::default();
-    let mut graphs: BTreeMap<String, (jvc_state::ContextGraph, jvc_rank::Ranking)> =
-        BTreeMap::new();
+    let mut graphs: BTreeMap<String, jvc_rank::Ranking> = BTreeMap::new();
     let mut unavailable = Vec::new();
     let mut scores = Vec::new();
     let mut scored: BTreeMap<String, (jvc_rank::Candidate, jvc_rank::Score, String, bool)> =
@@ -351,13 +428,15 @@ fn rank_word_state(
             exact = false;
             continue;
         }
-        // Equal actor weights share the same calculation, including across language scopes.
-        let graph_key = serde_json::to_string(
-            &json!({"actors":contextual.actors,"roots":contextual.roots,"rows":contextual.rows}),
-        )
-        .unwrap();
+        // Reuse weights only when the profile and the complete resolved graph match.
+        let mut graph_description = json!({"calculation":contextual.calculation,"actors":contextual.actors,"roots":contextual.roots,"rows":contextual.rows});
+        if profile == Some(jvc_rank::Profile::ShunV1) {
+            graph_description["refusals"] = json!(contextual.refusals);
+        }
+        let graph_key = serde_json::to_string(&graph_description).unwrap();
         if !graphs.contains_key(&graph_key) {
-            let graph = jvc_rank::Graph::new(
+            let graph = jvc_rank::Graph::with_refusals(
+                profile.unwrap(),
                 contextual.actors.clone(),
                 contextual.roots.clone(),
                 contextual
@@ -372,13 +451,15 @@ fn rank_word_state(
                             .collect()
                     })
                     .collect(),
+                contextual.refusals.clone(),
+                &limits,
             );
             let ranking =
                 graph.and_then(|g| jvc_rank::rank(&g, params.as_ref().unwrap(), limits.clone()));
             match ranking {
                 Ok(ranking) => {
                     exact &= ranking.exact;
-                    graphs.insert(graph_key.clone(), (contextual.clone(), ranking));
+                    graphs.insert(graph_key.clone(), ranking);
                 }
                 Err(_) => {
                     unavailable.push(id.clone());
@@ -387,7 +468,7 @@ fn rank_word_state(
                 }
             }
         }
-        let (contextual, ranking) = &graphs[&graph_key];
+        let ranking = &graphs[&graph_key];
         let verdicts = contextual
             .actors
             .iter()
@@ -416,7 +497,22 @@ fn rank_word_state(
                     .iter()
                     .filter(|v| **v != jvc_rank::Verdict::Absent)
                     .count();
-                scores.push(json!({"target":id,"support":interval_value(&score.support),"opposition":interval_value(&score.opposition),"net":interval_value(&score.net),"direct_reviewers":reviewers,"status":status}));
+                let mut entry = json!({"target":id,"support":interval_value(&score.support),"opposition":interval_value(&score.opposition),"net":interval_value(&score.net),"direct_reviewers":reviewers,"status":status});
+                if let Some(limit) = reviewers_limit {
+                    let (details, complete) = reviewer_details(
+                        &contextual,
+                        ranking,
+                        &candidate.verdicts,
+                        limit,
+                        evaluation
+                            .overlay
+                            .as_ref()
+                            .is_some_and(|overlay| overlay["version"] == 2),
+                    );
+                    entry["reviewers"] = Value::Array(details);
+                    entry["reviewers_complete"] = Value::Bool(complete);
+                }
+                scores.push(entry);
                 scored.insert(id.clone(), (candidate, score, graph_key, *definition));
             }
             Err(_) => {
@@ -455,7 +551,7 @@ fn rank_word_state(
             }
             if ga == gb {
                 comparison_terms = comparison_terms
-                    .checked_add(graphs[ga].1.weights.len())
+                    .checked_add(graphs[ga].weights.len())
                     .ok_or_else(|| {
                         Error::new("resource_unavailable", "candidate actor terms overflow")
                     })?;
@@ -467,7 +563,7 @@ fn rank_word_state(
                 }
             }
             let difference = if ga == gb {
-                jvc_rank::difference_with_limits(ca, cb, &graphs[ga].1.weights, &limits)
+                jvc_rank::difference_with_limits(ca, cb, &graphs[ga].weights, &limits)
                     .map_err(|e| Error::new("resource_unavailable", e.to_string()))?
             } else {
                 jvc_rank::separate_difference(sa, sb)
@@ -510,7 +606,7 @@ fn rank_word_state(
         let default_overlay = json!({"version":1,"base_view":input.selected_view,"root_changes":[],"trust":[],"blocked":[],"work":null});
         let overlay = input.overlay.as_ref().unwrap_or(&default_overlay);
         let suspensions=evaluation.lifecycle.suspended.iter().flat_map(|(identity,causes)|causes.iter().map(move|cause|json!({"identity":identity,"cause":cause,"reason":"incomplete_history"}))).collect::<Vec<_>>();
-        json!({"algorithm":jvc_rank::ALGORITHM,"budget":params.as_ref().unwrap().work,"completed":graphs.values().map(|(_,r)|r.completed_work).sum::<u64>(),"exact":exact,"overlay":jvc_core::hash_id("sha256:",b"",&canonical_value(overlay)?),"incomplete_identities":evaluation.lifecycle.suspended.keys().collect::<Vec<_>>(),"suspensions":suspensions})
+        json!({"algorithm":profile.unwrap().name(),"budget":params.as_ref().unwrap().work,"completed":graphs.values().map(|r|r.completed_work).sum::<u64>(),"exact":exact,"overlay":jvc_core::hash_id("sha256:",b"",&canonical_value(overlay)?),"incomplete_identities":evaluation.lifecycle.suspended.keys().collect::<Vec<_>>(),"suspensions":suspensions})
     };
     Ok(
         json!({"calculation":calculation,"scores":scores,"layers":layers,"unavailable_scores":unavailable}),
@@ -562,10 +658,77 @@ impl EvaluationSession {
         output(value)
     }
     pub fn rank(&self, word: &str) -> std::result::Result<String, JsValue> {
-        output(rank_word_state(&self.input, &self.evaluation, word).map_err(fail)?)
+        output(rank_word_state(&self.input, &self.evaluation, word, None).map_err(fail)?)
+    }
+    /// Ranks one word with at most `reviewers` reviewer details per score.
+    pub fn rank_with_reviewers(
+        &self,
+        word: &str,
+        reviewers: usize,
+    ) -> std::result::Result<String, JsValue> {
+        output(rank_word_state(&self.input, &self.evaluation, word, Some(reviewers)).map_err(fail)?)
     }
 }
 
+/// Word-form tools. Requests and results cross as JSON. A builder error is a
+/// JSON object with `kind` of `invalid` or `resource-limit`.
+fn builder_fail(e: jvc_morphology::BuilderError) -> JsValue {
+    JsValue::from_str(&serde_json::to_string(&e).unwrap())
+}
+/// The serialized byte ceiling of one builder request.
+///
+/// A search package holds at most 200,000 entries. An inventory built from
+/// such a package lists each gismu with its word ID and each rafsi claim
+/// with its pair ID, about 150 bytes per row, so a full inventory needs
+/// about 30 MiB. The ceiling leaves room above that. Bytes beyond it are
+/// refused before any allocation, including bytes in fields the request
+/// shape ignores. The typed limits of the morphology crate apply after
+/// parsing.
+pub const BUILDER_INPUT_LIMIT: usize = 64 * 1024 * 1024;
+fn builder_input_checked<T: serde::de::DeserializeOwned>(
+    bytes: &[u8],
+) -> std::result::Result<T, jvc_morphology::BuilderError> {
+    if bytes.len() > BUILDER_INPUT_LIMIT {
+        return Err(jvc_morphology::BuilderError::ResourceLimit {
+            measure: "request bytes".into(),
+            value: bytes.len() as u64,
+            limit: BUILDER_INPUT_LIMIT as u64,
+        });
+    }
+    serde_json::from_slice(bytes).map_err(|e| jvc_morphology::BuilderError::Invalid {
+        message: format!("The request is malformed: {e}"),
+    })
+}
+fn builder_input<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> std::result::Result<T, JsValue> {
+    builder_input_checked(bytes).map_err(builder_fail)
+}
+#[wasm_bindgen]
+pub fn builder_presets() -> std::result::Result<String, JsValue> {
+    output(jvc_morphology::builder_presets())
+}
+#[wasm_bindgen]
+pub fn analyze_word(profile: &str, spelling: &str) -> std::result::Result<String, JsValue> {
+    let profile = match profile {
+        "cll" => jvc_morphology::Profile::Cll,
+        "extended" => jvc_morphology::Profile::Extended,
+        _ => {
+            return Err(builder_fail(jvc_morphology::BuilderError::Invalid {
+                message: "The profile is cll or extended.".into(),
+            }));
+        }
+    };
+    output(jvc_morphology::analyze_word(profile, spelling))
+}
+#[wasm_bindgen]
+pub fn build_lujvo(bytes: &[u8]) -> std::result::Result<String, JsValue> {
+    let request: jvc_morphology::LujvoRequest = builder_input(bytes)?;
+    output(jvc_morphology::build_lujvo(&request).map_err(builder_fail)?)
+}
+#[wasm_bindgen]
+pub fn generate_gismu(bytes: &[u8]) -> std::result::Result<String, JsValue> {
+    let request: jvc_morphology::GismuRequest = builder_input(bytes)?;
+    output(jvc_morphology::generate_gismu(&request).map_err(builder_fail)?)
+}
 fn assignment_status(current: Option<&str>, eligibility: &jvc_state::Eligibility) -> &'static str {
     if current == Some("active") || *eligibility == jvc_state::Eligibility::Eligible {
         "active"
@@ -573,6 +736,44 @@ fn assignment_status(current: Option<&str>, eligibility: &jvc_state::Eligibility
         "unavailable"
     } else {
         "inactive"
+    }
+}
+#[cfg(test)]
+mod builder_input_tests {
+    use super::{BUILDER_INPUT_LIMIT, builder_input_checked};
+    use jvc_morphology::{BuilderError, LujvoRequest};
+    #[test]
+    fn a_request_over_the_byte_ceiling_is_refused_before_parsing() {
+        // An ignored field carries the bulk. Nothing is parsed or allocated for it.
+        let mut bytes = br#"{"profile":"cll","components":[],"ignored":""#.to_vec();
+        bytes.resize(BUILDER_INPUT_LIMIT + 1, b'x');
+        let result: Result<LujvoRequest, BuilderError> = builder_input_checked(&bytes);
+        match result {
+            Err(BuilderError::ResourceLimit {
+                measure,
+                value,
+                limit,
+            }) => {
+                assert_eq!(measure, "request bytes");
+                assert_eq!(value, (BUILDER_INPUT_LIMIT + 1) as u64);
+                assert_eq!(limit, BUILDER_INPUT_LIMIT as u64);
+            }
+            other => panic!("expected a resource limit, got {other:?}"),
+        }
+    }
+    #[test]
+    fn a_request_at_the_ceiling_is_parsed() {
+        let mut bytes = br#"{"profile":"cll","components":[],"ignored":""#.to_vec();
+        bytes.resize(BUILDER_INPUT_LIMIT - 2, b'x');
+        bytes.extend_from_slice(br#""}"#);
+        assert_eq!(bytes.len(), BUILDER_INPUT_LIMIT);
+        let result: Result<LujvoRequest, BuilderError> = builder_input_checked(&bytes);
+        assert!(result.is_ok(), "{result:?}");
+    }
+    #[test]
+    fn a_malformed_request_under_the_ceiling_is_invalid() {
+        let result: Result<LujvoRequest, BuilderError> = builder_input_checked(b"{");
+        assert!(matches!(result, Err(BuilderError::Invalid { .. })));
     }
 }
 #[cfg(test)]

@@ -213,6 +213,12 @@ The wizard exposes ordinary language and previews. The advanced editor exposes s
 Switching modes preserves every field. It never flattens structured values into prose or discards an unsupported annotation.
 An optional JSON inspector remains read-only until the user deliberately enters a raw-edit mode.
 
+The editor uses the [definition field defaults](format.md#absent-fields-and-compatibility) when it opens a publication or restores a draft.
+An omitted optional field produces its defined empty or unspecified value. The app never fills it from another definition or a parent revision.
+The raw inspector and source export preserve the authenticated body, including its original field presence.
+Before signing, the writer omits optional fields whose interpreted values equal their defaults unless explicit evidence rules require them.
+Receipt retries resend the exact stored record. They never add or remove fields from an already signed body.
+
 A reader can draft before generating an identity. Only publication requires the signing key.
 The step bar reads Meaning, Type, Form, Places, Publish.
 “Skip to the full editor” opens step 4 with every field section open.
@@ -263,7 +269,26 @@ Equal scores use lexical order for stable presentation, with no claim of linguis
 Show the numerical construction score separately from editorial support for rafsi assignments.
 A locked rafsi remains locked when another component changes. The app explains any resulting invalid combination.
 
-Required joining characters come from the selected morphology rules. The app does not permit arbitrary joining characters under the CLL profile.
+Required joining characters come from the selected morphology rules. The builder defaults to automatic joins, without optional hyphens.
+The author can choose an optional hyphen at each boundary where the selected profile permits it.
+The boundary control offers automatic joins and each permitted explicit choice, including no optional hyphen.
+An explicit choice cannot remove a required hyphen or add a join that the selected profile rejects.
+The preview separates joining characters from component rafsi and identifies each required or optional hyphen.
+
+An optional hyphen can increase the construction score. The builder accepts that choice and scores the exact selected spelling.
+It never substitutes a shorter spelling during selection, draft restoration, or publication.
+The lowest-score default remains available through the automatic join controls.
+
+Optional hyphens follow the selected parser rules, such as the [PEG morphology rules](https://mw.lojban.org/papri/BPFK_Section:_PEG_Morphology_Algorithm).
+The app never describes an optional variant as output from the original [CLL 4.11 algorithm](https://lojban.github.io/cll/4/11/).
+That algorithm adds only required hyphens. A profile that adds optional construction choices needs a new version.
+Existing profile versions retain their construction rules.
+
+The draft stores explicit join choices separately from rafsi choices.
+Back navigation, reloads, and editor changes preserve each choice while the same adjacent components remain compatible.
+A component change or reorder can invalidate a join choice. The app marks that boundary for review and explains the incompatible choice.
+It requires a new explicit choice or a return to automatic joins before the builder accepts that candidate.
+It never silently removes an invalidated choice or changes the author's prose.
 
 Every gismu row offers its permitted long forms as well as listed short rafsi.
 A complete five-letter gismu belongs in a final position under the classic rules. A nonfinal long form uses the appropriate stem.
@@ -354,7 +379,10 @@ The wizard can suggest placeholder mappings, but the author approves numbering b
 Repeated references can name the same place. Textual order does not determine final place order.
 
 In structured editing, typed circled numerals insert integer place references. Pasting offers literal text or explicit token conversion.
+Every rich text node has a text form in structured editing, so a published body converts to editor text and back without loss: `①` or `{place N}` is a place reference, `{operand ID}` an operand reference, `[[spelling|label]]` a word link, `[[https://host/path|label]]` a web link, and `` `text` `` code. A backslash before `\`, `[`, `{`, `` ` ``, or a circled numeral keeps that character as literal text.
+The draft holds each rich text field as its exact rich text value. The editor shows a field in its text form and parses the text back only when the author edits that field, so an untouched value never changes. Literal mode turns the place references of every field into circled characters after a confirmation, and structured mode reads circled characters in text as references again. Links and code stay in both modes; a field edited in literal mode becomes plain text.
 Literal mode preserves circled characters and underscores as text. Both modes produce the same compact rich-text schema.
+In literal mode, removing or moving a place updates the visible circled characters in unchanged fields to keep their saved references aligned.
 Removing a declared place requires removal, replacement, or literalization of every reference to it.
 
 A null frame means unspecified structure. The wizard never substitutes a guessed zero-place frame.
@@ -370,7 +398,7 @@ Show the complete spelling, definition, place table, formation evidence, sources
 Signing requires valid structured references and schema fields. Linguistic disagreement alone does not make the record structurally invalid.
 The author can correct a typed reference or convert it to literal text after a preview.
 New native definitions use fixed `license.expression: "CC0-1.0"` and the official CC0 URL.
-Their fixed `license.attribution` is an empty string. The signed header issuer identifies the contributor.
+Their interpreted `license.attribution` is an empty string, so new bodies omit that field. The signed header issuer identifies the contributor.
 These license fields remain read-only. Imported author attribution stays in its separate source evidence and parent references.
 The notice reads: “New definitions use CC0 1.0. By publishing, you release your contribution under CC0 1.0.”
 Link “CC0 1.0” to https://creativecommons.org/publicdomain/zero/1.0/. The Publish action expresses agreement, without a separate checkbox.
@@ -408,7 +436,7 @@ Back navigation, mode changes, reloads, and failed provider calls preserve the d
 ## 6. Revisions, retirement, and rafsi
 
 “Revise” copies a publication into a new local draft with its exact parent ID.
-A reviewed revision uses native origin and legacy null. An imported parent keeps its original legacy evidence unchanged.
+A reviewed revision uses native origin and omits legacy. An imported parent keeps its original legacy evidence unchanged.
 The draft preserves attribution through source references to that imported publication and its source. It does not claim to be the original extraction.
 
 Anyone can propose a revision. The resulting card identifies its signer and whether accepted continuity connects that signer to the original author.
@@ -485,6 +513,10 @@ Numbers are not percentages, probabilities, or proof that a definition is correc
 Every card also shows the current user's own judgment separately. A personal “My judgments first” toggle applies an explicit local presentation preference.
 
 The details panel shows the view, major sources of influence, and whether the calculation is exact or bounded.
+It names the calculation profile from the result metadata and states that profile's route rule.
+Under `simple-routes-shun-v1`, an unfinished result says that its upper endpoint can include routes that effective shuns forbid. No upper endpoint is called received support.
+Incoming trust in the reviewer list is a list of public declarations. It does not show which routes delivered weight.
+A reviewer with weight 0 counts as a reviewer. A profile the client does not know leaves scores unavailable, with the profile named. Nothing substitutes another calculation or a cached site score.
 A bounded result exposes its interval and unresolved comparisons.
 If a layer contains more than five candidates, show its size and a shared banner. Do not number them as ranked winners. The ordinary card can use “Order unresolved” without presenting mathematical notation first.
 
@@ -509,10 +541,15 @@ A public decision states that its history is public even after a later clear.
 
 “Ignore influence from this identity” creates an `overlay.blocked` entry with the selected identity and scope by default.
 It removes that identity and routes through it from the personal view.
-It does not use an `overlay.trust` shun, which only blocks an issuer's edge.
+It does not use an `overlay.trust` shun. Under `simple-routes-bounds-v1` a shun removes only the issuer's own trust edge. Under `simple-routes-shun-v1` a route is also refused where any earlier actor on it effectively shuns the next person, while independent routes and the person's own starting allocation stay.
 A separate choice signs `trust.set` with `value: "shun"` to publish an editorial shun.
 Other readers interpret that as this user's refusal to heed, not a universal veto.
-The personal view also applies the current user's public shuns as local blocks, as the format specifies.
+The personal view also applies the current user's effective public shuns as local blocks, as the format specifies. The browser keeps its saved private preferences as a version 1 overlay. For each personal calculation it builds a version 2 overlay with the same fields and `public_shun_issuer`, the current session identity or null for an anonymous session. The core resolves that issuer's public shuns with the scope, continuity, clear, and conflict rules of the calculation's snapshot. The browser derives no block from its own registers, and it stores no derived block list or issuer.
+A narrower public heed or a public clear can lift such a block in its context. A private Trust rule does not cancel a block from the user's own public shun. A private Ignore is a separate block that stays until the user removes it, also after a public clear. The interface says both where it offers the private choice and on the Trust page.
+The reviewer list labels a block with the reasons that the calculation result supplies: `public_shun_block`, `private_block`, both, or a generic block when the result gives no reason. The client infers no reason from a different snapshot.
+The public preview tells a signed view that did not load apart from a loaded profile this client does not know. For a failed load it says that the route rule is unavailable and names the error. After Make public or Undo the status reports the first delivery outcome, as on the identity page. An accepted record says that others can build on it. An unfinished delivery says that the record is saved locally and points to Not delivered. A receipt never proves that the shown snapshot includes the record.
+A newly signed public trust choice changes a personal calculation only in a snapshot that holds it. After the signature the status says that the personal view includes it after delivery and a recompute for that snapshot. An older snapshot's scores do not claim to include it.
+The public preview explains the effect of a shun under the calculation profile of the signed view in use. It does not claim that a public shun removes every influence of that person in every reader's view.
 The UI never labels an ordinary shun as an allegation of malice.
 
 “Report identity abuse” is a separate action. It requires a category, explanation, and explicit public preview.
@@ -528,6 +565,9 @@ Clearing a public choice does not clear a separate private block.
 Removing a root removes its starting allocation, but independent incoming routes can still supply influence.
 Ignore blocks the identity and routes through it in the personal view.
 The trust page distinguishes public records, private overrides, and the active public view.
+The site view is the server's selected signed view by default. The reader can choose another retained signed view by its event ID, and can return to the server's view. Each signed view names its calculation profile, so this explicit choice is the only way to change the profile. The page names the profile of the view in use and its route rule. No view is rewritten and no view ID changes.
+A result from a calculation profile this client does not know gives no scores and no order. The word page then shows definitions in event order and says so, with the profile name. Nothing substitutes another profile or a number.
+Remembered search results belong to the view choice that produced them: a signed view ID, or the server's view. After a different choice, browser Back starts a new search under the current choice instead of restoring old hits and cursors. Under the same choice the results are restored without a request, with their fixed snapshot and view for later pages.
 Private preferences remain local unless the user explicitly exports them. A public publish button never appears as an automatic save for private changes.
 The view detail shows roots, allocations, rafsi_threshold, H, alpha, exclusions, accepted import selections, and the calculation budget.
 It also shows account_authority and the selected account witnesses. A policy change explains its effect on imported status before adoption.
@@ -538,7 +578,7 @@ Each import entry exposes its source, importer, and exact publication selection.
 
 It labels H as “Outward allowance,” not reach or a depth limit.
 It labels H=3 and alpha=1/2 as initial values for real-use tuning.
-Users can pin an older view, import another view, or create a personal overlay.
+Users can pin a retained view version by choosing its exact event ID, or create a personal overlay. Browsing a view's history and following the later changes of another view need a view history endpoint.
 Results always name an exact view event. If a known newer view body is unavailable, label the older selection explicitly.
 
 The reference personal overlay adds the current identity with `q=1` only when no allocation already names its continuity group.
@@ -763,9 +803,19 @@ Public reads need no account. Public event admission follows published quotas an
 | `POST /events` | One envelope plus nullable canonical body encoded as a UTF-8 JSON value. |
 | `GET /receipts/ID` | This server's receipt and interpretation outcome for that event. |
 | `GET /package-parts/HASH` | Canonical derived search-part bytes, with a 4 MiB uncompressed limit. |
-| `GET /packages/LANGUAGE?snapshot=S` | Search package manifest and content hashes. |
-| `GET /search?q=Q&language=L&view=V&snapshot=S` | Optional remote results with view and snapshot metadata. |
-| `GET /words/WORD_ID?view=V&snapshot=S` | Candidate IDs, rafsi claims, and attributed ranking summary. |
+| `GET /packages/LANGUAGE?snapshot=S&version=N` | Search package manifest and content hashes. Version 1 is the default. Version 2 adds row metadata. |
+| `POST /search` | Remote draft search. The JSON body carries the GET search fields and returns the same `SearchResponse`. |
+| `GET /search?q=Q&language=L&view=V&snapshot=S&retired=1` | Optional remote results with view and snapshot metadata. Without `retired=1` the results hold active publications only. With it, each preview carries the publication status. Any other `retired` value is HTTP 400. |
+| `GET /words/WORD_ID?view=V&snapshot=S&reviewers=1` | Candidate IDs, rafsi claims, and attributed ranking summary. `reviewers=1` adds bounded reviewer details to each score. Any other `reviewers` value is HTTP 400. |
+| `GET /identities/KEY?view=V&snapshot=S` | Effective profile claims, continuity state, and activity counts for one signing key. |
+| `GET /identities/KEY/activity?view=V&snapshot=S&after=ID&limit=N` | Events signed by that key in event-ID order, with their interpretation and local receipt position. |
+| `GET /records?snapshot=S&after=ID&limit=N` | Snapshot records for local calculation: envelope, body, and body status, bounded by count and bytes. The limit ranges from 1 through 200. |
+
+The `POST /search` body requires string fields `q` and `language`.
+Optional fields are `snapshot`, `view`, `after`, `retired`, and `limit`.
+The first four use the same strings as GET. `limit` accepts a positive integer or its decimal string.
+Unknown fields and query parameters on a POST search return HTTP 400.
+Both search methods apply the same bounds, cursor rules, and result selection. Draft text stays in the POST body.
 
 The POST /events body contains exactly `envelope` and `body`. Canonicalize the enclosed body and compare its hash and byte length before acceptance.
 Transport whitespace outside canonical objects does not alter signed bytes. The server preserves canonical signed meaning and never changes a field to make a signature pass.
@@ -839,11 +889,11 @@ AssistanceProfile contains exactly id, label, provider, model, operations, and d
 
 Its ID is an opaque configuration name. Operations lists the supported assist operations from section 16. Other values are display strings.
 Public capability metadata never contains provider credentials or private endpoint URLs.
-The following objects define required response fields. Optional values use null rather than omitted fields.
+The following objects define required response fields. Optional values use null rather than omitted fields, except the fields marked with `?`, which appear only when the request asks for them or when the server supports them.
 
 An `ID` means its prefixed string from the format specification. A cursor is an opaque ASCII string of at most 256 bytes.
 Snapshot IDs, logical-inventory digests, and package hashes use the `sha256:` form. Field paths in errors use JSON Pointer syntax.
-The query limit ranges from 1 through 1,000, with default 200. Search returns at most 100 hits per page.
+The query limit ranges from 1 through 1,000, with default 200, except where a route states a lower bound. Search returns at most 100 hits per page, and records at most 200 per page.
 
 Transport requests have a 1 MiB uncompressed limit, except import-selection uploads with their separate 16 MiB limit. Object limits still apply after decoding and decompression.
 
@@ -860,7 +910,8 @@ Capabilities = {
 ManifestResponse = {
   snapshot: ID, logical_inventory: ID, manifest: FormatManifest,
   accepted_cursor: cursor, materialized_cursor: cursor,
-  packages: [{language: string, hash: ID, bytes: integer}]
+  packages: [{language: string, hash: ID, bytes: integer}],
+  package_versions: [{language: string, version: integer, hash: ID, bytes: integer}]
 }
 InventoryResponse = {
   snapshot: ID, kind: "events" | "bodies" | "import_selections", ids: [ID], next: ID | null
@@ -885,7 +936,33 @@ Calculation = {
 Score = {
   target: event-ID | rafsi-pair-ID, support: [rational, rational],
   opposition: [rational, rational], net: [rational, rational],
-  direct_reviewers: integer, status: "active" | "deprecated" | "conflicted" | "unavailable"
+  direct_reviewers: integer, status: "active" | "deprecated" | "conflicted" | "unavailable",
+  reviewers?: [ReviewerDetail], reviewers_complete?: boolean
+}
+ReviewerDetail = {
+  identity: identity-string, verdict: "bless" | "curse", weight: [rational, rational] | null,
+  root: rational | null, blocked: boolean, incoming: [identity-string],
+  incoming_count: integer, incoming_complete: boolean, multiple_routes: boolean
+}
+IdentityResponse = {
+  snapshot: ID, view: event-ID, identity: identity-string, actor: identity-string,
+  successor: identity-string | null, retired: boolean, compromised: boolean, suspended: boolean,
+  profile: {state: "none" | "known" | "conflicted" | "unavailable",
+            claims: [{event: event-ID, issuer: identity-string | null, body_hash: ID | null,
+                      body: ProfileBody | null, body_status: "present" | "missing" | "invalid" | "unavailable" | "omitted"}],
+            claims_count: integer, claims_complete: boolean},
+  counts: {definitions: integer, rafsi: integer, judgments: integer, trust: integer, reports: integer, other: integer}
+}
+ActivityResponse = {
+  snapshot: ID, view: event-ID, identity: identity-string,
+  items: [{id: event-ID, action: action-object, interpretation: interpretation-string, seen: cursor | null}],
+  next: event-ID | null
+}
+RecordsResponse = {
+  snapshot: ID, logical_inventory: ID,
+  items: [{id: event-ID, envelope: envelope-object, body: canonical-object | null,
+           body_status: "present" | "missing" | "unavailable" | "none"}],
+  next: event-ID | null
 }
 PublicationStatus = {
   event: event-ID,
@@ -910,6 +987,27 @@ SearchResponse = {
 }
 Error = {code: string, message: string, event: event-ID | null, field: string | null}
 ```
+
+Reviewer details appear only when the request asks for them. Each list is bounded to 64 entries, and `reviewers_complete` says whether the list is complete.
+A detail names the resolved actor, its effective verdict, and its influence interval under the same graph that produced the score.
+`root` is the actor's starting allowance when it is a root of the view. `incoming` lists the actors whose resolved heeds reach it directly, bounded to 16.
+`multiple_routes` is true when the actor has more than one direct source of influence in the effective graph: its direct incoming heeds plus its root allowance, when it has one. It does not count indirect routes. The response never states a per-route share, because the bounded calculation does not derive one.
+The shared core materializes the details only for a request that asks for them, bounded to 64 before serialization. A request without the flag does no reviewer-detail work.
+An older server omits the field. A client distinguishes that omission from an empty list, which means that no reviewer exists.
+
+Identity responses resolve the profile register under the effective continuity rules. Concurrent profile claims appear together with state `conflicted`.
+A response lists at most 16 claims in event-ID order with at most 1 MiB of claim bodies in total. `claims_count` is the number of concurrent heads, and `claims_complete` is false when the list or a body was cut. A cut body has `body_status` `omitted`.
+
+A body absent from the snapshot has `missing`. Returned bytes that fail body validation have `invalid`. These claims keep state `known` unless concurrent heads conflict. A retained body or envelope that storage did not return has `unavailable`. Only that storage failure sets profile state `unavailable`.
+
+If the selected view cannot be evaluated, the identity route returns HTTP 503 with code `resource_unavailable`, like the search and word routes. It never asserts that an identity has no profile, successor, or compromise notice without an evaluation. The activity route still answers, with interpretation `unavailable` per item.
+`/identities/KEY` and `/identities/KEY/activity` are the only identity paths. A longer path is HTTP 404.
+The counts describe events signed by that exact key in the snapshot. They are raw authorship, not imported source attribution.
+Activity items use event-ID order, which is stable but not chronological. `seen` is this server's receipt position, for navigation only.
+
+The records transport returns the committed envelope representation of the snapshot with its body when retained. Pages hold at most 200 records, and the encoded `items` bytes, as the response carries them before any transport compression, stay under 4 MiB. A page always holds at least one item, so one item can exceed that bound alone.
+`body_status` `missing` means that the snapshot never retained the body. `unavailable` means that the snapshot retained it and storage did not return it now. A client keeps the two apart: a missing body is a fact of the snapshot, and an unavailable one deserves another request.
+A client authenticates each envelope and body through the shared core and compares the complete set with the snapshot inventory before claiming a complete local calculation.
 
 Word layers contain definition IDs only. Assignment status is `eligible`, `inactive`, or `unknown`, with distinct pair scores.
 Statuses contains one entry for each returned definition, sorted by event ID. It uses the response's exact snapshot and view.
@@ -978,7 +1076,7 @@ Inventory `after` is exclusive and must use the requested identifier family. Its
 Changes cursors are server-specific and never transferable between peers. Empty changes pages retain the supplied cursor and set caught_up appropriately.
 
 An empty-string cursor is invalid. A request without a changes cursor starts from that server's earliest retained receipt. An empty initial log returns its opaque initial cursor. Retention gaps require snapshot reconciliation through HTTP 410.
-Search accepts an optional `after` cursor tied to the same query, language, view, and snapshot.
+Search accepts an optional `after` cursor tied to the same query, language, retired flag, view, and snapshot.
 
 Match kinds are `headword`, `gloss`, `headword-prefix`, `gloss-prefix`, and `token`, in that relevance order.
 Search responses identify candidates but carry no unqualified quality score. The word response supplies ranking when requested.
@@ -987,13 +1085,22 @@ A no-judgment candidate has an exact zero score when complete graph inputs suppo
 
 ### Search package contract
 
-A package manifest contains exactly `version`, `language`, `snapshot`, and `parts`. Version is 1.
+A package manifest contains exactly `version`, `language`, `snapshot`, and `parts`. Version is 1 or 2.
+The manifest response lists version 1 packages in `packages` and every other version in `package_versions`.
+A client requests a version explicitly with the `version` query. The default remains version 1.
 Each part contains `hash`, `bytes`, and `count`. Part hashes identify canonical JSON arrays of search entries.
 Parts contain at most 2,000 entries and 4 MiB uncompressed. These are derived artifacts, not signed event bodies.
 
 Their dedicated endpoint uses that limit rather than the 256 KiB event-body limit. Split a larger package into more parts.
 An entry contains `event`, `word`, `language`, `glosses`, `plain_text`, `classification`, and `body`.
 Event is the publication ID. Word is its word object. Body is its body hash or null.
+A version 2 entry adds `issuer`, `notes`, `rafsi`, `rafsi_complete`, and `attribution`.
+Issuer is the signing key, which is the importer for an import. Notes is true when the definition has notes.
+Rafsi lists the spellings of retained rafsi claim bodies for the word, sorted, at most 64 of them. `rafsi_complete` is false when the word has more claims than the list holds. Missing, unreadable, or invalid claim bytes also set `rafsi_complete` to false. A client never treats a cut list as a complete conflict inventory. The exact claims of a word are the `rafsi` event IDs of the word route and their claim bodies.
+Attribution is null for a native publication.
+If an advertised version 2 package fails its checks, the client uses the version 1 package instead and records the reason with the cached package. It shows that state wherever it describes the package. It never falls back without that record.
+For an import it contains `source`, nullable `author`, nullable `account` with `origin` and `account`, and `dates`, a map of source date labels to source strings.
+These fields are server assertions derived from the records. They are not part of the signed format, and a client can authenticate them against the records.
 
 Other fields use definition shapes, except plain_text, which is a literal search string derived from rich text.
 The package sorts entries by event ID and preserves alternatives. It does not encode one chosen definition per word.
@@ -1338,7 +1445,7 @@ The provider interface follows the documented capabilities of [OpenRouter](https
 Release scenarios must cover these additional cases:
 
 1. Complete every wizard branch with inference disabled and the network unavailable.
-2. Preserve drafts, undo history, rafsi locks, and human prose after mode switches and delayed AI responses.
+2. Preserve drafts, undo history, rafsi locks, explicit join choices, and human prose after mode switches and delayed AI responses.
 3. Generate cmavo-based compounds and permitted long fu'ivla forms with short alternatives also present.
 4. Select a non-top gismu candidate and acknowledge every known root and rafsi conflict.
 5. Reuse shared vectors only with matching content, input recipe, vector profile, and accepted producer.
@@ -1351,5 +1458,10 @@ Release scenarios must cover these additional cases:
 12. Ignore new former-period actions outside the carry while preserving source attribution and the original importer signature.
 13. Change witnesses without an active fallback, then preview a parentless reset and obtain new certificate evidence.
 14. Inspect a stranger's account claim without replacing the genuine profile marker's accepted observation.
+15. Select valid optional `y`, `r`, and `n` hyphens under profiles that permit them, including forms with worse construction scores.
+16. Refuse missing required joins and invalid optional joins. Recover the intended components and joins from every accepted spelling.
+17. Preserve optional joins through publication and revision. Require review when a component change invalidates an explicit join choice.
+18. Read and revise definitions with omitted optional fields, including nested place and formation fields, without changing retained signed bodies.
+19. Keep explicit old records readable and preserve their IDs. Refuse invalid present values and missing required evidence.
 
 The [prototype plan](prototype-plan.md) defines implementation stages. The [handover cases](handover-cases.md) define required account-control outcomes.

@@ -2,6 +2,8 @@ use super::*;
 use num_bigint::BigInt;
 use num_traits::{One, Zero};
 
+const MAX_CONTEXT_REFUSALS: usize = 100_000;
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Context {
     pub kind: String,
@@ -15,10 +17,16 @@ pub struct PositiveEdge {
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ContextGraph {
+    pub calculation: String,
     pub actors: Vec<String>,
     pub roots: Vec<Rational>,
     pub rows: Vec<Vec<PositiveEdge>>,
+    /// Each target lists the resolved actors who effectively shun it.
+    /// The old profile uses an empty relation.
+    pub refusals: Vec<Vec<usize>>,
     pub blocked: BTreeSet<usize>,
+    pub public_shun_blocked: BTreeSet<usize>,
+    pub private_blocked: BTreeSet<usize>,
     pub judgments: BTreeMap<String, BTreeMap<String, Judgment>>,
     pub available: bool,
     pub reasons: BTreeSet<String>,
@@ -137,15 +145,64 @@ fn narrower(a: &Value, b: &Value) -> bool {
     let b = dimensions(b);
     a != b && a.iter().zip(b.iter()).all(|(a, b)| a == b || b == "*")
 }
+fn scoped_pairs<'a>(
+    trust: &'a [TrustRule],
+    context: &Context,
+    issuer: Option<&str>,
+) -> BTreeMap<(String, String), Vec<&'a TrustRule>> {
+    let mut pairs: BTreeMap<_, Vec<_>> = BTreeMap::new();
+    for rule in trust {
+        if issuer.is_some_and(|actor| actor != rule.actor)
+            || rule.actor == rule.subject
+            || !matches(&rule.scope, context)
+            || rule.values.iter().all(|value| value == "clear")
+        {
+            continue;
+        }
+        pairs
+            .entry((rule.actor.clone(), rule.subject.clone()))
+            .or_default()
+            .push(rule);
+    }
+    pairs
+}
+fn retained_rules<'a>(rules: &[&'a TrustRule]) -> Vec<&'a TrustRule> {
+    rules
+        .iter()
+        .copied()
+        .filter(|rule| {
+            !rules
+                .iter()
+                .any(|other| narrower(&other.scope, &rule.scope))
+        })
+        .collect()
+}
 /// Construct the positive graph for one exact comparison context.
 /// Blocked destinations lose their original shares after row normalization.
 pub fn evaluate_context(evaluation: &Evaluation, context: &Context) -> ContextGraph {
+    evaluate_context_with_limit(evaluation, context, MAX_CONTEXT_REFUSALS)
+}
+fn evaluate_context_with_limit(
+    evaluation: &Evaluation,
+    context: &Context,
+    max_refusals: usize,
+) -> ContextGraph {
+    let calculation = evaluation
+        .policy
+        .as_ref()
+        .and_then(|policy| policy["calculation"].as_str())
+        .unwrap_or_default()
+        .to_owned();
     if evaluation.reasons.contains("invalid_overlay") {
         return ContextGraph {
+            calculation,
             actors: Vec::new(),
             roots: Vec::new(),
             rows: Vec::new(),
+            refusals: Vec::new(),
             blocked: BTreeSet::new(),
+            public_shun_blocked: BTreeSet::new(),
+            private_blocked: BTreeSet::new(),
             judgments: BTreeMap::new(),
             available: false,
             reasons: evaluation.reasons.clone(),
@@ -181,6 +238,8 @@ pub fn evaluate_context(evaluation: &Evaluation, context: &Context) -> ContextGr
     };
     let mut raw_roots: BTreeMap<String, Rational> = BTreeMap::new();
     let mut blocked: BTreeSet<String> = evaluation.lifecycle.suspended.keys().cloned().collect();
+    let mut public_shun_blocked = BTreeSet::new();
+    let mut private_blocked = BTreeSet::new();
     if let Some(policy) = &evaluation.policy {
         for root in policy["roots"].as_array().into_iter().flatten() {
             if let (Some(key), Some(q)) = (root["identity"].as_str(), rational(&root["q"])) {
@@ -196,6 +255,22 @@ pub fn evaluate_context(evaluation: &Evaluation, context: &Context) -> ContextGr
     }
     let mut trust = evaluation.trust.clone();
     if let Some(overlay) = &evaluation.overlay {
+        if overlay["version"] == 2 {
+            if let Some(key) = overlay["public_shun_issuer"].as_str() {
+                let issuer = resolve(key);
+                // Public personal blocks use public rules before private replacement.
+                for ((_, subject), rules) in scoped_pairs(&evaluation.trust, context, Some(&issuer))
+                {
+                    if retained_rules(&rules)
+                        .iter()
+                        .any(|rule| rule.values.contains("shun"))
+                    {
+                        public_shun_blocked.insert(subject);
+                    }
+                }
+                blocked.extend(public_shun_blocked.iter().cloned());
+            }
+        }
         for root in overlay["root_changes"].as_array().into_iter().flatten() {
             if let Some(key) = root["identity"].as_str() {
                 if root["q"].is_null() {
@@ -208,7 +283,11 @@ pub fn evaluate_context(evaluation: &Evaluation, context: &Context) -> ContextGr
         for item in overlay["blocked"].as_array().into_iter().flatten() {
             if matches(&item["scope"], context) {
                 if let Some(key) = item["identity"].as_str() {
-                    blocked.insert(resolve(key));
+                    let actor = resolve(key);
+                    if overlay["version"] == 2 {
+                        private_blocked.insert(actor.clone());
+                    }
+                    blocked.insert(actor);
                 }
             }
         }
@@ -242,22 +321,13 @@ pub fn evaluate_context(evaluation: &Evaluation, context: &Context) -> ContextGr
         *current = std::cmp::max(current.clone(), q);
     }
 
-    let mut pairs: BTreeMap<(String, String), Vec<&TrustRule>> = BTreeMap::new();
     for rule in &trust {
         if matches(&rule.scope, context) && !rule.values.iter().all(|v| v == "clear") {
             actors.insert(rule.actor.clone());
             actors.insert(rule.subject.clone());
         }
-        if rule.actor != rule.subject
-            && matches(&rule.scope, context)
-            && !rule.values.iter().all(|v| v == "clear")
-        {
-            pairs
-                .entry((rule.actor.clone(), rule.subject.clone()))
-                .or_default()
-                .push(rule);
-        }
     }
+    let pairs = scoped_pairs(&trust, context, None);
     let actors: Vec<_> = actors.into_iter().collect();
     let indices: BTreeMap<_, _> = actors
         .iter()
@@ -265,12 +335,27 @@ pub fn evaluate_context(evaluation: &Evaluation, context: &Context) -> ContextGr
         .map(|(i, a)| (a.clone(), i))
         .collect();
     let mut rows = vec![Vec::new(); actors.len()];
+    let route_refusals = calculation == "simple-routes-shun-v1";
+    let mut refusals = if route_refusals {
+        vec![Vec::new(); actors.len()]
+    } else {
+        Vec::new()
+    };
+    let mut refusal_count = 0;
+    let mut reasons = evaluation.reasons.clone();
+    let mut available = evaluation.available && evaluation.policy.is_some();
     let mut weights: BTreeMap<String, BTreeMap<String, Rational>> = BTreeMap::new();
     for ((issuer, subject), rules) in pairs {
-        let retained: Vec<_> = rules
-            .iter()
-            .filter(|r| !rules.iter().any(|other| narrower(&other.scope, &r.scope)))
-            .collect();
+        let retained = retained_rules(&rules);
+        if route_refusals && retained.iter().any(|rule| rule.values.contains("shun")) {
+            if refusal_count == max_refusals {
+                reasons.insert("resource_unavailable".into());
+                available = false;
+                break;
+            }
+            refusals[indices[&subject]].push(indices[&issuer]);
+            refusal_count += 1;
+        }
         if retained.is_empty()
             || retained
                 .iter()
@@ -328,14 +413,29 @@ pub fn evaluate_context(evaluation: &Evaluation, context: &Context) -> ContextGr
         .iter()
         .filter_map(|a| indices.get(a).copied())
         .collect();
+    let public_shun_blocked = public_shun_blocked
+        .iter()
+        .filter_map(|actor| indices.get(actor).copied())
+        .collect();
+    let private_blocked = private_blocked
+        .iter()
+        .filter_map(|actor| indices.get(actor).copied())
+        .collect();
+    for list in &mut refusals {
+        list.sort_unstable();
+    }
     ContextGraph {
+        calculation,
         actors,
         roots,
         rows,
+        refusals,
         blocked,
+        public_shun_blocked,
+        private_blocked,
         judgments,
-        available: evaluation.available && evaluation.policy.is_some(),
-        reasons: evaluation.reasons.clone(),
+        available,
+        reasons,
     }
 }
 
@@ -367,9 +467,8 @@ fn valid_rational(v: &Value, positive: bool) -> bool {
     r.numer() == &BigInt::from(n) && r.denom() == &BigInt::from(d)
 }
 pub(crate) fn valid_overlay(v: &Value, base: &str) -> bool {
-    if !exact(
-        v,
-        &[
+    let fields: &[&str] = match v["version"].as_u64() {
+        Some(1) => &[
             "version",
             "base_view",
             "root_changes",
@@ -377,8 +476,25 @@ pub(crate) fn valid_overlay(v: &Value, base: &str) -> bool {
             "blocked",
             "work",
         ],
-    ) || v["version"] != 1
-        || v["base_view"].as_str() != Some(base)
+        Some(2) => &[
+            "version",
+            "base_view",
+            "root_changes",
+            "trust",
+            "blocked",
+            "work",
+            "public_shun_issuer",
+        ],
+        _ => return false,
+    };
+    if !exact(v, fields) || v["base_view"].as_str() != Some(base) {
+        return false;
+    }
+    if v["version"] == 2
+        && !v["public_shun_issuer"].is_null()
+        && !v["public_shun_issuer"]
+            .as_str()
+            .is_some_and(|key| jvc_core::valid_id(key, "ed25519:"))
     {
         return false;
     }
@@ -455,4 +571,106 @@ pub(crate) fn valid_overlay(v: &Value, base: &str) -> bool {
         }
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn refusal_pair_limit_matches_ranker_default() {
+        assert_eq!(
+            MAX_CONTEXT_REFUSALS,
+            jvc_rank::Limits::default().max_refusals
+        );
+    }
+
+    #[test]
+    fn old_profile_personal_blocks_do_not_build_or_charge_a_refusal_relation() {
+        let input = EvaluationInput {
+            events: Vec::new(),
+            bodies: BTreeMap::new(),
+            selected_view: String::new(),
+            overlay: None,
+            import_selections: BTreeMap::new(),
+            limits: Limits::default(),
+        };
+        let mut evaluation = evaluate(&input);
+        evaluation.available = true;
+        evaluation.reasons.clear();
+        let issuer = jvc_core::identity_from_seed(&[1; 32]);
+        evaluation.policy =
+            Some(json!({"calculation":"simple-routes-bounds-v1","roots":[],"excluded":[]}));
+        evaluation.overlay = Some(
+            json!({"version":2,"public_shun_issuer":issuer,"root_changes":[],"trust":[],"blocked":[]}),
+        );
+        evaluation.trust = [2, 3]
+            .into_iter()
+            .map(|seed| TrustRule {
+                actor: issuer.clone(),
+                subject: jvc_core::identity_from_seed(&[seed; 32]),
+                scope: json!({"kind":"*","word":"*","language":"*"}),
+                values: BTreeSet::from(["shun".into()]),
+            })
+            .collect();
+        let context = Context {
+            kind: "definition".into(),
+            word: "word".into(),
+            language: Some("en".into()),
+        };
+        let graph = evaluate_context_with_limit(&evaluation, &context, 0);
+        assert!(graph.available);
+        assert_eq!(graph.public_shun_blocked.len(), 2);
+        assert!(graph.refusals.is_empty());
+        assert_eq!(graph.refusals.capacity(), 0);
+        evaluation.policy.as_mut().unwrap()["calculation"] = json!("simple-routes-shun-v1");
+        assert!(!evaluate_context_with_limit(&evaluation, &context, 0).available);
+    }
+
+    #[test]
+    fn refusal_construction_is_bounded_and_reports_unavailable() {
+        let input = EvaluationInput {
+            events: Vec::new(),
+            bodies: BTreeMap::new(),
+            selected_view: String::new(),
+            overlay: None,
+            import_selections: BTreeMap::new(),
+            limits: Limits::default(),
+        };
+        let mut evaluation = evaluate(&input);
+        evaluation.available = true;
+        evaluation.reasons.clear();
+        evaluation.policy =
+            Some(json!({"calculation":"simple-routes-shun-v1","roots":[],"excluded":[]}));
+        evaluation.trust = ["b", "c"]
+            .into_iter()
+            .map(|subject| TrustRule {
+                actor: "a".into(),
+                subject: subject.into(),
+                scope: json!({"kind":"*","word":"*","language":"*"}),
+                values: BTreeSet::from(["shun".into()]),
+            })
+            .collect();
+        let context = Context {
+            kind: "definition".into(),
+            word: "word".into(),
+            language: Some("en".into()),
+        };
+        let accepted = evaluate_context_with_limit(&evaluation, &context, 2);
+        assert!(accepted.available);
+        assert_eq!(accepted.refusals.iter().map(Vec::len).sum::<usize>(), 2);
+        let refused = evaluate_context_with_limit(&evaluation, &context, 1);
+        assert!(!refused.available);
+        assert!(refused.reasons.contains("resource_unavailable"));
+        assert_eq!(refused.refusals.iter().map(Vec::len).sum::<usize>(), 1);
+        evaluation.policy.as_mut().unwrap()["calculation"] = json!("simple-routes-bounds-v1");
+        let old = evaluate_context_with_limit(&evaluation, &context, 0);
+        assert!(old.available);
+        assert!(old.refusals.is_empty());
+        assert_eq!(old.refusals.capacity(), 0);
+        assert!(old.rows.iter().all(Vec::is_empty));
+        assert!(!old.reasons.contains("resource_unavailable"));
+        assert_eq!(MAX_CONTEXT_REFUSALS, 100_000);
+    }
 }

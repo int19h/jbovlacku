@@ -115,6 +115,15 @@ export function createEvent(
 }
 export const wordId = (word: { language: "jbo"; spelling: string }): string =>
   wasm.runtime_word_identifier(utf8(JSON.stringify(word)));
+/** The rafsi pair ID of a word ID and NFC rafsi spelling, per the format specification. */
+export const rafsiPairId = (word: string, rafsi: string): string =>
+  "jvr1:" +
+  contentHash(
+    utf8(
+      "jbovlacku-rafsi-v1\n" +
+        canonicalize(utf8(JSON.stringify({ word, rafsi }))),
+    ),
+  ).slice(7);
 
 export const validateAction = (envelopeBytes: Uint8Array): boolean =>
   wasm.check_action(envelopeBytes);
@@ -169,7 +178,17 @@ export function evaluateSession(input: EvaluationRequest) {
   const session = new wasm.EvaluationSession(utf8(JSON.stringify(input)));
   return {
     state: JSON.parse(session.state()) as Evaluation,
-    rankWord: (word: string) => JSON.parse(session.rank(word)),
+    /**
+     * Ranks one word. `reviewers` asks for at most that many reviewer details
+     * per score, bounded inside the core. Without it the aggregate lookup does
+     * no reviewer-detail work and the scores carry no `reviewers` field.
+     */
+    rankWord: (word: string, reviewers?: number) =>
+      JSON.parse(
+        reviewers === undefined
+          ? session.rank(word)
+          : session.rank_with_reviewers(word, reviewers),
+      ),
     free: () => session.free(),
   };
 }
@@ -179,3 +198,197 @@ export const rankWord = (input: EvaluationRequest, word: string) =>
 /** Canonical local wrappers allow enclosing containers around validated records. */
 export const canonicalizeStorageWrapper = (bytes: Uint8Array): string =>
   wasm.canonicalize_storage_wrapper(bytes);
+
+/** Word-form tools from the shared morphology crate. See docs/morphology.md. */
+export type MorphologyProfile = "cll" | "extended";
+export interface BuilderPreset {
+  id: string;
+  label: string;
+  description: string;
+  source_url: string;
+  reference_url: string | null;
+  /** The SHA-256 of the pinned source bytes, as hexadecimal. Additive in morphology version 2. */
+  source_digest: string;
+  denominator: number;
+  languages: { language: string; name: string; numerator: number }[];
+}
+export interface BuilderFailure {
+  kind: "invalid" | "resource-limit";
+  message?: string;
+  measure?: string;
+  value?: number;
+  limit?: number;
+}
+export class BuilderError extends Error {
+  constructor(public failure: BuilderFailure) {
+    super(
+      failure.kind === "resource-limit"
+        ? `${failure.measure} is ${failure.value}, above the limit of ${failure.limit}.${failure.measure === "build recognition work" ? " Lock a component form." : ""}`
+        : (failure.message ?? "The builder request failed."),
+    );
+  }
+}
+function builderCall<T>(run: () => string): T {
+  try {
+    return JSON.parse(run()) as T;
+  } catch (error) {
+    if (typeof error === "string") {
+      try {
+        const failure = JSON.parse(error) as BuilderFailure;
+        if (failure && typeof failure === "object" && "kind" in failure)
+          throw new BuilderError(failure);
+      } catch (inner) {
+        if (inner instanceof BuilderError) throw inner;
+      }
+      throw new Error(error);
+    }
+    throw error;
+  }
+}
+export const builderPresets = (): BuilderPreset[] =>
+  builderCall(() => wasm.builder_presets());
+export interface RecoveredPart {
+  text: string;
+  kind: "rafsi" | "core";
+  join_before: string | null;
+}
+export interface WordAnalysis {
+  original: string;
+  normalized: string | null;
+  kind: "gismu" | "lujvo" | "cmavo" | "fuivla" | "cmevla" | "unknown";
+  readings: RecoveredPart[][];
+  diagnostics: string[];
+  morphology: { id: string; version: string };
+}
+export const analyzeWord = (
+  profile: MorphologyProfile,
+  spelling: string,
+): WordAnalysis => builderCall(() => wasm.analyze_word(profile, spelling));
+export interface LujvoComponentRequest {
+  id: string;
+  spelling: string;
+  kind: string;
+  definition?: string | null;
+  claims?: { rafsi: string; pair: string }[];
+  locked?: string | null;
+}
+export interface RafsiInventoryClaim {
+  rafsi: string;
+  word: string;
+  spelling: string;
+  pair: string;
+}
+export interface LujvoRequest {
+  profile: MorphologyProfile;
+  components: LujvoComponentRequest[];
+  inventory?: { snapshot?: string | null; claims?: RafsiInventoryClaim[] };
+  limits?: { choice_product?: number; results?: number };
+}
+export interface LujvoChoice {
+  form: string;
+  origin: "claim" | "stem" | "final" | "core";
+  shape: string;
+  position: "any" | "nonfinal" | "final";
+  pair: string | null;
+}
+export interface LujvoCandidate {
+  spelling: string;
+  parts: {
+    id: string;
+    form: string;
+    origin: LujvoChoice["origin"];
+    pair: string | null;
+  }[];
+  tokens: string[];
+  score: number;
+  recovered: RecoveredPart[];
+  conflicts: {
+    rafsi: string;
+    id: string;
+    word: string;
+    spelling: string;
+    pair: string;
+  }[];
+  unlisted: string[];
+}
+export interface LujvoResult {
+  rows: {
+    id: string;
+    normalized: string;
+    choices: LujvoChoice[];
+    /** A listed choice or an extended whole-word lock awaiting recognition. */
+    lock_valid: boolean;
+    /** The whole-word check exhausted its work limit. Listed rafsi remain available. */
+    recognition_incomplete: boolean;
+    diagnostics: string[];
+  }[];
+  candidates: LujvoCandidate[];
+  complete: boolean;
+  considered: number;
+  rejected: { spelling: string; parts: string[]; reason: string }[];
+  morphology: { id: string; version: string };
+  scoring: { id: string; version: string };
+  diagnostics: string[];
+}
+export const buildLujvo = (request: LujvoRequest): LujvoResult =>
+  builderCall(() => wasm.build_lujvo(utf8(JSON.stringify(request))));
+export interface CalculatedRational {
+  numerator: string;
+  denominator: string;
+}
+export interface GismuSourceRow {
+  language: string;
+  word: string;
+  input: string | null;
+  weight: { numerator: string | number; denominator: string | number } | null;
+}
+export interface GismuRequest {
+  sources: GismuSourceRow[];
+  candidates?: "source-letters" | "all-letters";
+  inventory?: {
+    snapshot?: string | null;
+    gismu?: { spelling: string; word: string }[];
+    claims?: RafsiInventoryClaim[];
+  };
+  window?: number;
+  manual?: string | null;
+  limits?: { work?: number };
+}
+export interface GismuCandidate {
+  form: string;
+  score: CalculatedRational;
+  rank: number | null;
+  contributions: {
+    language: string;
+    input: string;
+    matched: number;
+    length: number;
+    weighted: CalculatedRational;
+  }[];
+  short_rafsi: string[];
+  conflicts: { word: string; spelling: string; rule: string }[];
+  rafsi_conflicts: RafsiInventoryClaim[];
+}
+export interface GismuResult {
+  languages: {
+    language: string;
+    weight: CalculatedRational;
+    normalized: CalculatedRational;
+    inputs: string[];
+  }[];
+  considered: number;
+  complete: boolean;
+  candidates: GismuCandidate[];
+  manual: GismuCandidate | null;
+  algorithm: { id: string; version: string };
+  parameters: {
+    weighting: string;
+    matching: string;
+    transliteration: string;
+    candidates: string;
+    aggregation: string;
+  };
+  diagnostics: string[];
+}
+export const generateGismu = (request: GismuRequest): GismuResult =>
+  builderCall(() => wasm.generate_gismu(utf8(JSON.stringify(request))));

@@ -270,6 +270,16 @@ pub fn evaluate(input: &EvaluationInput) -> Evaluation {
     {
         result.available = false;
         result.reasons.insert("invalid_overlay".into());
+    } else if input
+        .overlay
+        .as_ref()
+        .and_then(|overlay| overlay["public_shun_issuer"].as_str())
+        .is_some_and(|issuer| graph.suspended(issuer))
+    {
+        result.available = false;
+        result
+            .reasons
+            .insert("public_shun_issuer_unavailable".into());
     }
     publications(&graph, input, &mut result);
     reconcile_selections(&graph, &mut result);
