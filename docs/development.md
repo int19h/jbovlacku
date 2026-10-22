@@ -86,6 +86,7 @@ The Node adapter accepts these environment variables:
 | `JVC_ASSETS_DIR`      | Browser assets. The source default is `apps/web/dist`.                                        |
 | `JVC_SERVER_ID`       | Service identifier. The source default is `local-node`.                                       |
 | `JVC_VIEW`            | Explicit selected view event ID. A fresh service has no dictionary view.                      |
+| `JVC_STATE_TRAVERSAL_LIMIT` | Explicit state work budget from 1 through 1,000,000,000. It overrides the saved import limit. |
 | `JVC_PUBLIC_ORIGIN`   | Explicit public origin permitted to submit browser writes through a reverse proxy.            |
 | `JVC_SNAPSHOT_LIMIT`  | Retained snapshot count. The default is 16. Allowed values are 1 through 64.                  |
 | `JVC_CORS_ORIGINS`    | Comma-separated additional permitted origins.                                                 |
@@ -123,6 +124,40 @@ It reports unavailable interpretation with `evaluation_resource_unavailable`. A 
 Use a separate data directory for each test service. Do not point a disposable test at another service's database.
 A selected view and explicit import selection determine which imported publications appear.
 The [importer guide](../packages/importer/README.md) describes local signed proposals and their disposable key inputs.
+
+### Initial Lensisku data
+
+The importer reads pinned REST captures and PostgreSQL COPY snapshots as separate sources.
+The SQL extraction uses every source definition language that the format can represent.
+It preserves original fields and available history. It reports unsupported or malformed rows without inventing source repairs.
+The importer guide describes both extraction commands, source manifests, and unresolved reports.
+
+After preparing a signed proposal, stop the Node server for the target data directory.
+From the repository root, load the proposal into that directory:
+
+```sh
+npx tsx packages/importer/src/load-cli.ts \
+  --proposal .cache/import-sql \
+  --data .cache/node \
+  --state-traversal-limit 1000000000
+JVC_DATA_DIR="$PWD/.cache/node" npm run start
+```
+
+The loader admits signed carriers, their import selection, and their selected view.
+It records the selected view and explicit traversal budget in `loaded-view.json`.
+Node startup reads that file. `JVC_VIEW` and `JVC_STATE_TRAVERSAL_LIMIT` provide explicit overrides.
+A repeat load reuses accepted event positions. It does not create new signatures.
+
+The loader and Node server hold an exclusive `.node-data-lock` in the target directory.
+If a process leaves that lock, settle the process before removing its exact lock directory.
+Keep the proposal journal and external source archive available for retries and source inspection.
+The SQL archive records the digest and path of the external dump instead of copying it into the proposal.
+Rights remain unknown in this extraction. Local loading grants no publication authority.
+
+Large imports need a larger explicit state work budget and enough memory.
+The traversal flag changes the work limit only. It does not remove memory or event limits.
+The loader completes admission before the server builds its snapshot, indexes, and search packages.
+Successful admission alone does not establish successful dictionary evaluation.
 
 ## Browser development
 
@@ -271,7 +306,8 @@ npx tsx scripts/test-server-security.ts
 The probe verifies real runtime WebAssembly, blocked JavaScript evaluation, blocked inline scripts, and blocked framing.
 `scripts/measure-service-io.ts` uses the same corpus variables to count object operations and sample Node and Wasm memory.
 `JVC_IO_REPORT` selects an output report file. Its disposable database is removed when the measurement finishes.
-The importer tests use pinned JSON captures. General SQL migration, inferred place conversion, and automatic rafsi publication remain unfinished.
+The importer tests use pinned JSON captures and a small SQL fixture with source provenance.
+Inferred place conversion and automatic rafsi publication remain unfinished.
 Use disposable contributor keys and synthetic account evidence. Do not use real contributor keys or change a Lensisku account.
 Read imported SQL as data. Do not execute an import dump against a service database.
 Use mocked providers before real inference tests.
