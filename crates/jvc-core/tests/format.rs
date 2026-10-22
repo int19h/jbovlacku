@@ -61,6 +61,118 @@ fn strict_json_and_exact_decimal_numbers() {
 }
 
 #[test]
+fn cached_issuer_checks_still_validate_every_signature() {
+    let event = signed(json!({"kind":"identity.merge"}));
+    let mut verifier = EnvelopeVerifier::default();
+    let valid = event.canonical_envelope().unwrap();
+    for _ in 0..3 {
+        assert_eq!(verifier.verify(&valid).unwrap().id(), event.id());
+    }
+    let signature = STANDARD.decode(&event.envelope().signature).unwrap();
+    for change in 0..5 {
+        let mut envelope = event.envelope().clone();
+        let mut bytes = signature.clone();
+        let end = bytes.len();
+        match change {
+            0 => bytes[end - 64..end - 32].fill(0),
+            1 => bytes[end - 32..].fill(0xff),
+            2 => bytes[end - 32] ^= 1,
+            3 => {
+                envelope.header.issuer = identity_from_seed(&[8; 32]);
+                envelope.id = hash_id(
+                    "jve1:",
+                    EVENT_DOMAIN,
+                    &canonical_value(&serde_json::to_value(&envelope.header).unwrap()).unwrap(),
+                );
+            }
+            _ => {
+                envelope.header.issuer = format!("ed25519:{}", "00".repeat(32));
+                envelope.id = hash_id(
+                    "jve1:",
+                    EVENT_DOMAIN,
+                    &canonical_value(&serde_json::to_value(&envelope.header).unwrap()).unwrap(),
+                );
+            }
+        }
+        envelope.signature = STANDARD.encode(bytes);
+        let invalid = canonical_value(&serde_json::to_value(envelope).unwrap()).unwrap();
+        let expected = verify_envelope(&invalid).unwrap_err();
+        assert_eq!(verifier.verify(&invalid).unwrap_err(), expected);
+        assert_eq!(verifier.verify(&valid).unwrap().id(), event.id());
+    }
+}
+
+#[test]
+fn original_body_validation_rejects_invalid_stored_bytes() {
+    let valid = br#"{"bio":[],"links":[],"name":"Test"}"#.to_vec();
+    let mut cases = vec![
+        (valid.clone(), true),
+        (
+            br#"{"bio":[],"links":[],"name":"Test","name":"Test"}"#.to_vec(),
+            false,
+        ),
+        (
+            br#"{"bio":[],"links":[],"name":"Test", "extra":0}"#.to_vec(),
+            false,
+        ),
+        (br#"{"bio":[],"links":[],"name":"\ud800"}"#.to_vec(), false),
+        (
+            br#"{"bio":[[1.0000000000000001]],"links":[],"name":"Test"}"#.to_vec(),
+            false,
+        ),
+        (
+            br#"{"bio":[[9007199254740992]],"links":[],"name":"Test"}"#.to_vec(),
+            false,
+        ),
+        (br#"{ "bio":[],"links":[],"name":"Test"}"#.to_vec(), false),
+        (
+            br#"{"bio":[[1e0]],"links":[],"name":"Test"}"#.to_vec(),
+            false,
+        ),
+        (b"{\xff}".to_vec(), false),
+    ];
+    cases.push((
+        format!("{}0{}", "[".repeat(33), "]".repeat(33)).into_bytes(),
+        false,
+    ));
+    for (bytes, expected) in cases {
+        let descriptor = ContentDescriptor {
+            hash: hash_id("sha256:", b"", &bytes),
+            bytes: bytes.len() as u64,
+        };
+        let event = sign_header(
+            &[7; 32],
+            header(json!({"kind":"identity.profile"}), Some(descriptor)),
+        )
+        .unwrap();
+        assert_eq!(
+            matches!(
+                inspect_body(&event, Some(&bytes)),
+                BodyAvailability::Valid { .. }
+            ),
+            expected,
+            "{}",
+            String::from_utf8_lossy(&bytes)
+        );
+    }
+    let event = sign_header(
+        &[7; 32],
+        header(
+            json!({"kind":"identity.profile"}),
+            Some(body_descriptor(&valid).unwrap()),
+        ),
+    )
+    .unwrap();
+    let changed = br#"{"bio":[],"links":[],"name":"Best"}"#;
+    assert!(
+        matches!(inspect_body(&event, Some(changed)), BodyAvailability::Invalid { reason } if reason.starts_with("body_hash:"))
+    );
+    assert!(
+        matches!(inspect_body(&event, Some(&valid[..valid.len()-1])), BodyAvailability::Invalid { reason } if reason.starts_with("body_length:"))
+    );
+}
+
+#[test]
 fn identifiers_preserve_spelling_and_require_nfc() {
     let word = json!({"language":"jbo","spelling":"banli"});
     assert_eq!(
