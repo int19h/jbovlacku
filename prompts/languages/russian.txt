@@ -1,0 +1,48 @@
+Language rules: Russian
+
+Remove these parts.
+- Case and number endings of nouns: книга gives книг, щука gives щук.
+- Agreement endings of adjectives: быстрый gives быстр, синий gives син, новая gives нов.
+- Infinitive -ть and -ти with the theme vowel before -ть: читать gives чит, говорить gives говор, нести gives нес, везти gives вез.
+- Finite person endings and past -л with its agreement: несёт gives нес, писал gives пис, работал gives работ.
+- Reflexive -ся/-сь. It comes after the infinitive ending, so it always goes with it. If -ся changes the meaning, say so in note: мыться gives мы. учиться gives уч, and note says that -ся makes it "learn", not "teach".
+- Noun-forming: -ость, -ние/-ение/-ание, -тие, -ие, -ство, -к- as in калибровка, -ация/-яция, -тель. When two endings overlap, remove the longest: привыкание loses -ание, стерилизация loses -ация.
+- Examples: упругость gives упруг. испарение gives испар. привыкание gives привык. открытие gives откры. развитие gives разви. усилие gives усил. богатство gives богат. мастерство gives мастер. стерилизация gives стерилиз. изоляция gives изол.
+- -к- only in an action noun after a verb stem: калибровка gives калибров, остановка gives останов, чистка gives чист, уборка gives убор, оценка gives оцен.
+- Bare -ция without -а- is not this suffix. Only the final -я goes: лекция gives лекци, функция gives функци.
+- -тель when the word means one who does the base verb: читатель gives чит, писатель gives пис. Keep it when the word names a device: двигатель stays двигатель when the target is an engine.
+- Adjective-forming: -н-, -ск-, -ов-/-ев-, when a living word without them carries the same relation. ночной gives ноч, as ночь does. лунный gives лун, as луна does. морской gives мор, as море does. городской gives город. садовый gives сад. звуковой gives звук.
+- If no such word exists, the suffix is fused and stays: ясность gives ясн, because no word яс- exists. странный gives странн, because страна does not carry the relation "strange". Do not add a fleeting vowel: ясность gives ясн, not ясен.
+- Verb-forming: -ова-/-ева-/-ирова- when the remainder is a word of the same relation. атаковать gives атак, because атака names the same relation. тестировать gives тест. танцевать gives танц, as танец does. фокусировать gives фокус. калибровать keeps -ов-, and калибровка gives калибров, because калибр alone does not name calibrating.
+- -изирова- is -из- plus -ирова-. Remove -ирова- and apply the -из- rule below: стабилизировать gives стабилиз, стандартизировать gives стандартиз.
+- The imperfective theme -а-/-я- added to a perfective, and the secondary imperfective -ива-/-ыва-/-ва-, when the base without them is attested with the same relation: привыкать gives привык, as привыкнуть shows. испарять gives испар. показывать gives показ, as показать shows. записывать gives запис. открывать gives откры, as открыть shows.
+
+Keep these parts.
+- A prefix that changes the meaning: при- in привыкать, ис- in испарение. Remove a prefix only when it marks aspect alone and the base without it has the same relation: прочитать gives чит, as читать does. сделать gives дел, as делать does.
+- -из- when the target requires making something so: стерилизовать gives стерилиз, нейтрализовать gives нейтрализ.
+- не- when the target requires negation: незнание gives незна when the target is not knowing. The а of незна belongs to the root зна-. неудача gives неудач, because удача is success. несчастье gives несчаст.
+
+Pronunciation.
+Transcribe the stem as it sounds inside the chosen word, including vowel reduction.
+A consonant at the cut takes the shape it has before a vowel. Do not devoice it at the new end of the stem: упругость gives упруг [ʊˈpruɡ], not [ʊˈpruk]. сладость gives слад [ˈslad], not [ˈslat].
+If the consonant was devoiced only before the removed ending, it gets its voice back: резка [ˈrʲeskə] gives рез [ˈrʲez], sounds rez, as резать shows. перевозка gives перевоз, with [z], as перевозить shows. Palatalization does not change sounds, because it is not written.
+A consonant alternation of the root stays, even at the cut. This replaces the step 6 rule for fused consonants. ношение keeps ш, not с. вождение keeps жд, not д.
+Vowel reduction in the stem follows the stress of the whole chosen word. Removing an ending never moves the stress.
+Example: in реше́ние the stress falls on the ending, so the е of реш is reduced: реш is [rʲɪʂ].
+Example: in сла́дость the stress falls on the stem, so the а of слад is not reduced: слад is [ˈslad].
+в before a voiceless consonant is [f]: вкус [fkus] gives fkus. лавка gives лавк [lafk], sounds lafk.
+
+Scoring.
+Secondary palatalization is not written after any consonant: [rʲ] is r, [lʲ] is l, конь [konʲ] gives kon, день [dʲenʲ] gives den.
+A reduced vowel is written as the vowel of a form of the same part that stresses it, when such a form exists. Name that form in note.
+Before you decide that no such form exists, check the related verbs, nouns and short adjectives of the same part, in every tense and person. For a noun made from a verb, check the third person singular of the verb first: it often stresses the root, as но́сит and во́дит do. Examples:
+- испарение, with reduced [ɐ] in -пар-, gives a from stressed пар.
+- лесной gives лес [lʲɪs], and its sounds are les, with e from лес. река gives рек [rʲɪk], and its sounds are rek, with e from ре́ки.
+- If the stressed form has ё, write o: жена gives жен, and its sounds are jon, from жёны.
+- The stressed form may show a consonant alternation. Use its vowel anyway. ношение gives нош [nɐʂ], and its sounds are noc, with o from но́сит. вождение gives вожд [vɐʐdʲ], and its sounds are vojd, with o from во́дит.
+Without such a form, write [ə] and [ɐ] as a, and [ɪ] and [ɨ] as i. Never write an unstressed о as o without a stressed form.
+Example: собака gives собак [sɐˈbak], and its sounds are sabak, because no form stresses the first о. корова gives коров [kɐˈrov], and its sounds are karov, for the same reason. облако gives облак [ˈoblək], and its sounds are oblak. беседа gives бесед [bʲɪˈsʲed], and its sounds are bised.
+Write ы as i, й as i, щ as c, ш as c, ж as j where it is [ʐ], ч as tc, ц as ts, х as x, в as v where it is [v]. чай gives tcai. щука gives щук, sounds cuk. мяч gives matc. A devoiced ж is [ʂ] and gives c: нож [noʂ] gives noc.
+After a consonant, е, я, ё and ю have no glide: е gives e, я gives a, ё gives o, ю gives u. мяч gives matc. тётя gives тёт, sounds tot. ключ gives klutc.
+An unstressed э at the start of a word is [ɪ] and gives i: этаж [ɪˈtaʂ] gives itac. экран [ɪˈkran] gives ikran.
+At the start of a word, after a vowel, and after ь or ъ, е, я, ё and ю begin with [j], written i: яма gives ям, sounds iam. ёлка gives ёлк, sounds iolk. юг [juk] gives iuk.

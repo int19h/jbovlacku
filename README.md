@@ -102,6 +102,7 @@ The documentation defines the product, its records, and the development process:
 - [Format specification](docs/format.md): Target signed records, causal state, identities, imports, and ranking.
 - [Frontend specification](docs/frontend.md): Target browser behavior, server contracts, authoring, and optional inference.
 - [Web UI design](docs/ui-design.md): Target screens, visual rules, and publication flow.
+- [AI prompts](prompts/README.md): Draft prompts for the optional AI actions. No application code uses them yet.
 - [Prototype plan](docs/prototype-plan.md): Required implementation stages and demonstrations.
 - [Handover cases](docs/handover-cases.md): Required account-control outcomes.
 - [Development guide](docs/development.md): Local builds, tests, shared VM work, and review requirements.
