@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { copyFile, mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -9,7 +9,11 @@ assert(
   application === "web" || application === "server",
   "Choose the web or server build output.",
 );
-const destination = join(root, "apps", application, "dist", "notices");
+// The optional second argument selects the build directory.
+const output = process.argv[3]
+  ? resolve(process.argv[3])
+  : join(root, "apps", application, "dist");
+const destination = join(output, "notices");
 const sources = [
   ["docs/dependencies.md", "dependencies.md"],
   ["docs/third-party-notices.md", "third-party-notices.md"],
