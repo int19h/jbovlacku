@@ -70,7 +70,7 @@ impl Part {
     }
 }
 pub fn is_hyphen(token: &str) -> bool {
-    matches!(token, "y" | "y'" | "'y" | "r" | "n")
+    matches!(token, "y" | "y'" | "'y" | "'y'" | "r" | "n")
 }
 fn is_cmevla(text: &str) -> bool {
     text.chars()
@@ -271,7 +271,9 @@ fn classic_tokens(tokens: &[String]) -> bool {
             .iter()
             .enumerate()
             .all(|(i, t)| rafsi_token_ok(t, i + 1 == parts.len()))
-        && tokens.iter().all(|t| t != "'y" && t != "y'")
+        && tokens
+            .iter()
+            .all(|t| !matches!(t.as_str(), "'y" | "y'" | "'y'"))
 }
 /// Uses pinned word recognition before offering a whole-word component.
 pub fn is_brivla_core(text: &str) -> bool {
@@ -792,9 +794,6 @@ fn build_lujvo_with_detail_budget(
     for component in &request.components {
         require_limit("component bytes", component.spelling.len() as u64, 128)?;
         require_limit("component claims", component.claims.len() as u64, 64)?;
-        if let Some(normalized) = crate::phonotactics::normalize_word(&component.spelling) {
-            crate::recognize::parse(&normalized)?;
-        }
         for claim in &component.claims {
             require_limit("rafsi bytes", claim.rafsi.len() as u64, 128)?;
         }
@@ -1122,14 +1121,14 @@ pub fn analyze_word(profile: Profile, spelling: &str) -> Analysis {
                 analysis.diagnostics.push("Fu'ivla recognition uses the extended jbotci lineage. This classification does not establish CLL validity.".into());
             }
             if analysis.kind == WordKind::Lujvo {
-                let parts: Vec<Part> = reading
-                    .tokens
+                let component_tokens: Vec<&String> =
+                    reading.tokens.iter().filter(|t| !is_hyphen(t)).collect();
+                let parts: Vec<Part> = component_tokens
                     .iter()
-                    .filter(|t| !is_hyphen(t))
-                    .map(|t| {
+                    .enumerate()
+                    .map(|(index, t)| {
                         if t.chars().last().is_some_and(is_consonant)
-                            || rafsi_token_ok(t, true)
-                            || rafsi_token_ok(t, false)
+                            || rafsi_token_ok(t, index + 1 == component_tokens.len())
                         {
                             Part::rafsi(t)
                         } else {
@@ -1880,6 +1879,152 @@ mod tests {
         assert!(!row.diagnostics.iter().any(
             |d| d.contains("not a brivla") || d.contains("not one of this component's choices")
         ));
+    }
+    #[test]
+    fn grok_component_exhaustion_preserves_locked_rafsi_builds() {
+        for profile in [Profile::Cll, Profile::Extended] {
+            let component = Component {
+                id: "a".into(),
+                spelling: "tca".repeat(26),
+                kind: "lujvo".into(),
+                definition: None,
+                claims: vec![Claim {
+                    rafsi: "bau".into(),
+                    pair: "pair-bau".into(),
+                }],
+                locked: Some("bau".into()),
+            };
+            let analysis = analyze_word(profile, &component.spelling);
+            assert_eq!(analysis.kind, WordKind::Unknown);
+            assert!(
+                analysis
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.contains("recognition work"))
+            );
+            let result = build_lujvo(&LujvoRequest {
+                profile,
+                components: vec![
+                    component,
+                    Component {
+                        id: "b".into(),
+                        spelling: "sinxa".into(),
+                        kind: "gismu".into(),
+                        definition: None,
+                        claims: vec![Claim {
+                            rafsi: "sni".into(),
+                            pair: "pair-sni".into(),
+                        }],
+                        locked: Some("sni".into()),
+                    },
+                ],
+                inventory: Inventory::default(),
+                limits: Limits::default(),
+            })
+            .unwrap();
+            assert!(result.rows[0].lock_valid);
+            assert!(
+                result.rows[0]
+                    .choices
+                    .iter()
+                    .any(|choice| choice.form == "bau")
+            );
+            assert!(
+                result.rows[0]
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.contains("recognition is incomplete"))
+            );
+            assert_eq!(result.candidates.len(), 1);
+            assert_eq!(result.candidates[0].spelling, "bausni");
+            assert_eq!(
+                result.candidates[0]
+                    .recovered
+                    .iter()
+                    .map(|part| part.text.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["bau", "sni"]
+            );
+        }
+    }
+    #[test]
+    fn grok_extended_apostrophe_y_apostrophe_is_one_join() {
+        for core in ["bangu", "fulta", "leksiko", "spageti"] {
+            let word = format!("{core}'y'ismu");
+            let analysis = analyze_word(Profile::Extended, &word);
+            assert_eq!(analysis.kind, WordKind::Lujvo, "{word}");
+            assert_eq!(analysis.readings.len(), 1);
+            assert_eq!(analysis.readings[0].len(), 2, "{word}");
+            assert_eq!(analysis.readings[0][0].text, core);
+            assert_eq!(analysis.readings[0][0].join_before, None);
+            assert_eq!(analysis.readings[0][1].text, "ismu");
+            assert_eq!(analysis.readings[0][1].join_before.as_deref(), Some("'y'"));
+            assert_eq!(analyze_word(Profile::Cll, &word).kind, WordKind::Unknown);
+            assert!(segment_cll(&word).unwrap().is_empty());
+        }
+        assert!(!classic_tokens(&s(&["bau", "'y'", "sakli"])));
+    }
+    #[test]
+    fn grok_extended_part_kinds_use_the_final_component_position() {
+        for (word, first, last, join) in [
+            ("bangu'ysakli", "bangu", "sakli", "'y"),
+            ("gerku'ymlatu", "gerku", "mlatu", "'y"),
+            ("bangu'y'ismu", "bangu", "ismu", "'y'"),
+        ] {
+            let analysis = analyze_word(Profile::Extended, word);
+            assert_eq!(analysis.kind, WordKind::Lujvo);
+            assert_eq!(
+                analysis.readings[0][0],
+                RecoveredPart {
+                    text: first.into(),
+                    kind: PartKind::Core,
+                    join_before: None,
+                }
+            );
+            let last_part = analysis.readings[0].last().unwrap();
+            assert_eq!(last_part.text, last);
+            assert_eq!(last_part.join_before.as_deref(), Some(join));
+            assert_eq!(
+                last_part.kind,
+                if gismu_shape(last).is_some() {
+                    PartKind::Rafsi
+                } else {
+                    PartKind::Core
+                }
+            );
+        }
+        let classic = analyze_word(Profile::Cll, "cuktysinxa");
+        assert!(
+            classic.readings[0]
+                .iter()
+                .all(|part| part.kind == PartKind::Rafsi)
+        );
+    }
+    #[test]
+    fn candidate_recognition_exhaustion_still_refuses_the_build() {
+        for profile in [Profile::Cll, Profile::Extended] {
+            let request = LujvoRequest {
+                profile,
+                components: (0..26)
+                    .map(|index| Component {
+                        id: index.to_string(),
+                        spelling: "ta".into(),
+                        kind: "cmavo".into(),
+                        definition: None,
+                        claims: vec![Claim {
+                            rafsi: "tca".into(),
+                            pair: "pair-tca".into(),
+                        }],
+                        locked: Some("tca".into()),
+                    })
+                    .collect(),
+                inventory: Inventory::default(),
+                limits: Limits::default(),
+            };
+            assert!(
+                matches!(build_lujvo(&request), Err(BuilderError::ResourceLimit { measure, value: 50_001, limit: 50_000 }) if measure == "recognition work")
+            );
+        }
     }
     fn conflict_request() -> LujvoRequest {
         let component = |id: &str, spelling: &str, rafsi: &str| Component {

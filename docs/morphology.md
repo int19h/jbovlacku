@@ -39,6 +39,8 @@ The extended profile adds the audited jbotci behavior for whole-word parts. It i
 
 Both profiles refuse the pair `mz` in every word kind and whole-word component. The extended profile does not include jbotci's experimental `mz` relaxation.
 
+Extended analysis also accepts the join `'y'`, as in `bangu'y'ismu`. It reports the full token as the join before the next component. A nonfinal whole gismu is a core. A final whole gismu can be a rafsi under the CLL component rules.
+
 The word recognizer ports the pure recognition functions from jbotci's `segment.rs` and the indicator table from `cmavo.rs`. Contract macros and source diagnostic types do not enter the port. The crate adds work limits and uses the CLL consonant-pair restrictions. It returns spelling spans without jbotci's stress and glide marks.
 
 The CLL profile restricts lujvo components and construction joins. General word recognition uses the pinned jbotci lineage for both profiles. This is not full equivalence with gencmu's `cll-ebnf` grammar. For example, jbotci and gencmu `bpfk` recognize `ismu`, while gencmu `cll-ebnf` rejects it. The retained [reference results](../crates/jvc-morphology/evidence/word-parses.json) record this difference. Fu'ivla classification is advisory under the CLL profile. Every such analysis reports that the extended jbotci lineage does not establish CLL validity.
@@ -47,7 +49,7 @@ The extended parser recognizes `sakrsakysakli` as `sakrsak + y + sakli`. The CLL
 
 ## Work limits
 
-The recognizer accepts at most 128 input bytes. It permits at most 50,000 calls to recursive recognition functions that share its cache. This counts failed paths and cached calls. Exhaustion invalidates the whole analysis, including any earlier successful branch. Analysis returns `unknown` with a resource diagnostic. Builders return `BuilderError::ResourceLimit` and no partial result.
+The recognizer accepts at most 128 input bytes. It permits at most 50,000 calls to recursive recognition functions that share its cache. This counts failed paths and cached calls. Exhaustion invalidates the whole analysis, including any earlier successful branch. Analysis returns `unknown` with a resource diagnostic. Candidate recognition exhaustion makes builders return `BuilderError::ResourceLimit` and no partial result.
 
 A lujvo request accepts 2 through 64 components, 64 claims per component, and 20,000 inventory claims. A component or claimed rafsi accepts at most 128 bytes. A build permits at most 20,000 choice combinations and 2,000,000 recognition calls across candidate checks. A result window permits at most 512 candidates.
 
@@ -61,7 +63,7 @@ A gismu request accepts 1 through 64 source rows. Each raw scoring input and nat
 
 Each builder shares one conflict budget across its result. It permits 1,000,000 inventory scans and index references, 20,000 copied conflict rows, and 4,000,000 copied text bytes. Gismu budgets include both ranked candidates and the manual form. Preflight checks cover the later copy pass before that pass allocates conflict strings. A resource error returns no partial result and no incomplete conflict list.
 
-Direct component analysis reports incomplete recognition when the recognizer reaches its work limit. It does not declare the spelling invalid or the whole-word lock obsolete from that incomplete result.
+Direct component analysis reports incomplete recognition when the recognizer reaches its work limit. It does not declare the spelling invalid or the whole-word lock obsolete from that incomplete result. A lujvo build keeps the row's listed rafsi choices and locks when whole-word recognition is incomplete. Each returned candidate still needs a complete parse.
 
 ## Extended lujvo scoring
 
