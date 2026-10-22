@@ -46,7 +46,7 @@ Some providers drop a schema that defines its keys only through `additionalPrope
 
 ## Checks on an answer
 
-The application checks every answer before it shows the suggestion. If the answer fails, the application returns the list of problems as the tool result, and the model sends a corrected answer.
+The application checks every answer before it shows the suggestion. If the answer fails, the application returns the list of problems as the tool result, and the model sends a corrected answer. After three failed answers, the suggestion fails.
 These checks apply:
 
 - The answer has exactly the requested keys, with the shape in `answer-shapes.json`.
@@ -54,6 +54,13 @@ These checks apply:
 - `hints`: each place has one to three alternatives, each with a known type and a reason. `unclear` stands alone. A type listed beside a broader type, such as `event` beside `referent`, merges into the broader type.
 - `mappings`: each entry names a supplied component place, `none` or `unclear`. A place does not list the same component place twice. `none` and `unclear` stand alone.
 - `sources`: a null field makes every later field null, and the note then says what is unknown. `word` is one word. `word_ipa` and `ipa` contain no space or dot. `sounds` has 1 to 64 letters from `a b c d e f g i j k l m n o p r s t u v x z`. A stem equal to the whole word needs a reason in the note.
+
+## Rules that the application keeps
+
+- The definition of the whole word decides the meaning. Component definitions only identify roles.
+- Any word form that follows the morphology rules is valid, including lower-scoring rafsi and optional hyphens. The tasks never judge a form.
+- The hint types follow the standard tags of the [format specification](../docs/format.md#glosses-types-and-defaults). `unclear` is not a tag. It marks a place that the definition does not describe.
+- In `sources`, the pronunciation lets speakers of the language check the word later. The stress mark in `word_ipa` is informational. Only `sounds` is scored.
 
 ## Tested configuration
 

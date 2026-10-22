@@ -569,8 +569,15 @@ Each hint permits `alternatives` and `note`. Its required alternatives array has
 Each alternative permits `tags`, `abstractor`, and `relation_arity`. Tags form a sorted, duplicate-free array with at most 32 entries.
 At least one tag, abstractor, or relation-arity value must supply information. Empty alternatives are invalid.
 
-Standard tags are `entity`, `agent`, `event`, `state`, `process`, `relation`, `proposition`, `number`, `text`, `set`, `mass`, `sequence`, and `tuple`.
-These tags carry no automatic subtype relationships. `abstractor` names a suggested Lojban abstraction form, or null.
+Standard tags are `referent`, `agent`, `event`, `state`, `process`, `relation`, `proposition`, `number`, `text`, `set`, and `sequence`.
+The standard tags form a tree. `referent` is anything that a place can refer to, and every other standard tag is narrower than it. `state` and `process` are narrower than `event`, because they are ways of viewing an event.
+Every place takes a plural reference: one thing, several things, or some stuff. A tag describes what the place refers to, and it does not change with number. A collective reading comes from the predicate, not from a tag.
+`agent` is a referent that carries out the action of the definition. `relation` is a property or relation itself, not its bearer. `proposition` is content that can be true or false.
+`number` is a numerical value or a measured amount. The dimension of a measurement is a `relation`, and a system of units is a `referent`.
+`text` is a linguistic expression itself, such as a quotation or a `sedu'u` abstraction. An object that holds words, such as a book or a sign, is a `referent`.
+`set` is a set as an object in its own right, as `lo'i` forms it. `sequence` is an ordered collection whose order the filler supplies. An order that comes from the members or from another place does not make a sequence.
+An alternative whose only tag is narrower than the only tag of another alternative of the same hint adds no information. Validation accepts it, and an AI suggestion check merges it into the broader alternative.
+`abstractor` names a suggested Lojban abstraction form, or null.
 Standard abstractors are `nu`, `du'u`, `ka`, `ni`, `jei`, `li'i`, `si'o`, `su'u`, `mu'e`, `pu'u`, `za'i`, and `zu'o`.
 A relation arity describes the value in one place. It does not change the outer definition's place count.
 

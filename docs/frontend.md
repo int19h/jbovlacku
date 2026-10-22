@@ -138,7 +138,7 @@ The app provides these addressable routes:
 | `/trust` | Public decisions and private view controls. |
 | `/identity` | Local key, backup, transfer, and loss controls. |
 | `/outbox` | “Not delivered,” with unfinished delivery records and an empty state. |
-| `/preferences` | Settings: languages, search mode, delivery peers, storage, data export, and appearance. |
+| `/preferences` | Settings, in groups: Languages, Assistance, Search, Appearance, Servers, and Your data. |
 
 Every route preserves browser back and forward behavior. Query changes use replace-state while typing, then a stable navigation state when selected.
 Links to a publication always retain its exact event ID. A default word link does not pretend to pin a particular revision.
@@ -328,13 +328,16 @@ The structured metadata retains the entered weights, the normalization rule, and
 Historical profiles preserve their own normalization semantics. The UI never compares differently scaled raw scores without a label.
 
 Each source row separates native spelling from the Lojbanized input used by the letter scorer.
+The table shows these columns: Language, Weight, Word, Said, Stem, Stem said, and Letters. Word is the native spelling. Said is the pronunciation of the whole word with its stress. Stem is the part that remains after removal of endings. Stem said is the pronunciation of the stem. Letters is the scoring input.
+The pronunciation is there so that speakers of the language can check the word later and propose a better one. Only the letters count toward the score. Stress is shown and is never scored.
 IPA input requires an explicit, versioned conversion and a preview of the resulting scoring input.
 One source word per language is the simple-mode default. Advanced mode can add alternatives under an explicitly selected aggregation rule.
 An unfinished row does not acquire an invented source word or weight.
 
 “Suggest source words” is optional AI assistance for every language in the selected profile.
-The model returns language, source spelling, proposed scoring input, and an explanation or uncertainty note.
+The app makes one request per language. The model returns the word, its sense, its stem, the pronunciation of the word and of the stem, the scoring letters, and a note.
 The author accepts each row or a reviewed set. Missing suggestions leave editable empty rows rather than dropping a language.
+A language with no single word for the meaning keeps its row, with an empty editable Word field and the assistant's note under it.
 Sources remain attributed suggestions until the author accepts them. The model cannot claim dictionary evidence that the app did not retrieve.
 
 The deterministic generator returns candidate spellings, total scores, per-source contributions, potential rafsi, and conflict information.
@@ -367,7 +370,8 @@ The wizard does not pretend that all word types use the gismu or lujvo algorithm
 The author edits the current definition alongside a place table. All structured fields remain available without AI.
 Each place row provides Description, Gloss, Kind of thing, and From.
 Kind of thing edits the complete type_hints format, including alternatives, custom tags, abstractors, relation arity, and notes.
-The example choices object, event, property, number, and unspecified are shortcuts, not a closed schema.
+The example choices object, event, property, number, and unspecified are shortcuts, not a closed schema. Object writes the `referent` tag.
+A place with several alternatives shows them together in the field, such as “object or event”.
 From edits derivation entries with a source word, optional exact source definition, source place, and explanation.
 The frame controls support fixed, variadic, context-dependent, and unspecified structure.
 Defaults and constraints, Notes, Examples, Etymology, and Sources use named disclosures.
@@ -388,6 +392,9 @@ A null frame means unspecified structure. The wizard never substitutes a guessed
 
 “Suggest places and glosses” is an optional AI action based on the current meaning, word form, component evidence, and existing draft annotations.
 The result proposes typed fields and identifies unresolved mappings. The author reviews the rendered text and table before accepting changes.
+The definition of the whole word decides the meaning and the types. Component definitions only identify which role a place plays. Any word form that follows the selected morphology rules is accepted, including lower-scoring rafsi and optional hyphens.
+A type suggestion gives one to three alternatives for a place, each with a short reason. A line under the row lists each alternative and its reason. `unclear` means that the definition does not describe the place. The field then reads “unspecified”.
+A mapping suggestion lists, for each place, the component places that it corresponds to. Each has a kind and a one-sentence reason. The kinds are direct, merged, distributed, and functional. The From field shows the kind, such as “klama 2 · direct”. The line under the row offers Add for a component place that the row does not name yet.
 AI suggestions never manufacture historical source attribution, exact quotations, accepted rafsi, or endorsements.
 Accepted suggestions remain ordinary author-controlled draft data. The app does not assign them automatic trust weight.
 
@@ -1234,6 +1241,10 @@ Every AI action is optional, including type, component, source-word, definition,
 Operators can disable all generation, disable individual tasks, or disable remote providers while retaining local models.
 Capabilities report those decisions. Disabled or failed AI never prevents manual authoring, signing, reading, or synchronization.
 
+The Assistance group of Settings has one checkbox, “Use AI assistance”. It is on by default when the server offers assistance.
+When it is off, the app hides every AI tagged button, every suggestion panel and its notes, the consent dialog, the “by meaning” search mode, and every AI hint line. Nothing else moves, and every manual path stays complete. The app sends nothing to a provider.
+When the operator disables assistance, the app looks the same. The checkbox is replaced by the line “Not available on this server.” The user's own choice is kept for a server that offers assistance later.
+
 The baseline provider interface is a documented subset of OpenAI-compatible Chat Completions and Embeddings over HTTP and JSON.
 It uses `/chat/completions` and `/embeddings` under a configured base URL. It does not depend on legacy text completions.
 This is an interoperability target, not a claim of one universal standardized protocol.
@@ -1241,7 +1252,10 @@ OpenRouter, Ollama, vLLM, and other compatible providers can use explicit adapte
 Required model parameters, structured-output support, and context limits are discovered or configured and then tested for that adapter.
 
 A provider without enforced JSON Schema output can still supply proposals after strict local parsing and validation.
-Invalid output appears as a failed suggestion. It never enters a signed body automatically.
+The model answers through one tool call. The app checks the answer. If the answer fails a check, the app returns the exact problems as the tool result, and the model sends a corrected answer. After three failed answers, the suggestion fails.
+Invalid output never enters a signed body automatically.
+
+Every AI action has four states. Idle is the AI tagged button. Working replaces the button with one status line, a spinner, and Cancel. A retry says so with its count, such as “The first answer had errors, so the assistant is trying again (2 of 3).” Done is the suggestion panel. Failed is one line in the button's place, such as “No usable answer after 3 tries. Try again or fill the rows in by hand.” The failed line never blocks the manual path.
 
 Server configuration supplies provider base URL, authentication secret reference, models, task capabilities, request limits, and permitted provider-specific parameters.
 The browser receives capability names and disclosure metadata, never the operator's API key.

@@ -173,7 +173,7 @@ test("structured places keep declared order when prose mentions place 3 first, a
   expect(body.frame.places[1].type_hints).toEqual([
     {
       alternatives: [
-        { tags: ["entity"], abstractor: null, relation_arity: null },
+        { tags: ["referent"], abstractor: null, relation_arity: null },
       ],
       note: [],
     },
@@ -1950,7 +1950,11 @@ test("Revise of an independently signed rich parent with compound evidence publi
             type_hints: [
               {
                 alternatives: [
-                  { tags: ["entity"], abstractor: null, relation_arity: null },
+                  {
+                    tags: ["referent"],
+                    abstractor: null,
+                    relation_arity: null,
+                  },
                 ],
                 note: [["note ", 1]],
               },
@@ -2447,7 +2451,7 @@ test("a type note follows the selected mode and keeps an unchanged rich note thr
             kind: "custom",
             hint: {
               alternatives: [
-                { tags: ["entity"], abstractor: null, relation_arity: null },
+                { tags: ["referent"], abstractor: null, relation_arity: null },
               ],
               note: [[{ code: "keep\n\nthis" }, " and ", 1]],
             },

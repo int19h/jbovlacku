@@ -489,7 +489,7 @@ function richParent() {
           type_hints: [
             {
               alternatives: [
-                { tags: ["entity"], abstractor: null, relation_arity: null },
+                { tags: ["referent"], abstractor: null, relation_arity: null },
                 { tags: ["event"], abstractor: "nu", relation_arity: null },
               ],
               note: [["note with ", 1]],
@@ -739,8 +739,8 @@ test("the editor and the core agree on every reviewed invalid draft", () => {
   assert.match(
     blocking(
       custom([
-        { tags: ["entity"], abstractor: null, relation_arity: null },
-        { tags: ["entity"], abstractor: null, relation_arity: null },
+        { tags: ["referent"], abstractor: null, relation_arity: null },
+        { tags: ["referent"], abstractor: null, relation_arity: null },
       ]),
     ).join("\n"),
     /same alternative twice/,
@@ -933,7 +933,7 @@ test("place rewrites touch only place nodes and cover type notes, and a frame co
         kind: "custom",
         hint: {
           alternatives: [
-            { tags: ["entity"], abstractor: null, relation_arity: null },
+            { tags: ["referent"], abstractor: null, relation_arity: null },
           ],
           note: [["note ", 3]],
         },
@@ -1190,7 +1190,7 @@ test("validation reads the final values, an edit changes only its own control, a
         kind: "custom",
         hint: {
           alternatives: [
-            { tags: ["entity"], abstractor: null, relation_arity: null },
+            { tags: ["referent"], abstractor: null, relation_arity: null },
           ],
           note: [[{ code: "first\n\nsecond" }]],
         },

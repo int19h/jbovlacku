@@ -404,6 +404,32 @@ fn openssh_signing_interoperability() {
 }
 
 #[test]
+fn standard_type_tags_use_referent_and_drop_mass_and_tuple() {
+    let mut body = parse_stored_json(include_bytes!("fixtures/definition.json")).unwrap();
+    let make = |body: &Value| {
+        header(
+            json!({"kind":"definition.publish","word":word_id(&body["word"]).unwrap(),"language":"en","parents":[],"origin":"native"}),
+            Some(body_descriptor(&canonical_value(body).unwrap()).unwrap()),
+        )
+    };
+    body["frame"]["arity"] = json!({"mode":"variadic","minimum":2});
+    let hint = |tags: Value| json!([{"alternatives":[{"tags":tags,"abstractor":null,"relation_arity":null}],"note":[]}]);
+    for tags in [
+        json!(["referent"]),
+        json!(["event", "relation"]),
+        json!(["sequence"]),
+        json!(["https://example.org/tag"]),
+    ] {
+        body["frame"]["tail"] = json!({"from":4,"description":[],"type_hints":hint(tags.clone())});
+        assert!(validate_body(&make(&body), &body).is_ok(), "{tags}");
+    }
+    for tag in ["entity", "mass", "tuple", "generic"] {
+        body["frame"]["tail"] = json!({"from":4,"description":[],"type_hints":hint(json!([tag]))});
+        assert!(validate_body(&make(&body), &body).is_err(), "{tag}");
+    }
+}
+
+#[test]
 fn structured_definition_variants_and_schema_boundaries() {
     let mut body = parse_stored_json(include_bytes!("fixtures/definition.json")).unwrap();
     let make = |body: &Value| {

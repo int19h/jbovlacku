@@ -70,7 +70,7 @@ import {
 import { describeArity } from "../../components/definition.ts";
 
 const standardTags = [
-  "entity",
+  "referent",
   "agent",
   "event",
   "state",
@@ -80,9 +80,7 @@ const standardTags = [
   "number",
   "text",
   "set",
-  "mass",
   "sequence",
-  "tuple",
 ];
 const standardAbstractors = [
   "nu",

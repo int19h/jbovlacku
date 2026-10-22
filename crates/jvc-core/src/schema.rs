@@ -424,7 +424,7 @@ fn type_hints(v: &Value, r: &mut Rich) -> Result<()> {
                 }
                 last = Some(t);
                 if ![
-                    "entity",
+                    "referent",
                     "agent",
                     "event",
                     "state",
@@ -434,9 +434,7 @@ fn type_hints(v: &Value, r: &mut Rich) -> Result<()> {
                     "number",
                     "text",
                     "set",
-                    "mass",
                     "sequence",
-                    "tuple",
                 ]
                 .contains(&t)
                 {

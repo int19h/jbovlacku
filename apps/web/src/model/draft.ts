@@ -73,7 +73,7 @@ export function hintForChoice(choice: KindChoice): TypeHint | null {
     case "object":
       return {
         alternatives: [
-          { tags: ["entity"], abstractor: null, relation_arity: null },
+          { tags: ["referent"], abstractor: null, relation_arity: null },
         ],
         note: [],
       };
@@ -807,7 +807,7 @@ function richProblems(
     }
 }
 const KNOWN_TAGS = new Set([
-  "entity",
+  "referent",
   "agent",
   "event",
   "state",
@@ -817,9 +817,7 @@ const KNOWN_TAGS = new Set([
   "number",
   "text",
   "set",
-  "mass",
   "sequence",
-  "tuple",
 ]);
 const ABSTRACTORS = new Set([
   "nu",

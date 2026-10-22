@@ -30,7 +30,7 @@ Normal transient sends and accepted index lag remain excluded.
 Its details show independent outcomes for each peer. An ordinary transient send does not display it.
 
 The footer includes the active view link, Settings, About, and Source on every page.
-Settings opens `/preferences`, which includes search mode, delivery peers, languages, storage, export, and appearance.
+Settings opens `/preferences`. Its groups are Languages, Assistance, Search, Appearance, Servers, and Your data. Assistance has one checkbox, “Use AI assistance”. When it is off, every AI tagged button and suggestion panel disappears without leaving a gap.
 For a personal view, its label reads “Trust: personal view.” The label follows the actual selected mode.
 The footer uses 13px text, 14px vertical padding, and gaps of 6px by 18px.
 Editor action bars supplement this navigation. They do not remove it.
