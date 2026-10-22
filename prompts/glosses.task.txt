@@ -1,0 +1,28 @@
+Write a short English dictionary gloss for the whole word and for each requested place.
+Use the supplied definition as the only source of meaning.
+
+The word gloss names the whole relation. It is a short noun phrase or a short verb phrase.
+Do not gloss the whole word with the name of one participant. "language teacher" is a place gloss, not a word gloss.
+When the definition says "x1 is a ⟨noun⟩", the word is that thing. The word gloss is the noun phrase, and the x1 gloss is the same noun.
+Example: "x1 is a recipe for dish x2 with ingredients x3" gives the word gloss "recipe", not "dish ingredients" or "cook by recipe".
+Example: "x1 is a passport issued to x2 by authority x3" gives the word gloss "passport", not "issue a passport".
+When the definition says "x1 is ⟨adjective⟩", the word gloss is that adjective, and the x1 gloss names the thing that has the property. "x1 is blue" gives the word gloss "blue" and the x1 gloss "blue thing". "x1 is happy about x2" gives "happy" and the x1 gloss "happy one".
+When the definition describes an action, the word gloss names the action. "x1 teaches x2 to x3" gives "teach", not "teacher". "x1 sells x2 to buyer x3 for price x4" gives "sell", not "seller".
+The word gloss, together with its sense, must carry every condition in the definition that separates this word from a plainer word.
+Example: a word for traveling by car for a fare must mention the fare in the gloss or in the sense. "travel by car" alone is wrong.
+Example: a word for ownership transfer with no observable intermediate owner must mention that condition in the gloss or in the sense. "atomic transfer" alone needs a sense that says what atomic means here.
+Do not add a condition the definition does not state. "covert", "secret", "indivisible" and "seamless" are not in a definition that says "no observable intermediate owner". pendo, "x1 is a friend of x2", gives "friend", not "close friend".
+Do not state a result that the definition does not assert. "x1 competes for prize x2" gives "prize" for x2, not "won prize". "x1 aims at target x2" gives "target", not "hit target".
+
+Each place gloss names the role of that place as a noun phrase: "transferrer", "fare-paying passenger", "destination", "time zone".
+Keep the direction of each role. The one who transfers is not the transfer. The one who teaches is not the teaching.
+A place gloss is one to three words. One clear word, such as "destination", is enough. It must not restate the whole definition. "fare-paying passenger" is right. "passenger who pays the fare for the car journey" restates the definition.
+
+The sense field explains which meaning of the gloss applies here.
+Write a sense when the gloss alone could be read another way, or when the gloss omits a defining condition.
+Write a sense for the whole word in every answer. State the defining condition there in plain words, even when the gloss already carries it. Do not invent a condition to fill the sense.
+For a place, leave sense empty when the gloss is already unambiguous, such as "prior owner" or "time zone". Do not write a sense that only restates the gloss: "fuel" needs no sense "the material that is burned". Write a place sense when the gloss leaves the role open: cusku, "x1 says x2 via expressive medium x4", gives x4 the gloss "medium" and the sense "the channel of expression, such as speech or writing".
+A sense is a short clause or sentence with new information. Do not write "of car travel", "in atomic transfer", or a repeat of the gloss. A sense must not consist only of a participant name, such as a sense that only says "resource". A sense can name roles inside a clause: "the money that the buyer pays the seller" is right.
+
+Use exactly the keys that the user message names: word for the whole word and one key for each requested place. Each value contains gloss and sense.
+Example of an answer for "x1 sells x2 to buyer x3 for price x4" with the keys word, x1 and x4: {"word": {"gloss": "sell", "sense": "transfer goods to a buyer in exchange for payment"}, "x1": {"gloss": "seller", "sense": ""}, "x4": {"gloss": "price", "sense": "the payment that the buyer gives"}}

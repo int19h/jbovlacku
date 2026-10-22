@@ -1,0 +1,133 @@
+{
+  "description": "Answer shapes for the submit_answer tool. For glosses, hints and mappings, the tool argument is an object with one property for each requested key: word for the whole word, and x1, x2 and so on for its places. Each property has the value shape below. For sources, the tool argument is the object below.",
+  "value_shape": {
+    "glosses": {
+      "type": "object",
+      "properties": {
+        "gloss": {
+          "type": "string"
+        },
+        "sense": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "gloss",
+        "sense"
+      ],
+      "additionalProperties": false
+    },
+    "hints": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "referent",
+              "agent",
+              "event",
+              "state",
+              "process",
+              "relation",
+              "proposition",
+              "number",
+              "text",
+              "set",
+              "sequence",
+              "unclear"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "description": "Alternatives for this place. Any of these: a filler of any listed type fits."
+    },
+    "mappings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "component": {
+            "type": "string",
+            "description": "One supplied component place, such as klama[2], or none, or unclear."
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "component",
+          "reason"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "sources": {
+      "type": "object",
+      "properties": {
+        "word": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sense": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stem": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "word_ipa": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The pronunciation of the whole chosen word, with its stress marked."
+        },
+        "ipa": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sounds": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Only the letters a b c d e f g i j k l m n o p r s t u v x z, with no spaces."
+        },
+        "note": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "word",
+        "sense",
+        "stem",
+        "word_ipa",
+        "ipa",
+        "sounds",
+        "note"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

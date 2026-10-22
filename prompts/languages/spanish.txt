@@ -1,0 +1,42 @@
+Language rules: Spanish
+
+Remove these parts.
+- Infinitive -ar, -er, -ir with the theme vowel: hablar gives habl [aβl], sounds avl. comer gives com. vivir gives viv [biβ], sounds biv. partir gives part.
+- Person, tense and mood endings: cantamos gives cant, comió gives com.
+- Gender -o/-a, only where it alternates: alto and alta give alt, gato and gata give gat. A final vowel that does not alternate stays: libro stays libro, casa stays casa.
+- Plural -s/-es: casas gives casa, papeles gives papel, flores gives flor.
+- Articles. Choose the word without its article: sol, not el sol.
+- Noun-forming: -ción with the theme vowel a, e or i that precedes it. calibración gives calibr, habituación gives habitu, evaporación gives evapor, definición gives defin, prohibición gives prohib [pɾoiβ], sounds proiv.
+- -miento, -aje, -idad/-dad, -ura, -anza/-encia, -ez/-eza, with the theme vowel before them. tratamiento gives trat. movimiento gives mov. conocimiento gives conoc. aterrizaje gives aterriz [ateris], sounds ateris. montaje gives mont. claridad gives clar. bondad gives bon. elasticidad gives elastic. pintura gives pint. altura gives alt. esperanza gives esper. resistencia gives resist. dependencia gives depend. rapidez gives rapid. tristeza gives trist. pureza gives pur.
+- In a noun in -sión, the s is the last consonant of the root in a changed shape. Remove only -ión. The cut rule gives the s the shape that a verb form shows before a vowel. decisión gives decis [desið], sounds desid, as decido shows. persuasión gives persuas [peɾswað], sounds persuad, as persuado shows. discusión gives discus [diskut], sounds diskut, as discuto shows. When no verb form shows another consonant, keep the s: profesión gives profes [pɾofes], sounds profes.
+- -dor/-dora when the word means one who does the base verb: pescador gives pesc, luchador gives luch. Keep it when the word names a device: lavadora, a washing machine, stays lavadora.
+- Adjective-forming: -oso/-osa, -ivo/-iva, -al, -ico/-ica with its -o/-a, when the rest is a word of the same relation. peligroso gives peligr. poderoso gives poder. famoso gives fam. activo gives act. deportivo gives deport. nacional gives nacion. natural gives natur. musical gives music [musik], sounds musik. metálico gives metal. atómico gives atom.
+- Keep -ic- when the rest is not such a word: elástico gives elastic and eléctrico gives electric, because elast- and electr- are not words. So elasticidad stops at elastic.
+- Adverb-forming -mente, with the gender -a before it: rápidamente gives rapid.
+A matching ending is not a part when the rest is not a base of the same relation: hospital and ciudad stay whole. segura gives segur by the gender rule, not seg, because -ura is not a part there.
+
+Keep these parts.
+- -iz- in -izar verbs when the target requires making something so: esterilizar gives esteriliz, neutralizar gives neutraliz.
+- -ific- in -ificar verbs on the same condition: purificar gives purific, simplificar gives simplific.
+- -ble, because it adds capability: lavable stays lavable, legible stays legible.
+- Every prefix. A prefix that changes the meaning: e- in evaporar, des- in desinfectar. in-, im-, i-, ir- and des- for negation or reversal: deshacer, incapaz, imposible, ilegal and irregular keep their prefixes. Letters that only look like a prefix belong to the root and stay: incluir gives inclu, informar gives inform, desear gives dese.
+
+Pronunciation.
+Use Latin American Spanish with seseo. In word_ipa, put ˈ before the whole stressed syllable: calibración is [kaliβɾaˈsjon], not [kaliβɾasˈjon]. c before e and i, and z, are [s] and are written s: cielo [ˈsjelo] gives sielo, zapato gives sapato.
+A c or g that softened before the removed ending takes the base shape, when the base has [k] or [ɡ]. Name the base in note.
+Example: elasticidad gives elastic [elastik], with the base elástico.
+Example: electricidad gives electric [elektɾik], with the base eléctrico.
+Example: analógico gives analog [analoɣ], sounds analog, with the base análogo.
+When the base also has [s], keep [s]: velocidad gives veloc [belos], sounds belos, with the base veloz. capacidad gives capac [kapas], sounds kapas, with the base capaz.
+A u that is a glide before the removed ending takes its vowel shape. Name the base in note.
+Example: habituación gives habitu [aβitu], with the base habitúo.
+Example: actuación gives actu [aktu], with the base actúo.
+The letters b and v have the same sound. Write [b] as b and [β] as v, whatever the spelling. Write [d] and [ð] as d, and [ɡ] and [ɣ] as g. This replaces the [ð] row for Spanish. b, d and g are stops at the start of a word and after m or n, and d is a stop after l. nube [ˈnuβe] gives nuve. uva [ˈuβa] gives uva. vaca [ˈbaka] gives baka. boca gives boka. hombre [ˈombɾe] gives ombre. lado [ˈlaðo] gives lado. lago [ˈlaɣo] gives lago. calibración gives calibr [kaliβɾ], sounds kalivr.
+Write ll and y before a vowel as i: llave gives iave, calle gives kaie, playa gives plaia, yema gives iema. A final y in a diphthong is i: rey gives rei.
+Write ñ as ni: año gives anio, mañana gives maniana.
+Write ch as tc: noche gives notce, leche gives letce.
+Write j, and g before e and i, as x: jardín gives xardin, ojo gives oxo, gente gives xente, girasol gives xirasol.
+Write every r as r. In ipa, a single r between vowels or after a consonant other than n, l or s is the tap [ɾ], and rr or an initial r is the trill [r]: pero is [ˈpeɾo] and gives pero, perro is [ˈpero] and gives pero, rosa is [ˈrosa] and gives rosa.
+qu before e or i is [k]: queso gives keso. gu before e or i is [ɡ]: guitarra gives gitara. gü is [ɡw]: pingüino gives pinguino.
+x is usually [ks]: taxi gives taksi, examen gives eksamen. In México it is [x]: México gives mexiko.
+h is silent and is not written: hora gives ora, ahora gives aora, hueso [ˈweso] gives ueso.

@@ -1,0 +1,40 @@
+Language rules: German
+
+Remove these parts.
+- Infinitive -en/-n: lesen gives les, machen gives mach, sammeln gives sammel, wandern gives wander.
+- Finite endings -e, -st, -t, -en and past -te: spielt gives spiel, spielte gives spiel, sagst gives sag.
+- Participle ge-...-t and ge-...-en when the base is attested without them: gemacht gives mach, gefangen gives fang. A ge- that is not a participle prefix stays: gewöhnen gives gewöhn, Geduld stays Geduld. After another prefix the participle has no ge-: verkauft gives verkauf.
+- Case, number and adjective agreement endings: Hunde gives Hund, Tage gives Tag, Kindes gives Kind, kleine gives klein, guten gives gut.
+- Articles. Choose the word without its article: Kind, not das Kind.
+- Noun-forming: -ung, -heit, -keit, -schaft, -tum, -e as in Hilfe, -ität. Heizung gives heiz. Lüftung gives lüft. Landung gives land. Freiheit gives frei. Krankheit gives krank. Einsamkeit gives einsam. Geschwindigkeit gives geschwind, because -igkeit is one ending there. Neutralität gives neutral. Freundschaft gives freund. Bereitschaft gives bereit. Reichtum gives reich.
+- Remove -e only when a related form shows the base without it: Hilfe gives hilf, Liebe gives lieb. Rose and Katze keep their -e.
+- Remove -schaft and -tum only when the rest names the same relation. Mannschaft stays Mannschaft, because a team is not a man. Eigentum stays Eigentum, because property is not the relation "own".
+- After removing -ität, remove a remaining -iz- that corresponds to adjective -isch: Elastizität gives elast, because of elastisch. Elektrizität gives elektr, because of elektrisch. Aktivität gives aktiv, because the adjective is aktiv.
+- Adjective-forming: -isch, -ig, -lich, -haft, when the rest is a base of the same relation. elastisch gives elast. farbig gives farb. freundlich gives freund. schmerzhaft gives schmerz. ängstlich gives ängst, because of Angst. Keep the ending when it adds a required meaning or when the rest is not such a base: täglich stays täglich, because -lich adds "every day". König, fertig, billig and möglich stay whole.
+- Phase prefixes that only mark completion: aufessen gives ess, austrinken gives trink.
+- Verb-forming -ier-: keep it when the rest without it is not a free word of the same relation. kalibrieren gives kalibrier, because kalibr- alone does not exist. rasieren gives rasier, because rasen is an unrelated verb. halbieren gives halbier, because -ier- adds "make half". Remove it when a free word names the same relation: alarmieren gives alarm, because of Alarm. kontrollieren gives kontroll, because of Kontrolle.
+
+Keep these parts.
+- A prefix that changes the meaning: ver- in verdunsten, ge- in gewöhnen, ent- in entkeimen, be- in behalten, auf- in aufhören. Dunst, wohnen, Keim, halten and hören name other relations.
+- -bar, because it adds capability: lesbar stays lesbar, essbar stays essbar. Lesbarkeit gives lesbar: -keit goes and -bar stays.
+- un-: unklar keeps un-, unsicher keeps un-, Unfall keeps un-.
+- Both halves of a compound. Remove only a removable ending after them. Haustür stays Haustür, not Haus. Sonnenlicht stays Sonnenlicht. Kühlschrank stays Kühlschrank, not Schrank. Luftheizung gives luftheiz.
+- A diminutive -chen or -lein: Brötchen stays Brötchen.
+
+Pronunciation.
+Use the standard pronunciation. Work from the sounds in ipa, not from the spelling.
+A final consonant that devoices only because the ending was removed takes its voiced shape from the base before a vowel. Name that form in note.
+Example: Hunde gives Hund [hʊnd], with d. Example: lieben gives lieb [liːb], with b. Example: lesen gives les [leːz], sounds lez. Example: Kindheit [ˈkɪnthaɪ̯t] gives kind [kɪnd], sounds kind, because of Kinder. Example: farbig gives farb [faʁb], with b.
+When nothing is removed, keep the devoiced sound: Hund [hʊnt] gives xunt.
+A consonantal r is r: rot [ʁoːt] gives rot. A vocalized r [ɐ̯] after a vowel is r: Tier [tiːɐ̯] gives tir, Uhr [uːɐ̯] gives ur. A syllabic -er [ɐ] gives er. This replaces the guide row for syllabic [ɐ] in German. Wasser [ˈvasɐ] gives vaser. Vater [ˈfaːtɐ] gives fater. Mutter [ˈmʊtɐ] gives muter.
+Write [ə] as e: Nebel [ˈneːbəl] gives nebel. Write ä [ɛ, ɛː] as e: spät [ʃpɛːt] gives cpet, Bär [bɛːɐ̯] gives ber. Write ö [ø, œ] as e: schön [ʃøːn] gives cen, Löffel [ˈlœfəl] gives lefel. Write ü [y, ʏ] as i: müde gives mide, grün [ɡʁyːn] gives grin, Glück [ɡlʏk] gives glik.
+Write ei as ai, au as au, eu and äu as oi: Stein gives ctain, Wein [vaɪn] gives vain, Haus [haʊs] gives xaus, Bauch [baʊx] gives baux, neu gives noi, heute [ˈhɔʏtə] gives xoite. Separate vowels stay separate: Protein [pʁoteˈiːn] gives protein. ie is the long vowel [iː]: Lied gives lit, viel gives fil.
+Write [x] and [ç] as x in every position, also after a front vowel, where the sound guide would give c. Buch gives bux. ich gives ix. Final -ig is [ɪç]: König [ˈkøːnɪç] gives kenix. Letters ch with another sound follow that sound: Chor [koːɐ̯] gives kor, Chef [ʃɛf] gives cef. chs is [ks]: sechs [zɛks] gives zeks. s before -chen is [s]: Häuschen [ˈhɔʏsçən] gives xoisxen.
+Write sch as c: Fisch gives fic, Schule [ˈʃuːlə] gives cule.
+Write z and tz as ts: Zeit gives tsait, Katze [ˈkatsə] gives katse, Platz gives plats.
+Write pf as pf: Pferd gives pfert, Apfel [ˈapfəl] gives apfel, Kopf gives kopf.
+Write sp and st as cp and ct at the start of a stem or a compound member, also after a prefix: spielen gives cpil, Stein gives ctain, verstehen gives versteh [fɛɐ̯ʃteː], sounds fercte, Bleistift gives blaictift. Elsewhere st is [st]: fest gives fest, Kiste gives kiste.
+Write a pronounced [h] as x: Haus gives xaus, Hand [hant] gives xant. An h after a vowel only marks length and is silent: Bahn [baːn] gives ban, sehen gives seh [zeː], sounds ze.
+v in a native word is [f]: voll [fɔl] gives fol. w is [v]: Wein gives vain. s before a vowel is [z]: Sonne [ˈzɔnə] gives zone. ß is [s]: groß gives gros. qu is [kv]: bequem gives bekvem.
+ng is one sound [ŋ] and gives n: singen gives sing [zɪŋ], sounds zin. Ding gives din. nk is [ŋk]: Bank gives bank.
+A double consonant letter is one sound: kommen gives komm [kɔm], sounds kom.

@@ -1,0 +1,39 @@
+Language rules: French
+
+Remove these parts.
+- Infinitive -er, -ir, -re and -oir. Remove only the ending. A vowel before it belongs to the root and stays. parler gives parl. finir gives fin. vendre gives vend. partir gives part. pouvoir gives pouv. créer gives cré. habituer gives habitu.
+- If step 1 gives a conjugated form, choose the infinitive instead.
+- Gender -e when it marks agreement on an adjective or a participle: grande gives grand, petite gives petit. A final e of a noun is not a gender ending: table stays table, livre stays livre.
+- Plural -s/-x: tables gives table, bateaux gives bateau. A final s or x of a singular word stays: gros stays gros, paix stays paix.
+- Articles. Choose the word without its article: école, not l'école. arbre, not l'arbre.
+- Noun-forming: -ation, -tion, -sion, -ion, -age, -ment, -ité, -ance/-ence, -ure, -eur. Examples: lavage gives lav. montage gives mont. changement gives chang. développement gives développ. rapidité gives rapid. activité gives activ. naissance gives naiss. résistance gives résist. existence gives exist. coupure gives coup. blessure gives bless.
+- -ation: if the verb ends in -er, remove -ation. The rest is the verb base: calibration and calibrage give calibr, évaporation gives évapor, habituation gives habitu.
+- Other -tion: remove only -ion. The t belongs to the root: action gives act, correction gives correct, direction gives direct.
+- -sion: remove only -ion. If a related form shows d or t in place of the s, the cut rule gives that sound in ipa and sounds. décision gives décis [desid], sounds desid, as décider shows. persuasion gives persuas [pɛʁsɥad], sounds persiad, as persuader shows. discussion gives discuss [diskyt], sounds diskit, as discuter shows. If no related form shows d or t, keep the s as it sounds: pression gives press [pʁɛs], sounds pres. division gives divis [diviz], sounds diviz.
+- Agent -eur when the word means one who does the base verb: chanteur gives chant, vendeur gives vend. Property -eur goes too: longueur gives long [lɔ̃ɡ], sounds long. largeur gives larg [laʁʒ], sounds larj. grandeur gives grand.
+- Adjective-forming: -ique, -eux/-euse, -if/-ive, -el/-elle, -al. nerveux gives nerv. courageux gives courag. actif gives act. sportif gives sport. naturel gives natur. culturel gives cultur. normal gives norm. atomique gives atom, as atome shows.
+- Remove -ique only when the rest is a base of the same relation. Keep -ique when no such base exists: élastique stays élastique, and élasticité gives élastic, not élast.
+An ending is not a part when the word does not mean the base plus that ending. cage, plage, fromage, image and moment keep the whole word. avion keeps the whole word.
+
+Keep these parts.
+- -is- in -iser verbs when the target requires making something so: stériliser gives stérilis, neutraliser gives neutralis. Remove -is- only when the base already names the same relation without the making: sympathiser gives sympath, as sympathie shows. In diviser, viser and briser, the s belongs to the root.
+- -ifi- in -ifier verbs on the same condition: purifier gives purifi, sounds pirifi. simplifier gives simplifi, sounds senplifi.
+- -able/-ible, because they add capability: lavable stays lavable, lisible stays lisible. When -ité follows, remove only -ité: lisibilité gives lisibil.
+- Every prefix. in- with its forms im-, il- and ir-, dé-/dés- and mé- add negation or reversal: incapable, impossible, illégal, irrégulier, défaire, désobéir and mécontent keep their prefixes. Other prefixes change the meaning: é- in évaporer, ac- in accoutumer, en- in enrichir, re- in refaire.
+
+Pronunciation.
+French stress falls on the last pronounced syllable of the word. Mark it in word_ipa: parler [paʁˈle], décision [desiˈzjɔ̃]. After the cut, ipa usually has no stress mark.
+The stem takes its sound inside the word, except at the cut. A c or g that softened only before the removed ending takes the base shape. Name the base in note.
+Example: élasticité gives élastic [elastik], with the base élastique.
+Example: électricité gives électric [elɛktʁik], with the base électrique.
+Example: pédagogique gives pédagog [pedaɡɔɡ], sounds pedagog, with the base pédagogue.
+A c or g that is also soft in the base before a vowel stays soft: changement gives chang [ʃɑ̃ʒ], sounds canj, as changer shows. déplacement gives déplac [deplas], sounds deplas, as déplacer shows.
+A final e muet is usually silent and is not written: rouge [ʁuʒ] gives ruj, porte [pɔʁt] gives port. An e muet that is pronounced is [ə] and gives e: petit [pəti] gives peti, cheval [ʃəval] gives ceval.
+Do not restore a silent final consonant: chaud [ʃo] gives co, gros [ɡʁo] gives gro. A pronounced final consonant is written: sac [sak] gives sak, chef [ʃɛf] gives cef. A consonant that is pronounced in the chosen word stays: chaude gives chaud [ʃod], sounds cod. petite gives petit [pətit], sounds petit.
+Work from the sounds, not the letters: ou is [u], au and eau are [o], ai is [ɛ] or [e]. tout [tu] gives tu. beau [bo] gives bo. mais [mɛ] gives me. The u after g or q before e or i is silent: guerre [ɡɛʁ] gives ger, musique [myzik] gives mizik.
+Write [y] as i, [ø, œ] as e, [ə] as e, [ɥ] as i, [w] as u, [ʁ] as r. rue [ʁy] gives ri. lune [lyn] gives lin. feu [fø] gives fe. peur [pœʁ] gives per. loi [lwa] gives lua. nuit [nɥi] gives nii, because [ɥ] and [i] are two sounds.
+Write a nasal vowel as its oral vowel followed by n. This rule replaces the nasal vowel row of the sound guide for French. The n stands for the nasal quality, and no nasal consonant is pronounced. In the step 8 count, a nasal vowel is one sound with two letters. bon [bɔ̃] gives bon. vin [vɛ̃] gives ven. blanc [blɑ̃] gives blan. brun [bʁœ̃] gives bren. enfant [ɑ̃fɑ̃] gives anfan.
+Score the sound, not the letters. ch as [ʃ] is c: chat [ʃa] gives ca. ch as [k] is k: chœur [kœʁ] gives ker, écho [eko] gives eko. j and soft g are [ʒ] and give j: jour [ʒuʁ] gives jur, genou [ʒənu] gives jenu.
+Write gn [ɲ] as ni. This rule replaces the [ɲ] row for French. montagne [mɔ̃taɲ] gives montani. campagne [kɑ̃paɲ] gives kanpani. Where gn is [ɡn], write gn: diagnostic [djaɡnɔstik] gives diagnostik.
+Write ill as i where it is [j]: fille [fij] gives fii, famille [famij] gives famii, travail [tʁavaj] gives travai, soleil [sɔlɛj] gives solei. Where ll is [l], write l: ville [vil] gives vil, mille [mil] gives mil.
+h is silent and is not written: habituation [abitɥasjɔ̃] gives habitu [abitɥ], sounds abiti. homme [ɔm] gives om.

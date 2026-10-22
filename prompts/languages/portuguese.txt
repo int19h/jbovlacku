@@ -1,0 +1,45 @@
+Language rules: Portuguese
+
+Remove these parts.
+- Infinitive -ar, -er, -ir with the theme vowel, and person, tense and mood endings: falar gives fal, lavar gives lav, vender gives vend, beber gives beb, partir gives part, cantou gives cant, cantava gives cant.
+- Gender -o/-a and plural -s, only where they alternate: gato and gata give gat, meninos gives menin. A root-final vowel or s stays: dia stays dia, lápis stays lápis.
+- Articles. Choose the word without its article.
+- Noun-forming: -ção with the theme vowel a, e or i that precedes it. calibração gives calibr, habituação gives habitu, evaporação gives evapor, esterilização gives esteriliz, definição gives defin, proibição gives proib.
+- When -ção follows a root vowel, the ç is the last root consonant in a changed shape. Remove only -ão. produção gives produç [pɾoduz], sounds produz, as produzo shows.
+- -mento: pagamento gives pag, movimento gives mov, conhecimento gives conhec. -agem: lavagem gives lav. -dade/-idade: liberdade gives liber, raridade gives rar, elasticidade gives elastic. -ura: pintura gives pint, largura gives larg. -ança/-ância and -ença/-ência: mudança gives mud, esperança gives esper, tolerância gives toler, existência gives exist. -ez/-eza: rapidez gives rapid, tristeza gives trist, beleza gives bel.
+- -dor/-dora when the word means one who does the base verb: trabalhador gives trabalh, pescador gives pesc. Keep it when the word names a device: lavadora, a washing machine, stays lavadora.
+- In a noun in -são, the s is the last consonant of the root in a changed shape. Remove only -ão. The cut rule gives the s the shape that a verb form shows before a vowel. Cite a form with a or o after the consonant, because d and t before i sound [dʒ] and [tʃ]. decisão gives decis [desid], sounds desid, as decido shows. invasão gives invas [ĩvad], sounds invad, as invado shows. discussão gives discuss [dʒiskut], sounds djiskut, as discuto shows. When no related form shows another consonant, keep the s: tensão gives tens [tẽs], sounds tens.
+- Do not cut a root -ão: mão and portão stay whole.
+- Adjective-forming: -oso/-osa, -ivo/-iva, -al, -ico/-ica with its -o/-a, when the rest is a word of the same relation. perigoso gives perig. nervoso gives nerv. famoso gives fam. corajoso gives coraj, as coragem shows. abusivo gives abus [abuz], sounds abuz. musical gives music [muzik], sounds muzik. metálico gives metal. atômico gives atom.
+- Adverb-forming -mente, with the feminine -a before it: rapidamente gives rapid, calmamente gives calm.
+- Keep -ic- when the rest is not such a word: elástico gives elastic and elétrico gives eletric, because elast- and eletr- are not words.
+
+Keep these parts.
+- -iz- in -izar verbs when the target requires making something so: esterilizar gives esteriliz, neutralizar gives neutraliz.
+- -ific- in -ificar verbs on the same condition: purificar gives purific, simplificar gives simplific.
+- -vel, because it adds capability: lavável stays lavável, legível stays legível.
+- Every prefix. A prefix that changes the meaning: e- in evaporar, des- in desinfetar. in-, im-, i- and des- for negation or reversal: desfazer, incapaz, impossível and ilegal keep their prefixes. Letters that only look like a prefix belong to the root and stay: incluir gives inclu, informar gives inform, desenhar gives desenh.
+
+Pronunciation.
+Use Brazilian Portuguese of São Paulo.
+A c or g that softened before the removed ending takes the base shape. Name the base in note.
+Example: elasticidade gives elastic [elastʃik], with the base elástico.
+Example: eletricidade gives eletric [eletɾik], with the base elétrico.
+Example: analógico gives analog [analɔɡ], sounds analog, with the base análogo.
+A g that is also [ʒ] in the base stays [ʒ]: fragilidade gives fragil [fɾaʒil], sounds frajil, as frágil shows.
+A t or d that sounds [tʃ] or [dʒ] only before the removed -ir takes the shape it has before a or o: partir gives part [paɾt], sounds part, as parto shows. assistir gives assist [asist], sounds asist, as assisto shows.
+A u that is a glide before the removed ending takes its vowel shape. Name the base in note.
+Example: habituação gives habitu [abitu], with the base habituo.
+Example: atuação gives atu [atu], with the base atuo.
+Write t and d before the sound [i] as tc and dj, also before a final e pronounced [i]: tia gives tcia, dia gives djia, tipo gives tcipu, ponte gives pontci, cidade gives sidadji.
+Write unstressed final e and o as i and u: leite gives leitci, gato gives gatu, livro gives livru.
+Write pretonic e and o as e and o, even when a speaker says i or u: menino gives meninu, costume gives kostumi.
+Write a nasal vowel as its oral vowel followed by n. This rule replaces the nasal vowel rows of the sound guide for Portuguese. bom gives bon. fim gives fin. campo gives kanpu. tempo gives tenpu. A vowel before a pronounced nasal consonant gets no extra n: cama gives kama, ano gives anu.
+Keep an audible off-glide of a nasal diphthong: ão gives aun, so mão gives maun and pão gives paun. Write the nasal marks in ipa and word_ipa: mão is [ˈmɐ̃w̃], decisão is [desiˈzɐ̃w̃]. mãe gives main. põe gives poin. bem gives bein.
+Write every r as r. Initial r and rr are [h] or [x] in São Paulo, but they give r. This replaces the [h] and [x] rows for these sounds. rato [ˈhatu] gives ratu. carro [ˈkahu] gives karu. porta [ˈpɔɾtɐ] gives porta.
+Write l at the end of a syllable as u, because it is [w]: alto [ˈawtu] gives autu, sal gives sau. l before a vowel stays l: metálico gives metal [metal].
+Write lh as li and nh as ni: filho gives filiu, vinho gives viniu, mulher gives mulier, banho gives baniu.
+Write ch and x [ʃ] as c: chave gives cavi, xícara gives cikara, caixa gives kaica. Other values of x follow the ipa: táxi [ˈtaksi] gives taksi, exame [eˈzɐ̃mi] gives ezami.
+Write j, and g before e and i, as j: janela gives janela, gente gives jentci, girafa gives jirafa. gu before e or i is [ɡ]: guerra gives gera.
+c before e or i, and ç, are [s]: cidade gives sidadji. A single s between vowels is [z]: casa [ˈkazɐ] gives kaza. ss is [s]: passar gives pasar. qu before e or i is [k]: quente [ˈkẽtʃi] gives kentci.
+h is silent and is not written: hora gives ora, hoje gives oji.

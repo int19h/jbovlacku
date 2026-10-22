@@ -1,0 +1,45 @@
+Language rules: Bengali
+
+Choose the form.
+- For a verb, choose its verbal noun in -আ, as a dictionary cites it, not a finite form: পড়া, not পড়ি.
+
+Remove these parts.
+- Case and number markers: -কে, -র/-এর, -রা/-এরা, -দের, -গুলো/-গুলি, -টা/-টি, -এ/-তে. Remove a marker once, from the end of the word. বইটা gives বই. ছেলেরা gives ছেলে. ছেলেদের gives ছেলে. মেয়েকে gives মেয়ে. ঘরে gives ঘর. বইগুলো gives বই.
+- Finite verb endings: করি gives কর, করছে gives কর.
+- The verbal noun -আ when the base alone names the relation: লেখা gives লেখ, পড়া gives পড় [pɔɽ]. A final -আ with no verb behind it is not a part: মাথা, "head", stays মাথা.
+- Property-noun -তা/-ত্ব: সুন্দরতা gives সুন্দর, স্থিতিস্থাপকতা gives স্থিতিস্থাপক, অভ্যস্ততা gives অভ্যস্ত, জড়ত্ব gives জড়, মনুষ্যত্ব gives মনুষ্য.
+- Action-noun -ন/-অন and -আয়ন when the base alone names the relation: ক্রমাঙ্কন gives ক্রমাঙ্ক. চলন gives চল. The whole ending goes in the pronunciation too: চলন [ˈtʃɔlon] gives চল [tʃɔl].
+- In a loanword, the English ending through its base alternation: ক্যালিব্রেশন gives ক্যালিব্রেট. ইনফেকশন gives ইনফেক্ট. This is the one case where the stem is not a letter-for-letter piece of the word.
+
+Keep these parts.
+- -করণ, "making", when the target is a process of making and the base alone names only the state: জীবাণুমুক্তকরণ keeps করণ, because জীবাণুমুক্ত alone is "germ-free". Remove only its final action-noun -ণ: the stem is জীবাণুমুক্তকর, ending in [kɔr]. বিশুদ্ধকরণ gives বিশুদ্ধকর on the same condition, because বিশুদ্ধ alone is "pure".
+- -ভবন, "becoming", on the same condition: বাষ্পীভবন gives বাষ্পীভব, একীভবন gives একীভব.
+- -আয়ন, "making into", on the same condition: keep -আয়- and remove only the final -ন. শিল্পায়ন gives শিল্পায়, because শিল্প alone is "industry". The vowel before ন goes with it: শিল্পায়ন [ʃilpajon] gives শিল্পায় [ʃilpaj], sounds cilpai. বিশ্বায়ন gives বিশ্বায়, because বিশ্ব alone is "world".
+- A causative -আ- or -ওয়া- when the target requires causation. Remove the verbal-noun ending -নো and keep the causative: শেখানো gives শেখা, খাওয়ানো gives খাওয়া [kʰawa]. Do not then remove the -আ, because শেখ alone means to learn.
+- A negative prefix অ-, নি- or নির্- when the target requires negation: অসুখী keeps অ-, অমিল keeps অ-, নির্ভুল keeps নির্-, নির্দোষ keeps নির্-.
+- Both halves of a compound: রান্নাঘর stays রান্নাঘর. রক্তচাপ stays রক্তচাপ. The silent final vowel of the first half stays silent inside the compound: হাতঘড়ি is [ɦatɡʱoɽi], not [ɦatɔɡʱoɽi].
+
+Pronunciation.
+The inherent vowel is [ɔ], but it is [o] when the next syllable has [i] or [u]: কর is [kɔr], করি is [kori], ছবি is [tʃʰobi].
+A word-final inherent vowel after a single consonant is silent in most nouns: কলম is [kɔlom]. After a conjunct it is usually pronounced: ভক্ত is [bʱɔkto]. It is also pronounced in some common adjectives and question words: বড় [bɔɽo], ছোট [tʃʰoʈo], কত [kɔto]. Say in note which you used.
+Do not apply the Hindi deletion pattern to medial vowels: কলম is [kɔlom], not [kɔlm]. গরম is [ɡɔrom].
+In word_ipa, stress the first syllable: [ˈkɔlom], [ˈbʱɔkto].
+য-ফলা after a consonant at the start of a word gives [æ] and no glide: ব্যাগ is [bæɡ], ব্যস্ত is [bæsto]. Before a syllable with [i] or [u] it gives [e]: ব্যক্তি is [bekti]. Inside a word it doubles the consonant and gives no glide: অভ্যাস is [obbʱaʃ]. সভ্য is [ʃobbʱo].
+ব-ফলা inside a word doubles the consonant: বিশ্বাস is [biʃʃaʃ]. বিদ্বান is [biddan]. At the start of a word it is silent: স্বাধীন is [ʃadʱin], দ্বীপ is [dip].
+ক্ষ is [kʰ] at the start of a word and [kkʰ] inside it: ক্ষতি is [kʰoti], পক্ষ is [pɔkkʰo]. জ্ঞ is [ɡ] at the start and [ɡɡ] inside: জ্ঞান is [ɡæn], বিজ্ঞান is [biɡɡan].
+ঋ is [ri]: কৃষি is [kriʃi].
+ঃ inside a word is not pronounced and doubles the next consonant: দুঃখ is [dukkʰo], নিঃশ্বাস is [niʃʃaʃ]. At the end of a word it is [h].
+শ ষ স are [ʃ]. They are [s] before ত থ প ক র ল ন: স্থান is [stʰan], স্নান is [snan], শ্রম is [srom]. Write the sound, not the letter.
+
+Scoring.
+Write [ɔ] and [o] as o. Write [æ] as a. কলম gives kolom. ভক্ত gives bokto. ব্যাগ gives bag.
+Aspiration and breathy voice are not written: ভ gives b, খ gives k. ভাত gives bat. খবর gives kobor.
+Write [ʃ] as c and [s] as s: বিশ্বাস gives bicac, ব্যস্ত gives basto, স্থান gives stan.
+Write চ and ছ as tc, জ ঝ and consonant য as dj: চাকা gives tcaka, ছবি gives tcobi, জল gives djol, ঝড় gives djor, যোগ gives djog.
+Write ড় ঢ় as r: গাড়ি gives gari. Write ণ as n. Write ং [ŋ] as n: রং gives ron, বাংলা gives banla.
+Write ট ঠ ড ঢ as t t d d: টাকা gives taka, ঢাকা gives daka.
+চ্ছ is a doubled affricate [ttʃʰ], written tc once: ইচ্ছা [ittʃʰa] gives itca.
+Write য় as i: মায়া gives maia. In ওয়া, য় is [w] and gives u: খাওয়া gives kaua. Write ও as o.
+Write ঃ as nothing inside a word: দুঃখ gives duko. At the end of a word, write its [h] as x.
+ক্ষ gives k: ক্ষতি gives koti, পক্ষ gives poko. জ্ঞ gives g: জ্ঞান gives gan.
+A geminate is written once: অভ্যাস gives obac. Nasalization ঁ is not written: চাঁদ gives tcad.

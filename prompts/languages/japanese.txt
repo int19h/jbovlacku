@@ -1,0 +1,44 @@
+Language rules: Japanese
+
+Choose the plain affirmative form in step 1. Keep negation that the target requires through a negative prefix: 不可能 keeps 不, 無菌 keeps 無, 非公式 keeps 非.
+
+Remove these parts.
+- Polite and tense material: -ます, -ました, -た, -て. 食べました gives 食べ. 食べて gives 食べ. 書きます gives 書き.
+- The dictionary ending -る of a vowel-stem verb. Test with -ます: a vowel-stem verb adds -ます straight to the stem. 食べる gives 食べ, 慣れる gives 慣れ, 見る gives 見, 着る gives 着. Many consonant-stem verbs also end in る: 帰る gives 帰り [kaeɾi], 走る gives 走り [haɕiɾi], 切る gives 切り [kiɾi].
+- For a consonant-stem verb, write the 連用形, the form before -ます, in stem, and its reading in ipa. This replaces the step 5 rule that the stem is a piece of the word. 書く gives 書き [kaki], sounds kaki. 話す gives 話し [hanaɕi], sounds xanaci. 買う gives 買い [kai], sounds kai. 待つ gives 待ち [matɕi], sounds matci.
+- A sound-changed past or -て form also gives the 連用形: 書いた gives 書き. 読んだ gives 読み [jomi], sounds iomi. 待って gives 待ち.
+- The irregular verbs: する gives し [ɕi], sounds ci. 来る gives 来 [ki], sounds ki.
+- Adjective -い. Remove only the last い: 強い gives 強, 高い gives 高 [taka], 楽しい gives 楽し [tanoɕi], sounds tanoci. The ない of 少ない and 危ない is part of the adjective: 少ない gives 少な [sɯkɯna], sounds sukuna.
+- A な-adjective has no -い ending: きれい and 嫌い stay whole.
+- Property -さ and -み: 強さ gives 強, 高さ gives 高, 大きさ gives 大き, 静かさ gives 静か, 深み gives 深 [ɸɯka], sounds fuka.
+- する after a word that already names the relation: 蒸発する gives 蒸発, 滅菌する gives 滅菌, キャンセルする gives キャンセル. Keep し when the part before it is not a word for the relation: 関する gives 関し, 対する gives 対し.
+- The property suffix 性 when the base already names the relation: 弾性 gives 弾, because 弾 in this compound means to spring back. 可燃性 gives 可燃. 安定性 gives 安定. 危険性 gives 危険. Keep 性 when the base alone names a thing or another relation: 個性 stays 個性, because 個 alone is a single item. 慣性 stays 慣性, because 慣 alone is habit.
+- The suffix 化 when the base already names the same state or relation: 習慣化 gives 習慣, 活性化 gives 活性, 自由化 gives 自由, 合法化 gives 合法. Keep 化 when the target is a process of becoming and the base names only a substance: 液化 stays 液化, 気化 stays 気化. Keep 化 when the base is bound: 馴化 stays 馴化, because 馴 alone is not a word for the relation.
+- The degree suffix 度 when the target is the relation, not its degree: 濃度 gives 濃 [noː], sounds no, when the target is being concentrated. 速度 gives 速 when the target is being fast. Keep 度 when the target is the measured quantity: 速度 stays 速度 for speed as a quantity, and 湿度 stays 湿度 for humidity. In 今度, 度 is not this suffix.
+- 的 when the rest names the relation: 科学的 gives 科学, 経済的 gives 経済, 具体的 gives 具体, 世界的 gives 世界. In 目的, 的 is not this suffix: 目的 stays whole.
+
+Keep these parts.
+- Both halves of a Sino-Japanese compound: 蒸発, 滅菌, 較正 and 学習 stay whole. Only the suffixes 性, 化, 度 and 的 follow their own rules above.
+- Causative -せる/-させる, passive -れる/-られる, and potential -える/-られる, when the target requires that meaning. Remove only the final -る. 食べさせる gives 食べさせ when the target is feeding someone. 書かせる gives 書かせ [kakase] when the target is making someone write. 読まれる gives 読まれ when the target is being read. 読める gives 読め [jome], sounds iome, when the target is being able to read. When the target does not need these meanings, choose the plain verb in step 1.
+- A loanword is segmented like a native word. The -ション of キャリブレーション is the English -tion. Remove it only through the base alternation, and only when the base is a Japanese loanword too. Write the base in stem. This replaces the step 5 rule that the stem is a piece of the word. キャリブレーション gives キャリブレート [kjaɾibɯɾeːto], sounds kiaribureto. コレクション gives コレクト [koɾekɯto], sounds korekuto. ファッション stays whole, because its ション is not the -tion ending. A loanword with no removable part stays whole: コーヒー [koːçiː] gives koxi, テレビ [teɾebi] gives terebi.
+
+Pronunciation.
+Use the standard Tokyo reading of the whole word, with its sokuon gemination and rendaku voicing. Write no stress or pitch mark. 滅菌 is めっきん [mekkiɴ], not metsukin. 学校 is がっこう [ɡakkoː]. 較正 is こうせい [koːseː] and gives kose.
+Rendaku belongs to each word. Use the reading of that word: 手紙 is てがみ [teɡami] and 花火 is はなび [hanabi], with rendaku. 朝日 is あさひ [asaçi], without rendaku.
+Keep devoiced i and u as vowels: 好き [sɯ̥ki] gives suki, 下 [ɕi̥ta] gives cita.
+じ and ず are [dʑi] and [dzɯ] at the start of a word and after ん, and often [ʑi] and [zɯ] between vowels. Write じ and ぢ as dj, and ず and づ as dz, in every position, also where ipa shows the fricative. This replaces the [ʑ] and [z] rows for these kana. 字 [dʑi] gives dji. 火事 [kaʑi] gives kadji. 図 [dzɯ] gives dzu. 水 [mizɯ] gives midzu.
+Write が-row consonants as g, also where a speaker says [ŋ]: 鍵 [kaɡi] gives kagi.
+
+Scoring.
+A long vowel is written once. こう [koː] gives ko. えい [eː] gives e. ケーキ [keːki] gives keki. Never double a vowel for length.
+Two vowels in separate moras are both written: 愛 [ai] gives ai. 青 [ao] gives ao. 思う [omoɯ] gives omou. 自由 [dʑijɯː] gives djiiu, because one i is [i] and the next i is [j].
+A geminate is written once. っき gives ki. 学校 gives gako. 切符 [kippɯ] gives kipu. 一緒 [iɕɕo] gives ico.
+A Cy mora contains a glide. Write it in ipa with [j], not [ʲ]. きゃ [kja] gives kia, りょ [ɾjo] gives rio, ひょ gives xio, みゃ gives mia, にゃ gives nia. 客 [kjakɯ] gives kiaku. 料理 [ɾjoːɾi] gives riori.
+After し, ち and じ the glide is part of the consonant and gets no letter: しょ gives co, ちょ gives tco, じょ gives djo, しゃ gives ca. 写真 [ɕaɕiɴ] gives cacin. 書店 [ɕoteɴ] gives coten.
+や ゆ よ give ia iu io, わ gives ua, and を gives o. 山 [jama] gives iama. 私 [wataɕi] gives uataci. 川 [kawa] gives kaua.
+Write the consonant of し as c, of ち as tc, of つ as ts, of ふ as f, and of ら行 as r. 夏 [natsɯ] gives natsu. 船 [ɸɯne] gives fune. 空 [soɾa] gives sora.
+Write は ひ へ ほ as xa xi xe xo. ひ is [çi], but it gives xi. This replaces the [ç] row for Japanese. 人 [çito] gives xito. 鼻 [hana] gives xana. 星 [hoɕi] gives xoci.
+Write ん as n in every position, also where it sounds [m] or [ŋ]. This replaces the [m] row for ん. 本 [hoɴ] gives xon. 新聞 [ɕimbɯɴ] gives cinbun. 散歩 [sampo] gives sanpo.
+Write う [ɯ] as u: 歌 [ɯta] gives uta.
+The vowel of each mora follows its consonant, even when it is devoiced: し gives ci, ち gives tci, つ gives tsu, ふ gives fu.
+Small kana in a loanword follow their sounds: ティー [tiː] gives ti, ディスコ [disɯko] gives disuko, ファン [ɸaɴ] gives fan.

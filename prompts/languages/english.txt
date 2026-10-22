@@ -1,0 +1,43 @@
+Language rules: English
+
+Remove these parts.
+- Inflection: plural and third-person -s/-es, past -ed, progressive -ing, comparative -er, superlative -est. cats gives cat. boxes gives box. walked gives walk. running gives run. taller gives tall. happiest gives happy.
+- -ing also makes a noun of action. Remove it there too: swimming gives swim, dancing gives dance.
+- An irregular form has no ending to remove. If step 1 gives an irregular form such as broken or children, choose the base form break or child instead.
+- Noun-forming: -ness, -ity, -ion/-tion/-sion/-ation, -ment, -ance/-ence, -cy, -hood, -ship, -al as in arrival. kindness gives kind. darkness gives dark. elasticity gives elastic. movement gives move. payment gives pay. resistance gives resist. existence gives exist. fluency gives fluent. childhood gives child. friendship gives friend. arrival gives arrive. refusal gives refuse.
+- -ion and -ation: if the verb ends in -ate, remove only -ion and keep -ate. calibration gives calibrate. evaporation gives evaporate. If the verb has no -ate, remove -ation. information gives inform. relaxation gives relax.
+- Adjective-forming: -ous, -ful, -ive, -al as in national. dangerous gives danger. famous gives fame. hopeful gives hope. active gives act. protective gives protect. national gives nation. musical gives music.
+- Agent -er/-or when the word means one who does the base verb: teacher gives teach, baker gives bake, actor gives act, collector gives collect.
+- Adverb -ly: quickly gives quick, slowly gives slow.
+- These lists are not complete. Remove any other ending that only changes the word class: failure gives fail, growth gives grow.
+An ending is not a part when the word does not mean the base plus that ending. sweater stays sweater, because a sweater is a garment, not one who sweats. apartment, moment, worship, previous and early stay whole.
+
+Write the base spelling in stem. In English this replaces the step 5 rule that the stem is a piece of the word. Restore a final e, a y, a single consonant, and the base consonant at the cut: calibration gives calibrate, happiness gives happy, stopped gives stop, decision gives decide. Name the base in note.
+
+Keep these parts.
+- -ize/-ise, -ify and -en when they mean "make so". They add causation. purify stays purify. simplify stays simplify. widen stays widen. darken stays darken. sterilize stays sterilize, because the target is treating an object to make it sterile. magnetize stays magnetize when the target is making an object magnetic.
+- If the target is only the state, choose the adjective in step 1, not the verb: for "x1 is pure", the word is pure, not purify.
+- -ate when no base exists without it. Do not cut calibrate to calibr or evaporate to evapor.
+- -able/-ible, because they add capability: washable stays washable, readable stays readable, visible stays visible, edible stays edible. When -ity follows, remove only -ity: probability gives probable, visibility gives visible.
+- -less and -free, because they mean "without": hopeless stays hopeless, careless stays careless, harmless stays harmless.
+- Every prefix. English has no prefix that marks only phase or aspect. un-, dis-, non- and in- with its forms im-, il- and ir- add negation or reversal: unfair, dishonest, nontoxic, impossible, irregular, unlock and disconnect keep their prefixes. Other prefixes change the meaning: e- in evaporate, under- in understand, re- in rewrite, mis- in misplace, over- in overflow.
+
+Pronunciation.
+Use a broad General American transcription. Write the sounds that a dictionary writes, not every change in fast speech.
+Write t and d as [t] and [d], never as the flap [ɾ] or the glottal stop [ʔ]. city [ˈsɪti] gives siti, not siri. ladder [ˈlædər] gives lader.
+Write an unstressed final -on, -en, -le or -el with [ə], not as a syllabic consonant. lemon [ˈlɛmən] gives lemen. bottle [ˈbɑtəl] gives batel. button [ˈbʌtən] gives baten.
+The r is pronounced everywhere, also after a vowel. car [kɑr] gives kar. door [dɔr] gives dor.
+Write an r-colored vowel as a vowel plus r: [ər] in an unstressed syllable, [ɜr] in a stressed one. Both give er. mother [ˈmʌðər] gives mazer. bird [bɜrd] gives berd. If you write [ɚ] or [ɝ], score it as er.
+
+At the cut, follow step 6. Only the sound at the cut takes its base shape. Every other sound, vowels included, stays as it sounds in the chosen word. So ipa follows word_ipa even when stem shows the base spelling. Name the base in note.
+Example: calibration [ˌkælɪˈbreɪʃən] gives stem calibrate, ipa [kælɪbreɪt], sounds kalibreit. The [ʃ] at the cut is [t], as in calibrate.
+Example: information [ˌɪnfərˈmeɪʃən] gives stem inform, ipa [ɪnfərm], sounds inferm. The verb has no -ate, so all of [eɪʃən] goes, and nothing is restored.
+Example: electricity [ɪˌlɛkˈtrɪsɪti] gives stem electric, ipa [ɪlɛktrɪk], sounds ilektrik, with [k], not the [s] of electricity.
+Example: decision [dɪˈsɪʒən] gives stem decide, ipa [dɪsɪd], sounds disid. The [ʒ] at the cut is [d], as in decide. The vowel stays [ɪ], as in decision. It does not become the [aɪ] of decide.
+Example: national [ˈnæʃənəl] gives stem nation, ipa [næʃən], sounds nacen, with the [æ] of national, not the [eɪ] of nation.
+Example: probability [ˌprɑbəˈbɪlɪti] gives stem probable, ipa [prɑbəbɪl], sounds prabebil.
+
+Vowels follow the sound guide. cabin [ˈkæbɪn] gives kabin. cup [kʌp] gives kap. hot [hɑt] gives xat. book [bʊk] gives buk. foot [fʊt] gives fut.
+Write the diphthongs [eɪ] ei, [aɪ] ai, [ɔɪ] oi, [aʊ] au, [oʊ] ou. Never drop the second element. make [meɪk] gives meik. home [hoʊm] gives xoum. light [laɪt] gives lait. boy [bɔɪ] gives boi. house [haʊs] gives xaus.
+Score only the sounds in ipa. A silent letter gives nothing: knee [ni] gives ni, write [raɪt] gives rait, lamb [læm] gives lam.
+Write a pronounced [h] as x: hat [hæt] gives xat, ahead [əˈhɛd] gives exed. A silent h has no sound: honest [ˈɑnɪst] gives anist, hour [ˈaʊər] gives auer.
