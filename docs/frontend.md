@@ -137,7 +137,7 @@ The app provides these addressable routes:
 | `/review` | Optional review queue. |
 | `/trust` | Public decisions and private view controls. |
 | `/identity` | Local key, backup, transfer, and loss controls. |
-| `/outbox` | “Not delivered,” with unfinished delivery records and an empty state. |
+| `/outbox` | “Not delivered,” with the records that have not reached a server. The page and its header marker exist only while such records exist. |
 | `/preferences` | Settings, in groups: Languages, Assistance, Search, Appearance, Servers, and Your data. |
 
 Every route preserves browser back and forward behavior. Query changes use replace-state while typing, then a stable navigation state when selected.
@@ -328,7 +328,7 @@ The structured metadata retains the entered weights, the normalization rule, and
 Historical profiles preserve their own normalization semantics. The UI never compares differently scaled raw scores without a label.
 
 Each source row separates native spelling from the Lojbanized input used by the letter scorer.
-The table shows these columns: Language, Weight, Word, Said, Stem, Stem said, and Letters. Word is the native spelling. Said is the pronunciation of the whole word with its stress. Stem is the part that remains after removal of endings. Stem said is the pronunciation of the stem. Letters is the scoring input.
+The table shows these columns: Language, Weight, Word, Said, Stem, Stem said, and Letters. Word is the native spelling. Said is the pronunciation of the whole word with its stress. Stem is the part of the word that the letters come from. Stem said is the pronunciation of the stem. Letters is the scoring input.
 The pronunciation is there so that speakers of the language can check the word later and propose a better one. Only the letters count toward the score. Stress is shown and is never scored.
 IPA input requires an explicit, versioned conversion and a preview of the resulting scoring input.
 One source word per language is the simple-mode default. Advanced mode can add alternatives under an explicitly selected aggregation rule.
@@ -1256,6 +1256,13 @@ The model answers through one tool call. The app checks the answer. If the answe
 Invalid output never enters a signed body automatically.
 
 Every AI action has four states. Idle is the AI tagged button. Working replaces the button with one status line, a spinner, and Cancel. A retry says so with its count, such as “The first answer had errors, so the assistant is trying again (2 of 3).” Done is the suggestion panel. Failed is one line in the button's place, such as “No usable answer after 3 tries. Try again or fill the rows in by hand.” The failed line never blocks the manual path.
+
+Every suggestion panel, note, and failed line links to the inference log with “How the assistant decided”. The log is a modal that shows the whole exchange that produced the suggestion.
+Its header names the task, the model and reasoning level, the provider, the prompt version with a link to the public prompt file, the time and duration, the number of answers and corrections, and the tokens and cost.
+One line says that the provider does not make the assistant's private reasoning available, and that the log holds the shared reasoning summary and everything that the assistant wrote.
+The rows are the system prompt, collapsed, and the app's request. Each answer then has its reasoning summary or the line “No reasoning summary was shared for this answer.”, any text that the assistant wrote, the tool call with its tokens, and the app's check. A failed check lists each problem that the app sent back to the assistant.
+“Export as Markdown” saves the log as shown. “Export raw JSON” saves every request and response exactly as sent and received.
+The log stays in the browser with the draft. The server keeps no copy, and nothing from the log is published with a definition.
 
 Server configuration supplies provider base URL, authentication secret reference, models, task capabilities, request limits, and permitted provider-specific parameters.
 The browser receives capability names and disclosure metadata, never the operator's API key.
