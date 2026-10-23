@@ -128,7 +128,10 @@ Alternate views cannot evict the most recent configured-view evaluation.
 If a committed admission cannot obtain an evaluation slot, its receipt still reports the durable acceptance and cursor.
 It reports unavailable interpretation with `evaluation_resource_unavailable`. A later receipt read or retry can evaluate it.
 
-The Node adapter evaluates new snapshots in the background.
+The Node adapter evaluates new snapshots in separate worker threads.
+A worker thread runs code independently within the same process. At most two evaluation runtimes remain live.
+One runtime serves completed rankings while another authenticates changed records and evaluates the next snapshot.
+The browser and Cloudflare Worker keep the same shared core and inline evaluation path.
 Without an explicit snapshot, word, search, identity, account, and package reads use the last completed snapshot.
 The manifest also names that completed snapshot. Interpreted results name their snapshot and view.
 Raw replication reads can expose the newer accepted inventory and name its snapshot.
@@ -168,13 +171,17 @@ Startup does not publish that base's index or mark it as completed.
 Without a current completed state, interpreted reads wait for catch-up. Recovery never moves the served snapshot or its materialized cursor backward.
 An expired private base also supports calculation only and remains unavailable through public snapshot routes.
 
-Shutdown drains pending evaluation and checkpoint work before it closes SQLite.
+Shutdown stops admission and allows up to ten seconds for core evaluation.
+If that deadline expires, the adapter closes client connections and stops its evaluation threads.
+Durable request handlers and checkpoint file operations settle before SQLite and the data directory lock close.
+Accepted records and the last valid checkpoint remain available for startup recovery.
 Checkpoint recovery rebuilds a missing search index from the saved entries before readiness.
 The service captures at most one checkpoint per minute after a 100 ms quiet period.
 It keeps only the latest pending snapshot during that interval. A failed capture also counts toward the interval.
 Shutdown bypasses the interval and saves the latest completed state.
-Core export and binary serialization still run synchronously on the Node event loop.
-The interval limits their frequency, not their duration.
+Core evaluation, checkpoint export, and checkpoint restore run in evaluation threads.
+Binary serialization of the enclosing checkpoint, package construction, and SQLite operations still use the main thread.
+The capture interval limits serialization frequency, not its duration.
 
 Use a separate data directory for each test service. Do not point a disposable test at another service's database.
 A selected view and explicit import selection determine which imported publications appear.

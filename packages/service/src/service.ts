@@ -1,4 +1,5 @@
 import type { IndexStore } from "./index-store.ts";
+import type { EvaluationRuntime, EvaluationSession } from "./evaluation.ts";
 import {
   AssistanceService,
   AssistanceError,
@@ -30,7 +31,6 @@ import {
   inspectBody,
   type Evaluation,
   type EvaluationRequest,
-  type EvaluationSessionHandle,
 } from "../../core/src/index.ts";
 import {
   type ObjectStore,
@@ -82,6 +82,7 @@ export interface ServiceOptions {
   corsOrigins?: string[];
   index?: IndexStore;
   asyncMaterialization?: boolean;
+  evaluationRuntime?: EvaluationRuntime;
   checkpoints?: CheckpointStore;
   /** Minimum time between cache captures. The default is 60,000 ms. */
   checkpointIntervalMs?: number;
@@ -287,7 +288,7 @@ export class DictionaryService {
         const recoveredId = snapshot.snapshot;
         let recovered:
           | {
-              session: EvaluationSessionHandle;
+              session: EvaluationSession;
               payload: ServiceCheckpoint;
               envelopes: Map<string, string>;
             }
@@ -321,10 +322,15 @@ export class DictionaryService {
                 throw new Error(
                   "The checkpoint envelope inventory is incomplete.",
                 );
-            const session = restoreHostEvaluationSession(
-              payload.core,
-              JSON.stringify(binding),
-            );
+            const session = await (this.options.evaluationRuntime
+              ? this.options.evaluationRuntime.restore(
+                  payload.core,
+                  JSON.stringify(binding),
+                )
+              : restoreHostEvaluationSession(
+                  payload.core,
+                  JSON.stringify(binding),
+                ));
             recovered = { session, payload, envelopes };
           }
         } catch (error) {
@@ -479,7 +485,7 @@ export class DictionaryService {
               ]);
             }
           await this.options.checkpoints!.save(binding, {
-            core: session.checkpoint(JSON.stringify(binding)),
+            core: await session.checkpoint(JSON.stringify(binding)),
             package_records:
               this.packageRecords.get(checkpoint.snapshot.snapshot) ?? [],
             packages: checkpoint.packages,
@@ -888,7 +894,21 @@ export class DictionaryService {
   }
   private evaluationCache = new Map<string, Promise<Evaluation>>();
   private inFlightEvaluations = new Set<string>();
-  private sessions = new Map<string, EvaluationSessionHandle>();
+  private sessionUses = new Map<string, number>();
+  private sessions = new Map<string, EvaluationSession>();
+  private async useSession<T>(
+    key: string,
+    operation: () => T | Promise<T>,
+  ): Promise<T> {
+    this.sessionUses.set(key, (this.sessionUses.get(key) ?? 0) + 1);
+    try {
+      return await operation();
+    } finally {
+      const remaining = this.sessionUses.get(key)! - 1;
+      if (remaining) this.sessionUses.set(key, remaining);
+      else this.sessionUses.delete(key);
+    }
+  }
   private evaluation(
     snapshot: Snapshot,
     view = this.options.selectedView ?? zeroView,
@@ -896,10 +916,16 @@ export class DictionaryService {
     const key = snapshot.snapshot + "|" + view;
     const cached = this.evaluationCache.get(key);
     if (cached) {
-      if (this.sessions.has(key) || this.inFlightEvaluations.has(key))
+      if (
+        (this.sessions.has(key) &&
+          this.sessions.get(key)!.isAvailable?.() !== false) ||
+        this.inFlightEvaluations.has(key)
+      )
         return cached;
       // A settled result without its session cannot support later forks or captures.
       this.evaluationCache.delete(key);
+      this.sessions.get(key)?.free();
+      this.sessions.delete(key);
       this.sessionSnapshots.delete(key);
     }
     if (this.inFlightEvaluations.size >= 2)
@@ -918,6 +944,7 @@ export class DictionaryService {
       const evicted = [...this.evaluationCache.keys()].find(
         (candidate) =>
           !this.inFlightEvaluations.has(candidate) &&
+          !this.sessionUses.has(candidate) &&
           !this.inFlightPackages.has(candidate.split("|")[0]) &&
           candidate !== this.completed?.snapshot.snapshot + "|" + configured &&
           (view === configured || candidate !== protectedKey),
@@ -981,55 +1008,62 @@ export class DictionaryService {
     };
     const baseEntry = [...this.sessions.entries()]
       .reverse()
-      .find(([key]) => this.sessionSnapshots.has(key));
+      .find(
+        ([key, session]) =>
+          this.sessionSnapshots.has(key) && session.isAvailable?.() !== false,
+      );
     const baseSnapshot = baseEntry
       ? this.sessionSnapshots.get(baseEntry[0])
       : undefined;
-    const builder = baseEntry
-      ? baseEntry[1].fork(options)
-      : createEvaluationSession(options);
+    // Keep the immutable array if the source cache is pruned during the fork.
     const baseRecords =
       (baseSnapshot
         ? this.packageRecords.get(baseSnapshot.snapshot)
         : undefined) ?? [];
-    let packageRecords: Map<string, PackageRecord> | undefined;
-    const mutableRecords = () => {
-      if (!packageRecords) {
-        packageRecords = new Map();
-        for (const record of baseRecords) packageRecords.set(record.id, record);
-      }
-      return packageRecords;
-    };
-    const changedPackages: PackageRecord[] = [];
-    const hint = this.snapshotDeltas.get(snapshot.snapshot);
-    const exactHint = baseSnapshot && hint?.base === baseSnapshot.snapshot;
-    if (baseSnapshot && !exactHint)
-      for (const id of Object.keys(baseSnapshot.events))
-        if (!snapshot.events[id]) {
-          builder.removeRecord(id);
-          if (
-            ["definition.publish", "rafsi.publish"].includes(
-              String(baseSnapshot.events[id].header.action.kind),
-            )
-          ) {
-            const records = mutableRecords();
-            const old = records.get(id);
-            if (old) changedPackages.push(old);
-            records.delete(id);
-          }
-        }
-    const changedIds = exactHint
-      ? sorted(hint.changed)
-      : sorted(Object.keys(snapshot.events)).filter((id) => {
-          const previous = baseSnapshot?.events[id];
-          const next = snapshot.events[id];
-          return (
-            !previous ||
-            previous.envelope_hash !== next.envelope_hash ||
-            previous.body_hash !== next.body_hash
-          );
-        });
+    const builder = await (baseEntry
+      ? this.useSession(baseEntry[0], () => baseEntry[1].fork(options))
+      : this.options.evaluationRuntime
+        ? this.options.evaluationRuntime.create(options)
+        : createEvaluationSession(options));
     try {
+      let packageRecords: Map<string, PackageRecord> | undefined;
+      const mutableRecords = () => {
+        if (!packageRecords) {
+          packageRecords = new Map();
+          for (const record of baseRecords)
+            packageRecords.set(record.id, record);
+        }
+        return packageRecords;
+      };
+      const changedPackages: PackageRecord[] = [];
+      const hint = this.snapshotDeltas.get(snapshot.snapshot);
+      const exactHint = baseSnapshot && hint?.base === baseSnapshot.snapshot;
+      if (baseSnapshot && !exactHint)
+        for (const id of Object.keys(baseSnapshot.events))
+          if (!snapshot.events[id]) {
+            await builder.removeRecord(id);
+            if (
+              ["definition.publish", "rafsi.publish"].includes(
+                String(baseSnapshot.events[id].header.action.kind),
+              )
+            ) {
+              const records = mutableRecords();
+              const old = records.get(id);
+              if (old) changedPackages.push(old);
+              records.delete(id);
+            }
+          }
+      const changedIds = exactHint
+        ? sorted(hint.changed)
+        : sorted(Object.keys(snapshot.events)).filter((id) => {
+            const previous = baseSnapshot?.events[id];
+            const next = snapshot.events[id];
+            return (
+              !previous ||
+              previous.envelope_hash !== next.envelope_hash ||
+              previous.body_hash !== next.body_hash
+            );
+          });
       for await (const { value: id, result: loaded } of orderedPrefetch(
         changedIds,
         (id) => {
@@ -1051,7 +1085,7 @@ export class DictionaryService {
           );
         if (loaded.body.status === "rejected") throw loaded.body.reason;
         const body = loaded.body.value;
-        const record = builder.addRecord(envelope, body ?? undefined);
+        const record = await builder.addRecord(envelope, body ?? undefined);
         this.canonicalEnvelopes.set(
           contentHash(envelope),
           new TextDecoder().decode(envelope),
@@ -1077,7 +1111,7 @@ export class DictionaryService {
           }
         }
       }
-      const session = builder.finish();
+      const session = await builder.finish();
       const state = session.state;
       if (ownsEntry()) {
         this.sessions.set(snapshot.snapshot + "|" + view, session);
@@ -1130,7 +1164,9 @@ export class DictionaryService {
         previous?.body_hash === event.body_hash
       ) {
         receiptSnapshot = complete!.snapshot.snapshot;
-        let state = this.sessions.get(key)?.state;
+        const session = this.sessions.get(key);
+        let state =
+          session?.isAvailable?.() === false ? undefined : session?.state;
         if (!state)
           try {
             state = await this.evaluation(complete!.snapshot);
@@ -2036,12 +2072,18 @@ export class DictionaryService {
       // The core materializes reviewer details only on request, bounded there.
       const withReviewers = reviewersFlag === "1";
       try {
-        const session = this.sessions.get(snapshot.snapshot + "|" + view);
-        if (session)
-          ranking = session.rankWord(
-            id,
-            withReviewers ? this.bound("reviewers", REVIEWER_LIMIT) : undefined,
+        const key = snapshot.snapshot + "|" + view;
+        const session = this.sessions.get(key);
+        if (session) {
+          ranking = await this.useSession(key, () =>
+            session.rankWord(
+              id,
+              withReviewers
+                ? this.bound("reviewers", REVIEWER_LIMIT)
+                : undefined,
+            ),
           );
+        }
       } catch {}
       const scores = ranking.scores as Record<string, unknown>[];
       return json({

@@ -534,6 +534,176 @@ test("package publication keeps its session until a third evaluation can use a f
   }
 });
 
+test("an asynchronous historical ranking keeps its evaluation slot until the read settles", async () => {
+  const { service, coordinator, definition, profile } = await fixture();
+  const historical = coordinator.state.snapshot!;
+  const first = judgment(
+    definition.envelope.id,
+    "4",
+    [profile.envelope.id],
+    "bless",
+  );
+  await service.admitMany([utf8(JSON.stringify(first))]);
+  await service.flushMaterialization();
+  const key = historical + "|" + service.options.selectedView;
+  const internals = service as any;
+  const session = internals.sessions.get(key);
+  const rank = session.rankWord.bind(session);
+  const gate = deferred();
+  const entered = deferred();
+  session.rankWord = async (...args: any[]) => {
+    entered.resolve();
+    await gate.promise;
+    return rank(...args);
+  };
+  const reading = read(
+    service,
+    "/words/" + wordId(word) + "?snapshot=" + historical,
+  );
+  try {
+    await entered.promise;
+    const second = judgment(
+      definition.envelope.id,
+      "5",
+      [first.envelope.id],
+      "curse",
+    );
+    await service.admitMany([utf8(JSON.stringify(second))]);
+    while (internals.background) await internals.background;
+    assert.ok(internals.sessions.has(key));
+    assert.ok(internals.evaluationCache.size <= 2);
+    assert.equal(coordinator.state.materialized_position, 4);
+    gate.resolve();
+    assert.equal((await reading).snapshot, historical);
+    await read(service, "/words/" + wordId(word));
+    await service.flushMaterialization();
+    assert.equal(coordinator.state.materialized_position, 5);
+  } finally {
+    gate.resolve();
+    await reading;
+    await service.flushMaterialization().catch(() => {});
+  }
+});
+
+test("an asynchronous removal error frees its acquired builder", async () => {
+  const { service, coordinator, profile } = await fixture();
+  const internals = service as any;
+  const key = coordinator.state.snapshot + "|" + service.options.selectedView;
+  const base = internals.sessions.get(key);
+  const fork = base.fork;
+  let freed = 0;
+  base.fork = async () => ({
+    removeRecord: async () => {
+      throw new Error("Injected removal failure");
+    },
+    free: () => {
+      freed++;
+    },
+  });
+  const events = { ...coordinator.state.events };
+  delete events[profile.envelope.id];
+  try {
+    const snapshot = await internals.buildSnapshot({
+      ...coordinator.state,
+      events,
+    });
+    await assert.rejects(
+      internals.computeEvaluation(snapshot),
+      /Injected removal failure/,
+    );
+    assert.equal(freed, 1);
+  } finally {
+    base.fork = fork;
+  }
+});
+
+test("a fork retains package records after its source cache is pruned", async () => {
+  const { service, coordinator, definition, profile } = await fixture();
+  const internals = service as any;
+  const snapshot = coordinator.state.snapshot!;
+  const base = internals.sessions.get(
+    snapshot + "|" + service.options.selectedView,
+  );
+  const fork = base.fork.bind(base);
+  assert.equal(internals.packageRecords.get(snapshot).length, 1);
+  base.fork = async (...args: any[]) => {
+    const builder = fork(...args);
+    // Model source cache eviction while the asynchronous worker fork returns.
+    internals.packageCache.delete(snapshot);
+    internals.packageRecords.delete(snapshot);
+    return builder;
+  };
+  const entry = judgment(
+    definition.envelope.id,
+    "4",
+    [profile.envelope.id],
+    "bless",
+  );
+  await service.admitMany([utf8(JSON.stringify(entry))]);
+  await service.flushMaterialization();
+  const latest = coordinator.state.snapshot!;
+  assert.equal(coordinator.state.materialized_snapshot, latest);
+  assert.equal(internals.packageRecords.get(latest).length, 1);
+  assert.equal(
+    internals.packageRecords.get(latest)[0].id,
+    definition.envelope.id,
+  );
+  const packages = await internals.packageCache.get(latest);
+  assert.equal(packages.entries.length, 1);
+  const result = await read(service, "/search?q=go&language=en");
+  assert.equal(result.snapshot, latest);
+  assert.equal(result.hits.length, 1);
+});
+
+test("a calculation-only base stays alive across an asynchronous fork", async () => {
+  const { service, coordinator, definition, profile } = await fixture();
+  const internals = service as any;
+  const baseSnapshot = await coordinator.getSnapshot(
+    coordinator.state.snapshot!,
+  );
+  const key = baseSnapshot!.snapshot + "|" + service.options.selectedView;
+  const base = internals.sessions.get(key);
+  const fork = base.fork.bind(base);
+  const entered = deferred();
+  const gate = deferred();
+  internals.completed = undefined;
+  base.fork = async (...args: any[]) => {
+    entered.resolve();
+    await gate.promise;
+    return fork(...args);
+  };
+  try {
+    const entry = judgment(
+      definition.envelope.id,
+      "4",
+      [profile.envelope.id],
+      "bless",
+    );
+    await service.admitMany([utf8(JSON.stringify(entry))]);
+    await entered.promise;
+    await assert.rejects(
+      internals.evaluation(baseSnapshot, "jve1:" + "0".repeat(64)),
+      (error: any) => error.code === "resource_unavailable",
+    );
+    assert.ok(internals.sessions.has(key));
+    assert.equal(internals.evaluationCache.size, 2);
+    gate.resolve();
+    await service.flushMaterialization();
+    assert.equal(
+      coordinator.state.materialized_snapshot,
+      coordinator.state.snapshot,
+    );
+    assert.equal(
+      (await read(service, "/receipts/" + entry.envelope.id)).interpretation,
+      "effective",
+    );
+    assert.equal(internals.sessionUses.size, 0);
+  } finally {
+    gate.resolve();
+    await service.flushMaterialization().catch(() => {});
+  }
+});
+
 test("a write during cold evaluation replaces a missing staged index base", async () => {
   const { objects, coordinator, options, definition, profile } =
     await fixture();
