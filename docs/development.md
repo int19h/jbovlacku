@@ -312,6 +312,26 @@ The cold-start readiness probe used three-second request deadlines and can start
 These single-process measurements use the VM's existing filesystem cache and do not establish performance on another host or under concurrent imports.
 They also do not establish hosted Worker resource compliance.
 
+A separate crash probe used the same definitions and added two disposable endorsements, for 59,133 events.
+The server saved the first endorsement at position 59,132, then accepted and materialized the second at position 59,133.
+The probe killed its exact server process 2.34 seconds after the second POST began, before another checkpoint capture.
+After the child exited, the probe removed only that dead process's exact stale data lock.
+
+The restart reached readiness in 7.30 seconds. Its first word request took 1.87 seconds and used the preceding checkpoint snapshot.
+Startup through that response took 9.16 seconds. The latest accepted word state appeared 9.87 seconds after startup.
+The core received one later record and reported one incremental update without a rebuild.
+The new event's effective receipt named the latest snapshot, with accepted and materialized cursors both at `local-node.59133`.
+
+Crash recovery peaked at 3,450,298,368 bytes, or 3.21 GiB, including 1.52 GiB of Wasm linear memory.
+The final checkpoint used 66,902,448 bytes, or 63.80 MiB.
+The data directory grew by 59.05 MiB, without a directory copy.
+The source listened only on `127.0.0.1:8951`, and all probe servers stopped afterward.
+
+The probe first created a compatible baseline because the Rust cleanup changed the Wasm digest.
+That preparation took 68.63 seconds for its cold word request. It did not measure crash recovery.
+The crash restart avoids full cold evaluation but still exceeds the five-second target from startup through the first response.
+These results use the same VM and filesystem cache. Other histories and concurrent workloads can take longer.
+
 The first combined full-data request before streaming reached WebAssembly's 4 GiB memory limit.
 The current measurement uses the streaming path and the revised source bodies.
 An explicit traversal limit or a larger Node heap does not remove the WebAssembly memory limit.

@@ -115,6 +115,11 @@ Search took 19 to 76 milliseconds. Package manifests took 1.5 to 2.6 millisecond
 
 The checkpoint used 63.80 MiB. Peak process memory reached 3.69 GiB, including 1.67 GiB of Wasm linear memory.
 
+After a crash, the adapter can restore an older valid checkpoint and evaluate the later records.
+A full-data crash restart reached readiness in 7.30 seconds and returned its first word response 1.87 seconds later.
+That response used the checkpoint snapshot. Startup through the latest accepted word state took 9.87 seconds.
+The restart replayed one record without a full rebuild and used 3.21 GiB peak process memory.
+
 Process startup through the first word response with a checkpoint took 6.54 seconds.
 Without a checkpoint, initial readiness took 31.15 seconds, and the first word request then took 66.64 seconds.
 That cold request still exceeds the original 30-second target.
