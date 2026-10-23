@@ -68,6 +68,14 @@ async function open(page: Page, path: string) {
   await page.evaluate(() => document.fonts.ready);
 }
 
+async function createAuditIdentity(page: Page) {
+  await open(page, "/identity");
+  await page.getByLabel("New passphrase", { exact: true }).fill(PASSPHRASE);
+  await page.getByLabel("Repeat passphrase").fill(PASSPHRASE);
+  await page.getByRole("button", { name: "Create a key", exact: true }).click();
+  await expect(page.getByText("Unlocked", { exact: true })).toBeVisible();
+}
+
 async function beginDraft(page: Page, kind?: "lujvo" | "gismu") {
   await open(page, "/new/meaning");
   await page
@@ -297,7 +305,7 @@ async function inventory(page: Page) {
         exception = "Inline place marker: ui-design.md shared components.";
       else if (
         node.matches("a[href]") &&
-        !node.matches(".btn") &&
+        !node.matches(".btn,.touch-link") &&
         !node.closest("header,footer,nav")
       ) {
         const prose = node.closest("p,.rich-text,.text,.inline-prose");
@@ -384,6 +392,53 @@ async function inventory(page: Page) {
   });
 }
 
+async function checkTargets(
+  page: Page,
+  info: TestInfo,
+  state: string,
+  viewport: { name: string; width: number },
+) {
+  await page.waitForLoadState("networkidle");
+  await page.evaluate(() => document.fonts.ready);
+  await expectPolicyClean(page);
+  const data = await inventory(page);
+  const failures = data.entries.filter(
+    (entry) =>
+      !entry.exception &&
+      (entry.targetBounds.width < 43.99 || entry.targetBounds.height < 43.99),
+  );
+  await artifact(info, `targets-${state}-${viewport.name}`, data, page);
+  expect
+    .soft(data.entries.length, `${state}: nonempty inventory`)
+    .toBeGreaterThan(8);
+  expect
+    .soft(
+      failures.map(
+        (entry) =>
+          `${entry.element} ${entry.name}: ${entry.targetBounds.width.toFixed(2)} x ${entry.targetBounds.height.toFixed(2)}`,
+      ),
+      `${state}: standalone targets must be at least 44 by 44`,
+    )
+    .toEqual([]);
+  expect
+    .soft(
+      data.entries
+        .filter((entry) => entry.labelAssociation === false)
+        .map((entry) => entry.path),
+      `${state}: each checkbox or radio has one label for its own control`,
+    )
+    .toEqual([]);
+  expect
+    .soft(data.pageWidth, `${state} fits the viewport`)
+    .toBeLessThanOrEqual(viewport.width);
+  return {
+    state,
+    count: data.entries.length,
+    exceptions: data.entries.filter((entry) => entry.exception).length,
+    failures: failures.length,
+  };
+}
+
 for (const viewport of [
   { name: "desktop", width: 1280, height: 900 },
   { name: "phone", width: 360, height: 800 },
@@ -398,7 +453,7 @@ for (const viewport of [
       await page.evaluate(() => {
         const samples = [
           ["sentence", "Read the ", "guide", " for details."],
-          ["sentence-start", "", "Edit", " returns to the retained draft."],
+          ["sentence-start", "", "This guide", " explains the process."],
           ["sentence-end", "Read the ", "guide", "."],
           [
             "sentence-colon",
@@ -457,6 +512,502 @@ for (const viewport of [
         expect.soft(entry.targetBounds.width, href).toBeGreaterThanOrEqual(44);
         expect.soft(entry.targetBounds.height, href).toBeGreaterThanOrEqual(44);
       }
+    });
+
+    test("R3: composition links and Edit have touch targets with centered short labels", async ({
+      page,
+    }, info) => {
+      await open(page, `/word/${fixture().words.vlacku}`);
+      await expect(page.locator("article.definition").first()).toBeVisible();
+      const data = await inventory(page);
+      await artifact(info, `composition-${viewport.name}`, data, page);
+      const components = await page
+        .locator("main > p")
+        .filter({ hasText: /valsi.*\+.*cukta.*·/ })
+        .locator("a")
+        .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("href")));
+      expect(components).toHaveLength(2);
+      for (const href of components) {
+        const entry = data.entries.find((entry) => entry.href === href)!;
+        expect
+          .soft(entry.exception, `Component ${href} has no inline exception`)
+          .toBeNull();
+        expect
+          .soft(entry.targetBounds.width, `Component ${href} width`)
+          .toBeGreaterThanOrEqual(44);
+        expect
+          .soft(entry.targetBounds.height, `Component ${href} height`)
+          .toBeGreaterThanOrEqual(44);
+      }
+      await open(page, `/word/${fixture().words.cukta}`);
+      const geometry = await page
+        .locator('.rafsi-line a[href="/rafsi/cku"]')
+        .evaluate((node) => {
+          const target = node.getBoundingClientRect();
+          const range = document.createRange();
+          range.selectNodeContents(node);
+          const text = range.getBoundingClientRect();
+          return {
+            targetWidth: target.width,
+            textWidth: text.width,
+            left: text.left - target.left,
+            right: target.right - text.right,
+            justifyContent: getComputedStyle(node).justifyContent,
+          };
+        });
+      await artifact(info, `short-label-${viewport.name}`, geometry, page);
+      expect
+        .soft(
+          geometry.targetWidth - geometry.textWidth,
+          "The short label leaves measurable free space",
+        )
+        .toBeGreaterThan(8);
+      expect.soft(geometry.justifyContent).toBe("center");
+      expect
+        .soft(
+          Math.abs(geometry.left - geometry.right),
+          "The label is centered inside the target",
+        )
+        .toBeLessThan(1);
+      await preparePublish(page);
+      const edit = page.getByRole("link", { name: "Edit", exact: true });
+      const box = (await edit.boundingBox())!;
+      await artifact(info, `publish-edit-${viewport.name}`, box, page);
+      expect.soft(box.width, "Publish Edit width").toBeGreaterThanOrEqual(44);
+      expect.soft(box.height, "Publish Edit height").toBeGreaterThanOrEqual(44);
+    });
+
+    test("R5: rafsi, records, manual forms, and unsigned publication cover standalone links", async ({
+      page,
+    }, info) => {
+      test.setTimeout(240000);
+      const manifest: Awaited<ReturnType<typeof checkTargets>>[] = [];
+      const check = async (state: string) =>
+        manifest.push(await checkTargets(page, info, state, viewport));
+      await open(page, `/word/${fixture().words.vlacku}`);
+      await expect(page.locator("article.definition").first()).toBeVisible();
+      await expandDetails(page);
+      await check("word-lujvo-expanded");
+      await open(page, "/rafsi/cku");
+      await expect(
+        page.getByRole("region", { name: "cku for cukta", exact: true }),
+      ).toContainText("Claimed by");
+      await expandDetails(page);
+      await check("rafsi-claims");
+      await open(page, `/rafsi-pair/${encodeURIComponent(fixture().pair)}`);
+      await expect(
+        page.getByRole("region", { name: "cku for cukta", exact: true }),
+      ).toContainText("Claimed by");
+      await expandDetails(page);
+      await check("rafsi-pair");
+      await open(page, "/claim/vlacku");
+      await page.getByLabel("Rafsi spelling", { exact: true }).fill("cku");
+      await page
+        .getByRole("button", { name: "Check claims and preview", exact: true })
+        .click();
+      await expect(page.locator("main .notice")).toContainText("Conflict: cku");
+      await expect(
+        page.getByRole("heading", { name: "Preview", exact: true }),
+      ).toBeVisible();
+      await check("claim-conflict-preview");
+      await open(
+        page,
+        `/definition/${fixture().definitions.cuktaRev}?compare=${fixture().definitions.cukta1}`,
+      );
+      await expect(
+        page.getByRole("region", { name: "Changed fields", exact: true }),
+      ).toBeVisible();
+      await expandDetails(page);
+      await check("definition-comparison");
+      await open(page, `/definition/${fixture().claim}`);
+      await expect(
+        page.getByRole("heading", {
+          name: "Signed rafsi.publish record",
+          exact: true,
+        }),
+      ).toBeVisible();
+      await check("record-rafsi");
+      for (const kind of ["lujvo", "gismu"] as const) {
+        await beginDraft(page, kind);
+        await open(page, "/new/form?manual=1");
+        await expect(
+          page.getByRole("link", {
+            name:
+              kind === "lujvo"
+                ? "Open the lujvo builder"
+                : "Open the gismu generator",
+            exact: true,
+          }),
+        ).toBeVisible();
+        await check(`form-manual-${kind}`);
+      }
+      await open(page, "/new/gismu");
+      await populateGismu(page);
+      await page
+        .getByLabel("Type a form yourself", { exact: true })
+        .fill("cukta");
+      await page
+        .getByRole("button", { name: "Choose cukta", exact: true })
+        .click();
+      const selected = page.getByRole("region", {
+        name: "Selected form",
+        exact: true,
+      });
+      await expect(selected).toContainText("identical to cukta");
+      await expect(selected).toContainText("cku is claimed by cukta");
+      await check("gismu-root-and-rafsi-conflicts");
+      await preparePublish(page);
+      await page.getByRole("link", { name: "Edit", exact: true }).click();
+      await open(page, "/new/editor");
+      await page.getByLabel("Headword", { exact: true }).fill("cukta");
+      await page.getByRole("button", { name: "Review", exact: true }).click();
+      await expect(
+        page.getByRole("link", { name: "Open the word", exact: true }),
+      ).toBeVisible();
+      await expect(
+        page.getByRole("link", { name: "Create or import a key", exact: true }),
+      ).toBeVisible();
+      await check("publish-existing-without-key");
+      await createAuditIdentity(page);
+      await open(page, "/new/publish");
+      // Change only the synthetic cached package's version during review.
+      await page.evaluate(
+        () =>
+          new Promise<void>((resolve, reject) => {
+            const request = indexedDB.open("jbovlacku-browser-v1", 3);
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => {
+              const db = request.result;
+              const tx = db.transaction("packages", "readwrite");
+              const store = tx.objectStore("packages");
+              const get = store.get("en");
+              get.onsuccess = () =>
+                store.put(
+                  { ...get.result, snapshot: `sha256:${"9".repeat(64)}` },
+                  "en",
+                );
+              tx.oncomplete = () => {
+                db.close();
+                resolve();
+              };
+              tx.onerror = () => {
+                db.close();
+                reject(tx.error);
+              };
+            };
+          }),
+      );
+      await page
+        .locator("aside")
+        .getByRole("button", { name: "Publish", exact: true })
+        .click();
+      const unlock = page.getByRole("dialog", {
+        name: "Unlock your key",
+        exact: true,
+      });
+      await unlock.getByLabel("Passphrase", { exact: true }).fill(PASSPHRASE);
+      await unlock.getByRole("button", { name: "Unlock", exact: true }).click();
+      await page
+        .getByRole("dialog", {
+          name: "Before your first public signature",
+          exact: true,
+        })
+        .getByRole("button", { name: "Continue", exact: true })
+        .click();
+      await expect(
+        page.getByRole("link", {
+          name: "Review updated conflicts",
+          exact: true,
+        }),
+      ).toBeVisible();
+      await check("publish-package-changed");
+      await page
+        .getByRole("link", { name: "Review updated conflicts", exact: true })
+        .click();
+      await page.route("**/api/v1/events", (route) =>
+        route.fulfill({
+          status: 503,
+          json: {
+            code: "unavailable",
+            message: "Layout fixture pauses delivery.",
+            event: null,
+            field: null,
+          },
+        }),
+      );
+      await page
+        .locator("aside")
+        .getByRole("button", { name: "Publish", exact: true })
+        .click();
+      await expect(
+        page.getByRole("region", { name: "Saved publication", exact: true }),
+      ).toContainText("Not delivered yet");
+      await check("publish-pending-group");
+      await open(page, `/new/editor?revise=${fixture().definitions.cuktaRev}`);
+      const parent = page
+        .locator("main > p")
+        .filter({ hasText: /^Revision of / })
+        .getByRole("link");
+      await expect(parent).toBeVisible();
+      const parentBox = (await parent.boundingBox())!;
+      expect
+        .soft(parentBox.width, "Revision parent width")
+        .toBeGreaterThanOrEqual(44);
+      expect
+        .soft(parentBox.height, "Revision parent height")
+        .toBeGreaterThanOrEqual(44);
+      await expandDetails(page);
+      await check("editor-revision");
+      expect(manifest).toHaveLength(13);
+      await artifact(info, `route-gap-manifest-${viewport.name}`, manifest);
+    });
+
+    test("R5: populated profiles, conflicts, and the profile preview cover standalone links", async ({
+      page,
+    }, info) => {
+      test.setTimeout(180000);
+      const manifest: Awaited<ReturnType<typeof checkTargets>>[] = [];
+      const check = async (state: string) =>
+        manifest.push(await checkTargets(page, info, state, viewport));
+      await createAuditIdentity(page);
+      let profileState = "known";
+      // These bounded response variants test layout, not signed profile evidence.
+      await page.route(
+        (url) => /^\/api\/v1\/identities\/[^/]+$/.test(url.pathname),
+        async (route) => {
+          const response = await route.fetch();
+          const body = await response.json();
+          const identity = decodeURIComponent(
+            new URL(route.request().url()).pathname.split("/").at(-1)!,
+          );
+          const claim = {
+            event: `jve1:${"1".repeat(64)}`,
+            issuer: identity,
+            body_hash: null,
+            body_status: "present",
+            body: {
+              name: "Layout profile",
+              bio: [["A synthetic profile for layout."]],
+              links: ["https://example.org/layout"],
+            },
+          };
+          body.profile = {
+            state: profileState,
+            claims:
+              profileState === "known"
+                ? [claim]
+                : [
+                    claim,
+                    {
+                      ...claim,
+                      event: `jve1:${"2".repeat(64)}`,
+                      body: null,
+                      body_status: "omitted",
+                    },
+                  ],
+            claims_count: profileState === "known" ? 1 : 2,
+            claims_complete: true,
+          };
+          if (identity === fixture().identities.author)
+            body.successor = fixture().identities.delegate;
+          await route.fulfill({ response, json: body });
+        },
+      );
+      await open(
+        page,
+        `/identity/${encodeURIComponent(fixture().identities.author)}`,
+      );
+      await expect(
+        page.locator("main").getByRole("link", {
+          name: "https://example.org/layout",
+          exact: true,
+        }),
+      ).toBeVisible();
+      await expandDetails(page);
+      await check("person-profile-and-activity");
+      await open(page, "/identity");
+      await page
+        .getByRole("link", { name: "Edit public profile", exact: true })
+        .click();
+      await expect(
+        page.getByRole("link", { name: "Manage it", exact: true }),
+      ).toBeVisible();
+      const editor = page.getByRole("region", {
+        name: "Edit public profile",
+        exact: true,
+      });
+      await editor
+        .getByRole("button", { name: "Preview the signed claim", exact: true })
+        .click();
+      await expect(
+        page.getByRole("region", { name: "Profile preview", exact: true }),
+      ).toBeVisible();
+      await check("person-self-profile-preview");
+      profileState = "conflicted";
+      await open(
+        page,
+        `/identity/${encodeURIComponent(fixture().identities.author)}`,
+      );
+      await expect(page.locator("main .card a.fingerprint")).toHaveCount(2);
+      await check("person-profile-conflict");
+      expect(manifest).toHaveLength(3);
+      await artifact(info, `profile-manifest-${viewport.name}`, manifest);
+    });
+
+    test("R5: handover recovery and stored status cover standalone links", async ({
+      page,
+    }, info) => {
+      test.setTimeout(180000);
+      const manifest: Awaited<ReturnType<typeof checkTargets>>[] = [];
+      const check = async (state: string) =>
+        manifest.push(await checkTargets(page, info, state, viewport));
+      await createAuditIdentity(page);
+      await open(page, "/identity/transfer");
+      await expect(page.getByText(/0 known heads/)).toBeVisible();
+      await check("handover-new-key");
+      await open(page, "/identity/compromise");
+      await expect(
+        page.getByRole("heading", { name: "Preview", exact: true }),
+      ).toBeVisible();
+      await check("compromise-empty-frontier");
+      await open(page, "/identity/transfer");
+      await page.getByLabel("New passphrase for the new key").fill(PASSPHRASE);
+      await page.getByLabel("Repeat passphrase").fill(PASSPHRASE);
+      await page
+        .getByRole("button", { name: "Create the new key", exact: true })
+        .click();
+      const download = page.waitForEvent("download");
+      await page
+        .getByRole("button", {
+          name: "Download the new key's backup",
+          exact: true,
+        })
+        .click();
+      await page
+        .getByLabel("Backup file", { exact: true })
+        .setInputFiles((await (await download).path())!);
+      await page.getByLabel("Its passphrase", { exact: true }).fill(PASSPHRASE);
+      await page
+        .getByRole("button", { name: "Test the backup", exact: true })
+        .click();
+      await expect(page.getByRole("status").last()).toContainText(
+        "recovers the new key",
+      );
+      await check("handover-successor-ready");
+      for (const box of await page.getByRole("checkbox").all())
+        await box.check();
+      await page
+        .getByRole("button", { name: "Sign the handover", exact: true })
+        .click();
+      const unlock = page.getByRole("dialog", {
+        name: "Unlock your key",
+        exact: true,
+      });
+      await unlock.getByLabel("Passphrase", { exact: true }).fill(PASSPHRASE);
+      await unlock.getByRole("button", { name: "Unlock", exact: true }).click();
+      await expect(
+        page.getByRole("region", { name: "Handover status", exact: true }),
+      ).toContainText("Handover complete");
+      // Restore the disposable old backup without its local status record.
+      // The recovery screen must discover the signed records on the fixture API.
+      const handover = await page.evaluate(
+        () =>
+          new Promise<{
+            old: string;
+            transfer: string;
+            accept: string;
+            successor: string;
+            signedAt: number;
+          }>((resolve, reject) => {
+            const request = indexedDB.open("jbovlacku-browser-v1", 3);
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => {
+              const db = request.result;
+              const tx = db.transaction("keys", "readwrite");
+              const keys = tx.objectStore("keys");
+              let handover: any;
+              const cursor = keys.openCursor();
+              cursor.onsuccess = () => {
+                const item = cursor.result;
+                if (!item) return;
+                if (String(item.key).startsWith("handover:")) {
+                  handover = item.value;
+                  const old = keys.get(`retired:${handover.old}`);
+                  old.onsuccess = () => keys.put(old.result, "selected");
+                  item.delete();
+                }
+                item.continue();
+              };
+              tx.oncomplete = () => {
+                db.close();
+                resolve(handover);
+              };
+              tx.onerror = () => {
+                db.close();
+                reject(tx.error);
+              };
+            };
+          }),
+      );
+      await open(page, "/identity/transfer");
+      await expect(
+        page.getByRole("region", { name: "Acceptance recovery", exact: true }),
+      ).toContainText("authenticated acceptance");
+      await check("handover-authenticated-acceptance");
+      // A saved status with no outbox rows represents an unfinished local retry.
+      await page.evaluate(
+        (record) =>
+          new Promise<void>((resolve, reject) => {
+            const request = indexedDB.open("jbovlacku-browser-v1", 3);
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => {
+              const db = request.result;
+              const tx = db.transaction(["keys", "outbox"], "readwrite");
+              tx.objectStore("keys").put(record, `handover:${record.old}`);
+              tx.objectStore("outbox").delete(record.transfer);
+              tx.objectStore("outbox").delete(record.accept);
+              tx.oncomplete = () => {
+                db.close();
+                resolve();
+              };
+              tx.onerror = () => {
+                db.close();
+                reject(tx.error);
+              };
+            };
+          }),
+        handover,
+      );
+      await open(page, "/identity/transfer");
+      await expect(
+        page.getByRole("region", { name: "Handover status", exact: true }),
+      ).toContainText("waiting to upload");
+      await expect(
+        page
+          .locator("main")
+          .getByRole("link", { name: "Not delivered", exact: true }),
+      ).toBeVisible();
+      await check("handover-stored-pending");
+      expect(manifest).toHaveLength(5);
+      await artifact(info, `lifecycle-manifest-${viewport.name}`, manifest);
+    });
+
+    test("R5: unavailable browser storage keeps a usable return link", async ({
+      page,
+    }, info) => {
+      await page.addInitScript(() => {
+        indexedDB.open = () => {
+          throw new Error("Layout fixture blocks browser storage.");
+        };
+      });
+      await open(page, "/identity");
+      await expect(
+        page.getByRole("heading", {
+          name: "Browser storage unavailable",
+          exact: true,
+        }),
+      ).toBeVisible();
+      await checkTargets(page, info, "storage-unavailable", viewport);
     });
 
     test("F2 and Grok3: Meaning and Type use the specified column gap", async ({
@@ -713,46 +1264,7 @@ for (const viewport of [
         failures: number;
       }[] = [];
       const check = async (state: string) => {
-        await page.waitForLoadState("networkidle");
-        await page.evaluate(() => document.fonts.ready);
-        await expectPolicyClean(page);
-        const data = await inventory(page);
-        const failures = data.entries.filter(
-          (entry) =>
-            !entry.exception &&
-            (entry.targetBounds.width < 43.99 ||
-              entry.targetBounds.height < 43.99),
-        );
-        manifest.push({
-          state,
-          count: data.entries.length,
-          exceptions: data.entries.filter((e) => e.exception).length,
-          failures: failures.length,
-        });
-        await artifact(info, `targets-${state}-${viewport.name}`, data, page);
-        expect
-          .soft(data.entries.length, `${state} has a nonempty target inventory`)
-          .toBeGreaterThan(8);
-        expect
-          .soft(
-            failures.map(
-              (entry) =>
-                `${entry.element} ${entry.name}: ${entry.targetBounds.width.toFixed(2)} x ${entry.targetBounds.height.toFixed(2)}`,
-            ),
-            `${state}: measured standalone targets must be at least 44 by 44`,
-          )
-          .toEqual([]);
-        expect
-          .soft(
-            data.entries
-              .filter((entry) => entry.labelAssociation === false)
-              .map((entry) => entry.path),
-            `${state}: each checkbox or radio has exactly one label for its own control`,
-          )
-          .toEqual([]);
-        expect
-          .soft(data.pageWidth, `${state} fits the viewport`)
-          .toBeLessThanOrEqual(viewport.width);
+        manifest.push(await checkTargets(page, info, state, viewport));
       };
       await open(page, "/search?q=cukta");
       await expect(
@@ -809,6 +1321,17 @@ for (const viewport of [
         .click();
       await check("person-scope");
       await page.getByRole("button", { name: "Trust", exact: true }).click();
+      await open(
+        page,
+        `/identity/${encodeURIComponent(fixture().identities.author)}`,
+      );
+      await expect(
+        page.getByRole("link", {
+          name: "Manage on the Trust page",
+          exact: true,
+        }),
+      ).toBeVisible();
+      await check("person-saved-choice");
       await open(page, "/trust");
       await expandDetails(page);
       await check("trust-expanded");
@@ -1008,7 +1531,7 @@ for (const viewport of [
       await open(page, "/new/publish");
       await expandDetails(page);
       await check("publish");
-      expect(manifest.length).toBe(22);
+      expect(manifest.length).toBe(23);
       await artifact(info, `manifest-${viewport.name}`, manifest);
     });
   });
