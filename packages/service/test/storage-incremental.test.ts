@@ -546,3 +546,167 @@ test("metadata publication does not promote an older coordinator event cache", a
     await f.close();
   }
 });
+
+test("Node restore rebuilds missing, partial, and extra rows and preserves alias sources", async () => {
+  const f = await fixture();
+  const path = join(f.directory, "index-restore.sqlite");
+  const index = new SqliteIndexStore(path, true);
+  const database = new DatabaseSync(path);
+  const entries = ["a", "b"].map((event) => ({
+    event,
+    word: { language: "jbo" as const, spelling: "klama" },
+    language: "en",
+    glosses: [],
+    plain_text: "go",
+    classification: {},
+    body: hash(2),
+  }));
+  try {
+    await assert.rejects(index.publish!(hash(1)), /generation is unavailable/);
+    await index.restore(hash(1), entries);
+    await index.publish!(hash(1));
+    const count = (snapshot: string) =>
+      database
+        .prepare("SELECT COUNT(*) AS n FROM search_entries WHERE snapshot=?")
+        .get(snapshot)!.n;
+    assert.equal(count(hash(1)), 2);
+    database
+      .prepare("DELETE FROM search_entries WHERE snapshot=? AND event=?")
+      .run(hash(1), "a");
+    await index.restore(hash(1), entries);
+    assert.equal(count(hash(1)), 2);
+    database
+      .prepare("INSERT INTO search_entries VALUES(?,?,?)")
+      .run(hash(1), "extra", "{}");
+    await index.restore(hash(1), entries);
+    assert.equal(count(hash(1)), 2);
+    assert.equal(
+      database
+        .prepare("SELECT event FROM search_entries WHERE event='extra'")
+        .get(),
+      undefined,
+    );
+    await index.reuse(hash(1), hash(3));
+    await index.reuse(hash(3), hash(4));
+    database
+      .prepare("INSERT INTO search_entries VALUES(?,?,?)")
+      .run(hash(1), "source-extra", "{}");
+    await index.restore(hash(3), entries);
+    assert.equal(count(hash(3)), 2);
+    assert.equal(count(hash(1)), 3);
+    assert.equal(
+      database
+        .prepare("SELECT source FROM search_aliases WHERE snapshot=?")
+        .get(hash(3)),
+      undefined,
+    );
+    assert.equal(
+      database
+        .prepare("SELECT source FROM search_aliases WHERE snapshot=?")
+        .get(hash(4))!.source,
+      hash(1),
+    );
+    await index.publish!(hash(3));
+    assert.equal(
+      database.prepare("SELECT snapshot FROM search_current").get()!.snapshot,
+      hash(3),
+    );
+  } finally {
+    database.close();
+    index.close();
+    await f.close();
+  }
+});
+
+test("Node restore keeps legacy matching rows and records empty generations", async () => {
+  const f = await fixture();
+  const path = join(f.directory, "index-legacy-restore.sqlite");
+  const index = new SqliteIndexStore(path, true);
+  const database = new DatabaseSync(path);
+  const entries = [
+    {
+      event: "a",
+      word: { language: "jbo" as const, spelling: "klama" },
+      language: "en",
+      glosses: [],
+      plain_text: "go",
+      classification: {},
+      body: hash(2),
+    },
+  ];
+  try {
+    await index.replace(hash(1), entries);
+    database.exec(
+      "DELETE FROM search_snapshots; CREATE TRIGGER no_rewrite BEFORE DELETE ON search_entries BEGIN SELECT RAISE(ABORT,'unchanged legacy rows must remain'); END",
+    );
+    await index.restore(hash(1), entries);
+    await index.publish!(hash(1));
+    assert.equal(
+      database
+        .prepare("SELECT entries FROM search_snapshots WHERE snapshot=?")
+        .get(hash(1))!.entries,
+      1,
+    );
+    database.exec("DROP TRIGGER no_rewrite");
+    await index.restore(hash(3), []);
+    await index.publish!(hash(3));
+    await index.reuse(hash(3), hash(4));
+    await index.publish!(hash(4));
+    assert.equal(
+      database
+        .prepare("SELECT entries FROM search_snapshots WHERE snapshot=?")
+        .get(hash(4))!.entries,
+      0,
+    );
+    assert.equal(
+      database.prepare("SELECT snapshot FROM search_current").get()!.snapshot,
+      hash(4),
+    );
+  } finally {
+    database.close();
+    index.close();
+    await f.close();
+  }
+});
+
+test("lost snapshot wrappers rebuild their auxiliary frozen revision metadata", async () => {
+  const f = await fixture();
+  try {
+    const initial = {
+      ...(await f.coordinator.load()),
+      position: 1,
+      events: { a: event(1) },
+      journal: [{ id: "a", position: 1 }],
+    };
+    const first = await publish(f.coordinator, initial, 1, ["a"]);
+    f.database.exec(
+      "DELETE FROM cached_snapshot_chunks; DELETE FROM cached_snapshots",
+    );
+    assert.equal(await f.coordinator.getSnapshot(first.wrapper.snapshot), null);
+    const state = await f.coordinator.load();
+    const next = { ...state, revision: state.revision + 1 };
+    assert.equal(
+      await f.coordinator.compareAndSwap(
+        state.revision,
+        next,
+        first.wrapper,
+        [],
+      ),
+      true,
+    );
+    assert.deepEqual(
+      await f.coordinator.getSnapshot(first.wrapper.snapshot),
+      first.wrapper,
+    );
+    assert.equal(
+      f.database
+        .prepare(
+          "SELECT event_revision FROM snapshot_cache_revisions WHERE hash=?",
+        )
+        .get(first.wrapper.snapshot)!.event_revision,
+      next.revision,
+    );
+  } finally {
+    await f.close();
+  }
+});

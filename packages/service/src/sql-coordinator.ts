@@ -293,7 +293,7 @@ export class SqlRowsCoordinator {
       revision,
     );
     this.sql.exec(
-      "INSERT INTO snapshot_cache_revisions VALUES(?,?)",
+      "INSERT INTO snapshot_cache_revisions VALUES(?,?) ON CONFLICT(hash) DO UPDATE SET event_revision=excluded.event_revision",
       snapshot.snapshot,
       revision,
     );

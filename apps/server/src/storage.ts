@@ -172,7 +172,7 @@ export class SqliteIndexStore {
         this.publishCurrent(snapshot);
       };
     this.database.exec(
-      "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS search_entries(snapshot TEXT NOT NULL,event TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(snapshot,event)); CREATE TABLE IF NOT EXISTS search_current(id INTEGER PRIMARY KEY CHECK(id=1),snapshot TEXT NOT NULL); CREATE TABLE IF NOT EXISTS search_aliases(snapshot TEXT PRIMARY KEY, source TEXT NOT NULL)",
+      "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS search_entries(snapshot TEXT NOT NULL,event TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(snapshot,event)); CREATE TABLE IF NOT EXISTS search_current(id INTEGER PRIMARY KEY CHECK(id=1),snapshot TEXT NOT NULL); CREATE TABLE IF NOT EXISTS search_aliases(snapshot TEXT PRIMARY KEY, source TEXT NOT NULL); CREATE TABLE IF NOT EXISTS search_snapshots(snapshot TEXT PRIMARY KEY, entries INTEGER NOT NULL)",
     );
   }
   async replace(
@@ -181,20 +181,78 @@ export class SqliteIndexStore {
   ) {
     this.database.exec("BEGIN IMMEDIATE");
     try {
-      const insert = this.database.prepare(UPSERT_SEARCH_ENTRY);
-      for (const entry of entries)
-        insert.run(snapshot, entry.event, JSON.stringify(entry));
-      if (!this.publish) this.publishCurrent(snapshot);
       this.database
         .prepare("DELETE FROM search_aliases WHERE snapshot=?")
         .run(snapshot);
+      this.database
+        .prepare("DELETE FROM search_entries WHERE snapshot=?")
+        .run(snapshot);
+      const insert = this.database.prepare(UPSERT_SEARCH_ENTRY);
+      for (const entry of entries)
+        insert.run(snapshot, entry.event, JSON.stringify(entry));
+      this.rememberGeneration(snapshot, entries.length);
+      if (!this.publish) this.publishCurrent(snapshot);
       this.database.exec("COMMIT");
     } catch (error) {
       this.database.exec("ROLLBACK");
       throw error;
     }
   }
+  private source(snapshot: string): string {
+    const alias = this.database
+      .prepare("SELECT source FROM search_aliases WHERE snapshot=?")
+      .get(snapshot);
+    return alias ? String(alias.source) : snapshot;
+  }
+  private rememberGeneration(snapshot: string, count: number): void {
+    this.database
+      .prepare(
+        "INSERT INTO search_snapshots VALUES(?,?) ON CONFLICT(snapshot) DO UPDATE SET entries=excluded.entries",
+      )
+      .run(snapshot, count);
+  }
+  private generation(
+    snapshot: string,
+  ): { source: string; count: number } | null {
+    const source = this.source(snapshot);
+    const marker = this.database
+      .prepare("SELECT entries FROM search_snapshots WHERE snapshot=?")
+      .get(source);
+    if (marker) return { source, count: Number(marker.entries) };
+    // Existing indexes predate generation markers. Keep their immutable rows.
+    const count = Number(
+      this.database
+        .prepare("SELECT COUNT(*) AS n FROM search_entries WHERE snapshot=?")
+        .get(source)!.n,
+    );
+    const current = this.database
+      .prepare("SELECT snapshot FROM search_current WHERE id=1")
+      .get();
+    if (count === 0 && current?.snapshot !== snapshot) return null;
+    this.rememberGeneration(source, count);
+    return { source, count };
+  }
+  async restore(
+    snapshot: string,
+    entries: import("../../../packages/service/src/packages.ts").SearchEntry[],
+  ): Promise<void> {
+    const source = this.source(snapshot);
+    const count = Number(
+      this.database
+        .prepare("SELECT COUNT(*) AS n FROM search_entries WHERE snapshot=?")
+        .get(source)!.n,
+    );
+    if (count === entries.length) {
+      this.rememberGeneration(source, count);
+      this.rememberGeneration(snapshot, count);
+      return;
+    }
+    // Repair only this generation. An alias source can still serve other snapshots.
+    await this.replace(snapshot, entries);
+  }
   private publishCurrent(snapshot: string): void {
+    if (!this.generation(snapshot))
+      throw new Error("The search index generation is unavailable.");
     this.database
       .prepare(
         "INSERT INTO search_current VALUES(1,?) ON CONFLICT(id) DO UPDATE SET snapshot=excluded.snapshot",
@@ -204,33 +262,17 @@ export class SqliteIndexStore {
   async reuse(previous: string, snapshot: string): Promise<void> {
     this.database.exec("BEGIN IMMEDIATE");
     try {
-      const alias = this.database
-        .prepare("SELECT source FROM search_aliases WHERE snapshot=?")
-        .get(previous);
-      const source = alias ? String(alias.source) : previous;
-      const current = this.database
-        .prepare("SELECT snapshot FROM search_current WHERE id=1")
-        .get();
-      if (
-        (!current &&
-          !alias &&
-          !this.database
-            .prepare("SELECT 1 FROM search_entries WHERE snapshot=? LIMIT 1")
-            .get(source)) ||
-        (current &&
-          String(current.snapshot) !== previous &&
-          !alias &&
-          !this.database
-            .prepare("SELECT 1 FROM search_entries WHERE snapshot=? LIMIT 1")
-            .get(source))
-      )
+      const previousGeneration = this.generation(previous);
+      if (!previousGeneration)
         throw new Error("The previous search index is unavailable.");
+      const { source, count } = previousGeneration;
       if (source !== snapshot)
         this.database
           .prepare(
             "INSERT INTO search_aliases VALUES(?,?) ON CONFLICT(snapshot) DO UPDATE SET source=excluded.source",
           )
           .run(snapshot, source);
+      this.rememberGeneration(snapshot, count);
       if (!this.publish) this.publishCurrent(snapshot);
       this.database.exec("COMMIT");
     } catch (error) {

@@ -315,3 +315,56 @@ test("a failed immutable file write preserves the previous checkpoint pin and by
     await other.close();
   }
 });
+
+test("a valid checkpoint can rebuild a deleted disposable Node search index", async () => {
+  const { SqliteIndexStore } =
+    await import("../../../apps/server/src/storage.ts");
+  const { DatabaseSync } = await import("node:sqlite");
+  const f = await fixture();
+  const entries = [
+    {
+      event: "a",
+      word: { language: "jbo" as const, spelling: "klama" },
+      language: "en",
+      glosses: [],
+      plain_text: "go",
+      classification: {},
+      body: hash(2),
+    },
+  ];
+  const path = join(f.directory, "disposable-index.sqlite");
+  let index = new SqliteIndexStore(path, true);
+  try {
+    await index.replace(binding.snapshot, entries);
+    await index.publish!(binding.snapshot);
+    index.close();
+    await rm(path);
+    await f.store.save(binding, {
+      ...payload,
+      packages: { ...payload.packages, entries },
+    });
+    const loaded = await new FileCheckpointStore(f.directory, f.pins).load(
+      binding,
+    );
+    assert.ok(loaded);
+    index = new SqliteIndexStore(path, true);
+    await index.restore(binding.snapshot, loaded.packages.entries);
+    await index.publish!(binding.snapshot);
+    const database = new DatabaseSync(path);
+    try {
+      assert.equal(
+        database.prepare("SELECT COUNT(*) AS n FROM search_entries").get()!.n,
+        1,
+      );
+      assert.equal(
+        database.prepare("SELECT snapshot FROM search_current").get()!.snapshot,
+        binding.snapshot,
+      );
+    } finally {
+      database.close();
+    }
+  } finally {
+    index.close();
+    await f.close();
+  }
+});
