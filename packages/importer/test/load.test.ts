@@ -31,6 +31,7 @@ import {
   SqliteCoordinator,
 } from "../../../apps/server/src/storage.ts";
 import { DictionaryService } from "../../service/src/service.ts";
+import { importSqlSnapshot, SQL_SOURCE, SQL_EXTRACTION } from "../src/sql.ts";
 
 const seed = new Uint8Array(32).fill(42);
 const directories: string[] = [];
@@ -75,6 +76,41 @@ function stores(directory: string) {
     coordinator: new SqliteCoordinator(join(directory, "coordinator.sqlite")),
     objects: new FileObjectStore(join(directory, "objects")),
   };
+}
+
+async function changedSelection(
+  f: Awaited<ReturnType<typeof fixture>>,
+  ids: string[],
+  sets: { source: string; importer: string; selection: string }[],
+  records: unknown[] = [],
+) {
+  const selection = prepareSelection(utf8(canonical([...ids].sort())));
+  const body = structuredClone(f.imported.view.body);
+  body.import_sets = [
+    ...sets,
+    { ...f.imported.view.body.import_sets[0], selection: selection.hash },
+  ].sort((a, b) => {
+    const token = (set: typeof a) =>
+      canonical([set.source, set.importer, set.selection]);
+    return token(a) < token(b) ? -1 : token(a) > token(b) ? 1 : 0;
+  });
+  const view = createEvent(
+    seed,
+    [f.imported.view.envelope.id],
+    "7".repeat(32),
+    { kind: "view.publish", parents: [f.imported.view.envelope.id] },
+    body,
+  );
+  await writeFile(join(f.proposal, "selected-view.json"), canonical(view));
+  await writeFile(
+    join(f.proposal, "import-selection.json"),
+    selection.canonical,
+  );
+  await writeFile(
+    join(f.proposal, "carriers.jsonl"),
+    records.map(canonical).join("\n"),
+  );
+  return view;
 }
 
 test("offline load accepts any carrier order and preserves receipts on rerun", async () => {
@@ -305,6 +341,305 @@ test("selection rejects several definitions for one source record", async () => 
       "\n",
   );
   await assert.rejects(loadImportProposal(f), /several definitions/);
+});
+
+test("several selected import sets reject distinct definitions for one persisted source record before commit", async () => {
+  const f = await fixture();
+  await loadImportProposal(f);
+  const original = f.imported.carriers.find(
+    (carrier) => carrier.envelope.header.action.kind === "definition.publish",
+  )!;
+  const revised = createEvent(
+    seed,
+    [f.imported.view.envelope.id],
+    "6".repeat(32),
+    original.envelope.header.action,
+    original.body,
+  );
+  await changedSelection(
+    f,
+    [revised.envelope.id],
+    f.imported.view.body.import_sets,
+    [revised],
+  );
+  const retained = stores(f.directory);
+  const before = await retained.coordinator.load();
+  retained.coordinator.close();
+  const configured = await readFile(join(f.directory, "loaded-view.json"));
+  await assert.rejects(loadImportProposal(f), /several definitions/);
+  const after = stores(f.directory);
+  try {
+    assert.deepEqual(await after.coordinator.load(), before);
+  } finally {
+    after.coordinator.close();
+  }
+  assert.deepEqual(
+    await readFile(join(f.directory, "loaded-view.json")),
+    configured,
+  );
+});
+
+test("duplicate definitions in two persisted import sets are rejected with an empty supplied selection", async () => {
+  const f = await fixture();
+  await loadImportProposal(f);
+  const original = f.imported.carriers.find(
+    (carrier) => carrier.envelope.header.action.kind === "definition.publish",
+  )!;
+  const revised = createEvent(
+    seed,
+    [f.imported.view.envelope.id],
+    "4".repeat(32),
+    original.envelope.header.action,
+    original.body,
+  );
+  await changedSelection(f, [revised.envelope.id], [], [revised]);
+  await loadImportProposal(f);
+  const second = prepareSelection(
+    await readFile(join(f.proposal, "import-selection.json")),
+  );
+  await changedSelection(
+    f,
+    [],
+    [
+      ...f.imported.view.body.import_sets,
+      { ...f.imported.view.body.import_sets[0], selection: second.hash },
+    ],
+  );
+  await assert.rejects(loadImportProposal(f), /several definitions/);
+});
+
+test("corrupt persisted selection bytes and unavailable selected bodies fail before the coordinator commit", async () => {
+  for (const missing of ["selection", "body"]) {
+    const f = await fixture();
+    await loadImportProposal(f);
+    await changedSelection(f, [], f.imported.view.body.import_sets);
+    const first = f.imported.carriers.find(
+      (carrier) => carrier.envelope.header.action.kind === "definition.publish",
+    )!;
+    const retained = stores(f.directory);
+    let commits = 0;
+    try {
+      const objects = {
+        get: (hash: string) =>
+          missing === "selection" && hash === f.imported.selection.hash
+            ? Promise.resolve(utf8("[]"))
+            : missing === "body" && hash === first.envelope.header.content!.hash
+              ? Promise.resolve(null)
+              : retained.objects.get(hash),
+        put: retained.objects.put.bind(retained.objects),
+      };
+      await assert.rejects(
+        admitImportProposal(
+          f.proposal,
+          {
+            load: () => retained.coordinator.load(),
+            getSnapshot: (id) => retained.coordinator.getSnapshot(id),
+            compareAndSwap: async (revision, state, snapshot) => {
+              commits++;
+              return retained.coordinator.compareAndSwap(
+                revision,
+                state,
+                snapshot,
+              );
+            },
+          },
+          objects,
+        ),
+        missing === "selection"
+          ? /do not match their hash/
+          : /body is unavailable/,
+      );
+      assert.equal(commits, 0);
+    } finally {
+      retained.coordinator.close();
+    }
+  }
+});
+
+test("nonmatching source and importer entries in persisted import sets stay inert", async () => {
+  for (const field of ["source", "importer"]) {
+    const f = await fixture();
+    await loadImportProposal(f);
+    const set = { ...f.imported.view.body.import_sets[0] };
+    set[field] =
+      field === "source"
+        ? "https://example.invalid/other"
+        : identityFromSeed(new Uint8Array(32).fill(43));
+    await changedSelection(f, [], [set]);
+    const loaded = await loadImportProposal(f);
+    assert.equal(loaded.accepted, 1);
+  }
+});
+
+test("one selection can supply separate matching source subsets to several import sets", async () => {
+  const f = await fixture();
+  await loadImportProposal(f);
+  const first = f.imported.carriers.find(
+    (carrier) => carrier.envelope.header.action.kind === "definition.publish",
+  )!;
+  const body = structuredClone(first.body);
+  body.legacy.source = "https://example.invalid/other-source";
+  const other = createEvent(
+    seed,
+    [f.imported.view.envelope.id],
+    "5".repeat(32),
+    first.envelope.header.action,
+    body,
+  );
+  const ids = [first.envelope.id, other.envelope.id];
+  const selection = prepareSelection(utf8(canonical(ids.sort())));
+  await changedSelection(
+    f,
+    ids,
+    [
+      {
+        ...f.imported.view.body.import_sets[0],
+        source: body.legacy.source,
+        selection: selection.hash,
+      },
+    ],
+    [other],
+  );
+  const loaded = await loadImportProposal(f);
+  assert.equal(loaded.accepted, 2);
+});
+
+test("overlapping selected chunks can repeat the exact same persisted publication", async () => {
+  const f = await fixture();
+  await loadImportProposal(f);
+  const first = f.imported.carriers.find(
+    (carrier) => carrier.envelope.header.action.kind === "definition.publish",
+  )!;
+  const view = await changedSelection(
+    f,
+    [first.envelope.id],
+    f.imported.view.body.import_sets,
+  );
+  const loaded = await loadImportProposal(f);
+  assert.equal(loaded.view, view.envelope.id);
+  assert.equal(loaded.accepted, 1);
+});
+
+test("SQL proposals load into the service and serve French and Russian definitions and packages", async () => {
+  const f = await fixture();
+  const bytes = await readFile(
+    new URL("../fixtures/lensisku-sql-sample.sql", import.meta.url),
+  );
+  const sqlManifest = JSON.parse(
+    await readFile(
+      new URL("../fixtures/lensisku-sql-sample.manifest.json", import.meta.url),
+      "utf8",
+    ),
+  );
+  const sourcePath = join(f.root, "source.sql");
+  const manifestPath = join(f.root, "sql-manifest.json");
+  const output = join(f.root, "sql-proposal");
+  await writeFile(sourcePath, bytes);
+  await writeFile(
+    manifestPath,
+    canonical({
+      ...sqlManifest,
+      source: SQL_SOURCE,
+      extraction: SQL_EXTRACTION,
+    }),
+  );
+  const imported = await importSqlSnapshot({
+    sourcePath,
+    manifestPath,
+    output,
+    seed,
+    roots: [],
+  });
+  assert.equal(imported.report.added, 4);
+  assert.equal(imported.report.incomplete, false);
+  const loaded = await loadImportProposal({
+    proposal: output,
+    directory: f.directory,
+  });
+  assert.equal(loaded.selected, 4);
+  const records = (await readFile(join(output, "carriers.jsonl"), "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  const retained = stores(f.directory);
+  try {
+    const configuration = (await readLoadedView(f.directory))!;
+    await checkLoadedView(
+      configuration,
+      retained.coordinator,
+      retained.objects,
+    );
+    const service = new DictionaryService(
+      retained.objects,
+      retained.coordinator,
+      {
+        serverId: "sql-loader-test",
+        selectedView: configuration.view,
+        policyUrl: "https://example.invalid/policy",
+      },
+    );
+    for (const language of ["fr", "ru"]) {
+      const definition = records.find(
+        (carrier) =>
+          carrier.envelope.header.action.kind === "definition.publish" &&
+          carrier.body.language === language,
+      );
+      assert.ok(definition, `The SQL fixture must supply ${language}.`);
+      const word = definition.body.word;
+      const response = await service.fetch(
+        new Request(`http://localhost/api/v1/words/${wordId(word)}`),
+      );
+      assert.equal(response.status, 200);
+      const details: any = await response.json();
+      assert.equal(details.view, configuration.view);
+      assert.deepEqual(details.word, word);
+      assert.ok(details.definitions.includes(definition.envelope.id));
+      const bodyResponse = await service.fetch(
+        new Request(
+          `http://localhost/api/v1/bodies/${definition.envelope.header.content.hash}`,
+        ),
+      );
+      assert.equal(bodyResponse.status, 200);
+      const body: any = await bodyResponse.json();
+      assert.equal(body.language, language);
+      assert.deepEqual(body.text, definition.body.text);
+      const searchResponse = await service.fetch(
+        new Request(
+          `http://localhost/api/v1/search?language=${language}&q=${encodeURIComponent(word.spelling)}`,
+        ),
+      );
+      assert.equal(searchResponse.status, 200);
+      const search: any = await searchResponse.json();
+      assert.ok(
+        search.hits.some((hit: any) =>
+          hit.definitions.includes(definition.envelope.id),
+        ),
+      );
+      const packageResponse = await service.fetch(
+        new Request(`http://localhost/api/v1/packages/${language}`),
+      );
+      assert.equal(packageResponse.status, 200);
+      const searchPackage: any = await packageResponse.json();
+      assert.equal(searchPackage.language, language);
+      const entries: any[] = [];
+      for (const part of searchPackage.parts) {
+        const response = await service.fetch(
+          new Request(`http://localhost/api/v1/package-parts/${part.hash}`),
+        );
+        assert.equal(response.status, 200);
+        entries.push(...((await response.json()) as any[]));
+      }
+      assert.ok(
+        entries.some(
+          (entry) =>
+            entry.event === definition.envelope.id &&
+            entry.language === language,
+        ),
+      );
+    }
+  } finally {
+    retained.coordinator.close();
+  }
 });
 
 test("server and loader exclude each other, and startup restores the loaded view", async () => {

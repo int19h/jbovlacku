@@ -198,8 +198,8 @@ export async function admitImportProposal(
   for await (const bytes of carriers(join(proposal, "carriers.jsonl")))
     await add(validCarrier(bytes));
   await add(view);
-  const sourceRecords = new Set<string>();
-  for (const id of selection.ids) {
+  const sourceRecords = new Map<string, string>();
+  const evidenceFor = async (id: string) => {
     const event = next.events[id];
     if (
       !event?.body_hash ||
@@ -218,7 +218,21 @@ export async function admitImportProposal(
         throw new Error(`The selected publication body is unavailable: ${id}`);
       const body = JSON.parse(new TextDecoder().decode(bytes));
       evidence = { source: body.legacy?.source, record: body.legacy?.record };
+      sourceEvidence.set(id, evidence);
     }
+    if (
+      typeof evidence.source !== "string" ||
+      !evidence.record ||
+      !Number.isSafeInteger(evidence.record.id) ||
+      evidence.record.id < 1
+    )
+      throw new Error(
+        `The selected publication source metadata is unavailable: ${id}`,
+      );
+    return { event, evidence };
+  };
+  for (const id of selection.ids) {
+    const { event, evidence } = await evidenceFor(id);
     if (
       !viewBody.import_sets.some(
         (set: { selection: string; source: string; importer: string }) =>
@@ -230,23 +244,55 @@ export async function admitImportProposal(
       throw new Error(
         `The selected publication does not match its source and importer: ${id}`,
       );
-    if (event.header.action.kind === "definition.publish") {
-      const token = `${evidence.source}/${event.header.issuer}/${evidence.record.id}`;
-      if (sourceRecords.has(token))
+  }
+  for (const set of viewBody.import_sets as {
+    selection: string;
+    source: string;
+    importer: string;
+  }[]) {
+    let ids = selection.ids;
+    if (set.selection !== selection.hash) {
+      if (!next.selections.includes(set.selection))
         throw new Error(
-          "The import selection contains several definitions for one source record.",
+          "The selected view requires another import selection that is not retained.",
         );
-      sourceRecords.add(token);
+      const bytes = await objects.get(set.selection);
+      if (!bytes)
+        throw new Error("The retained import selection bytes are unavailable.");
+      const retained = prepareSelection(bytes);
+      if (retained.hash !== set.selection)
+        throw new Error(
+          "The retained import selection bytes do not match their hash.",
+        );
+      ids = retained.ids;
+    }
+    for (const id of ids) {
+      const retained = next.events[id];
+      if (
+        retained &&
+        (retained.header.issuer !== set.importer ||
+          retained.header.action.origin !== "import" ||
+          !["definition.publish", "rafsi.publish"].includes(
+            String(retained.header.action.kind),
+          ))
+      )
+        continue;
+      const { event, evidence } = await evidenceFor(id);
+      if (set.source !== evidence.source) continue;
+      if (event.header.action.kind === "definition.publish") {
+        const token = JSON.stringify([
+          set.source,
+          set.importer,
+          evidence.record.id,
+        ]);
+        if (sourceRecords.has(token) && sourceRecords.get(token) !== id)
+          throw new Error(
+            "The import selection contains several definitions for one source record.",
+          );
+        sourceRecords.set(token, id);
+      }
     }
   }
-  for (const set of viewBody.import_sets)
-    if (
-      set.selection !== selection.hash &&
-      !next.selections.includes(set.selection)
-    )
-      throw new Error(
-        "The selected view requires another import selection that is not retained.",
-      );
   await objects.put(selection.hash, utf8(selection.canonical));
   if (!next.selections.includes(selection.hash)) {
     next.selections.push(selection.hash);

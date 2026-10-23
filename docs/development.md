@@ -169,9 +169,11 @@ The [importer guide](../packages/importer/README.md) describes local signed prop
 
 ### Initial Lensisku data
 
-The importer reads pinned REST captures and PostgreSQL COPY snapshots as separate sources.
+The importer reads pinned REST captures and PostgreSQL COPY snapshots under one canonical Lensisku source origin.
+Both extraction commands share one journal for that origin and importer key.
 The SQL extraction uses every source definition language that the format can represent.
-It preserves original fields and available history. It reports unsupported or malformed rows without inventing source repairs.
+It preserves authored source fields and available history. It omits derived vectors and caches with explicit source limitations.
+Malformed related rows leave affected definitions unresolved. They never create false source removals.
 The importer guide describes both extraction commands, source manifests, and unresolved reports.
 
 After preparing a signed proposal, stop the Node server for the target data directory.
@@ -274,6 +276,10 @@ Initial package generation also rereads retained bytes to detect storage failure
 
 These single-process measurements use the VM's existing filesystem cache. They do not establish performance on another host or under concurrent full imports.
 The measurements do not establish hosted Worker resource compliance.
+
+The first full SQL evaluation before streaming reached WebAssembly's 4 GiB memory limit with derived source vectors in every body.
+The revised extraction omits derived vectors and cache fields. Full dictionary serving with that extraction remains unmeasured.
+An explicit traversal limit or a larger Node heap does not remove the WebAssembly memory limit.
 
 ## Browser development
 

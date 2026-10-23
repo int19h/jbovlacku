@@ -116,6 +116,10 @@ Process startup through the first word response took 6.43 seconds.
 Initial evaluation without a checkpoint still exceeds the original 30-second target in the measured build.
 The [development guide](docs/development.md#initial-lensisku-data) describes state reuse, checkpoint recovery, and the measurement limits.
 
+The current SQL extraction omits derived vectors and cache fields.
+Serving performance with this revised extraction remains unmeasured.
+A larger traversal budget does not remove memory limits.
+
 [Issue 9](https://github.com/int19h/jbovlacku/issues/9) tracks ranking CPU limits.
 [Issue 11](https://github.com/int19h/jbovlacku/issues/11) tracks state evaluation beyond the local corpus.
 [Issue 10](https://github.com/int19h/jbovlacku/issues/10) tracks URL serialization and invisible headword characters.
