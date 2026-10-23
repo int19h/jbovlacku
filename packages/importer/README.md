@@ -44,11 +44,11 @@ npx tsx packages/importer/src/cli.ts \
   --sign
 ```
 
-The output includes `carriers.jsonl`, `import-selection.json`, `selected-view.json`, `proposal.json`, and `journal.json`. The source archive keeps the exact bytes and manifest by digest. The carrier contains all retained publication envelopes and their bodies.
+The output includes `carriers.jsonl`, `import-selection.json`, `selected-view.json`, `proposal.json`, and `journal.sqlite`. The source archive keeps the exact bytes and manifest by digest. The carrier contains all retained publication envelopes and their bodies.
 
 The journal is the local record of imported source versions. A repeat run reuses its original signed envelopes and view. Keep the journal with the proposal when you resume an import.
 
-The command saves and flushes the exact source before it commits the journal. It flushes the journal file and its directory before it writes dependent output files. A repeat run can rebuild incomplete output files from the committed journal.
+The command saves and flushes the exact source before it commits the SQLite journal. It commits the journal before it writes dependent output files. A repeat run can rebuild incomplete output files from the committed journal.
 
 Existing source files remain immutable at their hash paths. The command refuses conflicting archive bytes. Protocol configuration and journal files use the core JSON parser, which rejects duplicate keys and unsafe numbers.
 
@@ -88,10 +88,13 @@ The extraction uses the source language table and retains separate tags such as 
 Wiki pages, phrases, and nonwords remain outside the lexical import.
 Unrepresentable rows remain in the source archive with unresolved notices.
 
-The SQL source namespace is `https://lensisku.lojban.org/source/sql-snapshot`.
-The REST capture and SQL snapshot remain distinct sources.
-Numeric account evidence uses the shared account origin `https://lensisku.lojban.org`.
-Each imported body retains source fields, available version rows, keyword indices, dates, and separate word-level and definition-level rafsi.
+The SQL and REST source origin is `https://lensisku.lojban.org`.
+Use the same output directory and importer key for both extraction commands.
+Both commands share one `journal.sqlite`, keyed by the source origin and numeric definition ID.
+Their extraction identifiers remain distinct. A snapshot type does not create a second source identity.
+Numeric account evidence uses that same origin.
+Each imported body retains authored source fields, available version rows, keyword indices, dates, and separate word-level and definition-level rafsi.
+Derived vectors and caches remain only in the source archive. Each body records their omission in its legacy limitations.
 Literal text receives no inferred place frame. Rafsi evidence creates no automatic rafsi claims.
 
 The sanitized SQL dump contains no aggregate definition scores or individual votes.
@@ -123,6 +126,21 @@ The output includes `carriers.jsonl`, `import-selection.json`, `selected-view.js
 Keep the journal with the proposal. Repeat imports reuse the retained envelopes.
 The JSON report names unresolved rows and groups them by reason.
 Read its `incomplete` field before loading the proposal. A saved proposal can contain unresolved source rows.
+Malformed related rows leave affected definitions unresolved and preserve their prior selections.
+If a damaged row has no readable owner, the importer treats its dependent table as incomplete.
+The estimate before signing includes staging, the proposal, the journal, and a loaded service copy.
+The SQL command stops when that estimate exceeds 3,000,000,000 bytes.
+
+Both commands append a run record and retain separate observations for source reversions.
+The REST adapter reads the shared journal into memory, as its earlier JSON implementation did.
+The SQL extraction continues to stream carriers and use disk storage for joins.
+
+An existing canonical REST `journal.json` migrates on its next successful REST import.
+The command commits `journal.sqlite`, then renames the old file to `journal.json.migrated`.
+If both active journal files remain after a crash, recover their exact state before another import.
+The commands refuse two active journals. They never choose one by date.
+An old SQL journal with the separate `/source/sql-snapshot` namespace requires explicit recovery.
+Signed bodies retain their original source identity and cannot migrate through a source-name rewrite.
 
 ## Load a signed proposal
 

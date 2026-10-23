@@ -101,8 +101,8 @@ The current default state work budget can run out at roughly 4,500 events in a f
 This is an approximate limit. Histories with more edges can reach it sooner, and the requested state also affects the work.
 The Node loader can retain a larger explicit traversal budget for a local import.
 That configuration does not remove memory limits or establish performance for the full corpus.
-The full initial SQL import exceeds WebAssembly's 4 GiB memory limit during evaluation.
-Its signed proposal and loaded objects remain available, but full dictionary reads need a runtime fix.
+The first full SQL evaluation reached WebAssembly's 4 GiB memory limit with derived source vectors in every body.
+The current extraction omits derived vectors and caches. Full dictionary serving with that extraction remains untested.
 
 [Issue 9](https://github.com/int19h/jbovlacku/issues/9) tracks ranking CPU limits.
 [Issue 11](https://github.com/int19h/jbovlacku/issues/11) tracks state evaluation beyond the local corpus.
