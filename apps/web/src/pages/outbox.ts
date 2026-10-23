@@ -50,7 +50,7 @@ export async function outboxPage(
         await app.delivery.exportLines(currentActive),
         "application/x-ndjson",
       ),
-    { class: "btn btn-quiet", style: "min-height:32px" },
+    { class: "btn btn-quiet" },
   );
   exportLine.append(
     text("Clearing browser data would lose these. "),
@@ -268,7 +268,6 @@ function row(app: App, item: OutboxItem, stoppedView = false): HTMLElement {
         },
         {
           class: "btn",
-          style: "min-height:40px",
           "data-outbox-action": "resume",
         },
       ),
@@ -282,7 +281,6 @@ function row(app: App, item: OutboxItem, stoppedView = false): HTMLElement {
           ),
         {
           class: "btn btn-quiet",
-          style: "min-height:40px",
           "data-outbox-action": "export",
         },
       ),
@@ -310,7 +308,7 @@ function row(app: App, item: OutboxItem, stoppedView = false): HTMLElement {
         tryNow.removeAttribute("aria-disabled");
       }
     },
-    { class: "btn", style: "min-height:40px", "data-outbox-action": "try" },
+    { class: "btn", "data-outbox-action": "try" },
   );
   const stop = button(
     "Stop retrying",
@@ -322,7 +320,6 @@ function row(app: App, item: OutboxItem, stoppedView = false): HTMLElement {
     },
     {
       class: "btn btn-quiet",
-      style: "min-height:40px",
       "data-outbox-action": "stop",
     },
   );

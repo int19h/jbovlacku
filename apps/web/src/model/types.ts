@@ -87,6 +87,8 @@ export interface SourceReference {
 export interface FormationSource {
   language: string;
   word: string;
+  /** Optional source evidence. Absent or null values mean unknown. */
+  word_ipa?: string | null;
   input: { format: "lojbanized" | "ipa"; text: string } | null;
   weight: Rational | null;
   notes: RichText;

@@ -149,6 +149,315 @@ async function seed(
   );
 }
 
+test("the referent shortcut names its broad meaning and retired hints need deliberate replacement", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await seed(page);
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { newPlace } = await import(String("/src/model/draft.ts"));
+    const store = new LocalStore();
+    const draft: any = await store.get("drafts", "current");
+    draft.structured = true;
+    draft.text = [[1, " has a fixture meaning."]];
+    draft.frameMode = "fixed";
+    draft.numberingApproved = true;
+    draft.places = [
+      {
+        ...newPlace(1),
+        kind: "custom",
+        hint: {
+          alternatives: [
+            { tags: ["mass"], abstractor: null, relation_arity: null },
+          ],
+          note: [["Retained annotation."]],
+        },
+      },
+    ];
+    await store.put("drafts", "current", draft);
+  });
+  await open(page, "/new/editor");
+  const kind = page.getByRole("combobox", {
+    name: "Kind of thing for place 1",
+  });
+  await expect(kind.locator('option[value="object"]')).toHaveText(
+    "anything (referent)",
+  );
+  await expect(page.locator("main")).toContainText(
+    'keeps the retired tag "mass"',
+  );
+  await expect(page.locator("main")).toContainText(
+    "mass is an opaque legacy annotation outside the current tag tree and has no current alias.",
+  );
+  await expect(page.getByRole("button", { name: /Replace mass/ })).toHaveCount(
+    0,
+  );
+  expect((await stored(page)).places[0].hint.alternatives[0].tags).toEqual([
+    "mass",
+  ]);
+  await kind.selectOption("object");
+  await expect
+    .poll(async () => (await stored(page)).places[0].kind)
+    .toBe("object");
+  await expect(page.locator("main")).not.toContainText(
+    'keeps the retired tag "mass"',
+  );
+  const hints = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { draftToBody } = await import(String("/src/model/draft.ts"));
+    const draft: any = await new LocalStore().get("drafts", "current");
+    return draftToBody(draft).body!.frame!.places[0].type_hints;
+  });
+  expect(hints[0].alternatives[0].tags).toEqual(["referent"]);
+});
+
+for (const [tag, replacement] of [
+  ["entity", "referent"],
+  ["tuple", "sequence"],
+]) {
+  test(`the author explicitly replaces ${tag} with ${replacement} without changing other annotations`, async ({
+    page,
+  }) => {
+    await createIdentity(page);
+    await seed(page);
+    await page.evaluate(
+      async ({ tag, replacement }) => {
+        const { LocalStore } = await import(String("/src/data/store.ts"));
+        const { newPlace } = await import(String("/src/model/draft.ts"));
+        const store = new LocalStore();
+        const draft: any = await store.get("drafts", "current");
+        draft.structured = true;
+        draft.text = [[1, " has a fixture meaning."]];
+        draft.frameMode = "fixed";
+        draft.numberingApproved = true;
+        draft.places = [
+          {
+            ...newPlace(1),
+            kind: "custom",
+            hint: {
+              alternatives: [
+                {
+                  tags: [tag, replacement].sort(),
+                  abstractor: "ka",
+                  relation_arity: { mode: "fixed", count: 2 },
+                },
+              ],
+              note: [[1, " keeps this exact note."]],
+            },
+          },
+        ];
+        await store.put("drafts", "current", draft);
+      },
+      { tag, replacement },
+    );
+    await open(page, "/new/editor");
+    await expect(page.locator("main")).toContainText(
+      `${tag} means ${replacement}.`,
+    );
+    await expect(page.locator("main")).not.toContainText(
+      "The original signed body stays valid.",
+    );
+    const before = (await stored(page)).places[0].hint;
+    expect(before.alternatives[0].tags).toContain(tag);
+    await page
+      .getByRole("button", {
+        name: `Replace ${tag} with ${replacement}`,
+        exact: true,
+      })
+      .click();
+    await expect
+      .poll(
+        async () => (await stored(page)).places[0].hint.alternatives[0].tags,
+      )
+      .toEqual([replacement]);
+    const after = (await stored(page)).places[0].hint;
+    expect(after.note).toEqual(before.note);
+    expect(after.alternatives[0].abstractor).toBe("ka");
+    expect(after.alternatives[0].relation_arity).toEqual({
+      mode: "fixed",
+      count: 2,
+    });
+    await expect(page.locator("main")).not.toContainText(
+      `keeps the retired tag "${tag}"`,
+    );
+    const tags = page.getByRole("textbox", { name: "Tags for alternative 1" });
+    await tags.fill(tag);
+    await expect(tags).toBeFocused();
+    await expect(tags).toHaveValue(tag);
+    await expect(
+      page.getByRole("button", {
+        name: `Replace ${tag} with ${replacement}`,
+        exact: true,
+      }),
+    ).toBeVisible();
+    await page
+      .getByRole("button", {
+        name: `Replace ${tag} with ${replacement}`,
+        exact: true,
+      })
+      .click();
+    await expect
+      .poll(
+        async () => (await stored(page)).places[0].hint.alternatives[0].tags,
+      )
+      .toEqual([replacement]);
+    const edited = (await stored(page)).places[0].hint;
+    expect(edited.note).toEqual(before.note);
+    expect(edited.alternatives[0].abstractor).toBe("ka");
+    expect(edited.alternatives[0].relation_arity).toEqual({
+      mode: "fixed",
+      count: 2,
+    });
+  });
+}
+
+test("another source word starts without the first word's pronunciation or stem", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await seed(page, { formation: true });
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore();
+    const draft: any = await store.get("drafts", "current");
+    Object.assign(draft.gismu.rows[0], {
+      word_ipa: "bʊk",
+      stem: "book",
+      ipa: "bʊk",
+    });
+    await store.put("drafts", "current", draft);
+  });
+  await open(page, "/new/gismu");
+  await page
+    .getByRole("button", { name: "Add an alternative word for English" })
+    .click();
+  await expect.poll(async () => (await stored(page)).gismu.rows.length).toBe(2);
+  const rows = (await stored(page)).gismu.rows;
+  expect(rows[0].word_ipa).toBe("bʊk");
+  expect(rows[0].stem).toBe("book");
+  expect(rows[0].ipa).toBe("bʊk");
+  expect(rows[1]).toMatchObject({
+    language: "en",
+    name: "English",
+    word: "",
+    input: "",
+    word_ipa: null,
+    stem: null,
+    ipa: null,
+    weight: rows[0].weight,
+  });
+});
+
+test("draft export keeps private source evidence while publication and Revise keep signed fields only", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await seed(page, { formation: true, spelling: "brodo" });
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore();
+    const draft: any = await store.get("drafts", "current");
+    const privateEvidence = { word_ipa: "bʊk", stem: "book", ipa: "bʊk" };
+    Object.assign(draft.gismu.rows[0], privateEvidence);
+    Object.assign(draft.formation.sources[0], privateEvidence, {
+      notes: [["An authored source note."]],
+    });
+    draft.formation.sources.push({
+      language: "es",
+      word: "",
+      input: null,
+      weight: null,
+      notes: [],
+      stem: "cant",
+      ipa: "kant",
+    });
+    draft.formation.sources.push({
+      language: "fr",
+      word: "",
+      word_ipa: null,
+      input: null,
+      weight: { numerator: 1, denominator: 2 },
+      notes: [],
+      stem: null,
+      ipa: "",
+    });
+    await store.put("drafts", "current", draft);
+  });
+  await open(page, "/new/publish");
+  await page.reload();
+  await expect(
+    page.getByRole("button", { name: "Export draft" }),
+  ).toBeVisible();
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export draft" }).click();
+  const file = await (await download).path();
+  const exported = JSON.parse(
+    await (await import("node:fs/promises")).readFile(file!, "utf8"),
+  );
+  expect(exported.gismu.rows[0]).toMatchObject({
+    word_ipa: "bʊk",
+    stem: "book",
+    ipa: "bʊk",
+  });
+  expect(exported.formation.sources[0]).toMatchObject({
+    word_ipa: "bʊk",
+    stem: "book",
+    ipa: "bʊk",
+  });
+  expect(exported.formation.sources[1]).toMatchObject({
+    stem: "cant",
+    ipa: "kant",
+  });
+  expect(exported.formation.sources[2]).toMatchObject({
+    weight: { numerator: 1, denominator: 2 },
+    stem: null,
+    ipa: "",
+  });
+  await page
+    .locator("aside")
+    .getByRole("button", { name: "Publish", exact: true })
+    .click();
+  const unlock = page.getByRole("dialog", { name: "Unlock your key" });
+  await unlock.getByLabel("Passphrase").fill(PASSPHRASE);
+  await unlock.getByRole("button", { name: "Unlock", exact: true }).click();
+  await acceptFirstSignature(page);
+  await expect(page).toHaveURL(/\/word\/brodo/);
+  const published = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const items = await new LocalStore().list("outbox");
+    return JSON.parse(items.find((item: any) => item.order === 0).transport);
+  });
+  expect(published.body.etymology.formation.sources).toEqual([
+    {
+      language: "en",
+      word: "book",
+      word_ipa: "bʊk",
+      input: { format: "lojbanized", text: "cukta" },
+      weight: { numerator: 1, denominator: 1 },
+      notes: [["An authored source note."]],
+    },
+    {
+      language: "fr",
+      word: "",
+      input: null,
+      weight: { numerator: 1, denominator: 2 },
+      notes: [],
+    },
+  ]);
+  await page.goto(
+    `/new/editor?revise=${encodeURIComponent(published.envelope.id)}`,
+  );
+  await expect
+    .poll(async () => (await stored(page))?.parents)
+    .toEqual([published.envelope.id]);
+  const revision = await stored(page);
+  expect(revision.gismu).toBeNull();
+  expect(revision.formation.sources).toEqual(
+    published.body.etymology.formation.sources,
+  );
+});
+
 test("F4 manual entry and Etymology can remove evidence after confirmation", async ({
   page,
 }) => {

@@ -90,6 +90,7 @@ th {
 .right {
   text-align: right;
 }
+/* Hidden text supplies accessible names. Interactive nodes must not use this class. */
 .sr {
   position: absolute;
   width: 1px;

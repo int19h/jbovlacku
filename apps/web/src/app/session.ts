@@ -4,7 +4,17 @@
  * session setting applies.
  */
 import { setPreferredView } from "../data/api.ts";
-import { el, p, button, field, describe, link, append } from "../lib/dom.ts";
+import {
+  el,
+  p,
+  button,
+  field,
+  describe,
+  link,
+  append,
+  inlineProse,
+  text,
+} from "../lib/dom.ts";
 import { createKey, parseBackup, unlockKey } from "../data/keys.ts";
 import {
   IdentityConflictError,
@@ -309,9 +319,12 @@ export class Session {
           el(
             "p",
             {},
-            "Your ",
-            link("key page", "/identity"),
-            " offers a backup test and lock controls.",
+            inlineProse(
+              "The key page link belongs to this backup and lock instruction.",
+              text("Your "),
+              link("key page", "/identity"),
+              text(" offers a backup test and lock controls."),
+            ),
           ),
         ),
         el(

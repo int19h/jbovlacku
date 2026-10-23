@@ -76,6 +76,7 @@ export async function formPage(route: Route, context: RenderContext, app: App) {
             ? "Open the lujvo builder"
             : "Open the gismu generator",
           kind === "lujvo" ? "/new/lujvo" : "/new/gismu",
+          { class: "touch-link" },
         ),
       ),
     );
@@ -151,7 +152,7 @@ export async function formPage(route: Route, context: RenderContext, app: App) {
       text(
         "Formation evidence from a builder describes one exact form. If the spelling changes, publishing is blocked until the form is built again or the evidence is removed. Changing the form never rewrites your prose. ",
       ),
-      link("Change the type", "/new/type"),
+      link("Change the type", "/new/type", { class: "touch-link" }),
     ),
   );
   main.append(section);
