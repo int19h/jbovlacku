@@ -152,8 +152,15 @@ test("a mismatched receipt or missing required body cannot clear a pending accep
   for (const changed of [
     { body_hash: "sha256:" + "0".repeat(64) },
     { body_status: "missing" as const },
+    {
+      snapshot: null,
+      interpretation: "unavailable" as const,
+      reasons: ["evaluation_resource_unavailable"],
+    },
   ]) {
     rememberAcceptedReceipt(receipt(), selfPeer);
+    rememberAcceptedReceipt({ ...completed(), ...changed }, selfPeer);
+    assert.equal(hasPendingMaterialization(), true);
     const controller = new AbortController();
     serve(() => {
       setImmediate(() => controller.abort());

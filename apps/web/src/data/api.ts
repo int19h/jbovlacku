@@ -311,6 +311,7 @@ export function rememberAcceptedReceipt(receipt: Receipt, peer: Peer) {
   else {
     const pending = acceptedAwaitingView.get(receipt.id);
     if (
+      receipt.snapshot !== null &&
       pending?.envelope_hash === receipt.envelope_hash &&
       pending?.body_hash === receipt.body_hash &&
       pending?.body_status === receipt.body_status &&
