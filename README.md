@@ -14,7 +14,9 @@ It does not restrict expressly authorized work on private GitHub issues and pull
 
 The Rust libraries implement canonical records, SSHSIG signatures, causal state, identity continuity, imported account controls, and exact ranking bounds.
 Native and WebAssembly builds share the format rules. The TypeScript application uses generated WebAssembly bindings.
-The definition validator accepts omitted `word_ipa`, `stem`, and `ipa` fields on formation sources.
+
+The definition validator accepts an omitted or null `word_ipa` field on formation sources.
+It rejects `stem` and `ipa` source fields, including null and empty values.
 Formation sources still require explicit `input`, `weight`, and `notes`, including their empty or null values.
 Every other [optional definition field](docs/format.md#absent-fields-and-compatibility) still requires its explicit value in the current validator.
 
@@ -61,8 +63,11 @@ The rafsi page lists known assignments across words from version 2 packages, and
 The lujvo builder offers short rafsi, gismu stems, whole gismu, whole-word parts under the extended profile, locks, CLL scores, recovered parts, and every competing rafsi claim from the local package.
 Choosing [optional hyphens](docs/morphology.md) in the lujvo builder remains a target change. The builder adds only the required hyphens.
 The gismu generator offers the CLL 1987, CLL 1995, and Ilmen presets with pinned sources, custom weights, exact scores, tied ranks, per-language contributions, root and rafsi conflicts, and manual forms without fabricated evidence.
-The core and draft model keep the optional word pronunciation, stem, and stem pronunciation in signed formation sources.
+
+The core and builders keep the optional full pronunciation, `word_ipa`, in signed formation sources.
+Draft reload and export preserve private `stem` and `ipa` values. Neither enters a signed formation source.
 The gismu source editor with seven columns remains a target feature.
+
 The [morphology profiles](docs/morphology.md) name the rules and versions that the metadata records.
 The status editor, transfer editor, semantic search, AI, and Lensisku cross-posting remain target features.
 The site view is the server's selected signed view, and the Trust page can use another retained signed view by its event ID. A signed view names its calculation profile, `simple-routes-bounds-v1` or `simple-routes-shun-v1`; the pages name the profile of each result and its route rule, and an unknown profile leaves scores unavailable.
