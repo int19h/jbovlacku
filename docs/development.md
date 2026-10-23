@@ -178,7 +178,7 @@ Accepted records and the last valid checkpoint remain available for startup reco
 Checkpoint recovery rebuilds a missing search index from the saved entries before readiness.
 The service captures at most one checkpoint per minute after a 100 ms quiet period.
 It keeps only the latest pending snapshot during that interval. A failed capture also counts toward the interval.
-Shutdown bypasses the interval and saves the latest completed state.
+Shutdown bypasses the interval and attempts to save the latest completed state.
 Core evaluation, checkpoint export, and checkpoint restore run in evaluation threads.
 Binary serialization of the enclosing checkpoint, package construction, and SQLite operations still use the main thread.
 The capture interval limits serialization frequency, not its duration.
