@@ -4,7 +4,6 @@
   align-items: center;
   justify-content: center;
   gap: 8px;
-  min-height: 44px;
   padding: 0 16px;
   border-radius: 8px;
   border: 1px solid var(--ink3);
@@ -75,7 +74,6 @@
 .field {
   display: block;
   width: 100%;
-  min-height: 44px;
   padding: 9px 12px;
   border: 1px solid var(--ink3);
   border-radius: 8px;
@@ -87,12 +85,12 @@
 }
 textarea.field {
   resize: vertical;
-  min-height: 5.5rem;
+  --target-min-height: 5.5rem;
 }
 .field-group {
   margin: 14px 0;
 }
-.field-group .hint {
+.hint {
   font-size: 13px;
   color: var(--ink3);
   margin-top: 4px;
@@ -101,7 +99,6 @@ textarea.field {
   display: flex;
   align-items: center;
   gap: 10px;
-  min-height: 44px;
 }
 .check input {
   width: 20px;
@@ -114,7 +111,6 @@ textarea.field {
   color: var(--ink2);
   border: 0;
   background: transparent;
-  min-height: 44px;
   cursor: pointer;
 }
 
@@ -138,7 +134,6 @@ textarea.field {
   letter-spacing: -0.02em;
   color: var(--ink);
   text-decoration: none;
-  min-height: 44px;
   display: inline-flex;
   align-items: center;
 }
@@ -157,7 +152,7 @@ textarea.field {
 .search-input {
   display: block;
   width: 100%;
-  min-height: 48px;
+  --target-min-height: 48px;
   padding: 10px 44px;
   border: 1px solid var(--ink3);
   border-radius: 10px;
@@ -176,7 +171,6 @@ textarea.field {
   right: 2px;
   top: 2px;
   width: 44px;
-  min-height: 44px;
   padding: 0;
   color: var(--ink2);
   text-decoration: none;
@@ -191,7 +185,6 @@ textarea.field {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  min-height: 44px;
   padding: 0 12px;
   border-radius: 8px;
   color: var(--ink);
@@ -229,12 +222,6 @@ textarea.field {
   font-size: 13px;
   color: var(--ink3);
 }
-.footer-inner a {
-  min-height: 24px;
-  display: inline-flex;
-  align-items: center;
-}
-
 /* Main surfaces */
 main {
   flex: 1 0 auto;
@@ -382,7 +369,6 @@ h2.section {
   color: var(--ink2);
 }
 .judgment-details summary {
-  min-height: 44px;
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -399,7 +385,6 @@ h2.section {
 
 /* Named disclosure */
 details.disclosure > summary {
-  min-height: 44px;
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -520,7 +505,6 @@ details.disclosure > .body {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  min-height: 44px;
   padding: 0 14px;
   color: var(--ink2);
   text-decoration: none;
@@ -664,7 +648,6 @@ pre.json {
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  min-height: 44px;
   border: 0;
   background: none;
   padding: 0 4px;
@@ -707,7 +690,6 @@ pre.json {
   border-radius: 12px;
   background: var(--surface);
   cursor: pointer;
-  min-height: 44px;
 }
 .opt.on {
   border: 2px solid var(--accent);
@@ -728,7 +710,6 @@ pre.json {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  min-height: 44px;
   padding: 0 12px;
   border: 1px solid var(--ink3);
   border-radius: 8px;
@@ -760,7 +741,6 @@ pre.json {
   display: inline-flex;
   align-items: center;
   padding: 0 16px;
-  min-height: 44px;
   cursor: pointer;
   color: var(--ink2);
 }
@@ -860,7 +840,6 @@ dialog.sheet h2 {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  min-height: 44px;
   padding: 0 10px 0 4px;
   color: var(--ink3);
   text-decoration: none;
@@ -892,7 +871,6 @@ dialog.sheet h2 {
   color: var(--on-accent);
 }
 .step-skip {
-  min-height: 44px;
   display: inline-flex;
   align-items: center;
 }
@@ -909,7 +887,6 @@ dialog.sheet h2 {
 .blank {
   display: inline-block;
   min-width: 2.2em;
-  border-bottom: 2px solid var(--accent);
   color: var(--accent);
   font-weight: 600;
   text-align: center;
@@ -918,6 +895,27 @@ dialog.sheet h2 {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
   gap: 10px;
+}
+.builder-form {
+  font-size: 44px;
+  line-height: 1.1;
+  font-weight: 680;
+  letter-spacing: -0.025em;
+}
+.hint-alternative {
+  min-width: 0;
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid var(--line2);
+  border-radius: 8px;
+}
+.alternative-remove-spacer {
+  height: 1.5em;
+}
+.hint-alternative > legend {
+  padding: 0 4px;
+  font-size: 13px;
+  color: var(--ink2);
 }
 .similar-item {
   padding: 14px 0;
@@ -987,4 +985,61 @@ dialog.sheet h2 {
 }
 .native {
   font-family: var(--font-native, inherit);
+}
+
+/* Every interactive surface has a target, including controls in new states.
+   Larger fields set --target-min-height. Ordinary widths cannot shrink targets. */
+:where(
+  a,
+  button,
+  input:not([type="hidden"]),
+  select,
+  textarea,
+  summary,
+  [role="button"],
+  [role="switch"],
+  [role="link"],
+  [tabindex]:not([tabindex^="-"]),
+  [contenteditable]:not([contenteditable="false"]),
+  label:has(input:is([type="checkbox"], [type="radio"]))
+) {
+  min-width: max(44px, var(--target-min-width, 0px)) !important;
+  min-height: max(44px, var(--target-min-height, 0px)) !important;
+}
+/* Box display applies to links and actions. Editable and scroll regions stay blocks. */
+:where(a, button, summary, [role="button"], [role="switch"], [role="link"]) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+:where(
+  [tabindex]:not([tabindex^="-"]),
+  [contenteditable]:not([contenteditable="false"])
+):not(
+  :where(a, button, summary, [role="button"], [role="switch"], [role="link"])
+) {
+  display: block;
+}
+/* Only source-marked sentence links use the inline exception in ui-design.md.
+   Explicit action classes keep the default target inside the same sentence. */
+.inline-prose[data-inline-prose-reason] > a:not(.btn, .touch-link, .pl) {
+  display: inline;
+  min-width: 0 !important;
+  min-height: 0 !important;
+}
+/* Place tokens stay compact in definitions and navigate to their declared rows.
+   ui-design.md permits this inline glyph exception without overlapping targets. */
+a.pl[data-inline-place-reason] {
+  min-width: 1.45em !important;
+  min-height: 1.45em !important;
+}
+/* Native checkbox and radio glyphs use their enclosing label as the target.
+   Only one direct input is allowed. The audit also requires one associated label. */
+label:is(.check, .opt, .chip):has(> input:only-of-type)
+  > input:is([type="checkbox"], [type="radio"]),
+.seg
+  label:has(> input:only-of-type)
+  > input:is([type="checkbox"], [type="radio"]) {
+  min-width: 0 !important;
+  min-height: 0 !important;
 }

@@ -231,7 +231,7 @@ export function trustPanel(app: App, options: TrustPanelOptions): HTMLElement {
   let scope: TrustScope = { ...allScope };
   const scopeLine = el("p", { class: "small", style: "margin-top:12px" });
   const scopeForm = el("div", {
-    style: "display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end",
+    style: "display:flex;flex-wrap:wrap;gap:8px;align-items:flex-start",
   });
   scopeForm.hidden = true;
   const kind = field("Kind", {
@@ -273,7 +273,7 @@ export function trustPanel(app: App, options: TrustPanelOptions): HTMLElement {
           scopeForm.hidden = !scopeForm.hidden;
           updateScope();
         },
-        { class: "btn btn-quiet", style: "min-height:32px;padding:0 6px" },
+        { class: "btn btn-quiet", style: "padding:0 6px" },
       ),
     );
   };

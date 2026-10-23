@@ -142,7 +142,6 @@ export async function gismuPage(
   presetField.input.style.maxWidth = "100%";
   presetField.wrapper.style.maxWidth = "100%";
   presetField.wrapper.style.flexWrap = "wrap";
-  presetField.input.style.minHeight = "40px";
   presetField.input.addEventListener("change", () => {
     const chosen =
       presets.find((pr) => pr.id === presetField.input.value) ?? null;
@@ -247,12 +246,16 @@ export async function gismuPage(
     if (preset) {
       presetNote.append(
         text(`${preset.description} Source: `),
-        link(preset.source_url, preset.source_url, { rel: "noreferrer" }),
+        link(preset.source_url, preset.source_url, {
+          class: "touch-link",
+          rel: "noreferrer",
+        }),
       );
       if (preset.reference_url)
         presetNote.append(
           text(" · reference: "),
           link(preset.reference_url, preset.reference_url, {
+            class: "touch-link",
             rel: "noreferrer",
           }),
         );
@@ -298,7 +301,7 @@ export async function gismuPage(
           class: "field",
           "aria-label": `Language tag of row ${index + 1}`,
           value: row.language,
-          style: "width:6rem;min-height:36px",
+          style: "width:6rem;",
         });
         code.addEventListener("change", () => {
           row.language = code.value.trim();
@@ -328,14 +331,14 @@ export async function gismuPage(
           "aria-label": `Weight numerator of row ${index + 1}`,
           value: row.weight?.numerator ?? "",
           inputmode: "numeric",
-          style: "width:4rem;min-height:36px",
+          style: "width:4rem;",
         });
         const d = el("input", {
           class: "field",
           "aria-label": `Weight denominator of row ${index + 1}`,
           value: row.weight?.denominator ?? "1",
           inputmode: "numeric",
-          style: "width:4rem;min-height:36px",
+          style: "width:4rem;",
         });
         const update = () => {
           const numerator = n.value.trim();
@@ -356,7 +359,7 @@ export async function gismuPage(
         class: "field",
         "aria-label": `Native word for ${row.name || row.language}`,
         value: row.word,
-        style: "min-width:8rem;min-height:36px",
+        style: "min-width:8rem;",
       });
       native.addEventListener("input", () => {
         row.word = native.value;
@@ -370,7 +373,7 @@ export async function gismuPage(
         value: row.input,
         spellcheck: "false",
         lang: "jbo",
-        style: "width:9rem;min-height:36px",
+        style: "width:9rem;",
       });
       input.addEventListener("input", () => {
         row.input = input.value;
@@ -389,7 +392,6 @@ export async function gismuPage(
           },
           {
             class: "btn btn-quiet",
-            style: "min-height:36px",
             "aria-label": `Add an alternative word for ${row.name || row.language}`,
             title:
               "Another source word of the same language. It shares the weight and contributes its largest recognition.",
@@ -560,7 +562,6 @@ export async function gismuPage(
                 },
                 {
                   class: "btn btn-quiet",
-                  style: "min-height:36px",
                   "aria-label": `Choose ${candidate.form}`,
                 },
               ),
@@ -588,7 +589,7 @@ export async function gismuPage(
             saver.touch();
             schedule();
           },
-          { class: "btn btn-quiet", style: "min-height:36px" },
+          { class: "btn btn-quiet" },
         ),
       );
     for (const line of result.diagnostics) more.append(p(line, "meta"));
@@ -607,8 +608,7 @@ export async function gismuPage(
       el("h2", {
         id: "sel-h",
         lang: "jbo",
-        style:
-          "margin:0;font-size:40px;line-height:1.1;font-weight:680;letter-spacing:-0.02em",
+        class: "builder-form",
         text: candidate.form,
       }),
     );
@@ -712,15 +712,19 @@ export async function gismuPage(
             "label",
             { class: "check" },
             input,
-            text(
-              ` ${conflict.rule === "identical" ? "identical to" : conflict.rule === "final-vowel" ? "differs only in the last vowel from" : "too close to"} `,
+            el(
+              "span",
+              { class: "acknowledgment-text" },
+              text(
+                `${conflict.rule === "identical" ? "identical to" : conflict.rule === "final-vowel" ? "differs only in the last vowel from" : "too close to"} `,
+              ),
+              link(
+                conflict.spelling,
+                `/word/${encodeURIComponent(conflict.spelling)}`,
+                { lang: "jbo", class: "touch-link" },
+              ),
+              text(` (${conflict.rule}). I keep this form.`),
             ),
-            link(
-              conflict.spelling,
-              `/word/${encodeURIComponent(conflict.spelling)}`,
-              { lang: "jbo" },
-            ),
-            text(` (${conflict.rule}). I keep this form.`),
           ),
         );
       }
@@ -736,6 +740,7 @@ export async function gismuPage(
             text(`${r.rafsi} is claimed by `),
             link(r.spelling, `/word/${encodeURIComponent(r.spelling)}`, {
               lang: "jbo",
+              class: "touch-link",
             }),
           ),
         );

@@ -137,7 +137,6 @@ export function calculationPanel(
   });
   const cancel = button("Cancel", () => app.personal.cancel(), {
     class: "btn btn-quiet",
-    style: "min-height:36px",
   });
   const retry = button(
     "Recompute from records",
@@ -149,7 +148,7 @@ export function calculationPanel(
           if (status.state === "ready") options.onRefresh?.();
         });
     },
-    { class: "btn btn-quiet", style: "min-height:36px" },
+    { class: "btn btn-quiet" },
   );
   const useSite = button(
     "Use the site view",
@@ -158,7 +157,7 @@ export function calculationPanel(
       app.shell.setViewLabel("Trust: site view");
       navigate(location.pathname + location.search, { replace: true });
     },
-    { class: "btn", style: "min-height:36px" },
+    { class: "btn" },
   );
   actions.append(cancel, retry);
   if (options.mode === "personal") actions.append(useSite);

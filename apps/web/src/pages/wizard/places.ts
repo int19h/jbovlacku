@@ -148,14 +148,17 @@ function hintEditor(
     alternatives.forEach((alt, index) => {
       const row = el("div", {
         style:
-          "display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;margin-top:8px",
+          "display:flex;flex-wrap:wrap;gap:8px;align-items:flex-start;margin-top:8px",
       });
       const tags = field(`Tags for alternative ${index + 1}`, {
         value: alt.tags.join(", "),
         placeholder: standardTags.slice(0, 4).join(", ") + "…",
         wrapperClass: "",
-        hint: `Standard: ${standardTags.join(", ")}`,
       });
+      const tagsHint = p(`Standard: ${standardTags.join(", ")}`, "hint");
+      tagsHint.id = `${tags.input.id}-hint`;
+      tags.input.setAttribute("aria-describedby", tagsHint.id);
+      tags.wrapper.append(tagsHint);
       tags.input.addEventListener("input", () => {
         alt.tags = tags.input.value
           .split(",")
@@ -220,17 +223,32 @@ function hintEditor(
       );
       if (alternatives.length > 1)
         row.append(
-          button(
-            `Remove alternative ${index + 1}`,
-            () => {
-              alternatives.splice(index, 1);
-              emit();
-              render();
-            },
-            { class: "btn btn-quiet" },
+          el(
+            "div",
+            {},
+            el("span", {
+              class: "field-label alternative-remove-spacer",
+              "aria-hidden": "true",
+            }),
+            button(
+              `Remove alternative ${index + 1}`,
+              () => {
+                alternatives.splice(index, 1);
+                emit();
+                render();
+              },
+              { class: "btn btn-quiet" },
+            ),
           ),
         );
-      box.append(row);
+      box.append(
+        el(
+          "fieldset",
+          { class: "hint-alternative" },
+          el("legend", { text: `Alternative ${index + 1}` }),
+          row,
+        ),
+      );
     });
     // The note follows the selected mode like every other rich field.
     // A text area, so a note with paragraphs keeps its blank lines in the editor.
@@ -390,7 +408,7 @@ export async function placesPage(
         { class: "small", style: "margin-top:8px" },
         text("Revision of "),
         link(draft.parents[0], routes.definition(draft.parents[0]), {
-          class: "fingerprint",
+          class: "fingerprint touch-link",
         }),
         text(
           draft.revisedImport
@@ -527,7 +545,7 @@ export async function placesPage(
       },
       {
         class: "btn btn-quiet",
-        style: "min-height:36px;font-size:14px",
+        style: "font-size:14px",
         title: "Insert a reference to the last declared place",
       },
     ),
@@ -538,7 +556,7 @@ export async function placesPage(
         if (spelling?.trim())
           insertAtCursor(editor.input, `[[${spelling.trim()}]]`);
       },
-      { class: "btn btn-quiet", style: "min-height:36px;font-size:14px" },
+      { class: "btn btn-quiet", style: "font-size:14px" },
     ),
     el("span", {
       class: "meta",
@@ -621,7 +639,7 @@ export async function placesPage(
               saver.touch();
               refreshPreview();
             },
-            { class: "btn btn-quiet", style: "min-height:32px" },
+            { class: "btn btn-quiet" },
           ),
         );
       preview.append(note);
@@ -686,7 +704,7 @@ export async function placesPage(
           renderPlaces();
           suggest.remove();
         },
-        { class: "btn", style: "min-height:36px" },
+        { class: "btn" },
       ),
       text(" You approve the numbering below before publishing."),
     );
@@ -720,7 +738,6 @@ export async function placesPage(
   const arity = el("select", {
     class: "inline-select",
     "aria-label": "Number of places",
-    style: "min-height:40px",
   });
   const arityOptions = (): { value: FrameMode; label: string }[] => [
     { value: "fixed", label: `exactly ${draft.places.length}` },
@@ -757,7 +774,6 @@ export async function placesPage(
   const role = el("select", {
     class: "inline-select",
     "aria-label": "Frame role",
-    style: "min-height:40px",
   });
   for (const option of [
     { value: "predicate", label: "predicate" },
@@ -814,7 +830,7 @@ export async function placesPage(
         "aria-label": `Place number ${place.index}`,
         min: "1",
         max: "65535",
-        style: "width:5rem;min-height:36px;padding:4px 8px",
+        style: "width:5rem;padding:4px 8px",
       });
       idx.value = String(place.index);
       idx.addEventListener("change", () => {
@@ -1053,7 +1069,7 @@ export async function placesPage(
             refreshNumbering();
             refreshPreview();
           },
-          { class: "btn", style: "min-height:36px" },
+          { class: "btn" },
         ),
       ),
     );
@@ -2114,7 +2130,6 @@ function derivationEditor(
           {
             class: "btn btn-quiet",
             "aria-label": `Remove derivation ${n} for place ${place.index}`,
-            style: "min-height:36px",
           },
         ),
       );
@@ -2137,7 +2152,7 @@ function derivationEditor(
         {
           class: "btn btn-quiet",
           "aria-label": `Add a derivation for place ${place.index}`,
-          style: "margin-top:6px;min-height:36px",
+          style: "margin-top:6px;",
         },
       ),
     );

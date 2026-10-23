@@ -120,8 +120,14 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
     ),
   );
   main.append(head);
-  const composition = el("p", { class: "muted", style: "margin-top:6px" });
-  const rafsiLine = el("p", { class: "muted", style: "margin-top:4px" });
+  const composition = el("p", {
+    class: "muted composition-line",
+    style: "margin-top:6px",
+  });
+  const rafsiLine = el("p", {
+    class: "muted rafsi-line",
+    style: "margin-top:4px",
+  });
   main.append(composition, rafsiLine);
   if (!word.word && !word.definitions.length) {
     main.append(
@@ -304,7 +310,7 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
                 if (status.state === "ready") rerender();
               });
           },
-          { class: "btn btn-quiet", style: "min-height:36px" },
+          { class: "btn btn-quiet" },
         ),
       );
     main.append(note);
@@ -514,12 +520,17 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
         ),
       );
       for (const claim of entry.claims) {
-        const row = el("div", { class: "small", style: "margin-top:8px" });
+        const row = el("div", {
+          class: "small claim-source",
+          style: "margin-top:8px",
+        });
         row.append(
           text("Claimed by "),
           identityLink(claim.envelope.header.issuer),
           text(" · "),
-          link("record", routes.definition(claim.envelope.id)),
+          link("record", routes.definition(claim.envelope.id), {
+            class: "touch-link",
+          }),
         );
         if (claim.body?.rationale.length)
           row.append(renderRichText(claim.body.rationale, { placeHref: null }));
@@ -555,7 +566,7 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
         text: "See also",
       }),
     );
-    const line = el("p", { class: "muted" });
+    const line = el("p", { class: "muted related-words" });
     [...related].sort().forEach((s, i) => {
       if (i) line.append(text(" · "));
       line.append(link(s, routes.word(s), { lang: "jbo" }));

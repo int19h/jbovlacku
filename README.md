@@ -48,6 +48,7 @@ A draft saved by the earlier prototype opens a choice to export it, convert it i
 Remote search offers a retired-results filter that shows each publication's status. The lujvo builder says whether a candidate spelling is taken in the local package and on the server.
 The rafsi page lists known assignments across words from version 2 packages, and the claim page signs a claim with its pair blessing.
 The lujvo builder offers short rafsi, gismu stems, whole gismu, whole-word parts under the extended profile, locks, CLL scores, recovered parts, and every competing rafsi claim from the local package.
+If several parts share the same competing rafsi claim, the builder shows one acknowledgment for that claim.
 Choosing [optional hyphens](docs/morphology.md) in the lujvo builder remains a target change. The builder adds only the required hyphens.
 The gismu generator offers the CLL 1987, CLL 1995, and Ilmen presets with pinned sources, custom weights, exact scores, tied ranks, per-language contributions, root and rafsi conflicts, and manual forms without fabricated evidence.
 The [morphology profiles](docs/morphology.md) name the rules and versions that the metadata records.
@@ -60,6 +61,33 @@ A cancelled or incomplete local calculation keeps personal scores unavailable an
 A planned handover creates and tests a successor key, shows the old key's heads from every configured peer, searches for an existing transfer, and saves the transfer, the acceptance, and the encrypted successor key in one transaction before upload. Partial upload reads "Old key retired, acceptance waiting", and retries reuse the stored events.
 A compromise notice previews the retained and excluded records of a chosen causal frontier, blocks on missing history, and needs explicit approval for an empty frontier. Ordinary signing from a retired or compromised key is refused.
 The [web UI design](docs/ui-design.md) defines the layouts. The reading, identity, trust, delivery, authoring, and builder screens follow it.
+The built Node app keeps Type and trust card labels separate from their descriptions.
+Draft placeholders have no extra underline, and helper text does not shift neighboring controls.
+Each custom place alternative keeps its hint below the Tags field and shows a separate boundary.
+
+One shared rule gives links and interactive controls a target of at least 44 by 44 CSS pixels.
+It covers buttons, fields, disclosure summaries, focusable regions, editable regions, and the app's ARIA actions.
+Source code marks complete prose sentences and structured place markers with the reason for their inline exception.
+Compact checkbox and radio glyphs use their enclosing labels as targets. The audit requires one label for each such input.
+Native inputs with external labels keep their own full target.
+
+A static test reads all web source files and rejects unapproved target overrides and prose markers without reasons.
+It accepts direct DOM helpers and literal styles.
+It rejects opaque style changes, hidden interactive classes, and aliases of the prose helper.
+Its failing fixtures cover CSS and inline overrides, raw markup, hidden prose, and inputs without labels.
+It rejects table rows and cells as target display types, and direct style assignments.
+
+The rich text renderer marks a paragraph only when each link has visible words in its own complete sentence.
+The sentence test keeps `e.g.` and `cf.` inside their sentences and rejects links after a separate sentence.
+Other rich text links keep the default target.
+Place circles keep equal dimensions of 1.45em beside word links. Numeric badges can be wider.
+The audit measures linked and unlinked place markers in body text and 21px definition prose.
+
+Browser tests measure controls at 1280 and 360 CSS pixels, including new controls without a target class.
+They cover populated builders, key states, delivery records, expanded place fields, compound words, rafsi claims, record comparisons, public profiles, and key handovers.
+They measure retired-key reporting, trust without a key, delivered outbox links, and the untested-backup action on Publish.
+They check sentences in the first-signature dialog, identity continuity, and Publish root, component, and competing claim notices.
+
 The general SQL migration, automatic rafsi publications, and structured import conversion also remain unfinished.
 The complete `jvc` command catalog in the format specification remains a target interface.
 The [development guide](docs/development.md) describes the implemented native commands.
