@@ -364,7 +364,13 @@ test("both persistent adapters reserve before inference and enforce settled spen
   for (const adapter of adapters) {
     let calls = 0;
     const config = providerConfig(
-      { JVC_AI_ENABLED: "enabled" },
+      {
+        JVC_AI_ENABLED: "enabled",
+        JVC_AI_HOURLY_BUDGET_USD: "1",
+        JVC_AI_DAILY_BUDGET_USD: "5",
+        JVC_AI_NETWORK_HOURLY_BUDGET_USD: "0.5",
+        JVC_AI_NETWORK_DAILY_BUDGET_USD: "2.5",
+      },
       async () => "disposable-only-key",
     )!;
     config.fetch = (async () => {
