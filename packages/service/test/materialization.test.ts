@@ -106,7 +106,10 @@ class MemoryCheckpoints implements CheckpointStore {
     this.saved = structuredClone({ binding, payload });
   }
 }
-async function fixture(checkpoints?: MemoryCheckpoints) {
+async function fixture(
+  checkpoints?: MemoryCheckpoints,
+  checkpointIntervalMs: number | null = 0,
+) {
   const bytes = new Map<string, Uint8Array>();
   const reads: string[] = [];
   const objects: ObjectStore = {
@@ -125,6 +128,7 @@ async function fixture(checkpoints?: MemoryCheckpoints) {
     asyncMaterialization: true,
     checkpoints,
     coreVersion: "test-artifact:1",
+    ...(checkpointIntervalMs === null ? {} : { checkpointIntervalMs }),
   };
   const definition = createEvent(
     seed,
@@ -882,6 +886,140 @@ test("package publication completes before checkpoint capture and flush cancels 
   assert.equal((service as any).checkpointTimer, undefined);
   assert.equal((service as any).checkpointJob, undefined);
   assert.equal((service as any).pendingCheckpoint, undefined);
+});
+
+for (const interval of [null, 1000]) {
+  test(`checkpoint captures are rate limited with ${interval === null ? "the default interval" : "a configured interval"} and flush keeps the newest session`, async () => {
+    const checkpoints = new MemoryCheckpoints();
+    const { service, coordinator, definition, profile } = await fixture(
+      checkpoints,
+      interval,
+    );
+    const initial = checkpoints.saved!.binding.snapshot;
+    const captured: string[] = [];
+    const capture = (service as any).saveCheckpoint.bind(service);
+    (service as any).saveCheckpoint = (
+      snapshot: Snapshot,
+      position: number,
+      packages: unknown,
+    ) => {
+      const session = (service as any).sessions.get(
+        snapshot.snapshot + "|" + service.options.selectedView,
+      );
+      const checkpoint = session.checkpoint.bind(session);
+      session.checkpoint = (binding: string) => {
+        captured.push(snapshot.snapshot);
+        return checkpoint(binding);
+      };
+      return capture(snapshot, position, packages);
+    };
+    let saves = 0;
+    const save = checkpoints.save.bind(checkpoints);
+    checkpoints.save = async (binding, payload) => {
+      saves++;
+      await save(binding, payload);
+    };
+    let previous = profile.envelope.id;
+    try {
+      for (const [index, value] of ["bless", "curse", "bless"].entries()) {
+        const entry = judgment(
+          definition.envelope.id,
+          String(index + 4),
+          [previous],
+          value,
+        );
+        previous = entry.envelope.id;
+        await service.admitMany([utf8(JSON.stringify(entry))]);
+        while ((service as any).background) await (service as any).background;
+        // Completions are farther apart than the existing 100 ms quiet period.
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        assert.deepEqual(captured, []);
+        assert.equal(saves, 0);
+      }
+      if (interval === null)
+        assert.ok((service as any).checkpointDue - performance.now() > 59000);
+      assert.equal((service as any).checkpointTimer.hasRef(), false);
+      const latest = coordinator.state.snapshot!;
+      assert.equal(checkpoints.saved!.binding.snapshot, initial);
+      // Historical reads must not evict the latest pending capture's session.
+      await read(service, "/words/" + wordId(word) + "?snapshot=" + initial);
+      await service.flushMaterialization();
+      assert.deepEqual(captured, [latest]);
+      assert.equal(saves, 1);
+      assert.equal(checkpoints.saved!.binding.snapshot, latest);
+      assert.equal((service as any).checkpointTimer, undefined);
+    } finally {
+      await service.flushMaterialization();
+    }
+  });
+}
+
+test("automatic checkpoint failures consume the interval and a forced flush attempts only the newest snapshot", async () => {
+  const checkpoints = new MemoryCheckpoints();
+  const { service, coordinator, definition, profile } = await fixture(
+    checkpoints,
+    500,
+  );
+  const initial = checkpoints.saved!.binding.snapshot;
+  const attempts: string[] = [];
+  const exports: string[] = [];
+  const capture = (service as any).saveCheckpoint.bind(service);
+  (service as any).saveCheckpoint = (
+    snapshot: Snapshot,
+    position: number,
+    packages: unknown,
+  ) => {
+    const session = (service as any).sessions.get(
+      snapshot.snapshot + "|" + service.options.selectedView,
+    );
+    const checkpoint = session.checkpoint.bind(session);
+    session.checkpoint = (binding: string) => {
+      exports.push(snapshot.snapshot);
+      return checkpoint(binding);
+    };
+    return capture(snapshot, position, packages);
+  };
+  checkpoints.save = async (binding) => {
+    attempts.push(binding.snapshot);
+    throw new Error("Automatic checkpoint save failed.");
+  };
+  try {
+    const first = judgment(
+      definition.envelope.id,
+      "4",
+      [profile.envelope.id],
+      "bless",
+    );
+    await service.admitMany([utf8(JSON.stringify(first))]);
+    while ((service as any).background) await (service as any).background;
+    const firstSnapshot = coordinator.state.snapshot!;
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    assert.deepEqual(attempts, [firstSnapshot]);
+    assert.deepEqual(exports, [firstSnapshot]);
+    assert.equal((service as any).checkpointTimer, undefined);
+    const second = judgment(
+      definition.envelope.id,
+      "5",
+      [first.envelope.id],
+      "curse",
+    );
+    await service.admitMany([utf8(JSON.stringify(second))]);
+    while ((service as any).background) await (service as any).background;
+    const latest = coordinator.state.snapshot!;
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    assert.deepEqual(attempts, [firstSnapshot]);
+    assert.deepEqual(exports, [firstSnapshot]);
+    assert.equal(checkpoints.saved!.binding.snapshot, initial);
+    await service.flushMaterialization();
+    assert.deepEqual(attempts, [firstSnapshot, latest]);
+    assert.deepEqual(exports, [firstSnapshot, latest]);
+    assert.equal(checkpoints.saved!.binding.snapshot, initial);
+    assert.equal((service as any).pendingCheckpoint, undefined);
+    assert.equal((service as any).checkpointTimer, undefined);
+    assert.equal((service as any).checkpointJob, undefined);
+  } finally {
+    await service.flushMaterialization();
+  }
 });
 
 test("checkpoint writes capture only the latest pending session and share unchanged package records", async () => {

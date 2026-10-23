@@ -75,6 +75,8 @@ export interface ServiceOptions {
   index?: IndexStore;
   asyncMaterialization?: boolean;
   checkpoints?: CheckpointStore;
+  /** Minimum time between cache captures. The default is 60,000 ms. */
+  checkpointIntervalMs?: number;
   coreVersion?: string;
   reportError?: (error: unknown) => void;
   allowPrototypeBatch?: boolean;
@@ -126,6 +128,7 @@ export class DictionaryService {
   private checkpointJob?: Promise<void>;
   private checkpointTimer?: ReturnType<typeof setTimeout>;
   private checkpointDue = 0;
+  private checkpointLastCapture = -Infinity;
   private checkpointFlushers = 0;
   private publication: Promise<void> = Promise.resolve();
   private metadata(): Promise<StateMetadata> {
@@ -299,6 +302,12 @@ export class DictionaryService {
   private scheduleCheckpoint(reset = false) {
     if (!this.pendingCheckpoint) return;
     if (reset) this.checkpointDue = performance.now() + 100;
+    const interval = this.options.checkpointIntervalMs ?? 60000;
+    this.checkpointDue = Math.max(
+      this.checkpointDue,
+      this.checkpointLastCapture +
+        (Number.isFinite(interval) ? Math.max(0, interval) : 60000),
+    );
     if (this.checkpointTimer !== undefined) clearTimeout(this.checkpointTimer);
     this.checkpointTimer = undefined;
     if (this.checkpointJob) return;
@@ -313,6 +322,7 @@ export class DictionaryService {
       },
       Math.max(0, this.checkpointDue - performance.now()),
     );
+    (this.checkpointTimer as unknown as { unref?: () => void }).unref?.();
   }
   private drainCheckpoints() {
     if (this.checkpointJob) return;
@@ -329,6 +339,8 @@ export class DictionaryService {
         );
         if (!session) continue;
         const binding = this.binding(checkpoint.snapshot, checkpoint.position);
+        // A failed export or save consumes the interval too.
+        this.checkpointLastCapture = performance.now();
         try {
           const envelopes: [string, string][] = [];
           const seen = new Set<string>();
