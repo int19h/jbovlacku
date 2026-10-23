@@ -16,12 +16,12 @@ import {
 import { parseAssistRequest } from "../packages/service/src/assistance.ts";
 
 // Run only after the coordinator grants these local ports. No paid provider runs.
-// JVC_TEST_WORKER_AI_MEMORY_R4=enabled node --import tsx scripts/test-worker-ai-memory-r4.ts
+// JVC_TEST_WORKER_AI_MEMORY=enabled node --import tsx scripts/test-worker-ai-memory.ts
 // --fixtures-only validates the synthetic inputs without opening a listener.
 const fixturesOnly = process.argv.includes("--fixtures-only");
-if (!fixturesOnly && process.env.JVC_TEST_WORKER_AI_MEMORY_R4 !== "enabled") {
+if (!fixturesOnly && process.env.JVC_TEST_WORKER_AI_MEMORY !== "enabled") {
   console.log(
-    "Skipped. Set JVC_TEST_WORKER_AI_MEMORY_R4=enabled to run the local Worker stress test.",
+    "Skipped. Set JVC_TEST_WORKER_AI_MEMORY=enabled to run the local Worker stress test.",
   );
   process.exit(0);
 }
@@ -124,7 +124,7 @@ assert.equal(
 function draft(job: "A" | "B" | "C") {
   const value: Data = {
     operation: "places-glosses",
-    draft_revision: `memory-r4-${job}`,
+    draft_revision: `memory-${job}`,
     language: "en",
     meaning: job + "M".repeat(16383),
     current: {
@@ -176,8 +176,8 @@ function answer(task: Task): Data {
         ? [{ type: "agent", reason: "The participant acts." }]
         : [
             {
-              component: "c64[256]",
-              reason: "direct: the last role of the last exact component.",
+              component: "klama[256]",
+              reason: "direct: the last role of the selected exact definition.",
             },
           ],
     ]),
@@ -188,7 +188,7 @@ function completion(job: string, task: Task, attempt: number): Data {
   // Small containers expose heap growth that a single long string cannot show.
   const tiny = () => Array.from({ length: 6000 }, () => [{}, []]);
   const value: Data = {
-    model: "local-memory-r4",
+    model: "local-memory",
     provider: "mock",
     unknown: { tiny: tiny() },
     choices: [
@@ -244,13 +244,13 @@ if (fixturesOnly) {
 const scratch = join(
   resolve(process.env.JVC_TEST_ROOT ?? root),
   ".cache",
-  "worker-ai-memory-r4",
+  "worker-ai-memory",
 );
 await mkdir(scratch, { recursive: true });
 const directory = await mkdtemp(join(scratch, "case-"));
 const configPath = join(directory, "wrangler.json");
 const emptyEnvPath = join(directory, "empty.env");
-const key = `disposable-memory-r4-${randomBytes(24).toString("hex")}`;
+const key = `disposable-memory-${randomBytes(24).toString("hex")}`;
 const keyPath = join(directory, "disposable-provider-key.txt");
 const logs: string[] = [];
 const providerFailures: string[] = [];
@@ -310,7 +310,8 @@ const provider = createHttpServer(async (request, response) => {
     );
     if (task === "mappings") {
       assert.equal(input.component_places.length, 64);
-      assert.equal(input.component_places[63].label, "c64");
+      assert.deepEqual(input.component_places[63].word, word);
+      assert.equal(input.component_places[63].definition, source.envelope.id);
       assert.deepEqual(
         input.component_places[63].places,
         Array.from({ length: 256 }, (_, index) => index + 1),
@@ -545,7 +546,7 @@ const previousEnvironment = Object.fromEntries(
   Object.keys(localEnvironment).map((name) => [name, process.env[name]]),
 );
 const sourceFiles = [
-  "scripts/test-worker-ai-memory-r4.ts",
+  "scripts/test-worker-ai-memory.ts",
   "apps/worker/src/index.ts",
   "apps/worker/src/index-store.ts",
   "packages/service/src/assistance.ts",
@@ -576,21 +577,21 @@ try {
     configPath,
     JSON.stringify(
       {
-        name: "jvc-memory-r4",
+        name: "jvc-memory",
         main: join(root, "apps/worker/src/index.ts"),
         compatibility_date: "2026-10-11",
         compatibility_flags: ["nodejs_compat"],
         r2_buckets: [
           {
             binding: "OBJECTS",
-            bucket_name: "memory-r4-objects",
+            bucket_name: "memory-objects",
             remote: false,
           },
         ],
         d1_databases: [
           {
             binding: "INDEX",
-            database_name: "memory-r4-index",
+            database_name: "memory-index",
             database_id: "00000000-0000-0000-0000-000000000001",
             remote: false,
           },
@@ -626,11 +627,11 @@ try {
     vars: {
       PUBLIC_ORIGIN: origin,
       SELECTED_VIEW: "",
-      SERVER_ID: "local-memory-r4",
+      SERVER_ID: "local-memory",
       JVC_AI_ENABLED: "enabled",
       JVC_AI_BASE_URL: `http://127.0.0.1:${providerPort}`,
       JVC_AI_KEY: (await readFile(keyPath, "utf8")).trim(),
-      JVC_AI_MODEL: "local-memory-r4",
+      JVC_AI_MODEL: "local-memory",
       JVC_AI_PROVIDER_ROUTE: "mock",
       JVC_AI_PROVIDER_NAME: "Local mock",
       JVC_AI_REASONING_EFFORT: "medium",
@@ -638,7 +639,10 @@ try {
       JVC_AI_MAX_TOKENS: "16384",
       JVC_AI_TIMEOUT_MS: "180000",
       JVC_AI_CONCURRENCY: "2",
-      JVC_AI_MAX_COST_USD: "329",
+      JVC_AI_INPUT_PRICE: "0.1",
+      JVC_AI_OUTPUT_PRICE: "0.2",
+      JVC_AI_HOURLY_BUDGET_USD: "100",
+      JVC_AI_DAILY_BUDGET_USD: "500",
       JVC_AI_MAX_PRICE: "10",
       JVC_AI_OPERATIONS: "places-glosses",
       JVC_LOCAL_WORKER: "disabled",

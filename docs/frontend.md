@@ -70,21 +70,20 @@ Long calculations use bounded jobs and explicit resource errors. Moving a job to
 
 ### Host service contracts
 
-| Port | Required behavior |
-| --- | --- |
-| Object storage | Read by hash, retain immutable bytes, and report missing or locally withheld objects separately. |
-| Admission coordinator | Deduplicate event IDs and commit receipts atomically before acknowledging storage. |
-| Snapshot pointer | Publish one complete snapshot through a compare-and-swap transaction. |
-| Index storage | Rebuild from retained records and identify the snapshot indexed. |
-| Job storage | Persist work and retries without repeating an already acknowledged external write. |
-| Vector index | Search one named embedding profile and expose its coverage. |
-| Provider adapter | Make bounded inference requests with server-held provider credentials. |
+| Port                  | Required behavior                                                                                |
+| --------------------- | ------------------------------------------------------------------------------------------------ |
+| Object storage        | Read by hash, retain immutable bytes, and report missing or locally withheld objects separately. |
+| Admission coordinator | Deduplicate event IDs and commit receipts atomically before acknowledging storage.               |
+| Snapshot pointer      | Publish one complete snapshot through a compare-and-swap transaction.                            |
+| Index storage         | Rebuild from retained records and identify the snapshot indexed.                                 |
+| Job storage           | Persist work and retries without repeating an already acknowledged external write.               |
+| Vector index          | Search one named embedding profile and expose its coverage.                                      |
+| Provider adapter      | Make bounded inference requests with server-held provider credentials.                           |
 
 The standalone vector backend can scan retained vectors exactly or use a bundled local index.
 Workers can use Vectorize or another configured backend. Backend indexes are disposable, host-specific accelerators.
 The portable vector artifacts remain available independently of that backend. A cloud index is never the only retained vector copy.
 The release tests exchange snapshots and vector artifacts between both adapters and compare their logical results.
-
 
 ## 3. Interface structure and appearance
 
@@ -126,19 +125,19 @@ Short explanations appear where the user takes the relevant action. Critical sta
 
 The app provides these addressable routes:
 
-| Route | Surface |
-| --- | --- |
-| `/search?q=...&lang=en` | Search results and filters. |
-| `/word/<word-id>?lang=en` | All definitions and rafsi claims for a word. |
-| `/definition/<event-id>` | One immutable definition revision. |
-| `/rafsi/<encoded-spelling>` | Assignments and conflicts for a rafsi. |
-| `/identity/<encoded-key>` | Public identity claims and activity. |
-| `/new` | New definition editor. |
-| `/review` | Optional review queue. |
-| `/trust` | Public decisions and private view controls. |
-| `/identity` | Local key, backup, transfer, and loss controls. |
-| `/outbox` | “Not delivered,” with waiting and stopped records. The header marker counts both. A direct visit shows an empty state when neither exists. |
-| `/preferences` | Settings, in groups: Languages, Assistance, Search, Appearance, Servers, and Your data. |
+| Route                       | Surface                                                                                                                                    |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `/search?q=...&lang=en`     | Search results and filters.                                                                                                                |
+| `/word/<word-id>?lang=en`   | All definitions and rafsi claims for a word.                                                                                               |
+| `/definition/<event-id>`    | One immutable definition revision.                                                                                                         |
+| `/rafsi/<encoded-spelling>` | Assignments and conflicts for a rafsi.                                                                                                     |
+| `/identity/<encoded-key>`   | Public identity claims and activity.                                                                                                       |
+| `/new`                      | New definition editor.                                                                                                                     |
+| `/review`                   | Optional review queue.                                                                                                                     |
+| `/trust`                    | Public decisions and private view controls.                                                                                                |
+| `/identity`                 | Local key, backup, transfer, and loss controls.                                                                                            |
+| `/outbox`                   | “Not delivered,” with waiting and stopped records. The header marker counts both. A direct visit shows an empty state when neither exists. |
+| `/preferences`              | Settings, in groups: Languages, Assistance, Search, Appearance, Servers, and Your data.                                                    |
 
 Every route preserves browser back and forward behavior. Query changes use replace-state while typing, then a stable navigation state when selected.
 Links to a publication always retain its exact event ID. A default word link does not pretend to pin a particular revision.
@@ -456,6 +455,9 @@ Optional Lensisku publication is another explicit action with its own result. It
 The draft preserves original meaning, current prose, word type, builder inputs, chosen form, structured fields, source references, and accepted suggestions.
 It also preserves field edit history and conflict acknowledgments. Unsigned private draft state never enters ordinary peer synchronization.
 Changing a component or weight invalidates dependent candidate scores and cached suggestions, while retaining human prose and place annotations.
+For gismu sources, language, algorithm input, and weight determine the scores. Notes, native words, and pronunciation fields do not change those scores.
+Source edits update the copy used for publication. An empty alternative row does not change the formation.
+If scoring inputs change, publication waits for a new form selection or removal of the old evidence.
 Changing the chosen form invalidates morphology and conflict review. It marks formation-dependent annotations for review rather than deleting them.
 
 A language change marks translations and language-specific glosses for review. It never relabels their text silently.
@@ -651,10 +653,10 @@ The backup is a UTF-8 JSON file with exactly these fields:
 
 ```json
 {
-  "format":"jbovlacku-key-backup",
-  "version":1,
-  "identity":"ed25519:<64 hex digits>",
-  "jwe":"<compact JWE string>"
+  "format": "jbovlacku-key-backup",
+  "version": 1,
+  "identity": "ed25519:<64 hex digits>",
+  "jwe": "<compact JWE string>"
 }
 ```
 
@@ -821,28 +823,28 @@ The base path is `/api/v1`. JSON errors contain `code`, `message`, `event`, and 
 The API never accepts a private key or passphrase. Transport authentication, when an operator requires it, remains separate from signing identity.
 Public reads need no account. Public event admission follows published quotas and content policy.
 
-| Method and path | Contract |
-| --- | --- |
-| `GET /capabilities` | Format version, size limits, accepted body types, optional service capabilities, CORS policy, peer identity, and admission-policy link. |
-| `GET /manifest` | Current snapshot ID, manifest, materialized cursor, accepted cursor, and available language packages. |
-| `GET /inventory?kind=K&snapshot=S&after=ID&limit=N` | Sorted event, body, or import-selection IDs from one immutable snapshot, with next cursor. |
-| `GET /events/ID?snapshot=S` | Exact envelope representation from the named snapshot, or explicit missing/withheld result. |
-| `GET /identity-heads/KEY?snapshot=S&after=ID&limit=N` | Known maximal own event IDs for that key, from one snapshot. |
-| `GET /account-control?origin=O&account=A&view=V&snapshot=S` | Controller candidates, claim chains, witness contributions, and certificate evidence. |
-| `GET /import-selections/HASH` | Canonical accepted-publication inventory, limited to 16 MiB. |
-| `POST /import-selections` | One canonical publication-ID array. Return its hash. Admission grants no trust. |
-| `GET /bodies/HASH` | Immutable canonical body, or explicit missing/withheld result. |
-| `GET /changes?after=CURSOR&limit=N` | Local receipt positions and event IDs, without causal-order claims. |
-| `POST /events` | One envelope plus nullable canonical body encoded as a UTF-8 JSON value. |
-| `GET /receipts/ID` | This server's receipt and interpretation outcome for that event. |
-| `GET /package-parts/HASH` | Canonical derived search-part bytes, with a 4 MiB uncompressed limit. |
-| `GET /packages/LANGUAGE?snapshot=S&version=N` | Search package manifest and content hashes. Version 1 is the default. Version 2 adds row metadata. |
-| `POST /search` | Remote draft search. The JSON body carries the GET search fields and returns the same `SearchResponse`. |
-| `GET /search?q=Q&language=L&view=V&snapshot=S&retired=1` | Optional remote results with view and snapshot metadata. Without `retired=1` the results hold active publications only. With it, each preview carries the publication status. Any other `retired` value is HTTP 400. |
-| `GET /words/WORD_ID?view=V&snapshot=S&reviewers=1` | Candidate IDs, rafsi claims, and attributed ranking summary. `reviewers=1` adds bounded reviewer details to each score. Any other `reviewers` value is HTTP 400. |
-| `GET /identities/KEY?view=V&snapshot=S` | Effective profile claims, continuity state, and activity counts for one signing key. |
-| `GET /identities/KEY/activity?view=V&snapshot=S&after=ID&limit=N` | Events signed by that key in event-ID order, with their interpretation and local receipt position. |
-| `GET /records?snapshot=S&after=ID&limit=N` | Snapshot records for local calculation: envelope, body, and body status, bounded by count and bytes. The limit ranges from 1 through 200. |
+| Method and path                                                   | Contract                                                                                                                                                                                                             |
+| ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /capabilities`                                               | Format version, size limits, accepted body types, optional service capabilities, CORS policy, peer identity, and admission-policy link.                                                                              |
+| `GET /manifest`                                                   | Current snapshot ID, manifest, materialized cursor, accepted cursor, and available language packages.                                                                                                                |
+| `GET /inventory?kind=K&snapshot=S&after=ID&limit=N`               | Sorted event, body, or import-selection IDs from one immutable snapshot, with next cursor.                                                                                                                           |
+| `GET /events/ID?snapshot=S`                                       | Exact envelope representation from the named snapshot, or explicit missing/withheld result.                                                                                                                          |
+| `GET /identity-heads/KEY?snapshot=S&after=ID&limit=N`             | Known maximal own event IDs for that key, from one snapshot.                                                                                                                                                         |
+| `GET /account-control?origin=O&account=A&view=V&snapshot=S`       | Controller candidates, claim chains, witness contributions, and certificate evidence.                                                                                                                                |
+| `GET /import-selections/HASH`                                     | Canonical accepted-publication inventory, limited to 16 MiB.                                                                                                                                                         |
+| `POST /import-selections`                                         | One canonical publication-ID array. Return its hash. Admission grants no trust.                                                                                                                                      |
+| `GET /bodies/HASH`                                                | Immutable canonical body, or explicit missing/withheld result.                                                                                                                                                       |
+| `GET /changes?after=CURSOR&limit=N`                               | Local receipt positions and event IDs, without causal-order claims.                                                                                                                                                  |
+| `POST /events`                                                    | One envelope plus nullable canonical body encoded as a UTF-8 JSON value.                                                                                                                                             |
+| `GET /receipts/ID`                                                | This server's receipt and interpretation outcome for that event.                                                                                                                                                     |
+| `GET /package-parts/HASH`                                         | Canonical derived search-part bytes, with a 4 MiB uncompressed limit.                                                                                                                                                |
+| `GET /packages/LANGUAGE?snapshot=S&version=N`                     | Search package manifest and content hashes. Version 1 is the default. Version 2 adds row metadata.                                                                                                                   |
+| `POST /search`                                                    | Remote draft search. The JSON body carries the GET search fields and returns the same `SearchResponse`.                                                                                                              |
+| `GET /search?q=Q&language=L&view=V&snapshot=S&retired=1`          | Optional remote results with view and snapshot metadata. Without `retired=1` the results hold active publications only. With it, each preview carries the publication status. Any other `retired` value is HTTP 400. |
+| `GET /words/WORD_ID?view=V&snapshot=S&reviewers=1`                | Candidate IDs, rafsi claims, and attributed ranking summary. `reviewers=1` adds bounded reviewer details to each score. Any other `reviewers` value is HTTP 400.                                                     |
+| `GET /identities/KEY?view=V&snapshot=S`                           | Effective profile claims, continuity state, and activity counts for one signing key.                                                                                                                                 |
+| `GET /identities/KEY/activity?view=V&snapshot=S&after=ID&limit=N` | Events signed by that key in event-ID order, with their interpretation and local receipt position.                                                                                                                   |
+| `GET /records?snapshot=S&after=ID&limit=N`                        | Snapshot records for local calculation: envelope, body, and body status, bounded by count and bytes. The limit ranges from 1 through 200.                                                                            |
 
 The `POST /search` body requires string fields `q` and `language`.
 Optional fields are `snapshot`, `view`, `after`, `retired`, and `limit`.
@@ -1245,7 +1247,6 @@ Its coordination state uses [Durable Object storage](https://developers.cloudfla
 [Workers compatibility documentation](https://developers.cloudflare.com/workers/configuration/compatibility-flags/) identifies the native-process limitation.
 These services are selected components, not evidence that an implementation already exists.
 
-
 ## 16. Semantic search and optional AI
 
 Semantic search finds definitions with related meanings. It supplements exact spelling, gloss, and ordinary text search.
@@ -1335,13 +1336,13 @@ An undo record survives draft reload and mode changes.
 
 The common API adds the following endpoints. Both standalone and Workers hosts implement identical contracts when they advertise each capability.
 
-| Endpoint | Contract |
-| --- | --- |
+| Endpoint                  | Contract                                                                 |
+| ------------------------- | ------------------------------------------------------------------------ |
 | `GET /embedding-profiles` | Available profiles, query availability, coverage, and provenance limits. |
-| `POST /search/semantic` | Meaning search under one profile and one dictionary snapshot. |
-| `POST /assist` | One explicit draft-suggestion task, with no publication side effects. |
-| `GET /jobs/ID` | State and result of a permitted asynchronous request. |
-| `DELETE /jobs/ID` | Request cancellation of that caller's job. |
+| `POST /search/semantic`   | Meaning search under one profile and one dictionary snapshot.            |
+| `POST /assist`            | One explicit draft-suggestion task, with no publication side effects.    |
+| `GET /jobs/ID`            | State and result of a permitted asynchronous request.                    |
+| `DELETE /jobs/ID`         | Request cancellation of that caller's job.                               |
 
 Embedding-profile responses contain exactly profiles. Each entry contains id, label, query_available, indexed, eligible, pending, and limitations.
 Id is a profile hash. Counts are nonnegative integers. Limitations is an array of strings. Query_available is a boolean.
@@ -1373,14 +1374,14 @@ Explanation is literal text. Provenance contains provider, model, nullable revis
 Usage is null or contains input_tokens and output_tokens. Counts are nonnegative integers or null when unavailable.
 Proposals never target identity, signatures, publication status, trust records, source ownership, or delivery state.
 
-| Operation | Permitted proposal roots |
-| --- | --- |
-| type | word_type |
-| lujvo | spelling and compound |
-| gismu-sources | formation.sources |
-| cmavo-class | classification.selmaho |
-| definition | text |
-| places-glosses | frame and glosses |
+| Operation      | Permitted proposal roots |
+| -------------- | ------------------------ |
+| type           | word_type                |
+| lujvo          | spelling and compound    |
+| gismu-sources  | formation.sources        |
+| cmavo-class    | classification.selmaho   |
+| definition     | text                     |
+| places-glosses | frame and glosses        |
 
 A cmavo-class proposal requires the draft classification to be cmavo. The author reviews its proposed selmaho array before acceptance.
 A type proposal uses the ordinary type-change flow. Acceptance clears an incompatible classification to null and preserves its prior value in draft undo history.
@@ -1489,7 +1490,6 @@ The source write and jvc publication are never atomic. The app reports each outc
 Read-only batch import continues even when authenticated writing is disabled. Source-only new definitions remain eligible for later import batches.
 
 ## 18. Additional release requirements
-
 
 The generator uses [CLL scoring](https://lojban.github.io/cll/4/12/) for its classic lujvo profile.
 Its gismu profile follows the [CLL generation rules](https://lojban.github.io/cll/4/14/), with explicit normalization and aggregation parameters.
