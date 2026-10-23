@@ -81,6 +81,8 @@ impl EvaluatedState {
             self.unresolved.clear();
             return;
         }
+        // Discard this state's old ancestry before allocating its replacement.
+        self.graph = None;
         let graph = Graph::new(self.prepared.nodes.clone(), &self.prepared.options.limits);
         self.evaluation = evaluate_graph(&self.prepared.options, &graph);
         self.remaining_work = graph.budget.get();
@@ -120,6 +122,23 @@ impl EvaluatedState {
         if self.prepared.event_limit_exceeded {
             rebuild_reason = Some("event_limit".into());
         }
+        // A restored all-global batch cannot use a local update. Decide that
+        // before constructing ancestry that the full rebuild would discard.
+        if rebuild_reason.is_none()
+            && self.graph.is_none()
+            && self.evaluation.available
+            && !added.is_empty()
+            && added.values().all(|node| !supports_local_update(node))
+        {
+            rebuild_reason = Some(
+                if next_ready_id(&added).is_some() {
+                    "global_action"
+                } else {
+                    "batch_dependencies"
+                }
+                .into(),
+            );
+        }
         if rebuild_reason.is_none() && self.graph.is_none() {
             let graph = Graph::new(self.prepared.nodes.clone(), &self.prepared.options.limits);
             if graph.resource.get() {
@@ -131,20 +150,7 @@ impl EvaluatedState {
         }
         while rebuild_reason.is_none() && !added.is_empty() {
             // Prefer dependencies from this same batch before their consumers.
-            let next = added
-                .iter()
-                .find(|(_, node)| {
-                    node.previous.iter().all(|id| !added.contains_key(id))
-                        && node.action["target"]
-                            .as_str()
-                            .is_none_or(|id| !added.contains_key(id))
-                        && node.action["parents"]
-                            .as_array()
-                            .into_iter()
-                            .flatten()
-                            .all(|id| id.as_str().is_none_or(|id| !added.contains_key(id)))
-                })
-                .map(|(id, _)| id.clone());
+            let next = next_ready_id(&added);
             let Some(id) = next else {
                 rebuild_reason = Some("batch_dependencies".into());
                 break;
@@ -173,10 +179,7 @@ impl EvaluatedState {
         if !self.evaluation.available || graph.resource.get() {
             return Err("base_unavailable");
         }
-        if !node.semantic
-            || !(node.kind == "judgment.set"
-                || node.kind == "definition.publish" && node.action["origin"] == "native")
-        {
+        if !supports_local_update(node) {
             return Err("global_action");
         }
         if graph.appended >= APPENDS_BEFORE_REBASE {
@@ -430,6 +433,29 @@ impl EvaluatedState {
     }
 }
 
+fn supports_local_update(node: &Node) -> bool {
+    node.semantic
+        && (node.kind == "judgment.set"
+            || node.kind == "definition.publish" && node.action["origin"] == "native")
+}
+
+fn next_ready_id(added: &BTreeMap<String, Node>) -> Option<String> {
+    added
+        .iter()
+        .find(|(_, node)| {
+            node.previous.iter().all(|id| !added.contains_key(id))
+                && node.action["target"]
+                    .as_str()
+                    .is_none_or(|id| !added.contains_key(id))
+                && node.action["parents"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .all(|id| id.as_str().is_none_or(|id| !added.contains_key(id)))
+        })
+        .map(|(id, _)| id.clone())
+}
+
 fn references(value: &Value, result: &mut BTreeSet<String>) {
     match value {
         Value::String(id) if jvc_core::valid_id(id, "jve1:") => {
@@ -467,4 +493,97 @@ fn unresolved(prepared: &PreparedEvaluationInput) -> BTreeSet<String> {
     }
     result.retain(|id| !prepared.nodes.contains_key(id));
     result
+}
+
+#[cfg(test)]
+mod rebuild_tests {
+    use super::*;
+    use jvc_core::{
+        Header, body_descriptor, canonical_value, identity_from_seed, sign_header, verify_envelope,
+    };
+    use serde_json::json;
+
+    fn event(
+        seed: u8,
+        nonce: u8,
+        action: Value,
+        body: Option<Value>,
+    ) -> (VerifiedEnvelope, Option<Vec<u8>>) {
+        let body = body.map(|value| canonical_value(&value).unwrap());
+        let signed = sign_header(
+            &[seed; 32],
+            Header {
+                version: 1,
+                issuer: identity_from_seed(&[seed; 32]),
+                previous: Vec::new(),
+                nonce: format!("{nonce:032x}"),
+                action,
+                content: body.as_deref().map(|bytes| body_descriptor(bytes).unwrap()),
+            },
+        )
+        .unwrap();
+        (
+            verify_envelope(&signed.canonical_envelope().unwrap()).unwrap(),
+            body,
+        )
+    }
+    fn base() -> PreparedEvaluationInput {
+        let (view, body) = event(
+            1,
+            1,
+            json!({"kind":"view.publish","parents":[]}),
+            Some(
+                json!({"name":"fixture","description":[],"roots":[{"identity":identity_from_seed(&[1;32]),"q":{"numerator":1,"denominator":1}}],"rafsi_threshold":{"numerator":1,"denominator":1},"H":{"numerator":3,"denominator":1},"alpha":{"numerator":1,"denominator":2},"excluded":[],"calculation":"simple-routes-bounds-v1","work":1000,"import_sets":[],"account_witnesses":[],"account_authority":false,"notes":[]}),
+            ),
+        );
+        let mut input = PreparedEvaluationInput::new(EvaluationOptions {
+            selected_view: view.id().into(),
+            import_selections: BTreeMap::new(),
+            overlay: None,
+            limits: Limits::default(),
+        });
+        input.add_record(&view, body.as_deref());
+        assert!(input.clone().evaluate().available);
+        input
+    }
+
+    #[test]
+    fn restored_global_updates_construct_one_graph_and_match_full_state() {
+        let profile = event(
+            2,
+            2,
+            json!({"kind":"identity.profile"}),
+            Some(json!({"name":"fixture","bio":[],"links":[]})),
+        );
+        let trust = event(
+            2,
+            3,
+            json!({"kind":"trust.set","subject":identity_from_seed(&[1;32]),"scope":{"kind":"*","word":"*","language":"*"},"value":"heed"}),
+            None,
+        );
+        for records in [vec![&profile], vec![&trust], vec![&profile, &trust]] {
+            let mut complete = base();
+            let saved = complete
+                .clone()
+                .into_state()
+                .checkpoint("host-checked")
+                .unwrap();
+            let state = EvaluatedState::restore_host_checkpoint(&saved, "host-checked").unwrap();
+            let mut delta = PreparedEvaluationInput::new(complete.options.clone());
+            for (record, body) in records {
+                complete.add_record(record, body.as_deref());
+                delta.add_record(record, body.as_deref());
+            }
+            let before = graph::construction_count();
+            let state = state.advance(delta, &[]);
+            assert_eq!(
+                graph::construction_count() - before,
+                1,
+                "a known global update rebuilt ancestry twice"
+            );
+            assert_eq!(state.statistics().reason.as_deref(), Some("global_action"));
+            assert_eq!(state.statistics().incremental_records, 0);
+            assert_eq!(state.evaluation(), &complete.evaluate());
+        }
+    }
 }
