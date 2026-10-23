@@ -557,10 +557,11 @@ fn event_limit_changes_retain_complete_authenticated_input() {
 
 /// The local acceptance run sets this path. No source content enters the repo.
 #[test]
+#[ignore = "requires JVC_LENSISKU_CARRIERS pointing to public carrier JSONL"]
 fn lensisku_slice_mixed_writes_equal_full_evaluation() {
-    let Ok(path) = std::env::var("JVC_LENSISKU_CARRIERS") else {
-        return;
-    };
+    let path = std::env::var("JVC_LENSISKU_CARRIERS").expect(
+        "set JVC_LENSISKU_CARRIERS to the public carrier JSONL before running this ignored test",
+    );
     use std::io::BufRead;
     let mut f = Fixture::new();
     f.input.events.clear();

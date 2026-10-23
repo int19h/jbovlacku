@@ -74,6 +74,13 @@ impl EvaluatedState {
 
     fn rebuild(&mut self) {
         self.judgment_changes = None;
+        if self.prepared.event_limit_exceeded {
+            self.evaluation = event_limit_evaluation(&self.prepared.options);
+            self.graph = None;
+            self.remaining_work = self.prepared.options.limits.traversal;
+            self.unresolved.clear();
+            return;
+        }
         let graph = Graph::new(self.prepared.nodes.clone(), &self.prepared.options.limits);
         self.evaluation = evaluate_graph(
             &self.prepared.options,

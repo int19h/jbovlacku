@@ -2,6 +2,15 @@ use super::*;
 use std::cell::Cell;
 use std::rc::Rc;
 
+#[cfg(test)]
+thread_local! {
+    static CONSTRUCTIONS: Cell<usize> = const { Cell::new(0) };
+}
+#[cfg(test)]
+pub(super) fn construction_count() -> usize {
+    CONSTRUCTIONS.with(Cell::get)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Node {
@@ -247,6 +256,8 @@ pub(crate) struct Graph {
 }
 impl Graph {
     pub fn new(nodes: BTreeMap<String, Node>, limits: &Limits) -> Self {
+        #[cfg(test)]
+        CONSTRUCTIONS.with(|count| count.set(count.get() + 1));
         let names = Rc::new(nodes.keys().cloned().collect::<Vec<_>>());
         let index = Rc::new(
             names

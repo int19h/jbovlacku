@@ -252,6 +252,9 @@ pub fn evaluate(input: &EvaluationInput) -> Evaluation {
     prepared.evaluate()
 }
 fn evaluate_prepared(prepared: PreparedEvaluationInput) -> Evaluation {
+    if prepared.event_limit_exceeded {
+        return event_limit_evaluation(&prepared.options);
+    }
     let PreparedEvaluationInput {
         options: input,
         nodes,
@@ -286,6 +289,12 @@ fn empty_evaluation(input: &EvaluationOptions) -> Evaluation {
         trust: Vec::new(),
     }
 }
+fn event_limit_evaluation(input: &EvaluationOptions) -> Evaluation {
+    let mut result = empty_evaluation(input);
+    result.available = false;
+    result.reasons.insert("resource_unavailable".into());
+    result
+}
 fn evaluate_graph(
     input: &EvaluationOptions,
     graph: &graph::Graph,
@@ -293,9 +302,7 @@ fn evaluate_graph(
 ) -> Evaluation {
     let mut result = empty_evaluation(input);
     if event_limit_exceeded {
-        result.available = false;
-        result.reasons.insert("resource_unavailable".into());
-        return result;
+        return event_limit_evaluation(input);
     }
     if graph.resource.get() {
         resource_unavailable(&mut result);
@@ -910,5 +917,88 @@ fn reconcile_selections(graph: &graph::Graph, result: &mut Evaluation) {
             p.status = Status::Unavailable;
             p.reasons.insert("source_selection_conflict".into());
         }
+    }
+}
+
+#[cfg(test)]
+mod event_limit_tests {
+    use super::*;
+    use jvc_core::{Header, identity_from_seed, sign_header, verify_envelope};
+    use serde_json::json;
+
+    fn records() -> Vec<VerifiedEnvelope> {
+        let issuer = identity_from_seed(&[1; 32]);
+        let subject = identity_from_seed(&[2; 32]);
+        let mut records: Vec<VerifiedEnvelope> = Vec::new();
+        for nonce in 0..3 {
+            let signed = sign_header(&[1; 32], Header {
+                version: 1,
+                issuer: issuer.clone(),
+                previous: records.last().map(|e| vec![e.id().into()]).unwrap_or_default(),
+                nonce: format!("{nonce:032x}"),
+                action: json!({"kind":"trust.set","subject":subject,"scope":{"kind":"*","word":"*","language":"*"},"value":"heed"}),
+                content: None,
+            }).unwrap();
+            records.push(verify_envelope(&signed.canonical_envelope().unwrap()).unwrap());
+        }
+        records
+    }
+
+    fn prepared(records: &[VerifiedEnvelope], limit: usize) -> PreparedEvaluationInput {
+        let mut limits = Limits::default();
+        limits.events = limit;
+        let mut prepared = PreparedEvaluationInput::new(EvaluationOptions {
+            selected_view: format!("jve1:{}", "0".repeat(64)),
+            import_selections: BTreeMap::new(),
+            overlay: None,
+            limits,
+        });
+        for record in records {
+            prepared.add_record(record, None);
+        }
+        prepared
+    }
+
+    #[test]
+    fn prepared_event_limit_stops_before_graph_construction() {
+        let prepared = prepared(&records(), 1);
+        let before = graph::construction_count();
+        let result = prepared.evaluate();
+        assert!(!result.available);
+        assert_eq!(
+            result.reasons,
+            BTreeSet::from(["resource_unavailable".into()])
+        );
+        assert_eq!(
+            graph::construction_count(),
+            before,
+            "over-limit preparation constructed a graph"
+        );
+    }
+
+    #[test]
+    fn retained_event_limit_stops_before_graph_and_recovers_every_authenticated_node() {
+        let records = records();
+        let before = graph::construction_count();
+        let mut state = prepared(&records, 1).into_state();
+        assert!(!state.evaluation().available);
+        assert_eq!(
+            graph::construction_count(),
+            before,
+            "over-limit state constructed a graph"
+        );
+        let options = prepared(&[], 1).options;
+        state = state.advance(PreparedEvaluationInput::new(options), &[]);
+        assert_eq!(
+            graph::construction_count(),
+            before,
+            "over-limit advance constructed a graph"
+        );
+        let expected = prepared(&records, records.len());
+        state = state.advance(PreparedEvaluationInput::new(expected.options.clone()), &[]);
+        assert_eq!(graph::construction_count(), before + 1);
+        assert_eq!(state.evaluation().receipts.len(), records.len());
+        assert!(!state.evaluation().reasons.contains("resource_unavailable"));
+        assert_eq!(state.evaluation(), &expected.evaluate());
     }
 }
