@@ -122,22 +122,21 @@ impl EvaluatedState {
         if self.prepared.event_limit_exceeded {
             rebuild_reason = Some("event_limit".into());
         }
-        // A restored all-global batch cannot use a local update. Decide that
-        // before constructing ancestry that the full rebuild would discard.
-        if rebuild_reason.is_none()
-            && self.graph.is_none()
-            && self.evaluation.available
-            && !added.is_empty()
-            && added.values().all(|node| !supports_local_update(node))
-        {
-            rebuild_reason = Some(
-                if next_ready_id(&added).is_some() {
-                    "global_action"
-                } else {
-                    "batch_dependencies"
-                }
-                .into(),
-            );
+        // An unavailable base or any global action requires a full rebuild.
+        // Decide before constructing ancestry that the rebuild would discard.
+        if rebuild_reason.is_none() && self.graph.is_none() && !added.is_empty() {
+            if !self.evaluation.available {
+                rebuild_reason = Some("base_unavailable".into());
+            } else if added.values().any(|node| !supports_local_update(node)) {
+                rebuild_reason = Some(
+                    if next_ready_id(&added).is_some() {
+                        "global_action"
+                    } else {
+                        "batch_dependencies"
+                    }
+                    .into(),
+                );
+            }
         }
         if rebuild_reason.is_none() && self.graph.is_none() {
             let graph = Graph::new(self.prepared.nodes.clone(), &self.prepared.options.limits);
@@ -545,6 +544,160 @@ mod rebuild_tests {
         input.add_record(&view, body.as_deref());
         assert!(input.clone().evaluate().available);
         input
+    }
+
+    fn publication() -> (VerifiedEnvelope, Option<Vec<u8>>) {
+        event(
+            1,
+            4,
+            json!({"kind":"definition.publish","word":jvc_core::word_id(&json!({"language":"jbo","spelling":"banli"})).unwrap(),"language":"en","parents":[],"origin":"native"}),
+            Some(
+                serde_json::from_str(include_str!(
+                    "../../jvc-core/tests/fixtures/definition.json"
+                ))
+                .unwrap(),
+            ),
+        )
+    }
+
+    fn assert_restored_rebuild(
+        mut complete: PreparedEvaluationInput,
+        records: &[&(VerifiedEnvelope, Option<Vec<u8>>)],
+        reason: &str,
+    ) {
+        let saved = complete
+            .clone()
+            .into_state()
+            .checkpoint("host-checked")
+            .unwrap();
+        let state = EvaluatedState::restore_host_checkpoint(&saved, "host-checked").unwrap();
+        assert!(state.graph.is_none());
+        let mut delta = PreparedEvaluationInput::new(complete.options.clone());
+        for (record, body) in records {
+            complete.add_record(record, body.as_deref());
+            delta.add_record(record, body.as_deref());
+        }
+        let before = graph::construction_count();
+        let state = state.advance(delta, &[]);
+        assert_eq!(
+            graph::construction_count() - before,
+            1,
+            "a restored rebuild constructed ancestry twice"
+        );
+        assert!(state.statistics().rebuilt);
+        assert_eq!(state.statistics().reason.as_deref(), Some(reason));
+        assert_eq!(state.statistics().incremental_records, 0);
+        assert!(state.judgment_changes().is_none());
+        assert_eq!(state.evaluation(), &complete.clone().evaluate());
+        let full = complete.into_state();
+        assert_eq!(state.remaining_work, full.remaining_work);
+        assert_eq!(state.unresolved, full.unresolved);
+        let graph = state.graph.as_ref().unwrap();
+        let full_graph = full.graph.as_ref().unwrap();
+        assert_eq!(graph.budget.get(), full_graph.budget.get());
+        assert_eq!(graph.resource.get(), full_graph.resource.get());
+    }
+
+    #[test]
+    fn restored_mixed_updates_construct_one_graph_and_match_full_state() {
+        let publication = publication();
+        let profile = event(
+            2,
+            2,
+            json!({"kind":"identity.profile"}),
+            Some(json!({"name":"fixture","bio":[],"links":[]})),
+        );
+        let judgment = event(
+            1,
+            5,
+            json!({"kind":"judgment.set","target":publication.0.id(),"value":"bless"}),
+            None,
+        );
+        let mut complete = base();
+        complete.add_record(&publication.0, publication.1.as_deref());
+        assert!(complete.nodes[publication.0.id()].semantic);
+        for records in [
+            vec![&profile, &judgment],
+            vec![&profile, &publication],
+            vec![&profile, &publication, &judgment],
+        ] {
+            // A publication in the delta must be new, rather than a duplicate.
+            let input = if records
+                .iter()
+                .any(|record| record.0.id() == publication.0.id())
+            {
+                base()
+            } else {
+                complete.clone()
+            };
+            assert_restored_rebuild(input, &records, "global_action");
+        }
+    }
+
+    fn assert_unavailable_updates(unavailable_reason: &str) {
+        let publication = publication();
+        let trust = event(
+            2,
+            3,
+            json!({"kind":"trust.set","subject":identity_from_seed(&[1;32]),"scope":{"kind":"*","word":"*","language":"*"},"value":"heed"}),
+            None,
+        );
+        let judgment = event(
+            1,
+            5,
+            json!({"kind":"judgment.set","target":publication.0.id(),"value":"bless"}),
+            None,
+        );
+        for records in [
+            vec![&trust],
+            vec![&publication],
+            vec![&judgment],
+            vec![&trust, &publication, &judgment],
+        ] {
+            let mut complete = base();
+            if unavailable_reason == "invalid_overlay" {
+                complete.options.overlay = Some(json!({}));
+            } else {
+                complete.options.limits.traversal = 1;
+            }
+            let evaluation = complete.clone().evaluate();
+            assert!(!evaluation.available);
+            assert!(evaluation.reasons.contains(unavailable_reason));
+            assert_restored_rebuild(complete, &records, "base_unavailable");
+        }
+    }
+
+    #[test]
+    fn restored_invalid_overlay_updates_construct_one_graph_and_match_full_state() {
+        assert_unavailable_updates("invalid_overlay");
+    }
+
+    #[test]
+    fn restored_resource_unavailable_updates_construct_one_graph_and_match_full_state() {
+        assert_unavailable_updates("resource_unavailable");
+    }
+
+    #[test]
+    fn restored_mixed_updates_preserve_traversal_exhaustion() {
+        let publication = publication();
+        let profile = event(
+            2,
+            2,
+            json!({"kind":"identity.profile"}),
+            Some(json!({"name":"fixture","bio":[],"links":[]})),
+        );
+        let mut complete = base();
+        let used = complete.options.limits.traversal - complete.clone().into_state().remaining_work;
+        complete.options.limits.traversal = used;
+        assert!(complete.clone().evaluate().available);
+        let mut expected = complete.clone();
+        for (record, body) in [&profile, &publication] {
+            expected.add_record(record, body.as_deref());
+        }
+        let evaluation = expected.evaluate();
+        assert!(!evaluation.available);
+        assert!(evaluation.reasons.contains("resource_unavailable"));
+        assert_restored_rebuild(complete, &[&profile, &publication], "global_action");
     }
 
     #[test]
