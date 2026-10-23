@@ -2,7 +2,8 @@ use super::*;
 use std::cell::Cell;
 use std::rc::Rc;
 
-#[derive(Clone)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct Node {
     pub id: String,
     pub issuer: String,
@@ -90,37 +91,42 @@ pub(crate) struct IdSet {
     names: Rc<Vec<String>>,
     index: Rc<BTreeMap<String, usize>>,
     entries: IdEntries,
+    extra: BTreeSet<String>,
 }
 #[derive(Clone)]
 enum IdEntries {
-    Sparse(Vec<usize>),
-    Dense(Vec<u64>),
+    Sparse(Rc<Vec<usize>>),
+    Dense(Rc<Vec<u64>>),
 }
 impl IdSet {
     fn new(names: Rc<Vec<String>>, index: Rc<BTreeMap<String, usize>>) -> Self {
         Self {
-            entries: IdEntries::Sparse(Vec::new()),
+            entries: IdEntries::Sparse(Rc::default()),
+            extra: BTreeSet::new(),
             names,
             index,
         }
     }
     pub fn contains(&self, id: &str) -> bool {
-        self.index.get(id).is_some_and(|i| match &self.entries {
-            IdEntries::Sparse(ids) => ids.binary_search(i).is_ok(),
-            IdEntries::Dense(bits) => bits[i / 64] & (1u64 << (i % 64)) != 0,
-        })
+        self.extra.contains(id)
+            || self.index.get(id).is_some_and(|i| match &self.entries {
+                IdEntries::Sparse(ids) => ids.binary_search(i).is_ok(),
+                IdEntries::Dense(bits) => bits[i / 64] & (1u64 << (i % 64)) != 0,
+            })
     }
     fn insert(&mut self, id: &str) {
         if let Some(i) = self.index.get(id) {
             match &mut self.entries {
                 IdEntries::Sparse(ids) => {
                     if let Err(at) = ids.binary_search(i) {
-                        ids.insert(at, *i);
+                        Rc::make_mut(ids).insert(at, *i);
                     }
                 }
-                IdEntries::Dense(bits) => bits[i / 64] |= 1u64 << (i % 64),
+                IdEntries::Dense(bits) => Rc::make_mut(bits)[i / 64] |= 1u64 << (i % 64),
             }
             self.make_dense_if_needed();
+        } else {
+            self.extra.insert(id.into());
         }
     }
     pub fn iter(&self) -> impl Iterator<Item = &String> {
@@ -128,7 +134,7 @@ impl IdSet {
             IdEntries::Sparse(ids) => (ids.as_slice(), [].as_slice()),
             IdEntries::Dense(bits) => ([].as_slice(), bits.as_slice()),
         };
-        sparse
+        let mut ordinary = sparse
             .iter()
             .map(|i| &self.names[*i])
             .chain(dense.iter().enumerate().flat_map(move |(word, bits)| {
@@ -142,22 +148,33 @@ impl IdSet {
                     self.names.get(word * 64 + bit)
                 })
             }))
+            .peekable();
+        let mut extra = self.extra.iter().peekable();
+        std::iter::from_fn(move || match (ordinary.peek(), extra.peek()) {
+            (Some(a), Some(b)) if a < b => ordinary.next(),
+            (Some(_), Some(_)) => extra.next(),
+            (Some(_), None) => ordinary.next(),
+            (None, Some(_)) => extra.next(),
+            (None, None) => None,
+        })
     }
     pub fn extend(&mut self, other: IdSet) {
         self.union(&other);
     }
     fn union(&mut self, other: &IdSet) {
+        self.extra.extend(other.extra.iter().cloned());
         if let IdEntries::Dense(_) = &other.entries {
             self.make_dense();
         }
         match (&mut self.entries, &other.entries) {
             (IdEntries::Dense(a), IdEntries::Dense(b)) => {
-                for (a, b) in a.iter_mut().zip(b) {
+                for (a, b) in Rc::make_mut(a).iter_mut().zip(b.iter()) {
                     *a |= b;
                 }
             }
             (IdEntries::Dense(bits), IdEntries::Sparse(ids)) => {
-                for i in ids {
+                let bits = Rc::make_mut(bits);
+                for i in ids.iter() {
                     bits[i / 64] |= 1u64 << (i % 64);
                 }
             }
@@ -178,7 +195,7 @@ impl IdSet {
                 }
                 merged.extend_from_slice(&a[left..]);
                 merged.extend_from_slice(&b[right..]);
-                *a = merged;
+                *a = Rc::new(merged);
             }
             (IdEntries::Sparse(_), IdEntries::Dense(_)) => unreachable!(),
         }
@@ -193,10 +210,10 @@ impl IdSet {
     fn make_dense(&mut self) {
         if let IdEntries::Sparse(ids) = &self.entries {
             let mut bits = vec![0; self.names.len().div_ceil(64)];
-            for i in ids {
+            for i in ids.iter() {
                 bits[i / 64] |= 1u64 << (i % 64);
             }
-            self.entries = IdEntries::Dense(bits);
+            self.entries = IdEntries::Dense(Rc::new(bits));
         }
     }
 }
@@ -212,6 +229,7 @@ impl Closure {
         self.missing.is_empty() && !self.invalid && !self.resource
     }
 }
+#[derive(Clone)]
 pub(crate) struct Graph {
     pub nodes: BTreeMap<String, Node>,
     pub own: Rc<BTreeMap<String, Closure>>,
@@ -225,6 +243,7 @@ pub(crate) struct Graph {
     pub index: Rc<BTreeMap<String, usize>>,
     pub budget: Cell<usize>,
     pub resource: Cell<bool>,
+    pub appended: usize,
 }
 impl Graph {
     pub fn new(nodes: BTreeMap<String, Node>, limits: &Limits) -> Self {
@@ -256,6 +275,7 @@ impl Graph {
             pending_cutoffs: BTreeSet::new(),
             budget: Cell::new(limits.traversal),
             resource: Cell::new(false),
+            appended: 0,
         };
         let before = graph.budget.get();
         graph.own = Rc::new(graph.build_cache(0));
@@ -581,6 +601,47 @@ impl Graph {
             .get(key)
             .cloned()
             .unwrap_or_else(|| key.into())
+    }
+    /// Append a complete ordinary event without changing any existing links.
+    /// New IDs stay outside the fixed bitset universe until the next rebuild.
+    pub fn append_ordinary(&mut self, node: Node) {
+        let closure = |cache: &BTreeMap<String, Closure>| {
+            let mut result = self.empty_closure();
+            result.ids.insert(&node.id);
+            for previous in &node.previous {
+                let prior = &cache[previous];
+                result.ids.union(&prior.ids);
+                result.missing.extend(prior.missing.iter().cloned());
+                result.invalid |= prior.invalid;
+                result.resource |= prior.resource;
+            }
+            result
+        };
+        let own = closure(&self.own);
+        let shared =
+            Rc::ptr_eq(&self.own, &self.structural) && Rc::ptr_eq(&self.own, &self.accepted);
+        if shared {
+            Rc::make_mut(&mut self.own).insert(node.id.clone(), own);
+            self.structural = self.own.clone();
+            self.accepted = self.own.clone();
+        } else {
+            let structural = closure(&self.structural);
+            let accepted = closure(&self.accepted);
+            Rc::make_mut(&mut self.own).insert(node.id.clone(), own);
+            Rc::make_mut(&mut self.structural).insert(node.id.clone(), structural);
+            Rc::make_mut(&mut self.accepted).insert(node.id.clone(), accepted);
+        }
+        self.lifecycle
+            .key_actor
+            .entry(node.issuer.clone())
+            .or_insert_with(|| node.issuer.clone());
+        self.lifecycle
+            .groups
+            .entry(node.issuer.clone())
+            .or_default()
+            .insert(node.issuer.clone());
+        self.nodes.insert(node.id.clone(), node);
+        self.appended += 1;
     }
     pub fn own_complete(&self, id: &str) -> bool {
         self.own.get(id).is_some_and(Closure::complete)

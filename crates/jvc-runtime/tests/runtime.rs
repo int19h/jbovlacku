@@ -858,3 +858,47 @@ fn streamed_search_projection_uses_original_body_authentication() {
         assert_ne!(state["receipts"][&id]["body"], "valid");
     }
 }
+
+#[test]
+fn forked_sessions_and_host_checkpoints_keep_rank_and_parent_isolation() {
+    let mut f = Fixture::new();
+    let target = f.definition("en");
+    f.view("simple-routes-bounds-v1", &[1], 1000);
+    let parent = f.streamed_session();
+    let parent_state = parent.state().unwrap();
+    let options = canonical_value(
+        &json!({"selected_view":f.selected_view,"import_selections":{},"overlay":f.overlay}),
+    )
+    .unwrap();
+    f.bless(1, &target);
+    let mut builder = parent.fork(&options).unwrap();
+    builder
+        .add_record(f.events.last().unwrap().as_bytes(), None)
+        .unwrap();
+    let child = builder.finish();
+    let statistics: Value = serde_json::from_str(&child.update_statistics().unwrap()).unwrap();
+    assert_eq!(statistics["incremental_records"], 1);
+    assert_eq!(parent.state().unwrap(), parent_state);
+    assert_eq!(
+        serde_json::from_str::<Value>(&child.state().unwrap()).unwrap(),
+        jvc_runtime::evaluate_bytes(&f.bytes()).unwrap()
+    );
+    let expected = f.rank("incremental-session");
+    assert_eq!(
+        serde_json::from_str::<Value>(&child.rank(&f.word).unwrap()).unwrap(),
+        expected
+    );
+    let checkpoint = child
+        .checkpoint("host-pinned-inventory-core-view-limits")
+        .unwrap();
+    let restored = jvc_runtime::EvaluationSession::restore_host_checkpoint(
+        &checkpoint,
+        "host-pinned-inventory-core-view-limits",
+    )
+    .unwrap();
+    assert_eq!(restored.state().unwrap(), child.state().unwrap());
+    assert_eq!(
+        restored.rank_with_reviewers(&f.word, 16).unwrap(),
+        child.rank_with_reviewers(&f.word, 16).unwrap()
+    );
+}

@@ -617,13 +617,19 @@ pub fn rank_word(bytes: &[u8], word: &str) -> std::result::Result<String, JsValu
 
 #[wasm_bindgen]
 pub struct EvaluationSession {
-    evaluation: jvc_state::Evaluation,
+    state: jvc_state::EvaluatedState,
 }
 /// Build a session from original records without one combined request.
 #[wasm_bindgen]
 pub struct EvaluationSessionBuilder {
     prepared: jvc_state::PreparedEvaluationInput,
     verifier: jvc_core::EnvelopeVerifier,
+    base: Option<jvc_state::EvaluatedState>,
+    removed: Vec<String>,
+}
+#[wasm_bindgen]
+pub fn evaluation_checkpoint_version() -> String {
+    jvc_state::CHECKPOINT_VERSION.into()
 }
 fn search_projection(
     event: &jvc_core::VerifiedEnvelope,
@@ -702,6 +708,8 @@ impl EvaluationSessionBuilder {
         Ok(Self {
             prepared: jvc_state::PreparedEvaluationInput::new(options),
             verifier: jvc_core::EnvelopeVerifier::default(),
+            base: None,
+            removed: Vec::new(),
         })
     }
     pub fn add_record(
@@ -719,35 +727,63 @@ impl EvaluationSessionBuilder {
     }
     pub fn finish(self) -> EvaluationSession {
         EvaluationSession {
-            evaluation: self.prepared.evaluate(),
+            state: match self.base {
+                Some(base) => base.advance(self.prepared, &self.removed),
+                None => self.prepared.into_state(),
+            },
         }
+    }
+    pub fn remove_record(&mut self, id: &str) {
+        self.removed.push(id.into());
     }
 }
 #[wasm_bindgen]
 impl EvaluationSession {
     #[wasm_bindgen(constructor)]
     pub fn new(bytes: &[u8]) -> std::result::Result<EvaluationSession, JsValue> {
-        let evaluation = jvc_state::evaluate(&evaluation_input(bytes).map_err(fail)?);
-        Ok(Self { evaluation })
+        let state = jvc_state::EvaluatedState::from_input(&evaluation_input(bytes).map_err(fail)?);
+        Ok(Self { state })
+    }
+    pub fn fork(&self, options: &[u8]) -> std::result::Result<EvaluationSessionBuilder, JsValue> {
+        let mut builder = EvaluationSessionBuilder::new(options)?;
+        builder.base = Some(self.state.clone());
+        Ok(builder)
+    }
+    pub fn checkpoint(&self, binding: &str) -> std::result::Result<Vec<u8>, JsValue> {
+        self.state.checkpoint(binding).map_err(fail)
+    }
+    /// The host must check an independent trusted digest and exact binding first.
+    pub fn restore_host_checkpoint(
+        bytes: &[u8],
+        binding: &str,
+    ) -> std::result::Result<EvaluationSession, JsValue> {
+        Ok(Self {
+            state: jvc_state::EvaluatedState::restore_host_checkpoint(bytes, binding)
+                .map_err(fail)?,
+        })
+    }
+    pub fn update_statistics(&self) -> std::result::Result<String, JsValue> {
+        output(self.state.statistics())
     }
     pub fn state(&self) -> std::result::Result<String, JsValue> {
-        let mut value = serde_json::to_value(&self.evaluation).unwrap();
+        let evaluation = self.state.evaluation();
+        let mut value = serde_json::to_value(evaluation).unwrap();
         value["publication_statuses"] = json!(
-            self.evaluation
+            evaluation
                 .publications
                 .keys()
-                .filter_map(|id| jvc_state::publication_status(&self.evaluation, id)
+                .filter_map(|id| jvc_state::publication_status(evaluation, id)
                     .map(|status| (id.clone(), status)))
                 .collect::<BTreeMap<_, _>>()
         );
         value["account_controls"] = json!(
-            self.evaluation
+            evaluation
                 .accounts
                 .iter()
                 .map(|(key, account)| (
                     key.clone(),
                     jvc_state::account_control(
-                        &self.evaluation,
+                        evaluation,
                         "",
                         &account.account.origin,
                         account.account.account
@@ -758,7 +794,7 @@ impl EvaluationSession {
         output(value)
     }
     pub fn rank(&self, word: &str) -> std::result::Result<String, JsValue> {
-        output(rank_word_state(&self.evaluation, word, None).map_err(fail)?)
+        output(rank_word_state(self.state.evaluation(), word, None).map_err(fail)?)
     }
     /// Ranks one word with at most `reviewers` reviewer details per score.
     pub fn rank_with_reviewers(
@@ -766,7 +802,7 @@ impl EvaluationSession {
         word: &str,
         reviewers: usize,
     ) -> std::result::Result<String, JsValue> {
-        output(rank_word_state(&self.evaluation, word, Some(reviewers)).map_err(fail)?)
+        output(rank_word_state(self.state.evaluation(), word, Some(reviewers)).map_err(fail)?)
     }
 }
 

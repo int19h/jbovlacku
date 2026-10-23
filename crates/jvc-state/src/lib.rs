@@ -3,10 +3,12 @@
 mod accounts;
 mod api;
 mod graph;
+mod incremental;
 mod policy;
 pub use api::{
     AccountControl, Authority, Certificate, PublicationStatus, account_control, publication_status,
 };
+pub use incremental::{CHECKPOINT_VERSION, EvaluatedState, UpdateStatistics};
 
 use jvc_core::{BodyAvailability, VerifiedEnvelope, inspect_body, validate_action};
 pub use policy::{Context, ContextGraph, PositiveEdge, evaluate_context};
@@ -27,7 +29,7 @@ pub struct EvaluationInput {
     pub limits: Limits,
 }
 /// State configuration without record payloads.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct EvaluationOptions {
     pub selected_view: String,
@@ -39,6 +41,7 @@ pub struct EvaluationOptions {
 }
 /// Authenticated records with only the content that state evaluation needs.
 /// Fields stay private so callers cannot supply an unvalidated projection.
+#[derive(Clone)]
 pub struct PreparedEvaluationInput {
     options: EvaluationOptions,
     nodes: BTreeMap<String, graph::Node>,
@@ -69,17 +72,19 @@ impl PreparedEvaluationInput {
         if !self.nodes.contains_key(event.id()) {
             if self.nodes.len() >= self.options.limits.events {
                 self.event_limit_exceeded = true;
-            } else {
-                self.nodes.insert(event.id().into(), node);
             }
+            self.nodes.insert(event.id().into(), node);
         }
         content
     }
     pub fn evaluate(self) -> Evaluation {
         evaluate_prepared(self)
     }
+    pub fn into_state(self) -> EvaluatedState {
+        EvaluatedState::new(self)
+    }
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Limits {
     pub events: usize,
@@ -252,7 +257,11 @@ fn evaluate_prepared(prepared: PreparedEvaluationInput) -> Evaluation {
         nodes,
         event_limit_exceeded,
     } = prepared;
-    let mut result = Evaluation {
+    let graph = graph::Graph::new(nodes, &input.limits);
+    evaluate_graph(&input, &graph, event_limit_exceeded)
+}
+fn empty_evaluation(input: &EvaluationOptions) -> Evaluation {
+    Evaluation {
         selected_view: input.selected_view.clone(),
         available: true,
         reasons: BTreeSet::new(),
@@ -275,13 +284,19 @@ fn evaluate_prepared(prepared: PreparedEvaluationInput) -> Evaluation {
         policy_history: BTreeMap::new(),
         selections: BTreeMap::new(),
         trust: Vec::new(),
-    };
+    }
+}
+fn evaluate_graph(
+    input: &EvaluationOptions,
+    graph: &graph::Graph,
+    event_limit_exceeded: bool,
+) -> Evaluation {
+    let mut result = empty_evaluation(input);
     if event_limit_exceeded {
         result.available = false;
         result.reasons.insert("resource_unavailable".into());
         return result;
     }
-    let graph = graph::Graph::new(nodes, &input.limits);
     if graph.resource.get() {
         resource_unavailable(&mut result);
         return result;
@@ -321,7 +336,7 @@ fn evaluate_prepared(prepared: PreparedEvaluationInput) -> Evaluation {
             },
         );
     }
-    policy::select(&graph, &input, &mut result);
+    policy::select(graph, input, &mut result);
     if result.reasons.contains("resource_unavailable") {
         resource_unavailable(&mut result);
         return result;
@@ -344,16 +359,16 @@ fn evaluate_prepared(prepared: PreparedEvaluationInput) -> Evaluation {
             .reasons
             .insert("public_shun_issuer_unavailable".into());
     }
-    publications(&graph, &mut result);
-    reconcile_selections(&graph, &mut result);
-    accounts::evaluate(&graph, &input, &mut result);
+    publications(graph, &mut result);
+    reconcile_selections(graph, &mut result);
+    accounts::evaluate(graph, input, &mut result);
     if graph.resource.get() {
         resource_unavailable(&mut result);
         return result;
     }
-    native_status(&graph, &mut result);
-    action_targets(&graph, &mut result);
-    registers(&graph, &mut result);
+    native_status(graph, &mut result);
+    action_targets(graph, &mut result);
+    registers(graph, &mut result);
     rafsi_gate(&mut result);
     result
 }
@@ -388,7 +403,17 @@ fn resource_unavailable(result: &mut Evaluation) {
 }
 
 fn publications(graph: &graph::Graph, result: &mut Evaluation) {
+    publications_for(graph, result, None);
+}
+fn publications_for(
+    graph: &graph::Graph,
+    result: &mut Evaluation,
+    only: Option<&BTreeSet<String>>,
+) {
     for (id, node) in &graph.nodes {
+        if only.is_some_and(|ids| !ids.contains(id)) {
+            continue;
+        }
         if !node.semantic || !matches!(node.kind.as_str(), "definition.publish" | "rafsi.publish") {
             continue;
         }
@@ -492,6 +517,9 @@ fn publications(graph: &graph::Graph, result: &mut Evaluation) {
     }
 }
 fn native_status(graph: &graph::Graph, result: &mut Evaluation) {
+    native_status_for(graph, result, None);
+}
+fn native_status_for(graph: &graph::Graph, result: &mut Evaluation, only: Option<&str>) {
     let mut status_records: BTreeMap<&str, Vec<&graph::Node>> = BTreeMap::new();
     for node in graph
         .nodes
@@ -502,7 +530,11 @@ fn native_status(graph: &graph::Graph, result: &mut Evaluation) {
             status_records.entry(target).or_default().push(node);
         }
     }
-    for publication in result.publications.values_mut().filter(|p| !p.imported) {
+    for publication in result
+        .publications
+        .values_mut()
+        .filter(|p| !p.imported && only.is_none_or(|id| p.id == id))
+    {
         let actor = graph.actor(&publication.issuer);
         let keys = graph.downstream(&publication.issuer);
         if !graph.suspended(&publication.issuer)
@@ -736,7 +768,13 @@ fn lineage(graph: &graph::Graph, node: &graph::Node) -> BTreeMap<String, String>
         .collect()
 }
 fn action_targets(graph: &graph::Graph, result: &mut Evaluation) {
+    action_targets_for(graph, result, None);
+}
+fn action_targets_for(graph: &graph::Graph, result: &mut Evaluation, only: Option<&str>) {
     for (id, node) in &graph.nodes {
+        if only.is_some_and(|only| id != only) {
+            continue;
+        }
         if !node.semantic {
             continue;
         }

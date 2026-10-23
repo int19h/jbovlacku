@@ -218,9 +218,22 @@ impl Fixture {
                 3 => events.sort_by_key(|e| e.id().to_owned()),
                 _ => {}
             }
+            let mut incremental = jvc_state::EvaluatedState::from_input(&input);
             for e in &events {
                 input.events.push(e.clone());
-                let _ = evaluate(&input);
+                let mut delta = PreparedEvaluationInput::new(EvaluationOptions {
+                    selected_view: input.selected_view.clone(),
+                    import_selections: input.import_selections.clone(),
+                    overlay: input.overlay.clone(),
+                    limits: input.limits.clone(),
+                });
+                delta.add_record(e, input.bodies.get(e.id()).map(Vec::as_slice));
+                incremental = incremental.advance(delta, &[]);
+                assert_eq!(
+                    incremental.evaluation(),
+                    &evaluate(&input),
+                    "H{case:02} delivery {order} incremental"
+                );
             }
             input.events.extend(events);
             assert_eq!(
@@ -1533,6 +1546,54 @@ fn evaluate_observed(input: &EvaluationInput) -> Evaluation {
         .unwrap();
     }
     result
+}
+
+#[test]
+fn incremental_width_growth_with_carried_account_history_keeps_resource_results() {
+    let mut f = Fixture::new();
+    f.handover("deprecated");
+    while f.input.events.len() < 64 {
+        f.event(30, vec![], json!({"kind":"identity.merge"}), None);
+    }
+    let before = f.input.clone();
+    let judgment = f.event(
+        31,
+        vec![],
+        json!({"kind":"judgment.set","target":f.d,"value":"bless"}),
+        None,
+    );
+    let (mut low, mut high) = (0, 100_000);
+    while low < high {
+        let middle = (low + high) / 2;
+        f.input.limits.traversal = middle;
+        if evaluate(&f.input).reasons.contains("resource_unavailable") {
+            low = middle + 1;
+        } else {
+            high = middle;
+        }
+    }
+    for budget in [low - 1, low, low + 100] {
+        let mut base = before.clone();
+        base.limits.traversal = budget;
+        f.input.limits.traversal = budget;
+        let state = jvc_state::EvaluatedState::from_input(&base);
+        let mut delta = PreparedEvaluationInput::new(EvaluationOptions {
+            selected_view: f.input.selected_view.clone(),
+            import_selections: f.input.import_selections.clone(),
+            overlay: f.input.overlay.clone(),
+            limits: f.input.limits.clone(),
+        });
+        let event = f
+            .input
+            .events
+            .iter()
+            .find(|event| event.id() == judgment)
+            .unwrap();
+        delta.add_record(event, None);
+        let state = state.advance(delta, &[]);
+        assert!(state.statistics().rebuilt);
+        assert_eq!(state.evaluation(), &evaluate(&f.input));
+    }
 }
 
 fn disable_status_authority(f: &mut Fixture, parents: Vec<String>) {
