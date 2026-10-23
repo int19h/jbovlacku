@@ -2990,3 +2990,121 @@ test("F09: a held first publication shows neutral progress until the send fails"
     page.getByRole("link", { name: "4 not delivered" }),
   ).toBeVisible();
 });
+
+for (const outcome of ["failure", "acceptance"] as const) {
+  test(`a reloaded first publication updates neutral progress after ${outcome} and releases its watcher`, async ({
+    page,
+  }) => {
+    await createIdentity(page);
+    await openPublishWithClaim(page, "brodi", "bro");
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let requests = 0;
+    await page.route("**/api/v1/events", async (route) => {
+      requests++;
+      await held;
+      // Reload cancels the first request while this handler waits.
+      if (outcome === "acceptance") await route.continue().catch(() => {});
+      else
+        await route
+          .fulfill({
+            status: 503,
+            json: {
+              code: "test_failure",
+              message: "Delivery failed in this test.",
+              event: null,
+              field: null,
+            },
+          })
+          .catch(() => {});
+    });
+    await page
+      .locator("aside")
+      .getByRole("button", { name: "Publish", exact: true })
+      .click();
+    await page.getByLabel("Passphrase", { exact: true }).fill(PASSPHRASE);
+    await page.getByRole("button", { name: "Unlock", exact: true }).click();
+    await acceptFirstSignature(page);
+    const saved = page.getByRole("region", {
+      name: "Saved publication",
+      exact: true,
+    });
+    try {
+      await expect(saved).toContainText("Saved. Sending.");
+      await page.reload();
+      await expect(
+        page.getByRole("heading", { name: "Saved publication", exact: true }),
+      ).toBeVisible();
+      await expect(saved).toContainText("Saved. Sending.");
+      await expect(
+        saved.getByRole("button", { name: "Try now", exact: true }),
+      ).toHaveCount(0);
+      await expect.poll(() => requests).toBeGreaterThan(1);
+    } finally {
+      release();
+    }
+    if (outcome === "failure") {
+      await expect(saved).toContainText("Saved. Not delivered yet.");
+      await expect(
+        saved.getByRole("button", { name: "Try now", exact: true }),
+      ).toBeVisible();
+      await expect(
+        saved.getByRole("link", { name: "See Not delivered", exact: true }),
+      ).toBeVisible();
+    } else {
+      await expect(saved).toContainText("All 4 signed records were accepted.");
+      await expect(saved).not.toContainText("Sending");
+    }
+    await page.getByRole("link", { name: "Settings", exact: true }).click();
+    await expect(page.locator("main h1")).toBeVisible();
+    await page.evaluate(async () => {
+      const { DeliveryEngine } = await import(String("/src/data/delivery.ts"));
+      const original = DeliveryEngine.prototype.subscribe;
+      (window as any).savedWatchers = 0;
+      DeliveryEngine.prototype.subscribe = function (listener: any) {
+        (window as any).savedWatchers++;
+        const unsubscribe = original.call(this, listener);
+        return () => {
+          (window as any).savedWatchers--;
+          unsubscribe();
+        };
+      };
+    });
+    await spaGoto(page, "/new/publish");
+    await expect(saved).toBeVisible();
+    await expect
+      .poll(() => page.evaluate(() => (window as any).savedWatchers))
+      .toBe(1);
+    await page.getByRole("link", { name: "Settings", exact: true }).click();
+    await expect
+      .poll(() => page.evaluate(() => (window as any).savedWatchers))
+      .toBe(0);
+    if (outcome === "failure") {
+      await spaGoto(page, "/new/publish");
+      await expect(saved).toBeVisible();
+      await page.evaluate(async () => {
+        const { LocalStore } = await import(String("/src/data/store.ts"));
+        const store = new LocalStore();
+        const items = (await store.list("outbox")).sort(
+          (a: any, b: any) => b.order - a.order,
+        );
+        for (const item of items) {
+          await store.mergeOutbox(item.id, (current: any) => ({
+            ...current,
+            stopped: true,
+          }));
+          await store.discardOutbox(item.id);
+        }
+        window.dispatchEvent(new Event("online"));
+      });
+      await expect(
+        page.getByText(
+          "These saved records are no longer available in this browser.",
+          { exact: true },
+        ),
+      ).toBeVisible();
+    }
+  });
+}

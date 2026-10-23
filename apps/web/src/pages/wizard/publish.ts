@@ -99,7 +99,7 @@ export async function publishPage(
     );
     const outcome = el("div", { "aria-live": "polite" });
     main.append(outcome);
-    renderSavedGroup(app, outcome, items);
+    savedPublicationView(app, outcome, context)(items, last.ids);
     return;
   }
   const saver = new DraftSaver(app, draft);
@@ -676,8 +676,7 @@ export async function publishPage(
     }
     return group;
   };
-  const renderSaved = (items: OutboxItem[]) =>
-    renderSavedGroup(app, outcome, items);
+  const renderSaved = savedPublicationView(app, outcome, context);
   const publish = button(
     "Publish",
     async () => {
@@ -730,7 +729,7 @@ export async function publishPage(
               if (error instanceof PublicationConflictError) {
                 if (error.kind === "already-published" && error.record) {
                   bindSaved();
-                  renderSaved(await groupItems(error.record));
+                  renderSaved(await groupItems(error.record), error.record.ids);
                   app.announce(error.message);
                   return;
                 }
@@ -856,13 +855,57 @@ export async function publishPage(
   refreshPublish();
   if (published) {
     bindSaved();
-    renderSaved(await groupItems(published));
+    renderSaved(await groupItems(published), published.ids);
   }
 }
+/** Keeps every saved-group path current until its route closes. */
+function savedPublicationView(
+  app: App,
+  outcome: HTMLElement,
+  context: RenderContext,
+) {
+  let unsubscribe: (() => void) | undefined;
+  let generation = 0;
+  context.signal.addEventListener(
+    "abort",
+    () => {
+      generation++;
+      unsubscribe?.();
+    },
+    { once: true },
+  );
+  return (initial: OutboxItem[], ids = initial.map((item) => item.id)) => {
+    unsubscribe?.();
+    const current = ++generation;
+    const wanted = new Set(ids);
+    let previous = "";
+    const render = (items: OutboxItem[]) => {
+      if (!context.live() || context.signal.aborted || current !== generation)
+        return;
+      const group = items.filter((item) => wanted.has(item.id));
+      const signature = JSON.stringify({ online: navigator.onLine, group });
+      if (signature === previous) return;
+      previous = signature;
+      renderSavedGroup(app, outcome, group);
+    };
+    render(initial);
+    if (!context.signal.aborted) unsubscribe = app.delivery.subscribe(render);
+  };
+}
+
 /** The saved group: delivery state per record and the controls that use the saved bytes. */
 function renderSavedGroup(app: App, outcome: HTMLElement, items: OutboxItem[]) {
   outcome.replaceChildren();
   const definition = items[0];
+  if (!definition) {
+    outcome.append(
+      p(
+        "These saved records are no longer available in this browser.",
+        "notice",
+      ),
+    );
+    return;
+  }
   const unfinished = items.filter((item) =>
     Object.values(item.peers).some((peer) => peer.state !== "accepted"),
   );
@@ -920,12 +963,6 @@ function renderSavedGroup(app: App, outcome: HTMLElement, items: OutboxItem[]) {
         retry.disabled = true;
         try {
           for (const item of unfinished) await app.delivery.tryNow(item.id);
-          const fresh = await app.delivery.items();
-          renderSavedGroup(
-            app,
-            outcome,
-            items.map((i) => fresh.find((f) => f.id === i.id) ?? i),
-          );
         } catch (error) {
           app.announce(describe(error));
         } finally {
