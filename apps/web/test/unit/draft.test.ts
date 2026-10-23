@@ -543,6 +543,56 @@ test("builders omit blank source evidence and preserve meaningful values before 
   }
 });
 
+test("retired signed hints survive reading while a new signature needs an explicit replacement", () => {
+  for (const tag of ["entity", "mass", "tuple"]) {
+    const parent = richParent();
+    const hint = {
+      alternatives: [{ tags: [tag], abstractor: null, relation_arity: null }],
+      note: [["An earlier annotation."]],
+    };
+    parent.frame.places[0].type_hints = [hint] as never;
+    assert.ok(admissible(parent), tag);
+    const draft = draftFromBody(
+      parent as never,
+      "jve1:" + "1".repeat(64),
+      "native",
+    );
+    const restored = normalizeDraft(JSON.parse(JSON.stringify(draft)));
+    assert.deepEqual(restored.places[0].hint, hint, tag);
+    const built = draftToBody(restored);
+    assert.deepEqual(built.body!.frame!.places[0].type_hints, [hint], tag);
+    assert.ok(
+      built.problems.some(
+        (problem) =>
+          problem.blocking &&
+          problem.field === "places.1" &&
+          problem.message.includes(`retired tag "${tag}"`),
+      ),
+      tag,
+    );
+    const fresh = newDraft({
+      spelling: "broda",
+      kind: "gismu",
+      text: [[1]],
+      frameMode: "fixed",
+      places: [{ ...newPlace(1), kind: "custom", hint }],
+      numberingApproved: true,
+    });
+    assert.ok(
+      draftToBody(fresh).problems.some(
+        (problem) =>
+          problem.blocking && problem.message.includes(`retired tag "${tag}"`),
+      ),
+      tag,
+    );
+    restored.places[0].hint!.alternatives[0].tags = ["event"];
+    const replaced = draftToBody(restored);
+    assert.deepEqual(replaced.problems, [], tag);
+    assert.ok(admissible(replaced.body, restored.parents), tag);
+    assert.deepEqual(parent.frame.places[0].type_hints, [hint], tag);
+  }
+});
+
 test("source pronunciations and stems survive draft reload, publication, and revision", () => {
   const row = {
     language: "en",

@@ -62,7 +62,7 @@ export type KindChoice =
   | "custom";
 export const kindChoices: { value: KindChoice; label: string }[] = [
   { value: "unspecified", label: "unspecified" },
-  { value: "object", label: "object" },
+  { value: "object", label: "anything (referent)" },
   { value: "event", label: "event" },
   { value: "property", label: "property" },
   { value: "number", label: "number" },
@@ -974,6 +974,7 @@ const KNOWN_TAGS = new Set([
   "set",
   "sequence",
 ]);
+const RETIRED_TAGS = new Set(["entity", "mass", "tuple"]);
 const ABSTRACTORS = new Set([
   "nu",
   "du'u",
@@ -1023,7 +1024,13 @@ function hintProblems(
         blocking: true,
       });
     for (const tag of a.tags)
-      if (!KNOWN_TAGS.has(tag) && !/^https:\/\/[^\s/]+/u.test(tag))
+      if (RETIRED_TAGS.has(tag))
+        problems.push({
+          field,
+          message: `${label} keeps the retired tag "${tag}". Replace it with a current tag or remove it before a new signature. The original signed body stays valid.`,
+          blocking: true,
+        });
+      else if (!KNOWN_TAGS.has(tag) && !/^https:\/\/[^\s/]+/u.test(tag))
         problems.push({
           field,
           message: `${label} uses the tag "${tag}". A tag is one of the named kinds or an HTTPS URL.`,

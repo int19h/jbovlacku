@@ -149,6 +149,63 @@ async function seed(
   );
 }
 
+test("the referent shortcut names its broad meaning and retired hints need deliberate replacement", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await seed(page);
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { newPlace } = await import(String("/src/model/draft.ts"));
+    const store = new LocalStore();
+    const draft: any = await store.get("drafts", "current");
+    draft.structured = true;
+    draft.text = [[1, " has a fixture meaning."]];
+    draft.frameMode = "fixed";
+    draft.numberingApproved = true;
+    draft.places = [
+      {
+        ...newPlace(1),
+        kind: "custom",
+        hint: {
+          alternatives: [
+            { tags: ["mass"], abstractor: null, relation_arity: null },
+          ],
+          note: [["Retained annotation."]],
+        },
+      },
+    ];
+    await store.put("drafts", "current", draft);
+  });
+  await open(page, "/new/editor");
+  const kind = page.getByRole("combobox", {
+    name: "Kind of thing for place 1",
+  });
+  await expect(kind.locator('option[value="object"]')).toHaveText(
+    "anything (referent)",
+  );
+  await expect(page.locator("main")).toContainText(
+    'keeps the retired tag "mass"',
+  );
+  expect((await stored(page)).places[0].hint.alternatives[0].tags).toEqual([
+    "mass",
+  ]);
+  await kind.selectOption("object");
+  await expect
+    .poll(async () => (await stored(page)).places[0].kind)
+    .toBe("object");
+  await expect(page.locator("main")).not.toContainText(
+    'keeps the retired tag "mass"',
+  );
+  const hints = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { draftToBody } = await import(String("/src/model/draft.ts"));
+    const draft: any = await new LocalStore().get("drafts", "current");
+    return draftToBody(draft).body!.frame!.places[0].type_hints;
+  });
+  expect(hints[0].alternatives[0].tags).toEqual(["referent"]);
+});
+
 test("F4 manual entry and Etymology can remove evidence after confirmation", async ({
   page,
 }) => {

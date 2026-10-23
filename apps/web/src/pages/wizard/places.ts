@@ -899,6 +899,7 @@ export async function placesPage(
             (hint) => {
               place.hint = hint;
               saver.touch();
+              refreshPreview();
             },
           ),
         );
@@ -908,6 +909,7 @@ export async function placesPage(
       if (place.kind !== "custom") place.hint = null;
       saver.touch();
       renderCustom();
+      refreshPreview();
     });
     const from = {
       wrapper: el(
@@ -1129,6 +1131,7 @@ export async function placesPage(
         };
         saver.touch();
         renderTailCustom();
+        refreshPreview();
       });
       const custom = el("div");
       const renderTailCustom = () => {
@@ -1138,6 +1141,7 @@ export async function placesPage(
             hintEditor(draft.tail.hint, draft.structured, (hint) => {
               draft.tail!.hint = hint;
               saver.touch();
+              refreshPreview();
             }),
           );
       };

@@ -404,7 +404,7 @@ fn openssh_signing_interoperability() {
 }
 
 #[test]
-fn standard_type_tags_use_referent_and_drop_mass_and_tuple() {
+fn standard_type_tags_accept_current_and_retired_version_one_names() {
     let mut body = parse_stored_json(include_bytes!("fixtures/definition.json")).unwrap();
     let make = |body: &Value| {
         header(
@@ -418,14 +418,45 @@ fn standard_type_tags_use_referent_and_drop_mass_and_tuple() {
         json!(["referent"]),
         json!(["event", "relation"]),
         json!(["sequence"]),
+        json!(["entity"]),
+        json!(["mass"]),
+        json!(["tuple"]),
         json!(["https://example.org/tag"]),
     ] {
         body["frame"]["tail"] = json!({"from":4,"description":[],"type_hints":hint(tags.clone())});
         assert!(validate_body(&make(&body), &body).is_ok(), "{tags}");
     }
-    for tag in ["entity", "mass", "tuple", "generic"] {
+    for tag in ["generic", "thing"] {
         body["frame"]["tail"] = json!({"from":4,"description":[],"type_hints":hint(json!([tag]))});
         assert!(validate_body(&make(&body), &body).is_err(), "{tag}");
+    }
+}
+
+#[test]
+fn signed_bodies_with_retired_tags_keep_their_original_bytes() {
+    for tag in ["entity", "mass", "tuple"] {
+        let mut body = parse_stored_json(include_bytes!("fixtures/definition.json")).unwrap();
+        body["frame"]["places"][0]["type_hints"] = json!([{
+            "alternatives":[{"tags":[tag],"abstractor":null,"relation_arity":null}],
+            "note":[["Retained annotation."]]
+        }]);
+        let bytes = canonical_value(&body).unwrap();
+        let envelope = sign_header(&[7; 32], header(
+            json!({"kind":"definition.publish","word":word_id(&body["word"]).unwrap(),"language":"en","parents":[],"origin":"native"}),
+            Some(body_descriptor(&bytes).unwrap()),
+        )).unwrap();
+        assert!(
+            matches!(
+                inspect_body(&envelope, Some(&bytes)),
+                BodyAvailability::Valid { .. }
+            ),
+            "{tag}"
+        );
+        assert_eq!(canonical_value(&body).unwrap(), bytes, "{tag}");
+        assert_eq!(
+            body["frame"]["places"][0]["type_hints"][0]["alternatives"][0]["tags"][0],
+            json!(tag)
+        );
     }
 }
 

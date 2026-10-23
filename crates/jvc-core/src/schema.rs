@@ -435,6 +435,9 @@ fn type_hints(v: &Value, r: &mut Rich) -> Result<()> {
                     "text",
                     "set",
                     "sequence",
+                    "entity",
+                    "mass",
+                    "tuple",
                 ]
                 .contains(&t)
                 {
