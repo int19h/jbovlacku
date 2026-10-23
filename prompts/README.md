@@ -58,6 +58,7 @@ After three failed answers for one task, the suggestion fails.
 
 A response without a `submit_answer` call counts as one failed answer and gets no tool result.
 A response with multiple calls also counts as one failed answer.
+Missing or repeated calls add the problem “Call submit_answer exactly once with the complete answer.”
 For either case, the server appends the assistant text without tool calls, followed by a user message that lists the problems.
 The next request keeps the existing exchange and adds those turns. It does not restart the request or add a tool result.
 After three failed answers, including responses without that call, the suggestion shows the same failed state.

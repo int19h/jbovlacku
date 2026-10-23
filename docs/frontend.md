@@ -350,7 +350,8 @@ One source word per language is the simple-mode default. Advanced mode can add a
 An unfinished row does not acquire an invented source word or weight.
 
 “Suggest source words” is optional AI assistance for every language in the selected profile.
-The app makes one request per language. The model returns the word, its sense, its stem, the pronunciation of the word and of the stem, the scoring letters, and a note.
+The app makes one request per selected source row. An individual action uses the row that the author chose, including an alternative row.
+The model returns the word, its sense, its stem, the pronunciation of the word and of the stem, the scoring letters, and a note.
 The author accepts each row or a reviewed set. Missing suggestions leave editable empty rows rather than dropping a language.
 A language with no single word for the meaning keeps its row, with an empty editable Word field and the assistant's note under it.
 Sources remain attributed suggestions until the author accepts them. The model cannot claim dictionary evidence that the app did not retrieve.
@@ -392,7 +393,15 @@ A place with several alternatives shows them together in the field, such as “e
 
 An older signed hint can contain retired tags. The reader and draft preserve its alternatives without rewriting them.
 Before a new signature, the editor names each retired tag and requires deliberate replacement with a current tag, or removal.
-This also applies to saved custom hints. The editor never guesses a replacement for `mass`.
+This also applies to saved custom hints.
+
+`entity` means `referent`. `tuple` means `sequence`.
+`mass` is an opaque legacy annotation outside the current tag tree and has no current alias.
+The problem offers “Replace entity with referent” or “Replace tuple with sequence” as an explicit action.
+These actions preserve the hint's abstractor, relation arity, and note. After replacement, identical tags or alternatives appear once.
+
+For `mass`, the author chooses a current tag or removes the annotation. The editor does not choose a replacement.
+The reassurance about the original signed body appears only for an unchanged alternative retained from that body's hint.
 
 From edits derivation entries with a source word, optional exact source definition, source place, and explanation.
 The frame controls support fixed, variadic, context-dependent, and unspecified structure.
@@ -437,15 +446,19 @@ Accepting a suggestion writes these fields only after the author reviews their v
 
 | Answer value | Draft field or panel behavior |
 | --- | --- |
-| Source `word`, `word_ipa`, `stem`, `ipa` | The matching formation source fields. Unknown optional evidence stays omitted. |
-| Source `sounds` | `input: {format: "lojbanized", text: sounds}`, or null when sounds is unknown. |
-| Source `sense` and `note` | Source `notes`, as separate rich text paragraphs with `Sense: ` and `Note: ` prefixes. Omit an unknown sense. |
+| Source `word`, `word_ipa`, `stem`, `ipa` | The matching formation source fields. A null answer never clears an existing value. Unknown evidence stays omitted when no value exists. |
+| Source `sounds` | `input: {format: "lojbanized", text: sounds}`. A null answer preserves an existing input and leaves an unknown input null. |
+| Source `sense` and `note` | On row acceptance, add nonempty `Sense: ` and `Note: ` paragraphs to source `notes`. Preserve existing notes. |
 | Hint `type` and `reason` | One alternative per current type, with null abstractor and relation arity. Hint `note` keeps one `type: reason` paragraph per alternative. |
 | Hint `unclear` | Panel only. Accepting it preserves an existing hint and leaves an empty hint unspecified. |
 | Mapping component and `reason` | Add its word, exact supplied definition, and place to `derivation`. Keep the full kind prefix in `explanation`. |
 | Mapping `none` or `unclear` | Panel only. Do not clear existing derivations. |
 
 The publication preview shows accepted source notes as the author's contribution, not as retrieved source evidence.
+For a null `word`, show the note under the row before acceptance. It enters `notes` only when the author accepts that row.
+Null source answers also preserve authored notes. A suggested new word can leave existing metadata that the model cannot replace.
+The author must review that retained stem and pronunciation against the changed word before accepting the row.
+
 The From field reads a recognized kind prefix from the derivation explanation after reload.
 A human explanation without such a prefix shows no kind label. The app never infers a kind from its prose.
 
@@ -1328,6 +1341,8 @@ If neither capability is available, the checkbox gives way to “Not available o
 
 While assistance is off, search uses “by words” and keeps the stored mode unchanged.
 When assistance returns, the stored mode returns if its required capability is available.
+The same fallback applies whenever the stored mode's capability is unavailable, including when assistance is on for generation alone.
+Search uses “by words” and preserves the stored preference. The stored mode returns when its capability becomes available.
 
 The baseline provider interface is a documented subset of OpenAI-compatible Chat Completions and Embeddings over HTTP and JSON.
 It uses `/chat/completions` and `/embeddings` under a configured base URL. It does not depend on legacy text completions.
@@ -1341,6 +1356,7 @@ For a failed answer with one usable call, the server appends the assistant turn 
 After three failed answers for one task, the suggestion fails.
 A response without a `submit_answer` call counts as one failed answer and gets no tool result.
 A response with multiple calls also counts as one failed answer.
+Missing or repeated calls add the problem “Call submit_answer exactly once with the complete answer.”
 For either case, the server appends the assistant text without tool calls, followed by a user message that lists the problems.
 The next request keeps the existing exchange and adds those turns. It uses the feedback text in the [answer checks](../prompts/README.md#checks-on-an-answer).
 It does not restart the request or add a tool result.
@@ -1354,7 +1370,10 @@ Its header names the task, the model and reasoning level, and the provider. It l
 It shows the time and duration, and the number of answers and corrections.
 It shows tokens and cost only when the provider sent those figures. Omit each missing figure.
 One line says that the provider does not make the assistant's private reasoning available, and that the log holds the shared reasoning summary and everything that the assistant wrote.
-The rows are the system prompt, collapsed, and the app's request. Each answer then has its reasoning summary or the line “No reasoning summary was shared for this answer.”, any text that the assistant wrote, the tool call with its tokens, and the app's check. A failed check lists each problem that the app sent back to the assistant.
+The rows start with the collapsed system prompt and the app's request.
+Each answer shows its shared reasoning summary or “No reasoning summary was shared for this answer.”
+It also shows the assistant text, tool calls, available token counts, and the server's check.
+A failed check lists each problem that the server sent back to the assistant.
 “Export as Markdown” saves the log as shown. “Export raw JSON” saves the retained request and response bodies with credentials and encrypted reasoning removed.
 The browser keeps the log with the draft. The server temporarily holds the private job result and log until expiry or explicit deletion.
 A publication does not include the log.
@@ -1372,7 +1391,7 @@ After consent, buttons use a small “AI” tag without repeated provider text.
 Suggestions appear in a quiet panel with “Use this” and “Dismiss.” Accepted text becomes ordinary draft text with undo.
 The service does not retain draft prompts or outputs in ordinary logs or peer sync.
 
-Queued inference jobs have an exposed expiry policy. Private outputs remain local draft data unless the author publishes selected content.
+Queued inference jobs have an exposed expiry policy. After the server's job expiry, private outputs remain local draft data unless the author publishes selected content.
 Cancel stops further local processing and requests upstream cancellation where supported. It cannot guarantee reversal of an already billed provider request.
 
 Provider output and retrieved definitions remain untrusted data. They cannot execute tools, install grammar rules, sign events, or make external writes.
@@ -1422,9 +1441,10 @@ The total uncompressed request limit is 256 KiB. The server also enforces task-s
 A completed suggestion contains operation, draft_revision, proposals, explanation, provenance, usage, and log.
 Each proposal contains path and value. Path is a JSON Pointer into current, restricted by the operation's allowlist below.
 Explanation is literal text. Provenance contains provider, model, revision, recipe, and seed. The reference service returns null for revision and seed.
+`revision` is a string or null. `seed` is a safe integer or null.
 
 Usage contains input_tokens and output_tokens. Each count is a nonnegative integer or null when unavailable.
-Per-item reasons travel inside proposal values, not as an extra property on each proposal.
+Reasons for proposed field edits travel inside proposal values. Panel-only reasons travel in the accepted tool arguments described below.
 Type alternatives use `type_hints.note` paragraphs with `type: reason`. Derivations keep the full kind prefix in `explanation`.
 Source `notes` keep the selected sense and note with `Sense: ` and `Note: ` prefixes.
 Proposals never target identity, signatures, publication status, trust records, source ownership, or delivery state.
@@ -1447,7 +1467,30 @@ InferenceLog = {
 ```
 
 Each exchange corresponds to one task. Its attempts keep request and response bodies with credentials and encrypted reasoning removed.
+The exchange's `request` is the initial user-message text for that task, including its requested-key and permitted-component-place legends.
+Each attempt's `request` is the full provider request body, including messages and tools. Neither field includes authentication headers.
 The log also keeps the assistant text, shared reasoning summary, calls, checks, timing, configured reasoning level, and available usage and cost.
+
+An accepted attempt has exactly one tool call of this shape. Its `function.arguments` is JSON text, decoded by the task's answer shape:
+
+```text
+SubmitAnswerCall = {
+  id: string, type: "function",
+  function: {name: "submit_answer", arguments: JSON-string}
+}
+HintsAnswer = {requested-place-key: [{type: current-tag | "unclear", reason: string}]}
+MappingsAnswer = {requested-place-key: [{component: supplied-component-place | "none" | "unclear", reason: string}]}
+```
+
+For a task exchange, the browser reads these arguments from the attempt whose `check.accepted` is true.
+The decoded answers use the [task shapes](../prompts/answer-shapes.json).
+`requested-place-key` is an `xN` key in the retained requested-key legend.
+`supplied-component-place` is a label such as `c1[2]` in the retained permitted-component-place legend.
+The browser uses the requested place key, task, sentinel, and reason to show panel-only hints and mappings.
+An `unclear` hint or a `none` or `unclear` mapping produces no field edit for that item.
+
+An aggregate `/frame` proposal can carry other edits. For a panel-only item, it must retain the authored hint or derivations.
+Acceptance never applies an empty hint or derivation list in place of that retained metadata.
 
 Missing cost stays null. `unknown_cost_attempts` counts attempts without a known cost. `answers` and `corrections` count across all tasks in the job.
 The browser uses these fields for the inference log and its exports. No provider credential enters the log.
@@ -1466,13 +1509,24 @@ A type proposal uses the ordinary type-change flow. Acceptance clears an incompa
 The author must complete the new classification before publication. The app never treats the old classification as valid for the new type.
 
 A gismu-sources request requires a non-null formation object with exactly one source row.
+The browser copies `current` and reduces `formation.sources` to the selected row for that request.
 Its source language is `current.formation.sources[0].language`. The request's `language` still names the definition language.
 The server uses that row's language to choose the source-language prompt. An unsupported source language is rejected before provider work.
+
 The manual builder initializes the formation object before requesting suggestions. The response proposes that one source row, not the whole language profile.
+
+The browser keeps a stable private ID for every row. It records that ID, the original index, language, row values, and draft revision when requesting.
+The proposal path stays `/formation/sources`, with a one-element array. Acceptance maps that array's first element to the recorded row ID.
+It leaves every other row unchanged, including alternative rows of the same language.
+
+Reordering marks the suggestion stale. After a comparison, the author can apply it to the same private ID if that row remains unchanged.
+If the row changed, changed language, or disappeared, the browser offers a new request and never applies to its former index.
 A lujvo proposal never bypasses deterministic construction and segmentation analysis.
 A places proposal must pass the frame and reference rules before acceptance. The author can edit rejected proposals as ordinary draft text.
 
-Assistance success always starts with HTTP 202 and exactly job, expires_at, and poll_after_ms. The reference service returns poll_after_ms 100.
+Assistance success always starts with HTTP 202 and exactly job, expires_at, and poll_after_ms.
+The reference service returns `poll_after_ms: 100`.
+`poll_after_ms` is an integer from 100 through 60,000.
 Job state is queued, running, completed, failed, cancel_requested, or canceled.
 GET and DELETE return state, result, error, expires_at, and progress.
 
@@ -1480,11 +1534,14 @@ Progress contains exactly task, attempt, and max_attempts. Before execution, tas
 During execution, task names the current task, attempt ranges from 1 through 3, and max_attempts is 3.
 The attempt limit applies separately to each task in a job. The server runs the answer checks and correction loop.
 
+Completed, failed, and canceled jobs keep the last reported progress. If no task started, task stays null and attempt stays zero.
+`max_attempts` remains 3 in every state. DELETE does not reset progress.
+
 Result and error are nullable. Errors use the common API error shape and can add log for a failed private job.
 A job ID is opaque, unpredictable, and scoped to its requesting session. Expires_at uses the format specification's UTC timestamp syntax.
 
 The reference service keeps jobs, results, and logs in memory for at most ten minutes from admission.
-Expiry aborts execution and deletes the job. A service restart loses these private jobs too.
+Expiry aborts execution and deletes the job's content. A service restart loses these private jobs too.
 The server publishes this retention limit in its assistance disclosure. It never copies these records into ordinary logs or peer synchronization.
 
 Successful DELETE returns HTTP 200 with the current job response. A queued job becomes canceled. A running job becomes cancel_requested until execution stops.
@@ -1500,7 +1557,14 @@ The browser sends that token in X-CSRF-Token when creating or canceling jobs. An
 Job reads require the same session cookie. A job ID alone never authorizes access. An expired session cannot retrieve its private jobs.
 
 Disabled capability returns HTTP 503 with code feature_disabled. Quotas use HTTP 429 with a retry interval.
-An absent job returns HTTP 410 with code job_expired. A different session receives HTTP 404 for a retained job.
+Unknown job IDs and jobs owned by another session return HTTP 404 with code missing.
+For its owner's current session, an expired job returns HTTP 410 with code job_expired.
+
+The service keeps a tombstone, a small expiry marker, after deleting the content.
+It contains only the job ID, owner session ID, and job expiry.
+It removes these tombstones when that session ends. Each session can hold at most 128 job IDs across live jobs and tombstones.
+At that limit, the service refuses new jobs with HTTP 429 until the session ends.
+
 Retrying a private draft operation does not publish anything or create a dictionary event.
 
 ## 17. Lensisku linking and cross-posting
