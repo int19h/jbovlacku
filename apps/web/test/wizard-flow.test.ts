@@ -372,6 +372,16 @@ test("draft export keeps private source evidence while publication and Revise ke
       stem: "cant",
       ipa: "kant",
     });
+    draft.formation.sources.push({
+      language: "fr",
+      word: "",
+      word_ipa: null,
+      input: null,
+      weight: { numerator: 1, denominator: 2 },
+      notes: [],
+      stem: null,
+      ipa: "",
+    });
     await store.put("drafts", "current", draft);
   });
   await open(page, "/new/publish");
@@ -399,6 +409,11 @@ test("draft export keeps private source evidence while publication and Revise ke
     stem: "cant",
     ipa: "kant",
   });
+  expect(exported.formation.sources[2]).toMatchObject({
+    weight: { numerator: 1, denominator: 2 },
+    stem: null,
+    ipa: "",
+  });
   await page
     .locator("aside")
     .getByRole("button", { name: "Publish", exact: true })
@@ -421,6 +436,13 @@ test("draft export keeps private source evidence while publication and Revise ke
       input: { format: "lojbanized", text: "cukta" },
       weight: { numerator: 1, denominator: 1 },
       notes: [["An authored source note."]],
+    },
+    {
+      language: "fr",
+      word: "",
+      input: null,
+      weight: { numerator: 1, denominator: 2 },
+      notes: [],
     },
   ]);
   await page.goto(

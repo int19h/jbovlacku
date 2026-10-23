@@ -41,7 +41,7 @@ import {
   LENSISKU_RIGHTS_REFERENCE,
 } from "../../src/model/draft.ts";
 import { textToRichText, richTextToText } from "../../src/model/richtext.ts";
-import type { TypeHint } from "../../src/model/types.ts";
+import type { FormationSource, TypeHint } from "../../src/model/types.ts";
 
 before(async () =>
   initializeCore(
@@ -898,50 +898,93 @@ test("cached draft formation keeps private evidence but publishes signed source 
   }
 });
 
-test("private-only draft sources stay in the draft without creating signed source rows", () => {
+test("signed evidence alone decides whether cached draft source rows publish", () => {
   const formation = manualFormation([], "A manual root.")!;
-  const privateRow = {
+  const emptySource: FormationSource = {
     language: "en",
     word: "",
     input: null,
-    weight: { numerator: 1, denominator: 2 },
+    weight: null,
     notes: [],
-    word_ipa: null,
-    stem: "run",
-    ipa: "rʌn",
   };
-  const draft = newDraft({
-    spelling: "broda",
-    kind: "gismu",
-    text: "A running thing.",
-    formation: { ...formation, sources: [privateRow] },
-    evidenceForm: "broda",
-  });
-  const restored = normalizeDraft(JSON.parse(JSON.stringify(draft)));
-  const before = structuredClone(restored);
-  const built = draftToBody(restored);
-  assert.deepEqual(built.problems, []);
-  assert.deepEqual(built.body!.etymology.formation!.sources, []);
-  assert.deepEqual(restored.formation, before.formation);
-  assert.deepEqual(restored.gismu, before.gismu);
-  assert.ok(admissible(built.body));
-  // Authored notes are signed evidence even without a word or scoring input.
-  restored.formation!.sources[0].notes = [["The base form is uncertain."]];
-  const withNotes = draftToBody(restored);
-  assert.equal(withNotes.body!.etymology.formation!.sources.length, 1);
-  assert.deepEqual(withNotes.body!.etymology.formation!.sources[0].notes, [
-    ["The base form is uncertain."],
-  ]);
-  assert.equal(
-    Object.hasOwn(withNotes.body!.etymology.formation!.sources[0], "stem"),
-    false,
-  );
-  assert.equal(
-    Object.hasOwn(withNotes.body!.etymology.formation!.sources[0], "ipa"),
-    false,
-  );
-  assert.deepEqual(withNotes.problems, []);
-  assert.ok(admissible(withNotes.body));
+  const cases: {
+    name: string;
+    fields: Partial<FormationSource>;
+    signed: boolean;
+  }[] = [
+    { name: "all signed fields empty", fields: {}, signed: false },
+    { name: "null pronunciation", fields: { word_ipa: null }, signed: false },
+    { name: "empty pronunciation", fields: { word_ipa: "" }, signed: false },
+    {
+      name: "blank word and pronunciation",
+      fields: { word: " \t ", word_ipa: " \t " },
+      signed: false,
+    },
+    { name: "empty note paragraphs", fields: { notes: [[]] }, signed: false },
+    {
+      name: "known weight only",
+      fields: { weight: { numerator: 1, denominator: 2 } },
+      signed: true,
+    },
+    {
+      name: "zero weight only",
+      fields: { weight: { numerator: 0, denominator: 1 } },
+      signed: true,
+    },
+    { name: "word only", fields: { word: "running" }, signed: true },
+    {
+      name: "pronunciation only",
+      fields: { word_ipa: "ˈrʌnɪŋ" },
+      signed: true,
+    },
+    {
+      name: "scoring input only",
+      fields: { input: { format: "lojbanized", text: "ran" } },
+      signed: true,
+    },
+    {
+      name: "authored notes only",
+      fields: { notes: [["The base form is uncertain."]] },
+      signed: true,
+    },
+  ];
+  for (const { name, fields, signed } of cases) {
+    const source = { ...emptySource, ...fields };
+    const { word_ipa, ...required } = source;
+    const expected = signed
+      ? [{ ...required, ...(word_ipa?.trim() ? { word_ipa } : {}) }]
+      : [];
+    for (const stem of [undefined, null, "", "run"]) {
+      for (const ipa of [undefined, null, "", "rʌn"]) {
+        const privateRow = {
+          ...source,
+          ...(stem === undefined ? {} : { stem }),
+          ...(ipa === undefined ? {} : { ipa }),
+        };
+        const draft = newDraft({
+          spelling: "broda",
+          kind: "gismu",
+          text: "A running thing.",
+          formation: { ...formation, sources: [privateRow] },
+          evidenceForm: "broda",
+        });
+        const restored = normalizeDraft(JSON.parse(JSON.stringify(draft)));
+        assert.deepEqual(restored.formation!.sources, [privateRow]);
+        const before = structuredClone(restored);
+        const built = draftToBody(restored);
+        const context = `${name}, stem=${String(stem)}, ipa=${String(ipa)}`;
+        assert.deepEqual(built.problems, [], context);
+        assert.deepEqual(
+          built.body!.etymology.formation!.sources,
+          expected,
+          context,
+        );
+        assert.deepEqual(restored.formation, before.formation, context);
+        assert.deepEqual(restored.gismu, before.gismu, context);
+        assert.ok(admissible(built.body), context);
+      }
+    }
+  }
 });
 
 test("an empty signed source with a known weight survives publication and Revise unchanged", () => {

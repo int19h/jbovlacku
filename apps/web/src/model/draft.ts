@@ -1468,13 +1468,13 @@ function signedFormation(formation: DraftFormation | null): Formation | null {
       notes: row.notes,
     };
     if (row.word_ipa?.trim()) source.word_ipa = row.word_ipa;
-    const privateOnly =
-      (Object.hasOwn(row, "stem") || Object.hasOwn(row, "ipa")) &&
-      !source.word.trim() &&
-      !source.word_ipa &&
-      source.input === null &&
-      !countNodes(source.notes);
-    if (!privateOnly) sources.push(source);
+    const hasSignedEvidence =
+      source.word.trim() ||
+      source.word_ipa ||
+      source.input !== null ||
+      source.weight !== null ||
+      countNodes(source.notes);
+    if (hasSignedEvidence) sources.push(source);
   }
   return { ...formation, sources };
 }

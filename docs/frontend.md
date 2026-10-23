@@ -478,7 +478,7 @@ It never changes the row's language, weight, or provenance. Null answers preserv
 
 The source preview shows before and after values for every proposed field, including fresh values and the new AI note group.
 It also shows each value that acceptance retains.
-Acceptance of any non-null suggested word starts a field review if it retains nonempty evidence, including when Word was empty.
+If an accepted non-null suggested word changes Word or fills an empty Word field, retained nonempty evidence needs review.
 The app marks every nonempty old value that remains, even when the proposal repeats it.
 
 These marks name Letters, Said, Stem, and Stem said. Letters review includes a retained scoring input even when its conversion is unavailable.
@@ -489,7 +489,7 @@ Acceptance retains these values until the author chooses an action. Clear remove
 Generation waits until every row has usable, unmarked Letters, so clearing Letters keeps generation waiting until the author fills them. Signing is blocked while any retained field or paragraph remains unresolved.
 
 Review marks and choices stay private in the draft. They survive reload and mode changes, and undo restores them with the values.
-A later accepted suggested word starts a new review for every retained value.
+A later accepted suggested word that changes Word starts a new review for every retained nonempty value.
 
 The draft privately tracks which paragraphs form the last accepted AI note group for each source row.
 The app initializes new source rows with a known empty AI note group.
