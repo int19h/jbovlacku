@@ -16,11 +16,50 @@ test.beforeAll(async () => {
   });
 });
 
-test.beforeEach(({ page }) => {
+const policyViolations = new WeakMap<Page, string[]>();
+
+test.beforeEach(async ({ page }) => {
   page.on("dialog", (dialog) => void dialog.accept());
+  const violations: string[] = [];
+  policyViolations.set(page, violations);
+  await page.exposeFunction(
+    "recordLayoutPolicyViolation",
+    (violation: string) => {
+      violations.push(violation);
+    },
+  );
+  await page.addInitScript(() => {
+    document.addEventListener("securitypolicyviolation", (event) => {
+      void (
+        window as unknown as {
+          recordLayoutPolicyViolation: (violation: string) => Promise<void>;
+        }
+      ).recordLayoutPolicyViolation(
+        `${location.pathname}: ${event.effectiveDirective}: ${event.blockedURI}`,
+      );
+    });
+  });
+});
+
+async function expectPolicyClean(page: Page) {
+  // Deliver policy events before a navigation replaces the document.
+  await page.evaluate(
+    () => new Promise<void>((resolve) => setTimeout(resolve, 0)),
+  );
+  expect
+    .soft(
+      policyViolations.get(page),
+      "No browser policy violations on any visited screen",
+    )
+    .toEqual([]);
+}
+
+test.afterEach(async ({ page }) => {
+  await expectPolicyClean(page);
 });
 
 async function open(page: Page, path: string) {
+  await expectPolicyClean(page);
   const response = await page.goto(`${fixture().origin}${path}`);
   expect(response?.headers()["content-security-policy"]).toBe(
     BROWSER_HEADERS["content-security-policy"],
@@ -141,16 +180,17 @@ async function populateGismu(page: Page) {
   ).toBeVisible();
 }
 
-async function populatePlaces(page: Page) {
+async function populatePlaces(page: Page, count = 2) {
   await page
     .getByRole("button", { name: "+ Add a place", exact: true })
     .click();
   await page
     .getByLabel("Kind of thing for place 1", { exact: true })
     .selectOption("custom");
-  await page
-    .getByRole("button", { name: "Add an alternative", exact: true })
-    .click();
+  if (count === 2)
+    await page
+      .getByRole("button", { name: "Add an alternative", exact: true })
+      .click();
 }
 
 async function preparePublish(page: Page) {
@@ -233,6 +273,8 @@ async function inventory(page: Page) {
     )) {
       let target: HTMLElement = node;
       let exception: string | null = null;
+      let exceptionContainer: string | null = null;
+      let exceptionSentence: string | null = null;
       let labelTarget = false;
       let labelAssociation: boolean | null = null;
       if (
@@ -259,17 +301,50 @@ async function inventory(page: Page) {
         !node.closest("header,footer,nav")
       ) {
         const prose = node.closest("p,.rich-text,.text,.inline-prose");
-        if (
-          prose &&
-          [...prose.childNodes].some(
-            (sibling) =>
-              sibling !== node &&
-              !(sibling instanceof Element && sibling.matches("a,button")) &&
-              /[a-z]{2}/i.test(sibling.textContent ?? ""),
-          )
-        ) {
-          exception =
-            "Link within running prose: ui-design.md inline exception.";
+        if (prose) {
+          const before = document.createRange();
+          before.selectNodeContents(prose);
+          before.setEndBefore(node);
+          const start = before.toString().length;
+          const end = start + (node.textContent?.length ?? 0);
+          const segments = new Intl.Segmenter("en", {
+            granularity: "sentence",
+          });
+          // Ignore other links when identifying words around this link.
+          const walker = document.createTreeWalker(prose, NodeFilter.SHOW_TEXT);
+          let plainText = "";
+          while (walker.nextNode()) {
+            const text = walker.currentNode.textContent ?? "";
+            plainText += walker.currentNode.parentElement?.closest("a,button")
+              ? " ".repeat(text.length)
+              : text;
+          }
+          for (const sentence of segments.segment(prose.textContent ?? "")) {
+            if (
+              sentence.index > start ||
+              sentence.index + sentence.segment.length < end
+            )
+              continue;
+            const surrounding = plainText.slice(
+              sentence.index,
+              sentence.index + sentence.segment.length,
+            );
+            // A metadata label or a separate sentence cannot supply prose.
+            const afterLabel = surrounding.slice(
+              surrounding.lastIndexOf(":") + 1,
+            );
+            if (
+              /[.!?]["')\]]?\s*$/.test(sentence.segment) &&
+              /[a-z]{2}/i.test(afterLabel) &&
+              !/·/.test(surrounding)
+            ) {
+              exception =
+                "Link within a sentence: ui-design.md inline exception.";
+              exceptionContainer = path(prose);
+              exceptionSentence = sentence.segment.trim();
+            }
+            break;
+          }
         }
       }
       entries.push({
@@ -296,6 +371,8 @@ async function inventory(page: Page) {
         labelTarget,
         labelAssociation,
         exception,
+        exceptionContainer,
+        exceptionSentence,
       });
     }
     return {
@@ -313,6 +390,74 @@ for (const viewport of [
 ]) {
   test.describe(viewport.name, () => {
     test.use({ viewport });
+
+    test("N1: the audit separates sentence links from labeled metadata and standalone actions", async ({
+      page,
+    }, info) => {
+      await open(page, `/word/${fixture().words.cukta}`);
+      await page.evaluate(() => {
+        const samples = [
+          ["sentence", "Read the ", "guide", " for details."],
+          ["sentence-start", "", "Edit", " returns to the retained draft."],
+          ["sentence-end", "Read the ", "guide", "."],
+          [
+            "sentence-colon",
+            "For example: read the ",
+            "guide",
+            " for details.",
+          ],
+          [
+            "sentence-colon-start",
+            "For example: ",
+            "this guide",
+            " explains the process.",
+          ],
+          ["metadata", "Source: ", "record", ""],
+          ["metadata-period", "Source: ", "record", "."],
+          ["action-before-sentence", "", "Claim one", ". Read the guide."],
+          ["action-after-sentence", "Read the guide. ", "Claim one", ""],
+        ];
+        for (const [id, before, caption, after] of samples) {
+          const paragraph = document.createElement("p");
+          paragraph.id = `audit-${id}`;
+          const anchor = document.createElement("a");
+          anchor.href = "#sample";
+          anchor.textContent = caption;
+          paragraph.append(before, anchor, after);
+          document.querySelector("main")!.append(paragraph);
+        }
+      });
+      const data = await inventory(page);
+      await artifact(info, `sentence-exceptions-${viewport.name}`, data);
+      for (const id of [
+        "sentence",
+        "sentence-start",
+        "sentence-end",
+        "sentence-colon",
+        "sentence-colon-start",
+        "metadata",
+        "metadata-period",
+        "action-before-sentence",
+        "action-after-sentence",
+      ]) {
+        const entry = data.entries.find((entry) =>
+          entry.path.includes(`#audit-${id} >`),
+        )!;
+        expect
+          .soft(Boolean(entry.exception), id)
+          .toBe(id.startsWith("sentence"));
+        if (entry.exception) {
+          expect.soft(entry.exceptionContainer).toContain(`#audit-${id}`);
+          expect.soft(entry.exceptionSentence).toMatch(/[.!?]$/);
+        }
+      }
+      for (const href of ["/rafsi/cku", "/claim/cukta"]) {
+        const entry = data.entries.find((entry) => entry.href === href)!;
+        expect.soft(entry.exception, href).toBeNull();
+        expect.soft(entry.targetBounds.width, href).toBeGreaterThanOrEqual(44);
+        expect.soft(entry.targetBounds.height, href).toBeGreaterThanOrEqual(44);
+      }
+    });
 
     test("F2 and Grok3: Meaning and Type use the specified column gap", async ({
       page,
@@ -391,118 +536,170 @@ for (const viewport of [
       expect.soft(parseFloat(styles.spacing)).toBeCloseTo(-1.1, 2);
     });
 
-    test("F4 F5 and Grok1: each alternative keeps its hint beside Tags and controls fit their rows", async ({
+    test("F4 F5 and Grok1: one and two alternatives keep hints below Tags and controls inside their groups", async ({
       page,
     }, info) => {
       await beginDraft(page);
       await open(page, "/new/places");
-      await populatePlaces(page);
+      await populatePlaces(page, 1);
       const rows = [];
-      for (const index of [1, 2]) {
-        const tags = page.getByLabel(`Tags for alternative ${index}`, {
-          exact: true,
-        });
-        const group = page.getByRole("group", {
-          name: `Alternative ${index}`,
-          exact: true,
-        });
-        await expect(group).toBeVisible();
-        const hintId = await tags.getAttribute("aria-describedby");
-        const hint = page.locator(`[id="${hintId}"]`);
-        const controls = [
-          tags,
-          page.getByLabel(`Abstractor for alternative ${index}`, {
+      for (const count of [1, 2]) {
+        if (count === 2)
+          await page
+            .getByRole("button", { name: "Add an alternative", exact: true })
+            .click();
+        for (let index = 1; index <= count; index++) {
+          const tags = page.getByLabel(`Tags for alternative ${index}`, {
             exact: true,
-          }),
-          page.getByLabel(`Relation arity for alternative ${index}`, {
+          });
+          const group = page.getByRole("group", {
+            name: `Alternative ${index}`,
             exact: true,
-          }),
-          page.getByLabel(`Count for alternative ${index}`, { exact: true }),
-          page.getByRole("button", {
+          });
+          await expect(group).toBeVisible();
+          await expect
+            .soft(group.getByText("Alternative", { exact: true }))
+            .toHaveCount(0);
+          const removeButton = group.getByRole("button", {
             name: `Remove alternative ${index}`,
             exact: true,
-          }),
-        ];
-        const boxes = await Promise.all(
-          controls.map(async (control) => (await control.boundingBox())!),
-        );
-        const groupBox = (await group.boundingBox())!;
-        for (const box of boxes) {
+          });
+          await expect(removeButton).toHaveCount(count === 1 ? 0 : 1);
+          if (count === 2) {
+            const spacer = group.locator(".alternative-remove-spacer");
+            await expect.soft(spacer).toHaveCount(1);
+            if (await spacer.count()) {
+              await expect.soft(spacer).toHaveAttribute("aria-hidden", "true");
+              await expect.soft(spacer).toBeEmpty();
+              const label = group.locator("label.field-label").first();
+              expect
+                .soft((await spacer.boundingBox())!.height)
+                .toBeCloseTo((await label.boundingBox())!.height, 1);
+            }
+          }
+          const hintId = await tags.getAttribute("aria-describedby");
+          const hint = page.locator(`[id="${hintId}"]`);
+          const controls = [
+            tags,
+            page.getByLabel(`Abstractor for alternative ${index}`, {
+              exact: true,
+            }),
+            page.getByLabel(`Relation arity for alternative ${index}`, {
+              exact: true,
+            }),
+            page.getByLabel(`Count for alternative ${index}`, { exact: true }),
+            ...(count === 2 ? [removeButton] : []),
+          ];
+          const boxes = await Promise.all(
+            controls.map(async (control) => (await control.boundingBox())!),
+          );
+          const groupBox = (await group.boundingBox())!;
+          for (const box of boxes) {
+            expect
+              .soft(
+                box.x,
+                `Alternative ${index} control stays inside its group`,
+              )
+              .toBeGreaterThanOrEqual(groupBox.x);
+            expect
+              .soft(
+                box.x + box.width,
+                `Alternative ${index} control stays inside its group`,
+              )
+              .toBeLessThanOrEqual(groupBox.x + groupBox.width);
+          }
+          const hintBox = (await hint.boundingBox())!;
+          rows.push({ count, index, boxes, hint: hintBox });
           expect
-            .soft(box.x, `Alternative ${index} control stays inside its group`)
-            .toBeGreaterThanOrEqual(groupBox.x);
+            .soft(hintBox.y, `Alternative ${index} hint follows its Tags input`)
+            .toBeGreaterThanOrEqual(boxes[0].y + boxes[0].height);
           expect
             .soft(
-              box.x + box.width,
-              `Alternative ${index} control stays inside its group`,
+              hintBox.y - boxes[0].y - boxes[0].height,
+              `Alternative ${index} hint is adjacent to Tags`,
             )
-            .toBeLessThanOrEqual(groupBox.x + groupBox.width);
-        }
-        const hintBox = (await hint.boundingBox())!;
-        rows.push({ index, boxes, hint: hintBox });
-        expect
-          .soft(hintBox.y, `Alternative ${index} hint follows its Tags input`)
-          .toBeGreaterThanOrEqual(boxes[0].y + boxes[0].height);
-        expect
-          .soft(
-            hintBox.y - boxes[0].y - boxes[0].height,
-            `Alternative ${index} hint is adjacent to Tags`,
-          )
-          .toBeLessThanOrEqual(8);
-        expect
-          .soft(await hint.evaluate((node) => getComputedStyle(node).fontSize))
-          .toBe("13px");
-        if (viewport.width === 360) {
-          for (let i = 1; i < boxes.length; i++) {
-            expect
-              .soft(
-                boxes[i].y,
-                `Alternative ${index} control ${i} stacks below the preceding control`,
-              )
-              .toBeGreaterThanOrEqual(boxes[i - 1].y + boxes[i - 1].height + 4);
-          }
+            .toBeLessThanOrEqual(8);
           expect
-            .soft(boxes[1].y)
-            .toBeGreaterThanOrEqual(hintBox.y + hintBox.height + 4);
-          if (index === 1) {
-            const next = (await page
-              .getByLabel("Tags for alternative 2", { exact: true })
-              .boundingBox())!;
-            expect
-              .soft(hintBox.y - boxes[0].y - boxes[0].height)
-              .toBeLessThan(next.y - hintBox.y - hintBox.height);
-          }
-        } else {
-          for (const box of boxes.slice(1, 4))
-            expect
-              .soft(
-                Math.abs(box.y - boxes[0].y),
-                `Alternative ${index} input alignment`,
-              )
-              .toBeLessThan(1);
-          const remove = boxes[4];
-          const sameLine = boxes
-            .slice(0, 4)
-            .filter((box) => Math.abs(box.y - remove.y) < box.height);
-          if (sameLine.length)
-            for (const box of sameLine)
+            .soft(
+              await hint.evaluate((node) => getComputedStyle(node).fontSize),
+            )
+            .toBe("13px");
+          if (viewport.width === 360) {
+            for (let i = 1; i < boxes.length; i++) {
               expect
                 .soft(
-                  Math.abs(box.y + box.height - remove.y - remove.height),
-                  `Alternative ${index} removal alignment`,
+                  boxes[i].y,
+                  `Alternative ${index} control ${i} stacks below the preceding control`,
+                )
+                .toBeGreaterThanOrEqual(
+                  boxes[i - 1].y + boxes[i - 1].height + 4,
+                );
+            }
+            expect
+              .soft(boxes[1].y)
+              .toBeGreaterThanOrEqual(hintBox.y + hintBox.height + 4);
+            if (index === 1 && count === 2) {
+              const next = (await page
+                .getByLabel("Tags for alternative 2", { exact: true })
+                .boundingBox())!;
+              expect
+                .soft(hintBox.y - boxes[0].y - boxes[0].height)
+                .toBeLessThan(next.y - hintBox.y - hintBox.height);
+            }
+          } else {
+            for (const box of boxes.slice(1, 4))
+              expect
+                .soft(
+                  Math.abs(box.y - boxes[0].y),
+                  `Alternative ${index} input alignment`,
                 )
                 .toBeLessThan(1);
-          else
-            expect
-              .soft(remove.y)
-              .toBeGreaterThanOrEqual(
-                Math.max(
-                  ...boxes.slice(0, 4).map((box) => box.y + box.height),
-                ) + 4,
-              );
+            const remove = boxes[4];
+            if (!remove) continue;
+            const sameLine = boxes
+              .slice(0, 4)
+              .filter((box) => Math.abs(box.y - remove.y) < box.height);
+            if (sameLine.length)
+              for (const box of sameLine)
+                expect
+                  .soft(
+                    Math.abs(box.y + box.height - remove.y - remove.height),
+                    `Alternative ${index} removal alignment`,
+                  )
+                  .toBeLessThan(1);
+            else
+              expect
+                .soft(remove.y)
+                .toBeGreaterThanOrEqual(
+                  Math.max(
+                    ...boxes.slice(0, 4).map((box) => box.y + box.height),
+                  ) + 4,
+                );
+          }
         }
+        const last = page.getByRole("group", {
+          name: `Alternative ${count}`,
+          exact: true,
+        });
+        const lastBox = (await last.boundingBox())!;
+        const noteLabel = page
+          .locator("label")
+          .filter({ hasText: /^Type note$/ });
+        const noteBox = (await noteLabel.boundingBox())!;
+        expect
+          .soft(
+            noteBox.y - lastBox.y - lastBox.height,
+            "The Type note is separate from the last alternative",
+          )
+          .toBeGreaterThanOrEqual(12);
+        await expectPolicyClean(page);
+        await artifact(
+          info,
+          `alternatives-${count}-${viewport.name}`,
+          rows.filter((row) => row.count === count),
+          page,
+        );
       }
-      await artifact(info, `alternatives-${viewport.name}`, rows, page);
     });
 
     test("F1 and Grok2: every visible interactive target meets its measured size rule", async ({
@@ -518,6 +715,7 @@ for (const viewport of [
       const check = async (state: string) => {
         await page.waitForLoadState("networkidle");
         await page.evaluate(() => document.fonts.ready);
+        await expectPolicyClean(page);
         const data = await inventory(page);
         const failures = data.entries.filter(
           (entry) =>
@@ -789,7 +987,11 @@ for (const viewport of [
       await page.getByLabel("Weights", { exact: true }).selectOption("custom");
       await check("gismu-custom");
       await open(page, "/new/places");
-      await populatePlaces(page);
+      await populatePlaces(page, 1);
+      await check("places-one-alternative");
+      await page
+        .getByRole("button", { name: "Add an alternative", exact: true })
+        .click();
       await page
         .getByRole("button", {
           name: "Add a derivation for place 1",
@@ -806,7 +1008,7 @@ for (const viewport of [
       await open(page, "/new/publish");
       await expandDetails(page);
       await check("publish");
-      expect(manifest.length).toBe(21);
+      expect(manifest.length).toBe(22);
       await artifact(info, `manifest-${viewport.name}`, manifest);
     });
   });

@@ -42,6 +42,7 @@ export async function aboutPage(
         { class: "small" },
         text("Admission policy: "),
         link(capabilities.policy_url, capabilities.policy_url, {
+          class: "touch-link",
           rel: "noopener noreferrer",
           target: "_blank",
         }),

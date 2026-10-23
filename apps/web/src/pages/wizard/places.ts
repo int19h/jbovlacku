@@ -226,7 +226,10 @@ function hintEditor(
           el(
             "div",
             {},
-            el("span", { class: "field-label", text: "Alternative" }),
+            el("span", {
+              class: "field-label alternative-remove-spacer",
+              "aria-hidden": "true",
+            }),
             button(
               `Remove alternative ${index + 1}`,
               () => {

@@ -247,6 +247,7 @@ a.hw,
 .revision-notice .identity-link,
 .definition .disclosure li .identity-link,
 .claim-source a,
+.rafsi-line a,
 .trust-roots a,
 .word-head > a,
 .row .identity-link,
@@ -952,10 +953,13 @@ dialog.sheet h2 {
 }
 .hint-alternative {
   min-width: 0;
-  margin: 12px 0 0;
+  margin: 12px 0;
   padding: 12px;
   border: 1px solid var(--line2);
   border-radius: 8px;
+}
+.alternative-remove-spacer {
+  height: 1.5em;
 }
 .hint-alternative > legend {
   padding: 0 4px;

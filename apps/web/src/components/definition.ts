@@ -208,7 +208,7 @@ export function historyBody(
       { class: "small" },
       text("Permanent record "),
       link(envelope.id, routes.definition(envelope.id), {
-        class: "fingerprint",
+        class: "fingerprint touch-link",
       }),
     ),
   );

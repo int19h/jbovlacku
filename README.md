@@ -64,7 +64,7 @@ The [web UI design](docs/ui-design.md) defines the layouts. The reading, identit
 The built Node app keeps Type and trust card labels separate from their descriptions.
 Draft placeholders have no extra underline, and helper text does not shift neighboring controls.
 Tests measure standalone controls at 1280 and 360 CSS pixels, including populated builders, key states, delivery records, and expanded place fields.
-Each custom place alternative keeps its hint beside the Tags field and shows a separate boundary.
+Each custom place alternative keeps its hint below the Tags field and shows a separate boundary.
 The general SQL migration, automatic rafsi publications, and structured import conversion also remain unfinished.
 The complete `jvc` command catalog in the format specification remains a target interface.
 The [development guide](docs/development.md) describes the implemented native commands.

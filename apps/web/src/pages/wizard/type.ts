@@ -192,7 +192,9 @@ export async function typePage(
       "p",
       { class: "small", style: "margin-top:14px" },
       text("Have the spelling already? "),
-      link("Type it in and skip the builder", "/new/form?manual=1"),
+      link("Type it in and skip the builder", "/new/form?manual=1", {
+        class: "touch-link",
+      }),
     ),
   );
   section.append(

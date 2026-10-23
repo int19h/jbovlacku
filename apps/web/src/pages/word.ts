@@ -121,7 +121,10 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
   );
   main.append(head);
   const composition = el("p", { class: "muted", style: "margin-top:6px" });
-  const rafsiLine = el("p", { class: "muted", style: "margin-top:4px" });
+  const rafsiLine = el("p", {
+    class: "muted rafsi-line",
+    style: "margin-top:4px",
+  });
   main.append(composition, rafsiLine);
   if (!word.word && !word.definitions.length) {
     main.append(

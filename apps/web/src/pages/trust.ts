@@ -372,15 +372,11 @@ export async function trustPage(
     return;
   }
   const body = view.body;
-  if (view.issuer)
-    main.append(
-      el(
-        "p",
-        { class: "small" },
-        text("Published by "),
-        identityLink(view.issuer),
-      ),
-    );
+  if (view.issuer) {
+    const publisher = identityLink(view.issuer);
+    publisher.classList.add("touch-link");
+    main.append(el("p", { class: "small" }, text("Published by "), publisher));
+  }
   const profile = describeProfile(body.calculation);
   main.append(
     p(

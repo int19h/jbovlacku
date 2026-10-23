@@ -246,12 +246,16 @@ export async function gismuPage(
     if (preset) {
       presetNote.append(
         text(`${preset.description} Source: `),
-        link(preset.source_url, preset.source_url, { rel: "noreferrer" }),
+        link(preset.source_url, preset.source_url, {
+          class: "touch-link",
+          rel: "noreferrer",
+        }),
       );
       if (preset.reference_url)
         presetNote.append(
           text(" · reference: "),
           link(preset.reference_url, preset.reference_url, {
+            class: "touch-link",
             rel: "noreferrer",
           }),
         );
