@@ -344,7 +344,20 @@ test("own-history has an overall deadline and respects caller cancellation", asy
 }) => {
   await page.goto("/");
   const results = await page.evaluate(async () => {
-    const { ownHeads } = await import(String("/src/data/history.ts"));
+    const { loadOwnHistory } = await import(String("/src/data/history.ts"));
+    const peer = {
+      id: "isolated",
+      base: "/own-history-test",
+      label: "test peer",
+    };
+    const ownHeads = async (
+      store: any,
+      identity: string,
+      offline = false,
+      signal?: AbortSignal,
+    ) =>
+      (await loadOwnHistory(store, identity, { offline, signal, peer }))
+        .frontier;
     const oldFetch = window.fetch;
     const oldTimeout = AbortSignal.timeout;
     const timeouts: number[] = [];
@@ -356,7 +369,9 @@ test("own-history has an overall deadline and respects caller cancellation", asy
       );
     };
     let requests = 0;
-    window.fetch = async (_, options) => {
+    window.fetch = async (input, options) => {
+      if (!String(input).includes("/own-history-test/"))
+        return oldFetch(input, options);
       requests++;
       return new Promise((_, reject) =>
         options!.signal!.addEventListener(
