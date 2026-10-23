@@ -1,12 +1,11 @@
 import { mkdir, open, readFile, link, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
+import type { CheckpointBinding } from "../../../packages/service/src/checkpoint.ts";
 import { UPSERT_SEARCH_ENTRY } from "../../../packages/service/src/index-store.ts";
 import { SqlRowsCoordinator } from "../../../packages/service/src/sql-coordinator.ts";
 import { DatabaseSync } from "node:sqlite";
 import {
-  emptyState,
-  type State,
   type ObjectStore,
   type Coordinator,
 } from "../../../packages/service/src/storage.ts";
@@ -75,6 +74,11 @@ export class FileObjectStore implements ObjectStore {
     }
   }
 }
+export interface CheckpointPin {
+  binding: string;
+  hash: string;
+  file: string;
+}
 export class SqliteCoordinator extends SqlRowsCoordinator {
   private database: DatabaseSync;
   private closed = false;
@@ -105,6 +109,51 @@ export class SqliteCoordinator extends SqlRowsCoordinator {
       retainedSnapshots,
     );
     this.database = database;
+    database.exec(
+      "CREATE TABLE IF NOT EXISTS evaluation_checkpoint_pin (id INTEGER PRIMARY KEY CHECK(id=1), binding TEXT NOT NULL, hash TEXT NOT NULL, file TEXT NOT NULL)",
+    );
+  }
+  checkpointPin(): CheckpointPin | null {
+    const row = this.database
+      .prepare(
+        "SELECT binding,hash,file FROM evaluation_checkpoint_pin WHERE id=1",
+      )
+      .get();
+    return row
+      ? {
+          binding: String(row.binding),
+          hash: String(row.hash),
+          file: String(row.file),
+        }
+      : null;
+  }
+  pinCheckpoint(binding: CheckpointBinding, pin: CheckpointPin): boolean {
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const metadata = JSON.parse(
+        String(
+          this.database.prepare("SELECT state FROM metadata WHERE id=1").get()!
+            .state,
+        ),
+      );
+      if (
+        metadata.materialized_snapshot !== binding.snapshot ||
+        metadata.materialized_position !== binding.position
+      ) {
+        this.database.exec("ROLLBACK");
+        return false;
+      }
+      this.database
+        .prepare(
+          "INSERT INTO evaluation_checkpoint_pin VALUES(1,?,?,?) ON CONFLICT(id) DO UPDATE SET binding=excluded.binding,hash=excluded.hash,file=excluded.file",
+        )
+        .run(pin.binding, pin.hash, pin.file);
+      this.database.exec("COMMIT");
+      return true;
+    } catch (error) {
+      if (this.database.isTransaction) this.database.exec("ROLLBACK");
+      throw error;
+    }
   }
   close() {
     if (this.closed) return;
@@ -115,10 +164,15 @@ export class SqliteCoordinator extends SqlRowsCoordinator {
 
 export class SqliteIndexStore {
   private database: DatabaseSync;
-  constructor(path: string) {
+  publish?: (snapshot: string) => Promise<void>;
+  constructor(path: string, staged = false) {
     this.database = new DatabaseSync(path);
+    if (staged)
+      this.publish = async (snapshot) => {
+        this.publishCurrent(snapshot);
+      };
     this.database.exec(
-      "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS search_entries(snapshot TEXT NOT NULL,event TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(snapshot,event)); CREATE TABLE IF NOT EXISTS search_current(id INTEGER PRIMARY KEY CHECK(id=1),snapshot TEXT NOT NULL)",
+      "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS search_entries(snapshot TEXT NOT NULL,event TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(snapshot,event)); CREATE TABLE IF NOT EXISTS search_current(id INTEGER PRIMARY KEY CHECK(id=1),snapshot TEXT NOT NULL); CREATE TABLE IF NOT EXISTS search_aliases(snapshot TEXT PRIMARY KEY, source TEXT NOT NULL)",
     );
   }
   async replace(
@@ -130,11 +184,54 @@ export class SqliteIndexStore {
       const insert = this.database.prepare(UPSERT_SEARCH_ENTRY);
       for (const entry of entries)
         insert.run(snapshot, entry.event, JSON.stringify(entry));
+      if (!this.publish) this.publishCurrent(snapshot);
       this.database
-        .prepare(
-          "INSERT INTO search_current VALUES(1,?) ON CONFLICT(id) DO UPDATE SET snapshot=excluded.snapshot",
-        )
+        .prepare("DELETE FROM search_aliases WHERE snapshot=?")
         .run(snapshot);
+      this.database.exec("COMMIT");
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+  private publishCurrent(snapshot: string): void {
+    this.database
+      .prepare(
+        "INSERT INTO search_current VALUES(1,?) ON CONFLICT(id) DO UPDATE SET snapshot=excluded.snapshot",
+      )
+      .run(snapshot);
+  }
+  async reuse(previous: string, snapshot: string): Promise<void> {
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const alias = this.database
+        .prepare("SELECT source FROM search_aliases WHERE snapshot=?")
+        .get(previous);
+      const source = alias ? String(alias.source) : previous;
+      const current = this.database
+        .prepare("SELECT snapshot FROM search_current WHERE id=1")
+        .get();
+      if (
+        (!current &&
+          !alias &&
+          !this.database
+            .prepare("SELECT 1 FROM search_entries WHERE snapshot=? LIMIT 1")
+            .get(source)) ||
+        (current &&
+          String(current.snapshot) !== previous &&
+          !alias &&
+          !this.database
+            .prepare("SELECT 1 FROM search_entries WHERE snapshot=? LIMIT 1")
+            .get(source))
+      )
+        throw new Error("The previous search index is unavailable.");
+      if (source !== snapshot)
+        this.database
+          .prepare(
+            "INSERT INTO search_aliases VALUES(?,?) ON CONFLICT(snapshot) DO UPDATE SET source=excluded.source",
+          )
+          .run(snapshot, source);
+      if (!this.publish) this.publishCurrent(snapshot);
       this.database.exec("COMMIT");
     } catch (error) {
       this.database.exec("ROLLBACK");
