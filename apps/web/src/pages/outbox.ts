@@ -9,7 +9,11 @@ import {
   isFinished,
   recipientLabel,
 } from "../data/delivery.ts";
-import { ownGraph, dependentIds } from "../data/outbox-graph.ts";
+import {
+  ownGraph,
+  dependentIds,
+  requiresLifecycleDelivery,
+} from "../data/outbox-graph.ts";
 import type { Envelope } from "../model/types.ts";
 import type { OutboxItem } from "../data/store.ts";
 
@@ -95,8 +99,10 @@ export async function outboxPage(
     const focusAction = focused?.dataset.outboxAction;
     const active = items.filter((item) => isNotDelivered(item));
     currentActive = active;
+    const waiting = active.filter((item) => !item.stopped);
+    const stopped = active.filter((item) => item.stopped);
     const kinds = new Set(
-      active.flatMap((item) =>
+      waiting.flatMap((item) =>
         Object.values(item.peers).map((peer) =>
           peer.failure === "unresolved" ? "unresolved" : peer.state,
         ),
@@ -125,10 +131,16 @@ export async function outboxPage(
           ? "Some records wait for another attempt."
           : "Some records wait for a connection.",
       );
+    if (waiting.length)
+      reasons.push(
+        "Waiting records stay in this browser. Eligible retries continue while the app is open. A closed browser does not deliver in the background.",
+      );
+    if (stopped.length)
+      reasons.push(
+        "Stopped records stay in this browser and are not sent again until you select Resume.",
+      );
     intro.hidden = active.length === 0;
-    intro.textContent = active.length
-      ? `${reasons.join(" ")} These records stay in this browser. Eligible retries continue while the app is open. A closed browser does not deliver in the background.`
-      : "";
+    intro.textContent = reasons.join(" ");
     list.replaceChildren();
     const dependencies = new Map<string, Set<string> | null>();
     for (const identity of new Set(active.map((item) => item.identity))) {
@@ -143,17 +155,20 @@ export async function outboxPage(
     }
     for (const item of active) {
       const dependents = dependencies.get(item.identity);
-      list.append(
-        row(
-          app,
-          item,
-          dependents
+      let discardState: "lifecycle" | "leaf" | "dependent" | "unavailable" =
+        "unavailable";
+      try {
+        discardState = requiresLifecycleDelivery(item)
+          ? "lifecycle"
+          : dependents
             ? dependents.has(item.id)
               ? "dependent"
               : "leaf"
-            : "unavailable",
-        ),
-      );
+            : "unavailable";
+      } catch {
+        /* Keep unreadable local records available for export. */
+      }
+      list.append(row(app, item, discardState));
     }
     empty.textContent = active.length ? "" : "No unfinished records.";
     exportLine.hidden = active.length === 0;
@@ -221,7 +236,11 @@ export async function outboxPage(
 function row(
   app: App,
   item: OutboxItem,
-  discardState: "leaf" | "dependent" | "unavailable" = "unavailable",
+  discardState:
+    | "lifecycle"
+    | "leaf"
+    | "dependent"
+    | "unavailable" = "unavailable",
 ): HTMLElement {
   const li = el("li", { class: "row", "data-outbox-record": item.id });
   const info = el("span", { class: "t" });
@@ -337,9 +356,11 @@ function row(
       info.append(
         el("small", {
           text:
-            discardState === "dependent"
-              ? "Later records depend on this record. Resume it or save it as a file."
-              : "Local history is unavailable. Resume this record or save it as a file.",
+            discardState === "lifecycle"
+              ? "This lifecycle record must be delivered. Resume it or save it as a file."
+              : discardState === "dependent"
+                ? "Later records depend on this record. Resume it or save it as a file."
+                : "Local history is unavailable. Resume this record or save it as a file.",
         }),
       );
     return li;

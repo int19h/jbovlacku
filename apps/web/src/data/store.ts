@@ -5,6 +5,7 @@
 import { utf8, verifyEnvelope } from "../../../../packages/core/src/index.ts";
 import {
   ownGraph,
+  requiresLifecycleDelivery,
   hasOwnDependent,
   remainingHeads,
   discardedPredecessorReads,
@@ -342,6 +343,16 @@ export class LocalStore {
           const records = items.result as OutboxItem[];
           const item = records.find((record) => record.id === id);
           if (!item) return;
+          if (
+            Object.values(item.peers).every((peer) => peer.state === "accepted")
+          )
+            throw new Error(
+              "This record was delivered to every recipient. Its signed bytes and receipts stay in this browser.",
+            );
+          if (requiresLifecycleDelivery(item))
+            throw new Error(
+              "This lifecycle record must be delivered. Resume it or save it as a file.",
+            );
           if (!item.stopped)
             throw new Error("Stop retrying before you discard this record.");
           const graph = ownGraph(

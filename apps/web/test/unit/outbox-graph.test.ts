@@ -42,3 +42,23 @@ test("a long own-history chain marks every ancestor in one pass", async () => {
   assert.equal(dependedOn.has("0"), true);
   assert.equal(dependedOn.has("4095"), false);
 });
+
+test("only compromise, transfer, and acceptance require lifecycle delivery", async () => {
+  const { requiresLifecycleDelivery } =
+    await import("../../src/data/outbox-graph.ts");
+  for (const kind of [
+    "identity.compromise",
+    "identity.transfer",
+    "identity.accept",
+    "identity.merge",
+    "judgment.set",
+  ])
+    assert.equal(
+      requiresLifecycleDelivery({
+        transport: JSON.stringify({
+          envelope: { header: { action: { kind } } },
+        }),
+      } as any),
+      kind !== "identity.merge" && kind !== "judgment.set",
+    );
+});

@@ -2,6 +2,17 @@
 import type { Envelope, Transport } from "../model/types.ts";
 import type { OutboxItem } from "./store.ts";
 
+/** These signed lifecycle decisions retain their bytes until delivery finishes. */
+export function requiresLifecycleDelivery(item: OutboxItem): boolean {
+  const kind = (JSON.parse(item.transport) as Transport).envelope?.header
+    ?.action?.kind;
+  return (
+    kind === "identity.compromise" ||
+    kind === "identity.transfer" ||
+    kind === "identity.accept"
+  );
+}
+
 export function ownGraph(
   items: OutboxItem[],
   own: Envelope[],

@@ -769,3 +769,258 @@ test("rediscovery shows the author a notice for an owned key that is not selecte
   await notice.getByRole("button", { name: "Dismiss", exact: true }).click();
   await expect(notice).toBeHidden();
 });
+
+test("stopped lifecycle records retain bytes and markers and never offer Discard", async ({
+  page,
+}) => {
+  await page.goto("/outbox");
+  const fixture = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { createKey } = await import(String("/src/data/keys.ts"));
+    const { signWith, outboxItem, queueHandover, queueCompromise } =
+      await import(String("/src/data/lifecycle.ts"));
+    const store = new LocalStore();
+    const old = await createKey("disposable old key");
+    const next = await createKey("disposable next key");
+    const stolen = await createKey("disposable stolen key");
+    await store.installIdentity(old.backup);
+    const recipients = {
+      self: { origin: location.origin, base: "/api/v1", label: "test" },
+    };
+    const stopped = (transport: any) => {
+      const item = outboxItem(transport, transport.envelope.id, 0, recipients);
+      item.stopped = true;
+      item.peers.self = {
+        ...item.peers.self,
+        state: "refused",
+        failure: "refused",
+        nextAttempt: null,
+      };
+      return item;
+    };
+    const transfer = stopped(
+      await signWith(old.key, old.backup.identity, [], {
+        kind: "identity.transfer",
+        successor: next.backup.identity,
+      }),
+    );
+    const accept = stopped(
+      await signWith(next.key, next.backup.identity, [], {
+        kind: "identity.accept",
+        transfer: transfer.id,
+      }),
+    );
+    await queueHandover(store, {
+      transfer,
+      accept,
+      old: old.backup,
+      successor: next.backup,
+      successorTested: false,
+      expectedHeads: [],
+    });
+    const notice = stopped(
+      await signWith(stolen.key, stolen.backup.identity, [], {
+        kind: "identity.compromise",
+        safe: [],
+      }),
+    );
+    notice.stopped = false;
+    await queueCompromise(store, notice, []);
+    const merge = stopped(
+      core.createEvent(
+        new Uint8Array(32).fill(103),
+        [],
+        "1".repeat(32),
+        { kind: "identity.merge" },
+        null,
+      ),
+    );
+    await store.queueGroup([merge]);
+    return {
+      ids: [transfer.id, accept.id, notice.id],
+      notice: notice.id,
+      merge: merge.id,
+    };
+  }, corePath);
+  await page.reload();
+  const notice = page.locator(`[data-outbox-record="${fixture.notice}"]`);
+  await notice
+    .getByRole("button", { name: "Stop retrying", exact: true })
+    .click();
+  for (const id of fixture.ids) {
+    const row = page.locator(`[data-outbox-record="${id}"]`);
+    await expect(row.getByText("Stopped", { exact: true })).toBeVisible();
+    await expect(row).toContainText("This lifecycle record must be delivered.");
+    await expect(
+      row.getByRole("button", { name: "Discard", exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      row.getByRole("button", { name: "Resume", exact: true }),
+    ).toBeVisible();
+    await expect(
+      row.getByRole("button", { name: "Save as file", exact: true }),
+    ).toBeVisible();
+  }
+  const result = await page.evaluate(async (ids) => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore();
+    const snapshot = async () =>
+      JSON.stringify(
+        await Promise.all(
+          ["outbox", "ownhistory", "heads", "keys"].map(async (name) => [
+            name,
+            await Promise.all(
+              (await store.keys(name)).map(async (id: string) => [
+                id,
+                await store.get(name, id),
+              ]),
+            ),
+          ]),
+        ),
+      );
+    const before = await snapshot();
+    const errors = [];
+    for (const id of ids)
+      errors.push(
+        await store.discardOutbox(id).then(
+          () => "",
+          (error: Error) => error.message,
+        ),
+      );
+    return {
+      before,
+      after: await snapshot(),
+      errors,
+      markers: await Promise.all(
+        ids.map((id) => store.get("keys", `discarded:${id}`)),
+      ),
+    };
+  }, fixture.ids);
+  expect(result.errors).toEqual(
+    Array(3).fill(
+      "This lifecycle record must be delivered. Resume it or save it as a file.",
+    ),
+  );
+  expect(result.after).toBe(result.before);
+  expect(result.markers).toEqual([undefined, undefined, undefined]);
+  const merge = page.locator(`[data-outbox-record="${fixture.merge}"]`);
+  page.once("dialog", (dialog) => void dialog.accept());
+  await merge.getByRole("button", { name: "Discard", exact: true }).click();
+  await expect(merge).toHaveCount(0);
+});
+
+test("a stale Discard refuses a fully delivered stopped record and refreshes the list", async ({
+  page,
+}) => {
+  await seed(page);
+  const leaf = page.locator(
+    '[aria-label="Unfinished records"] [data-outbox-record="leaf"]',
+  );
+  await expect(
+    leaf.getByRole("button", { name: "Discard", exact: true }),
+  ).toBeVisible();
+  const accepted = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore();
+    return store.mergeOutbox("leaf", (item: any) => ({
+      ...item,
+      peers: Object.fromEntries(
+        Object.entries(item.peers).map(([id, peer]: any) => [
+          id,
+          {
+            ...peer,
+            state: "accepted",
+            receipt: {
+              id: item.id,
+              admission: "accepted",
+              proof: "synthetic receipt",
+            },
+          },
+        ]),
+      ),
+    }));
+  });
+  page.once("dialog", (dialog) => void dialog.accept());
+  await leaf.getByRole("button", { name: "Discard", exact: true }).click();
+  await expect(page.getByRole("status")).toContainText(
+    "delivered to every recipient",
+  );
+  await expect(leaf).toHaveCount(0);
+  const kept = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore();
+    return {
+      item: await store.get("outbox", "leaf"),
+      marker: await store.get("keys", "discarded:leaf"),
+      heads: await store.get("heads", "test"),
+    };
+  });
+  expect(kept.item).toEqual(accepted);
+  expect(kept.marker).toBeUndefined();
+  expect(kept.heads).toEqual(["leaf"]);
+});
+
+for (const mixed of [false, true]) {
+  test(`the Not delivered introduction separates stopped records${mixed ? " from waiting retries" : " without promising retries"}`, async ({
+    page,
+  }) => {
+    await seed(page);
+    await page.evaluate(async (mixed) => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const store = new LocalStore();
+      for (const item of await store.list("outbox"))
+        await store.mergeOutbox(item.id, (current: any) => ({
+          ...current,
+          stopped: !mixed || current.id !== "base",
+          peers: Object.fromEntries(
+            Object.entries(current.peers).map(([id, peer]: any) => [
+              id,
+              {
+                ...peer,
+                state: mixed && current.id === "base" ? "refused" : "unknown",
+                failure: "server",
+                nextAttempt: null,
+              },
+            ]),
+          ),
+        }));
+    }, mixed);
+    await page.reload();
+    const intro = page.locator("main > p.muted");
+    await expect(intro).toContainText(
+      "Stopped records stay in this browser and are not sent again until you select Resume.",
+    );
+    await expect(intro).not.toContainText("Some delivery outcomes are unknown");
+    if (mixed) {
+      await expect(intro).toContainText("A server refused some records.");
+      await expect(intro).toContainText("Eligible retries continue");
+    } else {
+      await expect(intro).not.toContainText("Eligible retries continue");
+      await expect(intro).not.toContainText("wait for another attempt");
+    }
+  });
+}
+
+test("an unreadable stopped record keeps its export path without crashing the list", async ({
+  page,
+}) => {
+  await seed(page);
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    await new LocalStore().mergeOutbox("leaf", (item: any) => ({
+      ...item,
+      transport: "{",
+    }));
+  });
+  await page.reload();
+  const leaf = page.locator('[data-outbox-record="leaf"]');
+  await expect(leaf).toContainText("Local history is unavailable.");
+  await expect(
+    leaf.getByRole("button", { name: "Save as file", exact: true }),
+  ).toBeVisible();
+  await expect(
+    leaf.getByRole("button", { name: "Discard", exact: true }),
+  ).toHaveCount(0);
+});

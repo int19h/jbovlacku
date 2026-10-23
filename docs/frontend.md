@@ -874,8 +874,10 @@ Stopping does not retract a public record or guarantee that an in-flight request
 A stopped record stays on the Not delivered page with Resume and Save as file. Discard follows the dependency restriction below.
 The header marker counts waiting and stopped records and stays while either exists.
 
-Discard is available only when no later local own record reaches the stopped record through predecessor links.
-Otherwise, the row explains that later records depend on it and offers Resume and Save as file.
+Discard is available only for an unfinished stopped record when no later local own record reaches it through predecessor links.
+When later records depend on it, the row explains this restriction and offers Resume and Save as file.
+Compromise notices, handover transfers, and handover acceptances must be delivered. Their stopped rows offer Resume and Save as file, without Discard.
+The discard transaction refuses these lifecycle records and records that every recipient already accepted. It keeps their signed bytes, receipts, and lifecycle markers.
 This restriction also applies when a server already holds the stopped record.
 Discard asks first, then deletes the local signed bytes and receipts. It does not retract a copy that a server already holds.
 
