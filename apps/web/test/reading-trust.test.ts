@@ -149,10 +149,12 @@ for (const mode of ["create", "restore"] as const) {
     }, fixture().identities.curator);
     if (mode === "create") await createIdentity(page);
     else {
-      const backup = await page.evaluate(async () => {
+      const backup = await page.evaluate(async (corePath) => {
+        const core = await import(corePath);
+        await core.initializeCore();
         const { createKey } = await import(String("/src/data/keys.ts"));
         return (await createKey("test passphrase with spaces")).backup;
-      });
+      }, corePath);
       await page.getByLabel("Backup file").setInputFiles({
         name: "key.json",
         mimeType: "application/json",
