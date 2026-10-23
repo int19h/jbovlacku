@@ -629,6 +629,50 @@ test("checkpoint startup restores index metadata and rejects publication failure
   );
 });
 
+test("package publication completes before checkpoint capture and flush cancels its timer", async () => {
+  const checkpoints = new MemoryCheckpoints();
+  const { service, coordinator, definition, profile } =
+    await fixture(checkpoints);
+  let exports = 0;
+  const capture = (service as any).saveCheckpoint.bind(service);
+  (service as any).saveCheckpoint = (
+    snapshot: Snapshot,
+    position: number,
+    packages: unknown,
+  ) => {
+    const session = (service as any).sessions.get(
+      snapshot.snapshot + "|" + service.options.selectedView,
+    );
+    const exportCheckpoint = session.checkpoint.bind(session);
+    session.checkpoint = (binding: string) => {
+      exports++;
+      return exportCheckpoint(binding);
+    };
+    return capture(snapshot, position, packages);
+  };
+  const entry = judgment(
+    definition.envelope.id,
+    "4",
+    [profile.envelope.id],
+    "bless",
+  );
+  await service.admitMany([utf8(JSON.stringify(entry))]);
+  while ((service as any).background) await (service as any).background;
+  assert.equal(exports, 0);
+  assert.notEqual((service as any).checkpointTimer, undefined);
+  const current = coordinator.state.materialized_snapshot;
+  assert.equal(
+    (await read(service, "/words/" + wordId(word))).snapshot,
+    current,
+  );
+  await service.flushMaterialization();
+  assert.equal(exports, 1);
+  assert.equal(checkpoints.saved?.binding.snapshot, current);
+  assert.equal((service as any).checkpointTimer, undefined);
+  assert.equal((service as any).checkpointJob, undefined);
+  assert.equal((service as any).pendingCheckpoint, undefined);
+});
+
 test("checkpoint writes capture only the latest pending session and share unchanged package records", async () => {
   const checkpoints = new MemoryCheckpoints();
   const { service, definition, profile, coordinator } =
@@ -681,6 +725,7 @@ test("checkpoint writes capture only the latest pending session and share unchan
       (service as any).packageRecords.get(coordinator.state.snapshot),
       initialRecords,
     );
+    if (index === 0) await entered.promise;
   }
   await entered.promise;
   assert.deepEqual(captured, [snapshots[0]]);
@@ -699,9 +744,13 @@ test(
     const { service, coordinator } = await fixture(checkpoints);
     const gate = deferred();
     const second = deferred();
+    const entered = deferred();
     let saves = 0;
     checkpoints.save = () => {
-      if (++saves === 1) return gate.promise;
+      if (++saves === 1) {
+        entered.resolve();
+        return gate.promise;
+      }
       second.resolve();
       return Promise.resolve();
     };
@@ -714,6 +763,7 @@ test(
       coordinator.state.position,
       packages,
     );
+    await entered.promise;
     gate.resolve();
     queueMicrotask(() =>
       (service as any).saveCheckpoint(

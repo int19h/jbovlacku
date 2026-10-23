@@ -124,6 +124,9 @@ export class DictionaryService {
     packages: MaterializedPackages;
   };
   private checkpointJob?: Promise<void>;
+  private checkpointTimer?: ReturnType<typeof setTimeout>;
+  private checkpointDue = 0;
+  private checkpointFlushers = 0;
   private publication: Promise<void> = Promise.resolve();
   private metadata(): Promise<StateMetadata> {
     return this.coordinator.loadMetadata?.() ?? this.coordinator.load();
@@ -266,9 +269,17 @@ export class DictionaryService {
   async flushMaterialization(): Promise<void> {
     await this.initialize();
     while (this.background) await this.background;
-    while (this.checkpointJob || this.pendingCheckpoint) {
-      if (!this.checkpointJob) this.drainCheckpoints();
-      await this.checkpointJob;
+    this.checkpointFlushers++;
+    try {
+      if (this.checkpointTimer !== undefined)
+        clearTimeout(this.checkpointTimer);
+      this.checkpointTimer = undefined;
+      while (this.checkpointJob || this.pendingCheckpoint) {
+        if (!this.checkpointJob) this.drainCheckpoints();
+        await this.checkpointJob;
+      }
+    } finally {
+      this.checkpointFlushers--;
     }
     if (this.backgroundError) throw this.backgroundError;
   }
@@ -283,12 +294,32 @@ export class DictionaryService {
     if (!session || !this.options.checkpoints || !this.options.coreVersion)
       return;
     this.pendingCheckpoint = { snapshot, position, packages };
-    this.drainCheckpoints();
+    this.scheduleCheckpoint(true);
+  }
+  private scheduleCheckpoint(reset = false) {
+    if (!this.pendingCheckpoint) return;
+    if (reset) this.checkpointDue = performance.now() + 100;
+    if (this.checkpointTimer !== undefined) clearTimeout(this.checkpointTimer);
+    this.checkpointTimer = undefined;
+    if (this.checkpointJob) return;
+    if (this.checkpointFlushers) {
+      this.drainCheckpoints();
+      return;
+    }
+    this.checkpointTimer = setTimeout(
+      () => {
+        this.checkpointTimer = undefined;
+        this.drainCheckpoints();
+      },
+      Math.max(0, this.checkpointDue - performance.now()),
+    );
   }
   private drainCheckpoints() {
     if (this.checkpointJob) return;
     this.checkpointJob = (async () => {
       while (this.pendingCheckpoint) {
+        if (!this.checkpointFlushers && performance.now() < this.checkpointDue)
+          break;
         const checkpoint = this.pendingCheckpoint;
         this.pendingCheckpoint = undefined;
         const session = this.sessions.get(
@@ -322,7 +353,7 @@ export class DictionaryService {
       }
     })().finally(() => {
       this.checkpointJob = undefined;
-      if (this.pendingCheckpoint) this.drainCheckpoints();
+      if (this.pendingCheckpoint) this.scheduleCheckpoint();
     });
   }
   private async interpretedSnapshot(value: string | null): Promise<Snapshot> {
