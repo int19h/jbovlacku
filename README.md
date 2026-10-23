@@ -17,6 +17,11 @@ Native and WebAssembly builds share the format rules. The TypeScript application
 The definition validator accepts omitted `word_ipa`, `stem`, and `ipa` fields on formation sources.
 Formation sources still require explicit `input`, `weight`, and `notes`, including their empty or null values.
 Every other [optional definition field](docs/format.md#absent-fields-and-compatibility) still requires its explicit value in the current validator.
+
+The shared core accepts `entity`, `mass`, and `tuple` as retired tags in signed version 1 bodies.
+The draft model preserves these hints for review.
+Before a new signature, the author must replace retired tags with current standard or custom HTTPS tags, or remove them.
+
 The Node.js adapter uses local object files and SQLite. The local Worker adapter uses R2, D1, and a Durable Object.
 The Worker currently serves the API only.
 Both adapters share admission, receipts, snapshots, search packages, and dictionary API logic.
