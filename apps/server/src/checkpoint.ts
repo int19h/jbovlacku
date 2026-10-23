@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { link, open, readFile, readdir, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { serialize, deserialize } from "node:v8";
 import { gzip, gunzip } from "node:zlib";
 import type {
   CheckpointBinding,
@@ -16,7 +17,12 @@ import {
 
 const compress = promisify(gzip);
 const decompress = promisify(gunzip);
-const ownedFile = /^evaluation-[a-f0-9]{64}\.json\.gz$/;
+const legacyFile = /^evaluation-[a-f0-9]{64}\.json\.gz$/;
+const binaryFile = /^evaluation-v2-[a-f0-9]{64}\.bin\.gz$/;
+const ownedFile = (name: string) =>
+  legacyFile.test(name) || binaryFile.test(name);
+const MAX_COMPRESSED_BYTES = 256 * 1024 * 1024;
+const MAX_PAYLOAD_BYTES = 768 * 1024 * 1024;
 const pendingFile = /^\.evaluation-pending-[a-f0-9-]{36}$/;
 const hash = (bytes: Uint8Array) =>
   createHash("sha256").update(bytes).digest("hex");
@@ -39,6 +45,7 @@ const bindingBytes = (binding: CheckpointBinding) =>
 
 export interface CheckpointPins {
   checkpointPin(): CheckpointPin | null;
+  prepareSnapshotCache?(snapshot: string): Promise<void>;
   pinCheckpoint(binding: CheckpointBinding, pin: CheckpointPin): boolean;
 }
 
@@ -60,7 +67,7 @@ export class FileCheckpointStore implements CheckpointStore {
   private async clean(): Promise<void> {
     const retained = this.pins.checkpointPin()?.file;
     for (const name of await readdir(this.directory)) {
-      if (name !== retained && (ownedFile.test(name) || pendingFile.test(name)))
+      if (name !== retained && (ownedFile(name) || pendingFile.test(name)))
         await unlink(join(this.directory, name));
     }
   }
@@ -72,17 +79,21 @@ export class FileCheckpointStore implements CheckpointStore {
       if (
         !pin ||
         pin.binding !== expected ||
-        !ownedFile.test(pin.file) ||
+        !ownedFile(pin.file) ||
         !/^[a-f0-9]{64}$/.test(pin.hash)
       )
         return null;
       const bytes = await readFile(join(this.directory, pin.file));
-      if (hash(bytes) !== pin.hash) return null;
-      const text = await decompress(bytes, {
-        maxOutputLength: 768 * 1024 * 1024,
+      if (bytes.length > MAX_COMPRESSED_BYTES || hash(bytes) !== pin.hash)
+        return null;
+      const decoded = await decompress(bytes, {
+        maxOutputLength: MAX_PAYLOAD_BYTES,
       });
-      const value = JSON.parse(text.toString("utf8"));
-      if (value.binding !== expected || typeof value.payload?.core !== "string")
+      const binary = binaryFile.test(pin.file);
+      const value = binary
+        ? deserialize(decoded)
+        : JSON.parse(decoded.toString("utf8"));
+      if (value.binding !== expected || (binary && value.cache_schema !== 2))
         return null;
       const payload = value.payload;
       if (
@@ -93,6 +104,11 @@ export class FileCheckpointStore implements CheckpointStore {
         !payload.packages.packages2
       )
         return null;
+      if (binary)
+        return payload.core instanceof Uint8Array
+          ? (payload as ServiceCheckpoint)
+          : null;
+      if (typeof payload.core !== "string") return null;
       const core = Buffer.from(payload.core, "base64");
       if (core.toString("base64") !== payload.core) return null;
       return { ...payload, core: new Uint8Array(core) } as ServiceCheckpoint;
@@ -111,19 +127,18 @@ export class FileCheckpointStore implements CheckpointStore {
     payload: ServiceCheckpoint,
   ): Promise<void> {
     await this.initialize();
+    await this.pins.prepareSnapshotCache?.(binding.snapshot);
     const expected = bindingBytes(binding);
-    const bytes = await compress(
-      JSON.stringify({
-        binding: expected,
-        payload: {
-          ...payload,
-          core: Buffer.from(payload.core).toString("base64"),
-        },
-      }),
-      { level: 1 },
-    );
+    const encoded = serialize({ cache_schema: 2, binding: expected, payload });
+    if (encoded.length > MAX_PAYLOAD_BYTES)
+      throw new Error("The checkpoint payload exceeds its local cache limit.");
+    const bytes = await compress(encoded, { level: 1 });
+    if (bytes.length > MAX_COMPRESSED_BYTES)
+      throw new Error(
+        "The compressed checkpoint exceeds its local cache limit.",
+      );
     const digest = hash(bytes);
-    const name = `evaluation-${digest}.json.gz`;
+    const name = `evaluation-v2-${digest}.bin.gz`;
     const target = join(this.directory, name);
     const temporary = join(
       this.directory,

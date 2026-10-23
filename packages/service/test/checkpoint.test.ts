@@ -11,6 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { serialize, deserialize } from "node:v8";
 import { gzip, gunzip } from "node:zlib";
 import test from "node:test";
 import {
@@ -118,12 +119,12 @@ test("missing and damaged checkpoints fall back even when a file claims its own 
     await f.store.save(binding, payload);
     const path = join(f.directory, f.pin().file);
     const original = await readFile(path);
-    const decoded = JSON.parse((await decompress(original)).toString("utf8"));
-    decoded.payload.core = Buffer.from("forged core state").toString("base64");
+    const decoded = deserialize(await decompress(original));
+    decoded.payload.core = Uint8Array.of(99, 98, 97);
     decoded.hash = createHash("sha256")
       .update(JSON.stringify(decoded.payload))
       .digest("hex");
-    await writeFile(path, await compress(JSON.stringify(decoded)));
+    await writeFile(path, await compress(serialize(decoded)));
     assert.equal(await f.store.load(binding), null);
     await writeFile(path, original.subarray(0, 12));
     assert.equal(await f.store.load(binding), null);
@@ -164,7 +165,7 @@ test("failed pin commits preserve the previous checkpoint and remove only exact 
     ]);
     assert.deepEqual(await f.store.load(binding), next);
     assert.equal(
-      (await readdir(f.directory)).filter((name) => name.endsWith(".json.gz"))
+      (await readdir(f.directory)).filter((name) => name.endsWith(".bin.gz"))
         .length,
       1,
     );
@@ -365,6 +366,83 @@ test("a valid checkpoint can rebuild a deleted disposable Node search index", as
     }
   } finally {
     index.close();
+    await f.close();
+  }
+});
+
+test("binary checkpoints keep typed core bytes and load only the declared cache schema", async () => {
+  const f = await fixture();
+  try {
+    await f.store.save(binding, payload);
+    assert.match(f.pin().file, /^evaluation-v2-[a-f0-9]{64}\.bin\.gz$/);
+    const decoded = deserialize(
+      await decompress(await readFile(join(f.directory, f.pin().file))),
+    );
+    assert.equal(decoded.cache_schema, 2);
+    assert.ok(decoded.payload.core instanceof Uint8Array);
+    assert.deepEqual(decoded.payload.core, payload.core);
+    for (const invalid of [
+      serialize({ ...decoded, cache_schema: 1 }),
+      serialize({
+        ...decoded,
+        payload: { ...decoded.payload, core: "old string core" },
+      }),
+      Buffer.from("an incompatible binary format"),
+    ]) {
+      const bytes = await compress(invalid);
+      const digest = createHash("sha256").update(bytes).digest("hex");
+      const name = `evaluation-v2-${digest}.bin.gz`;
+      await writeFile(join(f.directory, name), bytes);
+      f.pins.pinCheckpoint(binding, {
+        binding: f.pin().binding,
+        hash: digest,
+        file: name,
+      });
+      assert.equal(
+        await new FileCheckpointStore(f.directory, f.pins).load(binding),
+        null,
+      );
+    }
+  } finally {
+    await f.close();
+  }
+});
+
+test("an independently pinned legacy JSON checkpoint loads and upgrades on the next save", async () => {
+  const f = await fixture();
+  try {
+    await f.store.save(binding, payload);
+    const expected = f.pin().binding;
+    const bytes = await compress(
+      JSON.stringify({
+        binding: expected,
+        payload: {
+          ...payload,
+          core: Buffer.from(payload.core).toString("base64"),
+        },
+      }),
+    );
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    const legacy = `evaluation-${digest}.json.gz`;
+    await writeFile(join(f.directory, legacy), bytes);
+    f.pins.pinCheckpoint(binding, {
+      binding: expected,
+      hash: digest,
+      file: legacy,
+    });
+    const reopened = new FileCheckpointStore(f.directory, f.pins);
+    assert.deepEqual(await reopened.load(binding), payload);
+    await writeFile(
+      join(f.directory, legacy),
+      await compress("damaged legacy bytes"),
+    );
+    assert.equal(await reopened.load(binding), null);
+    await writeFile(join(f.directory, legacy), bytes);
+    await reopened.save(binding, payload);
+    assert.match(f.pin().file, /^evaluation-v2-/);
+    assert.deepEqual(await reopened.load(binding), payload);
+    assert.deepEqual(await readdir(f.directory), [f.pin().file]);
+  } finally {
     await f.close();
   }
 });

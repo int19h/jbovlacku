@@ -253,6 +253,30 @@ export class SqlRowsCoordinator {
       );
       return;
     }
+    this.writeNormalizedSnapshot(snapshot, revision, changedIds);
+  }
+  async prepareSnapshotCache(id: string): Promise<void> {
+    this.sql.transaction(() => {
+      const metadata = JSON.parse(
+        String(this.sql.exec("SELECT state FROM metadata WHERE id=1")[0].state),
+      ) as StateMetadata;
+      if (
+        metadata.snapshot !== id ||
+        this.sql.exec(
+          "SELECT hash FROM snapshot_cache_revisions WHERE hash=?",
+          id,
+        ).length
+      )
+        return;
+      const snapshot = this.readSnapshot(id);
+      if (snapshot) this.writeNormalizedSnapshot(snapshot, metadata.revision);
+    });
+  }
+  private writeNormalizedSnapshot(
+    snapshot: Snapshot,
+    revision: number,
+    changedIds?: string[],
+  ) {
     const existing =
       this.sql.exec("SELECT event FROM snapshot_event_versions LIMIT 1")
         .length > 0;
@@ -288,7 +312,7 @@ export class SqlRowsCoordinator {
       value,
     } satisfies SnapshotRow);
     this.sql.exec(
-      "INSERT INTO cached_snapshots VALUES(?,?)",
+      "INSERT OR IGNORE INTO cached_snapshots VALUES(?,?)",
       snapshot.snapshot,
       revision,
     );
@@ -296,6 +320,10 @@ export class SqlRowsCoordinator {
       "INSERT INTO snapshot_cache_revisions VALUES(?,?) ON CONFLICT(hash) DO UPDATE SET event_revision=excluded.event_revision",
       snapshot.snapshot,
       revision,
+    );
+    this.sql.exec(
+      "DELETE FROM cached_snapshot_chunks WHERE hash=?",
+      snapshot.snapshot,
     );
     for (let offset = 0, position = 0; offset < serialized.length; position++) {
       let end = Math.min(offset + 200_000, serialized.length);

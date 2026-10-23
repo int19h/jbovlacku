@@ -710,3 +710,99 @@ test("lost snapshot wrappers rebuild their auxiliary frozen revision metadata", 
     await f.close();
   }
 });
+
+test("checkpoint preparation normalizes only the exact current legacy snapshot before writes", async () => {
+  const f = await fixture();
+  try {
+    const legacyState: State = {
+      ...emptyState(),
+      revision: 4,
+      position: 2,
+      events: { a: event(1), b: event(2) },
+      journal: [
+        { id: "a", position: 1 },
+        { id: "b", position: 2 },
+      ],
+    };
+    const legacy = snapshot(legacyState, 1);
+    const old = snapshot(legacyState, 2);
+    f.database
+      .prepare("INSERT INTO cached_snapshots VALUES(?,?)")
+      .run(legacy.snapshot, 3);
+    f.database
+      .prepare("INSERT INTO cached_snapshots VALUES(?,?)")
+      .run(old.snapshot, 2);
+    for (const wrapper of [legacy, old])
+      f.database
+        .prepare("INSERT INTO cached_snapshot_chunks VALUES(?,?,?)")
+        .run(wrapper.snapshot, 0, serializeSnapshotCache(wrapper));
+    const { events, journal, selections, snapshots, ...metadata } = legacyState;
+    f.database
+      .prepare("UPDATE metadata SET revision=4,state=?")
+      .run(JSON.stringify({ ...metadata, snapshot: legacy.snapshot }));
+    for (const [id, value] of Object.entries(legacyState.events))
+      f.database
+        .prepare("INSERT INTO events VALUES(?,?)")
+        .run(id, JSON.stringify(value));
+    for (const item of legacyState.journal)
+      f.database
+        .prepare("INSERT INTO receipts VALUES(?,?)")
+        .run(item.position, item.id);
+    await f.coordinator.prepareSnapshotCache(old.snapshot);
+    assert.equal(
+      f.database
+        .prepare("SELECT COUNT(*) AS n FROM snapshot_event_versions")
+        .get()!.n,
+      0,
+    );
+    await f.coordinator.prepareSnapshotCache(legacy.snapshot);
+    assert.equal(
+      f.database
+        .prepare("SELECT COUNT(*) AS n FROM snapshot_event_versions")
+        .get()!.n,
+      2,
+    );
+    assert.equal(
+      f.database
+        .prepare("SELECT revision FROM cached_snapshots WHERE hash=?")
+        .get(legacy.snapshot)!.revision,
+      3,
+    );
+    assert.equal(
+      f.database
+        .prepare(
+          "SELECT event_revision FROM snapshot_cache_revisions WHERE hash=?",
+        )
+        .get(legacy.snapshot)!.event_revision,
+      4,
+    );
+    const reopened = new SqlRowsCoordinator(f.connection);
+    assert.deepEqual(await reopened.getSnapshot(legacy.snapshot), legacy);
+    assert.deepEqual(await reopened.getSnapshot(old.snapshot), old);
+    f.statements.length = 0;
+    await f.coordinator.prepareSnapshotCache(legacy.snapshot);
+    assert.equal(
+      f.statements.some((sql) =>
+        sql.startsWith("INSERT INTO snapshot_event_versions"),
+      ),
+      false,
+    );
+    const state = await f.coordinator.load();
+    const next = {
+      ...state,
+      position: 3,
+      events: { ...state.events, c: event(3) },
+      journal: [...state.journal, { id: "c", position: 3 }],
+    };
+    f.statements.length = 0;
+    await publish(f.coordinator, next, 3, ["c"]);
+    assert.equal(
+      f.statements.filter((sql) =>
+        sql.startsWith("INSERT INTO snapshot_event_versions"),
+      ).length,
+      1,
+    );
+  } finally {
+    await f.close();
+  }
+});
