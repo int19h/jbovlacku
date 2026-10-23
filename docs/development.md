@@ -325,6 +325,25 @@ The cold-start readiness probe used three-second request deadlines and can start
 These single-process measurements use the VM's existing filesystem cache and do not establish performance on another host or under concurrent imports.
 They also do not establish hosted Worker resource compliance.
 
+A separate crash probe retained the same definitions and added two disposable endorsements, for 59,135 events.
+The first endorsement reached checkpoint position 59,134. The second reached accepted and materialized position 59,135 without another capture.
+The probe killed its exact child 2.23 seconds after the second POST began.
+After the child exited, the probe removed only that dead process's exact stale data lock.
+
+Crash recovery reached readiness in 6.79 seconds. Its first word request then took 1.78 seconds and returned the latest materialized snapshot.
+Startup through that response took 8.56 seconds. Concurrent manifest and changes reads both reported materialized cursor `local-node.59135`.
+The manifest named the same latest snapshot as the word response.
+The core received one later record and reported one incremental update without a rebuild.
+
+Crash recovery peaked at 3,243,741,184 bytes, or 3.02 GiB, including 1.52 GiB of Wasm linear memory.
+The final checkpoint used 66,904,504 bytes, or 63.81 MiB.
+The data directory grew by 9.12 MiB, without a directory copy.
+The source listened only on `127.0.0.1:8951`, and all probe servers stopped afterward.
+
+The probe reused an existing compatible checkpoint. It did not repeat full cold evaluation.
+Crash recovery still exceeds the five-second target from startup through the first response.
+These results use the same VM and filesystem cache. Other histories and concurrent workloads can take longer.
+
 The first combined full-data request before streaming reached WebAssembly's 4 GiB memory limit.
 The current measurement uses the streaming path and the revised source bodies.
 An explicit traversal limit or a larger Node heap does not remove the WebAssembly memory limit.

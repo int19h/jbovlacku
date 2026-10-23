@@ -122,6 +122,9 @@ The checkpoint used 63.80 MiB. Peak process memory reached 3.69 GiB, including 1
 After a crash, the adapter can restore an older valid checkpoint and evaluate the later records.
 If the checkpoint predates the stored materialized snapshot, interpreted reads wait for catch-up.
 Recovery does not expose that older checkpoint as the current public snapshot.
+A full-data crash restart reached readiness in 6.79 seconds and returned the latest word state 1.78 seconds later.
+Startup through that first response took 8.56 seconds. The manifest and changes endpoint kept the same materialized cursor.
+Recovery replayed one record without a rebuild and peaked at 3.02 GiB of process memory.
 
 Process startup through the first word response with a checkpoint took 6.54 seconds.
 Without a checkpoint, initial readiness took 31.15 seconds, and the first word request then took 66.64 seconds.
