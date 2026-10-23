@@ -4,10 +4,12 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { serialize, deserialize } from "node:v8";
 import { gzip, gunzip } from "node:zlib";
-import type {
-  CheckpointBinding,
-  CheckpointStore,
-  ServiceCheckpoint,
+import {
+  checkpointBindingKey,
+  parseCheckpointBinding,
+  type CheckpointBinding,
+  type CheckpointStore,
+  type ServiceCheckpoint,
 } from "../../../packages/service/src/checkpoint.ts";
 import {
   durableDirectory,
@@ -26,22 +28,7 @@ const MAX_PAYLOAD_BYTES = 768 * 1024 * 1024;
 const pendingFile = /^\.evaluation-pending-[a-f0-9-]{36}$/;
 const hash = (bytes: Uint8Array) =>
   createHash("sha256").update(bytes).digest("hex");
-const bindingBytes = (binding: CheckpointBinding) =>
-  JSON.stringify([
-    binding.schema,
-    binding.snapshot,
-    binding.logical_inventory,
-    binding.position,
-    binding.view,
-    binding.core_version,
-    binding.limits
-      ? [
-          binding.limits.events,
-          binding.limits.traversal,
-          binding.limits.claim_depth,
-        ]
-      : null,
-  ]);
+const bindingBytes = checkpointBindingKey;
 
 export interface CheckpointPins {
   checkpointPin(): CheckpointPin | null;
@@ -69,6 +56,14 @@ export class FileCheckpointStore implements CheckpointStore {
     for (const name of await readdir(this.directory)) {
       if (name !== retained && (ownedFile(name) || pendingFile.test(name)))
         await unlink(join(this.directory, name));
+    }
+  }
+  async latestBinding(): Promise<CheckpointBinding | null> {
+    try {
+      const pin = this.pins.checkpointPin();
+      return pin ? parseCheckpointBinding(pin.binding) : null;
+    } catch {
+      return null;
     }
   }
   async load(binding: CheckpointBinding): Promise<ServiceCheckpoint | null> {

@@ -122,6 +122,7 @@ New admissions store wrappers in bounded coordinator rows and create no more leg
 
 At most two distinct evaluation jobs and two package jobs run at once.
 Requests for the same snapshot and view share evaluation work.
+An evaluation keeps its cache slot until its package publication finishes.
 An unknown or invalid requested view is rejected before full evaluation.
 Alternate views cannot evict the most recent configured-view evaluation.
 If a committed admission cannot obtain an evaluation slot, its receipt still reports the durable acceptance and cursor.
@@ -137,6 +138,8 @@ During that gap, a new event receipt reports `index_lag` and `evaluation_pending
 A late-body receipt also uses a null snapshot until the completed snapshot contains the same body mapping.
 An unchanged event keeps the completed snapshot and its derived receipt while later writes wait.
 This receipt lets the browser finish its wait without waiting for every other write.
+If a completed snapshot contains the exact event representation without a derived receipt, the receipt names that snapshot with `evaluation_unavailable`.
+The receipt rebuilds a missing evaluated session before it answers.
 The service retains the preceding completed snapshot during a backlog. Failed jobs leave it available, and later reads retry the latest inventory.
 
 After local publication, a fresh browser word read waits for accepted records from this server to finish evaluation.
@@ -150,10 +153,17 @@ A checkpoint is a saved evaluated state.
 The Node adapter keeps one pinned checkpoint under `evaluation-cache` in `JVC_DATA_DIR`.
 The file contains compressed Node binary data. An independent SQLite row pins its digest and calculation context.
 That context includes the exact snapshot, logical inventory, event position, selected view, work limits, and Wasm artifact digest.
+The pin also retains one private base wrapper. This wrapper does not extend public snapshot retention.
 
 The core also compares its checkpoint schema and binding before restore.
-Missing, damaged, incompatible, or mismatched checkpoints return to full evaluation from original records.
+Missing, damaged, incompatible, or incorrectly bound checkpoints return to full evaluation from original records.
 The cache limits are 256 MiB compressed and 768 MiB decoded. A cache failure does not change protocol results.
+
+Startup can restore a valid older checkpoint after a crash.
+The adapter requires the same selected view, work limits, and core version, and the exact saved base inventory.
+It then reads and authenticates only new or changed record bytes from the latest inventory.
+The core applies its ordinary rules for incremental updates and full rebuilds from retained authenticated records.
+An expired private base supports calculation only. It does not become the completed public snapshot.
 
 Shutdown drains pending evaluation and checkpoint work before it closes SQLite.
 Checkpoint recovery rebuilds a missing search index from the saved entries before readiness.

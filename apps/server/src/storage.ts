@@ -1,7 +1,11 @@
 import { mkdir, open, readFile, link, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { CheckpointBinding } from "../../../packages/service/src/checkpoint.ts";
+import {
+  checkpointBindingKey,
+  parseCheckpointBinding,
+  type CheckpointBinding,
+} from "../../../packages/service/src/checkpoint.ts";
 import { UPSERT_SEARCH_ENTRY } from "../../../packages/service/src/index-store.ts";
 import { SqlRowsCoordinator } from "../../../packages/service/src/sql-coordinator.ts";
 import { DatabaseSync } from "node:sqlite";
@@ -112,6 +116,19 @@ export class SqliteCoordinator extends SqlRowsCoordinator {
     database.exec(
       "CREATE TABLE IF NOT EXISTS evaluation_checkpoint_pin (id INTEGER PRIMARY KEY CHECK(id=1), binding TEXT NOT NULL, hash TEXT NOT NULL, file TEXT NOT NULL)",
     );
+    const pinned = this.checkpointPin();
+    const binding = pinned ? parseCheckpointBinding(pinned.binding) : null;
+    if (binding) {
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        this.retainCheckpointSnapshot(binding.snapshot);
+        database.exec("COMMIT");
+      } catch (error) {
+        database.exec("ROLLBACK");
+        database.close();
+        throw error;
+      }
+    }
   }
   checkpointPin(): CheckpointPin | null {
     const row = this.database
@@ -128,6 +145,7 @@ export class SqliteCoordinator extends SqlRowsCoordinator {
       : null;
   }
   pinCheckpoint(binding: CheckpointBinding, pin: CheckpointPin): boolean {
+    if (checkpointBindingKey(binding) !== pin.binding) return false;
     this.database.exec("BEGIN IMMEDIATE");
     try {
       const metadata = JSON.parse(
@@ -140,6 +158,10 @@ export class SqliteCoordinator extends SqlRowsCoordinator {
         metadata.materialized_snapshot !== binding.snapshot ||
         metadata.materialized_position !== binding.position
       ) {
+        this.database.exec("ROLLBACK");
+        return false;
+      }
+      if (!this.retainCheckpointSnapshot(binding.snapshot)) {
         this.database.exec("ROLLBACK");
         return false;
       }

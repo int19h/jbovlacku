@@ -63,6 +63,12 @@ export class SqlRowsCoordinator {
       "CREATE TABLE IF NOT EXISTS snapshot_cache_revisions (hash TEXT PRIMARY KEY, event_revision INTEGER NOT NULL)",
     );
     sql.exec(
+      "CREATE TABLE IF NOT EXISTS checkpoint_snapshot (id INTEGER PRIMARY KEY CHECK(id=1), hash TEXT NOT NULL, event_revision INTEGER)",
+    );
+    sql.exec(
+      "CREATE TABLE IF NOT EXISTS checkpoint_snapshot_chunks (position INTEGER PRIMARY KEY, value TEXT NOT NULL)",
+    );
+    sql.exec(
       "INSERT OR IGNORE INTO metadata VALUES(1,0,?)",
       JSON.stringify(this.metadata(emptyState())),
     );
@@ -197,6 +203,9 @@ export class SqlRowsCoordinator {
       )
       .map((row) => String(row.value))
       .join("");
+    return this.decodeSnapshot(text);
+  }
+  private decodeSnapshot(text: string): Snapshot {
     const parsed = JSON.parse(text) as Snapshot | SnapshotRow;
     const snapshot =
       "cache_schema" in parsed
@@ -221,6 +230,56 @@ export class SqlRowsCoordinator {
   }
   async getSnapshot(id: string): Promise<Snapshot | null> {
     return this.sql.transaction(() => this.readSnapshot(id));
+  }
+  async getCheckpointSnapshot(id: string): Promise<Snapshot | null> {
+    return this.sql.transaction(() => {
+      const row = this.sql.exec(
+        "SELECT hash FROM checkpoint_snapshot WHERE id=1",
+      )[0];
+      if (row?.hash !== id) return null;
+      const text = this.sql
+        .exec("SELECT value FROM checkpoint_snapshot_chunks ORDER BY position")
+        .map((chunk) => String(chunk.value))
+        .join("");
+      return text ? this.decodeSnapshot(text) : null;
+    });
+  }
+  protected retainCheckpointSnapshot(id: string): boolean {
+    const old = this.sql.exec(
+      "SELECT hash FROM checkpoint_snapshot WHERE id=1",
+    )[0];
+    if (
+      old?.hash === id &&
+      this.sql.exec("SELECT position FROM checkpoint_snapshot_chunks LIMIT 1")
+        .length
+    )
+      return true;
+    if (
+      !this.sql.exec("SELECT hash FROM cached_snapshots WHERE hash=?", id)
+        .length ||
+      !this.sql.exec(
+        "SELECT position FROM cached_snapshot_chunks WHERE hash=? LIMIT 1",
+        id,
+      ).length
+    )
+      return false;
+    this.sql.exec("DELETE FROM checkpoint_snapshot_chunks");
+    this.sql.exec(
+      "INSERT INTO checkpoint_snapshot_chunks SELECT position,value FROM cached_snapshot_chunks WHERE hash=?",
+      id,
+    );
+    this.sql.exec(
+      "INSERT INTO checkpoint_snapshot VALUES(1,?,(SELECT event_revision FROM snapshot_cache_revisions WHERE hash=?)) ON CONFLICT(id) DO UPDATE SET hash=excluded.hash,event_revision=excluded.event_revision",
+      id,
+      id,
+    );
+    this.pruneSnapshotVersions();
+    return true;
+  }
+  private pruneSnapshotVersions() {
+    this.sql.exec(
+      "DELETE FROM snapshot_event_versions AS event WHERE end_revision IS NOT NULL AND NOT EXISTS(SELECT 1 FROM snapshot_cache_revisions AS snapshot WHERE event.start_revision<=snapshot.event_revision AND event.end_revision>snapshot.event_revision) AND NOT EXISTS(SELECT 1 FROM checkpoint_snapshot AS checkpoint WHERE checkpoint.event_revision IS NOT NULL AND event.start_revision<=checkpoint.event_revision AND event.end_revision>checkpoint.event_revision)",
+    );
   }
   private rememberSnapshot(snapshot: Snapshot) {
     // These private objects are immutable after publication. The service replaces changed records.
@@ -358,16 +417,7 @@ export class SqlRowsCoordinator {
       this.sql.exec("DELETE FROM cached_snapshots WHERE hash=?", id);
       this.sql.exec("DELETE FROM snapshot_cache_revisions WHERE hash=?", id);
     }
-    if (expired.length) {
-      const oldest = this.sql.exec(
-        "SELECT MIN(event_revision) AS revision FROM snapshot_cache_revisions",
-      )[0]?.revision;
-      if (oldest !== null && oldest !== undefined)
-        this.sql.exec(
-          "DELETE FROM snapshot_event_versions WHERE end_revision<=?",
-          Number(oldest),
-        );
-    }
+    if (expired.length) this.pruneSnapshotVersions();
     return expired;
   }
   async compareAndSwap(

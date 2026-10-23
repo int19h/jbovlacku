@@ -45,6 +45,8 @@ export interface Coordinator {
   loadMetadata?(): Promise<StateMetadata>;
   markMaterialized?(snapshot: string, position: number): Promise<boolean>;
   getSnapshot(id: string): Promise<Snapshot | null>;
+  /** The host retains at most one private checkpoint base outside public expiry. */
+  getCheckpointSnapshot?(id: string): Promise<Snapshot | null>;
   compareAndSwap(
     revision: number,
     state: State,

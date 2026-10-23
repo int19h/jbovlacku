@@ -394,16 +394,142 @@ test("receipts use a completed evaluation while a later write is still pending",
         service,
         "/receipts/" + first.envelope.id,
       );
-      assert.equal(missingDerived.snapshot, null);
-      assert.deepEqual(missingDerived.reasons, [
-        "index_lag",
-        "evaluation_pending",
-      ]);
+      assert.equal(missingDerived.snapshot, evaluated.snapshot);
+      assert.deepEqual(missingDerived.reasons, ["evaluation_unavailable"]);
     } finally {
       sessions.set(key, session);
     }
   } finally {
     gate.resolve();
+    await service.flushMaterialization();
+  }
+});
+
+test("an idle completed event-limit evaluation reports unavailable interpretation without lag", async () => {
+  const { service, coordinator, definition, profile } = await fixture();
+  service.options.stateLimits = { events: 2, traversal: 1000, claim_depth: 8 };
+  const entry = judgment(
+    definition.envelope.id,
+    "4",
+    [profile.envelope.id],
+    "bless",
+  );
+  await service.admitMany([utf8(JSON.stringify(entry))]);
+  await service.flushMaterialization();
+  assert.equal(
+    coordinator.state.snapshot,
+    coordinator.state.materialized_snapshot,
+  );
+  assert.equal((service as any).background, undefined);
+  for (const id of [entry.envelope.id, definition.envelope.id]) {
+    const asyncReceipt = await read(service, "/receipts/" + id);
+    assert.equal(
+      asyncReceipt.snapshot,
+      coordinator.state.materialized_snapshot,
+    );
+    assert.equal(asyncReceipt.interpretation, "unavailable");
+    assert.deepEqual(asyncReceipt.reasons, ["evaluation_unavailable"]);
+    service.options.asyncMaterialization = false;
+    try {
+      assert.deepEqual(await read(service, "/receipts/" + id), asyncReceipt);
+    } finally {
+      service.options.asyncMaterialization = true;
+    }
+  }
+});
+
+test("a receipt rebuilds a missing completed session before answering", async () => {
+  const { service, coordinator, definition } = await fixture();
+  const expected = await read(service, "/receipts/" + definition.envelope.id);
+  const key = coordinator.state.snapshot + "|" + service.options.selectedView;
+  const internals = service as any;
+  internals.sessions.get(key).free();
+  internals.sessions.delete(key);
+  // A settled evaluation promise alone cannot restore the native session.
+  assert.ok(internals.evaluationCache.has(key));
+  const compute = internals.computeEvaluation.bind(service);
+  let evaluations = 0;
+  internals.computeEvaluation = (...args: any[]) => {
+    evaluations++;
+    return compute(...args);
+  };
+  const receipt = await read(service, "/receipts/" + definition.envelope.id);
+  assert.deepEqual(receipt, expected);
+  assert.equal(evaluations, 1);
+  assert.ok(internals.sessions.has(key));
+  assert.ok(internals.evaluationCache.size <= 2);
+});
+
+test("package publication keeps its session until a third evaluation can use a free slot", async () => {
+  const checkpoints = new MemoryCheckpoints();
+  const { service, objects, coordinator, definition, profile } =
+    await fixture(checkpoints);
+  const historical = coordinator.state.snapshot!;
+  const first = judgment(
+    definition.envelope.id,
+    "4",
+    [profile.envelope.id],
+    "bless",
+  );
+  await service.admitMany([utf8(JSON.stringify(first))]);
+  await service.flushMaterialization();
+  const gate = deferred();
+  const entered = deferred();
+  const put = objects.put.bind(objects);
+  const complete = coordinator.state.materialized_snapshot;
+  objects.put = async (hash, bytes) => {
+    const value = JSON.parse(new TextDecoder().decode(bytes));
+    if (value.parts && value.snapshot !== complete) {
+      entered.resolve();
+      await gate.promise;
+    }
+    await put(hash, bytes);
+  };
+  try {
+    const second = judgment(
+      definition.envelope.id,
+      "5",
+      [first.envelope.id],
+      "curse",
+    );
+    await service.admitMany([utf8(JSON.stringify(second))]);
+    await entered.promise;
+    const latest = coordinator.state.snapshot!;
+    const key = latest + "|" + service.options.selectedView;
+    const internals = service as any;
+    assert.ok(internals.inFlightPackages.has(latest));
+    assert.equal(internals.inFlightEvaluations.has(key), false);
+    const third = await service.fetch(
+      request("/words/" + wordId(word) + "?snapshot=" + historical),
+    );
+    assert.equal(third.status, 503);
+    assert.equal(((await third.json()) as any).code, "resource_unavailable");
+    assert.ok(internals.sessions.has(key));
+    assert.equal(internals.evaluationCache.size, 2);
+    gate.resolve();
+    await service.flushMaterialization();
+    assert.equal(coordinator.state.materialized_snapshot, latest);
+    assert.equal(checkpoints.saved!.binding.snapshot, latest);
+    // These receipt fields end the browser wait before it asks for the word.
+    for (const id of [second.envelope.id, definition.envelope.id]) {
+      const receipt = await read(service, "/receipts/" + id);
+      assert.equal(receipt.snapshot, latest);
+      assert.equal(receipt.interpretation, "effective");
+      assert.deepEqual(receipt.reasons, []);
+    }
+    assert.equal(
+      (
+        await read(
+          service,
+          "/words/" + wordId(word) + "?snapshot=" + historical,
+        )
+      ).snapshot,
+      historical,
+    );
+    assert.ok(internals.evaluationCache.size <= 2);
+  } finally {
+    gate.resolve();
+    objects.put = put;
     await service.flushMaterialization();
   }
 });

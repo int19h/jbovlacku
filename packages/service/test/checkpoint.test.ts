@@ -22,9 +22,11 @@ import {
   SqliteCoordinator,
   type CheckpointPin,
 } from "../../../apps/server/src/storage.ts";
-import type {
-  CheckpointBinding,
-  ServiceCheckpoint,
+import {
+  checkpointBindingKey,
+  parseCheckpointBinding,
+  type CheckpointBinding,
+  type ServiceCheckpoint,
 } from "../src/checkpoint.ts";
 
 const compress = promisify(gzip);
@@ -39,6 +41,19 @@ const binding: CheckpointBinding = {
   core_version: "actual-wasm-digest:core-v1:service-v1",
   limits: { events: 200000, traversal: 1000000, claim_depth: 1024 },
 };
+const wrapper = (id = binding.snapshot) => ({
+  snapshot: id,
+  logical_inventory: binding.logical_inventory,
+  manifest: {
+    version: 1 as const,
+    events: { count: 0, hash: hash(0) },
+    bodies: { count: 0, hash: hash(0) },
+    import_selections: { count: 0, hash: hash(0) },
+  },
+  events: {},
+  bodies: [],
+  import_selections: [],
+});
 const payload: ServiceCheckpoint = {
   core: Uint8Array.of(1, 2, 3, 255),
   package_records: [],
@@ -215,21 +230,45 @@ test("SQLite pins permit only the exact last materialized snapshot", async () =>
   );
   try {
     const state = await coordinator.load();
-    const accepted = {
+    const materialized = {
       ...state,
       revision: 1,
-      position: 8,
-      snapshot: hash(8),
+      position: binding.position,
+      snapshot: binding.snapshot,
       materialized_snapshot: binding.snapshot,
       materialized_position: binding.position,
     };
-    assert.equal(await coordinator.compareAndSwap(0, accepted), true);
+    assert.equal(
+      await coordinator.compareAndSwap(0, materialized, wrapper()),
+      true,
+    );
+    const accepted = {
+      ...materialized,
+      revision: 2,
+      position: 8,
+      snapshot: hash(8),
+    };
+    assert.equal(
+      await coordinator.compareAndSwap(1, accepted, wrapper(accepted.snapshot)),
+      true,
+    );
     const pin = {
-      binding: "trusted binding",
+      binding: checkpointBindingKey(binding),
       hash: "a".repeat(64),
       file: "evaluation-" + "a".repeat(64) + ".json.gz",
     };
+    assert.equal(
+      coordinator.pinCheckpoint(binding, {
+        ...pin,
+        binding: "file supplied binding",
+      }),
+      false,
+    );
     assert.equal(coordinator.pinCheckpoint(binding, pin), true);
+    assert.deepEqual(
+      await coordinator.getCheckpointSnapshot(binding.snapshot),
+      wrapper(),
+    );
     assert.deepEqual(coordinator.checkpointPin(), pin);
     assert.equal(
       coordinator.pinCheckpoint(
@@ -267,14 +306,18 @@ test("checkpoint bytes and the independent SQLite pin survive closing and reopen
   try {
     const state = await coordinator.load();
     assert.equal(
-      await coordinator.compareAndSwap(0, {
-        ...state,
-        revision: 1,
-        position: binding.position,
-        snapshot: binding.snapshot,
-        materialized_snapshot: binding.snapshot,
-        materialized_position: binding.position,
-      }),
+      await coordinator.compareAndSwap(
+        0,
+        {
+          ...state,
+          revision: 1,
+          position: binding.position,
+          snapshot: binding.snapshot,
+          materialized_snapshot: binding.snapshot,
+          materialized_position: binding.position,
+        },
+        wrapper(),
+      ),
       true,
     );
     const directory = join(f.directory, "evaluation-cache");
@@ -442,6 +485,52 @@ test("an independently pinned legacy JSON checkpoint loads and upgrades on the n
     assert.match(f.pin().file, /^evaluation-v2-/);
     assert.deepEqual(await reopened.load(binding), payload);
     assert.deepEqual(await readdir(f.directory), [f.pin().file]);
+  } finally {
+    await f.close();
+  }
+});
+
+test("checkpoint discovery reads only a guarded independent pin and preserves exact load checks", async () => {
+  const f = await fixture();
+  try {
+    assert.equal(await f.store.latestBinding(), null);
+    await f.store.save(binding, payload);
+    assert.deepEqual(await f.store.latestBinding(), binding);
+    const pin = { ...f.pin() };
+    await writeFile(
+      join(f.directory, pin.file),
+      "a file cannot nominate its own context",
+    );
+    assert.deepEqual(await f.store.latestBinding(), binding);
+    assert.equal(await f.store.load(binding), null);
+    for (const malformed of [
+      "null",
+      "[]",
+      "{}",
+      "[1]",
+      JSON.stringify([
+        1,
+        binding.snapshot,
+        binding.logical_inventory,
+        -1,
+        binding.view,
+        binding.core_version,
+        null,
+      ]),
+      JSON.stringify([
+        1,
+        binding.snapshot,
+        binding.logical_inventory,
+        7,
+        binding.view,
+        binding.core_version,
+        [1, "bad", 3],
+      ]),
+    ]) {
+      assert.equal(parseCheckpointBinding(malformed), null);
+      f.pins.pinCheckpoint(binding, { ...pin, binding: malformed });
+      assert.equal(await f.store.latestBinding(), null);
+    }
   } finally {
     await f.close();
   }

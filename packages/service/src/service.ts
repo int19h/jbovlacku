@@ -1,8 +1,9 @@
 import type { IndexStore } from "./index-store.ts";
-import type {
-  CheckpointBinding,
-  CheckpointStore,
-  ServiceCheckpoint,
+import {
+  checkpointBindingKey,
+  type CheckpointBinding,
+  type CheckpointStore,
+  type ServiceCheckpoint,
 } from "./checkpoint.ts";
 import { orderedPrefetch, readRecordBytes } from "./record-reads.ts";
 import {
@@ -151,7 +152,13 @@ export class DictionaryService {
       position,
       view: this.options.selectedView ?? zeroView,
       core_version: this.options.coreVersion ?? "",
-      limits: this.options.stateLimits ?? null,
+      limits: this.options.stateLimits
+        ? {
+            events: this.options.stateLimits.events,
+            traversal: this.options.stateLimits.traversal,
+            claim_depth: this.options.stateLimits.claim_depth,
+          }
+        : null,
     };
   }
   initialize(): Promise<void> {
@@ -161,14 +168,69 @@ export class DictionaryService {
     const metadata = await this.metadata();
     const id = metadata.materialized_snapshot ?? metadata.snapshot;
     if (id && this.options.checkpoints && this.options.coreVersion) {
-      const snapshot = await this.coordinator.getSnapshot(id);
-      if (snapshot) {
-        const binding = this.binding(
-          snapshot,
-          metadata.materialized_snapshot
-            ? metadata.materialized_position
-            : metadata.position,
-        );
+      const currentBase = await this.coordinator.getSnapshot(id);
+      let candidate = currentBase
+        ? {
+            snapshot: currentBase,
+            binding: this.binding(
+              currentBase,
+              metadata.materialized_snapshot
+                ? metadata.materialized_position
+                : metadata.position,
+            ),
+            publiclyRetained: true,
+          }
+        : undefined;
+      try {
+        const pinned = await this.options.checkpoints.latestBinding?.();
+        if (
+          pinned &&
+          pinned.schema === 1 &&
+          pinned.position <= metadata.position &&
+          pinned.view === (this.options.selectedView ?? zeroView) &&
+          pinned.core_version === this.options.coreVersion &&
+          checkpointBindingKey(pinned) ===
+            checkpointBindingKey({
+              ...pinned,
+              limits: this.options.stateLimits ?? null,
+            })
+        ) {
+          const publicSnapshot = await this.coordinator.getSnapshot(
+            pinned.snapshot,
+          );
+          const base =
+            publicSnapshot ??
+            (await this.coordinator.getCheckpointSnapshot?.(pinned.snapshot));
+          if (
+            base &&
+            base.snapshot === pinned.snapshot &&
+            base.logical_inventory === pinned.logical_inventory
+          ) {
+            const current = (await this.current()).snapshot;
+            const bodies = new Set(current.bodies);
+            const selections = new Set(current.import_selections);
+            if (
+              Object.keys(base.events).every(
+                (event) => current.events[event] !== undefined,
+              ) &&
+              base.bodies.every((body) => bodies.has(body)) &&
+              base.import_selections.every((selection) =>
+                selections.has(selection),
+              )
+            )
+              candidate = {
+                snapshot: base,
+                binding: pinned,
+                publiclyRetained: publicSnapshot !== null,
+              };
+          }
+        }
+      } catch (error) {
+        this.options.reportError?.(error);
+      }
+      if (candidate) {
+        const { snapshot, binding, publiclyRetained } = candidate;
+        const recoveredId = snapshot.snapshot;
         let recovered:
           | {
               session: EvaluationSessionHandle;
@@ -193,7 +255,7 @@ export class DictionaryService {
               if (
                 !packages ||
                 Object.values(packages).some(
-                  (pkg) => pkg.manifest.snapshot !== id,
+                  (pkg) => pkg.manifest.snapshot !== recoveredId,
                 )
               )
                 throw new Error(
@@ -217,21 +279,27 @@ export class DictionaryService {
         if (recovered) {
           const { session, payload, envelopes } = recovered;
           try {
-            await this.options.index?.restore?.(id, payload.packages.entries);
-            await this.options.index?.publish?.(id, [id]);
+            if (publiclyRetained) {
+              await this.options.index?.restore?.(
+                recoveredId,
+                payload.packages.entries,
+              );
+              await this.options.index?.publish?.(recoveredId, [recoveredId]);
+            }
           } catch (error) {
             session.free();
             throw error;
           }
-          const key = id + "|" + binding.view;
+          const key = recoveredId + "|" + binding.view;
           this.sessions.set(key, session);
           this.sessionSnapshots.set(key, snapshot);
           this.evaluationCache.set(key, Promise.resolve(session.state));
-          this.packageRecords.set(id, payload.package_records);
-          this.packageCache.set(id, Promise.resolve(payload.packages));
+          this.packageRecords.set(recoveredId, payload.package_records);
+          this.packageCache.set(recoveredId, Promise.resolve(payload.packages));
           this.canonicalEnvelopes = envelopes;
-          this.completed = { snapshot, position: binding.position };
-          this.snapshotPositions.set(id, binding.position);
+          if (publiclyRetained)
+            this.completed = { snapshot, position: binding.position };
+          this.snapshotPositions.set(recoveredId, binding.position);
         }
       }
     }
@@ -769,7 +837,13 @@ export class DictionaryService {
   ): Promise<Evaluation> {
     const key = snapshot.snapshot + "|" + view;
     const cached = this.evaluationCache.get(key);
-    if (cached) return cached;
+    if (cached) {
+      if (this.sessions.has(key) || this.inFlightEvaluations.has(key))
+        return cached;
+      // A settled result without its session cannot support later forks or captures.
+      this.evaluationCache.delete(key);
+      this.sessionSnapshots.delete(key);
+    }
     if (this.inFlightEvaluations.size >= 2)
       return Promise.reject(
         new ApiError(
@@ -786,6 +860,7 @@ export class DictionaryService {
       const evicted = [...this.evaluationCache.keys()].find(
         (candidate) =>
           !this.inFlightEvaluations.has(candidate) &&
+          !this.inFlightPackages.has(candidate.split("|")[0]) &&
           candidate !== this.completed?.snapshot.snapshot + "|" + configured &&
           (view === configured || candidate !== protectedKey),
       );
@@ -995,11 +1070,26 @@ export class DictionaryService {
       if (
         previous?.envelope_hash === event.envelope_hash &&
         previous?.body_hash === event.body_hash
-      )
-        derived = this.sessions.get(key)?.state.receipts[id];
-      receiptSnapshot = derived ? complete!.snapshot.snapshot : null;
-      if (!derived) {
+      ) {
+        receiptSnapshot = complete!.snapshot.snapshot;
+        let state = this.sessions.get(key)?.state;
+        if (!state)
+          try {
+            state = await this.evaluation(complete!.snapshot);
+          } catch (error) {
+            if (
+              !(error instanceof ApiError) ||
+              error.code !== "resource_unavailable"
+            )
+              throw error;
+            reasons = ["evaluation_resource_unavailable"];
+          }
+        derived = state?.receipts[id];
+      } else {
+        receiptSnapshot = null;
         reasons = ["index_lag", "evaluation_pending"];
+      }
+      if (!derived) {
         if (event.body_hash) {
           const envelope = await this.objects.get(event.envelope_hash);
           const body = await this.objects.get(event.body_hash);
