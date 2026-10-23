@@ -163,7 +163,10 @@ Startup can restore a valid older checkpoint after a crash.
 The adapter requires the same selected view, work limits, and core version, and the exact saved base inventory.
 It then reads and authenticates only new or changed record bytes from the latest inventory.
 The core applies its ordinary rules for incremental updates and full rebuilds from retained authenticated records.
-An expired private base supports calculation only. It does not become the completed public snapshot.
+If the pin differs from the durable materialized snapshot, startup uses it only for calculation, even when public retention still includes it.
+Startup does not publish that base's index or mark it as completed.
+Without a current completed state, interpreted reads wait for catch-up. Recovery never moves the served snapshot or its materialized cursor backward.
+An expired private base also supports calculation only and remains unavailable through public snapshot routes.
 
 Shutdown drains pending evaluation and checkpoint work before it closes SQLite.
 Checkpoint recovery rebuilds a missing search index from the saved entries before readiness.
@@ -321,26 +324,6 @@ Initial evaluation authenticates every record, and initial package generation re
 The cold-start readiness probe used three-second request deadlines and can start overlapping initial snapshot builds.
 These single-process measurements use the VM's existing filesystem cache and do not establish performance on another host or under concurrent imports.
 They also do not establish hosted Worker resource compliance.
-
-A separate crash probe used the same definitions and added two disposable endorsements, for 59,133 events.
-The server saved the first endorsement at position 59,132, then accepted and materialized the second at position 59,133.
-The probe killed its exact server process 2.34 seconds after the second POST began, before another checkpoint capture.
-After the child exited, the probe removed only that dead process's exact stale data lock.
-
-The restart reached readiness in 7.30 seconds. Its first word request took 1.87 seconds and used the preceding checkpoint snapshot.
-Startup through that response took 9.16 seconds. The latest accepted word state appeared 9.87 seconds after startup.
-The core received one later record and reported one incremental update without a rebuild.
-The new event's effective receipt named the latest snapshot, with accepted and materialized cursors both at `local-node.59133`.
-
-Crash recovery peaked at 3,450,298,368 bytes, or 3.21 GiB, including 1.52 GiB of Wasm linear memory.
-The final checkpoint used 66,902,448 bytes, or 63.80 MiB.
-The data directory grew by 59.05 MiB, without a directory copy.
-The source listened only on `127.0.0.1:8951`, and all probe servers stopped afterward.
-
-The probe first created a compatible baseline because the Rust cleanup changed the Wasm digest.
-That preparation took 68.63 seconds for its cold word request. It did not measure crash recovery.
-The crash restart avoids full cold evaluation but still exceeds the five-second target from startup through the first response.
-These results use the same VM and filesystem cache. Other histories and concurrent workloads can take longer.
 
 The first combined full-data request before streaming reached WebAssembly's 4 GiB memory limit.
 The current measurement uses the streaming path and the revised source bodies.

@@ -210,6 +210,203 @@ async function fixture(
   };
 }
 
+for (const expired of [false, true]) {
+  test(`an older ${expired ? "private" : "public"} checkpoint never replaces the durable materialized snapshot during catch-up`, async () => {
+    const f = await fixture(expired ? 2 : 16);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const requests: Promise<any>[] = [];
+    try {
+      let previous = f.profile.envelope.id;
+      for (let n = 4; n < (expired ? 8 : 5); n++)
+        previous = (await f.write(n, previous)).envelope.id;
+      assert.equal((await f.coordinator.getSnapshot(f.base)) === null, expired);
+      const metadata = await f.coordinator.loadMetadata();
+      const expectedWord = await read(f.service, "/words/" + wordId(word));
+      const calls: [string, string][] = [];
+      const service = f.restart({
+        index: {
+          async replace(snapshot: string) {
+            calls.push(["replace", snapshot]);
+          },
+          async restore(snapshot: string) {
+            calls.push(["restore", snapshot]);
+          },
+          async publish(snapshot: string) {
+            calls.push(["publish", snapshot]);
+          },
+        },
+      });
+      const internal = service as any;
+      const compute = internal.computeEvaluation.bind(service);
+      let entered!: () => void;
+      const started = new Promise<void>((resolve) => (entered = resolve));
+      internal.computeEvaluation = async (...args: any[]) => {
+        entered();
+        await gate;
+        return compute(...args);
+      };
+      await service.initialize();
+      await started;
+      let manifestReturned = false;
+      let wordReturned = false;
+      const manifestRequest = read(service, "/manifest").then((value) => {
+        manifestReturned = true;
+        return value;
+      });
+      const wordRequest = read(service, "/words/" + wordId(word)).then(
+        (value) => {
+          wordReturned = true;
+          return value;
+        },
+      );
+      requests.push(manifestRequest, wordRequest);
+      const changes = await read(service, "/changes");
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const beforeCatchup = {
+        manifestReturned,
+        wordReturned,
+        oldIndexCalls: calls.filter(([, snapshot]) => snapshot === f.base),
+      };
+      release();
+      const [manifest, result] = await Promise.all(requests);
+      await settle(service);
+      assert.deepEqual(beforeCatchup, {
+        manifestReturned: false,
+        wordReturned: false,
+        oldIndexCalls: [],
+      });
+      const durableCursor = "older-test." + metadata.materialized_position;
+      assert.equal(changes.materialized_cursor, durableCursor);
+      assert.equal(manifest.materialized_cursor, durableCursor);
+      assert.equal(manifest.snapshot, metadata.materialized_snapshot);
+      assert.deepEqual(result, expectedWord);
+      assert.equal(
+        f.reads.includes(f.definition.envelope.header.content!.hash),
+        false,
+        "waiting readers must still use incremental checkpoint recovery",
+      );
+    } finally {
+      release();
+      await Promise.allSettled(requests);
+      await f.close();
+    }
+  });
+}
+
+test("an exact materialized checkpoint restores and publishes its index without evaluation", async () => {
+  const f = await fixture();
+  try {
+    const expected = await read(f.service, "/words/" + wordId(word));
+    const calls: [string, string][] = [];
+    const service = f.restart({
+      index: {
+        async replace(snapshot: string) {
+          calls.push(["replace", snapshot]);
+        },
+        async restore(snapshot: string) {
+          calls.push(["restore", snapshot]);
+        },
+        async publish(snapshot: string) {
+          calls.push(["publish", snapshot]);
+        },
+      },
+    });
+    let evaluations = 0;
+    const internal = service as any;
+    const compute = internal.computeEvaluation.bind(service);
+    internal.computeEvaluation = (...args: any[]) => {
+      evaluations++;
+      return compute(...args);
+    };
+    await service.initialize();
+    assert.deepEqual(calls, [
+      ["restore", f.base],
+      ["publish", f.base],
+    ]);
+    assert.equal((await read(service, "/manifest")).snapshot, f.base);
+    assert.deepEqual(await read(service, "/words/" + wordId(word)), expected);
+    assert.equal(evaluations, 0);
+    assert.equal(
+      f.reads.includes(f.definition.envelope.header.content!.hash),
+      false,
+    );
+  } finally {
+    await f.close();
+  }
+});
+
+test("an exact materialized pin remains readable while a newer accepted snapshot catches up", async () => {
+  const f = await fixture();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  const requests: Promise<any>[] = [];
+  try {
+    const expected = await read(f.service, "/words/" + wordId(word));
+    // Leave the next accepted snapshot unevaluated, as at a crash during work.
+    (f.service as any).queueMaterialization = () => {};
+    await f.write(4);
+    const metadata = await f.coordinator.loadMetadata();
+    assert.notEqual(metadata.snapshot, f.base);
+    assert.equal(metadata.materialized_snapshot, f.base);
+    const calls: [string, string][] = [];
+    const service = f.restart({
+      index: {
+        async replace(snapshot: string) {
+          calls.push(["replace", snapshot]);
+        },
+        async restore(snapshot: string) {
+          calls.push(["restore", snapshot]);
+        },
+        async publish(snapshot: string) {
+          calls.push(["publish", snapshot]);
+        },
+      },
+    });
+    const internal = service as any;
+    const compute = internal.computeEvaluation.bind(service);
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => (entered = resolve));
+    internal.computeEvaluation = async (...args: any[]) => {
+      entered();
+      await gate;
+      return compute(...args);
+    };
+    await service.initialize();
+    await started;
+    assert.deepEqual(calls, [
+      ["restore", f.base],
+      ["publish", f.base],
+    ]);
+    let manifestBeforeCatchup: any;
+    let wordBeforeCatchup: any;
+    requests.push(
+      read(service, "/manifest").then(
+        (value) => (manifestBeforeCatchup = value),
+      ),
+      read(service, "/words/" + wordId(word)).then(
+        (value) => (wordBeforeCatchup = value),
+      ),
+    );
+    const changes = await read(service, "/changes");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(manifestBeforeCatchup?.snapshot, f.base);
+    assert.equal(
+      manifestBeforeCatchup.materialized_cursor,
+      changes.materialized_cursor,
+    );
+    assert.equal(
+      changes.materialized_cursor,
+      "older-test." + metadata.materialized_position,
+    );
+    assert.deepEqual(wordBeforeCatchup, expected);
+  } finally {
+    release();
+    await Promise.allSettled(requests);
+    await f.close();
+  }
+});
+
 test("crash restart restores an older pinned checkpoint and reads only later records", async () => {
   const f = await fixture();
   try {

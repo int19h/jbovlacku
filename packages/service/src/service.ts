@@ -278,8 +278,12 @@ export class DictionaryService {
         }
         if (recovered) {
           const { session, payload, envelopes } = recovered;
+          const restoresMaterialized =
+            publiclyRetained &&
+            recoveredId === metadata.materialized_snapshot &&
+            binding.position === metadata.materialized_position;
           try {
-            if (publiclyRetained) {
+            if (restoresMaterialized) {
               await this.options.index?.restore?.(
                 recoveredId,
                 payload.packages.entries,
@@ -297,7 +301,7 @@ export class DictionaryService {
           this.packageRecords.set(recoveredId, payload.package_records);
           this.packageCache.set(recoveredId, Promise.resolve(payload.packages));
           this.canonicalEnvelopes = envelopes;
-          if (publiclyRetained)
+          if (restoresMaterialized)
             this.completed = { snapshot, position: binding.position };
           this.snapshotPositions.set(recoveredId, binding.position);
         }
