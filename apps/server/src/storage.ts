@@ -259,12 +259,14 @@ export class SqliteIndexStore {
       )
       .run(snapshot);
   }
-  async reuse(previous: string, snapshot: string): Promise<void> {
+  async reuse(previous: string, snapshot: string): Promise<boolean> {
     this.database.exec("BEGIN IMMEDIATE");
     try {
       const previousGeneration = this.generation(previous);
-      if (!previousGeneration)
-        throw new Error("The previous search index is unavailable.");
+      if (!previousGeneration) {
+        this.database.exec("COMMIT");
+        return false;
+      }
       const { source, count } = previousGeneration;
       if (source !== snapshot)
         this.database
@@ -275,6 +277,7 @@ export class SqliteIndexStore {
       this.rememberGeneration(snapshot, count);
       if (!this.publish) this.publishCurrent(snapshot);
       this.database.exec("COMMIT");
+      return true;
     } catch (error) {
       this.database.exec("ROLLBACK");
       throw error;

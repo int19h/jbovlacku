@@ -515,16 +515,18 @@ export class DictionaryService {
           try {
             if (this.options.index) {
               const base = this.packageBases.get(snapshot.snapshot);
+              let reused = false;
               if (
                 previous?.entries === built.entries &&
                 base &&
                 this.options.index.reuse
               )
-                await this.options.index.reuse(
-                  base.snapshot,
-                  snapshot.snapshot,
-                );
-              else
+                reused =
+                  (await this.options.index.reuse(
+                    base.snapshot,
+                    snapshot.snapshot,
+                  )) !== false;
+              if (!reused)
                 await this.options.index.replace(
                   snapshot.snapshot,
                   built.entries,

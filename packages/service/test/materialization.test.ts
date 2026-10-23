@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { before, test } from "node:test";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { SqliteIndexStore } from "../../../apps/server/src/storage.ts";
 import {
   initializeCore,
   createEvent,
@@ -325,6 +329,107 @@ test("background writes keep complete reads and cursors until the latest snapsho
     );
   } finally {
     full.free();
+  }
+});
+
+test("a write during cold evaluation replaces a missing staged index base", async () => {
+  const { objects, coordinator, options, definition, profile } =
+    await fixture();
+  coordinator.state = {
+    ...coordinator.state,
+    materialized_snapshot: null,
+    materialized_position: 0,
+  };
+  const directory = await mkdtemp(join(tmpdir(), "jvc-cold-index-"));
+  const path = join(directory, "indexes.sqlite");
+  const index = new SqliteIndexStore(path, true);
+  const database = new DatabaseSync(path);
+  const service = new DictionaryService(objects, coordinator, {
+    ...options,
+    index,
+  });
+  const gate = deferred();
+  const entered = deferred();
+  const original = (service as any).computeEvaluation.bind(service);
+  let held = false;
+  (service as any).computeEvaluation = async (...args: any[]) => {
+    if (!held) {
+      held = true;
+      entered.resolve();
+      await gate.promise;
+    }
+    return original(...args);
+  };
+  try {
+    const base = coordinator.state.snapshot!;
+    await service.initialize();
+    await entered.promise;
+    const entry = judgment(
+      definition.envelope.id,
+      "4",
+      [profile.envelope.id],
+      "bless",
+    );
+    await service.admitMany([utf8(JSON.stringify(entry))]);
+    const latest = coordinator.state.snapshot!;
+    assert.notEqual(latest, base);
+    assert.equal(
+      database.prepare("SELECT COUNT(*) AS n FROM search_snapshots").get()!.n,
+      0,
+    );
+    gate.resolve();
+    // Check the reads even when flush fails, to expose the persistent 503.
+    let failure: unknown;
+    try {
+      await service.flushMaterialization();
+    } catch (error) {
+      failure = error;
+    }
+    const words = [];
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const response = await service.fetch(request("/words/" + wordId(word)));
+      words.push({
+        status: response.status,
+        body: (await response.json()) as any,
+      });
+    }
+    assert.deepEqual(
+      words.map((word) => word.status),
+      [200, 200],
+      String(failure),
+    );
+    for (const word of words) assert.equal(word.body.snapshot, latest);
+    assert.equal(failure, undefined);
+    for (const route of [
+      "/manifest",
+      "/search?q=go&language=en",
+      "/identities/" + identityFromSeed(seed),
+      "/account-control?origin=https://example.invalid&account=1",
+    ])
+      assert.equal((await read(service, route)).snapshot, latest);
+    assert.equal(
+      database.prepare("SELECT snapshot FROM search_current WHERE id=1").get()!
+        .snapshot,
+      latest,
+    );
+    assert.equal(
+      database
+        .prepare("SELECT COUNT(*) AS n FROM search_snapshots WHERE snapshot=?")
+        .get(base)!.n,
+      0,
+    );
+    assert.equal(
+      database
+        .prepare("SELECT COUNT(*) AS n FROM search_entries WHERE snapshot=?")
+        .get(latest)!.n,
+      1,
+    );
+  } finally {
+    gate.resolve();
+    await service.flushMaterialization().catch(() => {});
+    database.close();
+    index.close();
+    await rm(directory, { recursive: true, force: true });
   }
 });
 

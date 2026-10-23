@@ -391,9 +391,12 @@ test("Node search reuse flattens aliases without copying unchanged entries", asy
       database.prepare("SELECT snapshot FROM search_current").get()!.snapshot,
       hash(4),
     );
-    await assert.rejects(
-      index.reuse(hash(999), hash(1000)),
-      /previous search index/,
+    assert.equal(await index.reuse(hash(999), hash(1000)), false);
+    assert.equal(
+      database
+        .prepare("SELECT snapshot FROM search_snapshots WHERE snapshot=?")
+        .get(hash(1000)),
+      undefined,
     );
     assert.equal(
       database.prepare("SELECT snapshot FROM search_current").get()!.snapshot,
