@@ -44,6 +44,8 @@ The committed adapter comparison uses one signed profile event. Importer tests i
 The SQL fixture retains four source definitions in English, French, and Russian, with available version history and numbered keywords.
 SQL extraction streams COPY blocks and joins source rows on disk. It retains separate language tags and separate word-level and definition-level rafsi evidence.
 Unsupported rows receive unresolved notices. The source archive keeps the original manifest and records the digest and path of the external dump.
+Split rows retain their owner across breaks in different fields. The size estimate counts new publications separately from staged observations.
+The SQL `--check-existing` mode requires a copied journal in fresh scratch output and refuses an existing proposal.
 
 An offline command loads signed carriers, their selection, and their view into a Node data directory. Repeat loads preserve receipt positions.
 Node startup restores the loaded view and its explicit state work budget. The server and loader require exclusive access to that directory.

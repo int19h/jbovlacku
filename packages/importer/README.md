@@ -140,10 +140,16 @@ Read its `incomplete` field before loading the proposal. A saved proposal can co
 Malformed related rows leave affected definitions unresolved and preserve their prior selections.
 The reader groups matching adjacent short fragments into one malformed record and reports every physical location.
 It retains the first fragment's owner without repairing or signing the damaged record.
+The field count spans every fragment, including breaks in different source fields.
+Each group stays within 64 physical rows and 32 MiB of decoded field bytes.
+An adjacent damaged row with its own identifier prefix retains its separate owner.
 An unreadable lookup row blocks definitions that reference its missing key, rather than the whole snapshot.
 An unpaired owner row without a readable owner still makes that dependent table incomplete.
 
 The calibrated estimate before signing includes staging, the existing journal, proposed carriers, journal growth, temporary reserves, and a projected loaded copy.
+Before estimating, the importer counts staged definitions that need a new publication under its ordinary reuse rules.
+New carrier bytes and added space for the loaded copy use that count, with a reserve for one new view.
+Observation growth still uses every staged definition row.
 It uses measured SQL v2 costs and file-allocation allowances. It is not a strict filesystem upper bound.
 The normal SQL command stops when that estimate exceeds 3,000,000,000 bytes.
 The final output compares measured proposal files with their estimate and reports a miss above ten percent.
@@ -151,7 +157,11 @@ It labels the projected loaded copy separately because extraction does not creat
 
 If you compare an existing proposal, copy its journal into a new scratch output directory.
 Add `--check-existing` to the SQL command for that directory.
+The command refuses an output directory that contains `carriers.jsonl` or `source-archive`.
+It refuses before opening or migrating the journal, so a retained proposal stays unchanged.
 This mode reparses the full source, refuses every new signed publication or view, and retains the original envelopes.
+It writes observations and exported proposal files only in that scratch directory.
+For another comparison, copy the retained journal into another new scratch directory.
 Its estimate covers the proposal and staging only, with a 1,500,000,000-byte budget.
 It does not load or start a service. Compare the exported carriers before using the result.
 

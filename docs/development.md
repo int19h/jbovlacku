@@ -132,13 +132,16 @@ Both extraction commands share one journal for that origin and importer key.
 The SQL extraction uses every source definition language that the format can represent.
 It preserves authored source fields and available history. It omits derived vectors and caches with explicit source limitations.
 Malformed related rows leave affected definitions unresolved. They never create false source removals.
-Split COPY fragments retain their first readable owner and remain malformed.
+Split COPY fragments retain their first readable owner and remain malformed, including breaks in different fields.
 Missing lookup rows block only their dependent definitions.
 The importer guide describes both extraction commands, source manifests, and unresolved reports.
 
 SQL extraction uses a calibrated disk estimate before signing and reports measured proposal bytes afterward.
+It counts definitions that need new publications before estimating carrier growth and added space for the loaded copy.
+Observation growth still covers all staged definition rows.
 The normal estimate includes a projected loaded copy, while `--check-existing` covers only its scratch proposal and staging.
 That check reparses the source with retained envelopes and refuses new publications.
+Use a new scratch directory with a copied journal. The command refuses existing `carriers.jsonl` or `source-archive` paths before opening the journal.
 Its 1.5 GB budget does not authorize a service load.
 
 After preparing a signed proposal, stop the Node server for the target data directory.
