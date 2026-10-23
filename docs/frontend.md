@@ -488,8 +488,12 @@ Acceptance retains these values until the author chooses an action. Clear remove
 Marked Letters, Said, Stem, and Stem said remain read-only until Keep or Clear. Keep preserves the marked value, and Clear permits new input.
 Generation waits until every row has usable, unmarked Letters. Clearing Letters keeps generation waiting until the author fills them.
 Unresolved marks block signing only while their formation exists. A type change that removes the formation also removes its marks.
+Explicit evidence removal keeps the row marks. Retained Letters still block generation.
+Any unresolved mark blocks signing when a new formation exists.
 
 Review marks and choices stay private in the draft. They survive reload and mode changes, and undo restores them with the values.
+A partial undo preserves later review choices and restores required marks with the retained values that it restores.
+Keep never overwrites a different paragraph or a changed field when its mark no longer matches.
 A later accepted suggested word that changes Word starts a new review for every retained nonempty value.
 A later proposal that replaces a marked value removes its old mark. Repeating that value preserves its mark.
 

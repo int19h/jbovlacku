@@ -505,7 +505,6 @@ export function removeFormationEvidence(draft: Draft): boolean {
     return false;
   draft.compound = null;
   draft.formation = null;
-  for (const row of draft.gismu?.rows ?? []) delete row.sourceReview;
   draft.evidenceForm = null;
   draft.publishAcknowledged = [];
   return true;

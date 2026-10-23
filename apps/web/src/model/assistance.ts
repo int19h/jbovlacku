@@ -742,6 +742,16 @@ export function undoPatches(
 }
 export function restorePatches(draft: Draft, record: AssistanceRecord): number {
   let kept = 0;
+  let restoredFormation = false;
+  const sourceUndos = new Map<
+    GismuRowState,
+    {
+      before: GismuRowState;
+      after: GismuRowState;
+      marks: SourceReview[] | undefined;
+      restored: (string | number)[][];
+    }
+  >();
   const patches =
     record.patches ??
     Object.keys(record.after ?? {}).map((k) => ({
@@ -751,6 +761,7 @@ export function restorePatches(draft: Draft, record: AssistanceRecord): number {
     }));
   for (const patch of patches) {
     let path = patch.path;
+    let sourceUndo: ReturnType<typeof sourceUndos.get>;
     if (path[0] === "gismu" && path[1] === "rows" && path.length > 2) {
       const sourceId =
         record.after?.gismu?.rows[Number(path[2])]?.id ??
@@ -763,6 +774,25 @@ export function restorePatches(draft: Draft, record: AssistanceRecord): number {
           continue;
         }
         path = ["gismu", "rows", String(index), ...path.slice(3)];
+        const row = draft.gismu!.rows[index];
+        const before = record.before?.gismu?.rows.find(
+          (row) => row.id === sourceId,
+        );
+        const after = record.after?.gismu?.rows.find(
+          (row) => row.id === sourceId,
+        );
+        if (before && after) {
+          if (!sourceUndos.has(row))
+            sourceUndos.set(row, {
+              before,
+              after,
+              marks: structuredClone(row.sourceReview),
+              restored: [],
+            });
+          sourceUndo = sourceUndos.get(row)!;
+          // Review arrays contain decisions, so never patch their numeric indexes.
+          if (path[3] === "sourceReview") continue;
+        }
       }
     }
     let parent: Record<string, unknown> = draft as unknown as Record<
@@ -781,7 +811,102 @@ export function restorePatches(draft: Draft, record: AssistanceRecord): number {
     ) {
       if (patch.before === undefined) delete parent[key];
       else parent[key] = structuredClone(patch.before);
+      if (
+        path.length === 1 &&
+        path[0] === "formation" &&
+        patch.after === null &&
+        draft.formation
+      )
+        restoredFormation = true;
+      sourceUndo?.restored.push(path.slice(3));
     } else kept++;
+  }
+  for (const [row, undo] of sourceUndos) {
+    const { before, after, marks, restored } = undo;
+    const same = (left: unknown, right: unknown) =>
+      semanticKey(left) === semanticKey(right);
+    const unchanged = same(marks, after.sourceReview);
+    if (!unchanged) kept++;
+    const restoredField = (field: string) =>
+      restored.some((path) => path[0] === field);
+    const restoredValue = (mark: SourceReview) => {
+      if (mark.field === "input")
+        return (
+          (restoredField("input") || restoredField("inputOriginal")) &&
+          row.input === before.input &&
+          Object.hasOwn(row, "inputOriginal") ===
+            Object.hasOwn(before, "inputOriginal") &&
+          same(row.inputOriginal, before.inputOriginal)
+        );
+      return restored.some(
+        (path) =>
+          path[0] === mark.field &&
+          (mark.field !== "notes" ||
+            path.length === 1 ||
+            Number(path[1]) === mark.index),
+      );
+    };
+    // Pair duplicate paragraphs in order. Their indexes can shift with the AI group.
+    const available = new Set(
+      (after.sourceReview ?? []).map((_, index) => index),
+    );
+    const carried = new Map<SourceReview, SourceReview>();
+    const identity = ({ index, ...mark }: SourceReview) => {
+      void index;
+      return semanticKey(mark);
+    };
+    for (const mark of before.sourceReview ?? []) {
+      const index = [...available].find(
+        (index) => identity(mark) === identity(after.sourceReview![index]),
+      );
+      if (index !== undefined) {
+        carried.set(mark, after.sourceReview![index]);
+        available.delete(index);
+      }
+    }
+    let reviews = unchanged
+      ? (before.sourceReview ?? []).filter(
+          (mark) =>
+            carried.has(mark) ||
+            restoredValue(mark) ||
+            restoredField("word") ||
+            restoredFormation,
+        )
+      : (marks ?? []).map((mark) => {
+          if (
+            mark.field === "notes" &&
+            restoredField("notes") &&
+            same(row.notes, before.notes)
+          ) {
+            const pair = [...carried].find(([, afterMark]) =>
+              same(mark, afterMark),
+            );
+            if (pair) return pair[0];
+          }
+          return mark;
+        });
+    if (!unchanged)
+      for (const mark of before.sourceReview ?? [])
+        if (
+          !carried.has(mark) &&
+          restoredValue(mark) &&
+          !reviews.some((other) => same(mark, other))
+        )
+          reviews.push(mark);
+    reviews = reviews.filter(
+      (mark) =>
+        sourceReviewMatches(row, mark) &&
+        (mark.field !== "input" ||
+          mark.inputText === undefined ||
+          row.input === mark.inputText),
+    );
+    if (
+      reviews.length ||
+      before.sourceReview !== undefined ||
+      (!unchanged && marks !== undefined)
+    )
+      row.sourceReview = structuredClone(reviews);
+    else delete row.sourceReview;
   }
   syncFormationSources(draft);
   return kept;

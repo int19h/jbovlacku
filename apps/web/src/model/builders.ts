@@ -223,16 +223,13 @@ export function resolveSourceReview(
 ) {
   const mark = row.sourceReview?.[markIndex];
   if (!mark) throw new Error("This source review no longer exists.");
-  if (action === "keep") {
-    if (mark.field === "notes") {
-      const notes = sourceNotes(row);
-      if (!notes[mark.index!])
-        throw new Error(
-          "This source paragraph moved. Review the current source notes.",
-        );
-      notes[mark.index!] = structuredClone(mark.value) as RichText[number];
-      row.notes = notes;
-    } else if (mark.field === "input") {
+  const matches =
+    sourceReviewMatches(row, mark) &&
+    (mark.field !== "input" ||
+      mark.inputText === undefined ||
+      row.input === mark.inputText);
+  if (action === "keep" && matches) {
+    if (mark.field === "input") {
       const value = structuredClone(mark.value) as FormationSource["input"];
       row.input =
         mark.inputText ?? (value?.format === "lojbanized" ? value.text : "");
@@ -240,13 +237,8 @@ export function resolveSourceReview(
         row.inputOriginal = structuredClone(mark.inputOriginal ?? null);
       else if (mark.inputText !== undefined) delete row.inputOriginal;
       else row.inputOriginal = value;
-    } else row[mark.field] = structuredClone(mark.value) as string | null;
-  } else if (
-    sourceReviewMatches(row, mark) &&
-    (mark.field !== "input" ||
-      mark.inputText === undefined ||
-      row.input === mark.inputText)
-  ) {
+    }
+  } else if (action === "clear" && matches) {
     if (mark.field === "notes") {
       const index = mark.index!;
       const notes = sourceNotes(row);
@@ -269,7 +261,7 @@ export function resolveSourceReview(
       row.inputOriginal = null;
     } else row[mark.field] = null;
   }
-  if (mark.field === "word_ipa") delete row.wordIpaNullOriginal;
+  if (mark.field === "word_ipa" && matches) delete row.wordIpaNullOriginal;
   row.sourceReview!.splice(markIndex, 1);
 }
 export interface GismuState {

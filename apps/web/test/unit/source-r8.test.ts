@@ -166,7 +166,7 @@ test("repeated scoring input keeps its review when JSON object keys have another
 });
 
 for (const field of ["word_ipa", "stem", "ipa", "input", "notes"] as const) {
-  test(`Keep restores the exact retained ${field} after an editor bypass`, () => {
+  test(`Keep leaves a later ${field} replacement intact after an editor bypass`, () => {
     const draft = example();
     const row = draft.gismu!.rows[0];
     row.input = "Buk";
@@ -175,7 +175,6 @@ for (const field of ["word_ipa", "stem", "ipa", "input", "notes"] as const) {
     const markIndex = sourceReviewMarks(row).findIndex(
       (mark) => mark.field === field,
     );
-    const retained = structuredClone(sourceReviewMarks(row)[markIndex].value);
     if (field === "notes") row.notes![0] = ["A later authored note"];
     else if (field === "input") {
       row.input = "klama";
@@ -188,8 +187,15 @@ for (const field of ["word_ipa", "stem", "ipa", "input", "notes"] as const) {
         : field === "input"
           ? formationSource(row).input
           : row[field];
-    assert.deepEqual(actual, retained);
-    if (field === "input") assert.equal(row.input, "Buk");
+    assert.deepEqual(
+      actual,
+      field === "notes"
+        ? ["A later authored note"]
+        : field === "input"
+          ? { format: "lojbanized", text: "klama" }
+          : "replacement",
+    );
+    if (field === "input") assert.equal(row.input, "klama");
   });
 
   test(`Clear leaves a later ${field} replacement intact after an editor bypass`, () => {
