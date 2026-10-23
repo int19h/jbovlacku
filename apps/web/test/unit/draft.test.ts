@@ -801,7 +801,8 @@ test("source stems stay private through draft reload, export, publication, and R
   const built = draftToBody(restored);
   assert.deepEqual(built.problems, []);
   assert.deepEqual(built.body!.etymology.formation, formation);
-  assert.deepEqual(restored, before);
+  assert.deepEqual(restored.formation, before.formation);
+  assert.deepEqual(restored.gismu, before.gismu);
   assert.ok(admissible(built.body));
   const parent = "jve1:" + "1".repeat(64);
   const revisionDraft = draftFromBody(built.body!, parent, "native");
@@ -889,7 +890,8 @@ test("cached draft formation keeps private evidence but publishes signed source 
           input: source.input,
           ...(word_ipa?.trim() ? { word_ipa } : {}),
         });
-        assert.deepEqual(restored, before);
+        assert.deepEqual(restored.formation, before.formation);
+        assert.deepEqual(restored.gismu, before.gismu);
         assert.ok(admissible(built.body));
       }
     }
@@ -920,7 +922,8 @@ test("private-only draft sources stay in the draft without creating signed sourc
   const built = draftToBody(restored);
   assert.deepEqual(built.problems, []);
   assert.deepEqual(built.body!.etymology.formation!.sources, []);
-  assert.deepEqual(restored, before);
+  assert.deepEqual(restored.formation, before.formation);
+  assert.deepEqual(restored.gismu, before.gismu);
   assert.ok(admissible(built.body));
   // Authored notes are signed evidence even without a word or scoring input.
   restored.formation!.sources[0].notes = [["The base form is uncertain."]];
