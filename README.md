@@ -14,8 +14,9 @@ It does not restrict expressly authorized work on private GitHub issues and pull
 
 The Rust libraries implement canonical records, SSHSIG signatures, causal state, identity continuity, imported account controls, and exact ranking bounds.
 Native and WebAssembly builds share the format rules. The TypeScript application uses generated WebAssembly bindings.
-The current definition validator still requires explicit empty or null fields.
-Support for [omitted optional definition fields](docs/format.md#absent-fields-and-compatibility) remains a target change.
+The definition validator accepts omitted `word_ipa`, `stem`, and `ipa` fields on formation sources.
+Formation sources still require explicit `input`, `weight`, and `notes`, including their empty or null values.
+Every other [optional definition field](docs/format.md#absent-fields-and-compatibility) still requires its explicit value in the current validator.
 The Node.js adapter uses local object files and SQLite. The local Worker adapter uses R2, D1, and a Durable Object.
 The Worker currently serves the API only.
 Both adapters share admission, receipts, snapshots, search packages, and dictionary API logic.

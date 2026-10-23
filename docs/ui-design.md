@@ -260,7 +260,14 @@ Language and Weight show the language and resolved weight. Word shows the native
 Stem shows the part that supplies the letters. Stem said shows its pronunciation. Letters is the editable scoring input.
 
 The signed source fields are `language`, `weight`, `word`, `word_ipa`, `stem`, `ipa`, and `input`, respectively.
-Letters uses the `lojbanized` input format. The pronunciation and stem fields remain published and do not affect the score.
+If `input` is null, Letters stays empty. For `format: "lojbanized"`, Letters shows the exact `input.text`.
+
+For `format: "ipa"`, Letters shows a preview from the recorded versioned conversion rule when the app supports that rule.
+Otherwise, Letters stays empty and the screen shows that conversion is unavailable. It keeps the original IPA algorithm input visible beside Letters.
+That input stays distinct from the stem pronunciation `ipa`. The screen never guesses or fills `ipa` from it.
+The preview preserves the original stored `input` bytes.
+
+The pronunciation and stem fields remain published and do not affect the score.
 An absent or null pronunciation or stem field means unknown and stays empty for an older record.
 
 The preset select offers documented CLL 1995, CLL 1987, twelve-language, and custom profiles when their sourced parameters exist.

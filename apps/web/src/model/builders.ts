@@ -329,7 +329,8 @@ export function formationSource(raw: GismuRowState): FormationSource {
     notes: sourceNotes(row),
   };
   for (const field of ["word_ipa", "stem", "ipa"] as const) {
-    if (row[field]) source[field] = row[field];
+    const value = row[field];
+    if (value?.trim()) source[field] = value;
   }
   return source;
 }

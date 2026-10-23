@@ -334,7 +334,14 @@ The table shows these columns: Language, Weight, Word, Said, Stem, Stem said, an
 The pronunciation is there so that speakers of the language can check the word later and propose a better one. Only the letters count toward the score. Stress is shown and is never scored.
 
 The signed formation source keeps Word as `word`, Said as `word_ipa`, Stem as `stem`, and Stem said as `ipa`.
-Letters uses `input` with `format: "lojbanized"`. Language and Weight use `language` and `weight`.
+Language and Weight use `language` and `weight`. If `input` is null, Letters stays empty.
+For `format: "lojbanized"`, Letters shows the exact `input.text`.
+
+For `format: "ipa"`, Letters shows a preview from the recorded versioned conversion rule when the app supports that rule.
+Otherwise, Letters stays empty and the app shows that conversion is unavailable. The app keeps the original IPA algorithm input visible beside Letters.
+That input stays distinct from the stem pronunciation `ipa`. The app never guesses or fills `ipa` from it.
+The preview preserves the original stored `input` bytes.
+
 The pronunciation and stem fields are optional. An absent or null field means unknown and stays empty when an older record opens.
 The app never guesses a missing stem or pronunciation from the scoring input.
 
