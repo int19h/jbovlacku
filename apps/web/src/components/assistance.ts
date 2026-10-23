@@ -13,6 +13,13 @@ import type { App } from "../app/context.ts";
 import { navigate, type RenderContext } from "../app/router.ts";
 import { getCapabilities, selfPeer, readBounded } from "../data/api.ts";
 import {
+  assistanceLog,
+  assistanceLogRows,
+  assistanceLogMarkdown,
+  applyMapping,
+  mappingRecordMatches,
+  retainAssistance,
+  storeAssistanceRecord,
   currentDraft,
   draftFingerprint,
   applyProposals,
@@ -199,6 +206,7 @@ async function consent(
   app: App,
   profile: ConsentProfile,
   signal: AbortSignal,
+  opener: HTMLElement | null,
 ): Promise<boolean> {
   const d = profile.disclosure;
   const prior = app.session.preferences.aiConsents ?? [];
@@ -272,193 +280,32 @@ async function consent(
       },
       { once: true },
     );
-    showDialog(dialog);
+    showDialog(dialog, opener);
     accept.focus();
   });
 }
 const json = (value: unknown) => JSON.stringify(value, null, 2);
-/** Show each provider figure only when it is known. Zero remains a figure. */
-function usageSummary(usage: Record<string, unknown>): string {
-  return [
-    usage.input_tokens == null
-      ? ""
-      : `Input tokens: ${String(usage.input_tokens)}.`,
-    usage.output_tokens == null
-      ? ""
-      : `Output tokens: ${String(usage.output_tokens)}.`,
-    usage.cost_usd == null ? "" : `Cost: ${String(usage.cost_usd)} USD.`,
-  ]
-    .filter(Boolean)
-    .join(" ");
-}
-function attemptUsage(attempt: Record<string, unknown>): string {
-  const usage =
-    attempt.usage && typeof attempt.usage === "object"
-      ? (attempt.usage as Record<string, unknown>)
-      : {};
-  return usageSummary({
-    input_tokens: Object.hasOwn(usage, "prompt_tokens")
-      ? usage.prompt_tokens
-      : usage.input_tokens,
-    output_tokens: Object.hasOwn(usage, "completion_tokens")
-      ? usage.completion_tokens
-      : usage.output_tokens,
-    cost_usd: attempt.cost_usd,
-  });
-}
-function logMarkdown(
-  log: Record<string, unknown>,
-  record: AssistanceRecord,
-): string {
-  const rows = [
-    `# ${record.label}`,
-    "",
-    `Model: ${String(log.model ?? "")}. Reasoning level: ${String(log.reasoning_effort ?? "")}. Provider: ${String(log.provider ?? "")}.`,
-    `Prompt version: ${String(log.prompt_version ?? "")}.`,
-    `Started: ${String(log.started_at ?? "")}. Duration: ${String(log.duration_ms ?? "")} ms.`,
-    `Answers: ${String(log.answers ?? "")}. Corrections: ${String(log.corrections ?? "")}.`,
-    usageSummary(log),
-    "",
-    "The provider does not make the assistant’s private reasoning available. This log holds the shared reasoning summary and everything that the assistant wrote.",
-  ];
-  for (const exchange of (Array.isArray(log.exchanges)
-    ? log.exchanges
-    : []) as Record<string, unknown>[]) {
-    rows.push(
-      "",
-      `## ${String(exchange.task)}`,
-      "",
-      "### System prompt",
-      "",
-      String(exchange.system_prompt ?? ""),
-      "",
-      "### App request",
-      "",
-      "```json",
-      json(exchange.request),
-      "```",
-    );
-    for (const attempt of (Array.isArray(exchange.attempts)
-      ? exchange.attempts
-      : []) as Record<string, unknown>[])
-      rows.push(
-        "",
-        `### Answer ${String(attempt.attempt)}`,
-        "",
-        String(
-          attempt.reasoning_summary ||
-            "No reasoning summary was shared for this answer.",
-        ),
-        "",
-        String(attempt.text ?? ""),
-        "",
-        "Tool call:",
-        "",
-        "```json",
-        json(attempt.tool_calls),
-        "```",
-        "",
-        attemptUsage(attempt),
-        "",
-        "App check:",
-        "",
-        "```json",
-        json(attempt.check),
-        "```",
-      );
-  }
-  return rows.join("\n");
-}
-export function inferenceLog(record: AssistanceRecord) {
-  const log = record.log ?? record.result?.log ?? {};
+export function inferenceLog(record: AssistanceRecord, draft?: Draft) {
+  const log = assistanceLog(record, draft);
   const dialog = el("dialog", {
     class: "sheet ai-log",
     "aria-labelledby": "ai-log-title",
   });
   dialog.append(
     el("h2", { id: "ai-log-title", text: "How the assistant decided" }),
-    p(
-      `${record.label}. Model: ${String(log.model ?? record.result?.provenance.model ?? "unavailable")}. Reasoning level: ${String(log.reasoning_effort ?? "unavailable")}. Provider: ${String(log.provider ?? record.result?.provenance.provider ?? "unavailable")}.`,
-    ),
-    p(
-      `Prompt version: ${String(log.prompt_version ?? record.result?.provenance.recipe ?? "unavailable")}.`,
-    ),
   );
-  for (const file of (Array.isArray(log.prompt_files)
-    ? log.prompt_files
-    : []) as unknown[]) {
-    if (
-      typeof file === "string" &&
-      /^[a-zA-Z0-9_./-]+$/.test(file) &&
-      !file.includes("..")
-    )
+  for (const row of assistanceLogRows(record, log)) {
+    if (row.kind === "heading")
+      dialog.append(el(`h${row.level ?? 3}` as "h3", { text: row.text }));
+    else if (row.kind === "code") dialog.append(el("pre", { text: row.text }));
+    else if (row.kind === "link")
       dialog.append(
-        link(
-          file,
-          file.startsWith("/api/v1/assist/prompts/")
-            ? file
-            : `https://github.com/int19h/jbovlacku/blob/main/${file.startsWith("prompts/") ? "" : "prompts/"}${file}`,
-          { target: "_blank", rel: "noopener noreferrer" },
-        ),
-        text(" "),
-      );
-  }
-  dialog.append(
-    p(
-      `Time: ${String(log.started_at ?? "unavailable")}. Duration: ${String(log.duration_ms ?? "unavailable")} ms. Answers: ${String(log.answers ?? 0)}. Corrections: ${String(log.corrections ?? 0)}.`,
-    ),
-    p(usageSummary(log)),
-    p(
-      "The provider does not make the assistant’s private reasoning available. This log holds the shared reasoning summary and everything that the assistant wrote.",
-      "small",
-    ),
-    p(
-      "This log stays in this browser with the draft. It is never published.",
-      "meta",
-    ),
-  );
-  if (record.error) dialog.append(p(record.error, "notice"));
-  for (const exchange of (Array.isArray(log.exchanges)
-    ? log.exchanges
-    : []) as Record<string, unknown>[]) {
-    const system = el(
-      "details",
-      {},
-      el("summary", { text: `System prompt: ${String(exchange.task)}` }),
-      el("pre", { text: String(exchange.system_prompt ?? "") }),
-    );
-    dialog.append(
-      system,
-      el("h3", { text: "App request" }),
-      el("pre", {
-        text:
-          typeof exchange.request === "string"
-            ? exchange.request
-            : json(exchange.request),
-      }),
-    );
-    for (const attempt of (Array.isArray(exchange.attempts)
-      ? exchange.attempts
-      : []) as Record<string, unknown>[]) {
-      dialog.append(
-        el("h3", { text: `Answer ${String(attempt.attempt)}` }),
-        p(
-          String(
-            attempt.reasoning_summary ||
-              "No reasoning summary was shared for this answer.",
-          ),
-        ),
-        el("div", {
-          class: "ai-written",
-          text: typeof attempt.text === "string" ? attempt.text : "",
+        link(row.text, row.href!, {
+          target: "_blank",
+          rel: "noopener noreferrer",
         }),
-        el("h4", { text: "Tool call" }),
-        el("pre", { text: json(attempt.tool_calls) }),
-        p(attemptUsage(attempt)),
-        el("h4", { text: "App check" }),
-        el("pre", { text: json(attempt.check) }),
       );
-    }
+    else dialog.append(p(row.text));
   }
   const close = button("Close", () => dialog.close(), { class: "btn" });
   dialog.append(
@@ -470,7 +317,7 @@ export function inferenceLog(record: AssistanceRecord) {
         () =>
           download(
             `jbovlacku-ai-${record.id}.md`,
-            logMarkdown(log, record),
+            assistanceLogMarkdown(record, log),
             "text/markdown",
           ),
         { class: "btn" },
@@ -506,9 +353,9 @@ function snapshot(draft: Draft): Partial<Draft> {
   void updatedAt;
   return structuredClone(rest);
 }
-const runners = new WeakMap<HTMLElement, () => Promise<void>>();
+const runners = new WeakMap<HTMLElement, () => Promise<boolean>>();
 export async function runAssistance(control: HTMLElement) {
-  await runners.get(control)?.();
+  return (await runners.get(control)?.()) ?? false;
 }
 export function assistanceAction(
   app: App,
@@ -518,6 +365,18 @@ export function assistanceAction(
   options: ActionOptions,
 ): HTMLElement {
   const box = el("div", { class: "ai-action", "data-ai-action": options.key });
+  const status = el("span", {
+    class: "sr",
+    role: "status",
+    "aria-live": "polite",
+    "aria-atomic": "true",
+  });
+  const content = el("div");
+  box.append(status, content);
+  let workingLine: HTMLElement | null = null;
+  let workingText: HTMLElement | null = null;
+  let showIdle = false;
+  let disposed = false;
   let profile: ConsentProfile | undefined;
   interface Run {
     controller: AbortController;
@@ -530,8 +389,10 @@ export function assistanceAction(
   let progress = "The assistant is working.";
   let record = (draft.ai?.records ?? []).findLast((r) => r.key === options.key);
   const visibility = assistanceVisibility(app, context);
-  const enabled = () => visibility.enabled && !!profile;
+  const enabled = () => !disposed && visibility.enabled && !!profile;
   const save = () => {
+    if (draft.ai) draft.ai.changes = (draft.ai.changes ?? 0) + 1;
+    retainAssistance(draft);
     saver.touch();
     box.dispatchEvent(new CustomEvent("assist-change", { bubbles: true }));
   };
@@ -540,12 +401,11 @@ export function assistanceAction(
       navigate(`${location.pathname}${location.search}`, { replace: true });
   };
   const logButton = (r: AssistanceRecord) =>
-    button("How the assistant decided", () => inferenceLog(r), {
+    button("How the assistant decided", () => inferenceLog(r, draft), {
       class: "btn btn-quiet small",
     });
   const storeRecord = (r: AssistanceRecord) => {
-    draft.ai ??= { records: [] };
-    draft.ai.records.push(r);
+    storeAssistanceRecord(draft, r);
     record = r;
     save();
   };
@@ -573,18 +433,26 @@ export function assistanceAction(
     if (context.live()) render();
     await acknowledge(run);
   };
-  context.signal.addEventListener("abort", () => void cancel(), { once: true });
+  const abortRun = () => void cancel();
+  context.signal.addEventListener("abort", abortRun, { once: true });
   box.addEventListener("assist-cancel", () => void cancel());
 
   function mappingControl(
     index: number,
+    canApply: () => boolean,
     derivation: NonNullable<
       Current["frame"]
     >["places"][number]["derivation"][number],
   ): HTMLElement {
-    const key = `${options.key}:mapping:${index}:${derivation.word.spelling}:${derivation.place}`;
+    const legacyKey = `${options.key}:mapping:${index}:${derivation.word.spelling}:${derivation.place}`;
+    const key = `${legacyKey}:${derivation.definition ?? ""}`;
+    const definitionLabel = derivation.definition
+      ? ` from ${derivation.definition}`
+      : "";
     const prior = draft.ai?.records.findLast(
-      (r) => r.key === key && r.state === "accepted",
+      (r) =>
+        mappingRecordMatches(r, key, legacyKey, derivation) &&
+        r.state === "accepted",
     );
     if (prior)
       return button(
@@ -594,11 +462,11 @@ export function assistanceAction(
           prior.state = "undone";
           save();
           await saver.flush();
-          render();
+          await refreshPage();
         },
         {
           class: "btn btn-quiet",
-          "aria-label": `Undo mapping ${derivation.word.spelling} ${derivation.place} to place ${index}`,
+          "aria-label": `Undo mapping ${derivation.word.spelling} ${derivation.place} to place ${index}${definitionLabel}`,
         },
       );
     const target = draft.places.find((p) => p.index === index);
@@ -614,35 +482,39 @@ export function assistanceAction(
     return button(
       "Add",
       async () => {
-        if (!target || !record?.result) return;
+        if (!canApply() || !record?.result) return;
         const before = snapshot(draft);
-        target.derivations.push({
-          word: derivation.word.spelling,
-          definition: derivation.definition,
-          place: derivation.place,
-          explanation: structuredClone(derivation.explanation),
-        });
+        try {
+          applyMapping(draft, index, derivation);
+        } catch (error) {
+          app.announce(describe(error));
+          return;
+        }
         const after = snapshot(draft);
-        draft.ai ??= { records: [] };
-        draft.ai.records.push({
+        storeAssistanceRecord(draft, {
           ...record,
           id: crypto.randomUUID(),
           key,
-          label: `Add ${derivation.word.spelling} ${derivation.place} to place ${index}`,
+          label: `Add ${derivation.word.spelling} ${derivation.place} to place ${index}${definitionLabel}`,
           state: "accepted",
+          result: null,
+          log: null,
+          log_id: record.log_id ?? record.id,
           patches: undoPatches(before, after),
+          before,
+          after,
         });
         save();
         await refreshPage();
       },
       {
         class: "btn btn-quiet",
-        "aria-label": `Add ${derivation.word.spelling} ${derivation.place} to place ${index}`,
-        disabled: !target,
+        "aria-label": `Add ${derivation.word.spelling} ${derivation.place} to place ${index}${definitionLabel}`,
+        disabled: !target || !canApply(),
       },
     );
   }
-  function renderProposal(result: Suggestion) {
+  function renderProposal(result: Suggestion, canApply: () => boolean) {
     const section = el("div", { class: "ai-proposals" });
     for (const proposal of result.proposals) {
       const title = proposal.path.replace(/^\//, "").replaceAll("/", " · ");
@@ -711,7 +583,7 @@ export function assistanceAction(
                       `${d.word.spelling} ${d.place}${mappingKind(d.explanation) ? ` · ${mappingKind(d.explanation)}` : ""}`,
                     ),
                     renderRichText(d.explanation, { placeHref: null }),
-                    mappingControl(place.index, d),
+                    mappingControl(place.index, canApply, d),
                   ),
                 ),
               ),
@@ -752,71 +624,159 @@ export function assistanceAction(
     }
     return section;
   }
-  function render() {
-    box.replaceChildren();
-    box.hidden = !enabled();
-    if (!enabled()) return;
-    if (working) {
-      box.append(
+  function renderAccepted(r: AssistanceRecord) {
+    content.append(
+      el(
+        "div",
+        { class: "ai-accepted" },
+        text("AI", "ai-tag"),
+        text(` ${options.label} accepted. `),
+        button(
+          "Undo",
+          async () => {
+            const newer = restorePatches(draft, r);
+            if (newer)
+              app.announce(
+                "Kept newer author edits while undoing the AI suggestion.",
+              );
+            r.state = "undone";
+            save();
+            await refreshPage();
+          },
+          { class: "btn btn-quiet", "aria-label": `Undo ${options.label}` },
+        ),
+        logButton(r),
+        button(
+          "Suggest again",
+          () => {
+            showIdle = true;
+            render();
+            const idle = content.lastElementChild;
+            if (idle instanceof HTMLButtonElement) idle.focus();
+          },
+          { class: "btn btn-quiet" },
+        ),
+      ),
+    );
+  }
+  function renderOtherMappingUndos(result?: Suggestion) {
+    const frame = result
+      ? (result.proposals.find((p) => p.path === "/frame")
+          ?.value as Current["frame"])
+      : null;
+    for (const prior of draft.ai?.records ?? []) {
+      if (
+        prior.state !== "accepted" ||
+        !prior.key.startsWith(`${options.key}:mapping:`)
+      )
+        continue;
+      const rendered = frame?.places.some((place) =>
+        place.derivation.some((mapping) => {
+          const legacy = `${options.key}:mapping:${place.index}:${mapping.word.spelling}:${mapping.place}`;
+          return mappingRecordMatches(
+            prior,
+            `${legacy}:${mapping.definition ?? ""}`,
+            legacy,
+            mapping,
+          );
+        }),
+      );
+      if (rendered) continue;
+      content.append(
         el(
           "div",
-          { role: "status", "aria-live": "polite", class: "ai-working" },
-          el("span", { class: "ai-spinner", "aria-hidden": "true" }),
-          text(progress),
-          button("Cancel", () => void cancel(), { class: "btn btn-quiet" }),
+          { class: "ai-accepted" },
+          text(`${prior.label} accepted. `),
+          button(
+            "Undo mapping",
+            async () => {
+              restorePatches(draft, prior);
+              prior.state = "undone";
+              save();
+              await refreshPage();
+            },
+            {
+              class: "btn btn-quiet",
+              "aria-label": `Undo mapping ${prior.label.replace(/^Add /, "")}`,
+            },
+          ),
+          logButton(prior),
         ),
       );
+    }
+  }
+  function render() {
+    const focused =
+      document.activeElement instanceof HTMLElement &&
+      content.contains(document.activeElement);
+    const replace = () => {
+      if (focused)
+        (
+          content.querySelector<HTMLElement>(
+            ".ai-suggestion button:not([disabled]), .notice + button",
+          ) ??
+          content.querySelector<HTMLElement>(
+            "button:not([disabled]), input, [tabindex]",
+          )
+        )?.focus();
+    };
+    box.hidden = !enabled();
+    if (!enabled()) return;
+    if (working && workingLine?.isConnected) {
+      workingText!.textContent = progress;
+      status.textContent = progress;
       return;
     }
+    content.replaceChildren();
+    workingLine = null;
+    if (working) {
+      workingText = text(progress);
+      workingLine = el(
+        "div",
+        { class: "ai-working" },
+        el("span", { class: "ai-spinner", "aria-hidden": "true" }),
+        workingText,
+        button("Cancel", () => void cancel(), { class: "btn btn-quiet" }),
+      );
+      content.append(workingLine);
+      status.textContent = progress;
+      replace();
+      return;
+    }
+    if (record?.state !== "done" || showIdle) renderOtherMappingUndos();
+    if (record?.state === "done") status.textContent = "Suggestion ready.";
+    else if (record?.state === "failed")
+      status.textContent = record.error ?? "No usable answer.";
+    else status.textContent = "";
+    const accepted = draft.ai?.records.findLast(
+      (r) => r.key === options.key && r.state === "accepted",
+    );
+    if (accepted && (showIdle || accepted !== record)) renderAccepted(accepted);
     const idle = () =>
-      box.append(
+      content.append(
         button(
           el("span", {}, text("AI", "ai-tag"), text(` ${options.label}`)),
           () => void start(),
           { class: "btn btn-quiet", "aria-label": options.label },
         ),
       );
-    if (!record || record.state === "dismissed" || record.state === "undone") {
+    if (
+      showIdle ||
+      !record ||
+      record.state === "dismissed" ||
+      record.state === "undone"
+    ) {
       idle();
+      replace();
       return;
     }
     if (record.state === "accepted") {
-      const r = record;
-      box.append(
-        el(
-          "div",
-          { class: "ai-accepted" },
-          text("AI", "ai-tag"),
-          text(` ${options.label} accepted. `),
-          button(
-            "Undo",
-            async () => {
-              const newer = restorePatches(draft, r);
-              if (newer)
-                app.announce(
-                  "Kept newer author edits while undoing the AI suggestion.",
-                );
-              r.state = "undone";
-              save();
-              await refreshPage();
-            },
-            { class: "btn btn-quiet", "aria-label": `Undo ${options.label}` },
-          ),
-          logButton(r),
-          button(
-            "Suggest again",
-            () => {
-              record = undefined;
-              render();
-            },
-            { class: "btn btn-quiet" },
-          ),
-        ),
-      );
+      renderAccepted(record);
+      replace();
       return;
     }
     if (record.state === "failed") {
-      box.append(
+      content.append(
         p(
           record.error ||
             "No usable answer. Try again or fill the fields in by hand.",
@@ -825,6 +785,7 @@ export function assistanceAction(
         button("Try again", () => void start(), { class: "btn btn-quiet" }),
         logButton(record),
       );
+      replace();
       return;
     }
     const result = record.result;
@@ -869,8 +830,17 @@ export function assistanceAction(
     } catch (error) {
       invalid = describe(error);
     }
+    renderOtherMappingUndos(invalid ? undefined : result);
     if (invalid) panel.append(el("pre", { text: json(result.proposals) }));
-    else panel.append(renderProposal(result));
+    const canApply = () => {
+      if (!reviewed) return false;
+      if (draftFingerprint(draft) !== reviewedFingerprint) {
+        queueMicrotask(render);
+        return false;
+      }
+      return true;
+    };
+    if (!invalid) panel.append(renderProposal(result, canApply));
     const accept = button(
       "Use this",
       async () => {
@@ -924,6 +894,10 @@ export function assistanceAction(
             reviewed = value;
             reviewedFingerprint = draftFingerprint(draft);
             accept.disabled = !reviewed || !!invalid;
+            for (const add of panel.querySelectorAll<HTMLButtonElement>(
+              'button[aria-label^="Add "]',
+            ))
+              add.disabled = !reviewed;
           },
         ),
       );
@@ -952,7 +926,8 @@ export function assistanceAction(
         logButton(r),
       ),
     );
-    box.append(panel);
+    content.append(panel);
+    replace();
   }
   async function request(
     run: Run,
@@ -971,8 +946,13 @@ export function assistanceAction(
       signal,
     });
     // A complete private attempt log can be larger than an ordinary API result.
-    // Each response is limited to 16 MiB and 30 seconds. Each action expires in 15 minutes.
-    const bytes = await readBounded(response, 16 * 1024 * 1024, signal);
+    // Job reads include the complete private log. Other responses keep the smaller bound.
+    // Each response expires after 30 seconds. Each action expires after 15 minutes.
+    const limit =
+      path.startsWith("/jobs/") && (!init.method || init.method === "GET")
+        ? 96 * 1024 * 1024
+        : 16 * 1024 * 1024;
+    const bytes = await readBounded(response, limit, signal);
     const value = JSON.parse(new TextDecoder().decode(bytes));
     if (!response.ok)
       throw Object.assign(
@@ -981,11 +961,19 @@ export function assistanceAction(
       );
     return { response, value };
   }
-  async function start() {
-    if (!visibility.ready || !enabled() || active || !context.live()) return;
+  async function start(): Promise<boolean> {
+    const opener = document.activeElement as HTMLElement | null;
+    if (!visibility.ready || active || !context.live()) return false;
+    try {
+      await app.session.refreshPreferences();
+    } catch (error) {
+      app.announce(describe(error));
+      return false;
+    }
+    if (!enabled() || active || !context.live()) return false;
     if (!draft.meaning.trim()) {
       app.announce("Write the meaning before asking for a suggestion.");
-      return;
+      return false;
     }
     const controller = new AbortController();
     const run: Run = {
@@ -1000,21 +988,23 @@ export function assistanceAction(
     const isCurrent = () =>
       active === run && context.live() && enabled() && !run.signal.aborted;
     active = run;
-    working = true;
     const revision = crypto.randomUUID();
     let requested: Current | undefined;
     let fingerprint = "";
     let received = false;
     try {
       await visibility.refresh();
-      if (!isCurrent()) return;
-      if (!(await consent(app, profile!, run.signal)) || !isCurrent()) return;
+      if (!isCurrent()) return false;
+      if (!(await consent(app, profile!, run.signal, opener)) || !isCurrent())
+        return false;
+      working = true;
+      showIdle = false;
       progress = "The assistant is working.";
       render();
       requested = options.current?.() ?? currentDraft(draft);
       fingerprint = draftFingerprint(draft);
       run.csrf = (await request(run, "/session")).value.csrf;
-      if (!isCurrent()) return;
+      if (!isCurrent()) return false;
       const answer = await request(
         run,
         "/assist",
@@ -1035,6 +1025,9 @@ export function assistanceAction(
                 ...(draft.lujvo?.components.flatMap((c) =>
                   c.definition ? [c.definition] : [],
                 ) ?? []),
+                ...(requested?.compound?.components.flatMap((c) =>
+                  c.definition ? [c.definition] : [],
+                ) ?? []),
                 ...draft.parents,
               ]),
             ].slice(0, 32),
@@ -1050,7 +1043,7 @@ export function assistanceAction(
         run.job = answer.value.job;
         if (!isCurrent()) {
           await acknowledge(run);
-          return;
+          return false;
         }
         const polling = Math.max(
           100,
@@ -1072,7 +1065,7 @@ export function assistanceAction(
           const status = (
             await request(run, `/jobs/${encodeURIComponent(run.job!)}`)
           ).value;
-          if (!isCurrent()) return;
+          if (!isCurrent()) return false;
           if (status.progress?.attempt > 1) {
             progress = `The first answer had errors, so the assistant is trying again (${status.progress.attempt} of ${status.progress.max_attempts || 3}).`;
             render();
@@ -1096,7 +1089,7 @@ export function assistanceAction(
             throw new DOMException("Canceled", "AbortError");
         }
       } else {
-        if (!isCurrent()) return;
+        if (!isCurrent()) return false;
         result = answer.value;
       }
       let checked: Suggestion;
@@ -1113,7 +1106,7 @@ export function assistanceAction(
         !enabled() ||
         active !== run
       )
-        return;
+        return false;
       storeRecord({
         id: crypto.randomUUID(),
         key: options.key,
@@ -1122,7 +1115,7 @@ export function assistanceAction(
         fingerprint,
         requested,
         result: checked,
-        log: checked.log,
+        log: checked.log ?? null,
         error: null,
         state: "done",
       });
@@ -1135,7 +1128,7 @@ export function assistanceAction(
         active !== run ||
         !requested
       )
-        return;
+        return false;
       storeRecord({
         id: crypto.randomUUID(),
         key: options.key,
@@ -1145,7 +1138,7 @@ export function assistanceAction(
         requested,
         result: null,
         log: (error as { log?: Record<string, unknown> }).log ?? null,
-        error: `${describe(error)} Try again or fill the fields in by hand.`,
+        error: describe(error),
         state: "failed",
       });
       received = await saver.flush();
@@ -1155,11 +1148,28 @@ export function assistanceAction(
         active = null;
         working = false;
         if (context.live()) {
+          const restore =
+            document.activeElement === opener ||
+            content.contains(document.activeElement) ||
+            document.activeElement === document.body;
           render();
-          if (!record) box.querySelector<HTMLButtonElement>("button")?.focus();
+          if (restore && document.activeElement === document.body) {
+            if (opener?.isConnected) opener.focus();
+            else if (enabled())
+              content
+                .querySelector<HTMLButtonElement>(
+                  record?.state === "done"
+                    ? ".ai-suggestion button:not([disabled])"
+                    : record?.state === "failed"
+                      ? ".notice + button"
+                      : "button",
+                )
+                ?.focus();
+          }
         }
       }
     }
+    return received && record?.state === "done";
   }
   const unsubscribe = visibility.subscribe(() => {
     profile = visibility.profiles.find(
@@ -1168,9 +1178,24 @@ export function assistanceAction(
         p.operations.includes(options.operation),
     );
     if (!enabled()) void cancel();
-    render();
+    if (!active || working || !enabled()) render();
   });
-  context.signal.addEventListener("abort", unsubscribe, { once: true });
+  const dispose = () => {
+    if (disposed) return;
+    disposed = true;
+    unsubscribe();
+    runners.delete(box);
+    void cancel();
+    record = undefined;
+    workingLine = null;
+    workingText = null;
+    content.replaceChildren();
+    status.textContent = "";
+    context.signal.removeEventListener("abort", abortRun);
+    context.signal.removeEventListener("abort", dispose);
+  };
+  box.addEventListener("assist-dispose", dispose, { once: true });
+  context.signal.addEventListener("abort", dispose, { once: true });
   runners.set(box, start);
   return box;
 }

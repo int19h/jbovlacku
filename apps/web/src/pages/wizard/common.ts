@@ -19,6 +19,7 @@ import {
 } from "../../model/draft.ts";
 import { lexicalKinds, type LexicalKind } from "../../model/types.ts";
 import { DraftConflictError, type ExpectedDraft } from "../../data/store.ts";
+import { assistanceSaveKey, retainAssistance } from "../../model/assistance.ts";
 export { DraftConflictError };
 
 export const DRAFT_KEY = "current";
@@ -110,9 +111,13 @@ export async function loadDraft(app: App): Promise<Draft | null> {
           if (!(error instanceof DraftConflictError)) throw error;
           return loadDraft(app);
         }
-        return normalizeDraft(revised);
+        const normalized = normalizeDraft(revised);
+        retainAssistance(normalized);
+        return normalized;
       }
-      return normalizeDraft(stored);
+      const normalized = normalizeDraft(stored);
+      retainAssistance(normalized);
+      return normalized;
     }
     return null;
   } catch {
@@ -165,11 +170,11 @@ export function guardDraftNavigation(
   );
 }
 /** The fields that make two draft copies the same for saving. */
-function contentKey(draft: Draft): string {
-  const { revision, updatedAt, ...rest } = draft;
+export function contentKey(draft: Draft): string {
+  const { revision, updatedAt, ai, ...rest } = draft;
   void revision;
   void updatedAt;
-  return JSON.stringify(rest);
+  return JSON.stringify([rest, assistanceSaveKey(ai)]);
 }
 /**
  * Saves the draft and reports the outcome through the save indicator.

@@ -2057,6 +2057,7 @@ function derivationEditor(
       );
       word.input.addEventListener("input", () => {
         derivation.word = word.input.value;
+        refreshMapping();
         changed();
       });
       const number = field(
@@ -2081,6 +2082,7 @@ function derivationEditor(
       number.input.addEventListener("input", () => {
         const value = number.input.value.trim();
         derivation.place = /^\d{1,5}$/.test(value) ? Number(value) : null;
+        refreshMapping();
         changed();
       });
       const definition = field(
@@ -2101,6 +2103,7 @@ function derivationEditor(
       );
       definition.input.addEventListener("input", () => {
         derivation.definition = definition.input.value.trim() || null;
+        refreshMapping();
         changed();
       });
       const explanation = field(
@@ -2124,12 +2127,16 @@ function derivationEditor(
           structured,
           false,
         );
+        refreshMapping();
         changed();
       });
       const mapping = el("p", {
         class: "meta span-3",
         text: `${derivation.word} ${derivation.place ?? "?"}${mappingKind(derivation.explanation) ? ` · ${mappingKind(derivation.explanation)}` : ""}`,
       });
+      const refreshMapping = () => {
+        mapping.textContent = `${derivation.word} ${derivation.place ?? "?"}${mappingKind(derivation.explanation) ? ` · ${mappingKind(derivation.explanation)}` : ""}`;
+      };
       row.append(
         mapping,
         word.wrapper,

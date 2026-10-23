@@ -24,9 +24,17 @@ export class Session {
   preferences!: Preferences;
   private lockTimer: ReturnType<typeof setTimeout> | undefined;
   private listeners = new Set<SessionListener>();
+  private preferenceChannel: BroadcastChannel | undefined;
   /** A pending action to resume after the key is created or unlocked. */
   pending: { description: string; run: () => Promise<void> } | null = null;
   constructor(public store: LocalStore) {
+    if (typeof BroadcastChannel !== "undefined") {
+      this.preferenceChannel = new BroadcastChannel("jbovlacku-preferences");
+      this.preferenceChannel.addEventListener(
+        "message",
+        () => void this.refreshPreferences(),
+      );
+    }
     window.addEventListener("pagehide", () => {
       this.lock();
     });
@@ -72,8 +80,18 @@ export class Session {
     this.touch();
     this.changed();
   }
+  async refreshPreferences() {
+    const preferences = await this.store.preferences();
+    if (JSON.stringify(preferences) !== JSON.stringify(this.preferences)) {
+      this.preferences = preferences;
+      setPreferredView(preferences.view);
+      this.changed();
+    }
+    return this.preferences;
+  }
   async setPreferences(patch: Partial<Preferences>) {
     this.preferences = await this.store.setPreferences(patch);
+    this.preferenceChannel?.postMessage("changed");
     if ("view" in patch) setPreferredView(this.preferences.view);
     this.changed();
     return this.preferences;

@@ -26,6 +26,7 @@ import {
   pendingLegacyDraft,
   DRAFT_KEY,
 } from "./common.ts";
+import { assistanceVisibility } from "../../components/assistance.ts";
 import type { SearchHit } from "../../model/types.ts";
 
 function highlightPlaceholders(meaning: string): HTMLElement {
@@ -331,12 +332,20 @@ export async function meaningPage(
         ),
       );
     }
-    modeLabel.append(
-      text(" · "),
-      link("by meaning: not configured", routes.preferences, { class: "meta" }),
-    );
+    if (assistanceVisibility(app, context).enabled)
+      modeLabel.append(
+        text(" · "),
+        link("by meaning: not configured", routes.preferences, {
+          class: "meta",
+        }),
+      );
   };
-  renderMode();
+  const unsubscribeAssistance = assistanceVisibility(app, context).subscribe(
+    renderMode,
+  );
+  context.signal.addEventListener("abort", unsubscribeAssistance, {
+    once: true,
+  });
   let timer: ReturnType<typeof setTimeout> | undefined;
   const scheduleNearby = () => {
     if (remoteConsent !== consentKey()) remoteConsent = null;

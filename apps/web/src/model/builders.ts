@@ -46,10 +46,13 @@ export interface LujvoState {
   acknowledged: string[];
 }
 export interface GismuRowState {
+  /** Stable browser identity. Older drafts receive it when they open. */
+  id?: string;
   sense?: string;
   note?: string;
   /** Supplementary evidence, retained without parsing it into signed fields. */
   notes?: RichText;
+  notesStale?: boolean;
   language: string;
   name: string;
   word: string;
@@ -57,6 +60,8 @@ export interface GismuRowState {
   stem?: string | null;
   ipa?: string | null;
   input: string;
+  /** Original signed input, separate from the supported scoring letters. */
+  inputOriginal?: FormationSource["input"];
   weight: { numerator: string; denominator: string } | null;
 }
 /** Migrate browser aliases only when the signed field is absent, including null. */
@@ -65,9 +70,36 @@ export function normalizeSourceRow(row: GismuRowState): GismuRowState {
     wordIpa?: string;
     stemIpa?: string;
   };
+  canonical.id ||= sourceRowId();
   if (!Object.hasOwn(row, "word_ipa") && wordIpa) canonical.word_ipa = wordIpa;
   if (!Object.hasOwn(row, "ipa") && stemIpa) canonical.ipa = stemIpa;
   return canonical;
+}
+/** Browser identity never enters the signed formation source. */
+export function sourceRowId(): string {
+  return `s${crypto.randomUUID()}`;
+}
+export function sourceRowKey(row: GismuRowState): string {
+  return `source-${(row.id ||= sourceRowId())}`;
+}
+/** Open signed evidence without guessing scoring letters or pronunciation. */
+export function sourceRowsFromFormation(
+  sources: FormationSource[],
+): GismuRowState[] {
+  return sources.map((source) =>
+    normalizeSourceRow({
+      ...structuredClone(source),
+      name: source.language,
+      input: source.input?.format === "lojbanized" ? source.input.text : "",
+      inputOriginal: structuredClone(source.input),
+      weight: source.weight
+        ? {
+            numerator: String(source.weight.numerator),
+            denominator: String(source.weight.denominator),
+          }
+        : null,
+    }),
+  );
 }
 export interface GismuState {
   preset: string | null;
@@ -322,9 +354,11 @@ export function formationSource(raw: GismuRowState): FormationSource {
   const source: FormationSource = {
     language: row.language,
     word: row.word,
-    input: row.input.trim()
-      ? { format: "lojbanized", text: row.input.trim().toLowerCase() }
-      : null,
+    input: Object.hasOwn(row, "inputOriginal")
+      ? structuredClone(row.inputOriginal ?? null)
+      : row.input.trim()
+        ? { format: "lojbanized", text: row.input }
+        : null,
     weight: row.weight ? rational(row.weight) : null,
     notes: sourceNotes(row),
   };
@@ -333,6 +367,31 @@ export function formationSource(raw: GismuRowState): FormationSource {
     if (value?.trim()) source[field] = value;
   }
   return source;
+}
+/** Compare interpreted evidence without changing exact input or note text. */
+export function sameFormationSources(
+  left: FormationSource[],
+  right: FormationSource[],
+): boolean {
+  const key = (sources: FormationSource[]) =>
+    JSON.stringify(
+      sources.map((source) => ({
+        ...source,
+        input: source.input ?? null,
+        weight: source.weight ?? null,
+        notes: source.notes ?? [],
+        word_ipa: source.word_ipa?.trim() ? source.word_ipa : null,
+        stem: source.stem?.trim() ? source.stem : null,
+        ipa: source.ipa?.trim() ? source.ipa : null,
+      })),
+      (_name, value) =>
+        value && typeof value === "object" && !Array.isArray(value)
+          ? Object.fromEntries(
+              Object.entries(value).sort(([a], [b]) => a.localeCompare(b)),
+            )
+          : value,
+    );
+  return key(left) === key(right);
 }
 /** Formation metadata for a generated or manual gismu under the recorded run. */
 export function formationMetadata(options: {
@@ -401,6 +460,7 @@ export function manualFormation(
           value?.trim(),
         ) ||
         [row.word_ipa, row.stem, row.ipa].some((value) => !!value?.length) ||
+        !!row.inputOriginal ||
         !!row.notes?.length,
     )
     .map(formationSource);

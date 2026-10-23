@@ -57,7 +57,7 @@ export interface Suggestion {
     seed: number | null;
   };
   usage: { input_tokens: number | null; output_tokens: number | null } | null;
-  log: Record<string, unknown>;
+  log?: Record<string, unknown>;
 }
 export interface AssistanceRecord {
   id: string;
@@ -68,6 +68,7 @@ export interface AssistanceRecord {
   requested: Current;
   result: Suggestion | null;
   log: Record<string, unknown> | null;
+  log_id?: string;
   error: string | null;
   state: "done" | "failed" | "accepted" | "dismissed" | "undone";
   patches?: { path: (string | number)[]; before: unknown; after: unknown }[];
@@ -76,6 +77,7 @@ export interface AssistanceRecord {
 }
 export interface AssistanceData {
   records: AssistanceRecord[];
+  changes?: number;
 }
 
 /** Revision changes from saving do not make an otherwise unchanged suggestion stale. */
@@ -327,22 +329,30 @@ export function applyProposals(draft: Draft, result: Suggestion) {
     result.operation === "definition" ||
     result.operation === "places-glosses"
   ) {
-    const checked = draftToBody(draft);
-    const invalid = checked.problems.filter(
-      (p) => p.blocking && p.field !== "numbering",
-    );
-    if (checked.body && checked.wordId)
-      invalid.push(
-        ...coreProblems(checked.body, checked.wordId, draft.parents, "native"),
-      );
-    if (invalid.length)
-      throw new Error(invalid.map((p) => p.message).join(" "));
+    checkAssistanceDraft(draft);
   }
 }
 
+/** Full and partial acceptance use the same frame and reference rules. */
+export function checkAssistanceDraft(draft: Draft) {
+  const checked = draftToBody(draft);
+  const invalid = checked.problems.filter(
+    (p) => p.blocking && p.field !== "numbering",
+  );
+  if (checked.body && checked.wordId)
+    invalid.push(
+      ...coreProblems(checked.body, checked.wordId, draft.parents, "native"),
+    );
+  if (invalid.length) throw new Error(invalid.map((p) => p.message).join(" "));
+}
+
 /** A source action sends exactly one language row, including rows without a word. */
-export function sourceCurrent(draft: Draft, index: number): Current {
-  const row = draft.gismu!.rows[index];
+export function sourceCurrent(draft: Draft, id: string | number): Current {
+  const row =
+    typeof id === "number"
+      ? draft.gismu?.rows[id]
+      : draft.gismu?.rows.find((r) => r.id === id);
+  if (!row) throw new Error("This source row no longer exists.");
   const current = currentDraft(draft);
   current.formation = {
     method: "non-algorithmic",
@@ -358,7 +368,15 @@ export function sourceCurrent(draft: Draft, index: number): Current {
   };
   return current;
 }
-export function applySource(draft: Draft, index: number, result: Suggestion) {
+export function applySource(
+  draft: Draft,
+  id: string | number,
+  result: Suggestion,
+) {
+  const index =
+    typeof id === "number"
+      ? id
+      : (draft.gismu?.rows.findIndex((r) => r.id === id) ?? -1);
   const sources = result.proposals.find((p) => p.path === "/formation/sources")
     ?.value as Formation["sources"];
   const old = draft.gismu?.rows[index];
@@ -370,7 +388,7 @@ export function applySource(draft: Draft, index: number, result: Suggestion) {
     typeof sources[0].word !== "string" ||
     !(
       sources[0].input === null ||
-      (sources[0].input.format === "lojbanized" &&
+      (["lojbanized", "ipa"].includes(sources[0].input.format) &&
         typeof sources[0].input.text === "string")
     )
   )
@@ -413,7 +431,9 @@ export function applySource(draft: Draft, index: number, result: Suggestion) {
   rows[index] = {
     ...normalizeSourceRow(old),
     word: source.word,
-    input: source.input?.text ?? "",
+    input: source.input?.format === "lojbanized" ? source.input.text : "",
+    inputOriginal: structuredClone(source.input),
+    notesStale: false,
     sense: extract("Sense"),
     word_ipa: source.word_ipa,
     stem: source.stem,
@@ -482,15 +502,30 @@ export function restorePatches(draft: Draft, record: AssistanceRecord): number {
       after: (record.after as Record<string, unknown>)[k],
     }));
   for (const patch of patches) {
+    let path = patch.path;
+    if (path[0] === "gismu" && path[1] === "rows" && path.length > 2) {
+      const sourceId =
+        record.after?.gismu?.rows[Number(path[2])]?.id ??
+        (record.key.startsWith("source-") ? record.key.slice(7) : undefined);
+      if (sourceId) {
+        const index =
+          draft.gismu?.rows.findIndex((row) => row.id === sourceId) ?? -1;
+        if (index < 0) {
+          kept++;
+          continue;
+        }
+        path = ["gismu", "rows", String(index), ...path.slice(3)];
+      }
+    }
     let parent: Record<string, unknown> = draft as unknown as Record<
       string,
       unknown
     >;
-    for (const key of patch.path.slice(0, -1)) {
+    for (const key of path.slice(0, -1)) {
       if (!parent || typeof parent !== "object") break;
       parent = parent[key] as Record<string, unknown>;
     }
-    const key = patch.path.at(-1)!;
+    const key = path.at(-1)!;
     if (
       parent &&
       typeof parent === "object" &&
@@ -524,4 +559,247 @@ export function mappingKind(explanation: RichText): string | null {
     /^(direct|merged|distributed|functional): [\s\S]*\S/.exec(words)?.[1] ??
     null
   );
+}
+
+export type Mapping = NonNullable<
+  Current["frame"]
+>["places"][number]["derivation"][number];
+/** Older partial records used a key without the exact definition. */
+export function mappingRecordMatches(
+  record: AssistanceRecord,
+  key: string,
+  legacyKey: string,
+  mapping: Mapping,
+): boolean {
+  if (record.key === key) return true;
+  if (record.key !== legacyKey) return false;
+  for (const patch of record.patches ?? []) {
+    if (patch.path.at(-1) !== "derivations" || !Array.isArray(patch.after))
+      continue;
+    const before = Array.isArray(patch.before) ? patch.before : [];
+    for (const added of patch.after) {
+      if (before.some((old) => semanticKey(old) === semanticKey(added)))
+        continue;
+      if (
+        added.word === mapping.word.spelling &&
+        added.place === mapping.place &&
+        added.definition === mapping.definition
+      )
+        return true;
+    }
+  }
+  return false;
+}
+/** A rejected partial proposal leaves the complete author draft untouched. */
+export function applyMapping(draft: Draft, index: number, derivation: Mapping) {
+  const candidate = structuredClone(draft);
+  const target = candidate.places.find((p) => p.index === index);
+  if (!target) throw new Error("This place no longer exists.");
+  target.derivations.push({
+    word: derivation.word.spelling,
+    definition: derivation.definition,
+    place: derivation.place,
+    explanation: structuredClone(derivation.explanation),
+  });
+  checkAssistanceDraft(candidate);
+  draft.places = candidate.places;
+}
+/** Retain one recent run and one accepted Undo for each action. */
+export function retainAssistance(draft: Draft) {
+  if (!draft.ai) return;
+  // Older mapping records copied the parent result and complete log.
+  for (const record of draft.ai.records) {
+    const parentKey = record.key.split(":mapping:")[0];
+    if (parentKey === record.key || record.log_id || !record.result) continue;
+    const revision = record.result.draft_revision;
+    const parent = draft.ai.records.find(
+      (other) =>
+        other.key === parentKey && other.result?.draft_revision === revision,
+    );
+    if (!parent) continue;
+    record.log_id = parent.id;
+    record.log = null;
+    record.result = null;
+  }
+  const latest = new Map<string, AssistanceRecord>();
+  const accepted = new Map<string, AssistanceRecord>();
+  const sourceKeys = new Set(
+    draft.gismu?.rows.map((row) => `source-${row.id}`) ?? [],
+  );
+  draft.ai.records = draft.ai.records.filter(
+    (record) => !record.key.startsWith("source-") || sourceKeys.has(record.key),
+  );
+  for (const record of draft.ai.records) {
+    latest.set(record.key, record);
+    if (record.state === "accepted") accepted.set(record.key, record);
+  }
+  // A removed dynamic control must not keep a private log forever.
+  const recent = draft.ai.records
+    .filter((record) => latest.get(record.key) === record)
+    .slice(-32);
+  const retained = new Set([...recent, ...accepted.values()]);
+  for (const record of retained) {
+    if (record.log_id) {
+      const parent = draft.ai.records.find((r) => r.id === record.log_id);
+      if (parent) retained.add(parent);
+    }
+  }
+  draft.ai.records = draft.ai.records.filter((r) => retained.has(r));
+  for (const record of draft.ai.records) {
+    if (record.result?.log) {
+      record.log ??= record.result.log;
+      delete record.result.log;
+    }
+  }
+}
+export function storeAssistanceRecord(draft: Draft, record: AssistanceRecord) {
+  draft.ai ??= { records: [] };
+  if (record.result?.log) {
+    record.log = record.result.log;
+    delete record.result.log;
+  }
+  draft.ai.records.push(record);
+  retainAssistance(draft);
+}
+/** Saving compares small record metadata rather than full private exchanges. */
+export function assistanceSaveKey(ai: AssistanceData | undefined): unknown {
+  return ai ? [ai.changes ?? 0, ai.records.map((r) => [r.id, r.state])] : null;
+}
+export function assistanceLog(
+  record: AssistanceRecord,
+  draft?: Draft,
+): Record<string, unknown> {
+  return (
+    record.log ??
+    record.result?.log ??
+    draft?.ai?.records.find((r) => r.id === record.log_id)?.log ??
+    {}
+  );
+}
+export type LogRow = {
+  kind: "heading" | "text" | "code" | "link";
+  text: string;
+  level?: number;
+  href?: string;
+};
+const logJson = (value: unknown) => JSON.stringify(value, null, 2) ?? "null";
+function logUsage(usage: Record<string, unknown>): string {
+  return [
+    usage.input_tokens == null
+      ? ""
+      : `Input tokens: ${String(usage.input_tokens)}.`,
+    usage.output_tokens == null
+      ? ""
+      : `Output tokens: ${String(usage.output_tokens)}.`,
+    usage.cost_usd == null ? "" : `Cost: ${String(usage.cost_usd)} USD.`,
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+/** The dialog and Markdown export show exactly these same rows. */
+export function assistanceLogRows(
+  record: AssistanceRecord,
+  log = assistanceLog(record),
+): LogRow[] {
+  const rows: LogRow[] = [];
+  const text = (value: string) => rows.push({ kind: "text", text: value });
+  const code = (value: unknown) =>
+    rows.push({
+      kind: "code",
+      text: typeof value === "string" ? value : logJson(value),
+    });
+  const heading = (value: string, level = 3) =>
+    rows.push({ kind: "heading", text: value, level });
+  text(
+    `${record.label}. Model: ${String(log.model ?? record.result?.provenance.model ?? "unavailable")}. Reasoning level: ${String(log.reasoning_effort ?? "unavailable")}. Provider: ${String(log.provider ?? record.result?.provenance.provider ?? "unavailable")}.`,
+  );
+  text(
+    `Prompt version: ${String(log.prompt_version ?? record.result?.provenance.recipe ?? "unavailable")}.`,
+  );
+  for (const file of Array.isArray(log.prompt_files) ? log.prompt_files : []) {
+    if (
+      typeof file === "string" &&
+      /^[a-zA-Z0-9_./-]+$/.test(file) &&
+      !file.includes("..")
+    )
+      rows.push({
+        kind: "link",
+        text: file,
+        href: file.startsWith("/api/v1/assist/prompts/")
+          ? file
+          : `https://github.com/int19h/jbovlacku/blob/main/${file.startsWith("prompts/") ? "" : "prompts/"}${file}`,
+      });
+  }
+  text(
+    `Time: ${String(log.started_at ?? "unavailable")}. Duration: ${String(log.duration_ms ?? "unavailable")} ms. Answers: ${String(log.answers ?? 0)}. Corrections: ${String(log.corrections ?? 0)}.`,
+  );
+  text(logUsage(log));
+  text(
+    "The provider does not make the assistant’s private reasoning available. This log holds the shared reasoning summary and everything that the assistant wrote.",
+  );
+  text("This log stays in this browser with the draft. It is never published.");
+  if (record.error) text(record.error);
+  for (const exchange of (Array.isArray(log.exchanges)
+    ? log.exchanges
+    : []) as Record<string, unknown>[]) {
+    heading(`System prompt: ${String(exchange.task)}`);
+    code(exchange.system_prompt ?? "");
+    heading("App request");
+    code(exchange.request);
+    for (const attempt of (Array.isArray(exchange.attempts)
+      ? exchange.attempts
+      : []) as Record<string, unknown>[]) {
+      heading(`Answer ${String(attempt.attempt)}`);
+      text(
+        String(
+          attempt.reasoning_summary ||
+            "No reasoning summary was shared for this answer.",
+        ),
+      );
+      code(attempt.text ?? "");
+      heading("Tool call", 4);
+      code(attempt.tool_calls);
+      const usage =
+        attempt.usage && typeof attempt.usage === "object"
+          ? (attempt.usage as Record<string, unknown>)
+          : {};
+      text(
+        logUsage({
+          input_tokens: usage.prompt_tokens ?? usage.input_tokens,
+          output_tokens: usage.completion_tokens ?? usage.output_tokens,
+          cost_usd: attempt.cost_usd,
+        }),
+      );
+      heading("App check", 4);
+      code(attempt.check);
+    }
+  }
+  return rows;
+}
+export function assistanceLogMarkdown(
+  record: AssistanceRecord,
+  log = assistanceLog(record),
+): string {
+  return [
+    `# ${record.label}`,
+    ...assistanceLogRows(record, log).map((row) => {
+      if (row.kind === "heading")
+        return `${"#".repeat(row.level ?? 3)} ${row.text}`;
+      if (row.kind === "link") return `[${row.text}](${row.href})`;
+      if (row.kind === "text") {
+        // Model summaries can contain Markdown delimiters too.
+        return row.text.replace(/[\\`*_{}\[\]<>#!|]/g, "\\$&");
+      }
+      const fence = "`".repeat(
+        Math.max(
+          3,
+          ...Array.from(
+            row.text.matchAll(/`+/g),
+            (match) => match[0].length + 1,
+          ),
+        ),
+      );
+      return `${fence}text\n${row.text}\n${fence}`;
+    }),
+  ].join("\n\n");
 }

@@ -4,7 +4,11 @@ import {
   assistanceVisibility,
   runAssistance,
 } from "../../components/assistance.ts";
-import { sourceCurrent, applySource } from "../../model/assistance.ts";
+import {
+  sourceCurrent,
+  applySource,
+  retainAssistance,
+} from "../../model/assistance.ts";
 /**
  * Step 3B: the gismu generator. Documented presets with pinned sources or
  * custom languages and weights, editable source rows, exact scores from the
@@ -31,7 +35,11 @@ import {
 } from "../../lib/dom.ts";
 import { navigate, type RenderContext, type Route } from "../../app/router.ts";
 import type { App } from "../../app/context.ts";
-import type { Draft } from "../../model/draft.ts";
+import {
+  editorToRichText,
+  richTextToEditor,
+  type Draft,
+} from "../../model/draft.ts";
 import type { CachedPackage } from "../../data/search.ts";
 import {
   cachedPackage,
@@ -41,6 +49,10 @@ import {
   inventoryCoverage,
   rootConflictKey,
   newGismuState,
+  sourceRowId,
+  sourceRowKey,
+  sourceRowsFromFormation,
+  sourceNotes,
   type GismuRowState,
   type PackageInventory,
 } from "../../model/builders.ts";
@@ -60,6 +72,7 @@ function presetRows(
     const old = previous.find((r) => r.language === language.language);
     return {
       ...old,
+      id: old?.id ?? sourceRowId(),
       language: language.language,
       name: language.name,
       word: old?.word ?? "",
@@ -94,9 +107,13 @@ export async function gismuPage(
     }
     saver.touch();
   }
+  const existingBuilder = draft.gismu;
   const state = (draft.gismu ??= newGismuState());
   const presets = builderPresets();
-  if (state.preset === null && !state.rows.length) {
+  if (!existingBuilder && draft.formation?.sources.length) {
+    state.rows = sourceRowsFromFormation(draft.formation.sources);
+    saver.touch();
+  } else if (state.preset === null && !state.rows.length && !existingBuilder) {
     state.preset = presets[0].id;
     state.rows = presetRows(presets[0], []);
     saver.touch();
@@ -178,16 +195,50 @@ export async function gismuPage(
   });
   const sourceActions = el("div", { class: "ai-source-actions" });
   const sourceControls = new Map<string, HTMLElement>();
+  const sourceObservers = new Map<string, MutationObserver>();
+  let rowCleanups: (() => void)[] = [];
+  const cleanupRows = () => {
+    for (const unsubscribe of rowCleanups) unsubscribe();
+    rowCleanups = [];
+  };
+  context.signal.addEventListener(
+    "abort",
+    () => {
+      cleanupRows();
+      for (const observer of sourceObservers.values()) observer.disconnect();
+    },
+    { once: true },
+  );
+  const notesEditing = new Set<string>();
+  const detailRows = new Map<
+    string,
+    { row: HTMLElement; notes: boolean; control: HTMLElement }
+  >();
+  const visibility = assistanceVisibility(app, context);
+  const syncSourceVisibility = () => {
+    sourceActions.hidden =
+      !visibility.enabled ||
+      !state.rows.length ||
+      ![...sourceControls.values()].some((control) => !control.hidden);
+    for (const details of detailRows.values())
+      details.row.hidden = !details.notes && details.control.hidden;
+  };
+  let bulkRunning = false;
   const fillSources = button(
     el("span", {}, text("AI", "ai-tag"), text(" Suggest source words")),
     async () => {
-      for (const control of sourceControls.values()) {
-        if (
-          !context.live() ||
-          app.session.preferences.useAiAssistance === false
-        )
-          break;
-        await runAssistance(control);
+      if (bulkRunning) return;
+      bulkRunning = true;
+      fillSources.disabled = true;
+      try {
+        for (const control of [...sourceControls.values()]) {
+          if (!context.live() || !visibility.enabled || !control.isConnected)
+            break;
+          if (!(await runAssistance(control))) break;
+        }
+      } finally {
+        bulkRunning = false;
+        fillSources.disabled = false;
       }
     },
     { class: "btn btn-quiet", "aria-label": "Suggest source words" },
@@ -259,15 +310,28 @@ export async function gismuPage(
     state.rows.length > 0 &&
     state.rows.every((r) => r.input.trim() && r.weight && r.language.trim());
   const renderRows = () => {
-    const activeKeys = new Set(
-      state.rows.map((row, index) => `source-${index}-${row.language}`),
-    );
+    cleanupRows();
+    const activeKeys = new Set(state.rows.map(sourceRowKey));
     for (const [key, control] of sourceControls)
       if (!activeKeys.has(key)) {
-        control.dispatchEvent(new Event("assist-cancel"));
+        control.dispatchEvent(new Event("assist-dispose"));
+        sourceObservers.get(key)?.disconnect();
+        sourceObservers.delete(key);
         sourceControls.delete(key);
         control.remove();
       }
+    if (draft.ai) {
+      const kept = draft.ai.records.filter(
+        (record) =>
+          !record.key.startsWith("source-") || activeKeys.has(record.key),
+      );
+      if (kept.length !== draft.ai.records.length) {
+        draft.ai.records = kept;
+        retainAssistance(draft);
+        saver.touch();
+      }
+    }
+    detailRows.clear();
     const preset = presets.find((pr) => pr.id === state.preset) ?? null;
     presetNote.replaceChildren();
     if (preset) {
@@ -315,6 +379,7 @@ export async function gismuPage(
     );
     const tbody = el("tbody");
     state.rows.forEach((row, index) => {
+      const sourceKey = sourceRowKey(row);
       const tr = el("tr");
       const languageCell = el("td");
       if (preset)
@@ -330,9 +395,13 @@ export async function gismuPage(
           style: "width:6rem;min-height:36px",
         });
         code.addEventListener("change", () => {
+          sourceControls
+            .get(sourceKey)
+            ?.dispatchEvent(new Event("assist-cancel"));
           row.language = code.value.trim();
           row.name = row.language;
           saver.touch();
+          renderRows();
           schedule();
         });
         languageCell.append(code);
@@ -381,6 +450,11 @@ export async function gismuPage(
         weightCell.append(n, text(" / "), d);
       }
       const nativeCell = el("td", { class: "native" });
+      const staleNotes = p(
+        "The source word changed. Review the source notes.",
+        "meta",
+      );
+      staleNotes.hidden = !row.notesStale;
       const native = el("input", {
         class: "field",
         "aria-label": `Native word for ${row.name || row.language}`,
@@ -388,6 +462,10 @@ export async function gismuPage(
         style: "min-width:8rem;min-height:36px",
       });
       native.addEventListener("input", () => {
+        if (row.word !== native.value && sourceNotes(row).length) {
+          row.notesStale = true;
+          staleNotes.hidden = false;
+        }
         row.word = native.value;
         saver.touch();
       });
@@ -403,16 +481,52 @@ export async function gismuPage(
       });
       input.addEventListener("input", () => {
         row.input = input.value;
+        delete row.inputOriginal;
         saver.touch();
         schedule();
       });
       inputCell.append(input);
+      if (row.inputOriginal?.format === "ipa") {
+        inputCell.append(
+          p(
+            "IPA conversion is unavailable. The original input stays unchanged.",
+            "meta",
+          ),
+          el("bdi", {
+            "aria-label": `Original IPA input for ${row.name || row.language}`,
+            text: row.inputOriginal.text,
+            style: "white-space:pre-wrap",
+          }),
+        );
+        input.disabled = true;
+        inputCell.append(
+          button(
+            "Replace IPA input with scoring letters",
+            () => {
+              if (
+                !confirm(
+                  "Replace the original IPA input with scoring letters? The original input will be removed from this source row.",
+                )
+              )
+                return;
+              delete row.inputOriginal;
+              saver.touch();
+              renderRows();
+            },
+            {
+              class: "btn btn-quiet small",
+              "aria-label": `Replace IPA input for ${row.name || row.language}`,
+            },
+          ),
+        );
+      }
       const tools = el("td", { class: "right", style: "white-space:nowrap" });
       tools.append(
         button(
           "Alternative",
           () => {
             state.rows.splice(index + 1, 0, {
+              id: sourceRowId(),
               language: row.language,
               name: row.name,
               weight: row.weight ? { ...row.weight } : null,
@@ -428,6 +542,18 @@ export async function gismuPage(
             "aria-label": `Add an alternative word for ${row.name || row.language}`,
             title:
               "Another source word of the same language. It shares the weight and contributes its largest recognition.",
+          },
+        ),
+        button(
+          "Notes",
+          () => {
+            notesEditing.add(sourceKey);
+            renderRows();
+            detailRows.get(sourceKey)?.row.querySelector("textarea")?.focus();
+          },
+          {
+            class: "btn btn-quiet",
+            "aria-label": `Edit source notes for ${row.name || row.language}`,
           },
         ),
         button(
@@ -468,47 +594,91 @@ export async function gismuPage(
         tools,
       );
       tbody.append(tr);
-      const sourceKey = `source-${index}-${row.language}`;
       let control = sourceControls.get(sourceKey);
+      const sourceLabel = `Suggest source for ${row.name || row.language}`;
+      if (control && control.dataset.sourceLabel !== sourceLabel) {
+        control.dispatchEvent(new Event("assist-dispose"));
+        sourceObservers.get(sourceKey)?.disconnect();
+        sourceObservers.delete(sourceKey);
+        control.remove();
+        sourceControls.delete(sourceKey);
+        control = undefined;
+      }
       if (!control) {
         control = assistanceAction(app, draft, saver, context, {
           key: sourceKey,
-          label: `Suggest source for ${row.name || row.language}`,
+          label: sourceLabel,
           operation: "gismu-sources",
-          current: () => sourceCurrent(draft, index),
-          apply: (d, r) => applySource(d, index, r),
+          current: () => sourceCurrent(draft, row.id!),
+          apply: (d, r) => applySource(d, row.id!, r),
         });
+        control.dataset.sourceLabel = sourceLabel;
         sourceControls.set(sourceKey, control);
-        new MutationObserver(() => {
-          sourceActions.hidden = ![...sourceControls.values()].some(
-            (c) => !c.hidden,
-          );
-        }).observe(control, { attributes: true, attributeFilter: ["hidden"] });
+        const observer = new MutationObserver(syncSourceVisibility);
+        observer.observe(control, {
+          attributes: true,
+          attributeFilter: ["hidden"],
+        });
+        sourceObservers.set(sourceKey, observer);
       }
       const details = el("td", { colspan: "8" });
-      if (row.sense) {
-        const sense = p(`Sense: ${row.sense}`, "meta ai-source-sense");
-        const unsubscribe = assistanceVisibility(app, context).bind(sense);
-        context.signal.addEventListener("abort", unsubscribe, { once: true });
-        details.append(sense);
-      }
-      if (row.note) {
-        const note = el("div", { class: "meta ai-source-note" }, p(row.note));
+      const showNotes =
+        sourceNotes(row).length > 0 || notesEditing.has(sourceKey);
+      if (showNotes) {
+        const notes = field(`Source notes for ${row.name || row.language}`, {
+          multiline: true,
+          rows: 4,
+          value: richTextToEditor(sourceNotes(row)),
+          hint: "Review all source notes. Edit the text or drop the notes before publication.",
+        });
+        notes.input.addEventListener("input", () => {
+          row.notes = editorToRichText(notes.input.value, true, false);
+          row.sense = "";
+          row.note = "";
+          row.notesStale = false;
+          staleNotes.hidden = true;
+          saver.touch();
+        });
+        details.append(
+          notes.wrapper,
+          staleNotes,
+          button(
+            "Drop source notes",
+            () => {
+              row.notes = [];
+              row.sense = "";
+              row.note = "";
+              row.notesStale = false;
+              notesEditing.delete(sourceKey);
+              saver.touch();
+              renderRows();
+            },
+            {
+              class: "btn btn-quiet",
+              "aria-label": `Drop source notes for ${row.name || row.language}`,
+            },
+          ),
+        );
         const aiRecord = draft.ai?.records.findLast(
           (r) => r.key === sourceKey && r.state === "accepted",
         );
-        if (aiRecord)
-          note.append(
-            button("How the assistant decided", () => inferenceLog(aiRecord), {
+        if (aiRecord) {
+          const logButton = button(
+            "How the assistant decided",
+            () => inferenceLog(aiRecord, draft),
+            {
               class: "btn btn-quiet small",
-            }),
+            },
           );
-        const unsubscribe = assistanceVisibility(app, context).bind(note);
-        context.signal.addEventListener("abort", unsubscribe, { once: true });
-        details.append(note);
+          const unsubscribe = visibility.bind(logButton);
+          rowCleanups.push(unsubscribe);
+          details.append(logButton);
+        }
       }
       details.append(control);
-      tbody.append(el("tr", {}, details));
+      const detailRow = el("tr", {}, details);
+      detailRows.set(sourceKey, { row: detailRow, notes: showNotes, control });
+      tbody.append(detailRow);
     });
     table.append(tbody);
     rowsBox.append(table);
@@ -519,6 +689,7 @@ export async function gismuPage(
           "Add a language",
           () => {
             state.rows.push({
+              id: sourceRowId(),
               language: "",
               name: "",
               word: "",
@@ -537,6 +708,7 @@ export async function gismuPage(
         "meta",
       ),
     );
+    syncSourceVisibility();
   };
   const chosen = (): GismuCandidate | null => {
     if (!result) return null;
@@ -993,6 +1165,8 @@ export async function gismuPage(
     },
   });
   main.append(bar);
+  const unsubscribeSources = visibility.subscribe(syncSourceVisibility);
+  context.signal.addEventListener("abort", unsubscribeSources, { once: true });
   renderRows();
   run();
 }

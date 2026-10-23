@@ -325,7 +325,9 @@ async function mockAssistant(page: Page, options: MockOptions = {}) {
       json: {
         state: options.failure ? "failed" : "completed",
         result: options.failure ? null : result,
-        error: options.failure ? { message: options.failure, log } : null,
+        error: options.failure
+          ? { message: options.failure, log: options.log ?? log }
+          : null,
       },
     });
   });
@@ -391,6 +393,7 @@ test("consent precedes sending, suggestions need acceptance, and private logs ex
   await expect(dialog).toContainText("Mock provider");
   await expect(dialog).toContainText("original meaning");
   await expect(dialog).toContainText("places-glosses");
+  await expect(page.locator(".ai-working")).toHaveCount(0);
   await dialog.getByRole("button", { name: "Not now" }).click();
   await expect(action).toBeFocused();
   expect(mock.calls).toHaveLength(0);
@@ -400,6 +403,12 @@ test("consent precedes sending, suggestions need acceptance, and private logs ex
     name: "Recommend a type suggestion",
   });
   await expect(panel).toBeVisible();
+  await expect(
+    panel.getByRole("button", { name: "Use this", exact: true }),
+  ).toBeFocused();
+  await expect(page.locator(".ai-action [role=status]")).toHaveText(
+    "Suggestion ready.",
+  );
   expect((await stored(page)).kind).toBe("gismu");
   expect(mock.calls[0].current).toHaveProperty("frame");
   expect(mock.calls[0].meaning).toBe("Original meaning");
@@ -494,6 +503,14 @@ test("new providers and expanded disclosures require consent and disabling the s
   ).toBeVisible();
   await page.goto("/preferences");
   await page.getByRole("checkbox", { name: "Use AI assistance" }).uncheck();
+  await expect
+    .poll(() =>
+      page.evaluate(async () => {
+        const { LocalStore } = await import(String("/src/data/store.ts"));
+        return (await new LocalStore().preferences()).useAiAssistance;
+      }),
+    )
+    .toBe(false);
   await page.goto("/new/type");
   await expect(
     page.getByRole("button", { name: "Recommend a type" }),
@@ -602,22 +619,44 @@ test("cancel, navigation, and the off setting cancel jobs without applying delay
 test("failures and rejected proposal paths leave the manual editor available and retain the log", async ({
   page,
 }) => {
-  const options: MockOptions = { failure: "No usable answer after 3 tries." };
+  const options: MockOptions = {
+    failure:
+      "No usable answer after 3 tries. Try again or fill the rows in by hand.",
+  };
   await mockAssistant(page, options);
   await draft(page);
   await page
     .getByRole("button", { name: "Recommend a type", exact: true })
     .click();
   await allow(page);
-  await expect(page.getByText(/No usable answer after 3 tries/)).toBeVisible();
+  await expect(page.locator(".ai-action .notice")).toHaveText(options.failure!);
+  await expect(
+    page.getByRole("button", { name: "Try again", exact: true }),
+  ).toBeFocused();
+  await expect(page.locator(".ai-action [role=status]")).toHaveText(
+    options.failure!,
+  );
   await expect(page.getByRole("radio", { name: /^cmavo/ })).toBeEnabled();
   await page.getByRole("button", { name: "How the assistant decided" }).click();
   await expect(page.getByRole("dialog")).toContainText("Missing word_type");
   await page.getByRole("button", { name: "Close", exact: true }).click();
+  options.provider = "Changed provider";
+  await page.getByRole("button", { name: "Try again", exact: true }).click();
+  await expect(
+    page.getByRole("dialog", { name: "Before using AI assistance" }),
+  ).toBeVisible();
+  await expect(page.locator(".ai-working")).toHaveCount(0);
+  await page.getByRole("button", { name: "Not now", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Try again", exact: true }),
+  ).toBeFocused();
+  options.provider = undefined;
   options.failure = undefined;
   options.invalid = true;
   await page.getByRole("button", { name: "Try again", exact: true }).click();
-  await expect(page.getByText(/outside this action/)).toBeVisible();
+  await expect(page.locator(".ai-action .notice")).toContainText(
+    "outside this action",
+  );
   await expect(
     page.getByRole("button", { name: "Use this", exact: true }),
   ).toHaveCount(0);
@@ -799,8 +838,8 @@ test("source requests cover each language and retain empty rows, pronunciation, 
     page.getByLabel("Native word for Japanese", { exact: true }),
   ).toHaveValue("");
   await expect(
-    page.getByText("No single source word is known.", { exact: true }),
-  ).toBeVisible();
+    page.getByLabel("Source notes for Japanese", { exact: true }),
+  ).toHaveValue("Note: No single source word is known.");
   expect((await stored(page)).gismu.rows).toHaveLength(2);
   await page.reload();
   await page
@@ -952,6 +991,9 @@ test("place panels add a missing component mapping with persistent undo and show
     .poll(async () => (await stored(page)).places[0].derivations.length)
     .toBe(1);
   await page.reload();
+  await expect(
+    page.getByLabel("Source word of derivation 1 for place 1", { exact: true }),
+  ).toHaveValue("klama");
   panel = page.getByRole("region", {
     name: "Suggest places and glosses suggestion",
   });
@@ -964,6 +1006,9 @@ test("place panels add a missing component mapping with persistent undo and show
   await expect
     .poll(async () => (await stored(page)).places[0].derivations.length)
     .toBe(0);
+  await expect(
+    page.getByLabel("Source word of derivation 1 for place 1", { exact: true }),
+  ).toHaveCount(0);
   await panel.getByRole("button", { name: "Use this", exact: true }).click();
   await expect(
     page.getByLabel("Kind of thing for place 1", { exact: true }),
@@ -979,6 +1024,12 @@ test("place panels add a missing component mapping with persistent undo and show
   await expect(page.locator(".ai-hint-line")).toContainText(
     "The definition names a quantity.",
   );
+  await page
+    .getByLabel("Explanation of derivation 1 for place 1", { exact: true })
+    .fill("merged: This place covers both sources.");
+  await expect(
+    page.getByText("klama 2 · merged", { exact: true }),
+  ).toBeVisible();
 });
 
 for (const unknown of ["none", "unclear"] as const) {
@@ -1397,10 +1448,11 @@ test("operator-disabled assistance hides saved AI decorations and preserves acce
       ],
     },
   });
+  await expect(page.locator(".ai-action")).toBeVisible();
   for (const [path, decoration] of [
     ["/new/type", ".ai-pick"],
     ["/new/places", ".ai-hint-line"],
-    ["/new/gismu", ".ai-source-note"],
+    ["/new/gismu", ".ai-source-actions"],
   ]) {
     options.disabled = false;
     const before = mock.capabilityReads();
@@ -1408,9 +1460,15 @@ test("operator-disabled assistance hides saved AI decorations and preserves acce
     await expect(page.locator(decoration)).toBeVisible();
     expect(mock.capabilityReads() - before).toBe(1);
     if (path === "/new/gismu")
-      await expect(page.locator(".ai-source-sense")).toBeVisible();
+      await expect(
+        page.getByLabel("Source notes for English", { exact: true }),
+      ).toHaveValue("Sense: written work\n\nNote: Accepted source note.");
     options.disabled = true;
+    const disabledCapabilities = page.waitForResponse((response) =>
+      response.url().endsWith("/api/v1/capabilities"),
+    );
     await page.reload();
+    await disabledCapabilities;
     await expect(page.locator("main h1")).toBeVisible();
     await expect(page.locator(decoration)).not.toBeVisible();
     await expect(
@@ -1418,10 +1476,14 @@ test("operator-disabled assistance hides saved AI decorations and preserves acce
         ".ai-tag:visible,.ai-action:visible,.ai-hint-line:visible,.ai-source-note:visible,.ai-source-sense:visible,.ai-source-actions:visible",
       ),
     ).toHaveCount(0);
-    if (path === "/new/gismu")
+    if (path === "/new/gismu") {
       await expect(
         page.getByLabel("Native word for English", { exact: true }),
       ).toHaveValue("book");
+      await expect(
+        page.getByLabel("Source notes for English", { exact: true }),
+      ).toBeVisible();
+    }
     if (path === "/new/places")
       await expect(
         page.getByRole("textbox", { name: "Definition text", exact: true }),
@@ -1444,8 +1506,9 @@ test("operator-disabled assistance hides saved AI decorations and preserves acce
     page.getByRole("checkbox", { name: "Use AI assistance", exact: true }),
   ).toBeChecked();
   await page.goto("/new/gismu");
-  await expect(page.locator(".ai-source-note")).toBeVisible();
-  await expect(page.locator(".ai-source-sense")).toBeVisible();
+  await expect(
+    page.getByLabel("Source notes for English", { exact: true }),
+  ).toHaveValue("Sense: written work\n\nNote: Accepted source note.");
 });
 
 for (const mode of ["Cancel", "navigation"] as const) {
@@ -1803,4 +1866,232 @@ test("accepted source evidence survives a generated form independently of edited
   });
   await page.reload();
   expect((await stored(page)).formation).toEqual(saved.formation);
+});
+
+test("an off setting in another tab cancels an active job and removes by-meaning mode", async ({
+  page,
+  context,
+}) => {
+  const mock = await mockAssistant(page, { delay: true });
+  await draft(page);
+  await page
+    .getByRole("button", { name: "Recommend a type", exact: true })
+    .click();
+  await allow(page);
+  const cancel = page.getByRole("button", { name: "Cancel", exact: true });
+  await expect(cancel).toBeFocused();
+  await expect(page.locator(".ai-working")).toContainText("2 of 3");
+  await expect(cancel).toBeFocused();
+  const settings = await context.newPage();
+  await settings.goto("/preferences");
+  await settings.getByRole("checkbox", { name: "Use AI assistance" }).uncheck();
+  await expect.poll(mock.deletions).toBe(1);
+  await expect(page.locator(".ai-action:visible")).toHaveCount(0);
+  mock.release();
+  expect((await stored(page)).ai?.records ?? []).toHaveLength(0);
+  await page.goto("/new/meaning");
+  await expect(
+    page.getByRole("link", { name: "by meaning: not configured" }),
+  ).toHaveCount(0);
+  await settings.close();
+});
+
+test("a dismissed later run keeps the newest accepted Undo reachable", async ({
+  page,
+}) => {
+  await mockAssistant(page);
+  await draft(page);
+  await page
+    .getByRole("button", { name: "Recommend a type", exact: true })
+    .click();
+  await allow(page);
+  await page.getByRole("button", { name: "Use this", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Suggest again", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Recommend a type", exact: true })
+    .click();
+  await page.getByRole("button", { name: "Dismiss", exact: true }).click();
+  await page.reload();
+  await page
+    .getByRole("button", { name: "Undo Recommend a type", exact: true })
+    .click();
+  await expect(page.getByRole("radio", { name: /^gismu/ })).toBeChecked();
+});
+
+test("partial mappings require stale review and recheck later edits", async ({
+  page,
+}) => {
+  const mock = await mockAssistant(page, { delay: true });
+  await draft(
+    page,
+    {
+      kind: "lujvo",
+      spelling: "ckusni",
+      frameMode: "fixed",
+      places: [
+        {
+          index: 1,
+          description: [["Original place."]],
+          glosses: [],
+          kind: "unspecified",
+          hint: null,
+          derivations: [],
+          defaults: [],
+          constraints: [],
+        },
+      ],
+    },
+    "/new/places",
+  );
+  await page
+    .getByRole("button", { name: "Suggest places and glosses", exact: true })
+    .click();
+  await allow(page);
+  await expect.poll(() => mock.calls.length).toBe(1);
+  await page
+    .getByLabel("Description for place 1", { exact: true })
+    .fill("A newer place.");
+  mock.release();
+  const panel = page.getByRole("region", {
+    name: "Suggest places and glosses suggestion",
+  });
+  const add = panel.getByRole("button", {
+    name: "Add klama 2 to place 1",
+    exact: true,
+  });
+  await expect(add).toBeDisabled();
+  await panel
+    .getByRole("checkbox", {
+      name: "I reviewed the newer fields and want to replace them",
+    })
+    .check();
+  await expect(add).toBeEnabled();
+  await page
+    .getByLabel("Description for place 1", { exact: true })
+    .fill("One more author edit.");
+  await add.click();
+  await expect(add).toBeDisabled();
+  expect((await stored(page)).places[0].derivations).toHaveLength(0);
+  await panel
+    .getByRole("checkbox", {
+      name: "I reviewed the newer fields and want to replace them",
+    })
+    .check();
+  await add.click();
+  await expect(
+    page.getByLabel("Source word of derivation 1 for place 1", { exact: true }),
+  ).toHaveValue("klama");
+});
+
+test("failed log Markdown matches the dialog and preserves string requests and code fences", async ({
+  page,
+}) => {
+  const failedLog = structuredClone(log) as any;
+  failedLog.exchanges[0].request = "First request line.\nSecond request line.";
+  failedLog.exchanges[0].system_prompt = "System prompt\n```\nA literal fence.";
+  failedLog.exchanges[0].attempts[0].text = "```\nAssistant text.";
+  const error =
+    "No usable answer after 3 tries. Try again or fill the rows in by hand.";
+  await mockAssistant(page, { failure: error, log: failedLog });
+  await draft(page);
+  await page
+    .getByRole("button", { name: "Recommend a type", exact: true })
+    .click();
+  await allow(page);
+  await page
+    .getByRole("button", { name: "How the assistant decided", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog", {
+    name: "How the assistant decided",
+  });
+  await expect(dialog).toContainText(error);
+  await expect(dialog).toContainText(
+    "First request line.\nSecond request line.",
+  );
+  const download = page.waitForEvent("download");
+  await dialog.getByRole("button", { name: "Export as Markdown" }).click();
+  const markdown = await readFile((await (await download).path())!, "utf8");
+  expect(markdown).toContain(error);
+  expect(markdown).toContain("First request line.\nSecond request line.");
+  expect(markdown).toContain(
+    "````text\nSystem prompt\n```\nA literal fence.\n````",
+  );
+  expect(markdown).toContain("[type.task.txt]");
+  expect(markdown).toContain("never published");
+});
+
+test("a completed suggestion keeps focus in a manual field that the author is editing", async ({
+  page,
+}) => {
+  const mock = await mockAssistant(page, { delay: true });
+  await draft(page);
+  await page
+    .getByRole("button", { name: "Recommend a type", exact: true })
+    .click();
+  await allow(page);
+  await expect.poll(() => mock.calls.length).toBe(1);
+  const manual = page.getByRole("radio", { name: /^gismu/ });
+  await manual.focus();
+  mock.release();
+  await expect(
+    page.getByRole("button", { name: "Use this", exact: true }),
+  ).toBeVisible();
+  await expect(manual).toBeFocused();
+});
+
+test("an accepted partial mapping keeps Undo and one log after the panel is dismissed", async ({
+  page,
+}) => {
+  await mockAssistant(page);
+  await draft(
+    page,
+    {
+      kind: "lujvo",
+      spelling: "ckusni",
+      frameMode: "fixed",
+      places: [
+        {
+          index: 1,
+          description: [["A place."]],
+          glosses: [],
+          kind: "unspecified",
+          hint: null,
+          derivations: [],
+          defaults: [],
+          constraints: [],
+        },
+      ],
+    },
+    "/new/places",
+  );
+  await page
+    .getByRole("button", { name: "Suggest places and glosses", exact: true })
+    .click();
+  await allow(page);
+  await page
+    .getByRole("button", { name: "Add klama 2 to place 1", exact: true })
+    .click();
+  await expect(
+    page.getByLabel("Source word of derivation 1 for place 1", { exact: true }),
+  ).toHaveValue("klama");
+  await page.getByRole("button", { name: "Dismiss", exact: true }).click();
+  await page.reload();
+  const data = await stored(page);
+  const mapping = data.ai.records.find((r: any) => r.key.includes(":mapping:"));
+  expect(mapping.result).toBeNull();
+  expect(mapping.log).toBeNull();
+  expect(mapping.log_id).toBe(
+    data.ai.records.find((r: any) => r.key === "places-glosses").id,
+  );
+  await page
+    .getByRole("button", {
+      name: "Undo mapping klama 2 to place 1",
+      exact: true,
+    })
+    .click();
+  await expect(
+    page.getByLabel("Source word of derivation 1 for place 1", { exact: true }),
+  ).toHaveCount(0);
 });

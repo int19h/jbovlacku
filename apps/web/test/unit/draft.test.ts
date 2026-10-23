@@ -581,7 +581,11 @@ test("source pronunciations and stems survive draft reload, publication, and rev
     gismu: { ...newGismuState(), rows: [row] },
   });
   const restored = normalizeDraft(JSON.parse(JSON.stringify(draft)));
-  assert.deepEqual(restored.gismu!.rows[0], row);
+  assert.equal(typeof restored.gismu!.rows[0].id, "string");
+  assert.deepEqual(restored.gismu!.rows[0], {
+    ...row,
+    id: restored.gismu!.rows[0].id,
+  });
   const built = draftToBody(restored);
   assert.deepEqual(built.problems, []);
   assert.deepEqual(built.body!.etymology.formation, formation);
@@ -2118,7 +2122,9 @@ test("browser source aliases migrate once with null precedence and independent s
       },
     }),
   );
+  assert.equal(typeof draft.gismu!.rows[0].id, "string");
   assert.deepEqual(draft.gismu!.rows[0], {
+    id: draft.gismu!.rows[0].id,
     language: "en",
     name: "English",
     word: "running",

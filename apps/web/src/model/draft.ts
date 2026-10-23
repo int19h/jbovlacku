@@ -159,6 +159,7 @@ export interface DraftExample {
 }
 import {
   normalizeSourceRow,
+  sourceRowKey,
   type GismuState,
   type LujvoState,
 } from "./builders.ts";
@@ -425,11 +426,66 @@ export function normalizeDraft(stored: Draft): Draft {
   });
   const { original, ...rest } = old;
   void original;
+  const gismu = old.gismu
+    ? { ...old.gismu, rows: old.gismu.rows.map(normalizeSourceRow) }
+    : null;
+  // Give old undo snapshots the same row identities as the current draft.
+  const ai = old.ai ? structuredClone(old.ai) : undefined;
+  const sourceValue = (row: import("./builders.ts").GismuRowState) => {
+    const { id, ...value } = normalizeSourceRow(row);
+    void id;
+    return JSON.stringify(
+      Object.fromEntries(
+        Object.entries(value).sort(([a], [b]) => a.localeCompare(b)),
+      ),
+    );
+  };
+  const matchingSource = (row: import("./builders.ts").GismuRowState) => {
+    const languageRows =
+      gismu?.rows.filter((current) => current.language === row.language) ?? [];
+    const exact = languageRows.filter(
+      (current) => sourceValue(current) === sourceValue(row),
+    );
+    return exact.length === 1
+      ? exact[0]
+      : languageRows.length === 1
+        ? languageRows[0]
+        : undefined;
+  };
+  for (const record of ai?.records ?? []) {
+    const legacy = /^source-(\d+)-(.+)$/.exec(record.key);
+    let migratedRow: import("./builders.ts").GismuRowState | undefined;
+    if (legacy) {
+      const snapshot = record.after?.gismu?.rows[Number(legacy[1])];
+      migratedRow = matchingSource(
+        snapshot ?? {
+          language: legacy[2],
+          name: "",
+          word: "",
+          input: "",
+          weight: null,
+        },
+      );
+      if (migratedRow) record.key = sourceRowKey(migratedRow);
+    }
+    for (const snapshot of [record.before, record.after]) {
+      if (!snapshot?.gismu) continue;
+      snapshot.gismu.rows = snapshot.gismu.rows.map((row, index) => {
+        const current =
+          legacy && index === Number(legacy[1])
+            ? migratedRow
+            : matchingSource(row);
+        return normalizeSourceRow({
+          ...row,
+          id: row.id ?? current?.id,
+        });
+      });
+    }
+  }
   return newDraft({
     ...rest,
-    gismu: old.gismu
-      ? { ...old.gismu, rows: old.gismu.rows.map(normalizeSourceRow) }
-      : null,
+    gismu,
+    ...(ai ? { ai } : {}),
     places,
     frameRole: old.frameRole ?? "predicate",
     evidenceForm:
