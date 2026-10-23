@@ -8,6 +8,7 @@ export interface CopyRow {
   row: number;
   line: number;
   error?: string;
+  fragments?: { row: number; line: number }[];
 }
 
 /** Decode PostgreSQL COPY text. The null marker is tested before escapes. */
@@ -43,7 +44,7 @@ export function decodeCopyField(value: string): string | null {
 }
 
 /** Ignore unrelated table rows without joining their potentially large byte chunks. */
-export async function* readCopyRows(
+async function* readPhysicalCopyRows(
   path: string,
   wanted: ReadonlySet<string>,
   onTable?: (table: string, rows: number) => void,
@@ -148,6 +149,83 @@ export async function* readCopyRows(
   if (length) throw new Error("The SQL source ends without a complete line.");
   if (table !== null)
     throw new Error("The SQL source ends inside a COPY block.");
+}
+
+/** Keep split records malformed while retaining their first fragment's owner. */
+export async function* readCopyRows(
+  path: string,
+  wanted: ReadonlySet<string>,
+  onTable?: (table: string, rows: number) => void,
+): AsyncGenerator<CopyRow> {
+  let pending: { rows: CopyRow[]; bytes: number } | undefined;
+  const short = (row: CopyRow) =>
+    row.values.length > 0 &&
+    row.values.length < row.columns.length &&
+    !row.error?.includes("read limit");
+  const bytes = (row: CopyRow) =>
+    row.values.reduce(
+      (sum, value) => sum + (value === null ? 0 : Buffer.byteLength(value)),
+      0,
+    );
+  const ownRecordPrefix = (row: CopyRow) => {
+    let identifiers = 0;
+    while (
+      identifiers < row.columns.length &&
+      /(?:id|num)$/.test(row.columns[identifiers])
+    )
+      identifiers++;
+    if (identifiers === 0 || row.values.length < identifiers) return false;
+    return row.values
+      .slice(0, identifiers)
+      .every(
+        (value) =>
+          typeof value === "string" &&
+          /^(0|[1-9][0-9]*)$/.test(value) &&
+          Number.isSafeInteger(Number(value)),
+      );
+  };
+  for await (const row of readPhysicalCopyRows(path, wanted, onTable)) {
+    if (pending) {
+      const head = pending.rows[0];
+      const last = pending.rows.at(-1)!;
+      const adjacent =
+        row.table === head.table &&
+        row.line === last.line + 1 &&
+        row.row === last.row + 1;
+      // A separate damaged row must keep its own possible owner.
+      if (adjacent && short(row) && !ownRecordPrefix(row)) {
+        const fields = head.values.length + row.values.length - 1;
+        if (fields === head.columns.length) {
+          const fragments = [...pending.rows, row];
+          yield {
+            ...head,
+            fragments: fragments.map(({ row, line }) => ({ row, line })),
+            error: `Malformed COPY record spans ${fragments.length} physical rows. No source repair was inferred.`,
+          };
+          pending = undefined;
+          continue;
+        }
+        // A middle line without tabs adds no source columns.
+        const nextBytes = pending.bytes + bytes(row);
+        if (
+          row.values.length === 1 &&
+          pending.rows.length < 64 &&
+          nextBytes <= 32 * 1024 * 1024
+        ) {
+          pending.rows.push(row);
+          pending.bytes = nextBytes;
+          continue;
+        }
+      }
+      yield* pending.rows;
+      pending = undefined;
+    }
+    const rowBytes = short(row) ? bytes(row) : 0;
+    if (short(row) && rowBytes <= 32 * 1024 * 1024)
+      pending = { rows: [row], bytes: rowBytes };
+    else yield row;
+  }
+  if (pending) yield* pending.rows;
 }
 
 export async function hashFile(

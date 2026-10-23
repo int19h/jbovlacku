@@ -1,11 +1,20 @@
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises";
+import {
+  access,
+  copyFile,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+  mkdir,
+} from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import {
   initializeCore,
+  identityFromSeed,
   contentHash,
   utf8,
   evaluate,
@@ -19,6 +28,7 @@ import {
   SQL_SOURCE,
   type SqlManifest,
 } from "../src/sql.ts";
+import type { ImportSizeEstimate } from "../src/import-estimate.ts";
 
 const directories: string[] = [];
 const seed = new Uint8Array(32).fill(43);
@@ -699,7 +709,7 @@ for (const [table, affected] of [
     );
     assert.ok(fresh.report.added < 4);
   });
-  test(`r2 F2 unknown owner of malformed ${table} blocks its dependent table`, async () => {
+  test(`r2 F2 unknown owner of malformed ${table} preserves unrelated lookup references`, async () => {
     const clean = withSyntheticRelatedRows(fixture);
     const input = await setup(clean);
     const first = await importSqlSnapshot(input);
@@ -709,12 +719,13 @@ for (const [table, affected] of [
     await updateSource(input, bad);
     const result = await importSqlSnapshot(input);
     assert.equal(result.selection, first.selection);
-    assert.equal(result.report.reused, 0, JSON.stringify(result.report));
-    assert.ok(
-      result.report.unresolved.some((issue) =>
-        /incomplete|malformed/.test(issue.reason),
-      ),
-    );
+    if (["languages", "valsitypes", "valsi", "natlangwords"].includes(table))
+      assert.ok(
+        result.report.reused > 0 && result.report.reused < 4,
+        JSON.stringify(result.report),
+      );
+    else assert.equal(result.report.reused, 0, JSON.stringify(result.report));
+    assert.ok(result.report.unresolved.length > 0);
   });
 }
 
@@ -1060,7 +1071,11 @@ test("r2 F3 a split definition tail cannot impersonate a complete record ID", as
   );
   assert.deepEqual(
     fragments.map((issue) => issue.record),
-    [62020, null],
+    [62020],
+  );
+  assert.match(
+    fragments[0].locator,
+    /COPY-row=5\/line=\d+.*COPY-row=6\/line=\d+/,
   );
   assert.ok(!result.report.unresolved.some((issue) => issue.record === 4));
   assert.ok(
@@ -1095,3 +1110,204 @@ for (const [table, prefixColumn] of [
     );
   });
 }
+
+function splitHistoryNotes(bytes: Buffer, pieces = 2): Buffer {
+  return tableMutation(bytes, "definition_versions", (fields, position) => {
+    if (position === 1)
+      fields[5] +=
+        "\r\n" +
+        Array.from(
+          { length: pieces - 1 },
+          (_, index) => `continued notes ${index + 1}`,
+        ).join("\r\n");
+    return fields;
+  });
+}
+
+test("r3 N1 a raw CRLF inside history notes leaves only its owner unresolved", async () => {
+  const input = await setup(splitHistoryNotes(fixture));
+  const result = await importSqlSnapshot(input);
+  assert.equal(
+    result.report.added,
+    3,
+    JSON.stringify(result.report.unresolved),
+  );
+  const publications = (await carriers(input.output)).filter(
+    (carrier) => carrier.body.legacy,
+  );
+  assert.deepEqual(
+    publications
+      .map((carrier) => carrier.body.legacy.record.id)
+      .sort((a, b) => a - b),
+    [4, 36101, 53191],
+  );
+  assert.ok(result.report.unresolved.every((issue) => issue.record === 74481));
+  const sourceIssue = result.report.unresolved.find((issue) =>
+    issue.locator.startsWith("definition_versions/COPY-row="),
+  )!;
+  assert.match(
+    sourceIssue.locator,
+    /COPY-row=2\/line=\d+.*COPY-row=3\/line=\d+/,
+  );
+});
+
+test("r3 N1 a split history row preserves the owner selection while other records reuse", async () => {
+  const input = await setup();
+  const clean = await importSqlSnapshot(input);
+  await updateSource(input, splitHistoryNotes(fixture));
+  const result = await importSqlSnapshot(input);
+  assert.equal(result.selection, clean.selection);
+  assert.equal(
+    result.report.reused,
+    3,
+    JSON.stringify(result.report.unresolved),
+  );
+  assert.equal(result.report.revised, 0);
+  assert.ok(result.report.unresolved.every((issue) => issue.record === 74481));
+});
+
+test("r3 N1 several raw line breaks in one history field keep one malformed owner", async () => {
+  const input = await setup(splitHistoryNotes(fixture, 4));
+  const result = await importSqlSnapshot(input);
+  assert.equal(result.report.added, 3);
+  assert.ok(result.report.unresolved.every((issue) => issue.record === 74481));
+  const issue = result.report.unresolved.find((item) =>
+    item.locator.startsWith("definition_versions/COPY-row="),
+  )!;
+  assert.equal((issue.locator.match(/COPY-row=/g) ?? []).length, 4);
+});
+
+for (const table of [
+  "languages",
+  "valsitypes",
+  "valsi",
+  "natlangwords",
+] as const) {
+  test(`r3 N1 an unreadable ${table} lookup key does not freeze unrelated definitions`, async () => {
+    const broken = tableMutation(fixture, table, (fields, position) =>
+      position === 0 ? ["unreadable lookup"] : fields,
+    );
+    const input = await setup(broken);
+    const result = await importSqlSnapshot(input);
+    assert.ok(
+      result.report.added > 0 && result.report.added < 4,
+      JSON.stringify(result.report),
+    );
+    assert.ok(
+      result.report.unresolved.some(
+        (issue) =>
+          issue.record === null &&
+          issue.locator.startsWith(`${table}/COPY-row=`),
+      ),
+    );
+  });
+}
+
+test("r3 N1 short COPY fragments stay separate from complete rows and later tables", async () => {
+  const source = Buffer.from(
+    "COPY public.first (id, owner, text, end) FROM stdin;\r\n1\t4\thead\r\ntail\tend\r\n2\t5\tvalid\tend\r\n3\t6\tshort\r\n\\.\r\nCOPY public.second (id, text) FROM stdin;\r\n9\tvalid\r\n\\.\r\n",
+  );
+  const input = await setup(source);
+  const rows = [];
+  const counts: Record<string, number> = {};
+  for await (const row of readCopyRows(
+    input.sourcePath,
+    new Set(["first", "second"]),
+    (table, count) => {
+      counts[table] = count;
+    },
+  ))
+    rows.push(row);
+  assert.equal(rows.length, 4);
+  assert.equal(rows[0].values[1], "4");
+  assert.match(rows[0].error!, /physical|fragment/);
+  assert.deepEqual(rows[1].values, ["2", "5", "valid", "end"]);
+  assert.ok(rows[2].error);
+  assert.equal(rows[3].table, "second");
+  assert.deepEqual(counts, { first: 4, second: 1 });
+});
+
+test("r3 N3 check-existing restages a copied journal and preserves every carrier byte", async () => {
+  const input = await setup();
+  await importSqlSnapshot(input);
+  const expected = await readFile(join(input.output, "carriers.jsonl"));
+  const output = join(input.directory, "check");
+  await mkdir(output);
+  await copyFile(
+    join(input.output, "journal.sqlite"),
+    join(output, "journal.sqlite"),
+  );
+  const estimates: ImportSizeEstimate[] = [];
+  const result = await importSqlSnapshot({
+    ...input,
+    output,
+    checkExisting: true,
+    estimate: (value) => estimates.push(value),
+  });
+  assert.equal(
+    estimates.length,
+    1,
+    "The check must restage instead of replaying the committed batch.",
+  );
+  assert.ok(estimates[0].stage_bytes > 0);
+  assert.equal(estimates[0].scope, "proposal");
+  assert.equal(estimates[0].budget_bytes, 1_500_000_000);
+  assert.equal(result.report.reused, 4);
+  assert.deepEqual(await readFile(join(output, "carriers.jsonl")), expected);
+  assert.equal(result.size_measurement.loaded_copy_measured, false);
+});
+
+test("r3 N3 check-existing refuses a missing journal before output writes", async () => {
+  const input = await setup();
+  await assert.rejects(
+    importSqlSnapshot({ ...input, checkExisting: true }),
+    /check requires an existing SQL journal/i,
+  );
+  await assert.rejects(access(input.output), { code: "ENOENT" });
+});
+
+test("r3 N3 check-existing refuses new definitions and rolls back all ledger changes", async () => {
+  const input = await setup();
+  await importSqlSnapshot(input);
+  const previous = await readFile(join(input.output, "carriers.jsonl"));
+  const changed = mutate(fixture, (fields) => {
+    if (fields[3] === "4") fields[4] = "A changed definition.";
+  });
+  await updateSource(input, changed);
+  await assert.rejects(
+    importSqlSnapshot({ ...input, checkExisting: true }),
+    /check cannot sign a new publication or view/i,
+  );
+  assert.deepEqual(
+    await readFile(join(input.output, "carriers.jsonl")),
+    previous,
+  );
+  const db = new DatabaseSync(join(input.output, "journal.sqlite"));
+  try {
+    assert.equal(
+      db.prepare("SELECT COUNT(*) AS count FROM versions").get()?.count,
+      4,
+    );
+    assert.equal(
+      db.prepare("SELECT COUNT(*) AS count FROM batches").get()?.count,
+      1,
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test("r3 N3 check-existing refuses a new roots view", async () => {
+  const input = await setup();
+  await importSqlSnapshot(input);
+  const roots = [
+    {
+      identity: identityFromSeed(seed),
+      q: { numerator: 1, denominator: 1 },
+    },
+  ];
+  await assert.rejects(
+    importSqlSnapshot({ ...input, roots, checkExisting: true }),
+    /check cannot sign a new publication or view/i,
+  );
+});

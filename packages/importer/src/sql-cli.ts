@@ -9,9 +9,14 @@ async function main() {
   const args = process.argv.slice(2);
   const flags = new Map<string, string>();
   let sign = false;
+  let checkExisting = false;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--sign" && !sign) {
       sign = true;
+      continue;
+    }
+    if (args[i] === "--check-existing" && !checkExisting) {
+      checkExisting = true;
       continue;
     }
     if (
@@ -36,7 +41,7 @@ async function main() {
   ])
     if (!flags.has(flag))
       throw new Error(`The SQL import command requires ${flag}.`);
-  if (!sign)
+  if (!sign && !checkExisting)
     throw new Error(
       "This command signs a local proposal. Add --sign to use the supplied disposable seed.",
     );
@@ -66,9 +71,14 @@ async function main() {
     output,
     seed: Buffer.from(seedText, "hex"),
     roots,
+    checkExisting,
     estimate: (estimate) =>
       process.stderr.write(
         JSON.stringify({ stage: "before-signing", ...estimate }) + "\n",
+      ),
+    measurement: (measurement) =>
+      process.stderr.write(
+        JSON.stringify({ stage: "after-export", ...measurement }) + "\n",
       ),
   });
   process.stdout.write(
