@@ -229,13 +229,16 @@ export async function personPage(
       response?.profile.state === "known"
         ? (response.profile.claims[0]?.body ?? null)
         : null;
-    main.append(
-      profileEditor(app, identity, current, () => {
-        if (!context.live()) return;
-        main.replaceChildren();
-        void personPage(route, context, app);
-      }),
-    );
+    const editor = profileEditor(app, identity, current, () => {
+      if (!context.live()) return;
+      main.replaceChildren();
+      void personPage(route, context, app);
+    });
+    main.append(editor);
+    // The key page links here with #edit. Focus the connected first field.
+    const firstField = editor.querySelector<HTMLInputElement>("input");
+    if (location.hash === "#edit" && firstField && context.focus(firstField))
+      editor.scrollIntoView();
   }
   const view = await loadSiteView(context.signal).catch(() => null);
   if (!context.live()) return;
@@ -708,12 +711,6 @@ function profileEditor(
     preview.append(el("div", { class: "actions" }, sign));
     previewBox.append(preview);
   });
-  // The key page links here with #edit. Put the first field in focus then.
-  if (location.hash === "#edit")
-    setTimeout(() => {
-      section.scrollIntoView();
-      name.input.focus();
-    }, 0);
   return section;
 }
 function describeKey(key: string) {

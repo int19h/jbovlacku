@@ -7,6 +7,98 @@ import {
   fixture,
 } from "./helpers.ts";
 
+test("the profile Name field keeps focus when held activity finishes the page render", async ({
+  page,
+}) => {
+  const identity = (await createIdentity(page)).identity as string;
+  const activityPath = `/api/v1/identities/${encodeURIComponent(identity)}/activity`;
+  let releaseActivity = () => {};
+  const held = new Promise<void>((resolve) => (releaseActivity = resolve));
+  let activityStarted = () => {};
+  const started = new Promise<void>((resolve) => (activityStarted = resolve));
+  await page.route(
+    (url) => url.pathname === activityPath,
+    async (route) => {
+      activityStarted();
+      await held;
+      await route.continue();
+    },
+  );
+  try {
+    await page.getByRole("link", { name: "Edit public profile" }).click();
+    await started;
+    const name = page
+      .getByRole("region", { name: "Edit public profile" })
+      .getByLabel("Name", { exact: true });
+    await expect(name).toBeFocused();
+    const emptyActivity = page.getByText(
+      "No signed records from this key are retained on this server.",
+      { exact: true },
+    );
+    await expect(emptyActivity).toHaveCount(0);
+    releaseActivity();
+    await expect(emptyActivity).toBeVisible();
+    // The next frame runs after the renderer's promise and heading-focus guard.
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) => requestAnimationFrame(() => resolve())),
+    );
+    await expect(name).toBeFocused();
+    await expect(page.locator("main h1")).not.toBeFocused();
+  } finally {
+    releaseActivity();
+    await page.unrouteAll({ behavior: "wait" });
+  }
+});
+
+test("a reader's search focus before the profile editor appears takes priority over Name focus", async ({
+  page,
+}) => {
+  const identity = (await createIdentity(page)).identity as string;
+  await page.evaluate(async (identity) => {
+    const { forgetProfile } = await import(
+      String("/src/components/attribution.ts")
+    );
+    forgetProfile(identity);
+  }, identity);
+  const profilePath = `/api/v1/identities/${encodeURIComponent(identity)}`;
+  let releaseProfile = () => {};
+  const held = new Promise<void>((resolve) => (releaseProfile = resolve));
+  let profileStarted = () => {};
+  const started = new Promise<void>((resolve) => (profileStarted = resolve));
+  await page.route(
+    (url) => url.pathname === profilePath,
+    async (route) => {
+      profileStarted();
+      await held;
+      await route.continue();
+    },
+  );
+  try {
+    await page.getByRole("link", { name: "Edit public profile" }).click();
+    await started;
+    const editor = page.getByRole("region", { name: "Edit public profile" });
+    await expect(editor).toHaveCount(0);
+    const search = page.getByLabel("Search words and meanings");
+    await search.focus();
+    await expect(search).toBeFocused();
+    releaseProfile();
+    await expect(editor.getByLabel("Name", { exact: true })).toBeVisible();
+    await expect(page.locator("main")).toContainText(
+      "No signed records from this key are retained on this server.",
+    );
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) => requestAnimationFrame(() => resolve())),
+    );
+    await expect(search).toBeFocused();
+    await expect(page.locator("main h1")).not.toBeFocused();
+  } finally {
+    releaseProfile();
+    await page.unrouteAll({ behavior: "wait" });
+  }
+});
+
 test("the public profile editor checks every limit, previews the signed claim, and publishes it", async ({
   page,
 }) => {

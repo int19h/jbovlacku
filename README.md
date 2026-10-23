@@ -126,6 +126,10 @@ The built Node app keeps Type and trust card labels separate from their descript
 Draft placeholders have no extra underline, and helper text does not shift neighboring controls.
 Each custom place alternative keeps its hint below the Tags field and shows a separate boundary.
 
+Page completion preserves explicit control focus and the reader's focus choices during loading.
+The Edit public profile link focuses Name unless the reader first chooses another control.
+Activity completion preserves the editor or reader focus.
+
 One shared rule gives links and interactive controls a target of at least 44 by 44 CSS pixels.
 It covers buttons, fields, disclosure summaries, focusable regions, editable regions, and the app's ARIA actions.
 Source code marks complete prose sentences and structured place markers with the reason for their inline exception.
