@@ -26,6 +26,8 @@ import {
   loadDefinition,
   loadRecord,
   RequestError,
+  hasPendingMaterialization,
+  MaterializationPendingError,
   type LoadedRecord,
 } from "../data/api.ts";
 import {
@@ -59,6 +61,11 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
   const requestedLanguage =
     route.params.get("lang") ?? app.session.preferences.definitionLanguage;
   context.title(spellingHint ?? "Word");
+  const waiting = route.params.has("fresh") && hasPendingMaterialization();
+  const pendingNotice = waiting
+    ? p("This server stored your records. Its word view is updating.", "notice")
+    : null;
+  if (pendingNotice) main.append(pendingNotice);
   let word: WordResponse;
   try {
     word = await getWord(id, {
@@ -67,10 +74,25 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
     });
   } catch (error) {
     if (!context.live()) return;
+    pendingNotice?.remove();
     main.append(
       el("h1", { class: "page", text: spellingHint ?? "Word" }),
       p(describe(error), "notice"),
     );
+    if (error instanceof MaterializationPendingError) {
+      main.append(
+        button(
+          "Refresh the word",
+          () => {
+            navigate(
+              `${routes.word(spellingHint ?? id, requestedLanguage)}&fresh=1`,
+            );
+          },
+          { class: "btn" },
+        ),
+      );
+      return;
+    }
     if (spellingHint)
       main.append(
         p(
@@ -86,6 +108,8 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
     return;
   }
   if (!context.live()) return;
+  pendingNotice?.remove();
+  if (waiting) app.own.invalidate();
   const spelling = word.word?.spelling ?? spellingHint ?? "Word unavailable";
   context.title(spelling);
   const head = el("div", { class: "word-head" });

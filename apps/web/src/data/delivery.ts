@@ -13,6 +13,7 @@ import {
   getReceipt,
   objectBytes,
   postEvent,
+  rememberAcceptedReceipt,
   RequestError,
   TransportError,
   type Peer,
@@ -453,6 +454,7 @@ export class DeliveryEngine {
         receipt,
         fetchVariant,
       );
+      if (state === "accepted") rememberAcceptedReceipt(receipt, target);
       return {
         state,
         attempts,
