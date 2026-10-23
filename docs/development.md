@@ -111,6 +111,12 @@ Migration from the first prototype retains its current snapshot only. Other old 
 A rebuilt inventory must match the stored current pointer. A mismatch reports storage unavailable.
 Legacy object-store wrappers and the old snapshot-ID table remain as one-time cleanup debt.
 Anonymous event and selection admission has no contributor quota. Signed object retention remains unbounded.
+
+A generation is an index copy for one snapshot. An alias points to a generation with the same entries.
+The Node search index retains its current generation, one rollback generation, active staged generations, and the source generations that aliases use.
+Index publication removes obsolete rows, aliases, and markers in the same SQLite transaction.
+Historical API reads use immutable packages. If an index base is absent, the service rebuilds it from the completed package entries.
+
 This prototype needs an admission policy and resource limits before public use.
 New admissions store wrappers in bounded coordinator rows and create no more legacy wrapper objects.
 
@@ -129,12 +135,15 @@ Raw replication reads can expose the newer accepted inventory and name its snaps
 The accepted cursor advances after durable admission. The materialized cursor advances after evaluation, packages, and index publication complete.
 During that gap, a new event receipt reports `index_lag` and `evaluation_pending`, with unavailable interpretation and a null snapshot.
 A late-body receipt also uses a null snapshot until the completed snapshot contains the same body mapping.
+An unchanged event keeps the completed snapshot and its derived receipt while later writes wait.
+This receipt lets the browser finish its wait without waiting for every other write.
 The service retains the preceding completed snapshot during a backlog. Failed jobs leave it available, and later reads retry the latest inventory.
 
 After local publication, a fresh browser word read waits for accepted records from this server to finish evaluation.
 The page shows that the server stored the records while its word view updates.
 This page session tracks only receipts whose envelope and required body match the saved delivery.
 The wait lasts at most 15 seconds and stops when the reader leaves the page.
+A temporary network failure or HTTP 5xx response triggers another poll within that same deadline.
 A failed wait keeps delivery accepted and offers a refresh. Ordinary reads and explicit snapshot reads still use their completed snapshot.
 
 A checkpoint is a saved evaluated state.
@@ -148,7 +157,11 @@ The cache limits are 256 MiB compressed and 768 MiB decoded. A cache failure doe
 
 Shutdown drains pending evaluation and checkpoint work before it closes SQLite.
 Checkpoint recovery rebuilds a missing search index from the saved entries before readiness.
-The service waits for a 100 ms quiet period before it captures a checkpoint. Shutdown cancels that delay and saves the latest completed state.
+The service captures at most one checkpoint per minute after a 100 ms quiet period.
+It keeps only the latest pending snapshot during that interval. A failed capture also counts toward the interval.
+Shutdown bypasses the interval and saves the latest completed state.
+Core export and binary serialization still run synchronously on the Node event loop.
+The interval limits their frequency, not their duration.
 
 Use a separate data directory for each test service. Do not point a disposable test at another service's database.
 A selected view and explicit import selection determine which imported publications appear.
@@ -194,6 +207,9 @@ These fields include source selection evidence and numeric source-account eviden
 Sessions retain evaluated state instead of all source bodies. Small ancestor sets use sparse storage.
 Identical history caches share storage when the snapshot contains no acceptance events. Work charges stay unchanged.
 
+When the event limit is exceeded, the core returns `resource_unavailable` before it builds ancestry caches.
+It retains authenticated records so that a later limit change can recover them.
+
 New snapshots reuse authenticated compact records and the preceding evaluation.
 A complete issuer with one active key can update a judgment register or publish a native definition without a full rebuild.
 The new event cannot resolve an old missing reference. The evaluator also requires enough work for the equivalent full result.
@@ -207,7 +223,18 @@ The evaluator retains the full logical work charge. Uncertain work at an ancesto
 
 Judgment updates can return a patch of at most 1 MiB for the exact parent session.
 The facade applies that patch to immutable result maps. Other changes return the full result.
-Differential tests compare the complete state and ranking with full evaluation, including mixed writes over a Lensisku slice.
+Differential tests compare the complete state and ranking with full evaluation.
+The external Lensisku slice test is ignored in an ordinary Cargo test run.
+It requires a local file of signed carriers through `JVC_LENSISKU_CARRIERS`.
+If you request this test without that variable, the test fails with a setup message.
+
+From the repository root, run the external test with the carrier file that your task authorizes:
+
+```sh
+JVC_LENSISKU_CARRIERS=/absolute/path/to/carriers.jsonl \
+  cargo test -p jvc-state --test incremental \
+  lensisku_slice_mixed_writes_equal_full_evaluation -- --ignored --exact --nocapture
+```
 
 Search packages reuse authenticated text and attribution fields from unchanged records.
 New or changed record bytes pass the original validators. Stored objects remain immutable.
@@ -217,7 +244,8 @@ Missing, changed, or late body bytes retain their separate handling. The verifie
 Every signature still passes the point, scalar, embedded-key, and equation rules.
 The existing combined-request API remains available for smaller browser snapshots. It still allocates the complete request.
 
-The full local measurement used 59,125 definitions, 44 languages, and the saved 1,000,000,000-unit traversal budget.
+The measurement below predates the review fixes and the removal of derived embedding vectors from signed import bodies.
+It used 59,125 definitions, 44 languages, and the saved 1,000,000,000-unit traversal budget.
 It began with 59,141 events and ended with 59,146 after five signed endorsements.
 Earlier local probes added 15 endorsements. Definition bodies and import selections remained unchanged.
 The source listened on `127.0.0.1:8951`. The start command used no Node heap override.

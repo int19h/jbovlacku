@@ -103,7 +103,9 @@ This is an approximate limit. Histories with more edges can reach it sooner, and
 The Node loader can retain a larger explicit traversal budget for a local import.
 
 The Node adapter serves the pinned SQL import with 59,125 definitions in 44 languages.
-It retains an evaluated checkpoint and keeps completed reads available during new evaluation.
+The measurements below predate the review fixes and the removal of derived embedding vectors from signed import bodies.
+The adapter retains an evaluated checkpoint and keeps completed reads available during new evaluation.
+It captures at most one checkpoint per minute and flushes the latest state on shutdown.
 After publication, the browser shows a pending notice until the accepted records reach the evaluated word view.
 On this VM, startup with a checkpoint took 6.11 seconds and the first `klama` request took 0.32 seconds.
 Five consecutive signed endorsements became visible in 4.26, 2.50, 2.11, 2.16, and 2.15 seconds.
