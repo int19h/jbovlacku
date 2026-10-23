@@ -24,7 +24,7 @@ The request keeps each label beside its exact event ID for the author's inferenc
 Selected component constraints use those labels too. Unknown labels, event IDs, prose, and labels for another word fail the answer checks.
 
 The application maps accepted labels to exact event IDs before construction and public proposals. The raw tool log keeps the labels.
-The other answer schemas require no event ID or hash. `mappings` uses short component-place names such as `c2[1]`.
+The other answer schemas require no event ID or hash. `mappings` keeps studied names such as `klama[2]`.
 
 ## Files
 
