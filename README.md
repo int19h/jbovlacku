@@ -19,8 +19,13 @@ Formation sources still require explicit `input`, `weight`, and `notes`, includi
 Every other [optional definition field](docs/format.md#absent-fields-and-compatibility) still requires its explicit value in the current validator.
 
 The shared core accepts `entity`, `mass`, and `tuple` as retired tags in signed version 1 bodies.
+Sorting and uniqueness compare signed tag strings. A retired tag can appear beside its current equivalent without an automatic merge.
+`entity` means `referent`. `tuple` means `sequence`.
+`mass` is an opaque legacy annotation outside the current tag tree and has no current alias.
+
 The draft model preserves these hints for review.
 Before a new signature, the author must replace retired tags with current standard or custom HTTPS tags, or remove them.
+Explicit alias replacement preserves the note, abstractor, and relation arity. After that action, identical tags and alternatives appear once.
 
 The Node.js adapter uses local object files and SQLite. The local Worker adapter uses R2, D1, and a Durable Object.
 The Worker currently serves the API only.
