@@ -44,8 +44,15 @@ export interface GismuRowState {
   language: string;
   name: string;
   word: string;
+  word_ipa?: string | null;
+  stem?: string | null;
+  ipa?: string | null;
   input: string;
   weight: { numerator: string; denominator: string } | null;
+}
+/** Start another word for the same language without copying its source evidence. */
+export function alternativeSourceRow(row: GismuRowState): GismuRowState {
+  return { ...row, word: "", input: "", word_ipa: null, stem: null, ipa: null };
 }
 export interface GismuState {
   preset: string | null;
@@ -284,6 +291,23 @@ function rational(value: { numerator: string; denominator: string }) {
   }
   return { numerator: Number(a), denominator: Number(b) };
 }
+/** Keep source evidence separate from the letters used for scoring. */
+function formationSource(row: GismuRowState): FormationSource {
+  const source: FormationSource = {
+    language: row.language,
+    word: row.word,
+    input: row.input.trim()
+      ? { format: "lojbanized", text: row.input.trim().toLowerCase() }
+      : null,
+    weight: row.weight ? rational(row.weight) : null,
+    notes: [],
+  };
+  if (row.word_ipa?.trim()) source.word_ipa = row.word_ipa;
+  return source;
+}
+function hasSignedSourceEvidence(row: GismuRowState): boolean {
+  return [row.word, row.input, row.word_ipa].some((value) => !!value?.trim());
+}
 /** Formation metadata for a generated or manual gismu under the recorded run. */
 export function formationMetadata(options: {
   result: GismuResult;
@@ -299,15 +323,7 @@ export function formationMetadata(options: {
   /** True when the form is the candidate the author chose from the run or entered under it. */
 }): Formation {
   const { result, candidate, rows, preset } = options;
-  const sources: FormationSource[] = rows.map((row) => ({
-    language: row.language,
-    word: row.word,
-    input: row.input.trim()
-      ? { format: "lojbanized", text: row.input.trim().toLowerCase() }
-      : null,
-    weight: row.weight ? rational(row.weight) : null,
-    notes: [],
-  }));
+  const sources = rows.filter(hasSignedSourceEvidence).map(formationSource);
   return {
     method: "algorithmic",
     algorithm: {
@@ -351,17 +367,7 @@ export function manualFormation(
   rows: GismuRowState[],
   reason: string,
 ): Formation | null {
-  const sources: FormationSource[] = rows
-    .filter((row) => row.word.trim() || row.input.trim())
-    .map((row) => ({
-      language: row.language,
-      word: row.word,
-      input: row.input.trim()
-        ? { format: "lojbanized", text: row.input.trim().toLowerCase() }
-        : null,
-      weight: row.weight ? rational(row.weight) : null,
-      notes: [],
-    }));
+  const sources = rows.filter(hasSignedSourceEvidence).map(formationSource);
   if (!sources.length && !reason.trim()) return null;
   return {
     method: "non-algorithmic",

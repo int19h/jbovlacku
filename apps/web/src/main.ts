@@ -227,7 +227,7 @@ async function start() {
             "Restore browser storage access and reload before using drafts, keys, or delivery.",
             "notice",
           ),
-          link("Back to search", "/"),
+          link("Back to search", "/", { class: "touch-link" }),
         );
         return;
       }

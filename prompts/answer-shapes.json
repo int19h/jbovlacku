@@ -88,18 +88,18 @@
             "null"
           ]
         },
-        "stem": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "word_ipa": {
           "type": [
             "string",
             "null"
           ],
           "description": "The pronunciation of the whole chosen word, with its stress marked."
+        },
+        "stem": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "ipa": {
           "type": [
@@ -121,8 +121,8 @@
       "required": [
         "word",
         "sense",
-        "stem",
         "word_ipa",
+        "stem",
         "ipa",
         "sounds",
         "note"

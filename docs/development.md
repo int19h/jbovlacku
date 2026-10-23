@@ -517,8 +517,10 @@ The server fixture publishes a seeded two-root view with synthetic definitions, 
 The draft model and the builder metadata have Node unit tests:
 
 ```sh
-npx tsx --test apps/web/test/unit/*.test.ts
+npm run test:web-unit
 ```
+
+Playwright loads these files when it lists tests, but it does not run them. Run this command as well as `npm run test:web`.
 
 On this VM, place browser binaries and test data under a task-specific `/build/jbovlacku` directory.
 

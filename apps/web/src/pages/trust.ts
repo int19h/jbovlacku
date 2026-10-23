@@ -155,7 +155,7 @@ export async function trustPage(
             }
           },
         ),
-      { class: "btn btn-quiet", style: "min-height:36px" },
+      { class: "btn btn-quiet" },
     );
   for (const [key, state] of publicRows) {
     const { subject, scope } = parseKey(key);
@@ -251,7 +251,7 @@ export async function trustPage(
             rule.value === "heed" ? "heed" : "shun",
             rerender,
           ),
-        { class: "btn btn-quiet", style: "min-height:36px" },
+        { class: "btn btn-quiet" },
       ),
       button(
         "Remove",
@@ -268,7 +268,7 @@ export async function trustPage(
           await app.store.setOverlay(current);
           rerender();
         },
-        { class: "btn btn-quiet", style: "min-height:36px" },
+        { class: "btn btn-quiet" },
       ),
     );
     (invalid || ineffective
@@ -300,7 +300,7 @@ export async function trustPage(
         "Make public",
         () =>
           makePublic(app, blocked.identity, blocked.scope, "shun", rerender),
-        { class: "btn btn-quiet", style: "min-height:36px" },
+        { class: "btn btn-quiet" },
       ),
       button(
         "Remove",
@@ -316,7 +316,7 @@ export async function trustPage(
           await app.store.setOverlay(current);
           rerender();
         },
-        { class: "btn btn-quiet", style: "min-height:36px" },
+        { class: "btn btn-quiet" },
       ),
     );
     const invalid = scopeError(blocked.scope);
@@ -329,17 +329,26 @@ export async function trustPage(
       );
     (invalid ? inactive : ignored).append(row);
   }
-  if (!trusted.childElementCount)
-    trusted.append(
-      p(
-        app.session.identity
-          ? registers
+  if (!trusted.childElementCount) {
+    if (app.session.identity)
+      trusted.append(
+        p(
+          registers
             ? "Nobody yet. Open an identity page and choose Trust their judgments."
-            : "Your public choices are unknown because your history could not be read."
-          : "Create a key to trust or ignore identities.",
-        "small",
-      ),
-    );
+            : "Your public choices are unknown because your history could not be read.",
+          "small",
+        ),
+      );
+    else
+      trusted.append(
+        el(
+          "p",
+          { class: "notice" },
+          text("Private trust needs a key. "),
+          link("Create or restore your key", routes.localIdentity),
+        ),
+      );
+  }
   main.append(trusted, el("h2", { class: "section", text: "People I ignore" }));
   if (!ignored.childElementCount) ignored.append(p("Nobody.", "small"));
   main.append(
@@ -372,15 +381,11 @@ export async function trustPage(
     return;
   }
   const body = view.body;
-  if (view.issuer)
-    main.append(
-      el(
-        "p",
-        { class: "small" },
-        text("Published by "),
-        identityLink(view.issuer),
-      ),
-    );
+  if (view.issuer) {
+    const publisher = identityLink(view.issuer);
+    publisher.classList.add("touch-link");
+    main.append(el("p", { class: "small" }, text("Published by "), publisher));
+  }
   const profile = describeProfile(body.calculation);
   main.append(
     p(
@@ -398,7 +403,7 @@ export async function trustPage(
     main.append(
       renderRichText(body.description, { placeHref: null, className: "small" }),
     );
-  const roots = el("p");
+  const roots = el("p", { class: "trust-roots" });
   if (!body.roots.length)
     roots.append(
       text(
@@ -479,7 +484,9 @@ export async function trustPage(
       );
       row(
         "View event",
-        link(view.id, routes.definition(view.id), { class: "fingerprint" }),
+        link(view.id, routes.definition(view.id), {
+          class: "fingerprint touch-link",
+        }),
       );
       return [
         dl,
@@ -564,7 +571,7 @@ function viewChooser(app: App, current: string, context: RenderContext) {
     class: "field",
     "aria-label": "Signed view event ID",
     placeholder: "jve1:…",
-    style: "width:100%;max-width:40rem;min-height:40px",
+    style: "width:100%;max-width:40rem;",
     spellcheck: "false",
   });
   const status = el("p", { class: "meta", role: "status" });

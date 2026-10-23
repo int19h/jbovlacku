@@ -2,7 +2,16 @@
  * The definition block used by the word page, the definition page, and the
  * publish preview. It renders the body exactly as signed.
  */
-import { el, link, p, text, disclosure, append, button } from "../lib/dom.ts";
+import {
+  inlineProse,
+  el,
+  link,
+  p,
+  text,
+  disclosure,
+  append,
+  button,
+} from "../lib/dom.ts";
 import { plural, fingerprintText } from "../lib/format.ts";
 import { renderRichText, plainText, visibleJson } from "../model/richtext.ts";
 import type {
@@ -142,9 +151,12 @@ export function sourceDisclosureBody(
       el(
         "p",
         { class: "small" },
-        text("Native publication signed by "),
-        identityLink(envelope.header.issuer),
-        text("."),
+        inlineProse(
+          "The signer link is part of the native publication attribution sentence.",
+          text("Native publication signed by "),
+          identityLink(envelope.header.issuer),
+          text("."),
+        ),
       ),
     );
   }
@@ -161,6 +173,7 @@ export function sourceDisclosureBody(
           "p",
           { class: "meta" },
           link(body.license.url, body.license.url, {
+            class: "touch-link",
             rel: "noopener noreferrer",
             target: "_blank",
           }),
@@ -174,6 +187,7 @@ export function sourceDisclosureBody(
           item.append(
             text(" "),
             link("link", source.url, {
+              class: "touch-link",
               rel: "noopener noreferrer",
               target: "_blank",
             }),
@@ -181,7 +195,9 @@ export function sourceDisclosureBody(
         if (source.event)
           item.append(
             text(" "),
-            link("record", routes.definition(source.event)),
+            link("record", routes.definition(source.event), {
+              class: "touch-link",
+            }),
           );
         if (source.locator) item.append(text(` · ${source.locator}`));
         list.append(item);
@@ -204,7 +220,7 @@ export function historyBody(
       { class: "small" },
       text("Permanent record "),
       link(envelope.id, routes.definition(envelope.id), {
-        class: "fingerprint",
+        class: "fingerprint touch-link",
       }),
     ),
   );
@@ -216,7 +232,9 @@ export function historyBody(
           "li",
           {},
           text("Revises "),
-          link(parent, routes.definition(parent), { class: "fingerprint" }),
+          link(parent, routes.definition(parent), {
+            class: "fingerprint touch-link",
+          }),
         ),
       );
     nodes.push(list);
@@ -237,7 +255,7 @@ export function historyBody(
           identityLink(child.envelope.header.issuer),
           text(": "),
           link(child.envelope.id, routes.definition(child.envelope.id), {
-            class: "fingerprint",
+            class: "fingerprint touch-link",
           }),
         ),
       );

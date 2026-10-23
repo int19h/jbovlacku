@@ -629,7 +629,9 @@ export async function handoverPage(
           "p",
           { class: "small" },
           text(`${found.peer}: authenticated acceptance `),
-          link(found.id, `/definition/${encodeURIComponent(found.id)}`),
+          link(found.id, `/definition/${encodeURIComponent(found.id)}`, {
+            class: "touch-link",
+          }),
         ),
       );
     if (g.recoveryBlocked) {
@@ -1005,7 +1007,7 @@ export function renderExisting(
           text(
             "Retries reuse the stored events and look the receipt up by event ID first. No replacement acceptance is ever signed automatically. ",
           ),
-          link("Not delivered", "/outbox"),
+          link("Not delivered", "/outbox", { class: "touch-link" }),
         ),
       );
     else
