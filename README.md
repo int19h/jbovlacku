@@ -46,11 +46,23 @@ The Not delivered page lists unfinished delivery only. It supports receipt looku
 Downloaded search packages permit local search without a request for each query. Version 2 packages carry authors, notes, and rafsi for result rows.
 Signing needs localhost or HTTPS. A plain HTTP Tailscale address supports reading only.
 
-The importer prepares signed proposals from pinned local Lensisku JSON captures. Repeat imports reuse signed records and retain source evidence.
+The importer prepares signed proposals from pinned local Lensisku JSON captures and SQL snapshots. Repeat imports reuse signed records and retain source evidence.
 It keeps definitions literal and preserves unknown fields as unknown. It does not infer places or individual votes.
+New SQL and REST publications omit derived vectors and caches with explicit source limitations.
+REST publications also omit viewer-specific values.
 The current importer records unknown rights. The source-notice convention below remains a target change.
+
 The committed adapter comparison uses one signed profile event. Importer tests include a two-row fixture derived from a pinned 2,429-row API capture.
-Full-capture runs are separate development evidence, not part of these committed tests. This capture does not represent the general SQL migration.
+
+The SQL fixture retains four source definitions in English, French, and Russian, with available version history and numbered keywords.
+SQL extraction streams COPY blocks and joins source rows on disk. It retains separate language tags and separate word-level and definition-level rafsi evidence.
+Unsupported rows receive unresolved notices. The source archive keeps the original manifest and records the digest and path of the external dump.
+Split rows retain their owner across breaks in different fields. The size estimate counts new publications separately from staged observations.
+The SQL `--check-existing` mode requires a copied journal in fresh scratch output and refuses an existing proposal.
+
+An offline command loads signed carriers, their selection, and their view into a Node data directory. Repeat loads preserve receipt positions.
+Node startup restores the loaded view and its explicit state work budget. The server and loader require exclusive access to that directory.
+Full-capture runs remain separate development evidence, not part of the committed fixture tests.
 The [importer guide](packages/importer/README.md) describes its input, journal, signing command, and limits.
 
 The guided wizard has five steps: Meaning, Type, Form, Places, and Publish. The full editor opens every field section and permits manual headword and type entry.
@@ -130,7 +142,7 @@ They cover populated builders, key states, delivery records, expanded place fiel
 They measure retired-key reporting, trust without a key, delivered outbox links, and the untested-backup action on Publish.
 They check sentences in the first-signature dialog, identity continuity, and Publish root, component, and competing claim notices.
 
-The general SQL migration, automatic rafsi publications, and structured import conversion also remain unfinished.
+Automatic rafsi publications and structured import conversion remain unfinished.
 The complete `jvc` command catalog in the format specification remains a target interface.
 The [development guide](docs/development.md) describes the implemented native commands.
 
@@ -159,8 +171,36 @@ The expansion budget does not bound total CPU time. These measurements do not es
 
 A local 2,430-event batch uses 17,010 R2 operations. Cold search uses 9,727 R2 operations before D1 and Durable Object work.
 Local Wrangler success does not prove deployed quota, memory, or CPU compliance. Larger imports need bounded incremental jobs.
+
 The current default state work budget can run out at roughly 4,500 events in a flat history.
 This is an approximate limit. Histories with more edges can reach it sooner, and the requested state also affects the work.
+The Node loader can retain a larger explicit traversal budget for a local import.
+
+The Node adapter serves the revised SQL import with 59,125 definitions in 44 languages.
+The extraction omits derived vectors and cache fields from signed bodies.
+The adapter retains an evaluated checkpoint and keeps completed reads available during new evaluation.
+It captures at most one checkpoint per minute and flushes the latest state on shutdown.
+After publication, the browser shows a pending notice until the accepted records reach the evaluated word view.
+
+On this VM, readiness with a checkpoint took 6.49 seconds, and the first `klama` request took 0.053 seconds.
+Five consecutive signed endorsements became visible in 3.47, 1.84, 1.94, 1.81, and 1.97 seconds.
+Warm word requests took 61 to 251 milliseconds across English, French, and Russian definition packages.
+Search took 19 to 76 milliseconds. Package manifests took 1.5 to 2.6 milliseconds.
+
+The checkpoint used 63.80 MiB. Peak process memory reached 3.69 GiB, including 1.67 GiB of Wasm linear memory.
+
+After a crash, the adapter can restore an older valid checkpoint and evaluate the later records.
+If the checkpoint predates the stored materialized snapshot, interpreted reads wait for catch-up.
+Recovery does not expose that older checkpoint as the current public snapshot.
+A full-data crash restart reached readiness in 6.79 seconds and returned the latest word state 1.78 seconds later.
+Startup through that first response took 8.56 seconds. The manifest and changes endpoint kept the same materialized cursor.
+Recovery replayed one record without a rebuild and peaked at 3.02 GiB of process memory.
+
+Process startup through the first word response with a checkpoint took 6.54 seconds.
+Without a checkpoint, initial readiness took 31.15 seconds, and the first word request then took 66.64 seconds.
+That cold request still exceeds the original 30-second target.
+The [development guide](docs/development.md#initial-lensisku-data) describes state reuse, checkpoint costs, and the measurement limits.
+A larger traversal budget does not remove memory limits.
 
 [Issue 9](https://github.com/int19h/jbovlacku/issues/9) tracks ranking CPU limits.
 [Issue 11](https://github.com/int19h/jbovlacku/issues/11) tracks state evaluation beyond the local corpus.

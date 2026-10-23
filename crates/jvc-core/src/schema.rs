@@ -1085,6 +1085,14 @@ fn observation(h: &Header, b: &Value) -> Result<()> {
 pub fn validate_body(h: &Header, b: &Value) -> Result<()> {
     validate_action(h)?;
     canonical_value(b)?;
+    validate_body_fields(h, b)
+}
+/// The body already passed the strict JSON reader and canonical byte check.
+pub(crate) fn validate_parsed_body(h: &Header, b: &Value) -> Result<()> {
+    validate_action(h)?;
+    validate_body_fields(h, b)
+}
+fn validate_body_fields(h: &Header, b: &Value) -> Result<()> {
     if reference_count(&h.action) + reference_count(b) > 256 {
         return Err(bad("record exceeds 256 other event references"));
     }

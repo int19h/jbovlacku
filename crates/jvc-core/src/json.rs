@@ -108,7 +108,10 @@ pub fn canonical_value(value: &Value) -> Result<Vec<u8>> {
 
 pub fn parse_stored_json(bytes: &[u8]) -> Result<Value> {
     let value = parse_json(bytes)?;
-    if canonical_value(&value)? != bytes {
+    // parse_json already enforces the public Value limits.
+    let canonical =
+        serde_json_canonicalizer::to_vec(&value).map_err(|e| Error::new("json", e.to_string()))?;
+    if canonical != bytes {
         return Err(Error::new(
             "canonical",
             "stored JSON bytes are not canonical",

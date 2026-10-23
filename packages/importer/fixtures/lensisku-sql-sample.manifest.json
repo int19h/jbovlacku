@@ -1,0 +1,23 @@
+{
+  "source": "https://lensisku.lojban.org",
+  "url": "file:///home/int19h.linux/lojban/archive/dumps-2026-09-13/lensisku-public-data.sanitized-v3.sql",
+  "account_origin": "https://lensisku.lojban.org",
+  "retrieved_at": "2026-09-13T00:00:00+00:00",
+  "sha256": "sha256:a6fa2a9ab39c724d4a4061fff1030b5149de0130c622afe41ea1c391fc03ad61",
+  "bytes": 24919,
+  "extraction": "lensisku-sql-literal-v2",
+  "recipe": "lensisku-sql-copy-v1",
+  "expected_rows": {
+    "definitions": 4,
+    "valsi": 4,
+    "definition_versions": 5,
+    "keywordmapping": 5,
+    "natlangwordbestplaces": 4,
+    "languages": 4,
+    "valsitypes": 3,
+    "natlangwords": 4
+  },
+  "notes": [
+    "This fixture is a derived sample. It is not a separate source snapshot. The operator export date is normalized to midnight UTC."
+  ]
+}

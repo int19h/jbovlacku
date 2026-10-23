@@ -1,0 +1,21 @@
+{
+  "description": "Four definition rows and their related source rows, copied without field edits. COPY blocks use the original CRLF bytes. The leading fixture comment is new. This is a derived fixture, not a separate export.",
+  "source_capture": "sha256:bc5ad87fda0668bf8fa2010aeddf71d1d0395549086bd5085bd9d87d77f93ddb",
+  "source_filename": "lensisku-public-data.sanitized-v3.sql",
+  "source_manifest_sha256": "sha256:a208ea46afb74a7d6063c9c3fe0c0a02c2fcf55f7efb03d586175f1cfbf814cf",
+  "definition_ids": [36101, 53191, 4, 74481],
+  "source_copy_row_positions": {
+    "definitions": [94, 2161, 19707, 40545],
+    "valsi": [14457, 35865, 36010, 36207],
+    "definition_versions": [1, 2, 3, 4, 5],
+    "keywordmapping": [1, 27554, 27629, 45060, 45061],
+    "natlangwordbestplaces": [3650, 20862, 36607, 41361],
+    "languages": [3, 50, 52, 55],
+    "valsitypes": [2, 4, 13],
+    "natlangwords": [12710, 26658, 42491, 42492]
+  },
+  "rights": "unknown: the SQL export contains no rights statement",
+  "limitations": [
+    "The sanitized export removes per-user tables. Version user_id values identify editors, not original authors. Definition aggregate scores are absent from this SQL file."
+  ]
+}

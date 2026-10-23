@@ -5,23 +5,39 @@ import {
   type AssistanceOptions,
   type ContextDefinition,
 } from "./assistance.ts";
-import { buildPackages, type MaterializedPackages } from "./packages.ts";
+import {
+  checkpointBindingKey,
+  type CheckpointBinding,
+  type CheckpointStore,
+  type ServiceCheckpoint,
+} from "./checkpoint.ts";
+import { orderedPrefetch, readRecordBytes } from "./record-reads.ts";
+import {
+  buildPackages,
+  rebasePackages,
+  type MaterializedPackages,
+  type PackageRecord,
+} from "./packages.ts";
 import {
   canonicalize,
   contentHash,
   prepareAdmission,
   prepareSelection,
-  evaluateSession,
+  createEvaluationSession,
+  restoreHostEvaluationSession,
   utf8,
   verifyEnvelope,
   inspectBody,
   type Evaluation,
+  type EvaluationRequest,
+  type EvaluationSessionHandle,
 } from "../../core/src/index.ts";
 import {
   type ObjectStore,
   type Coordinator,
   type State,
   type Snapshot,
+  type StateMetadata,
 } from "./storage.ts";
 const zeroView = `jve1:${"0".repeat(64)}`;
 const idPattern = /^(sha256:|jve1:|jvw1:|ed25519:)[a-f0-9]{64}$/;
@@ -60,10 +76,16 @@ export interface ServiceOptions {
   assistance?: AssistanceOptions;
   serverId: string;
   selectedView?: string;
+  stateLimits?: EvaluationRequest["limits"];
   policyUrl: string;
   publicOrigin?: string;
   corsOrigins?: string[];
   index?: IndexStore;
+  asyncMaterialization?: boolean;
+  checkpoints?: CheckpointStore;
+  /** Minimum time between cache captures. The default is 60,000 ms. */
+  checkpointIntervalMs?: number;
+  coreVersion?: string;
   reportError?: (error: unknown) => void;
   allowPrototypeBatch?: boolean;
   beforeCommit?: (state: State) => Promise<void>;
@@ -136,6 +158,353 @@ export class DictionaryService {
       },
     );
   }
+  private canonicalEnvelopes = new Map<string, string>();
+  private importSelections = new Map<string, string[]>();
+  private sessionSnapshots = new Map<string, Snapshot>();
+  private packageBases = new Map<
+    string,
+    { snapshot: string; changed: PackageRecord[] }
+  >();
+  private completed?: { snapshot: Snapshot; position: number };
+  private snapshotPositions = new Map<string, number>();
+  private snapshotDeltas = new Map<
+    string,
+    { base: string | null; changed: string[] }
+  >();
+  private initialized?: Promise<void>;
+  private pendingMaterialization?: Snapshot;
+  private background?: Promise<void>;
+  private backgroundError?: unknown;
+  private pendingCheckpoint?: {
+    snapshot: Snapshot;
+    position: number;
+    packages: MaterializedPackages;
+  };
+  private checkpointJob?: Promise<void>;
+  private checkpointTimer?: ReturnType<typeof setTimeout>;
+  private checkpointDue = 0;
+  private checkpointLastCapture = -Infinity;
+  private checkpointFlushers = 0;
+  private publication: Promise<void> = Promise.resolve();
+  private metadata(): Promise<StateMetadata> {
+    return this.coordinator.loadMetadata?.() ?? this.coordinator.load();
+  }
+  private rememberDelta(
+    snapshot: string,
+    base: string | null,
+    changed: string[],
+  ) {
+    this.snapshotDeltas.set(snapshot, { base, changed });
+    while (this.snapshotDeltas.size > 4)
+      this.snapshotDeltas.delete(this.snapshotDeltas.keys().next().value!);
+  }
+  private binding(snapshot: Snapshot, position: number): CheckpointBinding {
+    return {
+      schema: 1,
+      snapshot: snapshot.snapshot,
+      logical_inventory: snapshot.logical_inventory,
+      position,
+      view: this.options.selectedView ?? zeroView,
+      core_version: this.options.coreVersion ?? "",
+      limits: this.options.stateLimits
+        ? {
+            events: this.options.stateLimits.events,
+            traversal: this.options.stateLimits.traversal,
+            claim_depth: this.options.stateLimits.claim_depth,
+          }
+        : null,
+    };
+  }
+  initialize(): Promise<void> {
+    return (this.initialized ??= this.initializeCheckpoint());
+  }
+  private async initializeCheckpoint() {
+    const metadata = await this.metadata();
+    const id = metadata.materialized_snapshot ?? metadata.snapshot;
+    if (id && this.options.checkpoints && this.options.coreVersion) {
+      const currentBase = await this.coordinator.getSnapshot(id);
+      let candidate = currentBase
+        ? {
+            snapshot: currentBase,
+            binding: this.binding(
+              currentBase,
+              metadata.materialized_snapshot
+                ? metadata.materialized_position
+                : metadata.position,
+            ),
+            publiclyRetained: true,
+          }
+        : undefined;
+      try {
+        const pinned = await this.options.checkpoints.latestBinding?.();
+        if (
+          pinned &&
+          pinned.schema === 1 &&
+          pinned.position <= metadata.position &&
+          pinned.view === (this.options.selectedView ?? zeroView) &&
+          pinned.core_version === this.options.coreVersion &&
+          checkpointBindingKey(pinned) ===
+            checkpointBindingKey({
+              ...pinned,
+              limits: this.options.stateLimits ?? null,
+            })
+        ) {
+          const publicSnapshot = await this.coordinator.getSnapshot(
+            pinned.snapshot,
+          );
+          const base =
+            publicSnapshot ??
+            (await this.coordinator.getCheckpointSnapshot?.(pinned.snapshot));
+          if (
+            base &&
+            base.snapshot === pinned.snapshot &&
+            base.logical_inventory === pinned.logical_inventory
+          ) {
+            const current = (await this.current()).snapshot;
+            const bodies = new Set(current.bodies);
+            const selections = new Set(current.import_selections);
+            if (
+              Object.keys(base.events).every(
+                (event) => current.events[event] !== undefined,
+              ) &&
+              base.bodies.every((body) => bodies.has(body)) &&
+              base.import_selections.every((selection) =>
+                selections.has(selection),
+              )
+            )
+              candidate = {
+                snapshot: base,
+                binding: pinned,
+                publiclyRetained: publicSnapshot !== null,
+              };
+          }
+        }
+      } catch (error) {
+        this.options.reportError?.(error);
+      }
+      if (candidate) {
+        const { snapshot, binding, publiclyRetained } = candidate;
+        const recoveredId = snapshot.snapshot;
+        let recovered:
+          | {
+              session: EvaluationSessionHandle;
+              payload: ServiceCheckpoint;
+              envelopes: Map<string, string>;
+            }
+          | undefined;
+        try {
+          const payload = await this.options.checkpoints.load(binding);
+          if (payload) {
+            if (
+              !(payload.core instanceof Uint8Array) ||
+              !Array.isArray(payload.package_records) ||
+              !Array.isArray(payload.packages?.entries) ||
+              !Array.isArray(payload.envelopes)
+            )
+              throw new Error("The checkpoint payload is invalid.");
+            for (const packages of [
+              payload.packages.packages,
+              payload.packages.packages2,
+            ])
+              if (
+                !packages ||
+                Object.values(packages).some(
+                  (pkg) => pkg.manifest.snapshot !== recoveredId,
+                )
+              )
+                throw new Error(
+                  "The checkpoint packages name another snapshot.",
+                );
+            const envelopes = new Map(payload.envelopes);
+            for (const event of Object.values(snapshot.events))
+              if (typeof envelopes.get(event.envelope_hash) !== "string")
+                throw new Error(
+                  "The checkpoint envelope inventory is incomplete.",
+                );
+            const session = restoreHostEvaluationSession(
+              payload.core,
+              JSON.stringify(binding),
+            );
+            recovered = { session, payload, envelopes };
+          }
+        } catch (error) {
+          this.options.reportError?.(error);
+        }
+        if (recovered) {
+          const { session, payload, envelopes } = recovered;
+          const restoresMaterialized =
+            publiclyRetained &&
+            recoveredId === metadata.materialized_snapshot &&
+            binding.position === metadata.materialized_position;
+          try {
+            if (restoresMaterialized) {
+              await this.options.index?.restore?.(
+                recoveredId,
+                payload.packages.entries,
+              );
+              await this.options.index?.publish?.(recoveredId, [recoveredId]);
+            }
+          } catch (error) {
+            session.free();
+            throw error;
+          }
+          const key = recoveredId + "|" + binding.view;
+          this.sessions.set(key, session);
+          this.sessionSnapshots.set(key, snapshot);
+          this.evaluationCache.set(key, Promise.resolve(session.state));
+          this.packageRecords.set(recoveredId, payload.package_records);
+          this.packageCache.set(recoveredId, Promise.resolve(payload.packages));
+          this.canonicalEnvelopes = envelopes;
+          if (restoresMaterialized)
+            this.completed = { snapshot, position: binding.position };
+          this.snapshotPositions.set(recoveredId, binding.position);
+        }
+      }
+    }
+    if (
+      this.options.asyncMaterialization &&
+      metadata.snapshot &&
+      this.completed?.snapshot.snapshot !== metadata.snapshot
+    )
+      this.queueMaterialization((await this.current()).snapshot);
+  }
+  private queueMaterialization(snapshot: Snapshot) {
+    this.pendingMaterialization = snapshot;
+    if (this.background) return;
+    this.background = (async () => {
+      while (this.pendingMaterialization) {
+        this.pendingMaterialization = undefined;
+        try {
+          const target = (await this.current()).snapshot;
+          await this.packages(target);
+          this.backgroundError = undefined;
+          const metadata = await this.metadata();
+          if (
+            metadata.snapshot &&
+            this.completed?.snapshot.snapshot !== metadata.snapshot
+          )
+            this.pendingMaterialization = (await this.current()).snapshot;
+        } catch (error) {
+          this.backgroundError = error;
+          this.options.reportError?.(error);
+        }
+      }
+    })().finally(() => {
+      this.background = undefined;
+      if (this.pendingMaterialization)
+        this.queueMaterialization(this.pendingMaterialization);
+    });
+  }
+  async flushMaterialization(): Promise<void> {
+    await this.initialize();
+    while (this.background) await this.background;
+    this.checkpointFlushers++;
+    try {
+      if (this.checkpointTimer !== undefined)
+        clearTimeout(this.checkpointTimer);
+      this.checkpointTimer = undefined;
+      while (this.checkpointJob || this.pendingCheckpoint) {
+        if (!this.checkpointJob) this.drainCheckpoints();
+        await this.checkpointJob;
+      }
+    } finally {
+      this.checkpointFlushers--;
+    }
+    if (this.backgroundError) throw this.backgroundError;
+  }
+  private saveCheckpoint(
+    snapshot: Snapshot,
+    position: number,
+    packages: MaterializedPackages,
+  ) {
+    const session = this.sessions.get(
+      snapshot.snapshot + "|" + (this.options.selectedView ?? zeroView),
+    );
+    if (!session || !this.options.checkpoints || !this.options.coreVersion)
+      return;
+    this.pendingCheckpoint = { snapshot, position, packages };
+    this.scheduleCheckpoint(true);
+  }
+  private scheduleCheckpoint(reset = false) {
+    if (!this.pendingCheckpoint) return;
+    if (reset) this.checkpointDue = performance.now() + 100;
+    const interval = this.options.checkpointIntervalMs ?? 60000;
+    this.checkpointDue = Math.max(
+      this.checkpointDue,
+      this.checkpointLastCapture +
+        (Number.isFinite(interval) ? Math.max(0, interval) : 60000),
+    );
+    if (this.checkpointTimer !== undefined) clearTimeout(this.checkpointTimer);
+    this.checkpointTimer = undefined;
+    if (this.checkpointJob) return;
+    if (this.checkpointFlushers) {
+      this.drainCheckpoints();
+      return;
+    }
+    this.checkpointTimer = setTimeout(
+      () => {
+        this.checkpointTimer = undefined;
+        this.drainCheckpoints();
+      },
+      Math.max(0, this.checkpointDue - performance.now()),
+    );
+    (this.checkpointTimer as unknown as { unref?: () => void }).unref?.();
+  }
+  private drainCheckpoints() {
+    if (this.checkpointJob) return;
+    this.checkpointJob = (async () => {
+      while (this.pendingCheckpoint) {
+        if (!this.checkpointFlushers && performance.now() < this.checkpointDue)
+          break;
+        const checkpoint = this.pendingCheckpoint;
+        this.pendingCheckpoint = undefined;
+        const session = this.sessions.get(
+          checkpoint.snapshot.snapshot +
+            "|" +
+            (this.options.selectedView ?? zeroView),
+        );
+        if (!session) continue;
+        const binding = this.binding(checkpoint.snapshot, checkpoint.position);
+        // A failed export or save consumes the interval too.
+        this.checkpointLastCapture = performance.now();
+        try {
+          const envelopes: [string, string][] = [];
+          const seen = new Set<string>();
+          for (const event of Object.values(checkpoint.snapshot.events))
+            if (!seen.has(event.envelope_hash)) {
+              seen.add(event.envelope_hash);
+              envelopes.push([
+                event.envelope_hash,
+                this.canonicalEnvelopes.get(event.envelope_hash)!,
+              ]);
+            }
+          await this.options.checkpoints!.save(binding, {
+            core: session.checkpoint(JSON.stringify(binding)),
+            package_records:
+              this.packageRecords.get(checkpoint.snapshot.snapshot) ?? [],
+            packages: checkpoint.packages,
+            envelopes,
+          });
+        } catch (error) {
+          this.options.reportError?.(error);
+        }
+      }
+    })().finally(() => {
+      this.checkpointJob = undefined;
+      if (this.pendingCheckpoint) this.scheduleCheckpoint();
+    });
+  }
+  private async interpretedSnapshot(value: string | null): Promise<Snapshot> {
+    if (!this.options.asyncMaterialization || value !== null)
+      return this.snapshot(value);
+    await this.initialize();
+    if (this.backgroundError && !this.background)
+      this.queueMaterialization((await this.current()).snapshot);
+    if (this.completed) return this.completed.snapshot;
+    const { snapshot } = await this.current();
+    await this.packages(snapshot);
+    return snapshot;
+  }
   private hashJson(value: unknown) {
     return contentHash(utf8(canonicalize(utf8(JSON.stringify(value)))));
   }
@@ -164,14 +533,20 @@ export class DictionaryService {
     const ids = sorted(Object.keys(state.events));
     let lines = "";
     for (const id of ids) {
-      const raw = await this.objects.get(state.events[id].envelope_hash);
-      if (!raw)
-        throw new ApiError(
-          503,
-          "storage_unavailable",
-          "Envelope bytes are unavailable.",
-        );
-      lines += new TextDecoder().decode(raw) + "\n";
+      const hash = state.events[id].envelope_hash;
+      let envelope = this.canonicalEnvelopes.get(hash);
+      if (envelope === undefined) {
+        const raw = await this.objects.get(hash);
+        if (!raw)
+          throw new ApiError(
+            503,
+            "storage_unavailable",
+            "Envelope bytes are unavailable.",
+          );
+        envelope = new TextDecoder().decode(raw);
+        this.canonicalEnvelopes.set(hash, envelope);
+      }
+      lines += envelope + "\n";
     }
     const bodies = sorted([
       ...new Set(
@@ -212,6 +587,30 @@ export class DictionaryService {
   }
   private packageCache = new Map<string, Promise<MaterializedPackages>>();
   private inFlightPackages = new Set<string>();
+  private requiredIndexSnapshots(...snapshots: (string | null | undefined)[]) {
+    return [
+      ...new Set(
+        [
+          ...this.inFlightPackages,
+          this.completed?.snapshot.snapshot,
+          ...snapshots,
+        ].filter((snapshot): snapshot is string => snapshot != null),
+      ),
+    ];
+  }
+  private packageRecords = new Map<string, PackageRecord[]>();
+  private prunePackageRecords() {
+    const retained = new Set([
+      ...this.packageCache.keys(),
+      ...this.inFlightPackages,
+      ...[...this.sessions.keys()].map((key) => key.split("|")[0]),
+    ]);
+    for (const snapshot of this.packageRecords.keys())
+      if (!retained.has(snapshot)) {
+        this.packageRecords.delete(snapshot);
+        this.packageBases.delete(snapshot);
+      }
+  }
   private packages(snapshot: Snapshot): Promise<MaterializedPackages> {
     const cached = this.packageCache.get(snapshot.snapshot);
     if (cached) return cached;
@@ -225,34 +624,146 @@ export class DictionaryService {
       );
     if (this.packageCache.size >= 2) {
       const evicted = [...this.packageCache.keys()].find(
-        (key) => !this.inFlightPackages.has(key),
-      )!;
+        (key) =>
+          !this.inFlightPackages.has(key) &&
+          key !== this.completed?.snapshot.snapshot,
+      );
+      if (evicted === undefined)
+        return Promise.reject(
+          new ApiError(
+            503,
+            "resource_unavailable",
+            "Materialized packages occupy the available cache slots.",
+          ),
+        );
       this.packageCache.delete(evicted);
+      this.prunePackageRecords();
     }
     this.inFlightPackages.add(snapshot.snapshot);
-    const pending = buildPackages(snapshot, this.objects).then(
-      async (built) => {
-        if (this.options.index)
-          await this.options.index.replace(snapshot.snapshot, built.entries);
-        for (let attempt = 0; attempt < 20; attempt++) {
-          const state = await this.coordinator.load();
-          if (
-            state.snapshot !== snapshot.snapshot ||
-            state.materialized_snapshot === snapshot.snapshot
-          )
-            break;
-          const next = {
-            ...state,
-            revision: state.revision + 1,
-            materialized_position: state.position,
-            materialized_snapshot: snapshot.snapshot,
-          };
-          if (await this.coordinator.compareAndSwap(state.revision, next))
-            break;
-        }
+    let previous: MaterializedPackages | undefined;
+    const pending = this.evaluation(snapshot)
+      .then(async () => {
+        const base = this.packageBases.get(snapshot.snapshot);
+        previous = base
+          ? await this.packageCache.get(base.snapshot)
+          : undefined;
+        if (previous && base && !base.changed.length)
+          return rebasePackages(previous, snapshot.snapshot, this.objects);
+        return buildPackages(
+          snapshot,
+          this.objects,
+          this.packageRecords.get(snapshot.snapshot),
+          previous && base ? { previous, changed: base.changed } : undefined,
+        );
+      })
+      .then(async (built) => {
+        const publish = this.publication.then(async () => {
+          const startingMetadata = await this.metadata();
+          if (startingMetadata.snapshot !== snapshot.snapshot) return;
+          let completed = false;
+          try {
+            if (this.options.index) {
+              const base = this.packageBases.get(snapshot.snapshot);
+              let reused = false;
+              if (
+                previous?.entries === built.entries &&
+                base &&
+                this.options.index.reuse
+              )
+                reused =
+                  (await this.options.index.reuse(
+                    base.snapshot,
+                    snapshot.snapshot,
+                  )) !== false;
+              if (!reused)
+                await this.options.index.replace(
+                  snapshot.snapshot,
+                  built.entries,
+                );
+              await this.options.index.publish?.(
+                snapshot.snapshot,
+                this.requiredIndexSnapshots(
+                  startingMetadata.materialized_snapshot,
+                ),
+              );
+            }
+            for (let attempt = 0; attempt < 20; attempt++) {
+              const metadata = await this.metadata();
+              if (metadata.snapshot !== snapshot.snapshot) break;
+              let published =
+                metadata.materialized_snapshot === snapshot.snapshot;
+              if (!published && this.coordinator.markMaterialized)
+                published = await this.coordinator.markMaterialized(
+                  snapshot.snapshot,
+                  metadata.position,
+                );
+              else if (!published) {
+                const state = await this.coordinator.load();
+                if (state.snapshot !== snapshot.snapshot) break;
+                const next = {
+                  ...state,
+                  revision: state.revision + 1,
+                  materialized_position: state.position,
+                  materialized_snapshot: snapshot.snapshot,
+                };
+                published = await this.coordinator.compareAndSwap(
+                  state.revision,
+                  next,
+                  undefined,
+                  [],
+                );
+              }
+              if (published) {
+                this.completed = { snapshot, position: metadata.position };
+                this.snapshotPositions.set(
+                  snapshot.snapshot,
+                  metadata.position,
+                );
+                completed = true;
+                try {
+                  this.saveCheckpoint(snapshot, metadata.position, built);
+                } catch (error) {
+                  this.options.reportError?.(error);
+                }
+                break;
+              }
+            }
+            if (
+              !completed &&
+              (await this.metadata()).snapshot === snapshot.snapshot
+            )
+              throw new ApiError(
+                503,
+                "busy",
+                "Materialization publication is busy.",
+              );
+          } finally {
+            const previousSnapshot =
+              this.completed?.snapshot.snapshot ??
+              startingMetadata.materialized_snapshot;
+            if (!completed && previousSnapshot && this.options.index) {
+              if (this.options.index.publish)
+                await this.options.index.publish(
+                  previousSnapshot,
+                  this.requiredIndexSnapshots(
+                    startingMetadata.materialized_snapshot,
+                  ),
+                );
+              else {
+                const old = await this.packageCache.get(previousSnapshot);
+                if (old)
+                  await this.options.index.replace(
+                    previousSnapshot,
+                    old.entries,
+                  );
+              }
+            }
+          }
+        });
+        this.publication = publish.catch(() => {});
+        await publish;
         return built;
-      },
-    );
+      });
     this.packageCache.set(snapshot.snapshot, pending);
     pending.then(
       () => {
@@ -262,6 +773,7 @@ export class DictionaryService {
         this.inFlightPackages.delete(snapshot.snapshot);
         if (this.packageCache.get(snapshot.snapshot) === pending)
           this.packageCache.delete(snapshot.snapshot);
+        this.prunePackageRecords();
       },
     );
     return pending;
@@ -275,16 +787,22 @@ export class DictionaryService {
       throw new ApiError(400, "language", "Definition language is invalid.");
     return value;
   }
-  private async current(): Promise<{ state: State; snapshot: Snapshot }> {
+  private async current(): Promise<{
+    state: StateMetadata;
+    snapshot: Snapshot;
+  }> {
     for (let attempt = 0; attempt < 20; attempt++) {
-      const state = await this.coordinator.load();
-      if (state.snapshot) {
-        const cached = await this.coordinator.getSnapshot(state.snapshot);
-        if (cached) return { state, snapshot: cached };
+      const metadata = await this.metadata();
+      if (metadata.snapshot) {
+        const cached = await this.coordinator.getSnapshot(metadata.snapshot);
+        if (cached) {
+          this.snapshotPositions.set(cached.snapshot, metadata.position);
+          return { state: metadata, snapshot: cached };
+        }
         // Another writer may expire the pointer between these two reads.
-        if ((await this.coordinator.load()).revision !== state.revision)
-          continue;
+        if ((await this.metadata()).revision !== metadata.revision) continue;
       }
+      const state = await this.coordinator.load();
       const snapshot = await this.buildSnapshot(state);
       if (state.snapshot && state.snapshot !== snapshot.snapshot)
         throw new ApiError(
@@ -298,7 +816,14 @@ export class DictionaryService {
         snapshot: snapshot.snapshot,
         snapshots: sorted([...state.snapshots, snapshot.snapshot]),
       };
-      if (await this.coordinator.compareAndSwap(state.revision, next, snapshot))
+      if (
+        await this.coordinator.compareAndSwap(
+          state.revision,
+          next,
+          snapshot,
+          [],
+        )
+      )
         return { state: next, snapshot };
     }
     throw new ApiError(503, "busy", "Snapshot publication is busy.");
@@ -307,7 +832,7 @@ export class DictionaryService {
     if (value === null) return (await this.current()).snapshot;
     this.identifier(value, "sha256:");
     let cached = await this.coordinator.getSnapshot(value);
-    if (!cached && (await this.coordinator.load()).snapshot === value)
+    if (!cached && (await this.metadata()).snapshot === value)
       cached = (await this.current()).snapshot;
     if (!cached || cached.snapshot !== value)
       throw new ApiError(
@@ -363,14 +888,20 @@ export class DictionaryService {
   }
   private evaluationCache = new Map<string, Promise<Evaluation>>();
   private inFlightEvaluations = new Set<string>();
-  private sessions = new Map<string, ReturnType<typeof evaluateSession>>();
+  private sessions = new Map<string, EvaluationSessionHandle>();
   private evaluation(
     snapshot: Snapshot,
     view = this.options.selectedView ?? zeroView,
   ): Promise<Evaluation> {
     const key = snapshot.snapshot + "|" + view;
     const cached = this.evaluationCache.get(key);
-    if (cached) return cached;
+    if (cached) {
+      if (this.sessions.has(key) || this.inFlightEvaluations.has(key))
+        return cached;
+      // A settled result without its session cannot support later forks or captures.
+      this.evaluationCache.delete(key);
+      this.sessionSnapshots.delete(key);
+    }
     if (this.inFlightEvaluations.size >= 2)
       return Promise.reject(
         new ApiError(
@@ -387,6 +918,8 @@ export class DictionaryService {
       const evicted = [...this.evaluationCache.keys()].find(
         (candidate) =>
           !this.inFlightEvaluations.has(candidate) &&
+          !this.inFlightPackages.has(candidate.split("|")[0]) &&
+          candidate !== this.completed?.snapshot.snapshot + "|" + configured &&
           (view === configured || candidate !== protectedKey),
       );
       if (evicted === undefined)
@@ -400,6 +933,8 @@ export class DictionaryService {
       this.evaluationCache.delete(evicted);
       this.sessions.get(evicted)?.free();
       this.sessions.delete(evicted);
+      this.sessionSnapshots.delete(evicted);
+      this.prunePackageRecords();
     }
     this.inFlightEvaluations.add(key);
     let result: Promise<Evaluation>;
@@ -426,38 +961,146 @@ export class DictionaryService {
     view = this.options.selectedView ?? zeroView,
     ownsEntry: () => boolean = () => true,
   ): Promise<Evaluation> {
-    const events: string[] = [];
-    const bodies: Record<string, string> = {};
     const selections: Record<string, string[]> = {};
-    for (const id of sorted(Object.keys(snapshot.events))) {
-      const event = snapshot.events[id];
-      const raw = await this.objects.get(event.envelope_hash);
-      if (!raw)
-        throw new ApiError(
-          503,
-          "storage_unavailable",
-          "Envelope bytes are unavailable.",
-        );
-      events.push(new TextDecoder().decode(raw));
-      if (event.body_hash) {
-        const body = await this.objects.get(event.body_hash);
-        if (body) bodies[id] = new TextDecoder().decode(body);
+    for (const hash of snapshot.import_selections) {
+      const cached = this.importSelections.get(hash);
+      if (cached) {
+        selections[hash] = cached;
+        continue;
+      }
+      const raw = await this.objects.get(hash);
+      if (raw) {
+        selections[hash] = prepareSelection(raw).ids;
+        this.importSelections.set(hash, selections[hash]);
       }
     }
-    for (const hash of snapshot.import_selections) {
-      const raw = await this.objects.get(hash);
-      if (raw) selections[hash] = prepareSelection(raw).ids;
-    }
-    const session = evaluateSession({
-      events,
-      bodies,
+    const options = {
       selected_view: view,
       import_selections: selections,
-    });
-    const state = session.state;
-    if (ownsEntry()) this.sessions.set(snapshot.snapshot + "|" + view, session);
-    else session.free();
-    return state;
+      limits: this.options.stateLimits,
+    };
+    const baseEntry = [...this.sessions.entries()]
+      .reverse()
+      .find(([key]) => this.sessionSnapshots.has(key));
+    const baseSnapshot = baseEntry
+      ? this.sessionSnapshots.get(baseEntry[0])
+      : undefined;
+    const builder = baseEntry
+      ? baseEntry[1].fork(options)
+      : createEvaluationSession(options);
+    const baseRecords =
+      (baseSnapshot
+        ? this.packageRecords.get(baseSnapshot.snapshot)
+        : undefined) ?? [];
+    let packageRecords: Map<string, PackageRecord> | undefined;
+    const mutableRecords = () => {
+      if (!packageRecords) {
+        packageRecords = new Map();
+        for (const record of baseRecords) packageRecords.set(record.id, record);
+      }
+      return packageRecords;
+    };
+    const changedPackages: PackageRecord[] = [];
+    const hint = this.snapshotDeltas.get(snapshot.snapshot);
+    const exactHint = baseSnapshot && hint?.base === baseSnapshot.snapshot;
+    if (baseSnapshot && !exactHint)
+      for (const id of Object.keys(baseSnapshot.events))
+        if (!snapshot.events[id]) {
+          builder.removeRecord(id);
+          if (
+            ["definition.publish", "rafsi.publish"].includes(
+              String(baseSnapshot.events[id].header.action.kind),
+            )
+          ) {
+            const records = mutableRecords();
+            const old = records.get(id);
+            if (old) changedPackages.push(old);
+            records.delete(id);
+          }
+        }
+    const changedIds = exactHint
+      ? sorted(hint.changed)
+      : sorted(Object.keys(snapshot.events)).filter((id) => {
+          const previous = baseSnapshot?.events[id];
+          const next = snapshot.events[id];
+          return (
+            !previous ||
+            previous.envelope_hash !== next.envelope_hash ||
+            previous.body_hash !== next.body_hash
+          );
+        });
+    try {
+      for await (const { value: id, result: loaded } of orderedPrefetch(
+        changedIds,
+        (id) => {
+          const event = snapshot.events[id];
+          return readRecordBytes(
+            this.objects,
+            event.envelope_hash,
+            event.body_hash,
+          );
+        },
+      )) {
+        const event = snapshot.events[id];
+        const { envelope } = loaded;
+        if (!envelope)
+          throw new ApiError(
+            503,
+            "storage_unavailable",
+            "Envelope bytes are unavailable.",
+          );
+        if (loaded.body.status === "rejected") throw loaded.body.reason;
+        const body = loaded.body.value;
+        const record = builder.addRecord(envelope, body ?? undefined);
+        this.canonicalEnvelopes.set(
+          contentHash(envelope),
+          new TextDecoder().decode(envelope),
+        );
+        if (
+          record ||
+          ["definition.publish", "rafsi.publish"].includes(
+            String(baseSnapshot?.events[id]?.header.action.kind),
+          )
+        ) {
+          const records = mutableRecords();
+          const old = records.get(id);
+          if (old) changedPackages.push(old);
+          records.delete(id);
+          if (record) {
+            const prepared: PackageRecord = {
+              ...record,
+              envelope_hash: contentHash(envelope),
+              missing: event.body_hash !== null && body === null,
+            };
+            records.set(id, prepared);
+            changedPackages.push(prepared);
+          }
+        }
+      }
+      const session = builder.finish();
+      const state = session.state;
+      if (ownsEntry()) {
+        this.sessions.set(snapshot.snapshot + "|" + view, session);
+        this.sessionSnapshots.set(snapshot.snapshot + "|" + view, snapshot);
+        if (!this.packageRecords.has(snapshot.snapshot))
+          this.packageRecords.set(
+            snapshot.snapshot,
+            packageRecords
+              ? [...packageRecords.values()].sort((a, b) =>
+                  a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
+                )
+              : baseRecords,
+          );
+        if (baseSnapshot && baseSnapshot.snapshot !== snapshot.snapshot)
+          this.packageBases.set(snapshot.snapshot, {
+            snapshot: baseSnapshot.snapshot,
+            changed: changedPackages,
+          });
+      } else session.free();
+      return state;
+    } finally {
+      builder.free();
+    }
   }
   private async receipt(
     id: string,
@@ -471,20 +1114,67 @@ export class DictionaryService {
     let derived: Evaluation["receipts"][string] | undefined;
     let reasons = ["evaluation_unavailable"];
     let bodyInvalid = false;
-    try {
-      derived = (await this.evaluation(snapshot)).receipts[id];
-    } catch (error) {
-      if (!(error instanceof ApiError) || error.code !== "resource_unavailable")
-        throw error;
-      // Acceptance is durable even when interpretation must wait for a cache slot.
-      reasons = ["evaluation_resource_unavailable"];
-      if (event.body_hash) {
-        const envelope = await this.objects.get(event.envelope_hash);
-        const body = await this.objects.get(event.body_hash);
-        if (envelope && body)
-          bodyInvalid = inspectBody(envelope, body).availability === "invalid";
+    let receiptSnapshot: string | null = snapshot.snapshot;
+    if (this.options.asyncMaterialization) {
+      await this.initialize();
+      if (this.backgroundError && !this.background)
+        this.queueMaterialization(snapshot);
+      const complete = this.completed;
+      const key =
+        complete?.snapshot.snapshot +
+        "|" +
+        (this.options.selectedView ?? zeroView);
+      const previous = complete?.snapshot.events[id];
+      if (
+        previous?.envelope_hash === event.envelope_hash &&
+        previous?.body_hash === event.body_hash
+      ) {
+        receiptSnapshot = complete!.snapshot.snapshot;
+        let state = this.sessions.get(key)?.state;
+        if (!state)
+          try {
+            state = await this.evaluation(complete!.snapshot);
+          } catch (error) {
+            if (
+              !(error instanceof ApiError) ||
+              error.code !== "resource_unavailable"
+            )
+              throw error;
+            reasons = ["evaluation_resource_unavailable"];
+          }
+        derived = state?.receipts[id];
+      } else {
+        receiptSnapshot = null;
+        reasons = ["index_lag", "evaluation_pending"];
       }
-    }
+      if (!derived) {
+        if (event.body_hash) {
+          const envelope = await this.objects.get(event.envelope_hash);
+          const body = await this.objects.get(event.body_hash);
+          if (envelope && body)
+            bodyInvalid =
+              inspectBody(envelope, body).availability === "invalid";
+        }
+      }
+    } else
+      try {
+        derived = (await this.evaluation(snapshot)).receipts[id];
+      } catch (error) {
+        if (
+          !(error instanceof ApiError) ||
+          error.code !== "resource_unavailable"
+        )
+          throw error;
+        // Acceptance is durable even when interpretation must wait for a cache slot.
+        reasons = ["evaluation_resource_unavailable"];
+        if (event.body_hash) {
+          const envelope = await this.objects.get(event.envelope_hash);
+          const body = await this.objects.get(event.body_hash);
+          if (envelope && body)
+            bodyInvalid =
+              inspectBody(envelope, body).availability === "invalid";
+        }
+      }
     return {
       id,
       admission,
@@ -500,7 +1190,7 @@ export class DictionaryService {
       cursor: this.cursor(
         acceptedPosition ?? (await this.coordinator.load()).events[id].position,
       ),
-      snapshot: snapshot.snapshot,
+      snapshot: receiptSnapshot,
       view: this.options.selectedView ?? zeroView,
       reasons: derived?.reasons ?? reasons,
       envelope_hash: event.envelope_hash,
@@ -515,6 +1205,7 @@ export class DictionaryService {
     );
   }
   async admitMany(requests: Uint8Array[]) {
+    if (this.options.asyncMaterialization) await this.initialize();
     if (requests.length < 1 || requests.length > 3000)
       throw new ApiError(
         413,
@@ -524,15 +1215,23 @@ export class DictionaryService {
     const prepared = requests.map(prepareAdmission);
     for (const p of prepared) {
       await this.objects.put(p.envelope_hash, utf8(p.envelope));
+      this.canonicalEnvelopes.set(p.envelope_hash, p.envelope);
       if (p.body !== null)
         await this.objects.put(p.header.content!.hash, utf8(p.body));
     }
     for (let attempt = 0; attempt < 20; attempt++) {
       const state = await this.coordinator.load();
-      const next = structuredClone(state);
+      const next = {
+        ...state,
+        events: { ...state.events },
+        journal: [...state.journal],
+        selections: [...state.selections],
+        snapshots: [...state.snapshots],
+      };
       next.revision++;
       const admissions: string[] = [];
       let changed = false;
+      const changedIds = new Set<string>();
       for (const p of prepared) {
         const old = next.events[p.id];
         if (
@@ -565,6 +1264,7 @@ export class DictionaryService {
         admissions.push(old ? "duplicate" : "accepted");
         if (!old || preferred || old.body_hash !== bodyHash) {
           changed = true;
+          changedIds.add(p.id);
           if (!old) {
             next.position++;
             next.journal.push({ position: next.position, id: p.id });
@@ -578,13 +1278,17 @@ export class DictionaryService {
           };
         }
         if (p.body !== null)
-          for (const retained of Object.values(next.events))
+          for (const [id, retained] of Object.entries(next.events))
             if (
               retained.header.content?.hash === p.header.content!.hash &&
               retained.header.content.bytes === p.header.content!.bytes &&
               retained.body_hash !== p.header.content!.hash
             ) {
-              retained.body_hash = p.header.content!.hash;
+              next.events[id] = {
+                ...retained,
+                body_hash: p.header.content!.hash,
+              };
+              changedIds.add(id);
               changed = true;
             }
       }
@@ -605,10 +1309,18 @@ export class DictionaryService {
         };
       }
       const snapshot = await this.buildSnapshot(next);
+      this.snapshotPositions.set(snapshot.snapshot, next.position);
       next.snapshot = snapshot.snapshot;
       next.snapshots = sorted([...next.snapshots, snapshot.snapshot]);
       if (this.options.beforeCommit) await this.options.beforeCommit(next);
-      if (await this.coordinator.compareAndSwap(state.revision, next, snapshot))
+      if (
+        await this.coordinator.compareAndSwap(state.revision, next, snapshot, [
+          ...changedIds,
+        ])
+      ) {
+        this.rememberDelta(snapshot.snapshot, state.snapshot, [...changedIds]);
+        if (this.options.asyncMaterialization)
+          this.queueMaterialization(snapshot);
         return {
           snapshot: snapshot.snapshot,
           receipts: await Promise.all(
@@ -622,6 +1334,7 @@ export class DictionaryService {
             ),
           ),
         };
+      }
     }
     throw new ApiError(503, "busy", "Admission is busy.");
   }
@@ -764,6 +1477,8 @@ export class DictionaryService {
     if (request.method === "GET" && url.pathname === "/api/health/live")
       return json({ status: "live" });
     if (request.method === "GET" && url.pathname === "/api/health/ready") {
+      if (this.options.asyncMaterialization || this.options.checkpoints)
+        await this.initialize();
       await this.current();
       return json({ status: "ready" });
     }
@@ -814,6 +1529,7 @@ export class DictionaryService {
         await this.requestBytes(request, 16 * 1024 * 1024),
       );
       await this.objects.put(selection.hash, utf8(selection.canonical));
+      this.importSelections.set(selection.hash, selection.ids);
       for (let attempt = 0; attempt < 20; attempt++) {
         const state = await this.coordinator.load();
         if (state.selections.includes(selection.hash))
@@ -822,14 +1538,22 @@ export class DictionaryService {
             bytes: selection.bytes,
             count: selection.count,
           });
-        const next = structuredClone(state);
+        const next = { ...state, selections: [...state.selections] };
         next.revision++;
         next.selections.push(selection.hash);
         const snapshot = await this.buildSnapshot(next);
         next.snapshot = snapshot.snapshot;
         if (
-          await this.coordinator.compareAndSwap(state.revision, next, snapshot)
-        )
+          await this.coordinator.compareAndSwap(
+            state.revision,
+            next,
+            snapshot,
+            [],
+          )
+        ) {
+          this.rememberDelta(snapshot.snapshot, state.snapshot, []);
+          if (this.options.asyncMaterialization)
+            this.queueMaterialization(snapshot);
           return json(
             {
               hash: selection.hash,
@@ -838,6 +1562,7 @@ export class DictionaryService {
             },
             201,
           );
+        }
       }
       throw new ApiError(503, "busy", "Selection admission is busy.");
     }
@@ -925,15 +1650,20 @@ export class DictionaryService {
         account_witness_service: null,
       });
     if (path === "/manifest") {
-      const { snapshot } = await this.current();
+      const snapshot = await this.interpretedSnapshot(null);
       const packages = await this.packages(snapshot);
-      const state = await this.coordinator.load();
+      const state = await this.metadata();
       return json({
         snapshot: snapshot.snapshot,
         logical_inventory: snapshot.logical_inventory,
         manifest: snapshot.manifest,
         accepted_cursor: this.cursor(state.position),
-        materialized_cursor: this.cursor(state.materialized_position),
+        materialized_cursor: this.cursor(
+          this.options.asyncMaterialization
+            ? (this.snapshotPositions.get(snapshot.snapshot) ??
+                state.materialized_position)
+            : state.materialized_position,
+        ),
         packages: Object.entries(packages.packages).map(([language, p]) => ({
           language,
           hash: p.hash,
@@ -974,7 +1704,7 @@ export class DictionaryService {
     }
     if (path === "/changes") {
       const { snapshot } = await this.current();
-      await this.packages(snapshot);
+      if (!this.options.asyncMaterialization) await this.packages(snapshot);
       const state = await this.coordinator.load();
       const after = this.cursorPosition(url.searchParams.get("after"), state);
       const remaining = state.journal.filter((item) => item.position > after);
@@ -1038,7 +1768,9 @@ export class DictionaryService {
     }
     if (path.startsWith("/packages/")) {
       const language = this.language(decodeURIComponent(path.slice(10)));
-      const snapshot = await this.snapshot(url.searchParams.get("snapshot"));
+      const snapshot = await this.interpretedSnapshot(
+        url.searchParams.get("snapshot"),
+      );
       const version = url.searchParams.get("version") ?? "1";
       if (version !== "1" && version !== "2")
         throw new ApiError(400, "version", "Package version must be 1 or 2.");
@@ -1080,7 +1812,9 @@ export class DictionaryService {
           "Query must contain 1 through 16384 bytes.",
         );
       const language = this.language(url.searchParams.get("language"));
-      const snapshot = await this.snapshot(url.searchParams.get("snapshot"));
+      const snapshot = await this.interpretedSnapshot(
+        url.searchParams.get("snapshot"),
+      );
       const view =
         url.searchParams.get("view") ?? this.options.selectedView ?? zeroView;
       this.identifier(view, "jve1:");
@@ -1232,7 +1966,9 @@ export class DictionaryService {
     if (path.startsWith("/words/")) {
       const id = decodeURIComponent(path.slice(7));
       this.identifier(id, "jvw1:");
-      const snapshot = await this.snapshot(url.searchParams.get("snapshot"));
+      const snapshot = await this.interpretedSnapshot(
+        url.searchParams.get("snapshot"),
+      );
       const view =
         url.searchParams.get("view") ?? this.options.selectedView ?? zeroView;
       this.identifier(view, "jve1:");
@@ -1397,7 +2133,9 @@ export class DictionaryService {
       this.identifier(identity, "ed25519:");
       if (parts.length > 2 || (section !== undefined && section !== "activity"))
         throw new ApiError(404, "missing", "API route is unavailable.");
-      const snapshot = await this.snapshot(url.searchParams.get("snapshot"));
+      const snapshot = await this.interpretedSnapshot(
+        url.searchParams.get("snapshot"),
+      );
       const view =
         url.searchParams.get("view") ?? this.options.selectedView ?? zeroView;
       this.identifier(view, "jve1:");
@@ -1580,7 +2318,9 @@ export class DictionaryService {
           "account",
           "Account must be a positive safe integer.",
         );
-      const snapshot = await this.snapshot(url.searchParams.get("snapshot"));
+      const snapshot = await this.interpretedSnapshot(
+        url.searchParams.get("snapshot"),
+      );
       const view =
         url.searchParams.get("view") ?? this.options.selectedView ?? zeroView;
       this.identifier(view, "jve1:");

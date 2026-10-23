@@ -406,6 +406,32 @@ test("version 2 search packages add issuer, notes, rafsi, and attribution beside
   assert.equal(bad.status, 400);
 });
 
+test("authenticated package projections preserve raw builds and canonical part bytes", async () => {
+  const { buildPackages } = await import("../src/packages.ts");
+  const imported = importedDefinition();
+  const { service, objects } = await fixture({ extra: [imported] });
+  const { snapshot } = await (service as any).current();
+  const projections = (service as any).packageRecords.get(snapshot.snapshot);
+  assert.ok(projections?.length);
+  const raw = await buildPackages(snapshot, objects);
+  const prepared = await buildPackages(snapshot, objects, projections);
+  assert.deepEqual(prepared, raw);
+  for (const pkg of [
+    ...Object.values(prepared.packages),
+    ...Object.values(prepared.packages2),
+  ]) {
+    for (const part of pkg.manifest.parts) {
+      const bytes = (await objects.get(part.hash))!;
+      const entries = JSON.parse(new TextDecoder().decode(bytes));
+      const expected = utf8(canonicalize(utf8(JSON.stringify(entries))));
+      assert.deepEqual(new Uint8Array(bytes), expected);
+      assert.equal(part.bytes, expected.length);
+      assert.equal(part.count, entries.length);
+      assert.equal(part.hash, contentHash(expected));
+    }
+  }
+});
+
 /** An imported definition with attribution and source dates. */
 function importedDefinition() {
   const importer = new Uint8Array(32).fill(43);

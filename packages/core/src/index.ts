@@ -1,4 +1,5 @@
 import init, * as wasm from "../generated/jvc_runtime.js";
+import { encodeEvaluationRequest } from "./evaluation-request.ts";
 const encoder = new TextEncoder();
 export const utf8 = (value: string) => encoder.encode(value);
 let ready: Promise<unknown> | undefined;
@@ -81,7 +82,7 @@ export const evaluate = (input: {
   overlay?: unknown;
   limits?: { events: number; traversal: number; claim_depth: number };
 }): Evaluation =>
-  JSON.parse(wasm.evaluate_records(utf8(JSON.stringify(input))));
+  JSON.parse(wasm.evaluate_records(encodeEvaluationRequest(input)));
 export const signHeader = (seed: Uint8Array, header: Header) =>
   JSON.parse(wasm.sign_record(seed, utf8(JSON.stringify(header))));
 export const identityFromSeed = (seed: Uint8Array): string =>
@@ -174,10 +175,108 @@ export function finishSigning(
 }
 
 export type EvaluationRequest = Parameters<typeof evaluate>[0];
-export function evaluateSession(input: EvaluationRequest) {
-  const session = new wasm.EvaluationSession(utf8(JSON.stringify(input)));
+export type EvaluationSessionOptions = Omit<
+  EvaluationRequest,
+  "events" | "bodies"
+>;
+/** Search fields copied from an authenticated record and its checked body. */
+export interface EvaluationPackageRecord {
+  id: string;
+  issuer: string;
+  kind: "definition.publish" | "rafsi.publish";
+  word: string;
+  body_hash: string | null;
+  body: Record<string, unknown> | null;
+}
+export interface EvaluationSessionHandle {
+  readonly state: Evaluation;
+  rankWord(word: string, reviewers?: number): any;
+  fork(options: EvaluationSessionOptions): EvaluationBuilder;
+  checkpoint(binding: string): Uint8Array;
+  updateStatistics(): {
+    incremental_records: number;
+    rebuilt: boolean;
+    reason: string | null;
+  };
+  free(): void;
+}
+interface SessionBasis {
+  state: Evaluation;
+  identity: string;
+}
+interface StateDelta {
+  version: 1;
+  base_session: string;
+  receipts: Evaluation["receipts"];
+  registers: Record<string, unknown>;
+  judgments: Record<string, Record<string, unknown>>;
+  lifecycle: {
+    key_actor: Record<string, string>;
+    groups: Record<string, string[]>;
+  };
+}
+function freezeState<T>(value: T): T {
+  if (value && typeof value === "object" && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const child of Object.values(value)) freezeState(child);
+  }
+  return value;
+}
+function applyStateDelta(parent: Evaluation, delta: StateDelta): Evaluation {
+  const oldJudgments = parent.judgments as StateDelta["judgments"];
+  const judgments = { ...oldJudgments };
+  for (const [target, actors] of Object.entries(delta.judgments))
+    judgments[target] = { ...oldJudgments[target], ...actors };
+  const lifecycle = parent.lifecycle as StateDelta["lifecycle"] &
+    Record<string, unknown>;
   return {
-    state: JSON.parse(session.state()) as Evaluation,
+    ...parent,
+    receipts: { ...parent.receipts, ...delta.receipts },
+    registers: {
+      ...(parent.registers as Record<string, unknown>),
+      ...delta.registers,
+    },
+    judgments,
+    lifecycle: {
+      ...lifecycle,
+      key_actor: { ...lifecycle.key_actor, ...delta.lifecycle.key_actor },
+      groups: { ...lifecycle.groups, ...delta.lifecycle.groups },
+    },
+  };
+}
+export interface EvaluationBuilder {
+  addRecord(
+    envelope: Uint8Array,
+    body?: Uint8Array,
+  ): EvaluationPackageRecord | null;
+  removeRecord(id: string): void;
+  finish(): EvaluationSessionHandle;
+  free(): void;
+}
+function wrapEvaluationSession(
+  session: wasm.EvaluationSession,
+  parent?: SessionBasis,
+): EvaluationSessionHandle {
+  let state: Evaluation;
+  let identity: string;
+  try {
+    identity = session.state_identity();
+    const delta = parent
+      ? (JSON.parse(session.state_delta()) as StateDelta | null)
+      : null;
+    state = freezeState(
+      delta?.version === 1 && delta.base_session === parent?.identity
+        ? applyStateDelta(parent.state, delta)
+        : (JSON.parse(session.state()) as Evaluation),
+    );
+  } catch (error) {
+    session.free();
+    throw error;
+  }
+  return {
+    get state() {
+      return state;
+    },
     /**
      * Ranks one word. `reviewers` asks for at most that many reviewer details
      * per score, bounded inside the core. Without it the aggregate lookup does
@@ -189,11 +288,72 @@ export function evaluateSession(input: EvaluationRequest) {
           ? session.rank(word)
           : session.rank_with_reviewers(word, reviewers),
       ),
+    fork: (options) =>
+      wrapEvaluationBuilder(session.fork(encodeEvaluationRequest(options)), {
+        state,
+        identity,
+      }),
+    checkpoint: (binding) => session.checkpoint(binding),
+    updateStatistics: () => JSON.parse(session.update_statistics()),
     free: () => session.free(),
   };
 }
+export function evaluateSession(input: EvaluationRequest) {
+  return wrapEvaluationSession(
+    new wasm.EvaluationSession(encodeEvaluationRequest(input)),
+  );
+}
+/** Authenticate original record bytes before the core retains their state fields. */
+export function createEvaluationSession(options: EvaluationSessionOptions) {
+  return wrapEvaluationBuilder(
+    new wasm.EvaluationSessionBuilder(encodeEvaluationRequest(options)),
+  );
+}
+function wrapEvaluationBuilder(
+  builder: wasm.EvaluationSessionBuilder,
+  parent?: SessionBasis,
+): EvaluationBuilder {
+  let closed = false;
+  function requireOpen() {
+    if (closed) throw new Error("The evaluation builder is closed.");
+  }
+  return {
+    addRecord(envelope: Uint8Array, body?: Uint8Array) {
+      requireOpen();
+      return JSON.parse(
+        builder.add_record(envelope, body),
+      ) as EvaluationPackageRecord | null;
+    },
+    removeRecord(id: string) {
+      requireOpen();
+      builder.remove_record(id);
+    },
+    finish() {
+      requireOpen();
+      closed = true;
+      return wrapEvaluationSession(builder.finish(), parent);
+    },
+    free() {
+      if (!closed) {
+        closed = true;
+        builder.free();
+      }
+    },
+  };
+}
+/** Only the host's independently checked checkpoint port calls this function. */
+export function restoreHostEvaluationSession(
+  bytes: Uint8Array,
+  binding: string,
+): EvaluationSessionHandle {
+  return wrapEvaluationSession(
+    wasm.EvaluationSession.restore_host_checkpoint(bytes, binding),
+  );
+}
+export const coreCheckpointVersion = (): string =>
+  wasm.evaluation_checkpoint_version();
 export const rankWord = (input: EvaluationRequest, word: string) =>
-  JSON.parse(wasm.rank_word(utf8(JSON.stringify(input)), word));
+  JSON.parse(wasm.rank_word(encodeEvaluationRequest(input), word));
 
 /** Canonical local wrappers allow enclosing containers around validated records. */
 export const canonicalizeStorageWrapper = (bytes: Uint8Array): string =>

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import {
   initializeCore,
+  createEvent,
   contentHash,
   utf8,
   evaluate,
@@ -194,7 +195,7 @@ test("source scores and author display changes never create fabricated lexical r
   assert.equal(
     result.journal.entries["4"].versions[0].carrier.body.legacy.attribution
       .author,
-    "officialdata",
+    null,
   );
 });
 
@@ -787,5 +788,197 @@ test("a known type without selmaho cannot hide a later known classification chan
   assert.deepEqual(
     result.journal.entries["4"].versions[0].carrier.body.classification.selmaho,
     ["BAI"],
+  );
+});
+
+test("r3 N2 REST publications omit derived, display, and viewer fields while keeping authored evidence and scores", () => {
+  const altered = rows();
+  const omitted: Record<string, unknown> = {
+    embedding: [0.1, 0.2, 0.3],
+    similarity: 0.9,
+    can_edit: true,
+    user_vote: 1,
+    comment_count: 4,
+    has_image: true,
+    sound_url: "/sounds/generated",
+    langrealname: "English display name",
+    username: "joined-display-name",
+    metadata: { processed_text: "derived text" },
+    cached_definition: "derived cache",
+    canonical_word: "computed-word",
+    processed_text: "derived search text",
+  };
+  Object.assign(altered[0], omitted);
+  altered[0].user_id = 1;
+  const bytes = utf8(JSON.stringify({ definitions: altered }));
+  const result = importCapture({
+    sourceBytes: bytes,
+    manifest: { ...manifest, sha256: contentHash(bytes) },
+    seed,
+    roots: [],
+  });
+  const body = result.journal.entries["4"].versions[0].carrier.body;
+  for (const key of Object.keys(omitted)) {
+    assert.equal(Object.hasOwn(body.legacy.original, key), false, key);
+    assert.ok(
+      body.legacy.limitations.some(
+        (item: string) =>
+          item.includes(key) ||
+          (key.startsWith("cached_") && item.includes("cached_*")),
+      ),
+      `Missing limitation for ${key}`,
+    );
+  }
+  assert.equal(body.legacy.extraction, "lensisku-list-literal-v2");
+  assert.equal(body.legacy.attribution.author, null);
+  assert.equal(body.legacy.attribution.author_account.username, null);
+  assert.equal(body.legacy.attribution.author_account.account, 1);
+  assert.equal(
+    body.legacy.attribution.author_account.evidence.kind,
+    "source-id",
+  );
+  assert.equal(body.license.attribution, "Lensisku source author unknown");
+  assert.deepEqual(body.legacy.original.score, { $source_number: "100001" });
+  assert.equal(body.legacy.original.definition, altered[0].definition);
+  assert.equal(body.legacy.original.notes, altered[0].notes);
+  assert.equal(body.legacy.original.owner_only, true);
+  assert.deepEqual(result.journal.entries["4"].observations[0].original, {
+    archive: contentHash(bytes),
+    locator: "definitions/definitionid=4",
+  });
+  assert.equal(
+    result.journal.entries["4"].observations[0].extraction,
+    "lensisku-list-literal-v2",
+  );
+});
+
+test("r3 N2 v2 captures retain old v1 envelopes on reuse and filter only newly signed revisions", () => {
+  const selectedRows = rows().slice(0, 1);
+  const bytes = utf8(JSON.stringify({ definitions: selectedRows }));
+  const currentManifest = {
+    ...manifest,
+    sha256: contentHash(bytes),
+    expected_rows: 1,
+  };
+  const first = importCapture({
+    sourceBytes: bytes,
+    manifest: currentManifest,
+    seed,
+    roots: [],
+  });
+  const version = first.journal.entries["4"].versions[0];
+  const oldBody = structuredClone(version.carrier.body);
+  oldBody.legacy.extraction = "lensisku-list-literal-v1";
+  oldBody.legacy.conversion.version = "lensisku-list-literal-v1";
+  oldBody.legacy.original = encodeOriginal(
+    parseSourceJson(JSON.stringify(selectedRows[0])),
+  );
+  oldBody.legacy.attribution.author = "officialdata";
+  oldBody.legacy.attribution.author_account.username = "officialdata";
+  oldBody.license.attribution = "Lensisku source author: officialdata";
+  const oldCarrier = createEvent(
+    seed,
+    [],
+    "11".repeat(16),
+    version.carrier.envelope.header.action,
+    oldBody,
+  ) as typeof version.carrier;
+  const oldJournal = structuredClone(first.journal);
+  oldJournal.head = oldCarrier.envelope.id;
+  oldJournal.views = [];
+  oldJournal.entries["4"].selected = oldCarrier.envelope.id;
+  oldJournal.entries["4"].versions[0].carrier = oldCarrier;
+  oldJournal.entries["4"].observations[0].publication = oldCarrier.envelope.id;
+  oldJournal.entries["4"].observations[0].extraction =
+    "lensisku-list-literal-v1";
+  oldJournal.entries["4"].observations[0].original = oldBody.legacy.original;
+  const reused = importCapture({
+    sourceBytes: bytes,
+    manifest: currentManifest,
+    seed,
+    roots: [],
+    journal: oldJournal,
+  });
+  assert.equal(reused.report.revised, 0);
+  assert.equal(reused.report.reused, 1);
+  assert.equal(reused.journal.entries["4"].selected, oldCarrier.envelope.id);
+  assert.deepEqual(
+    reused.journal.entries["4"].observations[0],
+    oldJournal.entries["4"].observations[0],
+  );
+  assert.equal(
+    reused.journal.entries["4"].observations.at(-1)!.extraction,
+    "lensisku-list-literal-v2",
+  );
+  assert.equal(
+    canonical(reused.journal.entries["4"].versions[0].carrier),
+    canonical(oldCarrier),
+  );
+  assert.equal(
+    Object.hasOwn(
+      reused.journal.entries["4"].versions[0].carrier.body.legacy.original,
+      "embedding",
+    ),
+    true,
+  );
+  selectedRows[0].definition = "An actual known lexical change after v1.";
+  const changedBytes = utf8(JSON.stringify({ definitions: selectedRows }));
+  const revised = importCapture({
+    sourceBytes: changedBytes,
+    manifest: { ...currentManifest, sha256: contentHash(changedBytes) },
+    seed,
+    roots: [],
+    journal: reused.journal,
+  });
+  const latest = revised.journal.entries["4"].versions.at(-1)!.carrier;
+  assert.equal(revised.report.revised, 1);
+  assert.equal(latest.body.legacy.extraction, "lensisku-list-literal-v2");
+  assert.equal(Object.hasOwn(latest.body.legacy.original, "embedding"), false);
+  assert.deepEqual(latest.envelope.header.action.parents, [
+    oldCarrier.envelope.id,
+  ]);
+  assert.equal(
+    canonical(revised.journal.entries["4"].versions[0].carrier),
+    canonical(oldCarrier),
+  );
+  assert.throws(
+    () =>
+      importCapture({
+        sourceBytes: bytes,
+        manifest: {
+          ...currentManifest,
+          extraction: "lensisku-list-literal-v1",
+        },
+        seed,
+        roots: [],
+        journal: oldJournal,
+      }),
+    /extraction recipe is unsupported/,
+  );
+});
+
+test("r3 N2 filtering preserves escaped source object key order", () => {
+  const row = JSON.stringify(rows()[0]).slice(0, -1);
+  const bytes = utf8(
+    `{"definitions":[${row},"$source_number":"source-owned","2":"second","1":"first"}]}`,
+  );
+  const result = importCapture({
+    sourceBytes: bytes,
+    manifest: { ...manifest, sha256: contentHash(bytes), expected_rows: 1 },
+    seed,
+    roots: [],
+  });
+  const original =
+    result.journal.entries["4"].versions[0].carrier.body.legacy.original;
+  assert.deepEqual(original.$source_object.slice(-3), [
+    ["$source_number", "source-owned"],
+    ["2", "second"],
+    ["1", "first"],
+  ]);
+  assert.equal(
+    original.$source_object.some(
+      ([key]: [string, unknown]) => key === "embedding" || key === "username",
+    ),
+    false,
   );
 });

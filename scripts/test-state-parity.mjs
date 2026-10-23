@@ -66,25 +66,52 @@ const server = createServer(async (request, response) => {
     if (url.pathname === "/") {
       response.setHeader("content-type", "text/html; charset=utf-8");
       response.end(`<!doctype html><script type="module">
-import init, { evaluate_records, rank_word, EvaluationSession } from '/jvc_runtime.js';
+import init, { evaluate_records, rank_word, EvaluationSession, EvaluationSessionBuilder } from '/jvc_runtime.js';
 await init();
 window.runCase = async (index) => {
   const { kind, input, word } = await (await fetch('/fixture/' + index)).json();
   const start = performance.now();
-  const bytes = new TextEncoder().encode(typeof input === 'string' ? input : JSON.stringify(input));
-  if (kind === 'state') {
-    return { result: JSON.parse(evaluate_records(bytes)), milliseconds: performance.now() - start };
-  }
-  const session = new EvaluationSession(bytes);
+  const encoder = new TextEncoder();
+  const bytes = encoder.encode(typeof input === 'string' ? input : JSON.stringify(input));
+  const request = typeof input === 'string' ? JSON.parse(input) : input;
+  const { events, bodies, ...options } = request;
+  const builder = new EvaluationSessionBuilder(encoder.encode(JSON.stringify(options)));
+  let streamed;
+  let consumed = false;
   try {
-    return {
-      result: JSON.parse(rank_word(bytes, word)),
-      session: JSON.parse(session.rank(word)),
-      reviewers: JSON.parse(session.rank_with_reviewers(word, 16)),
-      milliseconds: performance.now() - start,
-    };
+    for (const envelope of events) {
+      const body = bodies[JSON.parse(envelope).id];
+      builder.add_record(encoder.encode(envelope), body === undefined ? undefined : encoder.encode(body));
+    }
+    consumed = true;
+    streamed = builder.finish();
   } finally {
-    session.free();
+    if (!consumed) builder.free();
+  }
+  try {
+    if (kind === 'state') {
+      return {
+        result: JSON.parse(evaluate_records(bytes)),
+        streamed_state: JSON.parse(streamed.state()),
+        milliseconds: performance.now() - start,
+      };
+    }
+    const session = new EvaluationSession(bytes);
+    try {
+      return {
+        result: JSON.parse(rank_word(bytes, word)),
+        session: JSON.parse(session.rank(word)),
+        reviewers: JSON.parse(session.rank_with_reviewers(word, 16)),
+        streamed_state: JSON.parse(streamed.state()),
+        streamed_rank: JSON.parse(streamed.rank(word)),
+        streamed_reviewers: JSON.parse(streamed.rank_with_reviewers(word, 16)),
+        milliseconds: performance.now() - start,
+      };
+    } finally {
+      session.free();
+    }
+  } finally {
+    streamed.free();
   }
 };
 </script>`);
@@ -141,7 +168,9 @@ try {
     assert(
       fixture.input &&
         fixture.expected &&
-        (kind === "state" ? fixture.name : fixture.word && fixture.reviewers),
+        (kind === "state"
+          ? fixture.name
+          : fixture.word && fixture.reviewers && fixture.expected_state),
       `Invalid native ${kind} fixture: ${file}`,
     );
     let timer;
@@ -159,9 +188,15 @@ try {
     ]).finally(() => clearTimeout(timer));
     try {
       assert.deepStrictEqual(actual.result, fixture.expected);
+      assert.deepStrictEqual(
+        actual.streamed_state,
+        kind === "state" ? fixture.expected : fixture.expected_state,
+      );
       if (kind === "ranking") {
         assert.deepStrictEqual(actual.session, fixture.expected);
         assert.deepStrictEqual(actual.reviewers, fixture.reviewers);
+        assert.deepStrictEqual(actual.streamed_rank, fixture.expected);
+        assert.deepStrictEqual(actual.streamed_reviewers, fixture.reviewers);
       }
     } catch (error) {
       throw new Error(

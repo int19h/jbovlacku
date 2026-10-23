@@ -142,6 +142,9 @@ export async function objectBytes(
   } catch (error) {
     if ((error as { name?: string } | null)?.name === "TimeoutError")
       throw new TransportError("The server did not answer in time.", "timeout");
+    if (options.signal?.aborted) throw error;
+    if (error instanceof TypeError)
+      throw new TransportError("No connection to the server.", "offline");
     throw error;
   }
   if (!response.ok) {
@@ -292,6 +295,105 @@ export async function getReceipt(id: string, options: RequestOptions = {}) {
   return validateReceipt(
     await api(`/receipts/${encodeURIComponent(id)}`, options),
   );
+}
+// This page session tracks only records whose local delivery it confirmed.
+const acceptedAwaitingView = new Map<string, Receipt>();
+const viewPending = (receipt: Receipt) =>
+  receipt.reasons.some((reason) =>
+    ["index_lag", "evaluation_pending"].includes(reason),
+  );
+const localPeer = (peer: Peer = selfPeer) =>
+  peer.id === selfPeer.id &&
+  new URL(peer.base, location.origin).href.replace(/\/$/, "") ===
+    new URL(selfPeer.base, location.origin).href.replace(/\/$/, "");
+
+/** Call only after delivery confirms the signed envelope and required body. */
+export function rememberAcceptedReceipt(receipt: Receipt, peer: Peer) {
+  if (!localPeer(peer)) return;
+  if (viewPending(receipt)) acceptedAwaitingView.set(receipt.id, receipt);
+  else {
+    const pending = acceptedAwaitingView.get(receipt.id);
+    if (
+      receipt.snapshot !== null &&
+      pending?.envelope_hash === receipt.envelope_hash &&
+      pending?.body_hash === receipt.body_hash &&
+      pending?.body_status === receipt.body_status &&
+      pending?.cursor === receipt.cursor
+    )
+      acceptedAwaitingView.delete(receipt.id);
+  }
+}
+export function hasPendingMaterialization() {
+  return acceptedAwaitingView.size > 0;
+}
+export class MaterializationPendingError extends Error {
+  constructor() {
+    super(
+      "This server stored your records. Its word view is still updating. Refresh this page to check again.",
+    );
+  }
+}
+/** Wait for local accepted records, without changing their delivery state. */
+async function waitForMaterialization(options: RequestOptions) {
+  if (!localPeer(options.peer) || !hasPendingMaterialization()) return;
+  const timeout = AbortSignal.timeout(15000);
+  const signal = options.signal
+    ? AbortSignal.any([options.signal, timeout])
+    : timeout;
+  try {
+    while (hasPendingMaterialization()) {
+      signal.throwIfAborted();
+      for (const [id, accepted] of [...acceptedAwaitingView]) {
+        let receipt: Receipt;
+        try {
+          receipt = await getReceipt(id, {
+            ...options,
+            signal,
+            cache: "no-store",
+          });
+        } catch (error) {
+          signal.throwIfAborted();
+          if (
+            error instanceof TransportError ||
+            (error instanceof RequestError &&
+              error.status >= 500 &&
+              error.status < 600)
+          )
+            continue;
+          throw error;
+        }
+        if (
+          receipt.id === id &&
+          receipt.admission !== "refused" &&
+          receipt.envelope_hash === accepted.envelope_hash &&
+          receipt.body_hash === accepted.body_hash &&
+          receipt.body_status === accepted.body_status &&
+          receipt.cursor === accepted.cursor &&
+          receipt.snapshot !== null &&
+          !viewPending(receipt) &&
+          acceptedAwaitingView.get(id) === accepted
+        )
+          acceptedAwaitingView.delete(id);
+      }
+      if (!hasPendingMaterialization()) return;
+      await new Promise<void>((resolve, reject) => {
+        const aborted = () => {
+          clearTimeout(timer);
+          signal.removeEventListener("abort", aborted);
+          reject(signal.reason);
+        };
+        const timer = setTimeout(() => {
+          signal.removeEventListener("abort", aborted);
+          resolve();
+        }, 200);
+        signal.addEventListener("abort", aborted, { once: true });
+        if (signal.aborted) aborted();
+      });
+    }
+  } catch (error) {
+    if (options.signal?.aborted) throw error;
+    throw new MaterializationPendingError();
+  }
 }
 export async function getCapabilities(
   options: RequestOptions = {},
@@ -452,10 +554,14 @@ export function getWord(
   if (options.fresh) wordCache.delete(key);
   let pending = wordCache.get(key);
   if (!pending) {
-    pending = api<unknown>(
-      `/words/${encodeURIComponent(id)}${query.size ? `?${query}` : ""}`,
-      options,
-    ).then((value) => validateWord(value, id));
+    pending = (async () => {
+      if (options.fresh && !options.snapshot)
+        await waitForMaterialization(options);
+      return api<unknown>(
+        `/words/${encodeURIComponent(id)}${query.size ? `?${query}` : ""}`,
+        options,
+      );
+    })().then((value) => validateWord(value, id));
     wordCache.set(key, pending);
     pending.catch(() => wordCache.delete(key));
     // Word responses change with new admissions. Keep them briefly.

@@ -632,6 +632,92 @@ test("concurrent distinct evaluations stay bounded and same-key work is shared",
   assert.equal(bounded.evaluationCache.size, 2);
   coordinator.close();
 });
+test("evaluation sends original byte buffers without decoding a body collection", async () => {
+  const { service, objects, coordinator, options } = await instance();
+  const entry = event("identity.profile", {
+    name: "Original source profile",
+    bio: [["Source evidence ".repeat(1000)]],
+    links: [],
+  });
+  await service.admit(utf8(JSON.stringify(entry)));
+  const state = await coordinator.load();
+  const snapshot = await coordinator.getSnapshot(state.snapshot!);
+  const sourceBodies = new WeakSet<Uint8Array>();
+  const bodyHash = state.events[entry.envelope.id].body_hash;
+  let bodyReads = 0;
+  const tracked = {
+    async get(hash: string) {
+      const bytes = await objects.get(hash);
+      if (bytes && hash === bodyHash) {
+        sourceBodies.add(bytes);
+        bodyReads++;
+      }
+      return bytes;
+    },
+    put: objects.put.bind(objects),
+  };
+  const decode = TextDecoder.prototype.decode;
+  TextDecoder.prototype.decode = function (input, options) {
+    assert.equal(
+      input instanceof Uint8Array && sourceBodies.has(input),
+      false,
+      "Evaluation must pass original bodies directly to the core.",
+    );
+    return decode.call(this, input, options);
+  };
+  const streamed: any = new DictionaryService(tracked, coordinator, options);
+  try {
+    const actual = await streamed.evaluation(snapshot);
+    assert.equal(bodyReads, 1);
+    assert.deepEqual(actual, await (service as any).evaluation(snapshot));
+  } finally {
+    TextDecoder.prototype.decode = decode;
+    for (const session of streamed.sessions.values()) session.free();
+  }
+});
+test("streamed evaluation releases failed work and retries the original records", async () => {
+  const { service, objects, coordinator, options } = await instance();
+  const first = event("identity.profile", {
+    name: "Retained profile",
+    bio: [],
+    links: [],
+  });
+  const second = event("identity.merge", null, [first.envelope.id]);
+  await service.admitMany(
+    [first, second].map((entry) => utf8(JSON.stringify(entry))),
+  );
+  const state = await coordinator.load();
+  const snapshot = (await coordinator.getSnapshot(state.snapshot!))!;
+  const lastId = Object.keys(snapshot.events).sort().at(-1)!;
+  const failedHash = snapshot.events[lastId].envelope_hash;
+  let fail = true;
+  const interrupted = {
+    async get(hash: string) {
+      if (fail && hash === failedHash)
+        throw new Error("Injected record read failure.");
+      return objects.get(hash);
+    },
+    put: objects.put.bind(objects),
+  };
+  const streamed: any = new DictionaryService(
+    interrupted,
+    coordinator,
+    options,
+  );
+  await assert.rejects(streamed.evaluation(snapshot), /record read failure/);
+  assert.equal(streamed.inFlightEvaluations.size, 0);
+  assert.equal(streamed.evaluationCache.size, 0);
+  assert.equal(streamed.sessions.size, 0);
+  fail = false;
+  try {
+    assert.deepEqual(
+      await streamed.evaluation(snapshot),
+      await (service as any).evaluation(snapshot),
+    );
+  } finally {
+    for (const session of streamed.sessions.values()) session.free();
+  }
+});
 test("package builds share work, bound concurrent snapshots, and release failed work", async () => {
   const { service, objects, coordinator, options } = await instance();
   const { createEvent, wordId } = await import("../../core/src/index.ts");
@@ -678,6 +764,10 @@ test("package builds share work, bound concurrent snapshots, and release failed 
   }
   const firstHash =
     snapshots[0].events[Object.keys(snapshots[0].events)[0]].envelope_hash;
+  const added = Object.keys(snapshots[2].events).find(
+    (id) => !snapshots[1].events[id],
+  )!;
+  const failureHash = snapshots[2].events[added].envelope_hash;
   let release!: () => void;
   const gate = new Promise<void>((resolve) => {
     release = resolve;
@@ -689,10 +779,10 @@ test("package builds share work, bound concurrent snapshots, and release failed 
       if (hash === firstHash) {
         reads++;
         await gate;
-        if (fail) {
-          fail = false;
-          throw new Error("injected package read failure");
-        }
+      }
+      if (fail && hash === failureHash) {
+        fail = false;
+        throw new Error("injected package read failure");
       }
       return objects.get(hash);
     },

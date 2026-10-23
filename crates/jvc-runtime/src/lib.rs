@@ -139,40 +139,104 @@ fn evaluation_input(bytes: &[u8]) -> Result<jvc_state::EvaluationInput> {
         limits: wire.limits,
     })
 }
-pub fn evaluate_bytes(bytes: &[u8]) -> Result<Value> {
-    let evaluation = jvc_state::evaluate(&evaluation_input(bytes)?);
-    let mut value = serde_json::to_value(&evaluation).unwrap();
-    let statuses = evaluation
-        .publications
-        .keys()
-        .filter_map(|id| {
-            jvc_state::publication_status(&evaluation, id)
-                .map(|status| (id.clone(), serde_json::to_value(status).unwrap()))
-        })
-        .collect::<serde_json::Map<String, Value>>();
-    let controls = evaluation
-        .accounts
-        .iter()
-        .map(|(key, account)| {
-            (
-                key.clone(),
-                serde_json::to_value(jvc_state::account_control(
-                    &evaluation,
+#[derive(Serialize)]
+struct StateOutput<'a> {
+    #[serde(flatten)]
+    evaluation: &'a jvc_state::Evaluation,
+    publication_statuses: PublicationStatuses<'a>,
+    account_controls: AccountControls<'a>,
+}
+impl<'a> StateOutput<'a> {
+    fn new(evaluation: &'a jvc_state::Evaluation) -> Self {
+        Self {
+            evaluation,
+            publication_statuses: PublicationStatuses(evaluation),
+            account_controls: AccountControls(evaluation),
+        }
+    }
+}
+struct PublicationStatuses<'a>(&'a jvc_state::Evaluation);
+impl Serialize for PublicationStatuses<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(self.0.publications.len()))?;
+        for id in self.0.publications.keys() {
+            if let Some(status) = jvc_state::publication_status(self.0, id) {
+                map.serialize_entry(id, &status)?;
+            }
+        }
+        map.end()
+    }
+}
+struct AccountControls<'a>(&'a jvc_state::Evaluation);
+impl Serialize for AccountControls<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(self.0.accounts.len()))?;
+        for (key, account) in &self.0.accounts {
+            map.serialize_entry(
+                key,
+                &jvc_state::account_control(
+                    self.0,
                     "",
                     &account.account.origin,
                     account.account.account,
-                ))
-                .unwrap(),
-            )
-        })
-        .collect::<serde_json::Map<String, Value>>();
-    value["publication_statuses"] = Value::Object(statuses);
-    value["account_controls"] = Value::Object(controls);
-    Ok(value)
+                ),
+            )?;
+        }
+        map.end()
+    }
+}
+
+const STATE_DELTA_LIMIT: usize = 1024 * 1024;
+struct LimitedOutput(Vec<u8>);
+impl std::io::Write for LimitedOutput {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if bytes.len() > STATE_DELTA_LIMIT.saturating_sub(self.0.len()) {
+            return Err(std::io::Error::other("state delta exceeds size limit"));
+        }
+        self.0.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+fn bounded_delta(value: impl Serialize) -> String {
+    let mut writer = LimitedOutput(Vec::new());
+    if serde_json::to_writer(&mut writer, &value).is_err() {
+        return "null".into();
+    }
+    String::from_utf8(writer.0).unwrap()
+}
+thread_local! {
+    static NEXT_SESSION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+fn session_identity() -> String {
+    NEXT_SESSION.with(|next| {
+        let value = next
+            .get()
+            .checked_add(1)
+            .expect("session identity exhausted");
+        next.set(value);
+        format!("session-{value}")
+    })
+}
+
+pub fn evaluate_bytes(bytes: &[u8]) -> Result<Value> {
+    let evaluation = jvc_state::evaluate(&evaluation_input(bytes)?);
+    Ok(serde_json::to_value(StateOutput::new(&evaluation)).unwrap())
 }
 #[wasm_bindgen]
 pub fn evaluate_records(bytes: &[u8]) -> std::result::Result<String, JsValue> {
-    output(evaluate_bytes(bytes).map_err(fail)?)
+    let evaluation = jvc_state::evaluate(&evaluation_input(bytes).map_err(fail)?);
+    output(StateOutput::new(&evaluation))
 }
 #[wasm_bindgen]
 pub fn sign_record(seed: &[u8], bytes: &[u8]) -> std::result::Result<String, JsValue> {
@@ -318,15 +382,13 @@ pub fn rank_word_bytes(bytes: &[u8], word: &str) -> Result<Value> {
     if !jvc_core::valid_id(word, "jvw1:") {
         return Err(Error::new("word", "word identifier is invalid"));
     }
-    let input = evaluation_input(bytes)?;
-    let evaluation = jvc_state::evaluate(&input);
-    rank_word_state(&input, &evaluation, word, None)
+    let evaluation = jvc_state::evaluate(&evaluation_input(bytes)?);
+    rank_word_state(&evaluation, word, None)
 }
 /// Ranks one word. `reviewers_limit` asks for bounded reviewer details per
 /// score. Without it, the aggregate lookup does no reviewer-detail work and
 /// the scores carry no `reviewers` field.
 fn rank_word_state(
-    input: &jvc_state::EvaluationInput,
     evaluation: &jvc_state::Evaluation,
     word: &str,
     reviewers_limit: Option<usize>,
@@ -399,7 +461,7 @@ fn rank_word_state(
             Ok(jvc_rank::Parameters {
                 h: configuration_ratio(&p["H"])?,
                 alpha: configuration_ratio(&p["alpha"])?,
-                work: input
+                work: evaluation
                     .overlay
                     .as_ref()
                     .and_then(|v| v["work"].as_u64())
@@ -603,8 +665,8 @@ fn rank_word_state(
     let calculation = if graphs.is_empty() {
         Value::Null
     } else {
-        let default_overlay = json!({"version":1,"base_view":input.selected_view,"root_changes":[],"trust":[],"blocked":[],"work":null});
-        let overlay = input.overlay.as_ref().unwrap_or(&default_overlay);
+        let default_overlay = json!({"version":1,"base_view":evaluation.selected_view,"root_changes":[],"trust":[],"blocked":[],"work":null});
+        let overlay = evaluation.overlay.as_ref().unwrap_or(&default_overlay);
         let suspensions=evaluation.lifecycle.suspended.iter().flat_map(|(identity,causes)|causes.iter().map(move|cause|json!({"identity":identity,"cause":cause,"reason":"incomplete_history"}))).collect::<Vec<_>>();
         json!({"algorithm":profile.unwrap().name(),"budget":params.as_ref().unwrap().work,"completed":graphs.values().map(|r|r.completed_work).sum::<u64>(),"exact":exact,"overlay":jvc_core::hash_id("sha256:",b"",&canonical_value(overlay)?),"incomplete_identities":evaluation.lifecycle.suspended.keys().collect::<Vec<_>>(),"suspensions":suspensions})
     };
@@ -619,46 +681,238 @@ pub fn rank_word(bytes: &[u8], word: &str) -> std::result::Result<String, JsValu
 
 #[wasm_bindgen]
 pub struct EvaluationSession {
-    input: jvc_state::EvaluationInput,
-    evaluation: jvc_state::Evaluation,
+    state: jvc_state::EvaluatedState,
+    identity: String,
+    base_identity: Option<String>,
+}
+/// Build a session from original records without one combined request.
+#[wasm_bindgen]
+pub struct EvaluationSessionBuilder {
+    prepared: jvc_state::PreparedEvaluationInput,
+    verifier: jvc_core::EnvelopeVerifier,
+    base: Option<jvc_state::EvaluatedState>,
+    removed: Vec<String>,
+    base_identity: Option<String>,
+}
+#[wasm_bindgen]
+pub fn evaluation_checkpoint_version() -> String {
+    jvc_state::CHECKPOINT_VERSION.into()
+}
+fn search_projection(
+    event: &jvc_core::VerifiedEnvelope,
+    availability: &jvc_core::BodyAvailability,
+) -> Value {
+    let header = event.header();
+    let kind = header.action["kind"].as_str().unwrap_or_default();
+    if !matches!(kind, "definition.publish" | "rafsi.publish") {
+        return Value::Null;
+    }
+    let body = if let jvc_core::BodyAvailability::Valid { body } = availability {
+        let selected = if kind == "definition.publish" {
+            &[
+                "word",
+                "language",
+                "text",
+                "glosses",
+                "classification",
+                "notes",
+            ][..]
+        } else {
+            &["rafsi"][..]
+        };
+        let mut fields: serde_json::Map<String, Value> = body
+            .as_object()
+            .unwrap()
+            .iter()
+            .filter(|(key, _)| selected.contains(&key.as_str()))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        if kind == "definition.publish" {
+            if let Some(legacy) = body.get("legacy") {
+                let legacy = if let Some(legacy) = legacy.as_object() {
+                    let mut result = serde_json::Map::new();
+                    if let Some(source) = legacy.get("source") {
+                        result.insert("source".into(), source.clone());
+                    }
+                    if let Some(attribution) = legacy.get("attribution") {
+                        let attribution = if let Some(fields) = attribution.as_object() {
+                            Value::Object(
+                                fields
+                                    .iter()
+                                    .filter(|(key, _)| {
+                                        matches!(
+                                            key.as_str(),
+                                            "author" | "author_account" | "dates"
+                                        )
+                                    })
+                                    .map(|(key, value)| (key.clone(), value.clone()))
+                                    .collect(),
+                            )
+                        } else {
+                            attribution.clone()
+                        };
+                        result.insert("attribution".into(), attribution);
+                    }
+                    Value::Object(result)
+                } else {
+                    legacy.clone()
+                };
+                fields.insert("legacy".into(), legacy);
+            }
+        }
+        Value::Object(fields)
+    } else {
+        Value::Null
+    };
+    json!({"id":event.id(),"issuer":header.issuer,"kind":kind,"word":header.action["word"],"body_hash":header.content.as_ref().map(|c| &c.hash),"body":body})
+}
+#[wasm_bindgen]
+impl EvaluationSessionBuilder {
+    #[wasm_bindgen(constructor)]
+    pub fn new(options: &[u8]) -> std::result::Result<Self, JsValue> {
+        let options = serde_json::from_value(parse_json(options).map_err(fail)?)
+            .map_err(|e| fail(Error::new("evaluation", e.to_string())))?;
+        Ok(Self {
+            prepared: jvc_state::PreparedEvaluationInput::new(options),
+            verifier: jvc_core::EnvelopeVerifier::default(),
+            base: None,
+            removed: Vec::new(),
+            base_identity: None,
+        })
+    }
+    pub fn add_record(
+        &mut self,
+        envelope: &[u8],
+        body: Option<Vec<u8>>,
+    ) -> std::result::Result<String, JsValue> {
+        let event = self.verifier.verify(envelope).map_err(fail)?;
+        let content = self
+            .prepared
+            .add_record_with(&event, body.as_deref(), |availability| {
+                search_projection(&event, availability)
+            });
+        output(content)
+    }
+    pub fn finish(self) -> EvaluationSession {
+        EvaluationSession {
+            identity: session_identity(),
+            base_identity: self.base_identity,
+            state: match self.base {
+                Some(base) => base.advance(self.prepared, &self.removed),
+                None => self.prepared.into_state(),
+            },
+        }
+    }
+    pub fn remove_record(&mut self, id: &str) {
+        self.removed.push(id.into());
+    }
 }
 #[wasm_bindgen]
 impl EvaluationSession {
     #[wasm_bindgen(constructor)]
     pub fn new(bytes: &[u8]) -> std::result::Result<EvaluationSession, JsValue> {
-        let input = evaluation_input(bytes).map_err(fail)?;
-        let evaluation = jvc_state::evaluate(&input);
-        Ok(Self { input, evaluation })
+        let state = jvc_state::EvaluatedState::from_input(&evaluation_input(bytes).map_err(fail)?);
+        Ok(Self {
+            state,
+            identity: session_identity(),
+            base_identity: None,
+        })
+    }
+    pub fn fork(&self, options: &[u8]) -> std::result::Result<EvaluationSessionBuilder, JsValue> {
+        let mut builder = EvaluationSessionBuilder::new(options)?;
+        builder.base = Some(self.state.clone());
+        builder.base_identity = Some(self.identity.clone());
+        Ok(builder)
+    }
+    pub fn checkpoint(&self, binding: &str) -> std::result::Result<Vec<u8>, JsValue> {
+        self.state.checkpoint(binding).map_err(fail)
+    }
+    /// The host must check an independent trusted digest and exact binding first.
+    pub fn restore_host_checkpoint(
+        bytes: &[u8],
+        binding: &str,
+    ) -> std::result::Result<EvaluationSession, JsValue> {
+        Ok(Self {
+            identity: session_identity(),
+            base_identity: None,
+            state: jvc_state::EvaluatedState::restore_host_checkpoint(bytes, binding)
+                .map_err(fail)?,
+        })
+    }
+    pub fn update_statistics(&self) -> std::result::Result<String, JsValue> {
+        output(self.state.statistics())
+    }
+    pub fn state_identity(&self) -> String {
+        self.identity.clone()
+    }
+    /// A bounded patch for the exact parent session, or JSON null.
+    pub fn state_delta(&self) -> String {
+        let (Some(base), Some(changes)) = (&self.base_identity, self.state.judgment_changes())
+        else {
+            return "null".into();
+        };
+        let e = self.state.evaluation();
+        let receipts: BTreeMap<_, _> = changes
+            .receipts
+            .iter()
+            .map(|k| (k, &e.receipts[k]))
+            .collect();
+        let registers: BTreeMap<_, _> = changes
+            .registers
+            .iter()
+            .map(|k| (k, &e.registers[k]))
+            .collect();
+        let judgments: BTreeMap<_, BTreeMap<_, _>> = changes
+            .judgments
+            .iter()
+            .map(|(target, actors)| {
+                (
+                    target,
+                    actors
+                        .iter()
+                        .map(|actor| (actor, &e.judgments[target][actor]))
+                        .collect(),
+                )
+            })
+            .collect();
+        let key_actor: BTreeMap<_, _> = changes
+            .actors
+            .iter()
+            .map(|k| (k, &e.lifecycle.key_actor[k]))
+            .collect();
+        let groups: BTreeMap<_, _> = changes
+            .actors
+            .iter()
+            .map(|k| (k, &e.lifecycle.groups[k]))
+            .collect();
+        #[derive(Serialize)]
+        struct Delta<'a, R: Serialize, G: Serialize, J: Serialize, L: Serialize> {
+            version: u8,
+            base_session: &'a str,
+            receipts: R,
+            registers: G,
+            judgments: J,
+            lifecycle: L,
+        }
+        #[derive(Serialize)]
+        struct Lifecycle<K: Serialize, G: Serialize> {
+            key_actor: K,
+            groups: G,
+        }
+        bounded_delta(Delta {
+            version: 1,
+            base_session: base,
+            receipts,
+            registers,
+            judgments,
+            lifecycle: Lifecycle { key_actor, groups },
+        })
     }
     pub fn state(&self) -> std::result::Result<String, JsValue> {
-        let mut value = serde_json::to_value(&self.evaluation).unwrap();
-        value["publication_statuses"] = json!(
-            self.evaluation
-                .publications
-                .keys()
-                .filter_map(|id| jvc_state::publication_status(&self.evaluation, id)
-                    .map(|status| (id.clone(), status)))
-                .collect::<BTreeMap<_, _>>()
-        );
-        value["account_controls"] = json!(
-            self.evaluation
-                .accounts
-                .iter()
-                .map(|(key, account)| (
-                    key.clone(),
-                    jvc_state::account_control(
-                        &self.evaluation,
-                        "",
-                        &account.account.origin,
-                        account.account.account
-                    )
-                ))
-                .collect::<BTreeMap<_, _>>()
-        );
-        output(value)
+        output(StateOutput::new(self.state.evaluation()))
     }
     pub fn rank(&self, word: &str) -> std::result::Result<String, JsValue> {
-        output(rank_word_state(&self.input, &self.evaluation, word, None).map_err(fail)?)
+        output(rank_word_state(self.state.evaluation(), word, None).map_err(fail)?)
     }
     /// Ranks one word with at most `reviewers` reviewer details per score.
     pub fn rank_with_reviewers(
@@ -666,7 +920,7 @@ impl EvaluationSession {
         word: &str,
         reviewers: usize,
     ) -> std::result::Result<String, JsValue> {
-        output(rank_word_state(&self.input, &self.evaluation, word, Some(reviewers)).map_err(fail)?)
+        output(rank_word_state(self.state.evaluation(), word, Some(reviewers)).map_err(fail)?)
     }
 }
 
@@ -793,5 +1047,53 @@ mod aggregation_tests {
             assert_eq!(status, Some("unavailable"));
             assert_eq!(assignment_status(status, &Eligibility::Eligible), "active");
         }
+    }
+}
+
+#[cfg(test)]
+mod state_output_tests {
+    use super::*;
+
+    #[test]
+    fn state_delta_writer_accepts_the_limit_and_falls_back_above_it() {
+        let at_limit = "x".repeat(STATE_DELTA_LIMIT - 2);
+        assert_eq!(bounded_delta(&at_limit).len(), STATE_DELTA_LIMIT);
+        assert_eq!(bounded_delta(format!("{at_limit}x")), "null");
+    }
+
+    #[test]
+    fn borrowed_state_output_matches_the_previous_value_shape() {
+        let evaluation = jvc_state::evaluate(
+            &evaluation_input(include_bytes!("../tests/invalid-overlay.json")).unwrap(),
+        );
+        let mut previous = serde_json::to_value(&evaluation).unwrap();
+        previous["publication_statuses"] = json!(
+            evaluation
+                .publications
+                .keys()
+                .filter_map(
+                    |id| jvc_state::publication_status(&evaluation, id).map(|status| (id, status))
+                )
+                .collect::<BTreeMap<_, _>>()
+        );
+        previous["account_controls"] = json!(
+            evaluation
+                .accounts
+                .iter()
+                .map(|(key, account)| (
+                    key,
+                    jvc_state::account_control(
+                        &evaluation,
+                        "",
+                        &account.account.origin,
+                        account.account.account
+                    )
+                ))
+                .collect::<BTreeMap<_, _>>()
+        );
+        assert_eq!(
+            serde_json::to_value(StateOutput::new(&evaluation)).unwrap(),
+            previous
+        );
     }
 }

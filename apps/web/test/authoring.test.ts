@@ -62,8 +62,45 @@ test("a first-time contributor writes a short literal definition and publishes i
     page.getByText("Signed with your key, with your endorsement."),
   ).toBeVisible();
   await expect(page.getByRole("checkbox")).toHaveCount(0);
+  // Acceptance can precede the evaluated word view. Hold receipt refreshes
+  // so the pending screen is observable even on a fast local service.
+  let releaseReceipts!: () => void;
+  const receiptsReady = new Promise<void>((resolve) => {
+    releaseReceipts = resolve;
+  });
+  await page.route("**/api/v1/events", async (route) => {
+    const response = await route.fetch();
+    const receipt = await response.json();
+    await route.fulfill({
+      response,
+      json: {
+        ...receipt,
+        snapshot: null,
+        interpretation: "unavailable",
+        reasons: ["index_lag", "evaluation_pending"],
+      },
+    });
+  });
+  await page.route("**/api/v1/receipts/*", async (route) => {
+    await receiptsReady;
+    await route.continue();
+  });
   await page.locator("aside").getByRole("button", { name: "Publish" }).click();
   await acceptFirstSignature(page);
+  try {
+    await expect(
+      page.getByText(
+        "This server stored your records. Its word view is updating.",
+      ),
+    ).toBeVisible();
+    await expect(
+      page.getByText(
+        "No definitions are available for this word in the selected view.",
+      ),
+    ).toHaveCount(0);
+  } finally {
+    releaseReceipts();
+  }
   await expect(page).toHaveTitle("brodu · jbovlacku");
   await expect(page.getByRole("status")).toContainText(
     "Published brodu with your endorsement.",
