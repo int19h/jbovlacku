@@ -502,6 +502,13 @@ export async function gismuPage(
           row.name = row.language;
           code.value = row.language;
           renameManualLabels(tr, previousName, row.name);
+          renameManualLabels(tools, previousName, row.name);
+          tools
+            .querySelector('[aria-label^="Remove the "]')
+            ?.setAttribute(
+              "aria-label",
+              `Remove the ${row.name || row.language} row`,
+            );
           const details = detailRows.get(sourceKey);
           if (details) {
             renameManualLabels(details.row, previousName, row.name);
@@ -671,7 +678,7 @@ export async function gismuPage(
           },
           {
             class: "btn btn-quiet btn-icon",
-            "aria-label": `Remove row ${index + 1}`,
+            "aria-label": `Remove the ${row.name || row.language} row`,
           },
         ),
       );
