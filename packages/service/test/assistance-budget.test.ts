@@ -5,15 +5,20 @@ import { initializeCore } from "../../core/src/index.ts";
 import {
   AssistanceService,
   estimateAssistanceCost,
+  parseAssistRequest,
   type AssistRequest,
   type AssistanceOptions,
   type AssistanceBudgetSnapshot,
+  type ContextDefinition,
 } from "../src/assistance.ts";
 import {
   providerConfig,
   estimateInferenceCost,
   inferenceTurnCost,
   INFERENCE_CORRECTION_BYTES,
+  INFERENCE_INITIAL_REQUEST_BYTES,
+  INFERENCE_GENERATED_FRAME_BYTES,
+  taskMaxTokens,
   type ProviderConfig,
 } from "../src/inference.ts";
 
@@ -79,11 +84,12 @@ function config(overrides: Partial<ProviderConfig> = {}): ProviderConfig {
 function fixture(
   provider: ProviderConfig,
   options: Partial<AssistanceOptions> = {},
+  context: ContextDefinition[] = [],
 ) {
   const instance = new AssistanceService(
     { provider, ...options },
     "budget-test",
-    async () => [],
+    async () => context,
   );
   const route = (
     path: string,
@@ -129,8 +135,8 @@ test("provider configuration uses separate published prices and server spending 
   const defaults = config() as any;
   assert.equal(defaults.inputPrice, 0.1);
   assert.equal(defaults.outputPrice, 0.2);
-  assert.equal(defaults.hourlyBudgetUsd, 1);
-  assert.equal(defaults.dailyBudgetUsd, 5);
+  assert.equal(defaults.hourlyBudgetUsd, 32);
+  assert.equal(defaults.dailyBudgetUsd, 160);
   assert.equal(defaults.maxCostUsd, undefined);
   for (const name of [
     "JVC_AI_INPUT_PRICE",
@@ -155,6 +161,196 @@ test("provider configuration uses separate published prices and server spending 
       /Invalid/,
     );
   }
+});
+
+const onePlace = () => ({
+  role: "predicate",
+  arity: { mode: "fixed", count: 1 },
+  places: [
+    {
+      index: 1,
+      description: [["A traveler."]],
+      glosses: [],
+      type_hints: [],
+      defaults: [],
+      constraints: [],
+      derivation: [],
+    },
+  ],
+  tail: null,
+  constraints: [],
+});
+function enabledRequests() {
+  const cases = config().operations.map((operation) => {
+    const request = {
+      ...draft(),
+      operation: operation as AssistRequest["operation"],
+    };
+    if (operation === "gismu-sources")
+      request.current.formation = {
+        method: "unknown",
+        sources: [
+          { language: "en", word: "", input: null, weight: null, notes: [] },
+        ],
+      };
+    if (operation === "cmavo-class") {
+      request.current.word_type = "cmavo";
+      request.current.classification = { kind: "cmavo", selmaho: [] };
+    }
+    return { label: operation, request, context: [] as ContextDefinition[] };
+  });
+  const existing = draft();
+  existing.operation = "places-glosses";
+  existing.current.frame = onePlace();
+  cases.push({
+    label: "places-glosses-existing",
+    request: existing,
+    context: [],
+  });
+  const manyPlaces = structuredClone(existing);
+  manyPlaces.current.frame!.arity.count = 256;
+  manyPlaces.current.frame!.places = Array.from(
+    { length: 256 },
+    (_, index) => ({
+      ...onePlace().places[0],
+      index: index + 1,
+    }),
+  );
+  cases.push({
+    label: "places-glosses-existing-256",
+    request: manyPlaces,
+    context: [],
+  });
+  const compound = draft();
+  compound.operation = "places-glosses";
+  compound.current.word_type = "lujvo";
+  compound.current.spelling = "klamkarce";
+  const components = ["klama", "karce"].map((spelling, index) => ({
+    word: { language: "jbo", spelling },
+    definition: `jve1:${String(index + 1).repeat(64)}`,
+    rafsi: spelling.slice(0, 4),
+  }));
+  compound.current.compound = {
+    components,
+    morphology: { id: "https://example.test/morphology", version: "1" },
+    scoring: { id: "https://example.test/scoring", version: "1" },
+  };
+  compound.context = components.map((component) => component.definition);
+  const context = components.map((component) => ({
+    event: component.definition,
+    body: { word: component.word, frame: onePlace() },
+  }));
+  cases.push({
+    label: "places-glosses-generated-mappings",
+    request: compound,
+    context,
+  });
+  return cases;
+}
+
+test("every enabled operation is admitted with empty default server and network allowances", async () => {
+  for (const { label, request, context } of enabledRequests()) {
+    const provider = config();
+    const estimate = estimateAssistanceCost(request, context, provider);
+    assert.ok(
+      estimate <
+        Math.min(
+          provider.hourlyBudgetUsd,
+          provider.dailyBudgetUsd,
+          provider.networkHourlyBudgetUsd,
+          provider.networkDailyBudgetUsd,
+        ),
+      `${label}: ${estimate}`,
+    );
+    const app = fixture(provider, {}, context);
+    const headers = await app.session();
+    const response = (await app.route("/assist", headers, request))!;
+    assert.equal(
+      response.status,
+      202,
+      `${label}: ${await response.clone().text()}`,
+    );
+    const job = ((await response.json()) as any).job;
+    await app.poll(job, headers);
+  }
+});
+
+test("every enabled operation fits defaults at the request and context byte limits with escaped text", (t) => {
+  for (const { label, request, context } of enabledRequests()) {
+    if (request.current.compound) {
+      const parts = request.current.compound.components;
+      request.current.compound.components = Array.from(
+        { length: 64 },
+        (_, index) => parts[index % parts.length],
+      );
+      for (const entry of context) {
+        const frame = onePlace();
+        frame.arity.count = 256;
+        frame.places = Array.from({ length: 256 }, (_, index) => ({
+          ...frame.places[0],
+          index: index + 1,
+        }));
+        entry.body.frame = frame;
+      }
+    }
+    while (context.length < 32) {
+      const event = `jve1:${context.length.toString(16).padStart(64, "0")}`;
+      if (context.some((entry) => entry.event === event)) continue;
+      context.push({
+        event,
+        body: { word: { language: "jbo", spelling: "broda" }, text: [] },
+      });
+    }
+    request.context = context.map((entry) => entry.event);
+    request.meaning = "M".repeat(16384);
+    request.current.text = [[""]];
+    const bodyRoom =
+      262144 - new TextEncoder().encode(JSON.stringify(request)).byteLength;
+    request.current.text = [['"'.repeat(Math.floor(bodyRoom / 2))]];
+    context[0].body.text = [[""]];
+    const contextRoom =
+      131072 - new TextEncoder().encode(JSON.stringify(context)).byteLength;
+    context[0].body.text = [['"'.repeat(Math.floor(contextRoom / 2))]];
+    assert.ok(
+      new TextEncoder().encode(JSON.stringify(request)).byteLength >= 262143,
+      label,
+    );
+    assert.ok(
+      new TextEncoder().encode(JSON.stringify(context)).byteLength >= 131071,
+      label,
+    );
+    parseAssistRequest(request);
+    const provider = config();
+    const estimate = estimateAssistanceCost(request, context, provider);
+    t.diagnostic(`${label}: ${estimate.toFixed(7)} USD`);
+    assert.ok(
+      estimate < provider.networkHourlyBudgetUsd,
+      `${label}: ${estimate}`,
+    );
+  }
+});
+
+test("the conservative ceiling for all twelve answers fits one default network share", () => {
+  const provider = config();
+  // Every task starts below 2 MiB. At most three tasks also receive a generated frame.
+  const ceiling =
+    4 *
+      [0, 1, 2].reduce(
+        (total, prior) =>
+          total +
+          inferenceTurnCost(
+            provider,
+            INFERENCE_INITIAL_REQUEST_BYTES +
+              prior * INFERENCE_CORRECTION_BYTES,
+            8192,
+          ),
+        0,
+      ) +
+    (3 * 3 * 2 * INFERENCE_GENERATED_FRAME_BYTES * provider.inputPrice) /
+      1000000;
+  assert.ok(Math.abs(ceiling - 7.5276288) < 1e-12);
+  assert.ok(ceiling < provider.networkHourlyBudgetUsd);
+  assert.ok(ceiling < provider.networkDailyBudgetUsd);
 });
 
 test("server budget refuses a new job before acceptance or any paid turn", async () => {
@@ -301,7 +497,7 @@ test("reservation arithmetic uses actual UTF-8 requests, both prices and every p
   const noInput = config({ inputPrice: 0 });
   assert.equal(
     estimateAssistanceCost(small, [], noInput),
-    (2 * 3 * noInput.maxTokens * noInput.outputPrice) / 1000000,
+    (2 * 3 * taskMaxTokens(noInput, "type") * noInput.outputPrice) / 1000000,
   );
   const frame = {
     role: "predicate",
@@ -346,13 +542,18 @@ test("reservation arithmetic uses actual UTF-8 requests, both prices and every p
       estimateAssistanceCost(places, [], provider),
   );
   assert.ok(
-    estimateAssistanceCost(generated, [], provider) > provider.hourlyBudgetUsd,
+    estimateAssistanceCost(generated, [], provider) <
+      provider.networkHourlyBudgetUsd,
   );
   const correction = INFERENCE_CORRECTION_BYTES;
   assert.ok(
     estimateInferenceCost(provider, { task: "type", input: "" }) >
-      inferenceTurnCost(provider, correction) +
-        inferenceTurnCost(provider, correction * 2),
+      inferenceTurnCost(provider, correction, taskMaxTokens(provider, "type")) +
+        inferenceTurnCost(
+          provider,
+          correction * 2,
+          taskMaxTokens(provider, "type"),
+        ),
   );
 });
 
@@ -488,6 +689,7 @@ test("reported charges remain in the hourly window for an hour after the paid an
   const started = new Promise<void>((resolve) => (called = resolve));
   const app = fixture(
     config({
+      hourlyBudgetUsd: 1,
       timeoutMs: 540000,
       fetch: (async () => {
         called();
@@ -617,6 +819,7 @@ test("interrupted durable reservations survive restart and recovery is persisted
   };
   let calls = 0;
   const provider = config({
+    hourlyBudgetUsd: 1,
     fetch: (async () => {
       calls++;
       return Response.json(completion());

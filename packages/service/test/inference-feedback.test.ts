@@ -21,6 +21,25 @@ const answer = {
   x2: { gloss: "subject", sense: "" },
 };
 
+test("a source keeps known whole-word IPA when its stem is unknown", () => {
+  const source = {
+    word: "book",
+    sense: "bound pages",
+    word_ipa: "bʊk",
+    stem: null,
+    ipa: null,
+    sounds: null,
+    note: "No stem known.",
+  };
+  const spec: TaskCase = { task: "sources", language: "en", input: "" };
+  assert.deepEqual(checkAnswer(spec, source), []);
+  assert.ok(
+    checkAnswer(spec, { ...source, stem: "book", sounds: "buk" }).some(
+      (problem) => problem.includes("ipa"),
+    ),
+  );
+});
+
 test("correction feedback names missing and unknown answer fields", async () => {
   const { x2, ...partial } = answer;
   const wrong = { ...partial, x3: x2 };
@@ -113,6 +132,90 @@ test("mapping tool schemas teach studied spellings and the checker names permitt
     x1: [{ component: "c2[1]", reason: "direct: an internal label." }],
   });
   assert.match(problems[0], /Use klama\[2\], karce\[3\], none, or unclear/);
+});
+
+for (const allAmbiguous of [false, true])
+  test(`mapping correction names only unique permitted places (${allAmbiguous ? "all" : "some"} ambiguous)`, async () => {
+    const mapping: TaskCase = {
+      task: "mappings",
+      input: "{}",
+      keys: ["x1"],
+      components: allAmbiguous
+        ? ["klama[1]"]
+        : ["klama[1]", "karce[2]", "karce[2]"],
+      ambiguousComponents: ["klama[1]"],
+    };
+    let calls = 0;
+    const config = providerConfig(
+      { JVC_AI_ENABLED: "enabled" },
+      async () => "disposable-feedback-key",
+    )!;
+    config.fetch = (async (_url, init) => {
+      const body = JSON.parse(String(init?.body));
+      if (calls++) {
+        const feedback = body.messages.at(-1).content;
+        const permitted = feedback.slice(feedback.indexOf("Use "));
+        assert.doesNotMatch(permitted, /klama\[1\]/);
+        assert.equal(
+          (permitted.match(/karce\[2\]/g) ?? []).length,
+          allAmbiguous ? 0 : 1,
+        );
+        assert.match(
+          permitted,
+          allAmbiguous
+            ? /Use none or unclear\./
+            : /Use karce\[2\], none, or unclear\./,
+        );
+      }
+      return Response.json({
+        choices: [
+          {
+            finish_reason: "tool_calls",
+            message: {
+              tool_calls: [
+                {
+                  id: "answer",
+                  type: "function",
+                  function: {
+                    name: "submit_answer",
+                    arguments: JSON.stringify({
+                      x1: [
+                        {
+                          component: calls === 1 ? "klama[1]" : "unclear",
+                          reason:
+                            calls === 1
+                              ? "direct: the traveler."
+                              : "unclear: definitions differ.",
+                        },
+                      ],
+                    }),
+                  },
+                },
+              ],
+            },
+          },
+        ],
+        usage: {},
+      });
+    }) as typeof fetch;
+    const log = newLog("places-glosses", config, "unique-feedback");
+    await new InferenceRunner(config, log, AbortSignal.timeout(2000)).run(
+      mapping,
+    );
+    assert.equal(calls, 2);
+    assert.equal(log.corrections, 1);
+  });
+
+test("mapping feedback keeps complete permitted names within the feedback limit", () => {
+  const name = `${"k".repeat(256)}[256]`;
+  const problems = checkAnswer(
+    { task: "mappings", input: "", keys: ["x1"], components: [name] },
+    {
+      x1: [{ component: "unknown", reason: "direct: an unavailable place." }],
+    },
+  );
+  assert.ok(problems[0].includes(`Use ${name}, none, or unclear.`));
+  assert.ok(problems[0].length <= 512);
 });
 
 const largeMappingCase: TaskCase = {

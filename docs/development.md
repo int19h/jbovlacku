@@ -300,15 +300,15 @@ Both local adapters accept these variables:
 | `JVC_AI_REASONING_EFFORT`          | Reasoning level. The default is `medium`.                                                                                                                            |
 | `JVC_AI_OPERATIONS`                | Comma-separated permitted operations. The default contains all six operations below. An empty value disables every operation.                                        |
 | `JVC_AI_DECISION_REPORTS`          | Set `enabled` to request a written decision report before the tool call. The default is disabled.                                                                    |
-| `JVC_AI_MAX_TOKENS`                | Maximum output tokens for each provider turn. The default is 16,384. The permitted range is 128 through 32,768.                                                      |
+| `JVC_AI_MAX_TOKENS`                | Operator ceiling for output tokens per provider turn. The default is 16,384. Each task also has a lower cap. The permitted range is 128 through 32,768.              |
 | `JVC_AI_TIMEOUT_MS`                | Time limit for the complete job. The default is 120,000 milliseconds. The permitted range is 10 through 540,000. Job expiry leaves a reading window after this time. |
 | `JVC_AI_CONCURRENCY`               | Maximum active jobs. The default is two. Node permits one through four. The Worker caps this value at two.                                                           |
 | `JVC_AI_INPUT_PRICE`               | Model input price in USD per million tokens. The default is 0.10.                                                                                                    |
 | `JVC_AI_OUTPUT_PRICE`              | Model output price in USD per million tokens. The default is 0.20.                                                                                                   |
-| `JVC_AI_HOURLY_BUDGET_USD`         | Server spending limit for the past hour. The default is 1 USD.                                                                                                       |
-| `JVC_AI_DAILY_BUDGET_USD`          | Server spending limit for the past day. The default is 5 USD.                                                                                                        |
-| `JVC_AI_NETWORK_HOURLY_BUDGET_USD` | Hourly allowance for each network. The default is half the configured server hourly limit.                                                                           |
-| `JVC_AI_NETWORK_DAILY_BUDGET_USD`  | Daily allowance for each network. The default is half the configured server daily limit.                                                                             |
+| `JVC_AI_HOURLY_BUDGET_USD`         | Server spending limit for the past hour. The default is 32 USD.                                                                                                      |
+| `JVC_AI_DAILY_BUDGET_USD`          | Server spending limit for the past day. The default is 160 USD.                                                                                                      |
+| `JVC_AI_NETWORK_HOURLY_BUDGET_USD` | Hourly allowance for each network. The default is one quarter of the configured server hourly limit.                                                                 |
+| `JVC_AI_NETWORK_DAILY_BUDGET_USD`  | Daily allowance for each network. The default is one quarter of the configured server daily limit.                                                                   |
 | `JVC_AI_MAX_PRICE`                 | Maximum input and output price in USD per million tokens. The default is 10. The permitted range is 0.001 through 100.                                               |
 
 Operations are `type`, `lujvo`, `gismu-sources`, `cmavo-class`, `definition`, and `places-glosses`.
@@ -364,7 +364,7 @@ An optional `JVC_AI_MAX_COST_USD` sets an additional admission ceiling for one c
 A reservation is a cost estimate held before job admission.
 The service constructs each possible task's actual initial provider request, including its prompt and tool schema.
 Let `B` be that request's UTF-8 byte count. Each byte counts as one input token.
-Let `M` be `max_tokens`, `Pi` the input price, and `Po` the output price.
+Let `M` be the task output cap, `Pi` the input price, and `Po` the output price.
 The response cap is `R = 262,144` bytes. The feedback allowance is `F = 32 × 512 × 6 + 4,096 = 102,400` bytes.
 The correction bound is `C = 2R + F = 626,688` bytes. It includes echoed reasoning, tool arguments, and escaped feedback.
 For tasks after a generated frame, add `G = 2R + 4,096 = 528,384` bytes. Other tasks use `G = 0`.
@@ -375,18 +375,51 @@ reservation(task) = 2 × sum(a = 0..2) [ (B + G + aC) × Pi + M × Po ] / 1,000,
 reservation(job) = sum(reservation(task))
 ```
 
+The configured `JVC_AI_MAX_TOKENS` is an operator ceiling. Each turn uses the smaller of that ceiling and its task cap.
+These caps use observed completion tokens, including the provider's reported reasoning tokens.
+The four studied tasks use medium-reasoning observations from prompt study v19. The other tasks use the recorded local live checks.
+No new provider requests are needed to apply these measurements.
+
+| Task          | Largest observed output | Task cap |
+| ------------- | ----------------------: | -------: |
+| `glosses`     |                   3,044 |    4,096 |
+| `hints`       |                   6,603 |    8,192 |
+| `mappings`    |                   3,657 |    6,144 |
+| `sources`     |                   5,687 |    8,192 |
+| `type`        |                   1,552 |    2,048 |
+| `components`  |                   1,376 |    2,048 |
+| `cmavo-class` |                   1,174 |    2,048 |
+| `definition`  |                   3,996 |    6,144 |
+| `places`      |                   1,017 |    2,048 |
+
+Every task cap exceeds its observed maximum by at least 24 percent. These observations do not guarantee completion for every future request.
+Changing the model or reasoning effort needs new evidence before these caps change.
+
 The operation determines which tasks remain. An absent initial frame includes the places task and up to sixteen generated places.
 An existing frame uses its actual place keys. The reservation includes mappings only when selected definitions supply component places.
 Before admission, every server and network allowance must cover existing charges plus the new reservation.
-The server defaults are 1 USD over the past hour and 5 USD over the past day.
-Each network receives half of each configured server limit by default: 0.50 USD per hour and 2.50 USD per day.
+The server defaults are 32 USD over the past hour and 160 USD over the past day.
+Each network receives one quarter of each configured server limit by default: 8 USD per hour and 40 USD per day.
+At least four separate network shares are needed to fill a server spending window.
 IPv6 requests count against both their /64 and /48 allowances. One IPv4 address has one allowance.
 The durable ledger stores keyed SHA-256 hashes of these units. It stores no client address or prefix.
 A private random key remains stable across restarts. Legacy records with no network identity count against every network until their windows end.
 
-A small type request reserves about 0.398 USD at the defaults. A small generated places request without mappings reserves about 1.846 USD.
-The exact amounts depend on the actual prompts, input, and tool schemas. The latter request exceeds the default hourly allowance.
-To permit larger operations, raise both the server allowance and the network allowance. Model prices remain separate from those allowances.
+The initial provider request is bounded at 2,097,152 bytes before any generated-frame allowance.
+Generated-frame follow-up tasks add at most `G` bytes to that bound.
+A conservative four-task ceiling uses the largest task cap for every task and adds `G` to all three follow-up tasks:
+
+```text
+ceiling = 4 × 6 × ((2,097,152 + 626,688) × 0.10 + 8,192 × 0.20) / 1,000,000
+        + 3 × 6 × 528,384 × 0.10 / 1,000,000
+        = 7.5276288 USD
+```
+
+The 8 USD hourly network share exceeds that ceiling by 0.4723712 USD. Its 40 USD daily share also covers every operation.
+
+Every enabled operation fits within the default network share, including a generated frame with glosses, hints, and mappings.
+The exact reservation depends on the actual prompts, input, and tool schemas. Model prices remain separate from spending allowances.
+Smaller operator allowances can exclude operations from the advertised capabilities.
 
 A request above any empty allowance or the optional per-job ceiling returns `billing_request_too_large` without `Retry-After`.
 Its message explains that waiting cannot help. Reduce the request or raise the named operator allowance.
@@ -425,7 +458,7 @@ The test restored the complete ledger after a runtime restart. An injected write
 Local workerd accepted the oversized old value. This does not remove the hosted 2 MB value limit or prove hosted quota compliance.
 These estimates require accurate operator prices. They do not guarantee charges from an untested compatible provider.
 
-The log bounds use separate size allowances. The initial request allowance is `B = 2,097,152` bytes.
+The log bounds use separate size allowances. The initial request allowance is `B = 2,097,152` bytes before generated-frame additions.
 The HTTP body permits 262,144 bytes, and loaded definition context permits 131,072 bytes.
 A generated initial frame comes from a response of at most 262,144 bytes.
 Existing frames permit 256 places. A compound permits 64 components, each with at most 256 supplied place indices.
@@ -438,6 +471,8 @@ If the next turn cannot fit, the job fails with `log_limit` before it sends that
 The request allowance is `4 × (3B + 3C)`, about 31.17 MiB for all twelve turns.
 Five response copies per turn add 15 MiB. Four exchange headers and their initial text add at most 8 MiB.
 The 64 MiB limit leaves room for feedback, checks, usage, and log metadata above these 54.17 MiB allowances.
+Generated-frame follow-up tasks add at most `12G = 6,340,608` bytes across request copies and exchange headers.
+The combined allowance remains below 61 MiB and leaves room within the 64 MiB limit.
 These are serialized bounds. They are not a JavaScript heap bound.
 Request snapshots share immutable messages and tool schemas. Exchange text shares the initial request strings.
 Raw response fields and correction metadata stay as compact JSON and expand one field at a time when read.
@@ -455,7 +490,8 @@ Extra origins permitted for public dictionary reads cannot use private jobs.
 Each session can start 12 jobs per hour. Each client network bucket can start 48 jobs per hour.
 One bucket holds at most eight sessions and one retained job. A failed job with no provider turn releases its retained slot.
 A new visitor can replace the oldest idle session within a full bucket.
-A context load, pending admission, running job, or readable retained result protects its session.
+A parsed request protects its session during context loading and admission. Running jobs and readable retained results also protect their sessions.
+The service limits body reads to ten seconds. Slow uploads never protect their sessions from idle eviction.
 Dismissed and discarded terminal records do not prevent idle eviction. Eviction removes their remaining job records.
 At most 128 sessions exist at once. A new visitor can replace the oldest idle session at that limit.
 `GET /session` refreshes a session for one hour. Job admission also extends it through the job's expiry.
@@ -468,6 +504,10 @@ Accepted work returns HTTP 202 with an opaque job ID, expiry, and polling interv
 Job reads expose the current task and answer count. Cancel aborts the outbound request and stops further local turns.
 Cancellation cannot reverse an already transmitted request or a provider charge.
 Private jobs expire after at most ten minutes. A service restart or Worker eviction also loses them.
+Unknown and foreign job IDs return HTTP 404 with `missing`. Owned expired IDs return HTTP 410 with `job_expired` while their markers remain.
+Expiry markers retain only the ID, owner session, and fixed expiry. Each session keeps at most 128 markers for at most one further hour.
+Each session also keeps at most 128 unexpired job records. This separate limit returns HTTP 429 with `session_job_limit` and the earliest expiry interval.
+Expiry markers never consume job slots. Reads and session renewal never extend either job or marker retention.
 The job deadline leaves a final reading window of 60 seconds, or one quarter of a shorter test lifetime.
 At the normal lifetime, a timeout occurs by nine minutes and leaves its failed state and log readable until expiry.
 They use transient memory rather than the dictionary object store, indexes, receipt journal, or ordinary logs.
@@ -492,11 +532,14 @@ Proposals keep each source row's original language code.
 English gloss suggestions keep language `en` even when the definition uses another language. Existing glosses in other languages remain present.
 Source proposals preserve missing words as empty editable rows.
 Their current sense and uncertainty appear as `Sense:` and `Note:` paragraphs. A null sense adds no paragraph.
-A new suggestion replaces these notes. The author can edit or remove accepted notes before publication.
+Acceptance replaces the tracked AI note group and preserves authored notes. The author can edit or remove accepted notes before publication.
 Source edits update the publication copy even after form selection or navigation through the step bar.
 Descriptive edits preserve historical scores. Changed language, algorithm input, or weight blocks publication until the author selects or removes the evidence.
 Definition and place suggestions need a valid word type and spelling for core validation before acceptance.
-Whole-word IPA, stem, and stem IPA use the separate `word_ipa`, `stem`, and `ipa` fields.
+Whole-word IPA uses the signed `word_ipa` field. Stem and stem IPA use private draft fields, `stem` and `ipa`.
+Source proposals contain only proposed fields and new AI notes. Null answers preserve existing values.
+A changed suggested word requires Keep or Clear for each retained nonempty field and authored note.
+The draft preserves these review choices and AI paragraph ownership through reload and undo. Neither enters signed records.
 The additional prompts cover type, components, selma'o, definition text, and an initial place structure.
 To update the runtime prompt bundle after editing a prompt, run `node prompts/build-bundle.mjs`.
 The service tests require that the generated bundle matches every public prompt file exactly.

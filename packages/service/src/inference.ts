@@ -159,10 +159,28 @@ const operations = [
 ];
 export const INFERENCE_RESPONSE_BYTES = 262144;
 export const INFERENCE_INITIAL_REQUEST_BYTES = 2097152;
+export const INFERENCE_GENERATED_FRAME_BYTES =
+  2 * INFERENCE_RESPONSE_BYTES + 4096;
 export const INFERENCE_FEEDBACK_BYTES = 32 * 512 * 6 + 4096;
 export const INFERENCE_CORRECTION_BYTES =
   2 * INFERENCE_RESPONSE_BYTES + INFERENCE_FEEDBACK_BYTES;
 export const INFERENCE_LOG_BYTES = 64 * 1024 * 1024;
+// These caps include a margin above the prompt studies and local live checks.
+const taskTokenCaps: Record<Task, number> = {
+  glosses: 4096,
+  hints: 8192,
+  mappings: 6144,
+  sources: 8192,
+  type: 2048,
+  components: 2048,
+  "cmavo-class": 2048,
+  definition: 6144,
+  places: 2048,
+};
+export const taskMaxTokens = (
+  config: Pick<ProviderConfig, "maxTokens">,
+  task: Task,
+) => Math.min(config.maxTokens, taskTokenCaps[task]);
 type ProviderEnv = Partial<
   Record<
     | "JVC_AI_ENABLED"
@@ -231,11 +249,16 @@ export function providerConfig(
   const maxPrice = number("JVC_AI_MAX_PRICE", 10, 0.001, 100);
   const hourlyBudgetUsd = number(
     "JVC_AI_HOURLY_BUDGET_USD",
-    1,
+    32,
     0.000001,
     10000,
   );
-  const dailyBudgetUsd = number("JVC_AI_DAILY_BUDGET_USD", 5, 0.000001, 100000);
+  const dailyBudgetUsd = number(
+    "JVC_AI_DAILY_BUDGET_USD",
+    160,
+    0.000001,
+    100000,
+  );
   return {
     baseUrl: baseUrl.replace(/\/$/, ""),
     model: env.JVC_AI_MODEL ?? "meta/muse-spark-1.3-contributor",
@@ -258,14 +281,14 @@ export function providerConfig(
     dailyBudgetUsd,
     networkHourlyBudgetUsd: number(
       "JVC_AI_NETWORK_HOURLY_BUDGET_USD",
-      hourlyBudgetUsd / 2,
-      0.0000005,
+      hourlyBudgetUsd / 4,
+      0.00000025,
       10000,
     ),
     networkDailyBudgetUsd: number(
       "JVC_AI_NETWORK_DAILY_BUDGET_USD",
-      dailyBudgetUsd / 2,
-      0.0000005,
+      dailyBudgetUsd / 4,
+      0.00000025,
       100000,
     ),
     operations: configured,
@@ -315,6 +338,12 @@ export const sourceLanguages: Record<string, string> = {
   msa: "malay",
   deu: "german",
   jpn: "japanese",
+};
+const permittedComponents = (spec: TaskCase) => {
+  const ambiguous = new Set(spec.ambiguousComponents ?? []);
+  return [...new Set(spec.components ?? [])].filter(
+    (name) => !ambiguous.has(name),
+  );
 };
 export function schemaFor(spec: TaskCase): JsonObject {
   if (["glosses", "hints", "mappings"].includes(spec.task))
@@ -450,6 +479,18 @@ export function checkAnswer(spec: TaskCase, value: unknown): string[] {
         problems.push(`${key}: unclear must stand alone.`);
     }
   } else if (spec.task === "mappings") {
+    const permitted = permittedComponents(spec);
+    const examples: string[] = [];
+    for (const name of permitted) {
+      if (examples.length === 4 || [...examples, name].join(", ").length > 300)
+        break;
+      examples.push(name);
+    }
+    const guidance = examples.length
+      ? `${examples.join(", ")}${examples.length < permitted.length ? ", other unique permitted places" : ""}, none, or unclear`
+      : permitted.length
+        ? "a unique name from the permitted list, none, or unclear"
+        : "none or unclear";
     for (const [key, row] of Object.entries(value)) {
       const names = row.map((entry: JsonObject) => entry.component);
       if (!row.length) problems.push(`${key} must be a nonempty array.`);
@@ -461,20 +502,9 @@ export function checkAnswer(spec: TaskCase, value: unknown): string[] {
       )
         problems.push(`${key}: none and unclear must stand alone.`);
       for (const entry of row) {
-        if (
-          ![...(spec.components ?? []), "none", "unclear"].includes(
-            entry.component,
-          )
-        )
+        if (![...permitted, "none", "unclear"].includes(entry.component))
           problems.push(
-            `${key}: ${entry.component.slice(0, 64)} is not a supplied component place. Use ${(
-              spec.components ?? []
-            )
-              .slice(0, 4)
-              .map((name) => name.slice(0, 64))
-              .join(
-                ", ",
-              )}${(spec.components?.length ?? 0) > 4 ? ", ..." : ""}, none, or unclear.`,
+            `${key}: ${entry.component.slice(0, 64)} is not a unique supplied component place. Use ${guidance}.`,
           );
         const sentinel = ["none", "unclear"].includes(entry.component);
         const kinds = sentinel
@@ -511,9 +541,9 @@ export function checkAnswer(spec: TaskCase, value: unknown): string[] {
       problems.push("sense is null, so every later field must be null.");
     if (
       value.stem === null &&
-      ["word_ipa", "ipa", "sounds"].some((field) => value[field] !== null)
+      ["ipa", "sounds"].some((field) => value[field] !== null)
     )
-      problems.push("stem is null, so every later field must be null.");
+      problems.push("stem is null, so ipa and sounds must be null.");
     if (
       value.word_ipa === null &&
       (value.ipa !== null || value.sounds !== null)
@@ -801,7 +831,7 @@ export function taskMessages(
     ).join("; ");
   };
   const ambiguous = new Set(spec.ambiguousComponents ?? []);
-  const unique = (spec.components ?? []).filter((name) => !ambiguous.has(name));
+  const unique = permittedComponents(spec);
   const ambiguityLegend = ambiguous.size
     ? ` Ambiguous component places: ${groupPlaces([...ambiguous])}. Each listed name refers to more than one selected definition. Do not use these names. Use unclear for an unresolved mapping.`
     : "";
@@ -837,12 +867,13 @@ function inferenceBody(
   config: ProviderConfig,
   messages: JsonObject[],
   tool: JsonObject,
+  task: Task,
 ): JsonObject {
   return {
     model: config.model,
     stream: false,
     usage: { include: true },
-    max_tokens: config.maxTokens,
+    max_tokens: taskMaxTokens(config, task),
     reasoning: { effort: config.reasoningEffort },
     provider: {
       only: [config.route],
@@ -855,15 +886,33 @@ function inferenceBody(
     messages: messages.slice(),
   };
 }
+function prepareInference(
+  config: ProviderConfig,
+  spec: TaskCase,
+  extraInputAllowance = 0,
+) {
+  const prepared = taskMessages(config, spec);
+  const tool = answerTool(spec);
+  const bytes = new TextEncoder().encode(
+    compactJson(inferenceBody(config, prepared.messages, tool, spec.task)),
+  ).byteLength;
+  if (bytes > INFERENCE_INITIAL_REQUEST_BYTES + extraInputAllowance)
+    throw new AssistanceError(
+      413,
+      "size",
+      "The inference request exceeded its initial byte limit.",
+    );
+  return { ...prepared, tool, bytes };
+}
 /** Each UTF-8 request byte reserves one input token. The safety margin is two. */
 export function inferenceTurnCost(
   config: ProviderConfig,
   requestBytes: number,
+  outputTokens = config.maxTokens,
 ): number {
   return (
     (2 *
-      (requestBytes * config.inputPrice +
-        config.maxTokens * config.outputPrice)) /
+      (requestBytes * config.inputPrice + outputTokens * config.outputPrice)) /
     1000000
   );
 }
@@ -873,17 +922,14 @@ export function estimateInferenceCost(
   spec: TaskCase,
   extraInputBytes = 0,
 ): number {
-  const { messages } = taskMessages(config, spec);
-  const initialBytes =
-    new TextEncoder().encode(
-      compactJson(inferenceBody(config, messages, answerTool(spec))),
-    ).byteLength + extraInputBytes;
+  const initialBytes = prepareInference(config, spec).bytes + extraInputBytes;
   return [0, 1, 2].reduce(
     (total, priorAnswers) =>
       total +
       inferenceTurnCost(
         config,
         initialBytes + priorAnswers * INFERENCE_CORRECTION_BYTES,
+        taskMaxTokens(config, spec.task),
       ),
     0,
   );
@@ -899,8 +945,12 @@ export class InferenceRunner {
     private signal: AbortSignal,
     private progress: (task: Task, attempt: number) => void = () => {},
   ) {}
-  async run(spec: TaskCase): Promise<JsonObject> {
-    const { files, system, input, messages } = taskMessages(this.config, spec);
+  async run(spec: TaskCase, extraInputAllowance = 0): Promise<JsonObject> {
+    const { files, system, input, messages, tool } = prepareInference(
+      this.config,
+      spec,
+      extraInputAllowance,
+    );
     for (const file of files)
       if (!this.log.prompt_files.includes(`/api/v1/assist/prompts/${file}`))
         this.log.prompt_files.push(`/api/v1/assist/prompts/${file}`);
@@ -914,12 +964,15 @@ export class InferenceRunner {
     const encodeSize = (value: unknown) =>
       new TextEncoder().encode(compactJson(value)).byteLength;
     this.logBytes += encodeSize(exchange) + 1;
-    const tool = answerTool(spec);
     for (let attempt = 1; attempt <= 3; attempt++) {
       this.signal.throwIfAborted();
       this.progress(spec.task, attempt);
-      const body = inferenceBody(this.config, messages, tool);
-      const turnEstimate = inferenceTurnCost(this.config, encodeSize(body));
+      const body = inferenceBody(this.config, messages, tool, spec.task);
+      const turnEstimate = inferenceTurnCost(
+        this.config,
+        encodeSize(body),
+        taskMaxTokens(this.config, spec.task),
+      );
       // Reserve space for the complete bounded response and the visible fields
       // that also appear separately in the log. Never discard an admitted turn.
       const logLimit = Math.min(

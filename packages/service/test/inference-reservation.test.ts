@@ -13,11 +13,14 @@ import {
   estimateInferenceCost,
   INFERENCE_CORRECTION_BYTES,
   INFERENCE_RESPONSE_BYTES,
+  INFERENCE_INITIAL_REQUEST_BYTES,
+  INFERENCE_GENERATED_FRAME_BYTES,
   inferenceTurnCost,
   InferenceRunner,
   newLog,
   providerConfig,
   taskMessages,
+  taskMaxTokens,
   type ProviderConfig,
   type TaskCase,
 } from "../src/inference.ts";
@@ -209,6 +212,7 @@ test("the estimator reserves the full correction allowance on each later attempt
         inferenceTurnCost(
           provider,
           firstBytes + prior * INFERENCE_CORRECTION_BYTES,
+          taskMaxTokens(provider, spec.task),
         ),
       0,
     ),
@@ -257,10 +261,12 @@ test("generated frames reserve full response descriptions in later task requests
   assert.equal(result.log.answers, 3);
 });
 
-test("network spending configuration defaults to half of each server limit and validates overrides", () => {
+test("network spending configuration defaults to one quarter of each server limit and validates overrides", () => {
   const defaults = config() as any;
-  assert.equal(defaults.networkHourlyBudgetUsd, 0.5);
-  assert.equal(defaults.networkDailyBudgetUsd, 2.5);
+  assert.equal(defaults.hourlyBudgetUsd, 32);
+  assert.equal(defaults.dailyBudgetUsd, 160);
+  assert.equal(defaults.networkHourlyBudgetUsd, 8);
+  assert.equal(defaults.networkDailyBudgetUsd, 40);
   const custom = providerConfig(
     {
       JVC_AI_ENABLED: "enabled",
@@ -269,8 +275,8 @@ test("network spending configuration defaults to half of each server limit and v
     },
     async () => "disposable",
   ) as any;
-  assert.equal(custom.networkHourlyBudgetUsd, 4);
-  assert.equal(custom.networkDailyBudgetUsd, 15);
+  assert.equal(custom.networkHourlyBudgetUsd, 2);
+  assert.equal(custom.networkDailyBudgetUsd, 7.5);
   for (const name of [
     "JVC_AI_NETWORK_HOURLY_BUDGET_USD",
     "JVC_AI_NETWORK_DAILY_BUDGET_USD",
@@ -298,6 +304,121 @@ test("network spending configuration defaults to half of each server limit and v
         /Invalid/,
       );
   }
+});
+
+test("each task uses its studied output cap for all answers and its reservation", async () => {
+  const caps: Record<TaskCase["task"], number> = {
+    glosses: 4096,
+    hints: 8192,
+    mappings: 6144,
+    sources: 8192,
+    type: 2048,
+    components: 2048,
+    "cmavo-class": 2048,
+    definition: 6144,
+    places: 2048,
+  };
+  for (const [task, cap] of Object.entries(caps)) {
+    const spec: TaskCase = {
+      task: task as TaskCase["task"],
+      input: "A traveler.",
+      language: "en",
+      check: () => ["Correct this answer."],
+    };
+    let turns = 0;
+    let firstBytes = 0;
+    const provider = config({
+      fetch: (async (_url, init) => {
+        const body = String(init?.body);
+        assert.equal(JSON.parse(body).max_tokens, cap, task);
+        if (!turns++) firstBytes = new TextEncoder().encode(body).byteLength;
+        return Response.json(completion({}));
+      }) as typeof fetch,
+    });
+    await assert.rejects(
+      new InferenceRunner(
+        provider,
+        newLog(task, provider, "caps"),
+        AbortSignal.timeout(2000),
+      ).run(spec),
+      { code: "invalid_answer" },
+    );
+    assert.equal(turns, 3, task);
+    const expected = [0, 1, 2].reduce(
+      (total, prior) =>
+        total +
+        (2 *
+          ((firstBytes + prior * INFERENCE_CORRECTION_BYTES) *
+            provider.inputPrice +
+            cap * provider.outputPrice)) /
+          1000000,
+      0,
+    );
+    assert.equal(estimateInferenceCost(provider, spec), expected, task);
+    assert.equal(
+      taskMaxTokens({ ...provider, maxTokens: 128 }, spec.task),
+      128,
+    );
+  }
+});
+
+test("initial inference requests enforce the same byte limit before reservation and provider work", async () => {
+  let calls = 0;
+  const provider = config({
+    fetch: (async () => {
+      calls++;
+      return Response.json(
+        completion({ word_type: "gismu", reason: "A root." }),
+      );
+    }) as typeof fetch,
+  });
+  const spec: TaskCase = {
+    task: "type",
+    input: "A".repeat(INFERENCE_INITIAL_REQUEST_BYTES),
+  };
+  assert.throws(() => estimateInferenceCost(provider, spec), {
+    status: 413,
+    code: "size",
+  });
+  await assert.rejects(
+    new InferenceRunner(
+      provider,
+      newLog("type", provider, "initial-cap"),
+      AbortSignal.timeout(2000),
+    ).run(spec),
+    { status: 413, code: "size" },
+  );
+  assert.equal(calls, 0);
+});
+
+test("a generated frame keeps its reserved initial allowance in downstream requests", async () => {
+  let calls = 0;
+  const provider = config({
+    fetch: (async (_url, init) => {
+      calls++;
+      const bytes = new TextEncoder().encode(String(init?.body)).byteLength;
+      assert.ok(bytes > INFERENCE_INITIAL_REQUEST_BYTES);
+      assert.ok(
+        bytes <=
+          INFERENCE_INITIAL_REQUEST_BYTES + INFERENCE_GENERATED_FRAME_BYTES,
+      );
+      return Response.json(
+        completion({ word: { gloss: "travel", sense: "the act of travel" } }),
+      );
+    }) as typeof fetch,
+  });
+  const spec: TaskCase = {
+    task: "glosses",
+    input: "A".repeat(INFERENCE_INITIAL_REQUEST_BYTES),
+    keys: ["word"],
+  };
+  const result = await new InferenceRunner(
+    provider,
+    newLog("places-glosses", provider, "generated-cap"),
+    AbortSignal.timeout(2000),
+  ).run(spec, INFERENCE_GENERATED_FRAME_BYTES);
+  assert.equal(result.word.gloss, "travel");
+  assert.equal(calls, 1);
 });
 
 function mappingFixture(includeUnique: boolean) {

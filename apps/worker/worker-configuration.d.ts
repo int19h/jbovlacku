@@ -21,8 +21,8 @@ interface __BaseEnv_Env {
 	JVC_AI_CONCURRENCY: "2";
 	JVC_AI_INPUT_PRICE: "0.1";
 	JVC_AI_OUTPUT_PRICE: "0.2";
-	JVC_AI_HOURLY_BUDGET_USD: "1";
-	JVC_AI_DAILY_BUDGET_USD: "5";
+	JVC_AI_HOURLY_BUDGET_USD: "32";
+	JVC_AI_DAILY_BUDGET_USD: "160";
 	JVC_AI_MAX_PRICE: "10";
 	JVC_AI_OPERATIONS: "type,lujvo,gismu-sources,cmavo-class,definition,places-glosses";
 	JVC_AI_KEY: string;
