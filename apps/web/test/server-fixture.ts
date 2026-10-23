@@ -118,6 +118,22 @@ const provider = createServer(async (request, response) => {
           ).content,
         )
       : null;
+  const fixedComponents = supplied?.current.compound?.components ?? [];
+  const componentAnswer = fixedComponents.map(
+    (component: { word: { spelling: string }; definition: string | null }) => ({
+      spelling: component.word.spelling,
+      definition:
+        supplied.definitions.find(
+          (definition: { label: string }) =>
+            /^d[1-9]\d*$/.test(definition.label) &&
+            definition.label === component.definition,
+        )?.label ?? null,
+    }),
+  );
+  if (componentAnswer.length === 0)
+    componentAnswer.push({ spelling: "cukta", definition: null });
+  if (componentAnswer.length === 1)
+    componentAnswer.push({ spelling: "sinxa", definition: null });
   const answer = sourceTask
     ? {
         word: "book",
@@ -130,18 +146,11 @@ const provider = createServer(async (request, response) => {
       }
     : componentTask
       ? {
-          components: [
-            {
-              spelling: "cukta",
-              definition:
-                supplied.current.compound?.components.find(
-                  (component: { word: { spelling: string } }) =>
-                    component.word.spelling === "cukta",
-                )?.definition ?? null,
-            },
-            { spelling: "sinxa", definition: null },
-          ],
-          reason: "Keep the selected book component and add a sign component.",
+          components: componentAnswer,
+          reason:
+            fixedComponents.length > 1
+              ? "Keep both selected components and their exact definitions."
+              : "Keep the selected book component and add a sign component.",
         }
       : corrected
         ? { word_type: "cmavo", reason: "A grammar word fits this meaning." }

@@ -1083,6 +1083,104 @@ for (const [action, lock] of [
   });
 }
 
+test("actual service resolves component labels to the chosen exact definitions through acceptance and reload", async ({
+  page,
+}) => {
+  const definitions = fixture().definitions;
+  const chosen = [definitions.cukta2, definitions.dunda2];
+  await draft(
+    page,
+    {
+      kind: "lujvo",
+      spelling: "",
+      text: "Human prose about donating a volume.",
+      lujvo: {
+        profile: "cll",
+        components: ["cukta", "dunda"].map((spelling, index) => ({
+          id: `chosen-${spelling}`,
+          spelling,
+          kind: "gismu",
+          definition: chosen[index],
+          gloss: "",
+          claims: [],
+          locked: null,
+        })),
+        selected: null,
+        acknowledged: [],
+      },
+    },
+    "/new/lujvo",
+  );
+  const sent = page.waitForRequest(
+    (request) =>
+      request.url().endsWith("/api/v1/assist") && request.method() === "POST",
+  );
+  await page
+    .getByRole("button", { name: "Suggest components", exact: true })
+    .click();
+  await allow(page);
+  const browserRequest = (await sent).postDataJSON();
+  expect(browserRequest.context).toEqual(chosen);
+  expect(
+    browserRequest.current.compound.components.map(
+      (component: any) => component.definition,
+    ),
+  ).toEqual(chosen);
+  const panel = page.getByRole("region", {
+    name: "Suggest components suggestion",
+  });
+  await expect(
+    panel.getByRole("button", { name: "Use this", exact: true }),
+  ).toBeEnabled();
+  const pending = await stored(page);
+  const record = pending.ai.records[0];
+  const exchange = record.log.exchanges[0];
+  const modelRequest = JSON.parse(exchange.request);
+  expect(
+    modelRequest.definitions.map((definition: any) => ({
+      label: definition.label,
+      event: definition.event,
+    })),
+  ).toEqual([
+    { label: "d1", event: chosen[0] },
+    { label: "d2", event: chosen[1] },
+  ]);
+  expect(
+    modelRequest.current.compound.components.map(
+      (component: any) => component.definition,
+    ),
+  ).toEqual(["d1", "d2"]);
+  expect(exchange.attempts).toHaveLength(1);
+  const modelAnswer = JSON.parse(
+    exchange.attempts[0].tool_calls[0].function.arguments,
+  );
+  expect(modelAnswer.components).toEqual([
+    { spelling: "cukta", definition: "d1" },
+    { spelling: "dunda", definition: "d2" },
+  ]);
+  expect(JSON.stringify(modelAnswer)).not.toContain(chosen[0]);
+  expect(JSON.stringify(modelAnswer)).not.toContain(chosen[1]);
+  expect(exchange.attempts[0].check).toEqual({ accepted: true, problems: [] });
+  expect(
+    record.result.proposals
+      .find((proposal: any) => proposal.path === "/compound")
+      .value.components.map((component: any) => component.definition),
+  ).toEqual(chosen);
+  await panel.getByRole("button", { name: "Use this", exact: true }).click();
+  const accepted = await stored(page);
+  expect(
+    accepted.lujvo.components.map((component: any) => component.definition),
+  ).toEqual(chosen);
+  expect(accepted.text).toEqual([["Human prose about donating a volume."]]);
+  await page.reload();
+  const reloaded = await stored(page);
+  expect(
+    reloaded.lujvo.components.map((component: any) => component.definition),
+  ).toEqual(chosen);
+  expect(reloaded.ai.records[0].log).toEqual(record.log);
+  expect(reloaded.text).toEqual(accepted.text);
+});
+
 test("actual service accepts an English source from the default language preset without changing its tag", async ({
   page,
 }) => {
