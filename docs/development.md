@@ -135,12 +135,19 @@ The browser and Cloudflare Worker keep the same shared core and inline evaluatio
 Without an explicit snapshot, word, search, identity, account, and package reads use the last completed snapshot.
 The manifest also names that completed snapshot. Interpreted results name their snapshot and view.
 Raw replication reads can expose the newer accepted inventory and name its snapshot.
+Ordinary own-history loads use the manifest's completed snapshot, including loads on word, person, and trust pages.
+Only final own-history scans before handover, compromise, and acceptance recovery select the accepted snapshot.
 
 Lifecycle safety scans discover a peer's accepted snapshot through the first unpinned identity-heads page.
 They pin later head pages, activity pages, and signed envelopes to that snapshot.
 The activity request uses `accepted=1` and requires the response marker `history: "accepted"`.
 This mode skips evaluation and returns unavailable interpretation for every listed record.
 A peer that ignores this mode cannot supply a complete accepted-history scan to the browser.
+
+If a pinned read returns HTTP 410 with `snapshot_expired`, the browser starts the scan again from a fresh accepted snapshot.
+Each scan has at most three attempts under its original time and work limits.
+The browser discards evidence from an expired attempt before another attempt.
+Repeated expiry reports incomplete history and blocks the signature. It does not classify the peer as malformed.
 
 Handover and acceptance recovery use this history before signing.
 Online compromise previews also include configured peers and refresh their history after an unlock wait.

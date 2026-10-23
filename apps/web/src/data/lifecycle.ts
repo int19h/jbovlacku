@@ -21,7 +21,12 @@ import {
   type Peer,
   type IdentityHeadsPage,
 } from "./api.ts";
-import { loadOwnHistory, type OwnHistory } from "./history.ts";
+import {
+  loadOwnHistory,
+  snapshotExpired,
+  SNAPSHOT_SCAN_ATTEMPTS,
+  type OwnHistory,
+} from "./history.ts";
 import { freshPeer } from "./delivery.ts";
 import {
   describeTransport,
@@ -134,232 +139,286 @@ export async function askPeers(
   signal?: AbortSignal,
 ): Promise<PeerKnowledge[]> {
   return Promise.all(
-    peers.map(async (peer): Promise<PeerKnowledge> => {
-      const knowledge: PeerKnowledge = {
+    peers.map((peer) => scanPeer(peer, identity, successor, signal)),
+  );
+}
+interface ScanBudget {
+  signal: AbortSignal;
+  check: () => void;
+  attempts: number;
+  pages: number;
+  items: number;
+}
+const scanContexts = new WeakMap<
+  PeerKnowledge,
+  {
+    identity: string;
+    successor: string | null;
+    budget: ScanBudget;
+  }
+>();
+function newScanBudget(signal?: AbortSignal): ScanBudget {
+  const deadline = AbortSignal.timeout(SCAN_LIMITS.millis);
+  return {
+    signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
+    check: () => {
+      if (deadline.aborted)
+        throw new ScanIncomplete(
+          `the scan exceeded ${SCAN_LIMITS.millis / 1000} seconds`,
+        );
+      signal?.throwIfAborted();
+    },
+    attempts: 0,
+    pages: 0,
+    items: 0,
+  };
+}
+async function scanPeer(
+  peer: Peer,
+  identity: string,
+  successor: string | null,
+  signal?: AbortSignal,
+  budget = newScanBudget(signal),
+): Promise<PeerKnowledge> {
+  for (;;) {
+    budget.attempts++;
+    const knowledge: PeerKnowledge = {
+      peer,
+      status: "answered",
+      complete: false,
+      outcome: "unreachable",
+      snapshot: null,
+      heads: [],
+      transfers: [],
+      compromises: [],
+      acceptances: [],
+      successorEvents: [],
+      unverified: [],
+    };
+    const scanSignal = budget.signal;
+    const check = budget.check;
+    scanContexts.set(knowledge, { identity, successor, budget });
+    // The first raw head page captures the accepted inventory. Later failures
+    // leave known evidence and block instead of counting as unreachable.
+    let stage: "capture" | "heads" | "activity" | "claims" = "capture";
+    try {
+      check();
+      const firstPage = await identityHeads(identity, null, null, {
         peer,
-        status: "answered",
-        complete: false,
-        outcome: "unreachable",
-        snapshot: null,
-        heads: [],
-        transfers: [],
-        compromises: [],
-        acceptances: [],
-        successorEvents: [],
-        unverified: [],
-      };
-      const deadline = AbortSignal.timeout(SCAN_LIMITS.millis);
-      const scanSignal = signal
-        ? AbortSignal.any([signal, deadline])
-        : deadline;
-      const check = () => {
-        if (deadline.aborted)
+        signal: scanSignal,
+      });
+      const snapshot = firstPage.snapshot;
+      knowledge.snapshot = snapshot;
+      stage = "heads";
+      let after: string | null = null;
+      const seen = new Set<string>();
+      for (let page = 0; ; page++) {
+        check();
+        if (++budget.pages > SCAN_LIMITS.pages)
           throw new ScanIncomplete(
-            `the scan exceeded ${SCAN_LIMITS.millis / 1000} seconds`,
+            `the head scan did not end within ${SCAN_LIMITS.pages} pages`,
           );
-        signal?.throwIfAborted();
-      };
-      // The first raw head page captures the accepted inventory. Later failures
-      // leave known evidence and block instead of counting as unreachable.
-      let stage: "capture" | "heads" | "activity" | "claims" = "capture";
-      try {
-        const firstPage = await identityHeads(identity, null, null, {
-          peer,
-          signal: scanSignal,
-        });
-        const snapshot = firstPage.snapshot;
-        knowledge.snapshot = snapshot;
-        stage = "heads";
-        let after: string | null = null;
-        const seen = new Set<string>();
-        for (let page = 0; ; page++) {
-          check();
-          if (page >= SCAN_LIMITS.pages)
-            throw new ScanIncomplete(
-              `the head scan did not end within ${SCAN_LIMITS.pages} pages`,
-            );
-          const result: IdentityHeadsPage =
-            page === 0
-              ? firstPage
-              : await identityHeads(identity, snapshot, after, {
-                  peer,
-                  signal: scanSignal,
-                });
-          let previous = after ?? "";
-          for (const head of result.heads) {
-            if (head <= previous)
-              throw new ScanMalformed("the head scan did not advance");
-            previous = head;
-            knowledge.heads.push(head);
-          }
-          if (knowledge.heads.length > SCAN_LIMITS.items)
-            throw new ScanIncomplete("the head scan exceeded the item limit");
-          if (result.next === null) break;
-          if (
-            seen.has(result.next) ||
-            result.next !== result.heads.at(-1) ||
-            (after !== null && result.next <= after)
-          )
-            throw new ScanMalformed(
-              "the head scan repeated or malformed a cursor",
-            );
-          seen.add(result.next);
-          after = result.next;
-        }
-        stage = "activity";
-        const scan = async (who: string) => {
-          const items: { id: string; action: Record<string, unknown> }[] = [];
-          let cursor: string | null = null;
-          const cursors = new Set<string>();
-          for (let page = 0; ; page++) {
-            check();
-            if (page >= SCAN_LIMITS.pages || items.length > SCAN_LIMITS.items)
-              throw new ScanIncomplete(
-                `the activity scan of ${who.slice(0, 16)}… did not end within the scan limits`,
-              );
-            const result: Omit<ActivityResponse, "view"> = await getActivity(
-              who,
-              cursor,
-              {
+        const result: IdentityHeadsPage =
+          page === 0
+            ? firstPage
+            : await identityHeads(identity, snapshot, after, {
                 peer,
                 signal: scanSignal,
-                snapshot,
-                accepted: true,
-                limit: 200,
-              },
+              });
+        let previous = after ?? "";
+        for (const head of result.heads) {
+          if (head <= previous)
+            throw new ScanMalformed("the head scan did not advance");
+          previous = head;
+          knowledge.heads.push(head);
+        }
+        budget.items += result.heads.length;
+        if (budget.items > SCAN_LIMITS.items)
+          throw new ScanIncomplete("the head scan exceeded the item limit");
+        if (result.next === null) break;
+        if (
+          seen.has(result.next) ||
+          result.next !== result.heads.at(-1) ||
+          (after !== null && result.next <= after)
+        )
+          throw new ScanMalformed(
+            "the head scan repeated or malformed a cursor",
+          );
+        seen.add(result.next);
+        after = result.next;
+      }
+      stage = "activity";
+      const scan = async (who: string) => {
+        const items: { id: string; action: Record<string, unknown> }[] = [];
+        let cursor: string | null = null;
+        const cursors = new Set<string>();
+        for (let page = 0; ; page++) {
+          check();
+          if (
+            ++budget.pages > SCAN_LIMITS.pages ||
+            budget.items > SCAN_LIMITS.items
+          )
+            throw new ScanIncomplete(
+              `the activity scan of ${who.slice(0, 16)}… did not end within the scan limits`,
             );
-            if (result.snapshot !== snapshot)
-              throw new ScanMalformed(
-                "the activity scan answered for another snapshot",
-              );
-            for (const item of result.items) {
-              if (cursor !== null && item.id <= cursor)
-                throw new ScanMalformed("the activity scan did not advance");
-              cursor = item.id;
-            }
-            items.push(...result.items);
-            if (items.length > SCAN_LIMITS.items)
-              throw new ScanIncomplete(
-                "the activity scan exceeded the item limit",
-              );
-            if (result.next === null) break;
-            if (
-              cursors.has(result.next) ||
-              result.next !== result.items.at(-1)?.id
-            )
-              throw new ScanMalformed(
-                "the activity scan repeated or malformed a cursor",
-              );
-            cursors.add(result.next);
-            cursor = result.next;
-          }
-          return items;
-        };
-        // Authenticate a listed lifecycle event before counting it.
-        const authenticated = async (
-          id: string,
-          who: string,
-          kind: string,
-        ): Promise<Envelope | null> => {
-          try {
-            const envelope = await getEnvelope(id, snapshot, {
+          const result: Omit<ActivityResponse, "view"> = await getActivity(
+            who,
+            cursor,
+            {
               peer,
               signal: scanSignal,
-            });
-            verifyEnvelope(utf8(JSON.stringify(envelope)));
-            if (
-              envelope.id !== id ||
-              envelope.header.issuer !== who ||
-              envelope.header.action.kind !== kind
-            )
-              throw new Error("the signed record does not match the claim");
-            return envelope;
-          } catch (error) {
-            knowledge.unverified.push({
-              id,
-              kind,
-              reason: error instanceof Error ? error.message : String(error),
-            });
-            return null;
-          }
-        };
-        const ownItems = await scan(identity);
-        const successorItems = successor ? await scan(successor) : [];
-        knowledge.successorEvents = successorItems.map((item) => item.id);
-        stage = "claims";
-        for (const item of ownItems) {
-          if (item.action.kind === "identity.transfer") {
-            const envelope = await authenticated(
-              item.id,
-              identity,
-              "identity.transfer",
+              snapshot,
+              accepted: true,
+              limit: 200,
+            },
+          );
+          if (result.snapshot !== snapshot)
+            throw new ScanMalformed(
+              "the activity scan answered for another snapshot",
             );
-            if (envelope)
-              knowledge.transfers.push({
-                id: envelope.id,
-                successor: String(envelope.header.action.successor),
-              });
+          for (const item of result.items) {
+            if (cursor !== null && item.id <= cursor)
+              throw new ScanMalformed("the activity scan did not advance");
+            cursor = item.id;
           }
-          if (item.action.kind === "identity.compromise") {
-            const envelope = await authenticated(
-              item.id,
-              identity,
-              "identity.compromise",
+          items.push(...result.items);
+          budget.items += result.items.length;
+          if (budget.items > SCAN_LIMITS.items)
+            throw new ScanIncomplete(
+              "the activity scan exceeded the item limit",
             );
-            if (envelope) knowledge.compromises.push(envelope.id);
-          }
+          if (result.next === null) break;
+          if (
+            cursors.has(result.next) ||
+            result.next !== result.items.at(-1)?.id
+          )
+            throw new ScanMalformed(
+              "the activity scan repeated or malformed a cursor",
+            );
+          cursors.add(result.next);
+          cursor = result.next;
         }
-        for (const item of successorItems)
-          if (successor && item.action.kind === "identity.accept") {
-            const envelope = await authenticated(
-              item.id,
-              successor,
-              "identity.accept",
-            );
-            if (envelope)
-              knowledge.acceptances.push({
-                id: envelope.id,
-                transfer: String(envelope.header.action.transfer),
-              });
-          }
-        knowledge.complete = true;
-        knowledge.outcome = knowledge.unverified.length
-          ? "malformed"
-          : "complete";
-        if (knowledge.unverified.length)
-          knowledge.status = `it listed ${knowledge.unverified.length} lifecycle record${knowledge.unverified.length === 1 ? "" : "s"} that it could not supply as valid signed evidence`;
-      } catch (error) {
-        const message =
-          error instanceof Error ? error.message : "The peer did not answer.";
-        if (error instanceof ScanIncomplete) {
-          knowledge.outcome = "partial";
-          knowledge.status = `incomplete: ${message}`;
-        } else if (error instanceof ScanMalformed) {
-          knowledge.outcome = "malformed";
-          knowledge.status = `malformed answer: ${message}`;
-        } else if (
-          stage === "capture" &&
-          (error instanceof TransportError || error instanceof RequestError)
-        ) {
-          // No usable answer at all.
-          knowledge.outcome = "unreachable";
-          knowledge.status = message;
-        } else if (error instanceof TransportError) {
-          // The connection failed or timed out after the peer supplied evidence.
-          knowledge.outcome = "partial";
-          knowledge.status = `incomplete: the ${stage} scan stopped (${message})`;
-        } else if (error instanceof RequestError) {
-          knowledge.outcome = "malformed";
-          knowledge.status = `malformed answer: the ${stage} scan got HTTP ${error.status} (${message})`;
-        } else {
-          // A response that the shared readers could not interpret.
-          knowledge.outcome = "malformed";
-          knowledge.status = `malformed answer: ${message}`;
+        return items;
+      };
+      // Authenticate a listed lifecycle event before counting it.
+      const authenticated = async (
+        id: string,
+        who: string,
+        kind: string,
+      ): Promise<Envelope | null> => {
+        try {
+          const envelope = await getEnvelope(id, snapshot, {
+            peer,
+            signal: scanSignal,
+          });
+          verifyEnvelope(utf8(JSON.stringify(envelope)));
+          if (
+            envelope.id !== id ||
+            envelope.header.issuer !== who ||
+            envelope.header.action.kind !== kind
+          )
+            throw new Error("the signed record does not match the claim");
+          return envelope;
+        } catch (error) {
+          if (snapshotExpired(error)) throw error;
+          knowledge.unverified.push({
+            id,
+            kind,
+            reason: error instanceof Error ? error.message : String(error),
+          });
+          return null;
+        }
+      };
+      const ownItems = await scan(identity);
+      const successorItems = successor ? await scan(successor) : [];
+      knowledge.successorEvents = successorItems.map((item) => item.id);
+      stage = "claims";
+      for (const item of ownItems) {
+        if (item.action.kind === "identity.transfer") {
+          const envelope = await authenticated(
+            item.id,
+            identity,
+            "identity.transfer",
+          );
+          if (envelope)
+            knowledge.transfers.push({
+              id: envelope.id,
+              successor: String(envelope.header.action.successor),
+            });
+        }
+        if (item.action.kind === "identity.compromise") {
+          const envelope = await authenticated(
+            item.id,
+            identity,
+            "identity.compromise",
+          );
+          if (envelope) knowledge.compromises.push(envelope.id);
         }
       }
-      return knowledge;
-    }),
-  );
+      for (const item of successorItems)
+        if (successor && item.action.kind === "identity.accept") {
+          const envelope = await authenticated(
+            item.id,
+            successor,
+            "identity.accept",
+          );
+          if (envelope)
+            knowledge.acceptances.push({
+              id: envelope.id,
+              transfer: String(envelope.header.action.transfer),
+            });
+        }
+      knowledge.complete = true;
+      knowledge.outcome = knowledge.unverified.length
+        ? "malformed"
+        : "complete";
+      if (knowledge.unverified.length)
+        knowledge.status = `it listed ${knowledge.unverified.length} lifecycle record${knowledge.unverified.length === 1 ? "" : "s"} that it could not supply as valid signed evidence`;
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "The peer did not answer.";
+      if (snapshotExpired(error) && stage !== "capture") {
+        // Evidence from an expired inventory cannot be mixed into the next attempt.
+        if (budget.attempts < SNAPSHOT_SCAN_ATTEMPTS) continue;
+        knowledge.snapshot = null;
+        knowledge.heads = [];
+        knowledge.transfers = [];
+        knowledge.compromises = [];
+        knowledge.acceptances = [];
+        knowledge.successorEvents = [];
+        knowledge.unverified = [];
+        knowledge.complete = false;
+        knowledge.outcome = "partial";
+        knowledge.status =
+          "incomplete: the server snapshots kept expiring. Retry before signing";
+      } else if (error instanceof ScanIncomplete) {
+        knowledge.outcome = "partial";
+        knowledge.status = `incomplete: ${message}`;
+      } else if (error instanceof ScanMalformed) {
+        knowledge.outcome = "malformed";
+        knowledge.status = `malformed answer: ${message}`;
+      } else if (
+        stage === "capture" &&
+        (error instanceof TransportError || error instanceof RequestError)
+      ) {
+        // No usable answer at all.
+        knowledge.outcome = "unreachable";
+        knowledge.status = message;
+      } else if (error instanceof TransportError) {
+        // The connection failed or timed out after the peer supplied evidence.
+        knowledge.outcome = "partial";
+        knowledge.status = `incomplete: the ${stage} scan stopped (${message})`;
+      } else if (error instanceof RequestError) {
+        knowledge.outcome = "malformed";
+        knowledge.status = `malformed answer: the ${stage} scan got HTTP ${error.status} (${message})`;
+      } else {
+        // A response that the shared readers could not interpret.
+        knowledge.outcome = "malformed";
+        knowledge.status = `malformed answer: ${message}`;
+      }
+    }
+    return knowledge;
+  }
 }
 /**
  * Fetches and authenticates the branches that a peer reports and this browser
@@ -377,41 +436,84 @@ export async function fetchBranches(
   let fetched = 0;
   for (const k of knowledge) {
     if (k.outcome !== "complete" || !k.snapshot) continue;
-    const learned = new Map<string, Envelope>();
-    const pending = k.heads.filter((h) => !history.events.has(h));
-    while (pending.length) {
-      signal?.throwIfAborted();
-      const id = pending.pop()!;
-      if (history.events.has(id) || learned.has(id)) continue;
-      if (fetched + learned.size >= 4096)
-        throw new Error(
-          `${k.peer.label} reports more than 4096 unknown records. This browser client cannot follow a history that large. Export the outbox from Not delivered to keep your signed records.`,
-        );
-      let envelope: Envelope;
+    for (;;) {
+      const learned = new Map<string, Envelope>();
+      const context = scanContexts.get(k);
+      const pending = k.heads.filter((h) => !history.events.has(h));
       try {
-        envelope = await getEnvelope(id, k.snapshot, { peer: k.peer, signal });
-        verifyEnvelope(utf8(JSON.stringify(envelope)));
+        while (pending.length) {
+          signal?.throwIfAborted();
+          context?.budget.check();
+          const id = pending.pop()!;
+          if (history.events.has(id) || learned.has(id)) continue;
+          if (fetched + learned.size >= 4096)
+            throw new Error(
+              `${k.peer.label} reports more than 4096 unknown records. This browser client cannot follow a history that large. Export the outbox from Not delivered to keep your signed records.`,
+            );
+          let envelope: Envelope;
+          try {
+            if (context && ++context.budget.items > SCAN_LIMITS.items)
+              throw new ScanIncomplete(
+                "the branch scan exceeded the item limit",
+              );
+            envelope = await getEnvelope(id, k.snapshot!, {
+              peer: k.peer,
+              signal: context?.budget.signal ?? signal,
+            });
+            verifyEnvelope(utf8(JSON.stringify(envelope)));
+          } catch (error) {
+            if (snapshotExpired(error) || error instanceof ScanIncomplete)
+              throw error;
+            // A branch with a missing ancestor is not known history. Nothing of it is kept.
+            throw new Error(
+              `${k.peer.label} reports record ${id.slice(0, 20)}… but could not supply it as a valid signed record (${error instanceof Error ? error.message : String(error)}).`,
+            );
+          }
+          if (envelope.id !== id || envelope.header.issuer !== history.identity)
+            throw new Error(
+              `${k.peer.label} supplied a record that does not belong to this key.`,
+            );
+          learned.set(id, envelope);
+          for (const previous of envelope.header.previous)
+            if (!history.events.has(previous) && !learned.has(previous))
+              pending.push(previous);
+        }
       } catch (error) {
-        // A branch with a missing ancestor is not known history. Nothing of it is kept.
-        throw new Error(
-          `${k.peer.label} reports record ${id.slice(0, 20)}… but could not supply it as a valid signed record (${error instanceof Error ? error.message : String(error)}).`,
-        );
+        if (!snapshotExpired(error)) throw error;
+        if (context && context.budget.attempts < SNAPSHOT_SCAN_ATTEMPTS) {
+          const fresh = await scanPeer(
+            k.peer,
+            context.identity,
+            context.successor,
+            signal,
+            context.budget,
+          );
+          Object.assign(k, fresh);
+          scanContexts.set(k, context);
+          if (k.outcome === "complete") continue;
+        } else {
+          k.snapshot = null;
+          k.heads = [];
+          k.transfers = [];
+          k.compromises = [];
+          k.acceptances = [];
+          k.successorEvents = [];
+          k.unverified = [];
+          k.complete = false;
+          k.outcome = "partial";
+          k.status =
+            "incomplete: the server snapshots kept expiring. Retry before signing";
+        }
+        throw new Error(`${k.peer.label}: ${k.status}. Retry before signing.`);
       }
-      if (envelope.id !== id || envelope.header.issuer !== history.identity)
-        throw new Error(
-          `${k.peer.label} supplied a record that does not belong to this key.`,
-        );
-      learned.set(id, envelope);
-      for (const previous of envelope.header.previous)
-        if (!history.events.has(previous) && !learned.has(previous))
-          pending.push(previous);
+      if (!learned.size) break;
+      // Keep the complete verified branch and its heads locally in one write, so
+      // later history loads do not depend on that peer.
+      await store.recordBranch(history.identity, [...learned.values()]);
+      for (const [id, envelope] of learned) history.events.set(id, envelope);
+      fetched += learned.size;
+      break;
     }
-    if (!learned.size) continue;
-    // Keep the complete verified branch and its heads locally in one write, so
-    // later history loads do not depend on that peer.
-    await store.recordBranch(history.identity, [...learned.values()]);
-    for (const [id, envelope] of learned) history.events.set(id, envelope);
-    fetched += learned.size;
   }
   if (fetched) {
     const ancestors = new Set<string>();

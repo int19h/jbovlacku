@@ -316,11 +316,12 @@ export async function compromisePage(
       ),
     );
   };
-  const gather = async (identity: string) => {
+  const gather = async (identity: string, accepted = false) => {
     const offline = app.offlineSigning.value;
     const { peers } = configuredPeers(app);
     const current = await loadOwnHistory(app.store, identity, {
       offline,
+      accepted,
       signal: context.signal,
     });
     if (!current.complete)
@@ -468,7 +469,7 @@ export async function compromisePage(
         key = session.workingKey;
       if (!key) key = (await unlockRetired(backup)) ?? undefined;
       if (!key) return;
-      const fresh = await gather(identity);
+      const fresh = await gather(identity, true);
       if (
         fresh.digest !== approved.digest ||
         approved.generation !== loadGeneration ||

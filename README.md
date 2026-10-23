@@ -124,7 +124,10 @@ A compromise notice previews the retained and excluded records of a chosen causa
 
 Before lifecycle signatures, peer history scans include accepted records that still wait for evaluation.
 The browser pins each scan to the peer's accepted snapshot and authenticates its signed lifecycle evidence.
-These raw history reads start no evaluation. Ordinary pages continue to use the last completed snapshot.
+These raw history reads start no evaluation. Final handover, compromise, and recovery scans also load accepted own history.
+Ordinary own-history loads on word, person, and trust pages use the last completed snapshot.
+If an accepted snapshot expires, the browser starts the scan again, with at most three attempts under the original limits.
+Repeated expiry leaves the peer scan incomplete and blocks the signature.
 
 The [web UI design](docs/ui-design.md) defines the layouts. The reading, identity, trust, delivery, authoring, and builder screens follow it.
 The built Node app keeps Type and trust card labels separate from their descriptions.
