@@ -75,12 +75,18 @@ A static test reads all web source files and rejects unapproved target overrides
 It accepts direct DOM helpers and literal styles.
 It rejects opaque style changes, hidden interactive classes, and aliases of the prose helper.
 Its failing fixtures cover CSS and inline overrides, raw markup, hidden prose, and inputs without labels.
+It rejects table rows and cells as target display types, and direct style assignments.
 
 The rich text renderer marks a paragraph only when each link has visible words in its own complete sentence.
+The sentence test keeps `e.g.` and `cf.` inside their sentences and rejects links after a separate sentence.
 Other rich text links keep the default target.
+Place circles keep equal dimensions of 1.45em beside word links. Numeric badges can be wider.
+The audit measures linked and unlinked place markers in body text and 21px definition prose.
+
 Browser tests measure controls at 1280 and 360 CSS pixels, including new controls without a target class.
 They cover populated builders, key states, delivery records, expanded place fields, compound words, rafsi claims, record comparisons, public profiles, and key handovers.
 They measure retired-key reporting, trust without a key, delivered outbox links, and the untested-backup action on Publish.
+They check sentences in the first-signature dialog, identity continuity, and Publish root, component, and competing claim notices.
 
 The general SQL migration, automatic rafsi publications, and structured import conversion also remain unfinished.
 The complete `jvc` command catalog in the format specification remains a target interface.
