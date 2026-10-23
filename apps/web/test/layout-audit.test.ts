@@ -4,6 +4,7 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { mkdir, writeFile, copyFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { PROXY_SELECTOR } from "../../../scripts/layout-policy.ts";
 import { fixture, PASSPHRASE } from "./helpers.ts";
 import { BROWSER_HEADERS } from "../../server/src/security.ts";
 import type { CachedPackage } from "../src/data/search.ts";
@@ -257,7 +258,7 @@ async function artifact(
 }
 
 async function inventory(page: Page) {
-  return page.evaluate(() => {
+  return page.evaluate((proxySelector) => {
     const path = (node: Element) => {
       const parts: string[] = [];
       for (
@@ -277,7 +278,7 @@ async function inventory(page: Page) {
     };
     const entries = [];
     for (const node of document.querySelectorAll<HTMLElement>(
-      'button,input:not([type="hidden"]),select,textarea,a[href],summary,[role="button"],[role="switch"],[tabindex]:not([tabindex^="-"]),[contenteditable="true"]',
+      'button,input:not([type="hidden"]),select,textarea,a[href],summary,[role="button"],[role="switch"],[role="link"],[tabindex]:not([tabindex^="-"]),[contenteditable]:not([contenteditable="false"])',
     )) {
       let target: HTMLElement = node;
       let exception: string | null = null;
@@ -289,8 +290,10 @@ async function inventory(page: Page) {
         node instanceof HTMLInputElement &&
         ["checkbox", "radio"].includes(node.type)
       ) {
-        target = node.labels?.[0] ?? node;
-        labelTarget = target !== node;
+        if (node.matches(proxySelector)) {
+          target = node.labels?.[0] ?? node;
+          labelTarget = target !== node;
+        }
         labelAssociation =
           node.labels?.length === 1 && node.labels[0].control === node;
       }
@@ -301,58 +304,14 @@ async function inventory(page: Page) {
         style.display === "none"
       )
         continue;
-      if (node.matches("a.pl"))
-        exception = "Inline place marker: ui-design.md shared components.";
-      else if (
-        node.matches("a[href]") &&
-        !node.matches(".btn,.touch-link") &&
-        !node.closest("header,footer,nav")
-      ) {
-        const prose = node.closest("p,.rich-text,.text,.inline-prose");
-        if (prose) {
-          const before = document.createRange();
-          before.selectNodeContents(prose);
-          before.setEndBefore(node);
-          const start = before.toString().length;
-          const end = start + (node.textContent?.length ?? 0);
-          const segments = new Intl.Segmenter("en", {
-            granularity: "sentence",
-          });
-          // Ignore other links when identifying words around this link.
-          const walker = document.createTreeWalker(prose, NodeFilter.SHOW_TEXT);
-          let plainText = "";
-          while (walker.nextNode()) {
-            const text = walker.currentNode.textContent ?? "";
-            plainText += walker.currentNode.parentElement?.closest("a,button")
-              ? " ".repeat(text.length)
-              : text;
-          }
-          for (const sentence of segments.segment(prose.textContent ?? "")) {
-            if (
-              sentence.index > start ||
-              sentence.index + sentence.segment.length < end
-            )
-              continue;
-            const surrounding = plainText.slice(
-              sentence.index,
-              sentence.index + sentence.segment.length,
-            );
-            // A metadata label or a separate sentence cannot supply prose.
-            const afterLabel = surrounding.slice(
-              surrounding.lastIndexOf(":") + 1,
-            );
-            if (
-              /[.!?]["')\]]?\s*$/.test(sentence.segment) &&
-              /[a-z]{2}/i.test(afterLabel) &&
-              !/·/.test(surrounding)
-            ) {
-              exception =
-                "Link within a sentence: ui-design.md inline exception.";
-              exceptionContainer = path(prose);
-              exceptionSentence = sentence.segment.trim();
-            }
-            break;
-          }
+      if (node.matches("a.pl[data-inline-place-reason]")) {
+        exception = node.getAttribute("data-inline-place-reason");
+      } else if (node.matches("a[href]:not(.btn,.touch-link)")) {
+        const prose = node.parentElement;
+        if (prose?.matches(".inline-prose[data-inline-prose-reason]")) {
+          exception = prose.getAttribute("data-inline-prose-reason");
+          exceptionContainer = path(prose);
+          exceptionSentence = prose.textContent?.trim() ?? null;
         }
       }
       entries.push({
@@ -389,7 +348,7 @@ async function inventory(page: Page) {
       pageWidth: document.documentElement.scrollWidth,
       entries,
     };
-  });
+  }, PROXY_SELECTOR);
 }
 
 async function checkTargets(
@@ -446,72 +405,263 @@ for (const viewport of [
   test.describe(viewport.name, () => {
     test.use({ viewport });
 
-    test("N1: the audit separates sentence links from labeled metadata and standalone actions", async ({
+    test("R6: new links and controls get large targets without audit coverage", async ({
       page,
     }, info) => {
       await open(page, `/word/${fixture().words.cukta}`);
       await page.evaluate(() => {
-        const samples = [
-          ["sentence", "Read the ", "guide", " for details."],
-          ["sentence-start", "", "This guide", " explains the process."],
-          ["sentence-end", "Read the ", "guide", "."],
-          [
-            "sentence-colon",
-            "For example: read the ",
-            "guide",
-            " for details.",
-          ],
-          [
-            "sentence-colon-start",
-            "For example: ",
-            "this guide",
-            " explains the process.",
-          ],
-          ["metadata", "Source: ", "record", ""],
-          ["metadata-period", "Source: ", "record", "."],
-          ["action-before-sentence", "", "Claim one", ". Read the guide."],
-          ["action-after-sentence", "Read the guide. ", "Claim one", ""],
-        ];
-        for (const [id, before, caption, after] of samples) {
-          const paragraph = document.createElement("p");
-          paragraph.id = `audit-${id}`;
-          const anchor = document.createElement("a");
-          anchor.href = "#sample";
-          anchor.textContent = caption;
-          paragraph.append(before, anchor, after);
-          document.querySelector("main")!.append(paragraph);
+        const container = document.createElement("section");
+        container.id = "r6-new-state";
+        for (const tag of [
+          "a",
+          "button",
+          "input",
+          "select",
+          "textarea",
+          "summary",
+          "div",
+        ]) {
+          const node = document.createElement(tag);
+          if (node instanceof HTMLAnchorElement) node.href = "#new";
+          if (tag === "div") {
+            node.setAttribute("role", "button");
+            node.tabIndex = 0;
+          }
+          node.setAttribute("data-new-control", tag);
+          if (tag !== "input") node.textContent = "go";
+          container.append(node);
         }
+        for (const mode of ["", "true", "plaintext-only"]) {
+          const editable = document.createElement("div");
+          editable.setAttribute("contenteditable", mode);
+          editable.textContent = "go";
+          container.append(editable);
+        }
+        const ariaLink = document.createElement("span");
+        ariaLink.setAttribute("role", "link");
+        ariaLink.textContent = "go";
+        container.append(ariaLink);
+        const native = document.createElement("input");
+        native.type = "checkbox";
+        native.id = "r6-native-checkbox";
+        const nativeLabel = document.createElement("label");
+        nativeLabel.htmlFor = native.id;
+        nativeLabel.textContent = "x";
+        nativeLabel.id = "r6-external-label";
+        container.append(native, nativeLabel);
+        const sentence = document.createElement("p");
+        sentence.id = "r6-unmarked-sentence";
+        const anchor = document.createElement("a");
+        anchor.href = "#unmarked";
+        anchor.textContent = "guide";
+        sentence.append("Read the ", anchor, " for details.");
+        container.append(sentence);
+        const marked = sentence.cloneNode(true) as HTMLElement;
+        marked.id = "r6-marked-sentence";
+        marked.className = "inline-prose";
+        marked.dataset.inlineProseReason =
+          "The guide link is part of this instruction sentence.";
+        container.append(marked);
+        document.querySelector("main")!.append(container);
       });
       const data = await inventory(page);
-      await artifact(info, `sentence-exceptions-${viewport.name}`, data);
-      for (const id of [
-        "sentence",
-        "sentence-start",
-        "sentence-end",
-        "sentence-colon",
-        "sentence-colon-start",
-        "metadata",
-        "metadata-period",
-        "action-before-sentence",
-        "action-after-sentence",
-      ]) {
-        const entry = data.entries.find((entry) =>
-          entry.path.includes(`#audit-${id} >`),
-        )!;
-        expect
-          .soft(Boolean(entry.exception), id)
-          .toBe(id.startsWith("sentence"));
-        if (entry.exception) {
-          expect.soft(entry.exceptionContainer).toContain(`#audit-${id}`);
-          expect.soft(entry.exceptionSentence).toMatch(/[.!?]$/);
+      await artifact(info, `default-targets-${viewport.name}`, data, page);
+      const native = data.entries.find((entry) =>
+        entry.path.includes("#r6-native-checkbox"),
+      )!;
+      expect(native.labelAssociation).toBe(true);
+      expect(native.labelTarget).toBe(false);
+      expect(
+        (await page.locator("#r6-external-label").boundingBox())!.width,
+      ).toBeLessThan(44);
+
+      for (const entry of data.entries.filter((entry) =>
+        entry.path.includes("#r6-new-state"),
+      )) {
+        if (entry.path.includes("#r6-marked-sentence")) {
+          expect.soft(entry.exception).toContain("instruction sentence");
+        } else {
+          expect.soft(entry.exception, entry.path).toBeNull();
+          expect
+            .soft(entry.targetBounds.width, entry.path)
+            .toBeGreaterThanOrEqual(44);
+          expect
+            .soft(entry.targetBounds.height, entry.path)
+            .toBeGreaterThanOrEqual(44);
         }
       }
-      for (const href of ["/rafsi/cku", "/claim/cukta"]) {
-        const entry = data.entries.find((entry) => entry.href === href)!;
-        expect.soft(entry.exception, href).toBeNull();
-        expect.soft(entry.targetBounds.width, href).toBeGreaterThanOrEqual(44);
-        expect.soft(entry.targetBounds.height, href).toBeGreaterThanOrEqual(44);
+    });
+
+    test("R6: rich prose keeps sentence links inline and other links large", async ({
+      page,
+    }, info) => {
+      // Exercise the shared renderer with synthetic content in the local Vite app.
+      await page.goto("/identity");
+      await page.locator("main h1").waitFor();
+      await page.evaluate(async () => {
+        const { renderRichText } = await import(
+          String("/src/model/richtext.ts")
+        );
+        const { markRichProse } = await import(String("/src/lib/dom.ts"));
+        const samples = {
+          colon: [
+            [
+              "For example: read the ",
+              { word: { language: "jbo", spelling: "ckusro" } },
+              " for details.",
+            ],
+          ],
+          sentence: [
+            [
+              "See ",
+              { word: { language: "jbo", spelling: "ckusro" } },
+              " for a library.",
+            ],
+          ],
+          bare: [
+            [{ url: "https://example.invalid/source", label: "Source code" }],
+          ],
+          metadata: [
+            [
+              "Source: ",
+              { url: "https://example.invalid/source", label: "record" },
+              ".",
+            ],
+          ],
+          separate: [
+            [
+              "Read the guide. ",
+              { url: "https://example.invalid/source", label: "open" },
+              ".",
+            ],
+          ],
+          unfinished: [
+            [
+              "Read the ",
+              { url: "https://example.invalid/source", label: "guide" },
+            ],
+          ],
+        };
+        for (const [id, value] of Object.entries(samples)) {
+          const node = renderRichText(value);
+          node.id = `rich-${id}`;
+          document.querySelector("main")!.append(node);
+        }
+        for (const kind of ["hidden", "block"]) {
+          const row = document.createElement("p");
+          row.id = `rich-${kind}`;
+          const context = document.createElement(
+            kind === "block" ? "div" : "span",
+          );
+          context.textContent = "Read this guide for details.";
+          if (kind === "hidden") context.className = "sr";
+          const link = document.createElement("a");
+          link.href = "#sample";
+          link.textContent = "go";
+          row.append(context, link);
+          markRichProse(
+            row,
+            "A synthetic renderer fixture supplies this reason.",
+          );
+          document.querySelector("main")!.append(row);
+        }
+      });
+      await expect(page.locator("#rich-sentence a")).toHaveCSS(
+        "display",
+        "inline",
+      );
+      await expect(page.locator("#rich-colon a")).toHaveCSS(
+        "display",
+        "inline",
+      );
+      for (const id of [
+        "bare",
+        "metadata",
+        "separate",
+        "unfinished",
+        "hidden",
+        "block",
+      ]) {
+        const anchor = page.locator(`#rich-${id} a`);
+        await expect(anchor).toHaveCSS("display", "inline-flex");
+        expect(
+          await anchor.evaluate((node) =>
+            node.parentElement!.hasAttribute("data-inline-prose-reason"),
+          ),
+          id,
+        ).toBe(false);
+        const box = (await anchor.boundingBox())!;
+        expect.soft(box.width, id).toBeGreaterThanOrEqual(44);
+        expect.soft(box.height, id).toBeGreaterThanOrEqual(44);
       }
+      await artifact(
+        info,
+        `rich-prose-${viewport.name}`,
+        await inventory(page),
+        page,
+      );
+    });
+
+    test("R6: larger fields, block regions, compact glyphs, and hidden controls keep their behavior", async ({
+      page,
+    }, info) => {
+      await open(page, "/new/meaning");
+      const search = (await page
+        .getByLabel("Search words and meanings")
+        .boundingBox())!;
+      const meaning = (await page
+        .getByLabel("Meaning", { exact: true })
+        .boundingBox())!;
+      expect(search.height).toBeGreaterThanOrEqual(48);
+      expect(meaning.height).toBeGreaterThanOrEqual(88);
+      await page.evaluate(() => {
+        const region = document.createElement("div");
+        region.id = "r6-block";
+        region.tabIndex = 0;
+        for (const value of ["First paragraph", "Second paragraph"]) {
+          const paragraph = document.createElement("p");
+          paragraph.textContent = value;
+          region.append(paragraph);
+        }
+        document.querySelector("main")!.append(region);
+        const hidden = document.createElement("a");
+        hidden.href = "#hidden";
+        hidden.textContent = "hidden";
+        hidden.hidden = true;
+        hidden.id = "r6-hidden";
+        const styleHidden = document.createElement("a");
+        styleHidden.href = "#hidden";
+        styleHidden.textContent = "hidden";
+        styleHidden.style.display = "none";
+        styleHidden.id = "r6-style-hidden";
+        region.append(hidden, styleHidden);
+      });
+      await expect(page.locator("#r6-block")).toHaveCSS("display", "block");
+      const paragraphs = page.locator("#r6-block > p");
+      const first = (await paragraphs.nth(0).boundingBox())!;
+      const second = (await paragraphs.nth(1).boundingBox())!;
+      expect(second.y).toBeGreaterThanOrEqual(first.y + first.height);
+      await expect(page.locator("#r6-hidden")).toBeHidden();
+      await expect(page.locator("#r6-style-hidden")).toBeHidden();
+      await page
+        .getByLabel("Meaning", { exact: true })
+        .fill("A test definition.");
+      await page.getByRole("button", { name: "New word", exact: true }).click();
+      const radio = page.locator('[data-kind="lujvo"] input');
+      const radioBox = (await radio.boundingBox())!;
+      const labelBox = (await page
+        .locator('[data-kind="lujvo"]')
+        .boundingBox())!;
+      expect(radioBox.width).toBe(20);
+      expect(radioBox.height).toBe(20);
+      expect(labelBox.width).toBeGreaterThanOrEqual(44);
+      expect(labelBox.height).toBeGreaterThanOrEqual(44);
+      await artifact(
+        info,
+        `preserved-controls-${viewport.name}`,
+        { search, meaning, radioBox, labelBox },
+        page,
+      );
     });
 
     test("R3: composition links and Edit have touch targets with centered short labels", async ({
@@ -658,7 +808,7 @@ for (const viewport of [
       await check("gismu-root-and-rafsi-conflicts");
       for (const label of await selected.locator("label.check").all()) {
         await expect
-          .soft(label.locator(":scope > .inline-prose"))
+          .soft(label.locator(":scope > .acknowledgment-text"))
           .toHaveCount(1);
         const labelBox = (await label.boundingBox())!;
         const anchorBox = (await label.getByRole("link").boundingBox())!;
@@ -673,11 +823,9 @@ for (const viewport of [
       }
       await expect
         .soft(
-          selected
-            .locator("label.check")
-            .filter({
-              has: page.getByRole("link", { name: "cukta", exact: true }),
-            }),
+          selected.locator("label.check").filter({
+            has: page.getByRole("link", { name: "cukta", exact: true }),
+          }),
         )
         .toHaveText("identical to cukta (identical). I keep this form.");
       const conflictLinks = (await inventory(page)).entries.filter(
@@ -708,6 +856,22 @@ for (const viewport of [
       await check("publish-existing-without-key");
       await createAuditIdentity(page);
       await open(page, "/new/publish");
+      const backupTest = page.getByRole("link", {
+        name: "Test it",
+        exact: true,
+      });
+      await expect(backupTest).toBeVisible();
+      const backupBox = (await backupTest.boundingBox())!;
+      expect.soft(backupBox.width).toBeGreaterThanOrEqual(44);
+      expect.soft(backupBox.height).toBeGreaterThanOrEqual(44);
+      expect
+        .soft(
+          (await inventory(page)).entries.find(
+            (entry) => entry.name === "Test it",
+          )?.exception,
+        )
+        .toBeNull();
+      await check("publish-untested-backup");
       // Change only the synthetic cached package's version during review.
       await page.evaluate(
         () =>
@@ -796,7 +960,7 @@ for (const viewport of [
         .toBeGreaterThanOrEqual(44);
       await expandDetails(page);
       await check("editor-revision");
-      expect(manifest).toHaveLength(13);
+      expect(manifest).toHaveLength(14);
       await artifact(info, `route-gap-manifest-${viewport.name}`, manifest);
     });
 
@@ -946,6 +1110,17 @@ for (const viewport of [
       await expect(
         page.getByRole("region", { name: "Handover status", exact: true }),
       ).toContainText("Handover complete");
+      await open(page, "/identity");
+      await expect(
+        page.getByRole("link", { name: "Report it stolen", exact: true }),
+      ).toBeVisible();
+      await check("identity-after-handover");
+      await open(page, "/outbox");
+      await expandDetails(page);
+      await expect(
+        page.getByRole("link", { name: "open", exact: true }).first(),
+      ).toBeVisible();
+      await check("outbox-delivered-retained-open");
       // Restore the disposable old backup without its local status record.
       // The recovery screen must discover the signed records on the fixture API.
       const handover = await page.evaluate(
@@ -1026,7 +1201,7 @@ for (const viewport of [
           .getByRole("link", { name: "Not delivered", exact: true }),
       ).toBeVisible();
       await check("handover-stored-pending");
-      expect(manifest).toHaveLength(5);
+      expect(manifest).toHaveLength(7);
       await artifact(info, `lifecycle-manifest-${viewport.name}`, manifest);
     });
 
@@ -1330,6 +1505,31 @@ for (const viewport of [
       await open(page, "/identity");
       await expandDetails(page);
       await check("identity-new");
+      await open(page, "/trust");
+      await expandDetails(page);
+      await expect(
+        page.getByRole("link", {
+          name: "Create or restore your key",
+          exact: true,
+        }),
+      ).toBeVisible();
+      await check("trust-without-key");
+      await open(
+        page,
+        `/identity/${encodeURIComponent(fixture().identities.author)}`,
+      );
+      await page
+        .getByRole("button", { name: "Trust their judgments", exact: true })
+        .click();
+      await expect(
+        page.getByRole("link", {
+          name: "Create or restore your key",
+          exact: true,
+        }),
+      ).toBeVisible();
+      await check("trustpanel-without-key");
+
+      await open(page, "/identity");
       await page.getByLabel("New passphrase", { exact: true }).fill(PASSPHRASE);
       await page.getByLabel("Repeat passphrase").fill(PASSPHRASE);
       await page
@@ -1569,7 +1769,7 @@ for (const viewport of [
       await open(page, "/new/publish");
       await expandDetails(page);
       await check("publish");
-      expect(manifest.length).toBe(23);
+      expect(manifest.length).toBe(25);
       await artifact(info, `manifest-${viewport.name}`, manifest);
     });
   });

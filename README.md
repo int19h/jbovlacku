@@ -63,9 +63,25 @@ A compromise notice previews the retained and excluded records of a chosen causa
 The [web UI design](docs/ui-design.md) defines the layouts. The reading, identity, trust, delivery, authoring, and builder screens follow it.
 The built Node app keeps Type and trust card labels separate from their descriptions.
 Draft placeholders have no extra underline, and helper text does not shift neighboring controls.
-Tests measure standalone controls at 1280 and 360 CSS pixels, including populated builders, key states, delivery records, and expanded place fields.
-The audit also covers compound word pages, rafsi claims, record comparisons, public profiles, key handovers, revision links, and saved publication actions.
 Each custom place alternative keeps its hint below the Tags field and shows a separate boundary.
+
+One shared rule gives links and interactive controls a target of at least 44 by 44 CSS pixels.
+It covers buttons, fields, disclosure summaries, focusable regions, editable regions, and the app's ARIA actions.
+Source code marks complete prose sentences and structured place markers with the reason for their inline exception.
+Compact checkbox and radio glyphs use their enclosing labels as targets. The audit requires one label for each such input.
+Native inputs with external labels keep their own full target.
+
+A static test reads all web source files and rejects unapproved target overrides and prose markers without reasons.
+It accepts direct DOM helpers and literal styles.
+It rejects opaque style changes, hidden interactive classes, and aliases of the prose helper.
+Its failing fixtures cover CSS and inline overrides, raw markup, hidden prose, and inputs without labels.
+
+The rich text renderer marks a paragraph only when each link has visible words in its own complete sentence.
+Other rich text links keep the default target.
+Browser tests measure controls at 1280 and 360 CSS pixels, including new controls without a target class.
+They cover populated builders, key states, delivery records, expanded place fields, compound words, rafsi claims, record comparisons, public profiles, and key handovers.
+They measure retired-key reporting, trust without a key, delivered outbox links, and the untested-backup action on Publish.
+
 The general SQL migration, automatic rafsi publications, and structured import conversion also remain unfinished.
 The complete `jvc` command catalog in the format specification remains a target interface.
 The [development guide](docs/development.md) describes the implemented native commands.
