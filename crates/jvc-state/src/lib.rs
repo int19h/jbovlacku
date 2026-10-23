@@ -945,8 +945,10 @@ mod event_limit_tests {
     }
 
     fn prepared(records: &[VerifiedEnvelope], limit: usize) -> PreparedEvaluationInput {
-        let mut limits = Limits::default();
-        limits.events = limit;
+        let limits = Limits {
+            events: limit,
+            ..Limits::default()
+        };
         let mut prepared = PreparedEvaluationInput::new(EvaluationOptions {
             selected_view: format!("jve1:{}", "0".repeat(64)),
             import_selections: BTreeMap::new(),
