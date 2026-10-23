@@ -1655,6 +1655,19 @@ test("a changed suggested word reviews retained identical values and original IP
     .getByRole("link", { name: "Enter without generation", exact: true })
     .click();
   await page.getByRole("button", { name: "Use brodu", exact: true }).click();
+  await expect(page).toHaveURL(/\/new\/places$/);
+  await expect
+    .poll(async () => (await stored(page)).formation)
+    .toMatchObject({
+      method: "non-algorithmic",
+      sources: [
+        {
+          language: "en",
+          word: "old",
+          input: { format: "ipa", text: "oʊld" },
+        },
+      ],
+    });
   await page.goto("/new/gismu");
   const panel = await sourceSuggestion(page);
   await expect(panel).toContainText("oʊld (proposed)");
