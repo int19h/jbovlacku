@@ -152,6 +152,13 @@ The wait lasts at most 15 seconds and stops when the reader leaves the page.
 A temporary network failure or HTTP 5xx response triggers another poll within that same deadline.
 A failed wait keeps delivery accepted and offers a refresh. Ordinary reads and explicit snapshot reads still use their completed snapshot.
 
+After a profile publication, the profile page uses the same wait before it requests the current claim.
+The page bypasses its cached profile and shows a pending notice during the wait.
+If the wait fails, the page offers a profile refresh without another signature.
+Personal recomputation waits before it requests the manifest for the next snapshot.
+The manifest lists that snapshot's inventory and packages.
+Cancellation stops these waits without removing accepted delivery evidence.
+
 A checkpoint is a saved evaluated state.
 The Node adapter keeps one pinned checkpoint under `evaluation-cache` in `JVC_DATA_DIR`.
 The file contains compressed Node binary data. An independent SQLite row pins its digest and calculation context.

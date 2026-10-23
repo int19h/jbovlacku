@@ -900,6 +900,25 @@ test("private rule labels use the loaded calculation continuity across a newer a
         body: JSON.stringify(acceptance),
       });
       if (!response.ok) throw new Error(await response.text());
+      // Admission precedes evaluation. Wait before requesting the newer calculation.
+      const deadline = Date.now() + 10000;
+      for (;;) {
+        const response = await fetch(
+          `/api/v1/receipts/${encodeURIComponent(acceptance.envelope.id)}`,
+        );
+        if (!response.ok) throw new Error(await response.text());
+        const receipt = await response.json();
+        if (
+          receipt.snapshot !== null &&
+          !receipt.reasons.some((reason: string) =>
+            ["index_lag", "evaluation_pending"].includes(reason),
+          )
+        )
+          break;
+        if (Date.now() >= deadline)
+          throw new Error("The handover evaluation did not finish.");
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
       const main = document.createElement("main");
       const app = {
         store,

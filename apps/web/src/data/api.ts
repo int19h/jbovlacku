@@ -329,7 +329,7 @@ export function hasPendingMaterialization() {
 export class MaterializationPendingError extends Error {
   constructor() {
     super(
-      "This server stored your records. Its word view is still updating. Refresh this page to check again.",
+      "This server stored your records. Its view is still updating. Refresh this page to check again.",
     );
   }
 }
@@ -408,8 +408,9 @@ export async function getCapabilities(
   return value as unknown as Capabilities;
 }
 export async function getManifest(
-  options: RequestOptions = {},
+  options: RequestOptions & { fresh?: boolean } = {},
 ): Promise<Manifest> {
+  if (options.fresh) await waitForMaterialization(options);
   const value = await api<unknown>("/manifest", options);
   if (
     !isObject(value) ||
@@ -703,9 +704,10 @@ export async function identityHeads(
 }
 export async function getIdentity(
   identity: string,
-  options: RequestOptions & { snapshot?: string } = {},
+  options: RequestOptions & { snapshot?: string; fresh?: boolean } = {},
 ): Promise<IdentityResponse> {
   if (!identityId(identity)) throw new Error("The identity is invalid.");
+  if (options.fresh && !options.snapshot) await waitForMaterialization(options);
   const params = new URLSearchParams();
   if (options.snapshot) params.set("snapshot", options.snapshot);
   if (preferredView) params.set("view", preferredView);

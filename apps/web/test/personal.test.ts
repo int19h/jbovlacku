@@ -200,16 +200,47 @@ test("the personal view adds the signing identity as a root so its own endorseme
     "aria-label",
     /^Score minus 3: 0 for, 3 against, 2 reviewers, in your personal view$/,
   );
-  await third.getByRole("button", { name: "Endorse" }).click();
-  await acceptFirstSignature(page);
-  await expect(page.getByRole("status")).toHaveText(
-    "Your endorsement is published.",
-  );
-  // The delivered endorsement is in a newer snapshot. The local calculation names the snapshot it used until a refresh.
-  await page
-    .getByRole("region", { name: "Personal view" })
-    .getByRole("button", { name: "Recompute from records" })
-    .click();
+  let releaseReceipts!: () => void;
+  const receiptsReady = new Promise<void>((resolve) => {
+    releaseReceipts = resolve;
+  });
+  await page.route("**/api/v1/events", async (route) => {
+    const response = await route.fetch();
+    const receipt = await response.json();
+    await route.fulfill({
+      response,
+      json: {
+        ...receipt,
+        snapshot: null,
+        interpretation: "unavailable",
+        reasons: ["index_lag", "evaluation_pending"],
+      },
+    });
+  });
+  await page.route("**/api/v1/receipts/*", async (route) => {
+    await receiptsReady;
+    await route.continue();
+  });
+  try {
+    await third.getByRole("button", { name: "Endorse" }).click();
+    await acceptFirstSignature(page);
+    await expect(page.getByRole("status")).toHaveText(
+      "Your endorsement is published.",
+    );
+    let manifests = 0;
+    await page.route("**/api/v1/manifest", async (route) => {
+      manifests++;
+      await route.continue();
+    });
+    const panel = page.getByRole("region", { name: "Personal view" });
+    await panel.getByRole("button", { name: "Recompute from records" }).click();
+    await expect(
+      panel.getByRole("button", { name: "Cancel", exact: true }),
+    ).toBeVisible();
+    expect(manifests).toBe(0);
+  } finally {
+    releaseReceipts();
+  }
   await expect(
     page
       .locator("article.definition", { hasText: "Third meaning" })
@@ -739,6 +770,12 @@ test("the personal view refuses a calculation from another snapshot and offers a
   await expect(page.getByRole("status")).toHaveText(
     "Your judgment is cleared.",
   );
+  // Ordinary search can serve the previous completed snapshot during evaluation.
+  // Wait for this clear before checking that the cached calculation is stale.
+  await page.evaluate(async () => {
+    const { getManifest } = await import(String("/src/data/api.ts"));
+    await getManifest({ fresh: true });
+  });
   await page.getByLabel("Search words and meanings").fill("book");
   await page.getByLabel("Search words and meanings").press("Enter");
   const results = page.getByRole("region", { name: "Search results" });

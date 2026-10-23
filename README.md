@@ -189,11 +189,16 @@ The Node loader can retain a larger explicit traversal budget for a local import
 
 The Node adapter serves the revised SQL import with 59,125 definitions in 44 languages.
 The extraction omits derived vectors and cache fields from signed bodies.
+
 The adapter retains an evaluated checkpoint and uses separate Node worker threads for completed reads and new evaluation.
 A worker thread runs code independently within the same process. At most two evaluation runtimes remain live.
 The adapter captures at most one checkpoint per minute. Shutdown waits up to ten seconds before it stops unfinished evaluation.
 Accepted records and the last valid checkpoint remain available for recovery.
+
 After publication, the browser shows a pending notice until the accepted records reach the evaluated word view.
+After a profile publication, the profile page waits for that evaluated view before it requests the new claim.
+Personal recomputation also waits for locally accepted records before it downloads the next snapshot.
+These waits stop after fifteen seconds and preserve accepted delivery evidence for another refresh.
 
 On this VM, the tested full dictionary contains 59,125 imported definitions in 44 languages.
 Compatible checkpoint recovery took 7.80 to 22.73 seconds in two local runs.

@@ -12,7 +12,7 @@ import {
   inlineProse,
 } from "../lib/dom.ts";
 import { fingerprintText, plural, shortIdentity } from "../lib/format.ts";
-import { getActivity } from "../data/api.ts";
+import { getActivity, hasPendingMaterialization } from "../data/api.ts";
 import {
   identityProfile,
   profileName,
@@ -27,7 +27,12 @@ import {
 } from "../model/richtext.ts";
 import { routes, type RenderContext, type Route } from "../app/router.ts";
 import type { App } from "../app/context.ts";
-import { identityId, type ProfileBody, type RichText } from "../model/types.ts";
+import {
+  identityId,
+  type ProfileBody,
+  type RichText,
+  type IdentityResponse,
+} from "../model/types.ts";
 import { trustPanel } from "../components/trustpanel.ts";
 import { loadSiteView } from "./trust.ts";
 import { scopeKey } from "../data/history.ts";
@@ -36,6 +41,7 @@ export async function personPage(
   route: Route,
   context: RenderContext,
   app: App,
+  fresh = false,
 ) {
   const { main } = context;
   main.className = "";
@@ -50,8 +56,36 @@ export async function personPage(
   }
   const isSelf = app.session.identity === identity;
   context.title(shortIdentity(identity));
-  const response = await identityProfile(identity);
+  const pending =
+    fresh && hasPendingMaterialization()
+      ? p("This server stored your profile. Its view is updating.", "notice")
+      : null;
+  if (pending) main.append(pending);
+  let response: IdentityResponse | null;
+  try {
+    response = await identityProfile(identity, {
+      fresh,
+      signal: context.signal,
+    });
+  } catch (error) {
+    if (!context.live()) return;
+    pending?.remove();
+    main.append(
+      el("h1", { class: "page", text: shortIdentity(identity) }),
+      p(describe(error), "notice"),
+      button(
+        "Refresh the profile",
+        () => {
+          main.replaceChildren();
+          void personPage(route, context, app, true);
+        },
+        { class: "btn" },
+      ),
+    );
+    return;
+  }
   if (!context.live()) return;
+  pending?.remove();
   const name = profileName(response);
   context.title(name ?? shortIdentity(identity));
   main.append(
@@ -232,7 +266,7 @@ export async function personPage(
     const editor = profileEditor(app, identity, current, () => {
       if (!context.live()) return;
       main.replaceChildren();
-      void personPage(route, context, app);
+      void personPage(route, context, app, true);
     });
     main.append(editor);
     // The key page links here with #edit. Focus the connected first field.
