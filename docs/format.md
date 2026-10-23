@@ -570,15 +570,20 @@ Each alternative permits `tags`, `abstractor`, and `relation_arity`. Tags form a
 At least one tag, abstractor, or relation-arity value must supply information. Empty alternatives are invalid.
 
 Standard tags are `referent`, `agent`, `event`, `state`, `process`, `relation`, `proposition`, `number`, `text`, `set`, and `sequence`.
+Version 1 still accepts the retired tags `entity`, `mass`, and `tuple` in signed bodies.
+`entity` has the meaning of `referent`, and `tuple` has the meaning of `sequence`. Their original signed spellings stay unchanged.
+`mass` keeps its earlier mass annotation. It has no automatic subtype relationship and no replacement alias.
+
+Readers preserve these tags. New authoring uses only current standard tags or custom HTTPS tags.
+
 The standard tags form a tree. `referent` is anything that a place can refer to, and every other standard tag is narrower than it. `state` and `process` are narrower than `event`, because they are ways of viewing an event.
 Every place takes a plural reference: one thing, several things, or some stuff. A tag describes what the place refers to, and it does not change with number. A collective reading comes from the predicate, not from a tag.
 `agent` is a referent that carries out the action of the definition. `relation` is a property or relation itself, not its bearer. `proposition` is content that can be true or false.
 `number` is a numerical value or a measured amount. The dimension of a measurement is a `relation`, and a system of units is a `referent`.
 `text` is a linguistic expression itself, such as a quotation or a `sedu'u` abstraction. An object that holds words, such as a book or a sign, is a `referent`.
 `set` is a set as an object in its own right, as `lo'i` forms it. `sequence` is an ordered collection whose order the filler supplies. An order that comes from the members or from another place does not make a sequence.
-In the AI type list, each entry has one tag and a reason. If a broader entry exists, keep it with its own reason.
-Drop the narrower entry and its reason from that AI list.
-This rule does not merge signed type alternatives. An alternative with its own abstractor or relation arity keeps that information, even beside a broader tag.
+The tag tree does not merge signed type alternatives.
+An alternative with its own abstractor or relation arity keeps that information, even beside a broader tag.
 Validation accepts broader and narrower alternatives together when their interpreted objects are distinct.
 `abstractor` names a suggested Lojban abstraction form, or null.
 Standard abstractors are `nu`, `du'u`, `ka`, `ni`, `jei`, `li'i`, `si'o`, `su'u`, `mu'e`, `pu'u`, `za'i`, and `zu'o`.
@@ -633,15 +638,6 @@ An omitted or null field means unknown. Older records keep that meaning and neve
 
 The fields are independent. A missing stem does not discard a known whole-word pronunciation or scoring input.
 These fields stay in the signed body when supplied. They do not replace `input` or affect the generation score.
-
-For the seven source columns, Word uses `word`, Said uses `word_ipa`, Stem uses `stem`, and Stem said uses `ipa`.
-Language and Weight use `language` and `weight`. If `input` is null, Letters stays empty.
-For `format: "lojbanized"`, Letters shows the exact `input.text`.
-
-For `format: "ipa"`, Letters shows a preview from the recorded versioned conversion rule when the app supports that rule.
-Otherwise, Letters stays empty and the UI shows that conversion is unavailable. The UI keeps the original IPA algorithm input visible beside Letters.
-That input stays distinct from the stem pronunciation `ipa`. The UI never guesses or fills `ipa` from it.
-The preview preserves the original stored `input` bytes.
 
 An input contains exactly format and text. Format is `lojbanized` or `ipa`, and text is nonempty.
 IPA input requires a versioned conversion rule before a letter-based generator can use it.

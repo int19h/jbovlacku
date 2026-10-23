@@ -52,22 +52,40 @@ Some providers drop a schema that defines its keys only through `additionalPrope
 
 ## Checks on an answer
 
-The application checks every answer before it shows the suggestion. If the answer fails, the application returns the list of problems as the tool result, and the model sends a corrected answer. After three failed answers, the suggestion fails.
+The server checks every answer before the browser shows the suggestion.
+For a failed answer with one usable call, it returns the problems as the tool result. The model then sends a corrected answer.
+After three failed answers for one task, the suggestion fails.
+
 A response without a `submit_answer` call counts as one failed answer and gets no tool result.
+A response with multiple calls also counts as one failed answer.
+For either case, the server appends the assistant text without tool calls, followed by a user message that lists the problems.
+The next request keeps the existing exchange and adds those turns. It does not restart the request or add a tool result.
 After three failed answers, including responses without that call, the suggestion shows the same failed state.
+
+The feedback starts with this text, followed by a newline and one problem per line:
+
+```text
+The answer was not accepted. Fix every problem and call submit_answer with the complete corrected answer.
+```
+
 These checks apply:
 
 - The answer has exactly the requested keys, with the shape in `answer-shapes.json`.
 - `glosses`: each gloss is nonempty, a sense does not repeat its gloss, and the whole-word sense is nonempty.
 - `hints`: each place has one to three alternatives, each with a known type and a reason. `unclear` stands alone. If a narrower type appears beside a broader type, keep only the broader entry and its own reason. For example, keep `referent` over `event`. This rule applies only to the AI type list, not to signed alternatives with abstractors or relation arity.
 - `mappings`: each entry names a supplied component place, `none` or `unclear`. A place does not list the same component place twice. `none` and `unclear` stand alone. A link's `reason` must start with `direct: `, `merged: `, `distributed: `, or `functional: `, followed by its explanation. A sentinel's reason must instead start with its matching `none: ` or `unclear: `. The check rejects a missing or mismatched prefix. There is no separate `kind` field.
-- `sources`: a null field makes every later field null, and the note then says what is unknown. `word` is one word. `word_ipa` and `ipa` contain no space or dot. `sounds` has 1 to 64 letters from `a b c d e f g i j k l m n o p r s t u v x z`. A stem equal to the whole word needs a reason in the note.
+- `sources`: `word` is one word. `word_ipa` and `ipa` contain no space or dot. `sounds` has 1 to 64 letters from `a b c d e f g i j k l m n o p r s t u v x z`. A stem equal to the whole word needs a reason in the note.
+
+For `sources`, if `word` is null, `sense`, `word_ipa`, `stem`, `ipa`, and `sounds` must be null.
+A null `stem` or `word_ipa` requires null `ipa` and `sounds`. A null `ipa` requires null `sounds`.
+A missing stem never discards a known `word_ipa`. The note explains any unknown field.
 
 ## Rules that the application keeps
 
 - The definition of the whole word decides the meaning. Component definitions only identify roles.
 - Any word form that follows the morphology rules is valid, including lower-scoring rafsi and optional hyphens. The tasks never judge a form.
 - The hint types follow the standard tags of the [format specification](../docs/format.md#glosses-types-and-defaults). `unclear` is not a tag. It marks a place that the definition does not describe.
+- The AI never suggests the retired tags `entity`, `mass`, or `tuple`.
 - In `sources`, the pronunciation lets speakers of the language check the word later. The stress mark in `word_ipa` is informational. Only `sounds` is scored.
 
 ## Tested configuration
