@@ -13,6 +13,8 @@ import {
   utf8,
   evaluateSession,
   canonicalize,
+  restoreHostEvaluationSession,
+  createEvaluationSession,
 } from "../../core/src/index.ts";
 import { DictionaryService } from "../src/service.ts";
 import {
@@ -230,6 +232,252 @@ function judgment(
   );
 }
 
+test("publication releases the superseded configured runtime and unused state", async () => {
+  const { service, coordinator, definition, profile } = await fixture();
+  service.options.evaluationRuntime = {
+    create: createEvaluationSession,
+    restore: restoreHostEvaluationSession,
+  };
+  const oldKey =
+    coordinator.state.snapshot + "|" + service.options.selectedView;
+  const old = (service as any).sessions.get(oldKey);
+  let released = false;
+  const free = old.free.bind(old);
+  old.free = () => {
+    released = true;
+    free();
+  };
+  await service.admitMany([
+    utf8(
+      JSON.stringify(
+        judgment(definition.envelope.id, "4", [profile.envelope.id], "bless"),
+      ),
+    ),
+  ]);
+  await service.flushMaterialization();
+  assert.equal(released, true);
+  assert.equal((service as any).sessions.has(oldKey), false);
+  assert.equal((service as any).evaluationCache.has(oldKey), false);
+});
+
+test("publication keeps an active ranking runtime until that read finishes", async () => {
+  const { service, coordinator, definition, profile } = await fixture();
+  service.options.evaluationRuntime = {
+    create: createEvaluationSession,
+    restore: restoreHostEvaluationSession,
+  };
+  const oldKey =
+    coordinator.state.snapshot + "|" + service.options.selectedView;
+  const old = (service as any).sessions.get(oldKey);
+  const entered = deferred();
+  const gate = deferred();
+  const rank = old.rankWord.bind(old);
+  old.rankWord = async (...args: any[]) => {
+    entered.resolve();
+    await gate.promise;
+    return rank(...args);
+  };
+  let released = false;
+  const free = old.free.bind(old);
+  old.free = () => {
+    released = true;
+    free();
+  };
+  const reading = read(service, "/words/" + wordId(word));
+  await entered.promise;
+  try {
+    await service.admitMany([
+      utf8(
+        JSON.stringify(
+          judgment(definition.envelope.id, "4", [profile.envelope.id], "bless"),
+        ),
+      ),
+    ]);
+    await service.flushMaterialization();
+    assert.equal(released, false);
+  } finally {
+    gate.resolve();
+  }
+  assert.ok((await reading).definitions.includes(definition.envelope.id));
+  assert.equal(released, true);
+});
+
+test("completed reads survive worker death while a pinned replacement restores", async () => {
+  const checkpoints = new MemoryCheckpoints();
+  const { service, coordinator, definition, view } = await fixture(checkpoints);
+  const key = coordinator.state.snapshot + "|" + view.envelope.id;
+  const dead = (service as any).sessions.get(key);
+  dead.isAvailable = () => false;
+  dead.rankWord = () => {
+    throw new Error("The worker stopped.");
+  };
+  const gate = deferred();
+  let restores = 0;
+  let cold = 0;
+  service.options.evaluationRuntime = {
+    async restore(bytes, binding) {
+      restores++;
+      await gate.promise;
+      return restoreHostEvaluationSession(bytes, binding);
+    },
+    create() {
+      cold++;
+      throw new Error("Unexpected cold evaluation.");
+    },
+  };
+  try {
+    const result = await Promise.race([
+      read(service, "/words/" + wordId(word)),
+      new Promise<never>((_, reject) =>
+        setTimeout(
+          () => reject(new Error("Completed read waited for recovery.")),
+          300,
+        ),
+      ),
+    ]);
+    assert.ok(result.definitions.includes(definition.envelope.id));
+    assert.deepEqual(result.scores, []);
+    const receipt = await read(service, "/receipts/" + definition.envelope.id);
+    assert.equal(receipt.snapshot, coordinator.state.snapshot);
+    assert.equal(receipt.interpretation, "effective");
+    assert.equal(restores, 1);
+    assert.equal(cold, 0);
+  } finally {
+    gate.resolve();
+    await Promise.allSettled([
+      ...((service as any).sessionRepairs?.values() ?? []),
+    ]);
+  }
+  assert.equal(
+    (service as any).sessions.get(key).isAvailable?.() !== false,
+    true,
+  );
+  assert.ok((await read(service, "/words/" + wordId(word))).scores.length > 0);
+});
+
+test("an old worker repair cannot retire a newer snapshot during publication", async () => {
+  const checkpoints = new MemoryCheckpoints();
+  const { service, coordinator, definition, profile } =
+    await fixture(checkpoints);
+  const oldKey =
+    coordinator.state.snapshot + "|" + service.options.selectedView;
+  const old = (service as any).sessions.get(oldKey);
+  old.isAvailable = () => false;
+  const repairGate = deferred();
+  const publishGate = deferred();
+  const publishing = deferred();
+  service.options.evaluationRuntime = {
+    create: createEvaluationSession,
+    async restore(bytes, binding) {
+      await repairGate.promise;
+      return restoreHostEvaluationSession(bytes, binding);
+    },
+  };
+  service.options.index = {
+    async replace() {
+      publishing.resolve();
+      await publishGate.promise;
+    },
+    async publish() {},
+  } as any;
+  await read(service, "/receipts/" + definition.envelope.id);
+  try {
+    await service.admitMany([
+      utf8(
+        JSON.stringify(
+          judgment(definition.envelope.id, "4", [profile.envelope.id], "bless"),
+        ),
+      ),
+    ]);
+    await publishing.promise;
+    const latest =
+      coordinator.state.snapshot + "|" + service.options.selectedView;
+    assert.ok((service as any).sessions.has(latest));
+    repairGate.resolve();
+    await Promise.all((service as any).sessionRepairs.values());
+    publishGate.resolve();
+    await service.flushMaterialization();
+    assert.ok(
+      (service as any).sessions.has(latest),
+      "The newly completed worker must remain live.",
+    );
+    assert.ok((service as any).evaluationCache.has(latest));
+    assert.ok((service as any).packageCache.has(coordinator.state.snapshot));
+  } finally {
+    repairGate.resolve();
+    publishGate.resolve();
+    await service.flushMaterialization();
+  }
+});
+
+test("flush exports the pending completed checkpoint before waiting for a rebuild", async () => {
+  const checkpoints = new MemoryCheckpoints();
+  const { service, coordinator, definition, profile } = await fixture(
+    checkpoints,
+    60000,
+  );
+  await service.admitMany([
+    utf8(
+      JSON.stringify(
+        judgment(definition.envelope.id, "4", [profile.envelope.id], "bless"),
+      ),
+    ),
+  ]);
+  while ((service as any).background) await (service as any).background;
+  const latest = coordinator.state.snapshot;
+  const gate = deferred();
+  const saved = deferred();
+  const save = checkpoints.save.bind(checkpoints);
+  checkpoints.save = async (binding, payload) => {
+    await save(binding, payload);
+    saved.resolve();
+  };
+  (service as any).background = gate.promise.finally(() => {
+    (service as any).background = undefined;
+  });
+  const flushing = service.flushMaterialization();
+  try {
+    await Promise.race([
+      saved.promise,
+      new Promise<never>((_, reject) =>
+        setTimeout(
+          () => reject(new Error("Checkpoint waited for the rebuild.")),
+          300,
+        ),
+      ),
+    ]);
+    assert.equal(checkpoints.saved!.binding.snapshot, latest);
+  } finally {
+    gate.resolve();
+    await flushing;
+  }
+});
+
+test("a forced checkpoint flush retries one failed export from a live session", async () => {
+  const checkpoints = new MemoryCheckpoints();
+  const { service, coordinator } = await fixture(checkpoints, 60000);
+  const snapshot = await coordinator.getSnapshot(coordinator.state.snapshot!);
+  const key = snapshot!.snapshot + "|" + service.options.selectedView;
+  const session = (service as any).sessions.get(key);
+  const checkpoint = session.checkpoint.bind(session);
+  let attempts = 0;
+  session.checkpoint = (binding: string) => {
+    if (++attempts === 1)
+      throw new Error("Transient checkpoint export failure.");
+    return checkpoint(binding);
+  };
+  const packages = await (service as any).packageCache.get(snapshot!.snapshot);
+  (service as any).saveCheckpoint(
+    snapshot,
+    coordinator.state.position,
+    packages,
+  );
+  await service.prepareEvaluationShutdown();
+  assert.equal(attempts, 2);
+  assert.equal(checkpoints.saved!.binding.snapshot, snapshot!.snapshot);
+  assert.equal((service as any).pendingCheckpoint, undefined);
+});
+
 test("background writes keep complete reads and cursors until the latest snapshot publishes", async () => {
   const { service, coordinator, definition, profile, view, records } =
     await fixture();
@@ -389,6 +637,11 @@ test("receipts use a completed evaluation while a later write is still pending",
     const receipts = { ...session.state.receipts };
     delete receipts[first.envelope.id];
     sessions.set(key, { ...session, state: { ...session.state, receipts } });
+    const cached = (service as any).evaluationCache.get(key);
+    (service as any).evaluationCache.set(
+      key,
+      Promise.resolve({ ...session.state, receipts }),
+    );
     try {
       const missingDerived = await read(
         service,
@@ -398,6 +651,7 @@ test("receipts use a completed evaluation while a later write is still pending",
       assert.deepEqual(missingDerived.reasons, ["evaluation_unavailable"]);
     } finally {
       sessions.set(key, session);
+      (service as any).evaluationCache.set(key, cached);
     }
   } finally {
     gate.resolve();
@@ -438,14 +692,14 @@ test("an idle completed event-limit evaluation reports unavailable interpretatio
   }
 });
 
-test("a receipt rebuilds a missing completed session before answering", async () => {
+test("a receipt keeps completed state while a missing session rebuilds", async () => {
   const { service, coordinator, definition } = await fixture();
   const expected = await read(service, "/receipts/" + definition.envelope.id);
   const key = coordinator.state.snapshot + "|" + service.options.selectedView;
   const internals = service as any;
   internals.sessions.get(key).free();
   internals.sessions.delete(key);
-  // A settled evaluation promise alone cannot restore the native session.
+  // The settled state answers while the runtime rebuild runs separately.
   assert.ok(internals.evaluationCache.has(key));
   const compute = internals.computeEvaluation.bind(service);
   let evaluations = 0;
@@ -456,6 +710,7 @@ test("a receipt rebuilds a missing completed session before answering", async ()
   const receipt = await read(service, "/receipts/" + definition.envelope.id);
   assert.deepEqual(receipt, expected);
   assert.equal(evaluations, 1);
+  await Promise.all(internals.sessionRepairs.values());
   assert.ok(internals.sessions.has(key));
   assert.ok(internals.evaluationCache.size <= 2);
 });

@@ -176,10 +176,13 @@ export class DictionaryService {
   private pendingMaterialization?: Snapshot;
   private background?: Promise<void>;
   private backgroundError?: unknown;
+  private evaluationStopping = false;
+  private evaluationShutdown?: Promise<void>;
   private pendingCheckpoint?: {
     snapshot: Snapshot;
     position: number;
     packages: MaterializedPackages;
+    exportAttempts?: number;
   };
   private checkpointJob?: Promise<void>;
   private checkpointTimer?: ReturnType<typeof setTimeout>;
@@ -375,10 +378,11 @@ export class DictionaryService {
       this.queueMaterialization((await this.current()).snapshot);
   }
   private queueMaterialization(snapshot: Snapshot) {
+    if (this.evaluationStopping) return;
     this.pendingMaterialization = snapshot;
     if (this.background) return;
     this.background = (async () => {
-      while (this.pendingMaterialization) {
+      while (this.pendingMaterialization && !this.evaluationStopping) {
         this.pendingMaterialization = undefined;
         try {
           const target = (await this.current()).snapshot;
@@ -397,26 +401,43 @@ export class DictionaryService {
       }
     })().finally(() => {
       this.background = undefined;
-      if (this.pendingMaterialization)
+      if (this.pendingMaterialization && !this.evaluationStopping)
         this.queueMaterialization(this.pendingMaterialization);
     });
   }
   async flushMaterialization(): Promise<void> {
     await this.initialize();
-    while (this.background) await this.background;
     this.checkpointFlushers++;
     try {
-      if (this.checkpointTimer !== undefined)
-        clearTimeout(this.checkpointTimer);
-      this.checkpointTimer = undefined;
-      while (this.checkpointJob || this.pendingCheckpoint) {
-        if (!this.checkpointJob) this.drainCheckpoints();
-        await this.checkpointJob;
-      }
+      await this.flushCheckpoints();
+      while (this.background) await this.background;
+      await this.flushCheckpoints();
     } finally {
       this.checkpointFlushers--;
     }
     if (this.backgroundError) throw this.backgroundError;
+  }
+  /** Save the last completed state before the host stops its workers. */
+  prepareEvaluationShutdown(): Promise<void> {
+    this.evaluationStopping = true;
+    return (this.evaluationShutdown ??= (async () => {
+      await this.initialize();
+      await this.publication;
+      this.checkpointFlushers++;
+      try {
+        await this.flushCheckpoints();
+      } finally {
+        this.checkpointFlushers--;
+      }
+    })());
+  }
+  private async flushCheckpoints() {
+    if (this.checkpointTimer !== undefined) clearTimeout(this.checkpointTimer);
+    this.checkpointTimer = undefined;
+    while (this.checkpointJob || this.pendingCheckpoint) {
+      if (!this.checkpointJob) this.drainCheckpoints();
+      await this.checkpointJob;
+    }
   }
   private saveCheckpoint(
     snapshot: Snapshot,
@@ -484,10 +505,35 @@ export class DictionaryService {
                 this.canonicalEnvelopes.get(event.envelope_hash)!,
               ]);
             }
+          const packageRecords =
+            this.packageRecords.get(checkpoint.snapshot.snapshot) ?? [];
+          const core = await this.useSession(
+            checkpoint.snapshot.snapshot +
+              "|" +
+              (this.options.selectedView ?? zeroView),
+            async () => {
+              let core: Uint8Array;
+              try {
+                core = await session.checkpoint(JSON.stringify(binding));
+              } catch (error) {
+                // Retry a failed live export once, including during shutdown.
+                if (
+                  !this.pendingCheckpoint &&
+                  session.isAvailable?.() !== false &&
+                  (checkpoint.exportAttempts ?? 0) < 1
+                )
+                  this.pendingCheckpoint = {
+                    ...checkpoint,
+                    exportAttempts: (checkpoint.exportAttempts ?? 0) + 1,
+                  };
+                throw error;
+              }
+              return core;
+            },
+          );
           await this.options.checkpoints!.save(binding, {
-            core: await session.checkpoint(JSON.stringify(binding)),
-            package_records:
-              this.packageRecords.get(checkpoint.snapshot.snapshot) ?? [],
+            core,
+            package_records: packageRecords,
             packages: checkpoint.packages,
             envelopes,
           });
@@ -664,6 +710,7 @@ export class DictionaryService {
       })
       .then(async (built) => {
         const publish = this.publication.then(async () => {
+          if (this.evaluationStopping) return;
           const startingMetadata = await this.metadata();
           if (startingMetadata.snapshot !== snapshot.snapshot) return;
           let completed = false;
@@ -731,6 +778,7 @@ export class DictionaryService {
                 } catch (error) {
                   this.options.reportError?.(error);
                 }
+                this.retireSupersededSessions();
                 break;
               }
             }
@@ -774,6 +822,7 @@ export class DictionaryService {
     pending.then(
       () => {
         this.inFlightPackages.delete(snapshot.snapshot);
+        this.retireSupersededSessions();
       },
       () => {
         this.inFlightPackages.delete(snapshot.snapshot);
@@ -896,6 +945,108 @@ export class DictionaryService {
   private inFlightEvaluations = new Set<string>();
   private sessionUses = new Map<string, number>();
   private sessions = new Map<string, EvaluationSession>();
+  private retiredSessions = new Set<string>();
+  private sessionRepairs = new Map<string, Promise<void>>();
+  private retireSupersededSessions() {
+    if (!this.options.evaluationRuntime || !this.completed) return;
+    const configured = this.options.selectedView ?? zeroView;
+    const current = this.completed.snapshot.snapshot + "|" + configured;
+    this.retiredSessions.delete(current);
+    for (const key of this.sessions.keys())
+      if (
+        key !== current &&
+        key.endsWith("|" + configured) &&
+        !this.inFlightEvaluations.has(key) &&
+        !this.inFlightPackages.has(key.split("|")[0])
+      )
+        this.retiredSessions.add(key);
+    this.releaseRetiredSessions();
+  }
+  private releaseRetiredSessions() {
+    this.retiredSessions.delete(
+      this.completed?.snapshot.snapshot +
+        "|" +
+        (this.options.selectedView ?? zeroView),
+    );
+    for (const key of this.retiredSessions) {
+      const snapshot = key.split("|")[0];
+      if (
+        this.sessionUses.has(key) ||
+        this.inFlightEvaluations.has(key) ||
+        this.inFlightPackages.has(snapshot)
+      )
+        continue;
+      this.retiredSessions.delete(key);
+      this.sessions.get(key)?.free();
+      this.sessions.delete(key);
+      this.sessionSnapshots.delete(key);
+      this.evaluationCache.delete(key);
+      this.packageCache.delete(snapshot);
+    }
+    this.prunePackageRecords();
+  }
+  private repairSession(snapshot: Snapshot, view: string) {
+    const key = snapshot.snapshot + "|" + view;
+    if (
+      this.evaluationStopping ||
+      this.sessionRepairs.has(key) ||
+      this.inFlightEvaluations.has(key) ||
+      this.inFlightEvaluations.size >= 2
+    )
+      return;
+    this.sessions.get(key)?.free();
+    this.sessions.delete(key);
+    this.sessionSnapshots.delete(key);
+    const retained = this.evaluationCache.get(key);
+    this.inFlightEvaluations.add(key);
+    const owns = () =>
+      !this.evaluationStopping && this.evaluationCache.get(key) === retained;
+    const repair = (async () => {
+      if (
+        this.options.checkpoints &&
+        this.options.coreVersion &&
+        view === (this.options.selectedView ?? zeroView)
+      ) {
+        const position = this.snapshotPositions.get(snapshot.snapshot);
+        if (position !== undefined) {
+          const binding = this.binding(snapshot, position);
+          try {
+            const payload = await this.options.checkpoints.load(binding);
+            if (payload) {
+              const session = await (this.options.evaluationRuntime
+                ? this.options.evaluationRuntime.restore(
+                    payload.core,
+                    JSON.stringify(binding),
+                  )
+                : restoreHostEvaluationSession(
+                    payload.core,
+                    JSON.stringify(binding),
+                  ));
+              if (owns()) {
+                this.sessions.set(key, session);
+                this.sessionSnapshots.set(key, snapshot);
+                this.evaluationCache.set(key, Promise.resolve(session.state));
+              } else session.free();
+              return;
+            }
+          } catch (error) {
+            this.options.reportError?.(error);
+          }
+        }
+      }
+      const state = await this.computeEvaluation(snapshot, view, owns);
+      if (owns()) this.evaluationCache.set(key, Promise.resolve(state));
+    })()
+      .catch((error) => {
+        this.options.reportError?.(error);
+      })
+      .finally(() => {
+        this.inFlightEvaluations.delete(key);
+        this.sessionRepairs.delete(key);
+        this.retireSupersededSessions();
+      });
+    this.sessionRepairs.set(key, repair);
+  }
   private async useSession<T>(
     key: string,
     operation: () => T | Promise<T>,
@@ -907,6 +1058,7 @@ export class DictionaryService {
       const remaining = this.sessionUses.get(key)! - 1;
       if (remaining) this.sessionUses.set(key, remaining);
       else this.sessionUses.delete(key);
+      this.releaseRetiredSessions();
     }
   }
   private evaluation(
@@ -922,11 +1074,9 @@ export class DictionaryService {
         this.inFlightEvaluations.has(key)
       )
         return cached;
-      // A settled result without its session cannot support later forks or captures.
-      this.evaluationCache.delete(key);
-      this.sessions.get(key)?.free();
-      this.sessions.delete(key);
-      this.sessionSnapshots.delete(key);
+      // Completed state remains valid when its ranking runtime stops.
+      this.repairSession(snapshot, view);
+      return cached;
     }
     if (this.inFlightEvaluations.size >= 2)
       return Promise.reject(
@@ -968,7 +1118,8 @@ export class DictionaryService {
     result = this.computeEvaluation(
       snapshot,
       view,
-      () => this.evaluationCache.get(key) === result,
+      () =>
+        !this.evaluationStopping && this.evaluationCache.get(key) === result,
     );
     this.evaluationCache.set(key, result);
     result.then(
@@ -1164,20 +1315,17 @@ export class DictionaryService {
         previous?.body_hash === event.body_hash
       ) {
         receiptSnapshot = complete!.snapshot.snapshot;
-        const session = this.sessions.get(key);
-        let state =
-          session?.isAvailable?.() === false ? undefined : session?.state;
-        if (!state)
-          try {
-            state = await this.evaluation(complete!.snapshot);
-          } catch (error) {
-            if (
-              !(error instanceof ApiError) ||
-              error.code !== "resource_unavailable"
-            )
-              throw error;
-            reasons = ["evaluation_resource_unavailable"];
-          }
+        let state: Evaluation | undefined;
+        try {
+          state = await this.evaluation(complete!.snapshot);
+        } catch (error) {
+          if (
+            !(error instanceof ApiError) ||
+            error.code !== "resource_unavailable"
+          )
+            throw error;
+          reasons = ["evaluation_resource_unavailable"];
+        }
         derived = state?.receipts[id];
       } else {
         receiptSnapshot = null;

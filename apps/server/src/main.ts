@@ -166,6 +166,9 @@ const mime: Record<string, string> = {
 const activeRequests = new Set<Promise<void>>();
 let stopping = false;
 const server = createServer((incoming, outgoing) => {
+  outgoing.once("finish", () => {
+    if (stopping) server.closeIdleConnections();
+  });
   const handled = (async () => {
     if (stopping) {
       incoming.resume();
@@ -242,7 +245,7 @@ const server = createServer((incoming, outgoing) => {
           trustedProxies,
         ),
       );
-      if (abandoned) response.headers.set("connection", "close");
+      if (abandoned || stopping) response.headers.set("connection", "close");
       outgoing.writeHead(response.status, Object.fromEntries(response.headers));
       if (response.body) await sendResponseBody(response.body, outgoing);
       outgoing.end(() => {
@@ -271,10 +274,15 @@ function closeService(): Promise<void> {
     activeRequests,
     stopAccepting: () => {
       stopping = true;
-      return new Promise<void>((resolve) => server.close(() => resolve()));
+      const closed = new Promise<void>((resolve) =>
+        server.close(() => resolve()),
+      );
+      server.closeIdleConnections();
+      return closed;
     },
     closeConnections: () => server.closeAllConnections(),
     flush: () => service.flushMaterialization(),
+    prepareEvaluationShutdown: () => service.prepareEvaluationShutdown(),
     stopEvaluation: () => evaluationRuntime.close(),
     closeStorage: async () => {
       try {

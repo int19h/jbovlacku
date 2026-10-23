@@ -3,6 +3,7 @@ interface ShutdownOptions {
   stopAccepting(): Promise<void>;
   closeConnections(): void;
   flush(): Promise<void>;
+  prepareEvaluationShutdown?(): Promise<void>;
   stopEvaluation(): Promise<void>;
   closeStorage(): Promise<void>;
   graceMs?: number;
@@ -13,7 +14,15 @@ export async function shutdownHost(options: ShutdownOptions): Promise<void> {
   const connectionsClosed = options.stopAccepting();
   let expired = false;
   let stopped: Promise<void> | undefined;
-  const stopEvaluation = () => (stopped ??= options.stopEvaluation());
+  const stopEvaluation = () =>
+    (stopped ??= (async () => {
+      // Export and save the completed worker before termination can reject it.
+      try {
+        await options.prepareEvaluationShutdown?.();
+      } finally {
+        await options.stopEvaluation();
+      }
+    })());
   let timer!: ReturnType<typeof setTimeout>;
   const deadline = new Promise<void>((resolve, reject) => {
     timer = setTimeout(() => {
@@ -29,7 +38,6 @@ export async function shutdownHost(options: ShutdownOptions): Promise<void> {
   const drainRequests = async () => {
     while (options.activeRequests.size)
       await Promise.allSettled([...options.activeRequests]);
-    await connectionsClosed;
   };
   try {
     await drainRequests();
@@ -41,20 +49,24 @@ export async function shutdownHost(options: ShutdownOptions): Promise<void> {
         deadline,
       ]);
   } finally {
-    clearTimeout(timer);
     try {
-      await stopEvaluation();
-    } finally {
-      await drainRequests();
-      // Termination bounds core work. Durable writes and checkpoint I/O must settle
-      // before their SQLite connections and the data lock close.
       try {
-        await flush();
-      } catch (error) {
-        if (!expired) throw error;
+        await stopEvaluation();
       } finally {
-        await options.closeStorage();
+        await drainRequests();
+        await connectionsClosed;
+        // Termination bounds core work. Durable writes and checkpoint I/O must settle
+        // before their SQLite connections and the data lock close.
+        try {
+          await flush();
+        } catch (error) {
+          if (!expired) throw error;
+        } finally {
+          await options.closeStorage();
+        }
       }
+    } finally {
+      clearTimeout(timer);
     }
   }
 }
