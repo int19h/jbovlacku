@@ -102,22 +102,23 @@ The current default state work budget can run out at roughly 4,500 events in a f
 This is an approximate limit. Histories with more edges can reach it sooner, and the requested state also affects the work.
 The Node loader can retain a larger explicit traversal budget for a local import.
 
-The Node adapter serves the pinned SQL import with 59,125 definitions in 44 languages.
-The measurements below predate the review fixes and the removal of derived embedding vectors from signed import bodies.
+The Node adapter serves the revised SQL import with 59,125 definitions in 44 languages.
+The extraction omits derived vectors and cache fields from signed bodies.
 The adapter retains an evaluated checkpoint and keeps completed reads available during new evaluation.
 It captures at most one checkpoint per minute and flushes the latest state on shutdown.
 After publication, the browser shows a pending notice until the accepted records reach the evaluated word view.
-On this VM, startup with a checkpoint took 6.11 seconds and the first `klama` request took 0.32 seconds.
-Five consecutive signed endorsements became visible in 4.26, 2.50, 2.11, 2.16, and 2.15 seconds.
-The checkpoint used 64.35 MiB. Wasm memory reached 1.69 GiB, and peak process memory reached 3.51 GiB.
 
-Search took 11 to 74 milliseconds across English, French, and Russian.
-Process startup through the first word response took 6.43 seconds.
-Initial evaluation without a checkpoint still exceeds the original 30-second target in the measured build.
-The [development guide](docs/development.md#initial-lensisku-data) describes state reuse, checkpoint recovery, and the measurement limits.
+On this VM, readiness with a checkpoint took 6.49 seconds, and the first `klama` request took 0.053 seconds.
+Five consecutive signed endorsements became visible in 3.47, 1.84, 1.94, 1.81, and 1.97 seconds.
+Warm word requests took 61 to 251 milliseconds across English, French, and Russian definition packages.
+Search took 19 to 76 milliseconds. Package manifests took 1.5 to 2.7 milliseconds.
 
-The current SQL extraction omits derived vectors and cache fields.
-Serving performance with this revised extraction remains unmeasured.
+The checkpoint used 63.80 MiB. Peak process memory reached 3.69 GiB, including 1.67 GiB of Wasm linear memory.
+
+Process startup through the first word response with a checkpoint took 6.54 seconds.
+Without a checkpoint, initial readiness took 31.15 seconds, and the first word request then took 66.64 seconds.
+That cold request still exceeds the original 30-second target.
+The [development guide](docs/development.md#initial-lensisku-data) describes state reuse, checkpoint costs, and the measurement limits.
 A larger traversal budget does not remove memory limits.
 
 [Issue 9](https://github.com/int19h/jbovlacku/issues/9) tracks ranking CPU limits.

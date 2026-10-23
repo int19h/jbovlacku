@@ -246,39 +246,64 @@ Missing, changed, or late body bytes retain their separate handling. The verifie
 Every signature still passes the point, scalar, embedded-key, and equation rules.
 The existing combined-request API remains available for smaller browser snapshots. It still allocates the complete request.
 
-The measurement below predates the review fixes and the removal of derived embedding vectors from signed import bodies.
-It used 59,125 definitions, 44 languages, and the saved 1,000,000,000-unit traversal budget.
-It began with 59,141 events and ended with 59,146 after five signed endorsements.
-Earlier local probes added 15 endorsements. Definition bodies and import selections remained unchanged.
-The source listened on `127.0.0.1:8951`. The start command used no Node heap override.
+The full local measurement used the revised SQL extraction without derived vectors or cache fields in signed bodies.
+It contained 59,125 definitions in 44 languages and used the saved 1,000,000,000-unit traversal budget.
+The run began with 59,126 events and ended with 59,131 after five signed endorsements.
+Definition bodies, the selected view, and the import selection remained unchanged.
+The source listened on `127.0.0.1:8951` and used the default Node heap configuration.
 
-With a checkpoint, readiness took 6.11 seconds. The first `klama` word request took 0.32 seconds.
-Process startup through that response took 6.43 seconds.
-A second restart restored all five writes. Its readiness took 6.20 seconds, and its first word request took 0.32 seconds.
-The second restart took 6.51 seconds through the first word response.
+The first launch had no checkpoint. Initial readiness took 31.15 seconds.
+The first `klama` request then took 66.64 seconds, and startup through that response took 97.80 seconds.
 
-The five endorsements became visible in 4.26, 2.50, 2.11, 2.16, and 2.15 seconds.
+The initial evaluation session took 52.31 seconds, including record reads, authentication, and evaluation.
+Its final core evaluation took 2.18 seconds. This profile does not separate file reads from authentication.
+The first launch also built the initial snapshot and packages.
+
+With a checkpoint, readiness took 6.49 seconds. The first word request took 0.053 seconds.
+Process startup through that response took 6.54 seconds.
+A second restart restored all five writes, with 6.09-second readiness and a 0.311-second first word request.
+That second startup took 6.40 seconds through the first word response.
+
+The five endorsements became visible in 3.47, 1.84, 1.94, 1.81, and 1.97 seconds.
 The timer ran from the signed POST until the first word response with the new reviewer count.
 Later receipt and event reads made sure that the named snapshot contained each signed event.
 Admission receipts reported durable acceptance, `index_lag`, `evaluation_pending`, and a null snapshot.
 Reads used the preceding completed snapshot while the new snapshot evaluated.
+Every update used the incremental path for one record.
 
-Search took 11 to 74 milliseconds across English, French, and Russian.
-The same run read language packages, package parts, and original definition bodies successfully.
-The checkpoint file used 67,471,830 bytes, or 64.35 MiB.
-Wasm linear memory reached 1.69 GiB. Linux reported peak process memory of 3.51 GiB, including Wasm.
+| Definition package | Warm word request | Search | Package manifest |
+| --- | ---: | ---: | ---: |
+| English | 62.7 ms | 75.8 ms | 2.0 ms |
+| French | 250.9 ms | 18.7 ms | 2.6 ms |
+| Russian | 61.0 ms | 20.8 ms | 1.5 ms |
+
+The word route returns candidates across definition languages.
+Each warm request used a headword from the named language package and included that package's exact definition.
+The run also read package parts and original bodies, with matching counts and languages.
+Package parts took 9.6 to 44.4 milliseconds, and body reads took 2.9 to 7.9 milliseconds.
+
+The final checkpoint used 66,900,700 bytes, or 63.80 MiB.
+Peak Wasm linear memory reached 1,794,899,968 bytes, or 1.67 GiB.
+Linux reported peak process memory of 3,959,283,712 bytes, or 3.69 GiB, including Wasm.
+The initial launch peaked at 2.64 GiB, and the five-write process reached the overall peak.
+The Node process remained below 4,000,000,000 bytes by about 41 MB in this run.
+
+The profiler measured synchronous core export separately from synchronous V8 serialization.
+Initial shutdown took 305 ms for export and 411 ms for serialization.
+The first automatic capture took 355 ms and 654 ms. The final shutdown capture took 171 ms and 568 ms.
+
+There was one automatic capture during the five writes, plus the forced final capture.
+The one-minute interval limits these pauses' frequency. It does not remove the pauses from the Node event loop.
 
 The word request with a checkpoint and all five writes met the five-second request targets.
-Process startup plus the first word response still exceeded five seconds.
-Initial evaluation without a checkpoint still authenticates every record and builds the complete history state.
-A preliminary run took 70.01 seconds for its first word request, above the original 30-second target.
-Initial package generation also rereads retained bytes to detect storage failures.
+Startup plus the first response still exceeded five seconds, and the first cold request still exceeded 30 seconds.
+Initial evaluation authenticates every record, and initial package generation rereads retained bytes to detect storage failures.
+The cold-start readiness probe used three-second request deadlines and can start overlapping initial snapshot builds.
+These single-process measurements use the VM's existing filesystem cache and do not establish performance on another host or under concurrent imports.
+They also do not establish hosted Worker resource compliance.
 
-These single-process measurements use the VM's existing filesystem cache. They do not establish performance on another host or under concurrent full imports.
-The measurements do not establish hosted Worker resource compliance.
-
-The first full SQL evaluation before streaming reached WebAssembly's 4 GiB memory limit with derived source vectors in every body.
-The revised extraction omits derived vectors and cache fields. Full dictionary serving with that extraction remains unmeasured.
+The first combined full-data request before streaming reached WebAssembly's 4 GiB memory limit.
+The current measurement uses the streaming path and the revised source bodies.
 An explicit traversal limit or a larger Node heap does not remove the WebAssembly memory limit.
 
 ## Browser development
