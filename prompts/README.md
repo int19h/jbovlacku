@@ -65,7 +65,8 @@ The user message includes that key list, such as "In submit_answer, use these ke
 If the draft has no spelling, the key list uses "the whole word" and "place 1" instead.
 For `mappings`, the prompt, tool schema, and answer use component spellings and place indices, such as `klama[2]`.
 The `component_places` metadata lists each component word, exact definition event or null, and available place indices.
-The request groups the permitted indices by spelling and uses one full permitted name as its example.
+The request groups the permitted indices by spelling and uses the first unambiguous full name as its example.
+It lists ambiguous names separately before the model answers. If every name is ambiguous, the example uses `unclear`.
 After the answer check, the application resolves each name to its exact selected definition.
 Repeated spellings with the same exact definition share a name.
 If one name refers to distinct selected definitions, the check asks for `unclear` instead of choosing a definition.

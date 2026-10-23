@@ -18,6 +18,8 @@ import {
   promptVersion,
   sourceLanguages,
   estimateInferenceCost,
+  normalizeClientNetwork,
+  INFERENCE_RESPONSE_BYTES,
   type ProviderConfig,
   type InferenceLog,
   type Task,
@@ -85,17 +87,25 @@ export interface AssistanceOptions {
   terminalReadMs?: number;
   budgetStore?: AssistanceBudgetStore;
 }
-export interface AssistanceBudgetEntry {
+export interface LegacyAssistanceBudgetEntry {
   id: string;
   at: number;
   reservedUsd: number;
   settledUsd: number;
   active: boolean;
 }
-export interface AssistanceBudgetSnapshot {
-  version: 1;
-  entries: AssistanceBudgetEntry[];
+export interface AssistanceBudgetEntry extends LegacyAssistanceBudgetEntry {
+  networkHashes: string[];
+  deadline: number;
+  costKnown: boolean;
 }
+export type AssistanceBudgetSnapshot =
+  | { version: 1; entries: LegacyAssistanceBudgetEntry[] }
+  | {
+      version: 2;
+      networkHashKey: string;
+      entries: AssistanceBudgetEntry[];
+    };
 export interface AssistanceBudgetStore {
   load(): Promise<AssistanceBudgetSnapshot | null>;
   save(snapshot: AssistanceBudgetSnapshot): Promise<void>;
@@ -445,6 +455,45 @@ function checkComponentContext(
       );
   }
 }
+function mappingMetadata(request: AssistRequest, context: ContextDefinition[]) {
+  const componentByPlace = new Map<
+    string,
+    { component: Data; place: number }[]
+  >();
+  const definitions = (request.current.compound?.components ?? []).map(
+    (component: Data) => {
+      const source = context.find(
+        (entry) =>
+          entry.event === component.definition &&
+          entry.body.word?.language === component.word?.language &&
+          entry.body.word?.spelling === component.word?.spelling,
+      );
+      const places = (source?.body.frame?.places ?? []).map(
+        (place: Data) => place.index,
+      );
+      for (const place of places) {
+        const name = `${component.word.spelling}[${place}]`;
+        const candidates = componentByPlace.get(name) ?? [];
+        if (
+          !candidates.some(
+            (entry) => entry.component.definition === component.definition,
+          )
+        )
+          candidates.push({ component, place });
+        componentByPlace.set(name, candidates);
+      }
+      return { word: component.word, definition: component.definition, places };
+    },
+  );
+  return {
+    componentByPlace,
+    definitions,
+    components: [...componentByPlace.keys()],
+    ambiguousComponents: [...componentByPlace]
+      .filter(([, candidates]) => candidates.length > 1)
+      .map(([name]) => name),
+  };
+}
 /** Estimate all possible tasks before the service admits a paid job. */
 export function estimateAssistanceCost(
   request: AssistRequest,
@@ -461,7 +510,7 @@ export function estimateAssistanceCost(
       : placeKeys(request.current.frame);
     // A generated frame can use the full output allowance. Its descriptions
     // pass through two JSON string layers in the following task requests.
-    const extra = generated ? config.maxTokens * 8 + 4096 : 0;
+    const extra = generated ? 2 * INFERENCE_RESPONSE_BYTES + 4096 : 0;
     const common = { input, word: request.current.spelling || undefined };
     cases.push({
       spec: { ...common, task: "glosses", keys: ["word", ...keys] },
@@ -469,34 +518,19 @@ export function estimateAssistanceCost(
     });
     if (keys.length)
       cases.push({ spec: { ...common, task: "hints", keys }, extra });
-    const components: string[] = [];
-    const componentDefinitions = (
-      request.current.compound?.components ?? []
-    ).map((component: Data) => {
-      const source = context.find(
-        (entry) =>
-          entry.event === component.definition &&
-          entry.body.word?.language === component.word?.language &&
-          entry.body.word?.spelling === component.word?.spelling,
-      );
-      const places = (source?.body.frame?.places ?? []).map(
-        (place: Data) => place.index,
-      );
-      for (const place of places)
-        components.push(`${component.word.spelling}[${place}]`);
-      return { word: component.word, definition: component.definition, places };
-    });
-    if (keys.length && components.length)
+    const metadata = mappingMetadata(request, context);
+    if (keys.length && metadata.components.length)
       cases.push({
         spec: {
           ...common,
           task: "mappings",
           input: JSON.stringify({
             ...JSON.parse(input),
-            component_places: componentDefinitions,
+            component_places: metadata.definitions,
           }),
           keys,
-          components: [...new Set(components)],
+          components: metadata.components,
+          ambiguousComponents: metadata.ambiguousComponents,
         },
         extra,
       });
@@ -787,46 +821,20 @@ export async function runAssistance(
           keys,
         })
       : {};
-    const suppliedComponents = request.current.compound?.components ?? [];
-    const componentByPlace = new Map<
-      string,
-      { component: Data; place: number }[]
-    >();
-    const componentDefinitions = suppliedComponents.map((component: Data) => {
-      const source = context.find(
-        (entry) =>
-          entry.event === component.definition &&
-          entry.body.word?.language === component.word?.language &&
-          entry.body.word?.spelling === component.word?.spelling,
-      );
-      const places = (source?.body.frame?.places ?? []).map(
-        (place: Data) => place.index,
-      );
-      for (const place of places) {
-        const name = `${component.word.spelling}[${place}]`;
-        const candidates = componentByPlace.get(name) ?? [];
-        if (
-          !candidates.some(
-            (entry) => entry.component.definition === component.definition,
-          )
-        )
-          candidates.push({ component, place });
-        componentByPlace.set(name, candidates);
-      }
-      return { word: component.word, definition: component.definition, places };
-    });
-    const componentPlaces = [...componentByPlace.keys()];
+    const metadata = mappingMetadata(request, context);
+    const { componentByPlace } = metadata;
     const mappings =
-      keys.length && componentPlaces.length
+      keys.length && metadata.components.length
         ? await runner.run({
             task: "mappings",
             word: request.current.spelling || undefined,
             input: JSON.stringify({
               ...JSON.parse(placeInput),
-              component_places: componentDefinitions,
+              component_places: metadata.definitions,
             }),
             keys,
-            components: componentPlaces,
+            components: metadata.components,
+            ambiguousComponents: metadata.ambiguousComponents,
             check(answer) {
               const problems: string[] = [];
               for (const [key, rows] of Object.entries(answer))
@@ -933,6 +941,8 @@ interface Session {
 }
 interface Job {
   reserved: boolean;
+  discarded: boolean;
+  networkUnits: string[];
   readUntil: number;
   budgetId: string;
   costReports: number;
@@ -954,11 +964,12 @@ interface Job {
 }
 export class AssistanceService {
   private sessions = new Map<string, Session>();
-  private admitting = new Set<string>();
+  private admitting = new Map<string, number>();
   private jobs = new Map<string, Job>();
   private network = new Map<string, { expires: number; count: number }>();
   private running = 0;
   private budgetEntries = new Map<string, AssistanceBudgetEntry>();
+  private networkHashKey = "";
   private budgetLoaded = false;
   private budgetUnavailable = false;
   private budgetTail: Promise<void> = Promise.resolve();
@@ -978,23 +989,34 @@ export class AssistanceService {
     try {
       if (!this.budgetLoaded) {
         const snapshot = await this.options.budgetStore?.load();
+        let migrated = false;
         if (snapshot !== null && snapshot !== undefined) {
           if (
             !isObject(snapshot) ||
-            snapshot.version !== 1 ||
-            Object.keys(snapshot).sort().join(",") !== "entries,version" ||
+            ![1, 2].includes(snapshot.version) ||
+            Object.keys(snapshot).sort().join(",") !==
+              (snapshot.version === 1
+                ? "entries,version"
+                : "entries,networkHashKey,version") ||
             !Array.isArray(snapshot.entries) ||
-            snapshot.entries.length > 16384
+            snapshot.entries.length > 16384 ||
+            (snapshot.version === 2 &&
+              (typeof snapshot.networkHashKey !== "string" ||
+                !/^[a-f0-9]{64}$/.test(snapshot.networkHashKey)))
           )
             throw new Error("Invalid private spending state.");
           const entries = new Map<string, AssistanceBudgetEntry>();
-          for (const entry of snapshot.entries) {
+          for (const rawEntry of snapshot.entries) {
+            const entry: Record<string, any> = rawEntry;
             if (
               !isObject(entry) ||
               Object.keys(entry).sort().join(",") !==
-                "active,at,id,reservedUsd,settledUsd" ||
+                (snapshot.version === 1
+                  ? "active,at,id,reservedUsd,settledUsd"
+                  : "active,at,costKnown,deadline,id,networkHashes,reservedUsd,settledUsd") ||
               typeof entry.id !== "string" ||
               !entry.id ||
+              entry.id.length > 128 ||
               entries.has(entry.id) ||
               typeof entry.active !== "boolean" ||
               !Number.isSafeInteger(entry.at) ||
@@ -1004,20 +1026,54 @@ export class AssistanceService {
                   typeof value === "number" &&
                   Number.isFinite(value) &&
                   value >= 0,
-              )
+              ) ||
+              (snapshot.version === 2 &&
+                (!Number.isSafeInteger(entry.deadline) ||
+                  entry.deadline < 0 ||
+                  typeof entry.costKnown !== "boolean" ||
+                  !Array.isArray(entry.networkHashes) ||
+                  entry.networkHashes.length > 2 ||
+                  new Set(entry.networkHashes).size !==
+                    entry.networkHashes.length ||
+                  !entry.networkHashes.every(
+                    (hash: unknown) =>
+                      typeof hash === "string" && /^[a-f0-9]{64}$/.test(hash),
+                  )))
             )
               throw new Error("Invalid private spending state.");
             // A restart loses private jobs. Keep their full outstanding charge.
             entries.set(entry.id, {
-              ...entry,
-              at: entry.active ? Math.max(entry.at, Date.now()) : entry.at,
+              id: entry.id,
+              reservedUsd: entry.reservedUsd,
+              settledUsd: entry.settledUsd,
+              networkHashes:
+                snapshot.version === 2 ? [...entry.networkHashes] : [],
+              deadline: snapshot.version === 2 ? entry.deadline : entry.at,
+              costKnown: snapshot.version === 2 ? entry.costKnown : false,
+              at: entry.active
+                ? Math.max(
+                    entry.at,
+                    Date.now(),
+                    snapshot.version === 2 ? entry.deadline : 0,
+                  )
+                : entry.at,
               active: false,
             });
           }
           this.budgetEntries = entries;
-          if (snapshot.entries.some((entry) => entry.active))
-            await this.saveBudget();
+          if (snapshot.version === 2)
+            this.networkHashKey = snapshot.networkHashKey;
+          migrated =
+            snapshot.version === 1 ||
+            snapshot.entries.some((entry) => entry.active);
         }
+        if (!this.networkHashKey) {
+          this.networkHashKey = [...crypto.getRandomValues(new Uint8Array(32))]
+            .map((value) => value.toString(16).padStart(2, "0"))
+            .join("");
+          migrated = true;
+        }
+        if (migrated) await this.saveBudget();
         this.budgetLoaded = true;
       }
       return await operation();
@@ -1035,9 +1091,11 @@ export class AssistanceService {
   private async saveBudget() {
     try {
       await this.options.budgetStore?.save({
-        version: 1,
+        version: 2,
+        networkHashKey: this.networkHashKey,
         entries: [...this.budgetEntries.values()].map((entry) => ({
           ...entry,
+          networkHashes: [...entry.networkHashes],
         })),
       });
       this.budgetUnavailable = false;
@@ -1046,49 +1104,138 @@ export class AssistanceService {
       throw error;
     }
   }
+  private networkUnits(network: string): string[] {
+    const normalized =
+      normalizeClientNetwork(network.replace(/\/64$/, "")) || network;
+    return normalized.endsWith("/64")
+      ? [normalized, `${normalized.split(":").slice(0, 3).join(":")}::/48`]
+      : [normalized];
+  }
+  private async networkHashes(units: string[]): Promise<string[]> {
+    const bytes = Uint8Array.from(this.networkHashKey.match(/../g)!, (pair) =>
+      parseInt(pair, 16),
+    );
+    const key = await crypto.subtle.importKey(
+      "raw",
+      bytes,
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    return Promise.all(
+      units.map(async (unit) => {
+        const signature = await crypto.subtle.sign(
+          "HMAC",
+          key,
+          new TextEncoder().encode(`jbovlacku-assistance-network-v1\n${unit}`),
+        );
+        return [...new Uint8Array(signature)]
+          .map((value) => value.toString(16).padStart(2, "0"))
+          .join("");
+      }),
+    );
+  }
   private spendingLimit(
     estimate: number,
     config: ProviderConfig,
+    networkHashes: string[],
   ): Response | null {
     const now = Date.now();
     for (const [id, entry] of this.budgetEntries)
       if (!entry.active && entry.at + 86400000 <= now)
         this.budgetEntries.delete(id);
+    const scopes = [
+      { hash: null, hour: config.hourlyBudgetUsd, day: config.dailyBudgetUsd },
+      ...networkHashes.map((hash) => ({
+        hash,
+        hour: config.networkHourlyBudgetUsd,
+        day: config.networkDailyBudgetUsd,
+      })),
+    ];
+    if (
+      (config.maxCostUsd !== undefined && estimate > config.maxCostUsd) ||
+      scopes.some((scope) => estimate > scope.hour || estimate > scope.day)
+    )
+      return json(
+        errorShape(
+          "billing_request_too_large",
+          "This request exceeds an inference spending limit even with no earlier charges. Reduce the request or ask the operator to raise the limit.",
+        ),
+        429,
+      );
     const releases: number[] = [];
-    for (const [window, limit] of [
-      [3600000, config.hourlyBudgetUsd],
-      [86400000, config.dailyBudgetUsd],
-    ]) {
-      const entries = [...this.budgetEntries.values()].filter(
-        (entry) => entry.active || entry.at + window > now,
-      );
-      let total = entries.reduce(
-        (sum, entry) => sum + Math.max(entry.reservedUsd, entry.settledUsd),
-        0,
-      );
-      if (total + estimate <= limit) continue;
-      let retry = now + window;
-      for (const entry of entries.sort((a, b) => a.at - b.at)) {
-        total -= Math.max(entry.reservedUsd, entry.settledUsd);
-        // Active reservations can settle sooner, but the full window is safe.
-        retry = Math.max(now + 1000, entry.at + window);
-        if (total + estimate <= limit) break;
+    let pending = false;
+    for (const scope of scopes) {
+      for (const [window, limit] of [
+        [3600000, scope.hour],
+        [86400000, scope.day],
+      ]) {
+        const entries = [...this.budgetEntries.values()].filter(
+          (entry) =>
+            (entry.active || entry.at + window > now) &&
+            (scope.hash === null ||
+              !entry.networkHashes.length ||
+              entry.networkHashes.includes(scope.hash)),
+        );
+        let total = entries.reduce(
+          (sum, entry) => sum + Math.max(entry.reservedUsd, entry.settledUsd),
+          0,
+        );
+        if (total + estimate <= limit) continue;
+        if (
+          entries.some((entry) => {
+            const job = this.jobs.get(entry.id);
+            return entry.active && (!job || this.activeJob(job));
+          })
+        )
+          pending = true;
+        const events: { at: number; release: number }[] = [];
+        for (const entry of entries) {
+          const charged = Math.max(entry.reservedUsd, entry.settledUsd);
+          const afterDeadline = entry.costKnown ? entry.settledUsd : charged;
+          if (entry.active) {
+            // Known charges can move to the last answer at the deadline.
+            events.push({
+              at: Math.max(now, entry.deadline),
+              release: charged - afterDeadline,
+            });
+            events.push({
+              at: Math.max(entry.at, entry.deadline) + window,
+              release: afterDeadline,
+            });
+          } else events.push({ at: entry.at + window, release: charged });
+        }
+        events.sort((a, b) => a.at - b.at);
+        for (const event of events) {
+          total -= event.release;
+          if (total + estimate <= limit) {
+            releases.push(event.at);
+            break;
+          }
+        }
       }
-      releases.push(retry);
     }
     if (this.budgetEntries.size >= 16384)
       releases.push(
         Math.min(
           ...[...this.budgetEntries.values()].map(
-            (entry) => entry.at + 86400000,
+            (entry) =>
+              (entry.active ? Math.max(entry.at, entry.deadline) : entry.at) +
+              86400000,
           ),
         ),
       );
-    if (config.maxCostUsd !== undefined && estimate > config.maxCostUsd)
-      releases.push(now + 3600000);
+    if (pending)
+      return json(
+        errorShape(
+          "billing_pending",
+          "Active inference work holds this allowance while its final costs are unknown. Wait for that work to finish, then request the suggestion again.",
+        ),
+        429,
+      );
     return releases.length
       ? this.retry(
-          "The server's inference spending limit cannot cover this new job. Try again after the retry time, or reduce the request.",
+          "The inference spending allowance cannot cover this job yet.",
           [Math.max(...releases)],
           "billing_limit",
         )
@@ -1104,6 +1251,7 @@ export class AssistanceService {
         const entry = this.budgetEntries.get(id);
         if (!entry) return;
         entry.settledUsd += reported ?? estimate;
+        if (reported === null) entry.costKnown = false;
         // Keep all charges for a full window after the latest paid answer.
         entry.at = Math.max(entry.at, Date.now());
         await this.saveBudget();
@@ -1115,6 +1263,7 @@ export class AssistanceService {
   }
   private releaseRetained(job: Job) {
     job.reserved = false;
+    job.discarded = true;
     job.result = null;
     if (job.error) delete job.error.log;
   }
@@ -1148,6 +1297,36 @@ export class AssistanceService {
   private ttl() {
     return Math.min(this.options.ttlMs ?? 600000, 600000);
   }
+  private sessionBusy(owner: string) {
+    return (
+      this.admitting.has(owner) ||
+      [...this.jobs.values()].some(
+        (job) => job.owner === owner && (this.activeJob(job) || job.reserved),
+      )
+    );
+  }
+  private sessionRelease(owner: string, session: Session) {
+    if (this.admitting.has(owner)) return session.expires;
+    const busy = [...this.jobs.values()].filter(
+      (job) => job.owner === owner && (this.activeJob(job) || job.reserved),
+    );
+    return busy.length
+      ? Math.max(...busy.map((job) => this.retainedRelease(job)))
+      : Date.now();
+  }
+  private activeJob(job: Job) {
+    return ["queued", "running", "cancel_requested"].includes(job.state);
+  }
+  private evictSession(owner: string) {
+    this.sessions.delete(owner);
+    for (const [id, job] of this.jobs) {
+      if (job.owner === owner) {
+        job.controller.abort();
+        this.releaseRetained(job);
+        this.jobs.delete(id);
+      }
+    }
+  }
   private sweep() {
     const now = Date.now();
     for (const [id, session] of this.sessions)
@@ -1160,7 +1339,8 @@ export class AssistanceService {
           }
       }
     for (const [id, job] of this.jobs) {
-      if (job.reserved && job.readUntil <= now) this.releaseRetained(job);
+      if (!this.activeJob(job) && !job.discarded && job.readUntil <= now)
+        this.releaseRetained(job);
       if (job.expires <= now) {
         job.controller.abort();
         this.jobs.delete(id);
@@ -1240,9 +1420,11 @@ export class AssistanceService {
     if (jobs.length >= 128)
       limits.push(Math.min(...jobs.map((job) => job.expires)));
     const retained = jobs.filter((job) => job.reserved);
-    const own = retained.filter((job) => job.network === network);
-    if (own.length >= (this.options.networkRetainedJobs ?? 1))
-      limits.push(Math.min(...own.map((job) => this.retainedRelease(job))));
+    for (const unit of this.networkUnits(network)) {
+      const own = retained.filter((job) => job.networkUnits.includes(unit));
+      if (own.length >= (this.options.networkRetainedJobs ?? 1))
+        limits.push(Math.min(...own.map((job) => this.retainedRelease(job))));
+    }
     if (retained.length >= Math.min(this.options.retainedJobs ?? 4, 4))
       limits.push(
         Math.min(...retained.map((job) => this.retainedRelease(job))),
@@ -1334,31 +1516,29 @@ export class AssistanceService {
           const idle = [...this.sessions.entries()]
             .filter(
               ([sessionId, value]) =>
-                value.network === network &&
-                !this.admitting.has(sessionId) &&
-                ![...this.jobs.values()].some((job) => job.owner === sessionId),
+                value.network === network && !this.sessionBusy(sessionId),
             )
             .sort((a, b) => a[1].touched - b[1].touched)[0];
-          if (idle) this.sessions.delete(idle[0]);
+          if (idle) this.evictSession(idle[0]);
           else
             return this.retry(
               "Private sessions for this network are at capacity.",
-              own.map((value) => value.expires),
+              [...this.sessions.entries()]
+                .filter(([, value]) => value.network === network)
+                .map(([owner, value]) => this.sessionRelease(owner, value)),
             );
         }
         if (this.sessions.size >= 128) {
           const idle = [...this.sessions.entries()]
-            .filter(
-              ([owner]) =>
-                !this.admitting.has(owner) &&
-                ![...this.jobs.values()].some((job) => job.owner === owner),
-            )
+            .filter(([owner]) => !this.sessionBusy(owner))
             .sort((a, b) => a[1].touched - b[1].touched)[0];
-          if (idle) this.sessions.delete(idle[0]);
+          if (idle) this.evictSession(idle[0]);
           else
             return this.retry(
               "Private sessions are at capacity.",
-              [...this.sessions.values()].map((value) => value.expires),
+              [...this.sessions.entries()].map(([owner, value]) =>
+                this.sessionRelease(owner, value),
+              ),
             );
         }
         id = crypto.randomUUID();
@@ -1389,145 +1569,159 @@ export class AssistanceService {
           "query",
           "Private draft fields belong in the request body.",
         );
-      let fields: unknown;
+      this.admitting.set(owner, (this.admitting.get(owner) ?? 0) + 1);
       try {
-        fields = JSON.parse(
-          new TextDecoder("utf-8", { fatal: true }).decode(await readBody()),
-        );
-      } catch (error) {
-        if (
-          error instanceof AssistanceError ||
-          (isObject(error) && typeof error.status === "number")
-        )
-          throw error;
-        throw new AssistanceError(
-          400,
-          "assist_request",
-          "The assistance body must contain JSON.",
-        );
-      }
-      const input = parseAssistRequest(fields);
-      if (!config.operations.includes(input.operation))
-        throw new AssistanceError(
-          503,
-          "feature_disabled",
-          "This AI action is disabled on this server.",
-        );
-      const context = await this.context(input.context);
-      if (new TextEncoder().encode(JSON.stringify(context)).byteLength > 131072)
-        throw new AssistanceError(
-          413,
-          "size",
-          "Selected definition context exceeds the byte limit.",
-        );
-      checkComponentContext(input, context);
-      const estimate = estimateAssistanceCost(input, context, config);
-      return this.budgetLock(async () => {
-        this.sweep();
-        this.session(request, true);
-        if (this.budgetUnavailable) await this.saveBudget();
-        // One lock covers durable spending, quotas, retained slots and execution slots.
-        const limited = this.admissionLimit(session, network, config);
-        if (limited) return limited;
-        const spending = this.spendingLimit(estimate, config);
-        if (spending) return spending;
-        const now = Date.now();
-        const id = crypto.randomUUID();
-        this.budgetEntries.set(id, {
-          id,
-          at: now,
-          reservedUsd: estimate,
-          settledUsd: 0,
-          active: true,
-        });
-        this.admitting.add(owner);
+        let fields: unknown;
         try {
-          await this.saveBudget();
-          try {
-            this.session(request, true);
-          } catch (error) {
-            this.budgetEntries.delete(id);
-            await this.saveBudget();
-            throw error;
-          }
+          fields = JSON.parse(
+            new TextDecoder("utf-8", { fatal: true }).decode(await readBody()),
+          );
         } catch (error) {
-          this.budgetEntries.delete(id);
-          throw error;
-        } finally {
-          this.admitting.delete(owner);
+          if (
+            error instanceof AssistanceError ||
+            (isObject(error) && typeof error.status === "number")
+          )
+            throw error;
+          throw new AssistanceError(
+            400,
+            "assist_request",
+            "The assistance body must contain JSON.",
+          );
         }
-        const previousQuota = this.network.get(network);
-        const quota =
-          previousQuota && previousQuota.expires > now
-            ? previousQuota
-            : { expires: now + 3600000, count: 0 };
-        quota.count++;
-        session.count++;
-        this.network.set(network, quota);
-        const job: Job = {
-          reserved: true,
-          readUntil: Infinity,
-          budgetId: id,
-          costReports: 0,
-          owner,
-          network,
-          deadline:
+        const input = parseAssistRequest(fields);
+        if (!config.operations.includes(input.operation))
+          throw new AssistanceError(
+            503,
+            "feature_disabled",
+            "This AI action is disabled on this server.",
+          );
+        const context = await this.context(input.context);
+        if (
+          new TextEncoder().encode(JSON.stringify(context)).byteLength > 131072
+        )
+          throw new AssistanceError(
+            413,
+            "size",
+            "Selected definition context exceeds the byte limit.",
+          );
+        checkComponentContext(input, context);
+        const estimate = estimateAssistanceCost(input, context, config);
+        return await this.budgetLock(async () => {
+          this.sweep();
+          this.session(request, true);
+          if (this.budgetUnavailable) await this.saveBudget();
+          // One lock covers durable spending, quotas, retained slots and execution slots.
+          const limited = this.admissionLimit(session, network, config);
+          if (limited) return limited;
+          const units = this.networkUnits(network);
+          const hashes = await this.networkHashes(units);
+          const spending = this.spendingLimit(estimate, config, hashes);
+          if (spending) return spending;
+          const now = Date.now();
+          const id = crypto.randomUUID();
+          const deadline =
             now +
             Math.min(
               config.timeoutMs,
               this.ttl() - Math.min(60000, this.ttl() / 4),
-            ),
-          expires: now + this.ttl(),
-          state: "queued",
-          result: null,
-          error: null,
-          progress: { task: null, attempt: 0, max_attempts: 3 },
-          controller: new AbortController(),
-        };
-        session.expires = Math.max(
-          session.expires,
-          now + this.sessionTtl(),
-          job.expires,
-        );
-        session.touched = now;
-        this.jobs.set(id, job);
-        const expiry = setTimeout(
-          () => {
-            job.controller.abort();
-            job.result = null;
-            job.error = null;
-            this.jobs.delete(id);
-          },
-          Math.max(0, job.expires - Date.now()),
-        );
-        expiry.unref?.();
-        this.running++;
-        const work = this.execute(
-          job,
-          input,
-          {
-            ...config,
-            onCost: async (reported, estimated) => {
-              job.costReports++;
-              await this.settleCost(id, reported, estimated);
+            );
+          this.budgetEntries.set(id, {
+            id,
+            at: now,
+            reservedUsd: estimate,
+            settledUsd: 0,
+            active: true,
+            networkHashes: hashes,
+            deadline,
+            costKnown: true,
+          });
+          try {
+            await this.saveBudget();
+            try {
+              this.session(request, true);
+            } catch (error) {
+              this.budgetEntries.delete(id);
+              await this.saveBudget();
+              throw error;
+            }
+          } catch (error) {
+            this.budgetEntries.delete(id);
+            throw error;
+          }
+          const previousQuota = this.network.get(network);
+          const quota =
+            previousQuota && previousQuota.expires > now
+              ? previousQuota
+              : { expires: now + 3600000, count: 0 };
+          quota.count++;
+          session.count++;
+          this.network.set(network, quota);
+          const job: Job = {
+            reserved: true,
+            discarded: false,
+            networkUnits: units,
+            readUntil: Infinity,
+            budgetId: id,
+            costReports: 0,
+            owner,
+            network,
+            deadline,
+            expires: now + this.ttl(),
+            state: "queued",
+            result: null,
+            error: null,
+            progress: { task: null, attempt: 0, max_attempts: 3 },
+            controller: new AbortController(),
+          };
+          session.expires = Math.max(
+            session.expires,
+            now + this.sessionTtl(),
+            job.expires,
+          );
+          session.touched = now;
+          this.jobs.set(id, job);
+          const expiry = setTimeout(
+            () => {
+              job.controller.abort();
+              job.result = null;
+              job.error = null;
+              this.jobs.delete(id);
             },
-          },
-          context,
-        );
-        if (this.options.waitUntil) this.options.waitUntil(work);
-        else void work;
-        return json(
-          {
-            job: id,
-            expires_at: new Date(job.expires)
-              .toISOString()
-              .replace(/\.\d{3}Z$/, "Z"),
-            poll_after_ms: 100,
-          },
-          202,
-          { "set-cookie": this.cookie(owner, session) },
-        );
-      });
+            Math.max(0, job.expires - Date.now()),
+          );
+          expiry.unref?.();
+          this.running++;
+          const work = this.execute(
+            job,
+            input,
+            {
+              ...config,
+              onCost: async (reported, estimated) => {
+                job.costReports++;
+                await this.settleCost(id, reported, estimated);
+              },
+            },
+            context,
+          );
+          if (this.options.waitUntil) this.options.waitUntil(work);
+          else void work;
+          return json(
+            {
+              job: id,
+              expires_at: new Date(job.expires)
+                .toISOString()
+                .replace(/\.\d{3}Z$/, "Z"),
+              poll_after_ms: 100,
+            },
+            202,
+            { "set-cookie": this.cookie(owner, session) },
+          );
+        });
+      } finally {
+        const pending = (this.admitting.get(owner) ?? 1) - 1;
+        if (pending) this.admitting.set(owner, pending);
+        else this.admitting.delete(owner);
+      }
     }
     if (
       path.startsWith("/jobs/") &&
@@ -1547,14 +1741,19 @@ export class AssistanceService {
           "missing",
           "The private job is unavailable.",
         );
+      if (request.method === "GET" && job.discarded)
+        throw new AssistanceError(
+          410,
+          "result_discarded",
+          "This private result and its log were discarded. Request a new suggestion to continue.",
+        );
       if (request.method === "DELETE") {
         job.reserved = false;
         if (["queued", "running", "cancel_requested"].includes(job.state)) {
           job.state = job.state === "queued" ? "canceled" : "cancel_requested";
           job.controller.abort();
         } else {
-          job.result = null;
-          if (job.error) delete job.error.log;
+          this.releaseRetained(job);
         }
       }
       return streamedJson({
@@ -1639,7 +1838,8 @@ export class AssistanceService {
           const entry = this.budgetEntries.get(job.budgetId);
           if (!entry) return;
           entry.active = false;
-          if (job.costReports === (log?.answers ?? 0)) entry.reservedUsd = 0;
+          if (entry.costKnown && job.costReports === (log?.answers ?? 0))
+            entry.reservedUsd = 0;
           if (entry.settledUsd === 0 && entry.reservedUsd === 0)
             this.budgetEntries.delete(job.budgetId);
           await this.saveBudget();

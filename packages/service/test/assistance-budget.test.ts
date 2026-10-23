@@ -13,7 +13,7 @@ import {
   providerConfig,
   estimateInferenceCost,
   inferenceTurnCost,
-  INFERENCE_FEEDBACK_BYTES,
+  INFERENCE_CORRECTION_BYTES,
   type ProviderConfig,
 } from "../src/inference.ts";
 
@@ -171,8 +171,11 @@ test("server budget refuses a new job before acceptance or any paid turn", async
   const headers = await app.session();
   const response = (await app.route("/assist", headers, draft()))!;
   assert.equal(response.status, 429);
-  assert.ok(Number(response.headers.get("retry-after")) > 0);
-  assert.equal(((await response.json()) as any).code, "billing_limit");
+  assert.equal(response.headers.get("retry-after"), null);
+  assert.equal(
+    ((await response.json()) as any).code,
+    "billing_request_too_large",
+  );
   assert.equal(calls, 0);
 });
 
@@ -181,7 +184,7 @@ test("a reported overspend does not interrupt admitted answers and blocks later 
   const provider = config({
     hourlyBudgetUsd: 1,
     dailyBudgetUsd: 5,
-    maxCostUsd: 0.2,
+    maxCostUsd: 0.5,
     fetch: (async () => {
       calls++;
       const value = completion(calls === 1 ? 2 : 0.001);
@@ -214,7 +217,7 @@ test("server reservation counts concurrent jobs before either provider reports c
   const gate = new Promise<void>((resolve) => (release = resolve));
   const app = fixture(
     config({
-      hourlyBudgetUsd: 0.15,
+      hourlyBudgetUsd: 0.7,
       fetch: (async () => {
         await gate;
         return Response.json(completion());
@@ -235,7 +238,7 @@ test("server reservation counts concurrent jobs before either provider reports c
   release();
   await app.poll(id, first);
   assert.equal(blocked.status, 429);
-  assert.equal(((await blocked.json()) as any).code, "billing_limit");
+  assert.equal(((await blocked.json()) as any).code, "billing_pending");
 });
 
 test("completed IPv6 jobs release global retained slots after their read window", async (t) => {
@@ -245,7 +248,7 @@ test("completed IPv6 jobs release global retained slots after their read window"
     terminalReadMs: 100,
   } as any);
   const records: { id: string; headers: Record<string, string> }[] = [];
-  for (const network of ["2001:db8:0:1::/64", "2001:db8:0:2::/64"]) {
+  for (const network of ["2001:db8:1:1::/64", "2001:db8:2:1::/64"]) {
     const headers = await app.session(network);
     const response = (await app.route("/assist", headers, draft(), network))!;
     assert.equal(response.status, 202);
@@ -267,10 +270,10 @@ test("completed IPv6 jobs release global retained slots after their read window"
   assert.equal(response.status, 202);
   await app.poll(((await response.json()) as any).job, third);
   for (const { id, headers } of records) {
-    const value = await app.poll(id, headers);
-    assert.equal(value.state, "completed");
-    assert.equal(value.result, null);
-    assert.equal(value.error?.log, undefined);
+    await assert.rejects(app.route(`/jobs/${id}`, headers), {
+      status: 410,
+      code: "result_discarded",
+    });
   }
 });
 
@@ -343,9 +346,9 @@ test("reservation arithmetic uses actual UTF-8 requests, both prices and every p
       estimateAssistanceCost(places, [], provider),
   );
   assert.ok(
-    estimateAssistanceCost(generated, [], provider) < provider.hourlyBudgetUsd,
+    estimateAssistanceCost(generated, [], provider) > provider.hourlyBudgetUsd,
   );
-  const correction = provider.maxTokens * 4 + INFERENCE_FEEDBACK_BYTES;
+  const correction = INFERENCE_CORRECTION_BYTES;
   assert.ok(
     estimateInferenceCost(provider, { task: "type", input: "" }) >
       inferenceTurnCost(provider, correction) +
@@ -368,7 +371,11 @@ test("an explicit job ceiling rejects all tasks before the first paid answer", a
   const request = { ...draft(), operation: "places-glosses" as const };
   const response = (await app.route("/assist", await app.session(), request))!;
   assert.equal(response.status, 429);
-  assert.equal(((await response.json()) as any).code, "billing_limit");
+  assert.equal(
+    ((await response.json()) as any).code,
+    "billing_request_too_large",
+  );
+  assert.equal(response.headers.get("retry-after"), null);
   assert.equal(calls, 0);
 });
 
@@ -435,7 +442,7 @@ test("unknown provider usage and transport failure retain estimated charges with
     await new Promise((resolve) => setTimeout(resolve, 1));
     assert.equal(saved!.entries.length, 1);
     assert.equal(saved!.entries[0].active, false);
-    assert.equal(saved!.entries[0].reservedUsd, 0);
+    assert.ok(saved!.entries[0].reservedUsd > 0);
     assert.ok(saved!.entries[0].settledUsd > 0);
     assert.equal(JSON.stringify(saved).includes("A teacher"), false);
     assert.equal(
@@ -546,7 +553,7 @@ test("concurrent admissions wait for durable reservation and cannot spend the sa
   let saves = 0;
   const app = fixture(
     config({
-      hourlyBudgetUsd: 0.15,
+      hourlyBudgetUsd: 0.7,
       fetch: (async () => {
         calls++;
         await fetchGate;
@@ -584,7 +591,7 @@ test("concurrent admissions wait for durable reservation and cannot spend the sa
   releaseFetch();
   assert.equal(accepted.status, 202);
   assert.equal(refused.status, 429);
-  assert.equal(((await refused.json()) as any).code, "billing_limit");
+  assert.equal(((await refused.json()) as any).code, "billing_pending");
   assert.equal(
     (await app.poll(((await accepted.json()) as any).job, one)).state,
     "completed",
@@ -624,6 +631,10 @@ test("interrupted durable reservations survive restart and recovery is persisted
   assert.equal(blocked.status, 429);
   assert.equal(blocked.headers.get("retry-after"), "3600");
   assert.equal(calls, 0);
+  const recovered = (await store.load()) as AssistanceBudgetSnapshot;
+  assert.equal(recovered.version, 2);
+  assert.match(recovered.networkHashKey, /^[a-f0-9]{64}$/);
+  assert.deepEqual(recovered.entries[0].networkHashes, []);
   assert.equal(saved.entries[0].active, false);
   const recoveryTime = saved.entries[0].at;
   t.mock.timers.tick(1800000);
@@ -712,9 +723,9 @@ test("failed terminal jobs discard their private logs when the read window ends"
   assert.equal(failed.state, "failed");
   assert.ok(failed.error.log);
   t.mock.timers.tick(101);
-  const expiredLog = await app.poll(id, headers);
-  assert.equal(expiredLog.state, "failed");
-  assert.equal(expiredLog.error.code, failed.error.code);
-  assert.equal(expiredLog.error.log, undefined);
+  await assert.rejects(app.route(`/jobs/${id}`, headers), {
+    status: 410,
+    code: "result_discarded",
+  });
   assert.equal((await app.route("/assist", headers, draft()))!.status, 202);
 });

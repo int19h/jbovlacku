@@ -4,6 +4,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdir, mkdtemp, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { serialize } from "node:v8";
 import {
   nodeAssistance,
   SqliteAssistanceBudgetStore,
@@ -51,6 +52,178 @@ const reserved = (): AssistanceBudgetSnapshot => ({
   ],
 });
 
+function memoryStorage(
+  values = new Map<string, unknown>(),
+  options: {
+    sync?: () => Promise<void>;
+    beforePut?: (key: string, value: unknown) => void;
+  } = {},
+) {
+  let tail = Promise.resolve();
+  const operations = (target: Map<string, unknown>) => ({
+    async get<T>(key: string) {
+      return structuredClone(target.get(key)) as T | undefined;
+    },
+    async put<T>(key: string, value: T) {
+      options.beforePut?.(key, value);
+      target.set(key, structuredClone(value));
+    },
+    async delete(key: string) {
+      return target.delete(key);
+    },
+  });
+  return {
+    ...operations(values),
+    async transaction<T>(
+      operation: (transaction: ReturnType<typeof operations>) => Promise<T>,
+    ): Promise<T> {
+      const previous = tail;
+      let release!: () => void;
+      tail = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      await previous;
+      try {
+        const staged = structuredClone(values);
+        const result = await operation(operations(staged));
+        values.clear();
+        for (const [key, value] of staged) values.set(key, value);
+        return result;
+      } finally {
+        release();
+      }
+    },
+    async sync() {
+      await options.sync?.();
+    },
+  };
+}
+
+function boundedSnapshot(): AssistanceBudgetSnapshot {
+  return JSON.parse(
+    JSON.stringify({
+      version: 2,
+      networkHashKey: Buffer.from(
+        crypto.getRandomValues(new Uint8Array(32)),
+      ).toString("hex"),
+      entries: Array.from({ length: 16384 }, (_, index) => ({
+        id: Array.from(index.toString(16), (digit) =>
+          String.fromCharCode(16 + parseInt(digit, 16)),
+        )
+          .join("")
+          .padStart(128, "\0"),
+        at: Number.MAX_SAFE_INTEGER,
+        deadline: Number.MAX_SAFE_INTEGER,
+        reservedUsd: 0.0000012345678901234567,
+        settledUsd: 0.0000012345678901234567,
+        active: false,
+        costKnown: false,
+        networkHashes: ["a".repeat(64), "b".repeat(64)],
+      })),
+    }),
+  );
+}
+
+test("Worker spending storage splits the bounded ledger into values below 128 KiB", async () => {
+  const values = new Map<string, unknown>();
+  let largestValue = 0;
+  const storage = memoryStorage(values, {
+    beforePut(_key, value) {
+      const bytes = serialize(value).byteLength;
+      largestValue = Math.max(largestValue, bytes);
+      if (bytes > 131072)
+        throw new Error("Synthetic storage value exceeds 128 KiB.");
+    },
+  });
+  const snapshot = boundedSnapshot();
+  assert.ok(serialize(snapshot).byteLength > 2 * 1024 * 1024);
+  const store = workerAssistanceBudgetStore(storage);
+  await store.save(snapshot);
+  assert.equal(
+    JSON.stringify(await workerAssistanceBudgetStore(storage).load()) ===
+      JSON.stringify(snapshot),
+    true,
+  );
+  assert.ok(largestValue <= 131072);
+  assert.ok(values.size > 1);
+});
+
+test("Worker spending storage rolls back partial writes and removes stale parts after a smaller snapshot", async () => {
+  const values = new Map<string, unknown>();
+  let fail = false;
+  let writes = 0;
+  const storage = memoryStorage(values, {
+    beforePut() {
+      if (fail && ++writes === 3)
+        throw new Error("Synthetic part write failure.");
+    },
+  });
+  const snapshot = boundedSnapshot();
+  const store = workerAssistanceBudgetStore(storage);
+  await store.save(snapshot);
+  const before = serialize(values);
+  fail = true;
+  const changed = structuredClone(snapshot);
+  changed.entries[0].settledUsd = 1;
+  await assert.rejects(store.save(changed), /Synthetic part write failure/);
+  assert.equal(serialize(values).equals(before), true);
+  assert.equal(
+    JSON.stringify(await store.load()) === JSON.stringify(snapshot),
+    true,
+  );
+  fail = false;
+  await store.save(reserved());
+  assert.equal(values.size, 2);
+});
+
+test("Worker spending storage upgrades the old value only after every new part commits", async () => {
+  const legacy = reserved();
+  const values = new Map<string, unknown>([["assistance-spending-v1", legacy]]);
+  let fail = true;
+  const storage = memoryStorage(values, {
+    beforePut(key) {
+      if (fail && key === "assistance-spending-manifest-v1")
+        throw new Error("Synthetic manifest write failure.");
+    },
+  });
+  const store = workerAssistanceBudgetStore(storage);
+  assert.deepEqual(await store.load(), legacy);
+  await assert.rejects(store.save(legacy), /Synthetic manifest write failure/);
+  assert.deepEqual(await store.load(), legacy);
+  assert.equal(values.size, 1);
+  fail = false;
+  await store.save(legacy);
+  assert.equal(values.has("assistance-spending-v1"), false);
+  assert.deepEqual(await workerAssistanceBudgetStore(storage).load(), legacy);
+});
+
+test("Worker spending storage refuses missing, corrupt, and oversized parts without a legacy fallback", async () => {
+  for (const damage of [
+    "missing",
+    "checksum",
+    "manifest",
+    "missing-manifest",
+  ] as const) {
+    const values = new Map<string, unknown>();
+    const store = workerAssistanceBudgetStore(memoryStorage(values));
+    await store.save(reserved());
+    values.set("assistance-spending-v1", reserved());
+    if (damage === "missing") values.delete("assistance-spending-part-v1:0");
+    else if (damage === "checksum")
+      (values.get("assistance-spending-part-v1:0") as Uint8Array)[0] ^= 1;
+    else if (damage === "missing-manifest")
+      values.delete("assistance-spending-manifest-v1");
+    else
+      values.set("assistance-spending-manifest-v1", {
+        version: 1,
+        bytes: 33554433,
+        parts: 513,
+        sha256: "a".repeat(64),
+      });
+    await assert.rejects(store.load(), /spending storage/);
+  }
+});
+
 test("Node spending reservations survive process exit and reported costs survive reopening", async () => {
   const scratch = resolve(
     process.env.JVC_TEST_ROOT ?? ".cache/browser-tests",
@@ -89,24 +262,23 @@ test("Node spending reservations survive process exit and reported costs survive
 });
 
 test("Worker spending storage survives adapter reconstruction and awaits durable writes", async () => {
-  const durable = new Map<string, AssistanceBudgetSnapshot>();
+  const durable = new Map<string, unknown>();
   let syncStarted = false;
+  let entered!: () => void;
+  const syncEntered = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
   let release!: () => void;
   const synced = new Promise<void>((resolve) => {
     release = resolve;
   });
-  const storage = {
-    async get<T>(key: string) {
-      return structuredClone(durable.get(key)) as T | undefined;
-    },
-    async put<T>(key: string, value: T) {
-      durable.set(key, structuredClone(value) as AssistanceBudgetSnapshot);
-    },
+  const storage = memoryStorage(durable, {
     async sync() {
       syncStarted = true;
+      entered();
       await synced;
     },
-  };
+  });
   const first = workerAssistanceBudgetStore(storage);
   assert.equal(await first.load(), null);
   const snapshot = reserved();
@@ -114,7 +286,7 @@ test("Worker spending storage survives adapter reconstruction and awaits durable
   const pending = first.save(snapshot).then(() => {
     saved = true;
   });
-  await new Promise<void>((resolve) => setImmediate(resolve));
+  await syncEntered;
   assert.equal(syncStarted, true);
   assert.equal(saved, false);
   release();
@@ -127,21 +299,34 @@ test("Worker spending storage survives adapter reconstruction and awaits durable
   settled.entries[0].active = false;
   await second.save(settled);
   assert.deepEqual(await workerAssistanceBudgetStore(storage).load(), settled);
-  assert.deepEqual([...durable.keys()], ["assistance-spending-v1"]);
+  assert.deepEqual([...durable.keys()].sort(), [
+    "assistance-spending-manifest-v1",
+    "assistance-spending-part-v1:0",
+  ]);
 });
 
 test("Worker spending storage propagates load and durability failures", async () => {
   const unavailable = workerAssistanceBudgetStore({
+    ...memoryStorage(),
     async get<T>(): Promise<T | undefined> {
       throw new Error("synthetic read failure");
     },
-    async put() {},
+    async transaction() {
+      throw new Error("synthetic read failure");
+    },
     async sync() {
       throw new Error("synthetic sync failure");
     },
   });
   await assert.rejects(unavailable.load(), /synthetic read failure/);
-  await assert.rejects(unavailable.save(reserved()), /synthetic sync failure/);
+  const syncFailure = workerAssistanceBudgetStore(
+    memoryStorage(new Map(), {
+      async sync() {
+        throw new Error("synthetic sync failure");
+      },
+    }),
+  );
+  await assert.rejects(syncFailure.save(reserved()), /synthetic sync failure/);
 });
 
 test("both persistent adapters reserve before inference and enforce settled spending after recreation", async () => {
@@ -159,15 +344,7 @@ test("both persistent adapters reserve before inference and enforce settled spen
   const path = join(directory, "assistance-spending.sqlite");
   let node = new SqliteAssistanceBudgetStore(path);
   const workerValues = new Map<string, unknown>();
-  const workerStorage = {
-    async get<T>(key: string) {
-      return structuredClone(workerValues.get(key)) as T | undefined;
-    },
-    async put<T>(key: string, value: T) {
-      workerValues.set(key, structuredClone(value));
-    },
-    async sync() {},
-  };
+  const workerStorage = memoryStorage(workerValues);
   const adapters = [
     {
       store: node,
@@ -284,14 +461,35 @@ test("both persistent adapters reserve before inference and enforce settled spen
       await new Promise<void>((resolve) => setTimeout(resolve, 1));
     }
     assert.equal(state, "completed");
-    const settled = (await adapter.store.load())!;
+    let settled = (await adapter.store.load())!;
+    for (
+      let attempt = 0;
+      attempt < 100 && settled.entries[0].active;
+      attempt++
+    ) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 1));
+      settled = (await adapter.store.load())!;
+    }
     assert.equal(settled.entries[0].active, false);
     assert.equal(settled.entries[0].settledUsd, 2);
     assert.doesNotMatch(
       JSON.stringify(settled),
       /private-draft-marker|Private meaning marker|disposable-only-key/,
     );
-    const second = fixture(adapter.recreate());
+    const recreatedStore = adapter.recreate();
+    const reopened = (await recreatedStore.load())!;
+    assert.equal(settled.version, 2);
+    assert.equal(reopened.version, 2);
+    if (settled.version !== 2 || reopened.version !== 2)
+      throw new Error("The spending snapshot did not upgrade.");
+    assert.equal(settled.networkHashKey === reopened.networkHashKey, true);
+    assert.equal(/^[a-f0-9]{64}$/.test(reopened.networkHashKey), true);
+    assert.equal(
+      JSON.stringify(settled.entries[0].networkHashes) ===
+        JSON.stringify(reopened.entries[0].networkHashes),
+      true,
+    );
+    const second = fixture(recreatedStore);
     const blocked = (await second.route(
       "/assist",
       await second.session(),

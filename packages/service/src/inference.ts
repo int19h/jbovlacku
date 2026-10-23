@@ -142,6 +142,8 @@ export interface ProviderConfig {
   outputPrice: number;
   hourlyBudgetUsd: number;
   dailyBudgetUsd: number;
+  networkHourlyBudgetUsd: number;
+  networkDailyBudgetUsd: number;
   onCost?: (reportedUsd: number | null, estimatedUsd: number) => Promise<void>;
   operations: string[];
   maxLogBytes?: number;
@@ -179,6 +181,8 @@ type ProviderEnv = Partial<
     | "JVC_AI_OUTPUT_PRICE"
     | "JVC_AI_HOURLY_BUDGET_USD"
     | "JVC_AI_DAILY_BUDGET_USD"
+    | "JVC_AI_NETWORK_HOURLY_BUDGET_USD"
+    | "JVC_AI_NETWORK_DAILY_BUDGET_USD"
     | "JVC_AI_OPERATIONS",
     string
   >
@@ -225,6 +229,13 @@ export function providerConfig(
     throw new Error("Unknown AI reasoning effort.");
   const maxTokens = Math.floor(number("JVC_AI_MAX_TOKENS", 16384, 128, 32768));
   const maxPrice = number("JVC_AI_MAX_PRICE", 10, 0.001, 100);
+  const hourlyBudgetUsd = number(
+    "JVC_AI_HOURLY_BUDGET_USD",
+    1,
+    0.000001,
+    10000,
+  );
+  const dailyBudgetUsd = number("JVC_AI_DAILY_BUDGET_USD", 5, 0.000001, 100000);
   return {
     baseUrl: baseUrl.replace(/\/$/, ""),
     model: env.JVC_AI_MODEL ?? "meta/muse-spark-1.3-contributor",
@@ -243,8 +254,20 @@ export function providerConfig(
     maxPrice,
     inputPrice: number("JVC_AI_INPUT_PRICE", 0.1, 0, 1000),
     outputPrice: number("JVC_AI_OUTPUT_PRICE", 0.2, 0, 1000),
-    hourlyBudgetUsd: number("JVC_AI_HOURLY_BUDGET_USD", 1, 0.000001, 10000),
-    dailyBudgetUsd: number("JVC_AI_DAILY_BUDGET_USD", 5, 0.000001, 100000),
+    hourlyBudgetUsd,
+    dailyBudgetUsd,
+    networkHourlyBudgetUsd: number(
+      "JVC_AI_NETWORK_HOURLY_BUDGET_USD",
+      hourlyBudgetUsd / 2,
+      0.0000005,
+      10000,
+    ),
+    networkDailyBudgetUsd: number(
+      "JVC_AI_NETWORK_DAILY_BUDGET_USD",
+      dailyBudgetUsd / 2,
+      0.0000005,
+      100000,
+    ),
     operations: configured,
   };
 }
@@ -261,6 +284,7 @@ export interface TaskCase {
   input: string;
   keys?: string[];
   components?: string[];
+  ambiguousComponents?: string[];
   definitionLabels?: string[];
   language?: string;
   word?: string;
@@ -764,15 +788,28 @@ export function taskMessages(
   const legend = spec.keys?.length
     ? `\n\nIn submit_answer, use these keys: ${spec.keys.map((key) => (key === "word" ? `word for ${spec.word ?? "the whole word"}` : spec.word ? `${key} for ${spec.word}[${key.slice(1)}]` : `${key} for place ${key.slice(1)}`)).join(", ")}.`
     : "";
-  const grouped = new Map<string, string[]>();
-  for (const component of spec.components ?? []) {
-    const match = /^(.*)\[(\d+)\]$/.exec(component);
-    if (match)
-      grouped.set(match[1], [...(grouped.get(match[1]) ?? []), match[2]]);
-  }
+  const groupPlaces = (components: string[]) => {
+    const grouped = new Map<string, string[]>();
+    for (const component of components) {
+      const match = /^(.*)\[(\d+)\]$/.exec(component);
+      if (match)
+        grouped.set(match[1], [...(grouped.get(match[1]) ?? []), match[2]]);
+    }
+    return Array.from(
+      grouped,
+      ([spelling, indices]) => `${spelling}[${indices.join(",")}]`,
+    ).join("; ");
+  };
+  const ambiguous = new Set(spec.ambiguousComponents ?? []);
+  const unique = (spec.components ?? []).filter((name) => !ambiguous.has(name));
+  const ambiguityLegend = ambiguous.size
+    ? ` Ambiguous component places: ${groupPlaces([...ambiguous])}. Each listed name refers to more than one selected definition. Do not use these names. Use unclear for an unresolved mapping.`
+    : "";
   const componentLegend =
     spec.task === "mappings" && spec.components?.length
-      ? `\n\nPermitted component places: ${Array.from(grouped, ([spelling, indices]) => `${spelling}[${indices.join(",")}]`).join("; ")}. Each listed index names a separate place. Use one full spelling and index in each entry, for example ${spec.components[0]}. If a name refers to distinct selected definitions, use unclear.`
+      ? unique.length
+        ? `\n\nPermitted component places: ${groupPlaces(unique)}. Each listed index names a separate place. Use one full spelling and index in each entry, for example ${unique[0]}.${ambiguityLegend}`
+        : `\n\nNo component place has a unique selected definition. Use unclear for each mapping, for example unclear.${ambiguityLegend}`
       : "";
   const input = spec.input + legend + componentLegend;
   return {
@@ -830,7 +867,7 @@ export function inferenceTurnCost(
     1000000
   );
 }
-/** Reserve three answers, with estimated prior output and bounded feedback for corrections. */
+/** Reserve three answers, with full responses and bounded feedback for corrections. */
 export function estimateInferenceCost(
   config: ProviderConfig,
   spec: TaskCase,
@@ -841,11 +878,13 @@ export function estimateInferenceCost(
     new TextEncoder().encode(
       compactJson(inferenceBody(config, messages, answerTool(spec))),
     ).byteLength + extraInputBytes;
-  const correctionBytes = config.maxTokens * 4 + INFERENCE_FEEDBACK_BYTES;
   return [0, 1, 2].reduce(
     (total, priorAnswers) =>
       total +
-      inferenceTurnCost(config, initialBytes + priorAnswers * correctionBytes),
+      inferenceTurnCost(
+        config,
+        initialBytes + priorAnswers * INFERENCE_CORRECTION_BYTES,
+      ),
     0,
   );
 }
