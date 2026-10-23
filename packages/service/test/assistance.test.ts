@@ -605,7 +605,14 @@ test("response size and billing bounds stop inference", async () => {
   assert.equal(log.cost_usd, null);
   const config = makeConfig({ maxCostUsd: 0.000001, fetch: queue([]) });
   await assert.rejects(
-    runAssistance(draft(), config, [], AbortSignal.timeout(1000), newLog("type", config, await promptVersion()), () => {}),
+    runAssistance(
+      draft(),
+      config,
+      [],
+      AbortSignal.timeout(1000),
+      newLog("type", config, await promptVersion()),
+      () => {},
+    ),
     { code: "billing_limit" },
   );
 });
@@ -810,7 +817,7 @@ test("prompt order omits disabled reports and appends reports to other tasks", a
       .join("\n\n"),
   );
 });
-test("source proposals replace notes and preserve language, weight and pronunciation evidence", async () => {
+test("source proposals contain only nonnull edits and new notes", async () => {
   for (const unknown of [false, true]) {
     const original = {
       language: "eng",
@@ -819,8 +826,6 @@ test("source proposals replace notes and preserve language, weight and pronuncia
       weight: { numerator: 3, denominator: 7 },
       notes: [["Author's original note."]],
       word_ipa: "old",
-      stem: "old",
-      ipa: "old",
     };
     const answer = unknown
       ? {
@@ -858,18 +863,19 @@ test("source proposals replace notes and preserve language, weight and pronuncia
       () => {},
     );
     const row = (result.proposals[0].value as any[])[0];
-    assert.equal(row.language, "eng");
-    assert.deepEqual(row.weight, original.weight);
+    assert.equal(Object.hasOwn(row, "language"), false);
+    assert.equal(Object.hasOwn(row, "weight"), false);
+    assert.equal(Object.hasOwn(row, "provenance"), false);
     assert.equal(
       row.notes.some((note: string[]) => note[0] === original.notes[0][0]),
       false,
     );
     for (const field of ["word_ipa", "stem", "ipa"] as const)
-      assert.equal(row[field], answer[field]);
-    assert.equal(row.word, answer.word ?? "");
+      assert.equal(row[field], answer[field] ?? undefined);
+    assert.equal(row.word, answer.word ?? undefined);
     assert.deepEqual(
       row.input,
-      unknown ? null : { format: "lojbanized", text: "titc" },
+      unknown ? undefined : { format: "lojbanized", text: "titc" },
     );
     assert.deepEqual(row.notes, [
       ...(answer.sense === null ? [] : [[`Sense: ${answer.sense}`]]),
@@ -918,15 +924,131 @@ test("repeated source suggestions replace old notes and omit a null sense", asyn
       newLog("gismu-sources", config, await promptVersion()),
       () => {},
     );
-    row = (result.proposals[0].value as any[])[0];
-    assert.deepEqual(row.notes, [
+    const proposed = (result.proposals[0].value as any[])[0];
+    assert.deepEqual(proposed.notes, [
       ...(answer.sense === null ? [] : [[`Sense: ${answer.sense}`]]),
       [`Note: ${answer.note}`],
     ]);
     assert.deepEqual(request.current.formation!.sources[0], previous);
+    row = {
+      ...row,
+      ...Object.fromEntries(
+        ["word", "word_ipa", "input"]
+          .filter((field) => Object.hasOwn(proposed, field))
+          .map((field) => [field, proposed[field]]),
+      ),
+      notes: proposed.notes,
+    };
   }
   assert.deepEqual(row.notes, [[`Note: ${second.note}`]]);
-  assert.equal(row.word_ipa, null);
+  assert.equal(row.word_ipa, first.word_ipa);
+});
+test("signed request sources refuse private pronunciation fields before inference", () => {
+  for (const field of ["stem", "ipa"]) {
+    const request = draft("gismu-sources", {
+      formation: {
+        method: "unknown",
+        sources: [
+          {
+            language: "en",
+            word: "teacher",
+            word_ipa: "ˈtitʃər",
+            input: null,
+            weight: null,
+            notes: [],
+            [field]: "titʃ",
+          },
+        ],
+      },
+    });
+    assert.throws(() => parseAssistRequest(request), {
+      status: 400,
+      code: "current",
+    });
+  }
+});
+test("source proposals include only nonempty note paragraphs", async () => {
+  const request = draft("gismu-sources", {
+    formation: {
+      method: "unknown",
+      sources: [
+        {
+          language: "en",
+          word: "teacher",
+          input: null,
+          weight: null,
+          notes: [["Authored note."]],
+        },
+      ],
+    },
+  });
+  const config = makeConfig({
+    fetch: queue([
+      completion({
+        word: "teacher",
+        sense: "One who teaches.",
+        stem: "teach",
+        word_ipa: "ˈtitʃər",
+        ipa: "titʃ",
+        sounds: "titc",
+        note: " \n ",
+      }),
+    ]),
+  });
+  const result = await runAssistance(
+    request,
+    config,
+    [],
+    AbortSignal.timeout(2000),
+    newLog("gismu-sources", config, await promptVersion()),
+    () => {},
+  );
+  const row = (result.proposals[0].value as any[])[0];
+  assert.deepEqual(row.notes, [["Sense: One who teaches."]]);
+  assert.deepEqual(Object.keys(row).sort(), [
+    "input",
+    "ipa",
+    "notes",
+    "stem",
+    "word",
+    "word_ipa",
+  ]);
+});
+test("private upload timeout cancels the shared service reader", async () => {
+  let canceled = false;
+  const instance = service({
+    provider: makeConfig({
+      fetch: (async () => {
+        assert.fail("A stalled upload cannot call the provider.");
+      }) as typeof fetch,
+    }),
+    requestBodyTimeoutMs: 15,
+  });
+  const headers = await session(instance);
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode("{"));
+    },
+    cancel() {
+      canceled = true;
+    },
+  });
+  const response = await instance.fetch(
+    new Request("http://localhost/api/v1/assist", {
+      method: "POST",
+      headers: {
+        origin: "http://localhost",
+        "content-type": "application/json",
+        ...headers,
+      },
+      body: stream,
+      duplex: "half",
+    } as RequestInit),
+  );
+  assert.equal(response.status, 408);
+  assert.equal(((await response.json()) as any).code, "request_timeout");
+  assert.equal(canceled, true);
+  assert.equal(stream.locked, false);
 });
 test("draft validation enforces operation fields, schema and exact context IDs", () => {
   assert.equal(parseAssistRequest(draft()).operation, "type");
@@ -1115,7 +1237,9 @@ test("new places precede glosses and hints, and supplied components drive place 
     answers[1],
     answers[2],
     {
-      x1: [{ component: "klama[1]", reason: "direct: the traveler is the goer." }],
+      x1: [
+        { component: "klama[1]", reason: "direct: the traveler is the goer." },
+      ],
     },
   ];
   const mappingConfig = makeConfig({
@@ -1899,7 +2023,7 @@ test("component labels and null work with optional context, and absent context p
     );
   assert.deepEqual(checkAnswer(spec, answer(null)), []);
 });
-test("every actual core preset source tag selects its prompt and remains unchanged in proposals", async () => {
+test("every actual core preset source tag selects its prompt without echoing signed source metadata", async () => {
   const languages = [
     ...new Set(
       builderPresets().flatMap((preset) =>
@@ -1935,7 +2059,8 @@ test("every actual core preset source tag selects its prompt and remains unchang
       () => {},
     );
     const rows = result.proposals[0].value as any[];
-    assert.equal(rows[0].language, language);
+    assert.equal(Object.hasOwn(rows[0], "language"), false);
+    assert.equal(request.current.formation!.sources[0].language, language);
     assert.equal(
       result.log.exchanges[0].system_prompt.includes(
         promptFiles[`languages/${sourceLanguages[language]}.txt`].trim(),
@@ -2111,7 +2236,10 @@ test("one network cannot occupy every retained slot through fresh sessions", asy
     "192.0.2.1",
   );
   assert.equal(blocked.status, 429);
-  assert.ok(Number(blocked.headers.get("retry-after")) >= 100 && Number(blocked.headers.get("retry-after")) <= 120);
+  assert.ok(
+    Number(blocked.headers.get("retry-after")) >= 100 &&
+      Number(blocked.headers.get("retry-after")) <= 120,
+  );
   const other = await session(instance, "192.0.2.2");
   assert.equal(
     (
@@ -2211,9 +2339,14 @@ test("mappings keep studied spelling names and preserve the unique selected defi
     const events = ["jve1:" + "a".repeat(64), "jve1:" + "b".repeat(64)];
     const components = events.map((event, index) => ({
       word: { language: "jbo", spelling: "klama" },
-      definition: index === 0
-        ? firstDefinition === "none" ? null : firstDefinition === "same-event" ? events[1] : event
-        : event,
+      definition:
+        index === 0
+          ? firstDefinition === "none"
+            ? null
+            : firstDefinition === "same-event"
+              ? events[1]
+              : event
+          : event,
       rafsi: "klam",
     }));
     const otherFrame = {
@@ -2221,12 +2354,22 @@ test("mappings keep studied spelling names and preserve the unique selected defi
       arity: { mode: "context" },
       places: [{ ...structuredClone(frame.places[0]), index: 2 }],
     };
-    const context = Array.from(new Map(components
-      .filter((part) => part.definition)
-      .map((part) => [part.definition!, {
-        event: part.definition!,
-        body: { word: part.word, frame: part.definition === events[0] ? otherFrame : frame },
-      }])).values());
+    const context = Array.from(
+      new Map(
+        components
+          .filter((part) => part.definition)
+          .map((part) => [
+            part.definition!,
+            {
+              event: part.definition!,
+              body: {
+                word: part.word,
+                frame: part.definition === events[0] ? otherFrame : frame,
+              },
+            },
+          ]),
+      ).values(),
+    );
     const request = draft("places-glosses", {
       spelling: "klamklama",
       frame,
@@ -2238,47 +2381,74 @@ test("mappings keep studied spelling names and preserve the unique selected defi
     });
     request.context = context.map((entry) => entry.event);
     const config = makeConfig({
-      fetch: queue([
-        completion({
-          word: { gloss: "travel", sense: "act of travel" },
-          x1: { gloss: "traveler", sense: "" },
-        }),
-        completion({ x1: [{ type: "agent", reason: "The traveler acts." }] }),
-        completion({ x1: [{ component: "klama[1]", reason: "direct: the traveler." }] }),
-      ], (body, turn) => {
-        if (turn === 0)
-          assert.match(body.messages[1].content, /word for klamklama, x1 for klamklama\[1\]/);
-        if (turn === 2) {
-          assert.match(body.messages[0].content, /klama\[2\]/);
-          const user = body.messages[1].content;
-          assert.match(user, /Permitted component places: klama\[(?:2,)?1\]/);
-          assert.equal(/c\d+\[/.test(user), false);
-          assert.match(user, /for example klama\[[12]\]/);
-          assert.match(body.tools[0].function.parameters.properties.x1.items.properties.component.description,
-            /such as klama\[2\]/);
-        }
-      }),
+      fetch: queue(
+        [
+          completion({
+            word: { gloss: "travel", sense: "act of travel" },
+            x1: { gloss: "traveler", sense: "" },
+          }),
+          completion({ x1: [{ type: "agent", reason: "The traveler acts." }] }),
+          completion({
+            x1: [{ component: "klama[1]", reason: "direct: the traveler." }],
+          }),
+        ],
+        (body, turn) => {
+          if (turn === 0)
+            assert.match(
+              body.messages[1].content,
+              /word for klamklama, x1 for klamklama\[1\]/,
+            );
+          if (turn === 2) {
+            assert.match(body.messages[0].content, /klama\[2\]/);
+            const user = body.messages[1].content;
+            assert.match(user, /Permitted component places: klama\[(?:2,)?1\]/);
+            assert.equal(/c\d+\[/.test(user), false);
+            assert.match(user, /for example klama\[[12]\]/);
+            assert.match(
+              body.tools[0].function.parameters.properties.x1.items.properties
+                .component.description,
+              /such as klama\[2\]/,
+            );
+          }
+        },
+      ),
     });
-    const result = await runAssistance(request, config, context, AbortSignal.timeout(2000),
-      newLog(request.operation, config, await promptVersion()), () => {});
+    const result = await runAssistance(
+      request,
+      config,
+      context,
+      AbortSignal.timeout(2000),
+      newLog(request.operation, config, await promptVersion()),
+      () => {},
+    );
     const derivation = (result.proposals[0].value as any).places[0].derivation;
     assert.equal(derivation[0].definition, events[1]);
     assert.equal(derivation[0].place, 1);
     assert.deepEqual(derivation[0].word, components[1].word);
-    const mappingInput = JSON.parse(result.log.exchanges[2].request.split("\n\nIn submit_answer")[0]);
-    assert.equal(mappingInput.component_places.some((entry: any) => "label" in entry), false);
-    assert.deepEqual(mappingInput.component_places.map((entry: any) => entry.definition),
-      components.map((entry) => entry.definition));
+    const mappingInput = JSON.parse(
+      result.log.exchanges[2].request.split("\n\nIn submit_answer")[0],
+    );
+    assert.equal(
+      mappingInput.component_places.some((entry: any) => "label" in entry),
+      false,
+    );
+    assert.deepEqual(
+      mappingInput.component_places.map((entry: any) => entry.definition),
+      components.map((entry) => entry.definition),
+    );
   }
 });
 
 test("ambiguous repeated spelling mappings request unclear without choosing a definition", async () => {
   const events = ["jve1:" + "a".repeat(64), "jve1:" + "b".repeat(64)];
   const components = events.map((definition) => ({
-    word: { language: "jbo", spelling: "klama" }, definition, rafsi: "klam",
+    word: { language: "jbo", spelling: "klama" },
+    definition,
+    rafsi: "klam",
   }));
   const request = draft("places-glosses", {
-    spelling: "klamklama", frame,
+    spelling: "klamklama",
+    frame,
     compound: {
       components,
       morphology: { id: "https://example.test/morphology", version: "1" },
@@ -2286,22 +2456,47 @@ test("ambiguous repeated spelling mappings request unclear without choosing a de
     },
   });
   request.context = events;
-  const config = makeConfig({ fetch: queue([
-    completion({ word: { gloss: "travel", sense: "act of travel" }, x1: { gloss: "traveler", sense: "" } }),
-    completion({ x1: [{ type: "agent", reason: "The traveler acts." }] }),
-    completion({ x1: [{ component: "klama[1]", reason: "direct: the traveler." }] }),
-    completion({ x1: [{ component: "unclear", reason: "unclear: the selected definitions differ." }] }),
-  ], (body, turn) => {
-    if (turn === 3) {
-      const feedback = body.messages.at(-1).content;
-      assert.match(feedback, /klama\[1\].*distinct selected definitions/);
-      assert.match(feedback, /unclear/);
-      assert.equal(/c\d+\[/.test(feedback), false);
-    }
-  }) });
-  const result = await runAssistance(request, config,
-    components.map((part) => ({ event: part.definition, body: { word: part.word, frame } })),
-    AbortSignal.timeout(2000), newLog(request.operation, config, await promptVersion()), () => {});
+  const config = makeConfig({
+    fetch: queue(
+      [
+        completion({
+          word: { gloss: "travel", sense: "act of travel" },
+          x1: { gloss: "traveler", sense: "" },
+        }),
+        completion({ x1: [{ type: "agent", reason: "The traveler acts." }] }),
+        completion({
+          x1: [{ component: "klama[1]", reason: "direct: the traveler." }],
+        }),
+        completion({
+          x1: [
+            {
+              component: "unclear",
+              reason: "unclear: the selected definitions differ.",
+            },
+          ],
+        }),
+      ],
+      (body, turn) => {
+        if (turn === 3) {
+          const feedback = body.messages.at(-1).content;
+          assert.match(feedback, /klama\[1\].*distinct selected definitions/);
+          assert.match(feedback, /unclear/);
+          assert.equal(/c\d+\[/.test(feedback), false);
+        }
+      },
+    ),
+  });
+  const result = await runAssistance(
+    request,
+    config,
+    components.map((part) => ({
+      event: part.definition,
+      body: { word: part.word, frame },
+    })),
+    AbortSignal.timeout(2000),
+    newLog(request.operation, config, await promptVersion()),
+    () => {},
+  );
   assert.deepEqual((result.proposals[0].value as any).places[0].derivation, []);
   assert.equal(result.log.corrections, 1);
 });

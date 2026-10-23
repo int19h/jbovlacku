@@ -19,7 +19,7 @@ import {
   sourceLanguages,
   estimateInferenceCost,
   normalizeClientNetwork,
-  INFERENCE_RESPONSE_BYTES,
+  INFERENCE_GENERATED_FRAME_BYTES,
   type ProviderConfig,
   type InferenceLog,
   type Task,
@@ -85,6 +85,7 @@ export interface AssistanceOptions {
   networkRetainedJobs?: number;
   networkSessions?: number;
   terminalReadMs?: number;
+  requestBodyTimeoutMs?: number;
   budgetStore?: AssistanceBudgetStore;
 }
 export interface LegacyAssistanceBudgetEntry {
@@ -319,6 +320,19 @@ export function parseAssistRequest(value: unknown): AssistRequest {
         "No source prompt is available for this language.",
       );
   }
+  if (
+    Array.isArray(current.formation?.sources) &&
+    current.formation.sources.some(
+      (row: unknown) =>
+        isObject(row) &&
+        (Object.hasOwn(row, "stem") || Object.hasOwn(row, "ipa")),
+    )
+  )
+    throw new AssistanceError(
+      400,
+      "current",
+      "Formation sources cannot contain private stem or ipa fields.",
+    );
   // A synthetic body runs the shared schema and reference checks. Draft-only
   // empty source spellings remain editable, so the check uses a placeholder.
   try {
@@ -510,7 +524,7 @@ export function estimateAssistanceCost(
       : placeKeys(request.current.frame);
     // A generated frame can use the full output allowance. Its descriptions
     // pass through two JSON string layers in the following task requests.
-    const extra = generated ? 2 * INFERENCE_RESPONSE_BYTES + 4096 : 0;
+    const extra = generated ? INFERENCE_GENERATED_FRAME_BYTES : 0;
     const common = { input, word: request.current.spelling || undefined };
     cases.push({
       spec: { ...common, task: "glosses", keys: ["word", ...keys] },
@@ -569,6 +583,62 @@ export function estimateAssistanceCost(
     0,
   );
 }
+/** Use the smallest draft shapes that each operation accepts. */
+export function minimumAssistanceCost(
+  config: ProviderConfig,
+  operation: Operation,
+): number {
+  const request: AssistRequest = {
+    operation,
+    draft_revision: "a",
+    language: "aa",
+    meaning: "a",
+    current: {
+      word_type: null,
+      classification: null,
+      spelling: "",
+      text: [],
+      frame: null,
+      glosses: [],
+      formation: null,
+      compound: null,
+    },
+    context: [],
+    profile: "default",
+  };
+  if (operation === "cmavo-class")
+    request.current.classification = { kind: "cmavo", selmaho: [] };
+  if (operation === "places-glosses")
+    request.current.frame = { role: "predicate", arity: { mode: "context" } };
+  if (operation === "gismu-sources") {
+    return Math.min(
+      ...Object.keys(sourceLanguages)
+        .filter((language) => language.length === 2)
+        .map((language) => {
+          request.current.formation = {
+            method: "unknown",
+            sources: [
+              { language, word: "", input: null, weight: null, notes: [] },
+            ],
+          };
+          return estimateAssistanceCost(request, [], config);
+        }),
+    );
+  }
+  return estimateAssistanceCost(request, [], config);
+}
+function fitsEmptyAllowance(config: ProviderConfig, estimate: number) {
+  return (
+    estimate <=
+    Math.min(
+      config.hourlyBudgetUsd,
+      config.dailyBudgetUsd,
+      config.networkHourlyBudgetUsd,
+      config.networkDailyBudgetUsd,
+      config.maxCostUsd ?? Infinity,
+    )
+  );
+}
 /** The caller owns the log. This function does not persist draft data. */
 export async function runAssistance(
   request: AssistRequest,
@@ -622,18 +692,17 @@ export async function runAssistance(
       path: "/formation/sources",
       value: [
         {
-          ...row,
-          word: answer.word ?? "",
-          word_ipa: answer.word_ipa,
-          stem: answer.stem,
-          ipa: answer.ipa,
-          input:
-            answer.sounds === null
-              ? null
-              : { format: "lojbanized", text: answer.sounds },
+          ...Object.fromEntries(
+            ["word", "word_ipa", "stem", "ipa"]
+              .filter((name) => answer[name] !== null)
+              .map((name) => [name, answer[name]]),
+          ),
+          ...(answer.sounds === null
+            ? {}
+            : { input: { format: "lojbanized", text: answer.sounds } }),
           notes: [
-            ...(answer.sense === null ? [] : [[`Sense: ${answer.sense}`]]),
-            [`Note: ${answer.note}`],
+            ...(answer.sense?.trim() ? [[`Sense: ${answer.sense}`]] : []),
+            ...(answer.note.trim() ? [[`Note: ${answer.note}`]] : []),
           ],
         },
       ],
@@ -760,6 +829,8 @@ export async function runAssistance(
       proposals.push({ path: "/spelling", value: candidate.spelling });
     explanations.push(answer.reason);
   } else {
+    const generatedFrameBytes =
+      request.current.frame === null ? INFERENCE_GENERATED_FRAME_BYTES : 0;
     let frame = request.current.frame
       ? structuredClone(request.current.frame)
       : null;
@@ -807,45 +878,56 @@ export async function runAssistance(
       { ...request, current: { ...request.current, frame } },
       context,
     );
-    const glosses = await runner.run({
-      task: "glosses",
-      word: request.current.spelling || undefined,
-      input: placeInput,
-      keys: ["word", ...keys],
-    });
+    const glosses = await runner.run(
+      {
+        task: "glosses",
+        word: request.current.spelling || undefined,
+        input: placeInput,
+        keys: ["word", ...keys],
+      },
+      generatedFrameBytes,
+    );
     const hints = keys.length
-      ? await runner.run({
-          task: "hints",
-          word: request.current.spelling || undefined,
-          input: placeInput,
-          keys,
-        })
+      ? await runner.run(
+          {
+            task: "hints",
+            word: request.current.spelling || undefined,
+            input: placeInput,
+            keys,
+          },
+          generatedFrameBytes,
+        )
       : {};
     const metadata = mappingMetadata(request, context);
     const { componentByPlace } = metadata;
     const mappings =
       keys.length && metadata.components.length
-        ? await runner.run({
-            task: "mappings",
-            word: request.current.spelling || undefined,
-            input: JSON.stringify({
-              ...JSON.parse(placeInput),
-              component_places: metadata.definitions,
-            }),
-            keys,
-            components: metadata.components,
-            ambiguousComponents: metadata.ambiguousComponents,
-            check(answer) {
-              const problems: string[] = [];
-              for (const [key, rows] of Object.entries(answer))
-                for (const entry of rows)
-                  if ((componentByPlace.get(entry.component)?.length ?? 0) > 1)
-                    problems.push(
-                      `${key}: ${entry.component} refers to distinct selected definitions. Use unclear for this mapping.`,
-                    );
-              return problems;
+        ? await runner.run(
+            {
+              task: "mappings",
+              word: request.current.spelling || undefined,
+              input: JSON.stringify({
+                ...JSON.parse(placeInput),
+                component_places: metadata.definitions,
+              }),
+              keys,
+              components: metadata.components,
+              ambiguousComponents: metadata.ambiguousComponents,
+              check(answer) {
+                const problems: string[] = [];
+                for (const [key, rows] of Object.entries(answer))
+                  for (const entry of rows)
+                    if (
+                      (componentByPlace.get(entry.component)?.length ?? 0) > 1
+                    )
+                      problems.push(
+                        `${key}: ${entry.component} refers to distinct selected definitions. Use unclear for this mapping.`,
+                      );
+                return problems;
+              },
             },
-          })
+            generatedFrameBytes,
+          )
         : {};
     for (const place of frame!.places ?? []) {
       const key = `x${place.index}`;
@@ -966,6 +1048,7 @@ export class AssistanceService {
   private sessions = new Map<string, Session>();
   private admitting = new Map<string, number>();
   private jobs = new Map<string, Job>();
+  private expiredJobs = new Map<string, { owner: string; expires: number }>();
   private network = new Map<string, { expires: number; count: number }>();
   private running = 0;
   private budgetEntries = new Map<string, AssistanceBudgetEntry>();
@@ -1152,10 +1235,7 @@ export class AssistanceService {
         day: config.networkDailyBudgetUsd,
       })),
     ];
-    if (
-      (config.maxCostUsd !== undefined && estimate > config.maxCostUsd) ||
-      scopes.some((scope) => estimate > scope.hour || estimate > scope.day)
-    )
+    if (!fitsEmptyAllowance(config, estimate))
       return json(
         errorShape(
           "billing_request_too_large",
@@ -1278,11 +1358,18 @@ export class AssistanceService {
   capabilities() {
     const provider = this.options.provider;
     if (!provider || !provider.operations.length) return [];
+    const operations = provider.operations.filter((operation) =>
+      fitsEmptyAllowance(
+        provider,
+        minimumAssistanceCost(provider, operation as Operation),
+      ),
+    );
+    if (!operations.length) return [];
     const name = `${provider.providerName ?? "OpenRouter"} (${provider.route})`;
-    const disclosure = `Server ${this.server} sends draft fields to ${name}. These include your original meaning, definition language and current definition. They also include word type, classification, spelling, places and glosses. Formation, components and selected exact source definitions are also sent. These fields cover all declared tasks: ${provider.operations.join(", ")}. Private jobs expire after ten minutes or service restart. Results and logs remain available for two minutes after completion unless you dismiss them sooner. Cancel cannot reverse a provider charge.`;
+    const disclosure = `Server ${this.server} sends draft fields to ${name}. These include your original meaning, definition language and current definition. They also include word type, classification, spelling, places and glosses. Formation, components and selected exact source definitions are also sent. These fields cover all declared tasks: ${operations.join(", ")}. Private jobs expire after ten minutes or service restart. Results and logs remain available for two minutes after completion unless you dismiss them sooner. Cancel cannot reverse a provider charge.`;
     return [
       "default",
-      ...(provider.operations.includes("lujvo") ? ["components", "lujvo"] : []),
+      ...(operations.includes("lujvo") ? ["components", "lujvo"] : []),
     ].map((id) => ({
       id,
       label:
@@ -1293,7 +1380,7 @@ export class AssistanceService {
             : "AI assistance",
       provider: name,
       model: provider.model,
-      operations: id === "default" ? provider.operations : ["lujvo"],
+      operations: id === "default" ? operations : ["lujvo"],
       disclosure,
     }));
   }
@@ -1322,6 +1409,8 @@ export class AssistanceService {
   }
   private evictSession(owner: string) {
     this.sessions.delete(owner);
+    for (const [id, marker] of this.expiredJobs)
+      if (marker.owner === owner) this.expiredJobs.delete(id);
     for (const [id, job] of this.jobs) {
       if (job.owner === owner) {
         job.controller.abort();
@@ -1330,25 +1419,40 @@ export class AssistanceService {
       }
     }
   }
+  private expireJob(id: string, job: Job) {
+    if (this.jobs.get(id) !== job) return;
+    job.controller.abort();
+    this.releaseRetained(job);
+    job.error = null;
+    this.jobs.delete(id);
+    if (!this.sessions.has(job.owner) || job.expires + 3600000 <= Date.now())
+      return;
+    this.expiredJobs.set(id, { owner: job.owner, expires: job.expires });
+    const own = [...this.expiredJobs.entries()]
+      .filter(([, marker]) => marker.owner === job.owner)
+      .sort(
+        ([leftId, left], [rightId, right]) =>
+          left.expires - right.expires ||
+          (leftId < rightId ? -1 : leftId > rightId ? 1 : 0),
+      );
+    for (const [oldest] of own.slice(0, Math.max(0, own.length - 128)))
+      this.expiredJobs.delete(oldest);
+  }
   private sweep() {
     const now = Date.now();
     for (const [id, session] of this.sessions)
       if (session.expires <= now) {
-        this.sessions.delete(id);
-        for (const [jobId, job] of this.jobs)
-          if (job.owner === id) {
-            job.controller.abort();
-            this.jobs.delete(jobId);
-          }
+        this.evictSession(id);
       }
     for (const [id, job] of this.jobs) {
       if (!this.activeJob(job) && !job.discarded && job.readUntil <= now)
         this.releaseRetained(job);
       if (job.expires <= now) {
-        job.controller.abort();
-        this.jobs.delete(id);
+        this.expireJob(id, job);
       }
     }
+    for (const [id, marker] of this.expiredJobs)
+      if (marker.expires + 3600000 <= now) this.expiredJobs.delete(id);
     for (const [key, quota] of this.network)
       if (quota.expires <= now) this.network.delete(key);
   }
@@ -1400,6 +1504,7 @@ export class AssistanceService {
     );
   }
   private admissionLimit(
+    owner: string,
     session: Session,
     network: string,
     config: ProviderConfig,
@@ -1420,8 +1525,13 @@ export class AssistanceService {
     )
       limits.push(quota.expires);
     const jobs = [...this.jobs.values()];
-    if (jobs.length >= 128)
-      limits.push(Math.min(...jobs.map((job) => job.expires)));
+    const ownJobs = jobs.filter((job) => job.owner === owner);
+    if (ownJobs.length >= 128)
+      return this.retry(
+        "This private session retains the maximum number of jobs. Wait for the earliest job to expire.",
+        [Math.min(...ownJobs.map((job) => job.expires))],
+        "session_job_limit",
+      );
     const retained = jobs.filter((job) => job.reserved);
     for (const unit of this.networkUnits(network)) {
       const own = retained.filter((job) => job.networkUnits.includes(unit));
@@ -1450,7 +1560,7 @@ export class AssistanceService {
   async route(
     request: Request,
     path: string,
-    readBody: () => Promise<Uint8Array>,
+    readBody: (signal?: AbortSignal) => Promise<Uint8Array>,
     network = "local",
     publicOrigin?: string,
   ): Promise<Response | null> {
@@ -1572,26 +1682,58 @@ export class AssistanceService {
           "query",
           "Private draft fields belong in the request body.",
         );
+      const bodyController = new AbortController();
+      let bodyTimer: ReturnType<typeof setTimeout> | undefined;
+      let fields: unknown;
+      try {
+        const timeout = new Promise<never>((_, reject) => {
+          bodyTimer = setTimeout(
+            () => {
+              const error = new AssistanceError(
+                408,
+                "request_timeout",
+                "The assistance request body exceeded its time limit.",
+              );
+              reject(error);
+              bodyController.abort(error);
+            },
+            Math.max(
+              1,
+              Math.min(this.options.requestBodyTimeoutMs ?? 10000, 10000),
+            ),
+          );
+        });
+        const body = await Promise.race([
+          readBody(bodyController.signal),
+          timeout,
+        ]);
+        if (body.byteLength > 262144)
+          throw new AssistanceError(
+            413,
+            "size",
+            "Request exceeds the byte limit.",
+          );
+        fields = JSON.parse(
+          new TextDecoder("utf-8", { fatal: true }).decode(body),
+        );
+      } catch (error) {
+        if (
+          error instanceof AssistanceError ||
+          (isObject(error) && typeof error.status === "number")
+        )
+          throw error;
+        throw new AssistanceError(
+          400,
+          "assist_request",
+          "The assistance body must contain JSON.",
+        );
+      } finally {
+        clearTimeout(bodyTimer);
+      }
+      const input = parseAssistRequest(fields);
+      this.session(request, true);
       this.admitting.set(owner, (this.admitting.get(owner) ?? 0) + 1);
       try {
-        let fields: unknown;
-        try {
-          fields = JSON.parse(
-            new TextDecoder("utf-8", { fatal: true }).decode(await readBody()),
-          );
-        } catch (error) {
-          if (
-            error instanceof AssistanceError ||
-            (isObject(error) && typeof error.status === "number")
-          )
-            throw error;
-          throw new AssistanceError(
-            400,
-            "assist_request",
-            "The assistance body must contain JSON.",
-          );
-        }
-        const input = parseAssistRequest(fields);
         if (!config.operations.includes(input.operation))
           throw new AssistanceError(
             503,
@@ -1614,7 +1756,7 @@ export class AssistanceService {
           this.session(request, true);
           if (this.budgetUnavailable) await this.saveBudget();
           // One lock covers durable spending, quotas, retained slots and execution slots.
-          const limited = this.admissionLimit(session, network, config);
+          const limited = this.admissionLimit(owner, session, network, config);
           if (limited) return limited;
           const units = this.networkUnits(network);
           const hashes = await this.networkHashes(units);
@@ -1685,10 +1827,7 @@ export class AssistanceService {
           this.jobs.set(id, job);
           const expiry = setTimeout(
             () => {
-              job.controller.abort();
-              job.result = null;
-              job.error = null;
-              this.jobs.delete(id);
+              this.expireJob(id, job);
             },
             Math.max(0, job.expires - Date.now()),
           );
@@ -1732,12 +1871,19 @@ export class AssistanceService {
     ) {
       const id = path.slice("/jobs/".length);
       const job = this.jobs.get(id);
-      if (!job)
+      if (!job) {
+        if (this.expiredJobs.get(id)?.owner === owner)
+          throw new AssistanceError(
+            410,
+            "job_expired",
+            "This private job expired.",
+          );
         throw new AssistanceError(
-          410,
-          "job_expired",
-          "This private job expired or the service restarted.",
+          404,
+          "missing",
+          "The private job is unavailable.",
         );
+      }
       if (job.owner !== owner)
         throw new AssistanceError(
           404,

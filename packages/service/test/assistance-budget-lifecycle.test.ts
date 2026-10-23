@@ -68,6 +68,10 @@ function config(overrides: Partial<ProviderConfig> = {}): ProviderConfig {
       async () => "disposable-budget-key",
     )!,
     fetch: (async () => Response.json(completion())) as typeof fetch,
+    hourlyBudgetUsd: 1,
+    dailyBudgetUsd: 5,
+    networkHourlyBudgetUsd: 0.5,
+    networkDailyBudgetUsd: 2.5,
     ...overrides,
   };
 }
