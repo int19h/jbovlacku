@@ -351,8 +351,9 @@ IPA input requires an explicit, versioned conversion and a preview of the result
 One source word per language is the simple-mode default. Advanced mode can add alternatives under an explicitly selected aggregation rule.
 An unfinished row does not acquire an invented source word or weight.
 
-“Suggest source words” is optional AI assistance for every language in the selected profile.
-The app makes one request per selected source row. An individual action uses the row that the author chose, including an alternative row.
+“Suggest source words” is optional AI assistance for the selected profile.
+The profile action selects every source row, including every alternative and rows with filled or empty Word fields.
+The app makes exactly one request per selected row. The individual row action selects only the row that the author chose.
 The model returns the word, its sense, its stem, the pronunciation of the word and of the stem, the scoring letters, and a note.
 
 The `sources` answer check requires `ipa` whenever the model gives non-null `sounds`.
@@ -360,8 +361,9 @@ Step 7 in `sources.task.txt` derives scoring letters from the stem IPA.
 If the model cannot give `ipa`, `sounds` must be null and the note must explain why.
 A null model answer never clears a value that the author entered.
 
-The author accepts each row or a reviewed set. Missing suggestions leave editable empty rows rather than dropping a language.
-A language with no single word for the meaning keeps its row, with an empty editable Word field and the assistant's note under it.
+The author accepts each row or a reviewed set. Missing suggestions keep existing rows and values rather than dropping a language.
+A language with no single word for the meaning keeps its row and its Word field unchanged, or empty when it had no word.
+The assistant's explanatory note appears under the row before acceptance.
 Sources remain attributed suggestions until the author accepts them. The model cannot claim dictionary evidence that the app did not retrieve.
 
 The deterministic generator returns candidate spellings, total scores, per-source contributions, potential rafsi, and conflict information.
@@ -456,7 +458,7 @@ Accepting a suggestion writes these fields only after the author reviews their v
 | --- | --- |
 | Source `word`, `word_ipa`, `stem`, `ipa` | The matching formation source fields. A null answer never clears an existing value. Unknown evidence stays omitted when no value exists. |
 | Source `sounds` | `input: {format: "lojbanized", text: sounds}`. A null answer preserves an existing input and leaves an unknown input null. |
-| Source `sense` and `note` | On row acceptance, add nonempty `Sense: ` and `Note: ` paragraphs to source `notes`. Preserve existing notes. |
+| Source `sense` and `note` | On row acceptance, replace the earlier accepted AI paragraph group with new nonempty `Sense: ` and `Note: ` paragraphs. Preserve authored notes. |
 | Hint `type` and `reason` | One alternative per current type, with null abstractor and relation arity. Hint `note` keeps one `type: reason` paragraph per alternative. |
 | Hint `unclear` | Panel only. Accepting it preserves an existing hint and leaves an empty hint unspecified. |
 | Mapping component and `reason` | Add its word, exact supplied definition, and place to `derivation`. Keep the full kind prefix in `explanation`. |
@@ -464,8 +466,35 @@ Accepting a suggestion writes these fields only after the author reviews their v
 
 The publication preview shows accepted source notes as the author's contribution, not as retrieved source evidence.
 For a null `word`, show the note under the row before acceptance. It enters `notes` only when the author accepts that row.
-Null source answers also preserve authored notes. A suggested new word can leave existing metadata that the model cannot replace.
-The author must review that retained stem and pronunciation against the changed word before accepting the row.
+
+Null source answers also preserve authored notes. Acceptance applies only `word`, `word_ipa`, `stem`, `ipa`, `input`, and the AI group in `notes`.
+It never changes the row's language, weight, or provenance. Null answers preserve existing values, including scoring input, without weakening the model's answer checks.
+
+The source preview shows before and after values for every proposed field, including fresh values and the new AI note group.
+It also shows each value that acceptance retains. If a non-null suggested word changes a nonempty Word field, acceptance starts a field review.
+The app marks every nonempty old value that remains, even when the proposal repeats it.
+
+These marks name Letters, Said, Stem, and Stem said. Letters review includes a retained scoring input even when its conversion is unavailable.
+Each retained Notes paragraph also needs review, including word-specific authored notes.
+Each marked field or paragraph shows its earlier word and value beside explicit Keep and Clear actions.
+
+Acceptance retains these values until the author chooses an action. Clear removes only that field or paragraph, and Keep records approval for the new word.
+The generator cannot score with marked Letters until the author keeps or clears them. Signing is blocked while any retained field or paragraph remains unresolved.
+
+Review marks and choices stay private in the draft. They survive reload and mode changes, and undo restores them with the values.
+A later accepted suggested word starts a new review for every retained value.
+
+The draft privately tracks which paragraphs form the last accepted AI note group for each source row.
+The app initializes new source rows with a known empty AI note group.
+This group information survives reload and mode changes, and undo restores it with the notes.
+
+New AI paragraphs replace that group, rather than append to it. Replacement starts at the earlier group's first position and preserves the order of authored paragraphs.
+Without an earlier group, the new group follows the authored notes. An empty new group removes only the earlier AI group.
+An author edit to an AI paragraph removes that paragraph from the group, so later suggestions preserve it as authored text.
+
+If group information is absent, the preview requires the author to identify the earlier AI paragraphs or choose “No earlier AI notes”.
+Acceptance waits for that choice. The app never infers paragraph ownership from a `Sense: ` or `Note: ` prefix.
+The choice establishes private group information for this draft. Group information and review marks never enter signed records or assistance requests and responses.
 
 The From field reads a recognized kind prefix from the derivation explanation after reload.
 A human explanation without such a prefix shows no kind label. The app never infers a kind from its prose.
@@ -1454,7 +1483,8 @@ Explanation is literal text. Provenance contains provider, model, revision, reci
 Usage contains input_tokens and output_tokens. Each count is a nonnegative integer or null when unavailable.
 Reasons for proposed field edits travel inside proposal values. Panel-only reasons travel in the accepted tool arguments described below.
 Type alternatives use `type_hints.note` paragraphs with `type: reason`. Derivations keep the full kind prefix in `explanation`.
-Source `notes` keep the selected sense and note with `Sense: ` and `Note: ` prefixes.
+
+Proposed source `notes` contain only the new selected sense and note with `Sense: ` and `Note: ` prefixes.
 Proposals never target identity, signatures, publication status, trust records, source ownership, or delivery state.
 
 The result's `log` contains the complete private provider exchange:
@@ -1467,16 +1497,23 @@ InferenceLog = {
   input_tokens: integer | null, output_tokens: integer | null,
   cost_usd: number | null, unknown_cost_attempts: integer,
   exchanges: [{task: string, system_prompt: string, request: string,
-    attempts: [{attempt: integer, reasoning_summary: string | null, text: string,
-      tool_calls: [unknown], check: {accepted: boolean, problems: [string]},
-      usage: object | null, cost_usd: number | null,
-      request: object, response: unknown}]}]
+    attempts: [InferenceAttempt]}]
 }
+InferenceAttempt = {
+  attempt: integer, reasoning_summary: string | null, text: string,
+  usage: object | null, cost_usd: number | null,
+  request: object, response: unknown
+} & (
+  {tool_calls: [SubmitAnswerCall], check: {accepted: true, problems: []}} |
+  {tool_calls: [unknown], check: {accepted: false, problems: [string]}}
+)
 ```
 
 Each exchange corresponds to one task. Its attempts keep request and response bodies with credentials and encrypted reasoning removed.
-The exchange's `request` is the initial user-message text for that task, including its requested-key and permitted-component-place legends.
+The exchange's `request` is the initial user-message text for that task, including the requested-key list and any permitted-component-place list.
+The [prompt guide](../prompts/README.md#request) defines both lists.
 Each attempt's `request` is the full provider request body, including messages and tools. Neither field includes authentication headers.
+
 The log also keeps the assistant text, shared reasoning summary, calls, checks, timing, configured reasoning level, and available usage and cost.
 
 An accepted attempt has exactly one tool call of this shape. Its `function.arguments` is JSON text, decoded by the task's answer shape:
@@ -1492,8 +1529,10 @@ MappingsAnswer = {requested-place-key: [{component: supplied-component-place | "
 
 For a task exchange, the browser reads these arguments from the attempt whose `check.accepted` is true.
 The decoded answers use the [task shapes](../prompts/answer-shapes.json).
-`requested-place-key` is an `xN` key in the retained requested-key legend.
-`supplied-component-place` is a label such as `c1[2]` in the retained permitted-component-place legend.
+`requested-place-key` is an `xN` key in the retained requested-key list.
+`supplied-component-place` is a label such as `klama[2]`: a supplied component spelling and a one-based place index listed in the request.
+The model sees and writes these spellings. Any internal component labels remain an application detail.
+
 The browser uses the requested place key, task, sentinel, and reason to show panel-only hints and mappings.
 An `unclear` hint or a `none` or `unclear` mapping produces no field edit for that item.
 
@@ -1521,11 +1560,21 @@ The browser copies `current` and reduces `formation.sources` to the selected row
 Its source language is `current.formation.sources[0].language`. The request's `language` still names the definition language.
 The server uses that row's language to choose the source-language prompt. An unsupported source language is rejected before provider work.
 
-The manual builder initializes the formation object before requesting suggestions. The response proposes that one source row, not the whole language profile.
+The manual builder initializes the formation object before requesting suggestions. The response proposes edits for that one source row.
 
 The browser keeps a stable private ID for every row. It records that ID, the original index, language, row values, and draft revision when requesting.
-The proposal path stays `/formation/sources`, with a one-element array. Acceptance maps that array's first element to the recorded row ID.
-It leaves every other row unchanged, including alternative rows of the same language.
+
+The proposal path stays `/formation/sources`, with a one-element array. Its first element is a partial object containing only proposed fields.
+It permits only `word`, `word_ipa`, `stem`, `ipa`, `input`, and `notes`. This object is an edit proposal, not a complete formation source.
+
+Non-null `word`, `word_ipa`, `stem`, and `ipa` map to their matching fields. Non-null `sounds` maps to `input: {format: "lojbanized", text: sounds}`.
+A null `word`, `word_ipa`, `stem`, `ipa`, or `sounds` omits its matching proposal field.
+Every proposal includes `notes`, even when empty. It contains only new nonempty `Sense: ` and `Note: ` paragraphs, or an empty rich-text value.
+The proposal never echoes existing notes or carries language, weight, or provenance fields.
+
+Acceptance maps those edits to the recorded row ID through the source acceptance rules in [step 4](#step-4-places-glosses-and-supporting-fields).
+It applies only the permitted fields and replaces the tracked AI note group. It preserves every omitted field and all authored notes pending explicit review.
+It leaves every other row unchanged, including alternative rows of the same language. It never replaces the stored row with the partial object.
 
 Reordering marks the suggestion stale. After a comparison, the author can apply it to the same private ID if that row remains unchanged.
 If the row changed, changed language, or disappeared, the browser offers a new request and never applies to its former index.
@@ -1549,7 +1598,9 @@ Result and error are nullable. Errors use the common API error shape and can add
 A job ID is opaque, unpredictable, and scoped to its requesting session. Expires_at uses the format specification's UTC timestamp syntax.
 
 The reference service keeps jobs, results, and logs in memory for at most ten minutes from admission.
-Expiry aborts execution and deletes the job's content. A service restart loses these private jobs too.
+Each admitted job has a fixed expiry. Reads and session renewal never extend it.
+Expiry aborts execution and deletes all sensitive job content. A service restart loses these private jobs and their expiry markers too.
+
 The server publishes this retention limit in its assistance disclosure. It never copies these records into ordinary logs or peer synchronization.
 
 Successful DELETE returns HTTP 200 with the current job response. A queued job becomes canceled. A running job becomes cancel_requested until execution stops.
@@ -1565,13 +1616,24 @@ The browser sends that token in X-CSRF-Token when creating or canceling jobs. An
 Job reads require the same session cookie. A job ID alone never authorizes access. An expired session cannot retrieve its private jobs.
 
 Disabled capability returns HTTP 503 with code feature_disabled. Quotas use HTTP 429 with a retry interval.
+
+Each session can retain at most 128 unexpired job records, including completed, failed, and canceled jobs.
+At that limit, admission returns HTTP 429 with code `session_job_limit` and an integer `Retry-After` header in seconds.
+Its value is `max(1, ceil((earliest_live_expiry_ms - now_ms) / 1000))`. Both times use milliseconds, and `earliest_live_expiry_ms` is the earliest retained job expiry.
+Job expiry frees a slot. Expiry markers never count toward this limit and never cause refusal of new work.
+
 Unknown job IDs and jobs owned by another session return HTTP 404 with code missing.
-For its owner's current session, an expired job returns HTTP 410 with code job_expired.
+For its owner's current session, an expired job with a retained expiry marker returns HTTP 410 with code job_expired.
 
 The service keeps a tombstone, a small expiry marker, after deleting the content.
 It contains only the job ID, owner session ID, and job expiry.
-It removes these tombstones when that session ends. Each session can hold at most 128 job IDs across live jobs and tombstones.
-At that limit, the service refuses new jobs with HTTP 429 until the session ends.
+A marker expires one hour after its job expiry, or when its session ends, whichever comes first. Session renewal never extends marker retention.
+
+Each session can retain at most 128 markers, separately from its unexpired job records.
+When a new marker exceeds that cap, the service evicts the oldest marker by job expiry, with lexicographic job ID as the tie-breaker.
+
+Evicted, aged-out, and restart-lost IDs return HTTP 404 with code missing, including for the former owner.
+The browser treats both 404 and 410 as a gone job. It stops polling and retains any outputs already saved with the local draft.
 
 Retrying a private draft operation does not publish anything or create a dictionary event.
 

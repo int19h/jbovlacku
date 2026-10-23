@@ -44,7 +44,11 @@ Providers can then cache that prefix.
 
 The user message contains the case: the word, its definition, the component definitions where the task uses them, and the requested keys.
 A place key such as `klama[2]` becomes `x2` in the tool arguments, and the whole word becomes `word`.
-The user message ends with that key list, such as "In submit_answer, use these keys: word for klama, x1 for klama[1]."
+After the case, the user message lists the requested keys.
+For example: "In submit_answer, use these keys: word for klama, x1 for klama[1]."
+
+For `mappings`, the permitted component places follow the requested keys, such as "Permitted component places: klama[1,2]".
+That grouped form permits `klama[1]` and `klama[2]`. The answer names each component place by its supplied spelling and one-based index.
 A `sources` request covers one target meaning and one language.
 
 The tool arguments are the answer. For `glosses`, `hints` and `mappings`, the tool schema lists each requested key as an explicit property.
