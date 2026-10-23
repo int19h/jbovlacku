@@ -526,7 +526,7 @@ Both local adapters accept these variables:
 | `JVC_AI_REASONING_EFFORT`          | Reasoning level. The default is `medium`.                                                                                                                            |
 | `JVC_AI_OPERATIONS`                | Comma-separated permitted operations. The default contains all six operations below. An empty value disables every operation.                                        |
 | `JVC_AI_DECISION_REPORTS`          | Set `enabled` to request a written decision report before the tool call. The default is disabled.                                                                    |
-| `JVC_AI_MAX_TOKENS`                | Optional output limit per provider turn. An explicit value replaces all automatic task, effort, and report limits. The permitted range is 128 through 32,768.        |
+| `JVC_AI_MAX_TOKENS`                | Optional output limit per provider turn. An explicit value replaces automatic task, effort, and report limits. The permitted range is 128 through 20,480.            |
 | `JVC_AI_TIMEOUT_MS`                | Time limit for the complete job. The default is 120,000 milliseconds. The permitted range is 10 through 540,000. Job expiry leaves a reading window after this time. |
 | `JVC_AI_CONCURRENCY`               | Maximum active jobs. The default is two. Node permits one through four. The Worker caps this value at two.                                                           |
 | `JVC_AI_INPUT_PRICE`               | Model input price in USD per million tokens. The default is 0.10.                                                                                                    |
@@ -602,9 +602,11 @@ reservation(job) = sum(reservation(task))
 ```
 
 Without `JVC_AI_MAX_TOKENS`, the service selects the automatic limits below. Completion counts include the provider's reported reasoning tokens.
+The automatic limits come from the tested model, `meta/muse-spark-1.3-contributor`.
+A different `JVC_AI_MODEL` needs new evidence or an explicit `JVC_AI_MAX_TOKENS` within the permitted range.
 The medium limits retain the measured margin for medium effort with decision reports disabled.
 For each studied task, another effort uses `ceil(observed_effort × medium_limit / observed_medium / 256) × 256`.
-This preserves that task's margin and rounds upward to 256 tokens.
+This preserves that task's margin before the global ceiling and rounds upward to 256 tokens.
 
 | Task       | Observed low | Observed medium | Observed high | Observed xhigh |
 | ---------- | -----------: | --------------: | ------------: | -------------: |
@@ -636,7 +638,7 @@ Those ratios are `11973 / 5687` for high and `17053 / 5687` for xhigh.
 | `glosses`     |     2,304 |        4,096 |      4,864 |      11,520 |
 | `hints`       |     2,816 |        8,192 |     10,240 |      10,496 |
 | `mappings`    |     4,608 |        6,144 |     12,288 |      14,336 |
-| `sources`     |     5,120 |        8,192 |     17,408 |      24,576 |
+| `sources`     |     5,120 |        8,192 |     17,408 |      20,480 |
 | `type`        |     2,048 |        2,048 |      4,352 |       6,144 |
 | `components`  |     2,048 |        2,048 |      4,352 |       6,144 |
 | `cmavo-class` |     2,048 |        2,048 |      4,352 |       6,144 |
@@ -644,9 +646,33 @@ Those ratios are `11973 / 5687` for high and `17053 / 5687` for xhigh.
 | `places`      |     2,048 |        2,048 |      4,352 |       6,144 |
 
 Efforts `none` and `minimal` use the low limits without direct measurements. The provider still receives the requested effort unchanged.
-Decision reports double each automatic limit, with a ceiling of 32,768. The factor of two is an unmeasured allowance for written reports.
+Decision reports double each automatic limit, with a ceiling of 20,480. The factor of two is an unmeasured allowance for written reports.
 An explicit `JVC_AI_MAX_TOKENS` replaces this entire calculation, including the report factor. It applies unchanged to every task and effort.
 Node and Worker defaults both omit this override. These observations and extrapolations do not guarantee completion for every future request.
+
+Every automatic and explicit output limit stays at or below 20,480 tokens, including limits with decision reports disabled.
+Startup refuses an explicit value above 20,480 and names the permitted range. Direct configuration also cannot send a larger limit.
+This ceiling protects the 262,144-byte response allowance. The allowance counts raw provider data, including encrypted reasoning, before private-log filtering.
+
+Archived responses show encrypted reasoning entries that grow in steps. These four common large steps appear in the studied response files:
+
+| Encrypted entry bytes | Responses | Reasoning tokens | Largest compact response bytes |
+| --------------------: | --------: | ---------------: | -----------------------------: |
+|                22,144 |       190 |   1,509 to 3,421 |                         25,100 |
+|                43,989 |       127 |   2,938 to 6,219 |                         47,641 |
+|                87,680 |        42 |  5,859 to 11,784 |                         91,508 |
+|               175,061 |         3 | 14,767 to 16,686 |                        178,378 |
+
+The source files are `spark-v19-panel/runs/c08`, `c09`, and `c10`, plus `new-cases-v7/runs/c11`.
+The largest stored response is `new-cases-v7/runs/c11/sources-v7-transparency--portuguese.json`.
+Its SHA-256 is `769b9b540207364a02bf40a07ded0cbce7900235b41f355e079fda3a76bdad85`.
+Its provider response occupies 178,378 bytes as compact UTF-8 JSON. It reports 17,053 completion tokens, including 16,686 reasoning tokens.
+
+Near the ceiling, the planning allowance uses 12 bytes per output token plus 4,096 bytes for other response fields.
+At 20,480 tokens, that allowance is 249,856 bytes, with 12,288 bytes below the response limit.
+This extrapolates the largest observed step. It does not establish a universal per-turn relationship between tokens and bytes.
+Some smaller archived turns exceed that ratio because the encrypted entries grow in steps. Across 645 stored responses, the largest compact response is 178,378 bytes.
+The independent raw response limit still stops unexpected larger responses. A different model also needs evidence for its response encoding.
 
 The operation determines which tasks remain. An absent initial frame includes the places task and up to sixteen generated places.
 An existing frame uses its actual place keys. The reservation includes mappings only when selected definitions supply component places.
@@ -663,15 +689,15 @@ Generated-frame follow-up tasks add at most `G` bytes to that bound.
 A conservative four-task ceiling uses the largest task cap for every task and adds `G` to all three follow-up tasks:
 
 ```text
-ceiling = 4 × 6 × ((2,097,152 + 626,688) × 0.10 + 32,768 × 0.20) / 1,000,000
+ceiling = 4 × 6 × ((2,097,152 + 626,688) × 0.10 + 20,480 × 0.20) / 1,000,000
         + 3 × 6 × 528,384 × 0.10 / 1,000,000
-        = 7.6455936 USD
+        = 7.5866112 USD
 ```
 
-The 8 USD hourly network share exceeds that ceiling by 0.3544064 USD. Its 40 USD daily share also covers every operation.
+The 8 USD hourly network share exceeds that ceiling by 0.4133888 USD. Its 40 USD daily share also covers every operation.
 
 Every enabled operation fits within the default network share at each effort, with reports enabled or disabled.
-This includes a generated frame with glosses, hints, and mappings, and an explicit maximum override of 32,768.
+This includes a generated frame with glosses, hints, and mappings, and an explicit maximum override of 20,480.
 The exact reservation depends on the actual prompts, input, and tool schemas. Model prices remain separate from spending allowances.
 Smaller operator allowances can exclude operations from the advertised capabilities.
 

@@ -158,6 +158,12 @@ const operations = [
   "places-glosses",
 ];
 export const INFERENCE_RESPONSE_BYTES = 262144;
+// Plan the ceiling envelope from the largest observed encrypted blob step:
+// 175061 bytes at 14767 reasoning tokens. Use 12 bytes per token plus 4096 bytes.
+// This near-ceiling extrapolation does not bound every smaller response.
+export const INFERENCE_RESPONSE_BYTES_PER_TOKEN = 12;
+export const INFERENCE_RESPONSE_OVERHEAD_BYTES = 4096;
+export const INFERENCE_MAX_OUTPUT_TOKENS = 20480;
 export const INFERENCE_INITIAL_REQUEST_BYTES = 2097152;
 export const INFERENCE_GENERATED_FRAME_BYTES =
   2 * INFERENCE_RESPONSE_BYTES + 4096;
@@ -218,12 +224,13 @@ export function taskMaxTokens(
   >,
   task: Task,
 ): number {
-  if (config.maxTokens !== undefined) return config.maxTokens;
+  if (config.maxTokens !== undefined)
+    return Math.min(INFERENCE_MAX_OUTPUT_TOKENS, config.maxTokens);
   const effort = ["none", "minimal"].includes(config.reasoningEffort)
     ? "low"
     : (config.reasoningEffort as StudiedEffort);
   return Math.min(
-    32768,
+    INFERENCE_MAX_OUTPUT_TOKENS,
     taskTokenCaps[effort][task] * (config.decisionReports ? 2 : 1),
   );
 }
@@ -291,10 +298,17 @@ export function providerConfig(
   const effort = env.JVC_AI_REASONING_EFFORT ?? "medium";
   if (!["none", "minimal", "low", "medium", "high", "xhigh"].includes(effort))
     throw new Error("Unknown AI reasoning effort.");
-  const maxTokens =
-    env.JVC_AI_MAX_TOKENS === undefined
-      ? undefined
-      : Math.floor(number("JVC_AI_MAX_TOKENS", 0, 128, 32768));
+  let maxTokens: number | undefined;
+  if (env.JVC_AI_MAX_TOKENS !== undefined) {
+    const value = Number(env.JVC_AI_MAX_TOKENS);
+    if (Number.isFinite(value) && value > INFERENCE_MAX_OUTPUT_TOKENS)
+      throw new Error(
+        `JVC_AI_MAX_TOKENS must be from 128 through ${INFERENCE_MAX_OUTPUT_TOKENS}.`,
+      );
+    maxTokens = Math.floor(
+      number("JVC_AI_MAX_TOKENS", 0, 128, INFERENCE_MAX_OUTPUT_TOKENS),
+    );
+  }
   const maxPrice = number("JVC_AI_MAX_PRICE", 10, 0.001, 100);
   const hourlyBudgetUsd = number(
     "JVC_AI_HOURLY_BUDGET_USD",

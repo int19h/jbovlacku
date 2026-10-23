@@ -256,10 +256,13 @@ const effortSettings = [
   "high",
   "xhigh",
 ].flatMap((reasoningEffort) =>
-  [false, true].map((decisionReports) => ({
-    reasoningEffort,
-    decisionReports,
-  })),
+  [false, true].flatMap((decisionReports) =>
+    [undefined, 20480].map((maxTokens) => ({
+      reasoningEffort,
+      decisionReports,
+      maxTokens,
+    })),
+  ),
 );
 
 test("every enabled operation is admitted with empty default server and network allowances", async () => {
@@ -382,7 +385,7 @@ test("the conservative ceiling for all twelve answers fits one default network s
         ) +
       (3 * 3 * 2 * INFERENCE_GENERATED_FRAME_BYTES * provider.inputPrice) /
         1000000;
-    assert.ok(ceiling <= 7.6455936);
+    assert.ok(ceiling <= 7.5866112);
     assert.ok(ceiling < provider.networkHourlyBudgetUsd);
     assert.ok(ceiling < provider.networkDailyBudgetUsd);
   }

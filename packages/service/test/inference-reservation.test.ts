@@ -14,6 +14,9 @@ import {
   estimateInferenceCost,
   INFERENCE_CORRECTION_BYTES,
   INFERENCE_RESPONSE_BYTES,
+  INFERENCE_RESPONSE_BYTES_PER_TOKEN,
+  INFERENCE_RESPONSE_OVERHEAD_BYTES,
+  INFERENCE_MAX_OUTPUT_TOKENS,
   INFERENCE_INITIAL_REQUEST_BYTES,
   INFERENCE_GENERATED_FRAME_BYTES,
   inferenceTurnCost,
@@ -363,6 +366,67 @@ test("each task uses its studied output cap for all answers and its reservation"
   }
 });
 
+test("explicit output limits accept the ceiling and reject values above it at startup", () => {
+  const configured = (value: string) =>
+    providerConfig(
+      { JVC_AI_ENABLED: "enabled", JVC_AI_MAX_TOKENS: value },
+      async () => "disposable-limit-key",
+    )!;
+  assert.equal(configured("20480").maxTokens, 20480);
+  assert.equal(configured("128.9").maxTokens, 128);
+  for (const value of ["20481", "20480.5", "32768"])
+    assert.throws(() => configured(value), {
+      message: "JVC_AI_MAX_TOKENS must be from 128 through 20480.",
+    });
+  for (const value of ["", "127", "-1", "NaN", "Infinity"])
+    assert.throws(() => configured(value), {
+      message: "Invalid JVC_AI_MAX_TOKENS.",
+    });
+});
+
+test("every output limit respects the ceiling and its response planning envelope", () => {
+  let largest = 0;
+  for (const reasoningEffort of [
+    "none",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+  ])
+    for (const decisionReports of [false, true])
+      for (const maxTokens of [undefined, 128, 20480, 32768, Infinity])
+        for (const task of [
+          "glosses",
+          "hints",
+          "mappings",
+          "sources",
+          "type",
+          "components",
+          "cmavo-class",
+          "definition",
+          "places",
+        ] as const) {
+          const cap = taskMaxTokens(
+            { reasoningEffort, decisionReports, maxTokens },
+            task,
+          );
+          assert.ok(
+            cap <= 20480,
+            `${task}/${reasoningEffort}/${decisionReports}/${maxTokens}: ${cap}`,
+          );
+          largest = Math.max(largest, cap);
+        }
+  assert.equal(largest, INFERENCE_MAX_OUTPUT_TOKENS);
+  assert.equal(INFERENCE_RESPONSE_BYTES_PER_TOKEN, 12);
+  assert.equal(INFERENCE_RESPONSE_OVERHEAD_BYTES, 4096);
+  const envelope =
+    largest * INFERENCE_RESPONSE_BYTES_PER_TOKEN +
+    INFERENCE_RESPONSE_OVERHEAD_BYTES;
+  assert.equal(envelope, 249856);
+  assert.ok(envelope <= INFERENCE_RESPONSE_BYTES);
+});
+
 test("effort caps, decision reports, and explicit overrides agree across requests, reservations, and unknown charges", async () => {
   const tasks: TaskCase["task"][] = [
     "glosses",
@@ -381,14 +445,23 @@ test("effort caps, decision reports, and explicit overrides agree across request
     high: [4864, 10240, 12288, 17408, 4352, 4352, 4352, 13056, 4352],
     xhigh: [11520, 10496, 14336, 24576, 6144, 6144, 6144, 18432, 6144],
   };
-  for (const [effort, limits] of Object.entries(caps))
+  for (const effort of ["none", "minimal", "low", "medium", "high", "xhigh"])
     for (const reports of [false, true])
-      for (const explicit of [undefined, "128", "32768"])
+      for (const explicit of [undefined, "128", "20480", "direct-32768"])
         for (const [index, task] of tasks.entries()) {
           const cap =
             explicit === undefined
-              ? Math.min(32768, limits[index] * (reports ? 2 : 1))
-              : Number(explicit);
+              ? Math.min(
+                  20480,
+                  caps[
+                    effort === "none" || effort === "minimal"
+                      ? "low"
+                      : (effort as keyof typeof caps)
+                  ][index] * (reports ? 2 : 1),
+                )
+              : explicit === "direct-32768"
+                ? 20480
+                : Number(explicit);
           const label = `${task}/${effort}/${reports}/${explicit}`;
           const spec: TaskCase = {
             task,
@@ -402,13 +475,19 @@ test("effort caps, decision reports, and explicit overrides agree across request
               JVC_AI_ENABLED: "enabled",
               JVC_AI_REASONING_EFFORT: effort,
               JVC_AI_DECISION_REPORTS: reports ? "enabled" : "disabled",
-              JVC_AI_MAX_TOKENS: explicit,
+              JVC_AI_MAX_TOKENS:
+                explicit === "direct-32768" ? undefined : explicit,
             },
             async () => "disposable-effort-key",
           )!;
+          if (explicit === "direct-32768") provider.maxTokens = 32768;
           assert.equal(
             provider.maxTokens,
-            explicit === undefined ? undefined : Number(explicit),
+            explicit === undefined
+              ? undefined
+              : explicit === "direct-32768"
+                ? 32768
+                : Number(explicit),
             label,
           );
           let turns = 0;
