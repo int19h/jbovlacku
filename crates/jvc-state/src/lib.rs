@@ -8,7 +8,7 @@ mod policy;
 pub use api::{
     AccountControl, Authority, Certificate, PublicationStatus, account_control, publication_status,
 };
-pub use incremental::{CHECKPOINT_VERSION, EvaluatedState, UpdateStatistics};
+pub use incremental::{CHECKPOINT_VERSION, EvaluatedState, JudgmentChanges, UpdateStatistics};
 
 use jvc_core::{BodyAvailability, VerifiedEnvelope, inspect_body, validate_action};
 pub use policy::{Context, ContextGraph, PositiveEdge, evaluate_context};

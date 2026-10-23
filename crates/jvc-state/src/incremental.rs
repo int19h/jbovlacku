@@ -11,6 +11,15 @@ pub struct UpdateStatistics {
     pub reason: Option<String>,
 }
 
+/// Keys changed by an advance that contains only local judgments.
+#[derive(Clone, Debug, Default)]
+pub struct JudgmentChanges {
+    pub receipts: BTreeSet<String>,
+    pub registers: BTreeSet<String>,
+    pub judgments: BTreeMap<String, BTreeSet<String>>,
+    pub actors: BTreeSet<String>,
+}
+
 /// Retained authenticated input and its evaluated state.
 /// A fork owns its result and shares only immutable ancestor payloads.
 #[derive(Clone)]
@@ -21,6 +30,7 @@ pub struct EvaluatedState {
     unresolved: BTreeSet<String>,
     remaining_work: usize,
     statistics: UpdateStatistics,
+    judgment_changes: Option<JudgmentChanges>,
 }
 
 impl EvaluatedState {
@@ -44,6 +54,7 @@ impl EvaluatedState {
             unresolved: BTreeSet::new(),
             remaining_work: 0,
             statistics: UpdateStatistics::default(),
+            judgment_changes: None,
         };
         state.rebuild();
         state
@@ -57,7 +68,12 @@ impl EvaluatedState {
         &self.statistics
     }
 
+    pub fn judgment_changes(&self) -> Option<&JudgmentChanges> {
+        self.judgment_changes.as_ref()
+    }
+
     fn rebuild(&mut self) {
+        self.judgment_changes = None;
         let graph = Graph::new(self.prepared.nodes.clone(), &self.prepared.options.limits);
         self.evaluation = evaluate_graph(
             &self.prepared.options,
@@ -97,6 +113,7 @@ impl EvaluatedState {
             || self.prepared.nodes.len().saturating_add(added.len())
                 > self.prepared.options.limits.events;
         self.statistics = UpdateStatistics::default();
+        self.judgment_changes = Some(JudgmentChanges::default());
         if self.prepared.event_limit_exceeded {
             rebuild_reason = Some("event_limit".into());
         }
@@ -260,6 +277,16 @@ impl EvaluatedState {
         if node.kind == "judgment.set" {
             let target = node.action["target"].as_str().unwrap();
             let key = format!("{}|judgment|{target}", node.issuer);
+            if let Some(changes) = &mut self.judgment_changes {
+                changes.receipts.insert(node.id.clone());
+                changes.registers.insert(key.clone());
+                changes.actors.insert(node.issuer.clone());
+                changes
+                    .judgments
+                    .entry(target.into())
+                    .or_default()
+                    .insert(node.issuer.clone());
+            }
             let mut heads = self
                 .evaluation
                 .registers
@@ -297,6 +324,7 @@ impl EvaluatedState {
                 },
             );
         } else {
+            self.judgment_changes = None;
             publications_for(
                 graph,
                 &mut self.evaluation,
@@ -394,6 +422,7 @@ impl EvaluatedState {
             graph: None,
             remaining_work: saved.remaining_work,
             statistics: UpdateStatistics::default(),
+            judgment_changes: None,
         })
     }
 }

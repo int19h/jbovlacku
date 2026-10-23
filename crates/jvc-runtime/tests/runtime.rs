@@ -126,11 +126,59 @@ impl Fixture {
     fn bytes(&self) -> Vec<u8> {
         canonical_value(&json!({"events":self.events,"bodies":self.bodies,"selected_view":self.selected_view,"import_selections":{},"overlay":self.overlay})).unwrap()
     }
+    fn legacy_state_output(&self) -> Value {
+        let evaluation = jvc_state::evaluate(&jvc_state::EvaluationInput {
+            events: self
+                .events
+                .iter()
+                .map(|e| jvc_core::verify_envelope(e.as_bytes()).unwrap())
+                .collect(),
+            bodies: self
+                .bodies
+                .iter()
+                .map(|(k, v)| (k.clone(), v.as_bytes().to_vec()))
+                .collect(),
+            selected_view: self.selected_view.clone(),
+            overlay: self.overlay.clone(),
+            import_selections: BTreeMap::new(),
+            limits: jvc_state::Limits::default(),
+        });
+        let mut value = serde_json::to_value(&evaluation).unwrap();
+        value["publication_statuses"] = json!(
+            evaluation
+                .publications
+                .keys()
+                .filter_map(
+                    |id| jvc_state::publication_status(&evaluation, id).map(|status| (id, status))
+                )
+                .collect::<BTreeMap<_, _>>()
+        );
+        value["account_controls"] = json!(
+            evaluation
+                .accounts
+                .iter()
+                .map(|(key, account)| (
+                    key,
+                    jvc_state::account_control(
+                        &evaluation,
+                        "",
+                        &account.account.origin,
+                        account.account.account
+                    )
+                ))
+                .collect::<BTreeMap<_, _>>()
+        );
+        value
+    }
     fn rank(&self, name: &str) -> Value {
         let bytes = self.bytes();
         let result = jvc_runtime::rank_word_bytes(&bytes, &self.word).unwrap();
         let session = jvc_runtime::EvaluationSession::new(&bytes).unwrap();
         let streamed = self.streamed_session();
+        assert_eq!(
+            serde_json::from_str::<Value>(&session.state().unwrap()).unwrap(),
+            self.legacy_state_output()
+        );
         assert_eq!(streamed.state().unwrap(), session.state().unwrap());
         assert_eq!(
             streamed.rank(&self.word).unwrap(),
@@ -901,4 +949,170 @@ fn forked_sessions_and_host_checkpoints_keep_rank_and_parent_isolation() {
         restored.rank_with_reviewers(&f.word, 16).unwrap(),
         child.rank_with_reviewers(&f.word, 16).unwrap()
     );
+}
+
+fn patched_state(
+    mut parent: Value,
+    session: &jvc_runtime::EvaluationSession,
+    identity: &str,
+) -> Value {
+    let patch: Value = serde_json::from_str(&session.state_delta()).unwrap();
+    assert_eq!(patch["version"], 1);
+    assert_eq!(patch["base_session"], identity);
+    for map in ["receipts", "registers"] {
+        parent[map]
+            .as_object_mut()
+            .unwrap()
+            .extend(patch[map].as_object().unwrap().clone());
+    }
+    for (target, actors) in patch["judgments"].as_object().unwrap() {
+        let target = parent["judgments"]
+            .as_object_mut()
+            .unwrap()
+            .entry(target.clone())
+            .or_insert_with(|| json!({}));
+        target
+            .as_object_mut()
+            .unwrap()
+            .extend(actors.as_object().unwrap().clone());
+    }
+    for map in ["key_actor", "groups"] {
+        parent["lifecycle"][map]
+            .as_object_mut()
+            .unwrap()
+            .extend(patch["lifecycle"][map].as_object().unwrap().clone());
+    }
+    parent
+}
+
+#[test]
+fn judgment_state_patches_reconstruct_full_results_and_exact_parent_tokens() {
+    let mut f = Fixture::new();
+    let target = f.definition("en");
+    let pair = jvc_core::rafsi_pair_id(&f.word, "ban").unwrap();
+    f.event(9,json!({"kind":"rafsi.publish","word":f.word,"assignment":pair,"origin":"native"}),Some(json!({"word":{"language":"jbo","spelling":"banli"},"rafsi":"ban","rationale":[],"sources":[],"legacy":null})));
+    f.view("simple-routes-bounds-v1", &[1], 1000);
+    let mut parent = f.streamed_session();
+    assert_eq!(parent.state_delta(), "null");
+    let options = canonical_value(
+        &json!({"selected_view":f.selected_view,"import_selections":{},"overlay":f.overlay}),
+    )
+    .unwrap();
+    let mut previous = None;
+    for (seed, value, use_previous, target) in [
+        (1, "bless", false, &target),
+        (1, "curse", false, &target),
+        (1, "clear", true, &target),
+        (2, "bless", false, &target),
+        (3, "bless", false, &pair),
+    ] {
+        let before: Value = serde_json::from_str(&parent.state().unwrap()).unwrap();
+        let identity = parent.state_identity();
+        let id = f.event_after(
+            seed,
+            if use_previous {
+                previous.clone().into_iter().collect()
+            } else {
+                Vec::new()
+            },
+            json!({"kind":"judgment.set","target":target,"value":value}),
+            None,
+        );
+        let mut builder = parent.fork(&options).unwrap();
+        builder
+            .add_record(f.events.last().unwrap().as_bytes(), None)
+            .unwrap();
+        let child = builder.finish();
+        let expected = jvc_runtime::evaluate_bytes(&f.bytes()).unwrap();
+        assert_eq!(patched_state(before.clone(), &child, &identity), expected);
+        assert_eq!(
+            serde_json::from_str::<Value>(&child.state().unwrap()).unwrap(),
+            expected
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(&parent.state().unwrap()).unwrap(),
+            before
+        );
+        assert_ne!(child.state_identity(), identity);
+        previous = Some(id);
+        parent = child;
+    }
+    // An unchanged record creates an empty patch for that exact parent.
+    let mut builder = parent.fork(&options).unwrap();
+    builder
+        .add_record(f.events.last().unwrap().as_bytes(), None)
+        .unwrap();
+    let duplicate = builder.finish();
+    let before: Value = serde_json::from_str(&parent.state().unwrap()).unwrap();
+    assert_eq!(
+        patched_state(before.clone(), &duplicate, &parent.state_identity()),
+        before
+    );
+    let checkpoint = parent.checkpoint("pinned-host-binding").unwrap();
+    let restored =
+        jvc_runtime::EvaluationSession::restore_host_checkpoint(&checkpoint, "pinned-host-binding")
+            .unwrap();
+    assert_eq!(restored.state_delta(), "null");
+    assert_ne!(restored.state_identity(), parent.state_identity());
+    f.bless(4, &target);
+    let mut builder = restored.fork(&options).unwrap();
+    builder
+        .add_record(f.events.last().unwrap().as_bytes(), None)
+        .unwrap();
+    let child = builder.finish();
+    assert_eq!(
+        patched_state(before, &child, &restored.state_identity()),
+        jvc_runtime::evaluate_bytes(&f.bytes()).unwrap()
+    );
+}
+
+#[test]
+fn publication_global_and_reconfigured_updates_use_full_state_export() {
+    let mut f = Fixture::new();
+    let target = f.definition("en");
+    f.view("simple-routes-bounds-v1", &[1], 1000);
+    let options = canonical_value(
+        &json!({"selected_view":f.selected_view,"import_selections":{},"overlay":f.overlay}),
+    )
+    .unwrap();
+    let mut parent = f.streamed_session();
+    for native in [true, false] {
+        let mut builder = parent.fork(&options).unwrap();
+        let start = f.events.len();
+        if native {
+            f.definition("de");
+        } else {
+            f.trust(1, 2, "heed", "en");
+        }
+        for envelope in &f.events[start..] {
+            let event = jvc_core::verify_envelope(envelope.as_bytes()).unwrap();
+            builder
+                .add_record(
+                    envelope.as_bytes(),
+                    f.bodies.get(event.id()).map(|b| b.as_bytes().to_vec()),
+                )
+                .unwrap();
+        }
+        let child = builder.finish();
+        assert_eq!(child.state_delta(), "null");
+        assert_eq!(
+            serde_json::from_str::<Value>(&child.state().unwrap()).unwrap(),
+            jvc_runtime::evaluate_bytes(&f.bytes()).unwrap()
+        );
+        parent = child;
+    }
+    let changed = canonical_value(
+        &json!({"selected_view":f.selected_view,"import_selections":{},"overlay":{"invalid":true}}),
+    )
+    .unwrap();
+    assert_eq!(
+        parent.fork(&changed).unwrap().finish().state_delta(),
+        "null"
+    );
+    let mut removed = parent.fork(&options).unwrap();
+    removed.remove_record(&target);
+    assert_eq!(removed.finish().state_delta(), "null");
+    let mut replaced = parent.fork(&options).unwrap();
+    replaced.add_record(f.events[0].as_bytes(), None).unwrap();
+    assert_eq!(replaced.finish().state_delta(), "null");
 }

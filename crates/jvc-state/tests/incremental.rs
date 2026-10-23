@@ -359,6 +359,11 @@ fn repeated_appends_rebase_after_restore_without_changing_tight_work_results() {
             let id = event.id().to_owned();
             state = f.advance(state, std::slice::from_ref(&id), &[]);
             assert_eq!(state.evaluation().available, evaluate(&f.input).available);
+            if state.statistics().rebuilt {
+                assert!(state.judgment_changes().is_none());
+            } else {
+                assert!(state.judgment_changes().is_some());
+            }
             if state.statistics().reason.as_deref() == Some("ancestry_rebase") {
                 rebases += 1;
             }
