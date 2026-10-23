@@ -7,7 +7,47 @@ import {
   fixture,
 } from "./helpers.ts";
 
-test("downloaded search queries work without sending a search request and offline signing uses saved history", async ({
+/** Only this exact background capability read can accompany private local queries. */
+async function guardLocalQuery(
+  page: import("@playwright/test").Page,
+  query: string,
+) {
+  const forbidden: string[] = [];
+  const leaks: string[] = [];
+  const handler = (route: import("@playwright/test").Route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const body = request.postData() ?? "";
+    const allowed =
+      request.method() === "GET" &&
+      url.pathname === "/api/v1/capabilities" &&
+      !url.search &&
+      !body;
+    if (allowed) return route.continue();
+    forbidden.push(`${request.method()} ${url.pathname}${url.search}`);
+    if (
+      [
+        decodeURIComponent(url.pathname),
+        ...url.searchParams.values(),
+        body,
+      ].some((value) => value.includes(query))
+    )
+      leaks.push(request.url());
+    return route.abort();
+  };
+  await page.route("**/api/v1/**", handler);
+  return {
+    forbidden,
+    leaks,
+    assertPrivate() {
+      expect(forbidden).toEqual([]);
+      expect(leaks).toEqual([]);
+    },
+    dispose: () => page.unroute("**/api/v1/**", handler),
+  };
+}
+
+test("downloaded local search sends nothing and offline signing uses saved history", async ({
   page,
 }) => {
   await page.goto("/preferences");
@@ -16,12 +56,7 @@ test("downloaded search queries work without sending a search request and offlin
     "The English search package is saved in this browser.",
   );
   await expect(page.getByText(/\d+ definitions · snapshot/)).toBeVisible();
-  let requests = 0;
-  await page.route("**/api/v1/**", (route) => {
-    if (new URL(route.request().url()).pathname === "/api/v1/search")
-      requests++;
-    return route.abort();
-  });
+  const privacy = await guardLocalQuery(page, "book");
   await page.goto("/search?q=book&lang=en");
   const results = page.getByRole("region", { name: "Search results" });
   await expect(
@@ -34,8 +69,8 @@ test("downloaded search queries work without sending a search request and offlin
     results.getByRole("link", { name: "notes" }).first(),
   ).toBeVisible();
   await expect(page.getByText(/^\d+ words?$/)).toBeVisible();
-  expect(requests).toBe(0);
-  await page.unroute("**/api/v1/**");
+  privacy.assertPrivate();
+  await privacy.dispose();
   // Offline signing uses the remembered local history only.
   await createIdentity(page);
   await page.getByText("Offline signing").click();
@@ -384,12 +419,7 @@ test("local search ranks match classes, keeps the strongest match, and sends not
       });
       return ["broda", "brode", "brodi"];
     }, corePath);
-    let requests = 0;
-    await page.route("**/api/v1/**", (route) => {
-      if (new URL(route.request().url()).pathname === "/api/v1/search")
-        requests++;
-      return route.abort();
-    });
+    const privacy = await guardLocalQuery(page, "I");
     await page.goto("/search?q=I&lang=en");
     const results = page.getByRole("region", { name: "Search results" });
     await expect(results.locator("article")).toHaveCount(3);
@@ -408,7 +438,7 @@ test("local search ranks match classes, keeps the strongest match, and sends not
     await expect(
       page.getByText("Local results include every retained publication."),
     ).toBeVisible();
-    expect(requests).toBe(0);
+    privacy.assertPrivate();
   } finally {
     await context.close();
   }
@@ -523,7 +553,7 @@ test("remote search pages pin snapshot and view, survive browser back, and rejec
   }
 });
 
-test("local search pages through many results in stable order, keeps equal-class previews, and renders HTML-like text literally", async ({
+test("local search pages through many results in stable order, keeps equal-class previews, renders HTML-like text literally, and sends nothing", async ({
   page,
 }) => {
   await page.goto("/");
@@ -566,12 +596,7 @@ test("local search pages through many results in stable order, keeps equal-class
         .map((entry) => entry.word.spelling),
     ];
   }, corePath);
-  let apiRequests = 0;
-  await page.route("**/api/v1/**", (route) => {
-    if (new URL(route.request().url()).pathname === "/api/v1/search")
-      apiRequests++;
-    return route.abort();
-  });
+  const privacy = await guardLocalQuery(page, "needle");
   await page.goto("/search?q=needle&lang=en");
   const results = page.getByRole("region", { name: "Search results" });
   await expect(results.locator("article")).toHaveCount(20);
@@ -604,7 +629,7 @@ test("local search pages through many results in stable order, keeps equal-class
   await expect(
     page.getByText("Local results include every retained publication."),
   ).toBeVisible();
-  expect(apiRequests).toBe(0);
+  privacy.assertPrivate();
   expect(await results.locator("img").count()).toBe(0);
   expect(await page.evaluate(() => Boolean((window as any).bad))).toBe(false);
 });
@@ -1248,4 +1273,33 @@ test("a restored search belongs to the view choice that produced it: a changed c
   await page.goBack();
   await expect(results.locator("article").first()).toBeVisible();
   expect(requests).toHaveLength(4);
+});
+
+test("the local-query guard blocks result fetches and query-bearing capability variants", async ({
+  page,
+}) => {
+  await page.route("**/privacy-harness", (route) =>
+    route.fulfill({
+      contentType: "text/html",
+      body: "<!doctype html><title>Privacy test</title>",
+    }),
+  );
+  await page.goto("/privacy-harness");
+  const guard = await guardLocalQuery(page, "book");
+  await page.evaluate(async () => {
+    await fetch("/api/v1/capabilities");
+    for (const path of [
+      "/words/result",
+      "/search/extra?q=book",
+      "/other?query=book",
+      "/capabilities?q=book",
+    ])
+      await fetch(`/api/v1${path}`).catch(() => {});
+    await fetch("/api/v1/capabilities", {
+      method: "POST",
+      body: JSON.stringify({ query: "book" }),
+    }).catch(() => {});
+  });
+  expect(guard.forbidden).toHaveLength(5);
+  expect(guard.leaks).toHaveLength(4);
 });
