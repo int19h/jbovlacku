@@ -464,12 +464,14 @@ test("draft export keeps private source evidence while publication and Revise ke
     {
       language: "fr",
       word: "",
-      word_ipa: null,
       input: null,
       weight: { numerator: 1, denominator: 2 },
       notes: [],
     },
   ]);
+  expect(published.body.etymology.formation.sources[1]).not.toHaveProperty(
+    "word_ipa",
+  );
   await page.goto(
     `/new/editor?revise=${encodeURIComponent(published.envelope.id)}`,
   );
