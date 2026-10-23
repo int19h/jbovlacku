@@ -107,7 +107,7 @@ Reusing an identical retained snapshot ID refreshes its retention position.
 A wrapper becomes visible only in the transaction that publishes its current pointer.
 
 An older prototype database has no trusted snapshot publication order.
-Migration rebuilds and retains its current snapshot only. Other old snapshot IDs expire.
+Migration from the first prototype retains its current snapshot only. Other old snapshot IDs expire.
 A rebuilt inventory must match the stored current pointer. A mismatch reports storage unavailable.
 Legacy object-store wrappers and the old snapshot-ID table remain as one-time cleanup debt.
 Anonymous event and selection admission has no contributor quota. Signed object retention remains unbounded.
@@ -120,6 +120,29 @@ An unknown or invalid requested view is rejected before full evaluation.
 Alternate views cannot evict the most recent configured-view evaluation.
 If a committed admission cannot obtain an evaluation slot, its receipt still reports the durable acceptance and cursor.
 It reports unavailable interpretation with `evaluation_resource_unavailable`. A later receipt read or retry can evaluate it.
+
+The Node adapter evaluates new snapshots in the background.
+Without an explicit snapshot, word, search, identity, account, and package reads use the last completed snapshot.
+The manifest also names that completed snapshot. Interpreted results name their snapshot and view.
+Raw replication reads can expose the newer accepted inventory and name its snapshot.
+
+The accepted cursor advances after durable admission. The materialized cursor advances after evaluation, packages, and index publication complete.
+During that gap, a new event receipt reports `index_lag` and `evaluation_pending`, with unavailable interpretation and a null snapshot.
+A late-body receipt also uses a null snapshot until the completed snapshot contains the same body mapping.
+The service retains the preceding completed snapshot during a backlog. Failed jobs leave it available, and later reads retry the latest inventory.
+
+A checkpoint is a saved evaluated state.
+The Node adapter keeps one pinned checkpoint under `evaluation-cache` in `JVC_DATA_DIR`.
+The file contains compressed Node binary data. An independent SQLite row pins its digest and calculation context.
+That context includes the exact snapshot, logical inventory, event position, selected view, work limits, and Wasm artifact digest.
+
+The core also compares its checkpoint schema and binding before restore.
+Missing, damaged, incompatible, or mismatched checkpoints return to full evaluation from original records.
+The cache limits are 256 MiB compressed and 768 MiB decoded. A cache failure does not change protocol results.
+
+Shutdown drains pending evaluation and checkpoint work before it closes SQLite.
+Checkpoint recovery rebuilds a missing search index from the saved entries before readiness.
+The service waits for a 100 ms quiet period before it captures a checkpoint. Shutdown cancels that delay and saves the latest completed state.
 
 Use a separate data directory for each test service. Do not point a disposable test at another service's database.
 A selected view and explicit import selection determine which imported publications appear.
@@ -165,20 +188,56 @@ These fields include source selection evidence and numeric source-account eviden
 Sessions retain evaluated state instead of all source bodies. Small ancestor sets use sparse storage.
 Identical history caches share storage when the snapshot contains no acceptance events. Work charges stay unchanged.
 
-Search packages reuse authenticated text and attribution fields when the stored byte hashes still match.
+New snapshots reuse authenticated compact records and the preceding evaluation.
+A complete issuer with one active key can update a judgment register or publish a native definition without a full rebuild.
+The new event cannot resolve an old missing reference. The evaluator also requires enough work for the equivalent full result.
+
+Trust, lifecycle, view, account, status, rafsi, profile, report, and bridge changes rebuild state from the retained authenticated records.
+Changed bodies, import selections, calculation configuration, or unavailable history also force a rebuild.
+These rules follow the [history and authority rules](format.md#4-causal-order-and-acceptance) and the [ranking rules](format.md#8-editorial-trust-and-ranking).
+
+Forks share immutable ancestor payloads. After 64 appended records, a rebuild incorporates the new IDs into the ancestor universe.
+The evaluator retains the full logical work charge. Uncertain work at an ancestor-width boundary forces a rebuild.
+
+Judgment updates can return a patch of at most 1 MiB for the exact parent session.
+The facade applies that patch to immutable result maps. Other changes return the full result.
+Differential tests compare the complete state and ranking with full evaluation, including mixed writes over a Lensisku slice.
+
+Search packages reuse authenticated text and attribution fields from unchanged records.
+New or changed record bytes pass the original validators. Stored objects remain immutable.
+Judgments reuse package parts and search entries. Changed publications rebuild the affected language packages.
+
 Missing, changed, or late body bytes retain their separate handling. The verifier caches at most 1,024 validated public keys per builder.
 Every signature still passes the point, scalar, embedded-key, and equation rules.
 The existing combined-request API remains available for smaller browser snapshots. It still allocates the complete request.
 
-The full local measurement used 59,125 definitions, 44 languages, 59,126 events, and the saved 1,000,000,000-unit traversal budget.
-The source ran on `127.0.0.1`. The start command used no Node heap override. Readiness took 2.63 seconds.
-The cold `klama` word request took 73.19 seconds, including 57.97 seconds for evaluation and 14.22 seconds for packages.
-Warm word requests took 0.79 to 1.12 seconds. Search took 0.77 to 0.93 seconds across English, French, and Russian.
-The same run read language packages, package parts, and the original definition bodies successfully.
-Wasm linear memory reached 763.13 MiB. Linux reported peak process memory of 3.61 GiB, including Wasm.
+The full local measurement used 59,125 definitions, 44 languages, and the saved 1,000,000,000-unit traversal budget.
+It began with 59,141 events and ended with 59,146 after five signed endorsements.
+Earlier local probes added 15 endorsements. Definition bodies and import selections remained unchanged.
+The source listened on `127.0.0.1:8951`. The start command used no Node heap override.
 
-The warm request and memory targets passed. The 30-second cold request target remains unmet.
-Initial evaluation still authenticates every record and builds the complete history state. Packages also reread retained bytes to detect storage failures.
+With a checkpoint, readiness took 6.11 seconds. The first `klama` word request took 0.32 seconds.
+Process startup through that response took 6.43 seconds.
+A second restart restored all five writes. Its readiness took 6.20 seconds, and its first word request took 0.32 seconds.
+The second restart took 6.51 seconds through the first word response.
+
+The five endorsements became visible in 4.26, 2.50, 2.11, 2.16, and 2.15 seconds.
+The timer ran from the signed POST until the first word response with the new reviewer count.
+Later receipt and event reads made sure that the named snapshot contained each signed event.
+Admission receipts reported durable acceptance, `index_lag`, `evaluation_pending`, and a null snapshot.
+Reads used the preceding completed snapshot while the new snapshot evaluated.
+
+Search took 11 to 74 milliseconds across English, French, and Russian.
+The same run read language packages, package parts, and original definition bodies successfully.
+The checkpoint file used 67,471,830 bytes, or 64.35 MiB.
+Wasm linear memory reached 1.69 GiB. Linux reported peak process memory of 3.51 GiB, including Wasm.
+
+The word request with a checkpoint and all five writes met the five-second request targets.
+Process startup plus the first word response still exceeded five seconds.
+Initial evaluation without a checkpoint still authenticates every record and builds the complete history state.
+A preliminary run took 70.01 seconds for its first word request, above the original 30-second target.
+Initial package generation also rereads retained bytes to detect storage failures.
+
 These single-process measurements use the VM's existing filesystem cache. They do not establish performance on another host or under concurrent full imports.
 The measurements do not establish hosted Worker resource compliance.
 

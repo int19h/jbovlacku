@@ -97,14 +97,21 @@ The expansion budget does not bound total CPU time. These measurements do not es
 
 A local 2,430-event batch uses 17,010 R2 operations. Cold search uses 9,727 R2 operations before D1 and Durable Object work.
 Local Wrangler success does not prove deployed quota, memory, or CPU compliance. Larger imports need bounded incremental jobs.
+
 The current default state work budget can run out at roughly 4,500 events in a flat history.
 This is an approximate limit. Histories with more edges can reach it sooner, and the requested state also affects the work.
 The Node loader can retain a larger explicit traversal budget for a local import.
+
 The Node adapter serves the pinned SQL import with 59,125 definitions in 44 languages.
-On this VM, readiness took 2.63 seconds and the cold `klama` request took 73.19 seconds.
-Warm word requests took 0.79 to 1.12 seconds. Search took 0.77 to 0.93 seconds across English, French, and Russian.
-Wasm memory reached 763.13 MiB. Peak process memory reached 3.61 GiB.
-The 30-second cold request target remains unmet. The [development guide](docs/development.md#initial-lensisku-data) describes the measured path and its limits.
+It retains an evaluated checkpoint and keeps completed reads available during new evaluation.
+On this VM, startup with a checkpoint took 6.11 seconds and the first `klama` request took 0.32 seconds.
+Five consecutive signed endorsements became visible in 4.26, 2.50, 2.11, 2.16, and 2.15 seconds.
+The checkpoint used 64.35 MiB. Wasm memory reached 1.69 GiB, and peak process memory reached 3.51 GiB.
+
+Search took 11 to 74 milliseconds across English, French, and Russian.
+Process startup through the first word response took 6.43 seconds.
+Initial evaluation without a checkpoint still exceeds the original 30-second target in the measured build.
+The [development guide](docs/development.md#initial-lensisku-data) describes state reuse, checkpoint recovery, and the measurement limits.
 
 [Issue 9](https://github.com/int19h/jbovlacku/issues/9) tracks ranking CPU limits.
 [Issue 11](https://github.com/int19h/jbovlacku/issues/11) tracks state evaluation beyond the local corpus.
