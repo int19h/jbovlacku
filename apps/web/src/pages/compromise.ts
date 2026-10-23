@@ -21,6 +21,8 @@ import { unlockKey } from "../data/keys.ts";
 import { loadOwnHistory, type OwnHistory } from "../data/history.ts";
 import {
   causalOrder,
+  askPeers,
+  fetchBranches,
   cutoffPreview,
   LifecycleConflictError,
   outboxItem,
@@ -137,6 +139,8 @@ export async function compromisePage(
   /** The heads stored in this browser when the preview was made. The write compares them again. */
   let storedHeads: string[] = [];
   let failure: string | null = null;
+  let previewDigest = "";
+  let loadGeneration = 0;
   const safe = new Set<string>();
   let approveEmpty = false;
   let acknowledge = false;
@@ -236,6 +240,13 @@ export async function compromisePage(
     previewBody.replaceChildren();
     if (!history || failure) return;
     const preview = cutoffPreview(history, [...safe]);
+    if (app.offlineSigning.value)
+      previewBody.append(
+        p(
+          "This offline preview uses only records saved in this browser. Configured peers were not searched. Unseen history can change the cutoff consequences.",
+          "notice",
+        ),
+      );
     const nameOf = (id: string) =>
       `${describeEvent(history!.events.get(id)!)} (${id.slice(0, 16)}…)`;
     previewBody.append(
@@ -305,23 +316,65 @@ export async function compromisePage(
       ),
     );
   };
+  const gather = async (identity: string) => {
+    const offline = app.offlineSigning.value;
+    const { peers } = configuredPeers(app);
+    const current = await loadOwnHistory(app.store, identity, {
+      offline,
+      signal: context.signal,
+    });
+    if (!current.complete)
+      throw new Error(
+        "Missing history blocks a confident notice. Connect to retrieve every known record before signing.",
+      );
+    if (!offline) {
+      const knowledge = await askPeers(peers, identity, null, context.signal);
+      for (const peer of knowledge)
+        if (
+          peer.outcome !== "complete" ||
+          !peer.complete ||
+          peer.unverified.length
+        )
+          throw new Error(
+            `${peer.peer.label}: ${peer.status}. A compromise notice needs a complete scan of every configured peer.`,
+          );
+      await fetchBranches(app.store, current, knowledge, context.signal);
+    }
+    const heads = [
+      ...((await app.store.get<string[]>("heads", identity)) ?? []),
+    ].sort();
+    return {
+      history: current,
+      heads,
+      digest: JSON.stringify({
+        identity,
+        offline,
+        peers,
+        heads,
+        events: [...current.events.keys()].sort(),
+        frontier: current.frontier,
+      }),
+    };
+  };
   const load = async () => {
+    const generation = ++loadGeneration;
+    const identity = keyField.input.value;
     history = null;
     failure = null;
     safe.clear();
+    approveEmpty = false;
+    acknowledge = false;
     renderList();
     previewBody.replaceChildren();
     actionBox.replaceChildren();
     try {
-      storedHeads = [
-        ...((await app.store.get<string[]>("heads", keyField.input.value)) ??
-          []),
-      ].sort();
-      history = await loadOwnHistory(app.store, keyField.input.value, {
-        offline: app.offlineSigning.value,
-        signal: context.signal,
-      });
+      const current = await gather(identity);
+      if (generation !== loadGeneration || !context.live()) return;
+      history = current.history;
+      storedHeads = current.heads;
+      previewDigest = current.digest;
     } catch (error) {
+      if (generation !== loadGeneration || !context.live()) return;
       failure = describe(error);
     }
     if (!context.live()) return;
@@ -394,28 +447,50 @@ export async function compromisePage(
       pass.input.focus();
     });
   const signNotice = async () => {
-    if (!history || signing) return;
+    if (!history || signing || !acknowledge || (!safe.size && !approveEmpty))
+      return;
+    const approved = {
+      identity: keyField.input.value,
+      history,
+      digest: previewDigest,
+      safe: [...safe].sort(),
+      heads: [...storedHeads],
+      generation: loadGeneration,
+    };
     signing = true;
     const buttons = actionBox.querySelectorAll("button");
     for (const b of buttons) b.disabled = true;
     try {
-      const identity = keyField.input.value;
+      const identity = approved.identity;
       const backup = candidates.find((c) => c.identity === identity)!;
       let key: CryptoKey | undefined;
       if (session.backup?.identity === identity && session.unlocked)
         key = session.workingKey;
       if (!key) key = (await unlockRetired(backup)) ?? undefined;
       if (!key) return;
-      const frontier = history.frontier;
+      const fresh = await gather(identity);
+      if (
+        fresh.digest !== approved.digest ||
+        approved.generation !== loadGeneration ||
+        keyField.input.value !== identity ||
+        !acknowledge ||
+        (!approved.safe.length && !approveEmpty) ||
+        JSON.stringify([...safe].sort()) !== JSON.stringify(approved.safe)
+      )
+        throw new LifecycleConflictError(
+          "The known history changed. Review the updated cutoff preview and approve again. Nothing was signed or sent.",
+        );
+      if (!context.live()) return;
+      const frontier = approved.history.frontier;
       const { recipients } = configuredPeers(app);
       const transport = await signWith(key, identity, frontier, {
         kind: "identity.compromise",
-        safe: [...safe].sort(),
+        safe: approved.safe,
       });
       await queueCompromise(
         app.store,
         outboxItem(transport, crypto.randomUUID(), 0, recipients),
-        storedHeads,
+        approved.heads,
       );
       app.own.invalidate();
       await app.delivery.invalidate();
@@ -426,7 +501,7 @@ export async function compromisePage(
       );
     } catch (error) {
       app.announce(describe(error));
-      if (error instanceof LifecycleConflictError) await load();
+      await load();
     } finally {
       signing = false;
       renderActions();

@@ -236,6 +236,128 @@ function judgment(
   );
 }
 
+test("accepted lifecycle history stays readable while evaluation is held open", async () => {
+  const { service, coordinator, profile } = await fixture();
+  const completed = coordinator.state.snapshot!;
+  const successorSeed = new Uint8Array(32).fill(62);
+  const identity = identityFromSeed(seed);
+  const successor = identityFromSeed(successorSeed);
+  const transfer = createEvent(
+    seed,
+    [profile.envelope.id],
+    "4".repeat(32),
+    { kind: "identity.transfer", successor },
+    null,
+  );
+  const compromise = createEvent(
+    seed,
+    [profile.envelope.id],
+    "5".repeat(32),
+    { kind: "identity.compromise", safe: [profile.envelope.id] },
+    null,
+  );
+  const acceptance = createEvent(
+    successorSeed,
+    [],
+    "6".repeat(32),
+    { kind: "identity.accept", transfer: transfer.envelope.id },
+    null,
+  );
+  const gate = deferred();
+  const entered = deferred();
+  const internals = service as any;
+  const compute = internals.computeEvaluation.bind(service);
+  let computations = 0;
+  internals.computeEvaluation = async (...args: any[]) => {
+    computations++;
+    entered.resolve();
+    await gate.promise;
+    return compute(...args);
+  };
+  try {
+    const accepted = await service.admitMany(
+      [transfer, compromise, acceptance].map((record) =>
+        utf8(JSON.stringify(record)),
+      ),
+    );
+    await entered.promise;
+    assert.notEqual(accepted.snapshot, completed);
+    assert.equal(coordinator.state.materialized_snapshot, completed);
+    assert.equal((await read(service, "/manifest")).snapshot, completed);
+    const ordinary = await read(service, `/identities/${identity}/activity`);
+    assert.equal(ordinary.snapshot, completed);
+    assert.equal(ordinary.history, undefined);
+    const heads = await read(service, `/identity-heads/${identity}`);
+    assert.equal(heads.snapshot, accepted.snapshot);
+    const raw = await Promise.race([
+      read(
+        service,
+        `/identities/${identity}/activity?accepted=1&snapshot=${heads.snapshot}&limit=1`,
+      ),
+      new Promise<never>((_, reject) => {
+        const timeout = setTimeout(
+          () => reject(new Error("Accepted history waited for evaluation.")),
+          1000,
+        );
+        timeout.unref();
+      }),
+    ]);
+    assert.equal(raw.history, "accepted");
+    assert.equal(raw.snapshot, accepted.snapshot);
+    assert.equal(raw.view, undefined);
+    assert.equal(
+      (
+        await read(
+          service,
+          `/identities/${identity}/activity?accepted=1&snapshot=${heads.snapshot}&view=invalid`,
+        )
+      ).history,
+      "accepted",
+    );
+    for (const path of [
+      `/identities/${identity}/activity?accepted=0`,
+      `/identities/${identity}/activity?accepted=`,
+      `/identities/${identity}?accepted=1`,
+    ])
+      assert.equal((await service.fetch(request(path))).status, 400);
+    const items = [...raw.items];
+    let after = raw.next;
+    while (after) {
+      const page = await read(
+        service,
+        `/identities/${identity}/activity?accepted=1&snapshot=${heads.snapshot}&limit=1&after=${after}`,
+      );
+      assert.equal(page.snapshot, accepted.snapshot);
+      items.push(...page.items);
+      after = page.next;
+    }
+    for (const event of [transfer, compromise]) {
+      assert.ok(items.some((item) => item.id === event.envelope.id));
+      assert.deepEqual(
+        await read(
+          service,
+          `/events/${event.envelope.id}?snapshot=${heads.snapshot}`,
+        ),
+        event.envelope,
+      );
+    }
+    assert.ok(items.every((item) => item.interpretation === "unavailable"));
+    const successorHistory = await read(
+      service,
+      `/identities/${successor}/activity?accepted=1&snapshot=${heads.snapshot}`,
+    );
+    assert.deepEqual(
+      successorHistory.items.map((item: any) => item.id),
+      [acceptance.envelope.id],
+    );
+    assert.equal(computations, 1, "raw reads must not start evaluation work");
+    assert.equal(coordinator.state.materialized_snapshot, completed);
+  } finally {
+    gate.resolve();
+    await service.flushMaterialization();
+  }
+});
+
 test("publication releases the superseded configured runtime and keeps cached results", async () => {
   const { service, coordinator, definition, profile } = await fixture();
   service.options.evaluationRuntime = {

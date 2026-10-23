@@ -28,7 +28,7 @@ const snapshot = "sha256:" + "a".repeat(64);
 const peer = { id: "mirror", base: "http://peer.test/api/v1", label: "mirror" };
 type Route = (url: URL) => unknown;
 /** Serves JSON routes through a mocked fetch. Unknown paths answer 404. */
-function serve(routes: Record<string, Route>) {
+function serve(routes: Record<string, Route>, accepted = true) {
   globalThis.fetch = (async (input: string | URL | Request) => {
     const url = new URL(String(input instanceof Request ? input.url : input));
     const key = Object.keys(routes).find((prefix) =>
@@ -43,6 +43,14 @@ function serve(routes: Record<string, Route>) {
         },
       );
     const body = routes[key](url);
+    if (
+      accepted &&
+      url.searchParams.get("accepted") === "1" &&
+      body &&
+      typeof body === "object" &&
+      "items" in body
+    )
+      (body as Record<string, unknown>).history = "accepted";
     return new Response(JSON.stringify(body), {
       status: 200,
       headers: { "content-type": "application/json" },
@@ -232,7 +240,7 @@ test("an activity page for another snapshot and an unreachable peer are told apa
   });
   const [mismatched] = await askPeers([peer], identity(), null);
   assert.equal(mismatched.outcome, "malformed");
-  assert.match(mismatched.status, /another snapshot/);
+  assert.match(mismatched.status, /another snapshot/i);
   serve({});
   const [down] = await askPeers([peer], identity(), null);
   assert.equal(down.outcome, "unreachable");
@@ -318,4 +326,98 @@ test("the compromise preview handles a 4096 event chain without recursion", asyn
   ]);
   assert.equal(preview.retained.length, 2048);
   assert.equal(preview.excluded.length, 2048);
+});
+
+test("the first raw head page captures accepted history and every later read pins it", async () => {
+  const transfer = transferEvent();
+  const head = "jve1:" + "0".repeat(64);
+  let headPages = 0;
+  let activityPages = 0;
+  serve({
+    "/api/v1/manifest": () => {
+      throw new Error("Lifecycle scans must not use the completed manifest.");
+    },
+    "/api/v1/identity-heads/": (url) => {
+      headPages++;
+      if (headPages === 1) {
+        assert.equal(url.searchParams.has("snapshot"), false);
+        return { snapshot, identity: identity(), heads: [head], next: head };
+      }
+      assert.equal(url.searchParams.get("snapshot"), snapshot);
+      assert.equal(url.searchParams.get("after"), head);
+      return {
+        snapshot,
+        identity: identity(),
+        heads: [transfer.id],
+        next: null,
+      };
+    },
+    "/api/v1/identities/": (url) => {
+      activityPages++;
+      assert.equal(url.searchParams.get("accepted"), "1");
+      assert.equal(url.searchParams.get("snapshot"), snapshot);
+      return {
+        snapshot,
+        identity: identity(),
+        items: [
+          {
+            id: transfer.id,
+            action: transfer.header.action,
+            interpretation: "unavailable",
+            seen: null,
+          },
+        ],
+        next: null,
+      };
+    },
+    "/api/v1/events/": (url) => {
+      assert.equal(url.searchParams.get("snapshot"), snapshot);
+      return transfer;
+    },
+  });
+  const [knowledge] = await askPeers([peer], identity(), null);
+  assert.equal(knowledge.outcome, "complete");
+  assert.equal(headPages, 2);
+  assert.equal(activityPages, 1);
+  assert.deepEqual(knowledge.transfers, [
+    { id: transfer.id, successor: successor() },
+  ]);
+});
+
+test("a peer that ignores accepted history mode blocks the lifecycle scan", async () => {
+  serve(
+    {
+      "/api/v1/identity-heads/": () => ({
+        snapshot,
+        identity: identity(),
+        heads: [],
+        next: null,
+      }),
+      "/api/v1/identities/": () => ({
+        snapshot,
+        identity: identity(),
+        items: [],
+        next: null,
+      }),
+    },
+    false,
+  );
+  const [knowledge] = await askPeers([peer], identity(), null);
+  assert.equal(knowledge.outcome, "malformed");
+  assert.equal(knowledge.complete, false);
+  assert.match(knowledge.status, /did not confirm accepted history/);
+});
+
+test("a malformed first accepted head page is reported as malformed rather than unreachable", async () => {
+  serve({
+    "/api/v1/identity-heads/": () => ({
+      snapshot: "invalid",
+      identity: identity(),
+      heads: [],
+      next: null,
+    }),
+  });
+  const [knowledge] = await askPeers([peer], identity(), null);
+  assert.equal(knowledge.outcome, "malformed");
+  assert.equal(knowledge.complete, false);
 });

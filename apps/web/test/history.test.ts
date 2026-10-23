@@ -174,7 +174,20 @@ test("own-history pagination rejects loops and malformed pages while preserving 
   const results = await page.evaluate(async (corePath) => {
     const core = await import(corePath);
     await core.initializeCore();
-    const { ownHeads } = await import(String("/src/data/history.ts"));
+    const { loadOwnHistory } = await import(String("/src/data/history.ts"));
+    const peer = {
+      id: "isolated",
+      base: "/own-history-test",
+      label: "test peer",
+    };
+    const ownHeads = async (
+      store: any,
+      identity: string,
+      offline = false,
+      signal?: AbortSignal,
+    ) =>
+      (await loadOwnHistory(store, identity, { offline, signal, peer }))
+        .frontier;
     const seed = new Uint8Array(32).fill(103);
     const parent = core.createEvent(
       seed,
@@ -241,6 +254,7 @@ test("own-history pagination rejects loops and malformed pages while preserving 
       {
         name: "wrong snapshot",
         pages: [
+          headPage([heads[0].id], heads[0].id),
           { ...headPage([], null), snapshot: "sha256:" + "b".repeat(64) },
         ],
       },
@@ -278,8 +292,10 @@ test("own-history pagination rejects loops and malformed pages while preserving 
                 ]
               : [],
         };
-        window.fetch = async (url) => {
+        window.fetch = async (url, options) => {
           const path = String(url);
+          if (!path.includes("/own-history-test/"))
+            return oldFetch(url, options);
           if (path.endsWith("/manifest"))
             return new Response(JSON.stringify({ snapshot, packages: [] }));
           if (path.includes("/identity-heads/")) {
@@ -335,7 +351,16 @@ test("own-history pagination rejects loops and malformed pages while preserving 
     pages: 64,
     error: expect.stringContaining("browser work limit"),
   });
-  for (const result of results.results.slice(2, -1))
+  expect(
+    results.results.find((result) => result.name === "wrong snapshot"),
+  ).toMatchObject({
+    pages: 2,
+    eventReads: 1,
+    error: expect.stringContaining("invalid own-history page"),
+  });
+  for (const result of results.results
+    .slice(2, -1)
+    .filter((result) => result.name !== "wrong snapshot"))
     expect(result.eventReads, result.name).toBe(0);
 });
 

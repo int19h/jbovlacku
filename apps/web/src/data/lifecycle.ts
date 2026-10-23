@@ -15,11 +15,11 @@ import {
 import {
   getActivity,
   getEnvelope,
-  getManifest,
   identityHeads,
   RequestError,
   TransportError,
   type Peer,
+  type IdentityHeadsPage,
 } from "./api.ts";
 import { loadOwnHistory, type OwnHistory } from "./history.ts";
 import { freshPeer } from "./delivery.ts";
@@ -30,7 +30,7 @@ import {
   type OutboxItem,
   type SavedRecipient,
 } from "./store.ts";
-import type { Envelope, Transport } from "../model/types.ts";
+import type { ActivityResponse, Envelope, Transport } from "../model/types.ts";
 
 export const LIFECYCLE_KINDS = [
   "identity.transfer",
@@ -159,12 +159,16 @@ export async function askPeers(
           );
         signal?.throwIfAborted();
       };
-      // Which scan stage is running. After the manifest answered, a later
-      // failure leaves known evidence and blocks instead of counting as unreachable.
-      let stage: "manifest" | "heads" | "activity" | "claims" = "manifest";
+      // The first raw head page captures the accepted inventory. Later failures
+      // leave known evidence and block instead of counting as unreachable.
+      let stage: "capture" | "heads" | "activity" | "claims" = "capture";
       try {
-        const manifest = await getManifest({ peer, signal: scanSignal });
-        knowledge.snapshot = manifest.snapshot;
+        const firstPage = await identityHeads(identity, null, null, {
+          peer,
+          signal: scanSignal,
+        });
+        const snapshot = firstPage.snapshot;
+        knowledge.snapshot = snapshot;
         stage = "heads";
         let after: string | null = null;
         const seen = new Set<string>();
@@ -174,17 +178,22 @@ export async function askPeers(
             throw new ScanIncomplete(
               `the head scan did not end within ${SCAN_LIMITS.pages} pages`,
             );
-          const result = await identityHeads(
-            identity,
-            manifest.snapshot,
-            after,
-            { peer, signal: scanSignal },
-          );
+          const result: IdentityHeadsPage =
+            page === 0
+              ? firstPage
+              : await identityHeads(identity, snapshot, after, {
+                  peer,
+                  signal: scanSignal,
+                });
+          let previous = after ?? "";
           for (const head of result.heads) {
-            if (after !== null && head <= after)
+            if (head <= previous)
               throw new ScanMalformed("the head scan did not advance");
+            previous = head;
             knowledge.heads.push(head);
           }
+          if (knowledge.heads.length > SCAN_LIMITS.items)
+            throw new ScanIncomplete("the head scan exceeded the item limit");
           if (result.next === null) break;
           if (
             seen.has(result.next) ||
@@ -208,13 +217,18 @@ export async function askPeers(
               throw new ScanIncomplete(
                 `the activity scan of ${who.slice(0, 16)}… did not end within the scan limits`,
               );
-            const result = await getActivity(who, cursor, {
-              peer,
-              signal: scanSignal,
-              snapshot: manifest.snapshot,
-              limit: 200,
-            });
-            if (result.snapshot !== manifest.snapshot)
+            const result: Omit<ActivityResponse, "view"> = await getActivity(
+              who,
+              cursor,
+              {
+                peer,
+                signal: scanSignal,
+                snapshot,
+                accepted: true,
+                limit: 200,
+              },
+            );
+            if (result.snapshot !== snapshot)
               throw new ScanMalformed(
                 "the activity scan answered for another snapshot",
               );
@@ -224,6 +238,10 @@ export async function askPeers(
               cursor = item.id;
             }
             items.push(...result.items);
+            if (items.length > SCAN_LIMITS.items)
+              throw new ScanIncomplete(
+                "the activity scan exceeded the item limit",
+              );
             if (result.next === null) break;
             if (
               cursors.has(result.next) ||
@@ -244,7 +262,7 @@ export async function askPeers(
           kind: string,
         ): Promise<Envelope | null> => {
           try {
-            const envelope = await getEnvelope(id, manifest.snapshot, {
+            const envelope = await getEnvelope(id, snapshot, {
               peer,
               signal: scanSignal,
             });
@@ -319,7 +337,10 @@ export async function askPeers(
         } else if (error instanceof ScanMalformed) {
           knowledge.outcome = "malformed";
           knowledge.status = `malformed answer: ${message}`;
-        } else if (stage === "manifest") {
+        } else if (
+          stage === "capture" &&
+          (error instanceof TransportError || error instanceof RequestError)
+        ) {
           // No usable answer at all.
           knowledge.outcome = "unreachable";
           knowledge.status = message;

@@ -136,6 +136,17 @@ Without an explicit snapshot, word, search, identity, account, and package reads
 The manifest also names that completed snapshot. Interpreted results name their snapshot and view.
 Raw replication reads can expose the newer accepted inventory and name its snapshot.
 
+Lifecycle safety scans discover a peer's accepted snapshot through the first unpinned identity-heads page.
+They pin later head pages, activity pages, and signed envelopes to that snapshot.
+The activity request uses `accepted=1` and requires the response marker `history: "accepted"`.
+This mode skips evaluation and returns unavailable interpretation for every listed record.
+A peer that ignores this mode cannot supply a complete accepted-history scan to the browser.
+
+Handover and acceptance recovery use this history before signing.
+Online compromise previews also include configured peers and refresh their history after an unlock wait.
+A changed preview clears the user's approval before a new lifecycle signature.
+These scans cover each peer's observed accepted snapshot. They do not prove that no unseen concurrent record exists.
+
 The accepted cursor advances after durable admission. The materialized cursor advances after evaluation, packages, and index publication complete.
 During that gap, a new event receipt reports `index_lag` and `evaluation_pending`, with unavailable interpretation and a null snapshot.
 A late-body receipt also uses a null snapshot until the completed snapshot contains the same body mapping.

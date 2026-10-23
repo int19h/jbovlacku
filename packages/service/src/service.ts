@@ -2326,13 +2326,22 @@ export class DictionaryService {
       this.identifier(identity, "ed25519:");
       if (parts.length > 2 || (section !== undefined && section !== "activity"))
         throw new ApiError(404, "missing", "API route is unavailable.");
-      const snapshot = await this.interpretedSnapshot(
-        url.searchParams.get("snapshot"),
-      );
+      const accepted = url.searchParams.get("accepted");
+      if (accepted !== null && (accepted !== "1" || section !== "activity"))
+        throw new ApiError(
+          400,
+          "accepted",
+          "Accepted history requires activity and accepted=1.",
+        );
+      const snapshot = accepted
+        ? await this.snapshot(url.searchParams.get("snapshot"))
+        : await this.interpretedSnapshot(url.searchParams.get("snapshot"));
       const view =
         url.searchParams.get("view") ?? this.options.selectedView ?? zeroView;
-      this.identifier(view, "jve1:");
-      await this.requireView(snapshot, view);
+      if (!accepted) {
+        this.identifier(view, "jve1:");
+        await this.requireView(snapshot, view);
+      }
       const own = sorted(
         Object.entries(snapshot.events)
           .filter(([, e]) => e.header.issuer === identity)
@@ -2341,7 +2350,7 @@ export class DictionaryService {
       if (section === "activity") {
         let evaluation: Evaluation | null = null;
         try {
-          evaluation = await this.evaluation(snapshot, view);
+          if (!accepted) evaluation = await this.evaluation(snapshot, view);
         } catch (error) {
           if (
             !(error instanceof ApiError) ||
@@ -2356,7 +2365,7 @@ export class DictionaryService {
         const state = await this.coordinator.load();
         return json({
           snapshot: snapshot.snapshot,
-          view,
+          ...(accepted ? { history: "accepted" } : { view }),
           identity,
           items: page.map((id) => ({
             id,

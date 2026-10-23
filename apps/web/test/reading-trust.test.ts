@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { acceptedHistoryFixture } from "./accepted-history-fixture.ts";
 import {
   corePath,
   createIdentity,
@@ -54,19 +55,21 @@ async function transferFixture(page: Page, accepted = false) {
   // Recovery tests require these peer records in the completed snapshot.
   for (const event of [data.transfer, ...(data.accept ? [data.accept] : [])]) {
     await expect
-      .poll(async () => {
-        const response = await page.request.get(
-          `/api/v1/receipts/${encodeURIComponent(event.id)}`,
-        );
-        if (!response.ok()) return false;
-        const receipt = await response.json();
-        return (
-          receipt.snapshot !== null &&
-          !receipt.reasons.some((reason: string) =>
-            ["index_lag", "evaluation_pending"].includes(reason),
-          )
-        );
-      })
+      .poll(() =>
+        page.evaluate(async (id) => {
+          const response = await fetch(
+            `/api/v1/receipts/${encodeURIComponent(id)}`,
+          );
+          if (!response.ok) return false;
+          const receipt = await response.json();
+          return (
+            receipt.snapshot !== null &&
+            !receipt.reasons.some((reason: string) =>
+              ["index_lag", "evaluation_pending"].includes(reason),
+            )
+          );
+        }, event.id),
+      )
       .toBe(true);
   }
   return data;
@@ -645,142 +648,328 @@ test("revision authorship uses actor responses at the displayed snapshot and fal
   );
 });
 
-for (const change of ["judgment", "transfer"] as const) {
+for (const change of ["judgment", "transfer", "compromise"] as const) {
   test(`a peer ${change} history change during the handover unlock wait needs new approval`, async ({
     page,
   }) => {
+    const pendingHistory = await acceptedHistoryFixture(page);
+    try {
+      const old = await createIdentity(page);
+      await page.getByRole("link", { name: "Start", exact: true }).click();
+      await page.getByLabel("New passphrase for the new key").fill(PASSPHRASE);
+      await page.getByLabel("Repeat passphrase").fill(PASSPHRASE);
+      await page.getByRole("button", { name: "Create the new key" }).click();
+      const downloadPromise = page.waitForEvent("download");
+      await page
+        .getByRole("button", { name: "Download the new key's backup" })
+        .click();
+      const backupPath = await (await downloadPromise).path();
+      await page.getByLabel("Backup file").setInputFiles(backupPath!);
+      await page.getByLabel("Its passphrase").fill(PASSPHRASE);
+      await page.getByRole("button", { name: "Test the backup" }).click();
+      await expect(page.getByRole("status").last()).toContainText(
+        "recovers the new key",
+      );
+      await expect(page.getByRole("checkbox")).toHaveCount(3);
+      for (const box of await page.getByRole("checkbox").all())
+        await box.check();
+      await page.evaluate(() => window.dispatchEvent(new Event("pagehide")));
+      await page.getByRole("button", { name: "Sign the handover" }).click();
+      const dialog = page.getByRole("dialog", { name: "Unlock your key" });
+      await expect(dialog).toBeVisible();
+      pendingHistory.hold();
+      const learned = await page.evaluate(
+        async ({ old, passphrase, target, change }) => {
+          const { unlockKey } = await import(String("/src/data/keys.ts"));
+          const { signWith } = await import(String("/src/data/lifecycle.ts"));
+          const { createKey } = await import(String("/src/data/keys.ts"));
+          const successor =
+            change === "transfer" ? await createKey(passphrase) : null;
+          const transport = await signWith(
+            await unlockKey(old, passphrase),
+            old.identity,
+            [],
+            successor
+              ? {
+                  kind: "identity.transfer",
+                  successor: successor.backup.identity,
+                }
+              : change === "compromise"
+                ? { kind: "identity.compromise", safe: [] }
+                : { kind: "judgment.set", target, value: "bless" },
+          );
+          const response = await fetch("/api/v1/events", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(transport),
+          });
+          if (!response.ok) throw new Error(await response.text());
+          return transport.envelope.id;
+        },
+        {
+          old,
+          passphrase: PASSPHRASE,
+          target: fixture().definitions.cukta1,
+          change,
+        },
+      );
+      const captured = await pendingHistory.pending();
+      expect(captured.accepted).not.toBe(captured.completed);
+      expect(await pendingHistory.ordinary()).toEqual([
+        captured.completed,
+        captured.completed,
+        captured.completed,
+      ]);
+      await pendingHistory.watchSignatures();
+      await dialog.getByLabel("Passphrase", { exact: true }).fill(PASSPHRASE);
+      await dialog.getByRole("button", { name: "Unlock", exact: true }).click();
+      await expect(page.locator(".status")).toContainText(
+        "The known history changed",
+      );
+      if (change === "transfer") {
+        const recovery = page.getByRole("region", {
+          name: "Acceptance recovery",
+        });
+        await expect(recovery).toContainText(learned);
+        await expect(recovery).toContainText(
+          "No acceptance for this transfer was found",
+        );
+        await expect(
+          page.getByRole("button", { name: "Sign the handover" }),
+        ).toHaveCount(0);
+      }
+      for (const box of await page.getByRole("checkbox").all())
+        await expect(box).not.toBeChecked();
+      expect(
+        await page.evaluate(async () => {
+          const { LocalStore } = await import(String("/src/data/store.ts"));
+          return (await new LocalStore().list("outbox")).length;
+        }),
+      ).toBe(0);
+      expect(await pendingHistory.signatures()).toBe(0);
+      expect((await pendingHistory.pending()).completed).toBe(
+        captured.completed,
+      );
+    } finally {
+      await pendingHistory.close();
+    }
+  });
+}
+
+test("a peer compromise during the notice unlock wait resets approval before any signature", async ({
+  page,
+}) => {
+  const self = await acceptedHistoryFixture(page);
+  const mirror = await acceptedHistoryFixture(page, "/mirror/api/v1");
+  try {
     const old = await createIdentity(page);
-    await page.getByRole("link", { name: "Start", exact: true }).click();
-    await page.getByLabel("New passphrase for the new key").fill(PASSPHRASE);
-    await page.getByLabel("Repeat passphrase").fill(PASSPHRASE);
-    await page.getByRole("button", { name: "Create the new key" }).click();
-    const downloadPromise = page.waitForEvent("download");
-    await page
-      .getByRole("button", { name: "Download the new key's backup" })
-      .click();
-    const backupPath = await (await downloadPromise).path();
-    await page.getByLabel("Backup file").setInputFiles(backupPath!);
-    await page.getByLabel("Its passphrase").fill(PASSPHRASE);
-    await page.getByRole("button", { name: "Test the backup" }).click();
-    await expect(page.getByRole("status").last()).toContainText(
-      "recovers the new key",
-    );
-    await expect(page.getByRole("checkbox")).toHaveCount(3);
-    for (const box of await page.getByRole("checkbox").all()) await box.check();
-    await page.evaluate(() => window.dispatchEvent(new Event("pagehide")));
-    await page.getByRole("button", { name: "Sign the handover" }).click();
-    const dialog = page.getByRole("dialog", { name: "Unlock your key" });
-    await expect(dialog).toBeVisible();
-    const learned = await page.evaluate(
-      async ({ old, passphrase, target, change }) => {
+    const branch = await page.evaluate(
+      async ({ old, passphrase }) => {
         const { unlockKey } = await import(String("/src/data/keys.ts"));
         const { signWith } = await import(String("/src/data/lifecycle.ts"));
-        const { createKey } = await import(String("/src/data/keys.ts"));
-        const successor =
-          change === "transfer" ? await createKey(passphrase) : null;
-        const transport = await signWith(
+        return signWith(await unlockKey(old, passphrase), old.identity, [], {
+          kind: "identity.merge",
+        });
+      },
+      { old, passphrase: PASSPHRASE },
+    );
+    await mirror.admit(branch);
+    await page.evaluate(async () => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      await new LocalStore().setPreferences({
+        peers: [
+          { id: "self", base: "/api/v1", label: "this server" },
+          { id: "mirror", base: "/mirror/api/v1", label: "mirror" },
+        ],
+      });
+    });
+    await page.goto("/identity/compromise");
+    const records = page.getByRole("list", {
+      name: "Own records in causal order",
+    });
+    await expect(records.getByRole("checkbox")).toHaveCount(1);
+    await records.getByRole("checkbox").check();
+    await page
+      .getByRole("checkbox", { name: /cannot prove which holder/ })
+      .check();
+    await page.getByRole("button", { name: "Sign the notice" }).click();
+    const dialog = page.getByRole("dialog", {
+      name: /^Unlock the retired key/,
+    });
+    await expect(dialog).toBeVisible();
+    mirror.hold();
+    const notice = await page.evaluate(
+      async ({ old, passphrase, branch }) => {
+        const { unlockKey } = await import(String("/src/data/keys.ts"));
+        const { signWith } = await import(String("/src/data/lifecycle.ts"));
+        return signWith(
           await unlockKey(old, passphrase),
           old.identity,
-          [],
-          successor
-            ? {
-                kind: "identity.transfer",
-                successor: successor.backup.identity,
-              }
-            : { kind: "judgment.set", target, value: "bless" },
+          [branch],
+          { kind: "identity.compromise", safe: [branch] },
         );
-        const response = await fetch("/api/v1/events", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(transport),
-        });
-        if (!response.ok) throw new Error(await response.text());
-        return transport.envelope.id;
       },
-      {
-        old,
-        passphrase: PASSPHRASE,
-        target: fixture().definitions.cukta1,
-        change,
-      },
+      { old, passphrase: PASSPHRASE, branch: branch.envelope.id },
     );
-    await dialog.getByLabel("Passphrase", { exact: true }).fill(PASSPHRASE);
+    await mirror.admit(notice);
+    const captured = await mirror.pending();
+    expect(await mirror.ordinary()).toEqual([
+      captured.completed,
+      captured.completed,
+      captured.completed,
+    ]);
+    await mirror.watchSignatures();
+    await dialog.getByLabel("Passphrase of the retired key").fill(PASSPHRASE);
     await dialog.getByRole("button", { name: "Unlock", exact: true }).click();
-    await expect(page.locator(".status")).toContainText(
+    await expect(page.getByRole("status")).toContainText(
       "The known history changed",
     );
-    if (change === "transfer") {
-      const recovery = page.getByRole("region", {
-        name: "Acceptance recovery",
-      });
-      await expect(recovery).toContainText(learned);
-      await expect(recovery).toContainText(
-        "No acceptance for this transfer was found",
-      );
-      await expect(
-        page.getByRole("button", { name: "Sign the handover" }),
-      ).toHaveCount(0);
-    }
+    await expect(records.getByRole("checkbox")).toHaveCount(2);
     for (const box of await page.getByRole("checkbox").all())
       await expect(box).not.toBeChecked();
+    await expect(
+      page.getByRole("button", { name: "Sign the notice" }),
+    ).toBeDisabled();
     expect(
       await page.evaluate(async () => {
         const { LocalStore } = await import(String("/src/data/store.ts"));
         return (await new LocalStore().list("outbox")).length;
       }),
     ).toBe(0);
-  });
-}
+    expect(await mirror.signatures()).toBe(0);
+    expect((await mirror.pending()).completed).toBe(captured.completed);
+    await page.route("**/mirror/api/v1/**", (route) =>
+      route.abort("connectionreset"),
+    );
+    await page.reload();
+    await expect(page.locator("main")).toContainText(
+      "needs a complete scan of every configured peer",
+    );
+    await expect(
+      page.getByRole("button", { name: "Sign the notice" }),
+    ).toHaveCount(0);
+  } finally {
+    await mirror.close();
+    await self.close();
+  }
+});
+
+test("changing the compromise key during unlock cannot replace the approved preview", async ({
+  page,
+}) => {
+  const history = await acceptedHistoryFixture(page);
+  try {
+    await createIdentity(page);
+    const retired = await page.evaluate(async (passphrase) => {
+      const { createKey } = await import(String("/src/data/keys.ts"));
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const created = await createKey(passphrase);
+      await new LocalStore().put(
+        "keys",
+        `retired:${created.backup.identity}`,
+        created.backup,
+      );
+      return created.backup.identity;
+    }, PASSPHRASE);
+    await page.goto("/identity/compromise");
+    await expect(page.getByRole("checkbox")).toHaveCount(2);
+    for (const box of await page.getByRole("checkbox").all()) await box.check();
+    await page.getByRole("button", { name: "Sign the notice" }).click();
+    const dialog = page.getByRole("dialog", {
+      name: /^Unlock the retired key/,
+    });
+    await expect(dialog).toBeVisible();
+    await page
+      .getByLabel("Which key")
+      .evaluate((node: HTMLSelectElement, identity) => {
+        node.value = identity;
+        node.dispatchEvent(new Event("change", { bubbles: true }));
+      }, retired);
+    await history.watchSignatures();
+    await dialog.getByLabel("Passphrase of the retired key").fill(PASSPHRASE);
+    await dialog.getByRole("button", { name: "Unlock", exact: true }).click();
+    await expect(page.getByRole("status")).toContainText(
+      "The known history changed",
+    );
+    for (const box of await page.getByRole("checkbox").all())
+      await expect(box).not.toBeChecked();
+    expect(await history.signatures()).toBe(0);
+    expect(
+      await page.evaluate(async () => {
+        const { LocalStore } = await import(String("/src/data/store.ts"));
+        return (await new LocalStore().list("outbox")).length;
+      }),
+    ).toBe(0);
+  } finally {
+    await history.close();
+  }
+});
 
 test("a late acceptance found by the final recovery scan prevents a new signature", async ({
   page,
 }) => {
-  const data = await transferFixture(page);
-  await page.goto("/identity/transfer");
-  const form = page.getByRole("form", { name: "Recover a lost acceptance" });
-  await expect(form).toBeVisible();
-  await form.getByLabel("Successor backup file").setInputFiles({
-    name: "successor.json",
-    mimeType: "application/json",
-    buffer: Buffer.from(JSON.stringify(data.successor)),
-  });
-  await form.getByLabel("Successor backup passphrase").fill(PASSPHRASE);
-  for (const checkbox of await form.getByRole("checkbox").all())
-    await checkbox.check();
-  const acceptance = await page.evaluate(
-    async ({ data, passphrase }) => {
-      const { unlockKey } = await import(String("/src/data/keys.ts"));
-      const { signWith } = await import(String("/src/data/lifecycle.ts"));
-      const transport = await signWith(
-        await unlockKey(data.successor, passphrase),
-        data.successor.identity,
-        [],
-        { kind: "identity.accept", transfer: data.transfer.id },
-      );
-      await fetch("/api/v1/events", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(transport),
-      });
-      return transport.envelope.id;
-    },
-    { data, passphrase: PASSPHRASE },
-  );
-  await form
-    .getByRole("button", { name: "Sign one recovery acceptance" })
-    .click();
-  await expect(
-    page.getByRole("region", { name: "Acceptance recovery" }),
-  ).toContainText(acceptance);
-  await expect(page.getByRole("status")).toContainText(
-    "acceptance search changed",
-  );
-  expect(
-    await page.evaluate(async () => {
-      const { LocalStore } = await import(String("/src/data/store.ts"));
-      return (await new LocalStore().list("outbox")).length;
-    }),
-  ).toBe(0);
+  const pendingHistory = await acceptedHistoryFixture(page);
+  try {
+    const data = await transferFixture(page);
+    await page.goto("/identity/transfer");
+    const form = page.getByRole("form", { name: "Recover a lost acceptance" });
+    await expect(form).toBeVisible();
+    await form.getByLabel("Successor backup file").setInputFiles({
+      name: "successor.json",
+      mimeType: "application/json",
+      buffer: Buffer.from(JSON.stringify(data.successor)),
+    });
+    await form.getByLabel("Successor backup passphrase").fill(PASSPHRASE);
+    for (const checkbox of await form.getByRole("checkbox").all())
+      await checkbox.check();
+    pendingHistory.hold();
+    const acceptance = await page.evaluate(
+      async ({ data, passphrase }) => {
+        const { unlockKey } = await import(String("/src/data/keys.ts"));
+        const { signWith } = await import(String("/src/data/lifecycle.ts"));
+        const transport = await signWith(
+          await unlockKey(data.successor, passphrase),
+          data.successor.identity,
+          [],
+          { kind: "identity.accept", transfer: data.transfer.id },
+        );
+        await fetch("/api/v1/events", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(transport),
+        });
+        return transport.envelope.id;
+      },
+      { data, passphrase: PASSPHRASE },
+    );
+    const captured = await pendingHistory.pending();
+    expect(captured.accepted).not.toBe(captured.completed);
+    expect(await pendingHistory.ordinary()).toEqual([
+      captured.completed,
+      captured.completed,
+      captured.completed,
+    ]);
+    await pendingHistory.watchSignatures();
+    await form
+      .getByRole("button", { name: "Sign one recovery acceptance" })
+      .click();
+    await expect(
+      page.getByRole("region", { name: "Acceptance recovery" }),
+    ).toContainText(acceptance);
+    await expect(page.getByRole("status")).toContainText(
+      "acceptance search changed",
+    );
+    expect(
+      await page.evaluate(async () => {
+        const { LocalStore } = await import(String("/src/data/store.ts"));
+        return (await new LocalStore().list("outbox")).length;
+      }),
+    ).toBe(0);
+    expect(await pendingHistory.signatures()).toBe(0);
+    expect((await pendingHistory.pending()).completed).toBe(captured.completed);
+  } finally {
+    await pendingHistory.close();
+  }
 });
 
 test("concurrent recovery writes save one acceptance and finish delivery with the original transfer", async ({

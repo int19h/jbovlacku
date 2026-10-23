@@ -121,6 +121,11 @@ Zero allocations and removals also prevent that addition. It applies private blo
 A cancelled or incomplete local calculation keeps personal scores unavailable and offers the site view. "Recompute from records" compares a local site-view calculation with the server scores.
 A planned handover creates and tests a successor key, shows the old key's heads from every configured peer, searches for an existing transfer, and saves the transfer, the acceptance, and the encrypted successor key in one transaction before upload. Partial upload reads "Old key retired, acceptance waiting", and retries reuse the stored events.
 A compromise notice previews the retained and excluded records of a chosen causal frontier, blocks on missing history, and needs explicit approval for an empty frontier. Ordinary signing from a retired or compromised key is refused.
+
+Before lifecycle signatures, peer history scans include accepted records that still wait for evaluation.
+The browser pins each scan to the peer's accepted snapshot and authenticates its signed lifecycle evidence.
+These raw history reads start no evaluation. Ordinary pages continue to use the last completed snapshot.
+
 The [web UI design](docs/ui-design.md) defines the layouts. The reading, identity, trust, delivery, authoring, and builder screens follow it.
 The built Node app keeps Type and trust card labels separate from their descriptions.
 Draft placeholders have no extra underline, and helper text does not shift neighboring controls.

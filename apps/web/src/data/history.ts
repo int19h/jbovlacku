@@ -6,10 +6,10 @@
 import { utf8, verifyEnvelope } from "../../../../packages/core/src/index.ts";
 import {
   getEnvelope,
-  getManifest,
   identityHeads,
   selfPeer,
   type Peer,
+  type IdentityHeadsPage,
 } from "./api.ts";
 import type { LocalStore, OutboxItem } from "./store.ts";
 import {
@@ -80,7 +80,11 @@ export async function loadOwnHistory(
       local.set(envelope.id, envelope);
       known.add(envelope.id);
     }
-  const manifest = options.offline ? null : await getManifest({ signal, peer });
+  // An unpinned raw head page names the accepted inventory, even during evaluation.
+  const firstPage = options.offline
+    ? null
+    : await identityHeads(identity, null, null, { signal, peer });
+  const snapshot = firstPage?.snapshot ?? null;
   const verified = new Map<string, Envelope>();
   /** Envelopes fetched from the server in this load. They are kept locally afterwards. */
   const fetched: Envelope[] = [];
@@ -91,9 +95,9 @@ export async function loadOwnHistory(
     if (cached) return cached;
     if (verified.size >= WORK_LIMIT) throw workLimit();
     let envelope = local.get(id) ?? null;
-    const fromServer = !envelope && Boolean(manifest);
-    if (!envelope && manifest)
-      envelope = await getEnvelope(id, manifest.snapshot, { signal, peer });
+    const fromServer = !envelope && Boolean(snapshot);
+    if (!envelope && snapshot)
+      envelope = await getEnvelope(id, snapshot, { signal, peer });
     if (!envelope) {
       complete = false;
       return null;
@@ -105,7 +109,7 @@ export async function loadOwnHistory(
     if (fromServer) fetched.push(envelope);
     return envelope;
   };
-  if (manifest) {
+  if (snapshot) {
     let after: string | null = null;
     const cursors = new Set<string>();
     let pages = 0;
@@ -113,10 +117,13 @@ export async function loadOwnHistory(
     do {
       check();
       if (++pages > 64) throw workLimit();
-      const page = await identityHeads(identity, manifest.snapshot, after, {
-        signal,
-        peer,
-      });
+      const page: IdentityHeadsPage =
+        pages === 1
+          ? firstPage!
+          : await identityHeads(identity, snapshot, after, {
+              signal,
+              peer,
+            });
       if (page.next !== null && cursors.has(page.next))
         throw new Error(
           "Own-history pagination repeated a cursor. Export the outbox or retry with another server.",
@@ -157,14 +164,14 @@ export async function loadOwnHistory(
     visited.add(id);
     const envelope = await read(id);
     if (!envelope) {
-      if (!manifest) continue;
+      if (!snapshot) continue;
       throw new Error(
         "This browser has no signed record for a remembered history reference. Connect to retrieve it.",
       );
     }
     for (const previous of envelope.header.previous) {
       ancestors.add(previous);
-      if (!manifest && !local.has(previous)) {
+      if (!snapshot && !local.has(previous)) {
         complete = false;
         continue;
       }
@@ -185,7 +192,7 @@ export async function loadOwnHistory(
     } catch {}
   return {
     identity,
-    snapshot: manifest?.snapshot ?? null,
+    snapshot,
     frontier,
     events: verified,
     complete,
