@@ -178,14 +178,23 @@ Startup does not publish that base's index or mark it as completed.
 Without a current completed state, interpreted reads wait for catch-up. Recovery never moves the served snapshot or its materialized cursor backward.
 An expired private base also supports calculation only and remains unavailable through public snapshot routes.
 
-Shutdown stops admission and allows up to ten seconds for core evaluation.
-If that deadline expires, the adapter closes client connections and stops its evaluation threads.
-Durable request handlers and checkpoint file operations settle before SQLite and the data directory lock close.
+Shutdown stops admission and closes idle connections immediately.
+Active responses close their connection after their bytes finish. Idle keep-alive sockets do not delay checkpoint work.
+
+The adapter allows up to ten seconds for core evaluation, then closes stalled client connections.
+Before stopping any evaluation worker, it prevents further publication and saves the latest completed snapshot from its owning worker.
+This save bypasses the normal capture interval, even while another worker rebuilds a newer accepted snapshot.
+Durable handlers and file operations can extend shutdown beyond ten seconds.
+
+The adapter closes SQLite and releases the data directory lock after those handlers and file operations settle.
 Accepted records and the last valid checkpoint remain available for startup recovery.
 Checkpoint recovery rebuilds a missing search index from the saved entries before readiness.
+
 The service captures at most one checkpoint per minute after a 100 ms quiet period.
 It keeps only the latest pending snapshot during that interval. A failed capture also counts toward the interval.
-Shutdown bypasses the interval and attempts to save the latest completed state.
+A failed live core export can retry once immediately. This bounded retry is an exception to the capture interval.
+
+Shutdown bypasses the interval and saves the latest completed state before stopping its worker.
 Core evaluation, checkpoint export, and checkpoint restore run in evaluation threads.
 Binary serialization of the enclosing checkpoint, package construction, and SQLite operations still use the main thread.
 The capture interval limits serialization frequency, not its duration.
@@ -257,6 +266,11 @@ Trust, lifecycle, view, account, status, rafsi, profile, report, and bridge chan
 Changed bodies, import selections, calculation configuration, or unavailable history also force a rebuild.
 These rules follow the [history and authority rules](format.md#4-causal-order-and-acceptance) and the [ranking rules](format.md#8-editorial-trust-and-ranking).
 
+After checkpoint restore, a mixed batch with any global action constructs ancestry once for its full rebuild.
+An unavailable restored base also constructs ancestry once.
+The rebuilt evaluation and work budget match full evaluation. Diagnostic statistics omit discarded incremental work.
+An unavailable base reports `base_unavailable`.
+
 Forks share immutable ancestor payloads. After 64 appended records, a rebuild incorporates the new IDs into the ancestor universe.
 The evaluator retains the full logical work charge. Uncertain work at an ancestor-width boundary forces a rebuild.
 
@@ -283,83 +297,61 @@ Missing, changed, or late body bytes retain their separate handling. The verifie
 Every signature still passes the point, scalar, embedded-key, and equation rules.
 The existing combined-request API remains available for smaller browser snapshots. It still allocates the complete request.
 
-The full local measurement used the revised SQL extraction without derived vectors or cache fields in signed bodies.
-It contained 59,125 definitions in 44 languages and used the saved 1,000,000,000-unit traversal budget.
-The run began with 59,126 events and ended with 59,131 after five signed endorsements.
-Definition bodies, the selected view, and the import selection remained unchanged.
-The source listened on `127.0.0.1:8951` and used the default Node heap configuration.
+### Full-data measurements
 
-The first launch had no checkpoint. Initial readiness took 31.15 seconds.
-The first `klama` request then took 66.64 seconds, and startup through that response took 97.80 seconds.
+These local runs use 59,125 imported definitions in 44 languages and the saved 1,000,000,000-unit traversal budget.
+They use the existing data directory in place, the default Node heap configuration, and `127.0.0.1:8951`.
+The server, worker, and Wasm artifacts at reviewed revision `fedfec3` match those measured at `b6c0354`.
+The repaired host measurement uses revision `5aefd15`.
 
-The initial evaluation session took 52.31 seconds, including record reads, authentication, and evaluation.
-Its final core evaluation took 2.18 seconds. This profile does not separate file reads from authentication.
-The first launch also built the initial snapshot and packages.
+| Measurement | Reviewed host, `b6c0354` | Repaired host, `5aefd15` |
+| --- | ---: | ---: |
+| Checkpoint recovery | 22.68 s | 7.07 s |
+| Trust choice visible | 30.37 s | 8.38 s |
+| Native publication visible | 46.71 s | 9.53 s |
+| Judgment visible | 35.51 s | 5.39 s |
+| Peak process memory during writes | 4.25 GiB | 3.94 GiB |
 
-With a checkpoint, readiness took 6.49 seconds. The first word request took 0.053 seconds.
-Process startup through that response took 6.54 seconds.
-A second restart restored all five writes, with 6.09-second readiness and a 0.311-second first word request.
-That second startup took 6.40 seconds through the first word response.
+A second restart of the reviewed artifacts took 29.33 seconds.
+The repaired core changed its digest, so its first recovery authenticated original records instead of restoring the incompatible checkpoint.
+That recovery took 70.72 seconds. Health first answered after 2.08 seconds, before interpreted reads were ready.
+The subsequent compatible checkpoint restart returned the retained native publication and judgment in another 0.090 seconds.
+That restart peaked at 2.15 GiB and stopped normally in 0.217 seconds.
 
-The five endorsements became visible in 3.47, 1.84, 1.94, 1.81, and 1.97 seconds.
-The timer ran from the signed POST until the first word response with the new reviewer count.
-Later receipt and event reads made sure that the named snapshot contained each signed event.
-Admission receipts reported durable acceptance, `index_lag`, `evaluation_pending`, and a null snapshot.
-Reads used the preceding completed snapshot while the new snapshot evaluated.
-Every update used the incremental path for one record.
+The reviewed write run sampled 91 manifest reads, 91 searches, and 91 word reads.
+All manifest and search samples succeeded. Their maximum times were 2.47 and 2.79 seconds.
+Three word reads reached their three-second deadline, and twelve health probes reached their one-second deadline.
+The reviewed host shared the VM with acceptance tests during that run.
 
-| Definition package | Warm word request |  Search | Package manifest |
-| ------------------ | ----------------: | ------: | ---------------: |
-| English            |           62.7 ms | 75.8 ms |           2.0 ms |
-| French             |          250.9 ms | 18.7 ms |           2.6 ms |
-| Russian            |           61.0 ms | 20.8 ms |           1.5 ms |
+The repaired write run sampled 32 manifest reads, 32 searches, and 32 word reads across all three actions.
+All 96 reads returned HTTP 200 within three seconds.
+Their maximum times were 0.675, 0.7315, and 1.981 seconds.
+Between the first write and final visible result, 89 of 90 health probes returned HTTP 200.
+One health probe reached its one-second deadline during the trust choice.
+No other acceptance suite ran during these repaired-host measurements.
 
-The word route returns candidates across definition languages.
-Each warm request used a headword from the named language package and included that package's exact definition.
-The run also read package parts and original bodies, with matching counts and languages.
-Package parts took 9.6 to 44.4 milliseconds, and body reads took 2.9 to 7.9 milliseconds.
+The repaired host admitted the three writes in 1.202, 0.974, and 0.839 seconds.
+Its accepted and materialized positions both reached 59,142. Normal shutdown took 3.200 seconds.
+Before shutdown, resident process memory was 2.24 GiB.
+The measurements include Node and its evaluation threads.
 
-The final checkpoint used 66,900,700 bytes, or 63.80 MiB.
-Peak Wasm linear memory reached 1,794,899,968 bytes, or 1.67 GiB.
-Linux reported peak process memory of 3,959,283,712 bytes, or 3.69 GiB, including Wasm.
-The initial launch peaked at 2.64 GiB, and the five-write process reached the overall peak.
-The Node process remained below 4,000,000,000 bytes by about 41 MB in this run.
+A Wasm trap retires its worker immediately. The service keeps completed state on the main thread for reads.
+A replacement restores a matching checkpoint when available and otherwise authenticates the snapshot in the background.
+Word scores can remain unavailable until that runtime returns.
 
-The profiler measured synchronous core export separately from synchronous V8 serialization.
-Initial shutdown took 305 ms for export and 411 ms for serialization.
-The first automatic capture took 355 ms and 654 ms. The final shutdown capture took 171 ms and 568 ms.
+After publication, the service releases older runtimes after their active read, fork, or export calls finish.
+Workers transfer full state or a bounded judgment delta as bytes, without retaining another parsed JavaScript state.
+The main thread applies matching deltas to immutable maps and shares unchanged objects.
 
-There was one automatic capture during the five writes, plus the forced final capture.
-The one-minute interval limits these pauses' frequency. It does not remove the pauses from the Node event loop.
+The fifteen-second browser wait can end before a full-dictionary evaluation finishes.
+A later refresh uses the same accepted record and creates no extra signature.
+Admission, package construction, enclosing checkpoint serialization, and state parsing still use the main thread.
+The checkpoint interval limits capture frequency, not the duration of these operations.
 
-The word request with a checkpoint and all five writes met the five-second request targets.
-Startup plus the first response still exceeded five seconds, and the first cold request still exceeded 30 seconds.
-Initial evaluation authenticates every record, and initial package generation rereads retained bytes to detect storage failures.
-The cold-start readiness probe used three-second request deadlines and can start overlapping initial snapshot builds.
-These single-process measurements use the VM's existing filesystem cache and do not establish performance on another host or under concurrent imports.
-They also do not establish hosted Worker resource compliance.
-
-A separate crash probe retained the same definitions and added two disposable endorsements, for 59,135 events.
-The first endorsement reached checkpoint position 59,134. The second reached accepted and materialized position 59,135 without another capture.
-The probe killed its exact child 2.23 seconds after the second POST began.
-After the child exited, the probe removed only that dead process's exact stale data lock.
-
-Crash recovery reached readiness in 6.79 seconds. Its first word request then took 1.78 seconds and returned the latest materialized snapshot.
-Startup through that response took 8.56 seconds. Concurrent manifest and changes reads both reported materialized cursor `local-node.59135`.
-The manifest named the same latest snapshot as the word response.
-The core received one later record and reported one incremental update without a rebuild.
-
-Crash recovery peaked at 3,243,741,184 bytes, or 3.02 GiB, including 1.52 GiB of Wasm linear memory.
-The final checkpoint used 66,904,504 bytes, or 63.81 MiB.
-The data directory grew by 9.12 MiB, without a directory copy.
-The source listened only on `127.0.0.1:8951`, and all probe servers stopped afterward.
-
-The probe reused an existing compatible checkpoint. It did not repeat full cold evaluation.
-Crash recovery still exceeds the five-second target from startup through the first response.
-These results use the same VM and filesystem cache. Other histories and concurrent workloads can take longer.
-
-The first combined full-data request before streaming reached WebAssembly's 4 GiB memory limit.
-The current measurement uses the streaming path and the revised source bodies.
+These runs differ in inventory, filesystem state, and concurrent work. They do not isolate the effect of one fix.
+Dense ancestry still uses quadratic bitset storage for a complete history chain.
+Overlapping evaluation runtimes still require several GiB, and individual requests can reach their deadlines.
+The measurements do not establish hosted Worker resource compliance or performance on another host.
 An explicit traversal limit or a larger Node heap does not remove the WebAssembly memory limit.
 
 ## Browser development

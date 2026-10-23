@@ -192,25 +192,43 @@ The extraction omits derived vectors and cache fields from signed bodies.
 
 The adapter retains an evaluated checkpoint and uses separate Node worker threads for completed reads and new evaluation.
 A worker thread runs code independently within the same process. At most two evaluation runtimes remain live.
-The adapter captures at most one checkpoint per minute. Shutdown waits up to ten seconds before it stops unfinished evaluation.
-Accepted records and the last valid checkpoint remain available for recovery.
+After publication, the host releases the older runtime when its active calls finish.
+Workers transfer state bytes without retaining another parsed JavaScript state. Judgment updates share unchanged result objects on the main thread.
+
+The adapter normally captures at most one checkpoint per minute. A failed live export can retry once immediately.
+Shutdown closes idle connections and grants up to ten seconds for evaluation.
+It saves the latest completed checkpoint before stopping its worker, without waiting for the capture interval.
+Durable handlers and file operations can extend shutdown beyond that limit.
+
+A faulted worker leaves completed results available on the main thread.
+Word responses can report unavailable scores while a replacement restores in the background.
 
 After publication, the browser shows a pending notice until the accepted records reach the evaluated word view.
 After a profile publication, the profile page waits for that evaluated view before it requests the new claim.
 Personal recomputation also waits for locally accepted records before it downloads the next snapshot.
 These waits stop after fifteen seconds and preserve accepted delivery evidence for another refresh.
+A full-dictionary evaluation can outlast that wait. A refresh reuses the accepted record without another signature.
 
-On this VM, the tested full dictionary contains 59,125 imported definitions in 44 languages.
-Compatible checkpoint recovery took 7.80 to 22.73 seconds in two local runs.
-After a core artifact change invalidated that cache, full recovery from original records took 56.89 seconds.
-A trust choice, native publication, and judgment became visible in 9.84, 12.64, and 8.22 seconds.
-Peak resident memory reached 4.65 GiB across the Node process and its threads.
+The server, worker, and Wasm artifacts at `fedfec3` match the earlier measurement at `b6c0354`.
+That run restored its checkpoint in 22.68 seconds. A later restart took 29.33 seconds.
+The repaired host measurement uses `5aefd15`, with 59,125 imported definitions in 44 languages.
+Its checkpoint restart took 7.07 seconds. Recovery after the core digest changed took 70.72 seconds.
 
-During those writes, 138 sampled manifest, search, and word requests completed within three seconds.
-Their maximum times were 1.36, 1.42, and 1.48 seconds.
-One separate health probe reached its one-second timeout during publication admission.
+| Visible write | Reviewed host, `b6c0354` | Repaired host, `5aefd15` |
+| --- | ---: | ---: |
+| Trust choice | 30.37 s | 8.38 s |
+| Native publication | 46.71 s | 9.53 s |
+| Judgment | 35.51 s | 5.39 s |
+
+The reviewed host peaked at 4.25 GiB. Three of 91 sampled word reads reached their three-second deadline.
+Twelve health probes reached their one-second deadline.
+
+The repaired host peaked at 3.94 GiB. All 96 sampled dictionary reads completed within three seconds.
+Between its first write and final visible result, 89 of 90 health probes succeeded. One reached its one-second deadline.
+
+These runs differ in inventory and concurrent work. They do not isolate the effect of one fix.
 Admission, package construction, and enclosing checkpoint serialization still use the main thread.
-These measurements establish local recovery and continued reading during core evaluation, without a latency guarantee for every host.
+Dense ancestry and overlapping runtimes still require several GiB. These measurements do not establish a latency guarantee.
 
 After a crash, the adapter can restore an older valid checkpoint and evaluate the later records.
 If the checkpoint predates the stored materialized snapshot, interpreted reads wait for catch-up.
