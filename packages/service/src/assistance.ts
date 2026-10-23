@@ -415,23 +415,24 @@ export async function runAssistance(
       language: row.language,
       input,
     });
-    const notes = ["Sense", "Word IPA", "Stem", "Stem IPA", "Note"]
-      .map((label, index) => {
-        const field = ["sense", "word_ipa", "stem", "ipa", "note"][index];
-        return `${label}: ${answer[field] ?? "Unknown"}`;
-      })
-      .join("\n");
     proposals.push({
       path: "/formation/sources",
       value: [
         {
           ...row,
           word: answer.word ?? "",
+          word_ipa: answer.word_ipa,
+          stem: answer.stem,
+          ipa: answer.ipa,
           input:
             answer.sounds === null
               ? null
               : { format: "lojbanized", text: answer.sounds },
-          notes: [[notes]],
+          notes: [
+            ...(row.notes ?? []),
+            [`Sense: ${answer.sense ?? ""}`],
+            [`Note: ${answer.note}`],
+          ],
         },
       ],
     });

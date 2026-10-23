@@ -129,6 +129,7 @@ function queue(
   let turn = 0;
   return (async (_url: unknown, init: any) => {
     const body = JSON.parse(init.body);
+    assert.deepEqual(body.usage, { include: true });
     if (body.tool_choice !== "auto")
       return Response.json(
         { error: { message: 'Only "auto" is supported for tool_choice.' } },
@@ -307,6 +308,83 @@ test("four studied tasks use exact explicit answer keys and semantic checks", ()
     ).length,
   );
 });
+test("mapping reasons require the exact matching kind and an explanation", () => {
+  const spec: TaskCase = {
+    task: "mappings",
+    input: "",
+    keys: ["x1"],
+    components: ["ctuca[1]"],
+  };
+  for (const component of ["ctuca[1]", "none", "unclear"]) {
+    const kinds =
+      component === "ctuca[1]"
+        ? ["direct", "merged", "distributed", "functional"]
+        : [component];
+    for (const kind of kinds)
+      assert.deepEqual(
+        checkAnswer(spec, {
+          x1: [
+            {
+              component,
+              reason: `${kind}: The definition supports this role.`,
+            },
+          ],
+        }),
+        [],
+      );
+    for (const reason of [
+      "",
+      "direct",
+      `${kinds[0]}:`,
+      `${kinds[0]}: `,
+      `${kinds[0]}:...`,
+      `${kinds[0]}: ...`,
+      `${kinds[0]}:  Explanation.`,
+      "Direct: Explanation.",
+      "other: Explanation.",
+      component === "ctuca[1]" ? "none: Explanation." : "direct: Explanation.",
+      component === "none" ? "unclear: Explanation." : "none: Explanation.",
+    ])
+      assert.ok(
+        checkAnswer(spec, { x1: [{ component, reason }] }).length,
+        `${component} rejected ${JSON.stringify(reason)}`,
+      );
+  }
+});
+test("a missing mapping prefix receives correction before acceptance", async () => {
+  const requests: any[] = [];
+  const { runner: inference, log } = await runner(
+    queue(
+      [
+        completion({
+          x1: [{ component: "ctuca[1]", reason: "The teacher acts." }],
+        }),
+        completion({
+          x1: [{ component: "ctuca[1]", reason: "direct: The teacher acts." }],
+        }),
+      ],
+      (body) => requests.push(body),
+    ),
+    "mappings",
+  );
+  await inference.run({
+    task: "mappings",
+    input: "A teacher.",
+    keys: ["x1"],
+    components: ["ctuca[1]"],
+  });
+  assert.equal(log.answers, 2);
+  assert.match(
+    log.exchanges[0].attempts[0].check.problems[0],
+    /starts with "direct: "/,
+  );
+  assert.equal(requests[1].messages.at(-1).role, "tool");
+  assert.ok(
+    requests[1].messages
+      .at(-1)
+      .content.includes(log.exchanges[0].attempts[0].check.problems[0]),
+  );
+});
 test("retry sends exact problems, keeps full exchange, and removes encrypted reasoning and keys", async () => {
   const requests: any[] = [];
   const { runner: inference, log } = await runner(
@@ -332,6 +410,8 @@ test("retry sends exact problems, keeps full exchange, and removes encrypted rea
   assert.equal(requests[0].provider.allow_fallbacks, false);
   assert.equal(requests[0].reasoning.effort, "medium");
   assert.equal(requests[0].tool_choice, "auto");
+  assert.deepEqual(requests[0].usage, { include: true });
+  assert.deepEqual(requests[1].usage, { include: true });
   assert.ok(
     requests[1].messages
       .at(-1)
@@ -360,7 +440,7 @@ test("the baseline provider accepts auto and rejects forced tool choices", async
   ]);
   const rejected = await provider("http://localhost/chat/completions", {
     method: "POST",
-    body: JSON.stringify({ tool_choice: "required" }),
+    body: JSON.stringify({ tool_choice: "required", usage: { include: true } }),
   });
   assert.equal(rejected.status, 400);
   const { runner: inference, log } = await runner(provider);
@@ -401,6 +481,62 @@ test("no tool calls and multiple tool calls count toward the same limit", async 
     code: "invalid_answer",
   });
   assert.equal(log.answers, 3);
+});
+test("three missing or wrongly named submit calls fail without a tool result", async () => {
+  for (const name of [null, "other_tool"]) {
+    const missing = completion({}, name === null ? { tool_calls: [] } : {});
+    if (name !== null)
+      missing.choices[0].message.tool_calls[0].function.name = name;
+    const requests: any[] = [];
+    const { runner: inference, log } = await runner(
+      queue([missing, missing, missing], (body) => requests.push(body)),
+    );
+    await assert.rejects(inference.run({ task: "type", input: "draft" }), {
+      code: "invalid_answer",
+    });
+    assert.equal(requests.length, 3);
+    assert.equal(log.answers, 3);
+    assert.equal(log.corrections, 2);
+    for (const body of requests)
+      assert.equal(
+        body.messages.some((message: any) => message.role === "tool"),
+        false,
+      );
+    assert.equal(requests[1].messages[2].tool_calls, undefined);
+    assert.equal(requests[1].messages.at(-1).role, "user");
+  }
+});
+test("a missing or wrongly named submit call can recover without a tool result", async () => {
+  for (const name of [null, "other_tool"]) {
+    const missing = completion({}, name === null ? { tool_calls: [] } : {});
+    if (name !== null)
+      missing.choices[0].message.tool_calls[0].function.name = name;
+    const requests: any[] = [];
+    const { runner: inference, log } = await runner(
+      queue(
+        [
+          missing,
+          completion({ word_type: "lujvo", reason: "A compound fits." }),
+        ],
+        (body) => requests.push(body),
+      ),
+    );
+    assert.equal(
+      (await inference.run({ task: "type", input: "draft" })).word_type,
+      "lujvo",
+    );
+    assert.equal(log.answers, 2);
+    assert.equal(log.corrections, 1);
+    assert.equal(
+      requests[1].messages.some((message: any) => message.role === "tool"),
+      false,
+    );
+    assert.equal(requests[1].messages[2].tool_calls, undefined);
+    assert.match(
+      requests[1].messages.at(-1).content,
+      /Call submit_answer exactly once/,
+    );
+  }
 });
 test("HTTP, network, null JSON and non-JSON failures disclose unknown usage with a failed check", async () => {
   for (const fetcher of [
@@ -517,6 +653,70 @@ test("malformed usage and unsafe aggregate token totals remain unknown", async (
   assert.equal(other.log.output_tokens, null);
   assert.equal(other.log.cost_usd, null);
 });
+test("requesting usage does not invent missing provider token counts or cost", async () => {
+  for (const usage of [undefined, { prompt_tokens: 100 }, { cost: 0.001 }]) {
+    const response: any = completion({
+      word_type: "lujvo",
+      reason: "A compound fits.",
+    });
+    response.usage = usage;
+    const { runner: inference, log } = await runner(queue([response]));
+    await inference.run({ task: "type", input: "draft" });
+    assert.equal(log.input_tokens, usage?.prompt_tokens ?? null);
+    assert.equal(log.output_tokens, null);
+    assert.equal(log.cost_usd, usage?.cost ?? null);
+    assert.equal(log.unknown_cost_attempts, usage?.cost === undefined ? 1 : 0);
+  }
+});
+test("failures before a provider request retain unknown figures and reported zero stays visible", async () => {
+  for (const overrides of [
+    { key: async () => "" },
+    {
+      key: async () => {
+        throw new Error("Local key unavailable.");
+      },
+    },
+    { maxCostUsd: 0.000001 },
+    { maxLogBytes: 1000 },
+  ]) {
+    const config = makeConfig({ ...overrides, fetch: queue([]) });
+    const log = newLog("type", config, await promptVersion());
+    await assert.rejects(
+      new InferenceRunner(config, log, AbortSignal.timeout(1000)).run({
+        task: "type",
+        input: "draft",
+      }),
+    );
+    assert.equal(log.answers, 0);
+    assert.equal(log.input_tokens, null);
+    assert.equal(log.output_tokens, null);
+    assert.equal(log.cost_usd, null);
+    assert.deepEqual(log.exchanges[0].attempts, []);
+  }
+  const zero = completion({ word_type: "lujvo", reason: "A compound fits." });
+  zero.usage = { prompt_tokens: 0, completion_tokens: 0, cost: 0 };
+  const { runner: inference, log } = await runner(queue([zero]));
+  await inference.run({ task: "type", input: "draft" });
+  assert.equal(log.input_tokens, 0);
+  assert.equal(log.output_tokens, 0);
+  assert.equal(log.cost_usd, 0);
+});
+test("unknown earlier usage stays unknown after a later known answer", async () => {
+  const missing: any = completion({});
+  delete missing.usage;
+  const { runner: inference, log } = await runner(
+    queue([
+      missing,
+      completion({ word_type: "lujvo", reason: "A compound fits." }),
+    ]),
+  );
+  await inference.run({ task: "type", input: "draft" });
+  assert.equal(log.answers, 2);
+  assert.equal(log.input_tokens, null);
+  assert.equal(log.output_tokens, null);
+  assert.equal(log.cost_usd, null);
+  assert.equal(log.unknown_cost_attempts, 1);
+});
 test("source prompt order, explicit tool keys and optional reports follow the recipe", async () => {
   let sent: any;
   const source = {
@@ -544,13 +744,188 @@ test("source prompt order, explicit tool keys and optional reports follow the re
       "common.system.txt",
       "sources.task.txt",
       "sound-guide.txt",
-      "languages/english.txt",
       "explain.txt",
+      "languages/english.txt",
     ]
       .map((name) => promptFiles[name].trim())
       .join("\n\n"),
   );
   assert.equal(sent.tool_choice, "auto");
+});
+test("prompt order omits disabled reports and appends reports to other tasks", async () => {
+  for (const decisionReports of [false, true]) {
+    let sent: any;
+    const config = makeConfig({
+      decisionReports,
+      fetch: queue(
+        [completion({ word_type: "lujvo", reason: "A compound fits." })],
+        (body) => (sent = body),
+      ),
+    });
+    const log = newLog("type", config, await promptVersion());
+    await new InferenceRunner(config, log, AbortSignal.timeout(1000)).run({
+      task: "type",
+      input: "draft",
+    });
+    assert.equal(
+      sent.messages[0].content,
+      [
+        "common.system.txt",
+        "type.task.txt",
+        ...(decisionReports ? ["explain.txt"] : []),
+      ]
+        .map((name) => promptFiles[name].trim())
+        .join("\n\n"),
+    );
+  }
+  let sent: any;
+  const config = makeConfig({
+    fetch: queue(
+      [
+        completion({
+          word: null,
+          sense: null,
+          stem: null,
+          word_ipa: null,
+          ipa: null,
+          sounds: null,
+          note: "Unknown source.",
+        }),
+      ],
+      (body) => (sent = body),
+    ),
+  });
+  await new InferenceRunner(
+    config,
+    newLog("sources", config, await promptVersion()),
+    AbortSignal.timeout(1000),
+  ).run({ task: "sources", language: "en", input: "draft" });
+  assert.equal(
+    sent.messages[0].content,
+    [
+      "common.system.txt",
+      "sources.task.txt",
+      "sound-guide.txt",
+      "languages/english.txt",
+    ]
+      .map((name) => promptFiles[name].trim())
+      .join("\n\n"),
+  );
+});
+test("source proposals preserve signed evidence, language, weight and existing notes", async () => {
+  for (const unknown of [false, true]) {
+    const original = {
+      language: "eng",
+      word: "old",
+      input: null,
+      weight: { numerator: 3, denominator: 7 },
+      notes: [["Author's original note."]],
+      word_ipa: "old",
+      stem: "old",
+      ipa: "old",
+    };
+    const answer = unknown
+      ? {
+          word: null,
+          sense: null,
+          stem: null,
+          word_ipa: null,
+          ipa: null,
+          sounds: null,
+          note: "No source is known.\nKeep this uncertainty.",
+        }
+      : {
+          word: "teacher",
+          sense: "one who teaches\na learner",
+          stem: "teach",
+          word_ipa: "ˈtitʃər",
+          ipa: "titʃ",
+          sounds: "titc",
+          note: "Removed -er.\nThe stem supplies the score.",
+        };
+    const request = draft("gismu-sources", {
+      formation: {
+        method: "unknown",
+        sources: [original],
+      },
+    });
+    parseAssistRequest(request);
+    const config = makeConfig({ fetch: queue([completion(answer)]) });
+    const result = await runAssistance(
+      request,
+      config,
+      [],
+      AbortSignal.timeout(2000),
+      newLog("gismu-sources", config, await promptVersion()),
+      () => {},
+    );
+    const row = (result.proposals[0].value as any[])[0];
+    assert.equal(row.language, "eng");
+    assert.deepEqual(row.weight, original.weight);
+    assert.deepEqual(row.notes[0], original.notes[0]);
+    for (const field of ["word_ipa", "stem", "ipa"] as const)
+      assert.equal(row[field], answer[field]);
+    assert.equal(row.word, answer.word ?? "");
+    assert.deepEqual(
+      row.input,
+      unknown ? null : { format: "lojbanized", text: "titc" },
+    );
+    assert.deepEqual(row.notes.slice(1), [
+      [`Sense: ${answer.sense ?? ""}`],
+      [`Note: ${answer.note}`],
+    ]);
+    assert.deepEqual(request.current.formation!.sources[0], original);
+  }
+});
+test("repeated source suggestions preserve notes and append the current sense and note separately", async () => {
+  const first = {
+    word: "teacher",
+    sense: "One who teaches.\nNote: part of the sense.",
+    stem: "teach",
+    word_ipa: "ˈtitʃər",
+    ipa: "titʃ",
+    sounds: "titc",
+    note: "Removed -er.",
+  };
+  const second = {
+    word: null,
+    sense: null,
+    stem: null,
+    word_ipa: null,
+    ipa: null,
+    sounds: null,
+    note: "No source is known.\nSense: part of the note.",
+  };
+  let row: any = {
+    language: "eng",
+    word: "",
+    input: null,
+    weight: null,
+    notes: [["Manual note.\nSense: literal text."]],
+  };
+  for (const answer of [first, second]) {
+    const previous = structuredClone(row);
+    const request = draft("gismu-sources", {
+      formation: { method: "unknown", sources: [row] },
+    });
+    const config = makeConfig({ fetch: queue([completion(answer)]) });
+    const result = await runAssistance(
+      request,
+      config,
+      [],
+      AbortSignal.timeout(2000),
+      newLog("gismu-sources", config, await promptVersion()),
+      () => {},
+    );
+    row = (result.proposals[0].value as any[])[0];
+    assert.deepEqual(row.notes.slice(0, -2), previous.notes);
+    assert.deepEqual(row.notes.slice(-2), [
+      [`Sense: ${answer.sense ?? ""}`],
+      [`Note: ${answer.note}`],
+    ]);
+  }
+  assert.equal(row.notes.at(-2)[0], "Sense: ");
+  assert.equal(row.word_ipa, null);
 });
 test("draft validation enforces operation fields, schema and exact context IDs", () => {
   assert.equal(parseAssistRequest(draft()).operation, "type");

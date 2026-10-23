@@ -328,6 +328,10 @@ Hosted secret setup and deployment remain separate operator work.
 The billing reservation uses UTF-8 request bytes as a conservative input-token bound, plus 1,024 tokens for transport overhead.
 It reserves each turn's maximum output tokens at `JVC_AI_MAX_PRICE` before sending that turn.
 It also sends that price ceiling to the provider. Unknown usage stays unknown in the log.
+Every turn sends `usage: { include: true }`, including correction turns.
+[OpenRouter's usage guide](https://openrouter.ai/docs/cookbook/administration/usage-accounting) says that this field is deprecated and has no effect because usage is automatic.
+The request retains the explicit field for the configured protocol. It does not guarantee that a response contains usage.
+The log records only the token counts and cost that the provider supplies.
 These bounds require a provider that honors its advertised price ceiling. They do not establish billing behavior for an untested compatible provider.
 
 An individual provider response has a 256 KiB limit. Each job reserves at most 2 MiB for its full inference log.

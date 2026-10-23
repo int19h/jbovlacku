@@ -298,8 +298,22 @@ export function checkAnswer(spec: TaskCase, value: unknown): string[] {
           problems.push(
             `${key}: ${entry.component} is not a supplied component place.`,
           );
-        if (!entry.reason.trim())
-          problems.push(`${key} needs a reason for every correspondence.`);
+        const sentinel = ["none", "unclear"].includes(entry.component);
+        const kinds = sentinel
+          ? [entry.component]
+          : ["direct", "merged", "distributed", "functional"];
+        const prefix = kinds.find((kind) =>
+          entry.reason.startsWith(`${kind}: `),
+        );
+        const explanation = prefix ? entry.reason.slice(prefix.length + 2) : "";
+        if (
+          !prefix ||
+          !/^\S/u.test(explanation) ||
+          !/[\p{L}\p{N}]/u.test(explanation)
+        )
+          problems.push(
+            `${key}: ${entry.component} needs a reason that starts with ${kinds.map((kind) => `"${kind}: "`).join(" or ")}, followed by an explanation.`,
+          );
       }
     }
   } else if (spec.task === "sources") {
@@ -422,9 +436,9 @@ export function newLog(
     duration_ms: 0,
     answers: 0,
     corrections: 0,
-    input_tokens: 0,
-    output_tokens: 0,
-    cost_usd: 0,
+    input_tokens: null,
+    output_tokens: null,
+    cost_usd: null,
     unknown_cost_attempts: 0,
     exchanges: [],
   };
@@ -564,9 +578,10 @@ export class InferenceRunner {
           "language",
           "No source prompt is available for this language.",
         );
-      files.push("sound-guide.txt", `languages/${language}.txt`);
-    }
-    if (this.config.decisionReports) files.push("explain.txt");
+      files.push("sound-guide.txt");
+      if (this.config.decisionReports) files.push("explain.txt");
+      files.push(`languages/${language}.txt`);
+    } else if (this.config.decisionReports) files.push("explain.txt");
     for (const file of files)
       if (!this.log.prompt_files.includes(`/api/v1/assist/prompts/${file}`))
         this.log.prompt_files.push(`/api/v1/assist/prompts/${file}`);
@@ -619,6 +634,7 @@ export class InferenceRunner {
       const body: JsonObject = {
         model: this.config.model,
         stream: false,
+        usage: { include: true },
         max_tokens: maxTokens,
         reasoning: { effort: this.config.reasoningEffort },
         provider: {
@@ -741,14 +757,17 @@ export class InferenceRunner {
           : null;
       entry.cost_usd = cost;
       this.log.input_tokens = sum(
-        this.log.input_tokens,
+        this.log.answers === 1 ? 0 : this.log.input_tokens,
         count(usage?.prompt_tokens),
       );
       this.log.output_tokens = sum(
-        this.log.output_tokens,
+        this.log.answers === 1 ? 0 : this.log.output_tokens,
         count(usage?.completion_tokens),
       );
-      this.log.cost_usd = costSum(this.log.cost_usd, cost);
+      this.log.cost_usd = costSum(
+        this.log.answers === 1 ? 0 : this.log.cost_usd,
+        cost,
+      );
       if (cost === null) this.log.unknown_cost_attempts++;
       if (!response.ok || !isObject(value) || value.error) {
         entry.check.problems = [
@@ -828,7 +847,7 @@ export class InferenceRunner {
           (call) =>
             typeof call?.id === "string" &&
             isObject(call.function) &&
-            typeof call.function.name === "string",
+            call.function.name === "submit_answer",
         )
         .map((call) => {
           let args = call.function.arguments;

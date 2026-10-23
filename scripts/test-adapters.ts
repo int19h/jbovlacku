@@ -46,6 +46,7 @@ const inferenceProvider = createHttpServer(async (request, response) => {
     }
     assert.deepEqual(body.provider.only, ["meta"]);
     assert.equal(body.reasoning.effort, "medium");
+    assert.deepEqual(body.usage, { include: true });
     const answer =
       body.messages.length === 2
         ? {}
