@@ -157,7 +157,7 @@ export async function* readCopyRows(
   wanted: ReadonlySet<string>,
   onTable?: (table: string, rows: number) => void,
 ): AsyncGenerator<CopyRow> {
-  let pending: { rows: CopyRow[]; bytes: number } | undefined;
+  let pending: { rows: CopyRow[]; bytes: number; fields: number } | undefined;
   const short = (row: CopyRow) =>
     row.values.length > 0 &&
     row.values.length < row.columns.length &&
@@ -194,27 +194,25 @@ export async function* readCopyRows(
         row.row === last.row + 1;
       // A separate damaged row must keep its own possible owner.
       if (adjacent && short(row) && !ownRecordPrefix(row)) {
-        const fields = head.values.length + row.values.length - 1;
-        if (fields === head.columns.length) {
-          const fragments = [...pending.rows, row];
-          yield {
-            ...head,
-            fragments: fragments.map(({ row, line }) => ({ row, line })),
-            error: `Malformed COPY record spans ${fragments.length} physical rows. No source repair was inferred.`,
-          };
-          pending = undefined;
-          continue;
-        }
-        // A middle line without tabs adds no source columns.
+        const fields = pending.fields + row.values.length - 1;
         const nextBytes = pending.bytes + bytes(row);
-        if (
-          row.values.length === 1 &&
-          pending.rows.length < 64 &&
-          nextBytes <= 32 * 1024 * 1024
-        ) {
-          pending.rows.push(row);
-          pending.bytes = nextBytes;
-          continue;
+        if (pending.rows.length < 64 && nextBytes <= 32 * 1024 * 1024) {
+          if (fields === head.columns.length) {
+            const fragments = [...pending.rows, row];
+            yield {
+              ...head,
+              fragments: fragments.map(({ row, line }) => ({ row, line })),
+              error: `Malformed COPY record spans ${fragments.length} physical rows. No source repair was inferred.`,
+            };
+            pending = undefined;
+            continue;
+          }
+          if (fields < head.columns.length) {
+            pending.rows.push(row);
+            pending.bytes = nextBytes;
+            pending.fields = fields;
+            continue;
+          }
         }
       }
       yield* pending.rows;
@@ -222,7 +220,7 @@ export async function* readCopyRows(
     }
     const rowBytes = short(row) ? bytes(row) : 0;
     if (short(row) && rowBytes <= 32 * 1024 * 1024)
-      pending = { rows: [row], bytes: rowBytes };
+      pending = { rows: [row], bytes: rowBytes, fields: row.values.length };
     else yield row;
   }
   if (pending) yield* pending.rows;

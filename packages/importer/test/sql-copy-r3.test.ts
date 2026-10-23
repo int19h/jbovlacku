@@ -68,6 +68,91 @@ function independentHistoryRows(): Buffer {
   );
 }
 
+function historyBreaksInTwoFields(): Buffer {
+  const lines = fixture.toString().split("\r\n");
+  const header = lines.findIndex((line) =>
+    line.startsWith("COPY public.definition_versions "),
+  );
+  const fields = lines[header + 2].split("\t");
+  fields[4] += "\r\ndefinition continuation";
+  fields[5] += "\r\nnotes continuation";
+  lines[header + 2] = fields.join("\t");
+  return Buffer.from(lines.join("\r\n"));
+}
+
+test("r4 R3-1 history breaks in two fields retain all three fragment locations and the head owner", async () => {
+  const bytes = historyBreaksInTwoFields();
+  const physical = bytes.toString().split("\r\n");
+  const header = physical.findIndex((line) =>
+    line.startsWith("COPY public.definition_versions "),
+  );
+  assert.deepEqual(
+    physical
+      .slice(header + 2, header + 5)
+      .map((line) => line.split("\t").length),
+    [5, 2, 12],
+  );
+  const input = await source(bytes);
+  const rows = [];
+  const counts: Record<string, number> = {};
+  for await (const row of readCopyRows(
+    input.path,
+    new Set(["definition_versions"]),
+    (table, count) => {
+      counts[table] = count;
+    },
+  ))
+    rows.push(row);
+  assert.equal(counts.definition_versions, 7);
+  assert.equal(rows.length, 5);
+  assert.equal(rows[1].values[1], "74481");
+  assert.deepEqual(rows[1].fragments, [
+    { row: 2, line: header + 3 },
+    { row: 3, line: header + 4 },
+    { row: 4, line: header + 5 },
+  ]);
+  assert.match(rows[1].error!, /spans 3 physical rows/);
+});
+
+test("r4 R3-1 history breaks in two fields leave only their owner unresolved", async () => {
+  const bytes = historyBreaksInTwoFields();
+  const input = await source(bytes);
+  const manifestPath = join(input.directory, "manifest.json");
+  await writeFile(
+    manifestPath,
+    JSON.stringify({
+      ...manifest,
+      bytes: bytes.length,
+      sha256: contentHash(bytes),
+      expected_rows: { ...manifest.expected_rows, definition_versions: 7 },
+    }),
+  );
+  const output = join(input.directory, "proposal");
+  const result = await importSqlSnapshot({
+    sourcePath: input.path,
+    manifestPath,
+    output,
+    seed: new Uint8Array(32).fill(44),
+    roots: [],
+  });
+  assert.equal(result.report.added, 3);
+  assert.deepEqual(
+    [...new Set(result.report.unresolved.map((issue) => issue.record))],
+    [74481],
+  );
+  const carriers = (await readFile(join(output, "carriers.jsonl"), "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.deepEqual(
+    carriers
+      .filter((carrier) => carrier.body.legacy)
+      .map((carrier) => carrier.body.legacy.record.id)
+      .sort((a, b) => a - b),
+    [4, 36101, 53191],
+  );
+});
+
 test("r3 N1 separate short history rows retain both structurally valid owner prefixes", async () => {
   const input = await source(independentHistoryRows());
   const rows = [];
@@ -177,4 +262,101 @@ test("r3 N1 the real definition fragment shape still associates the 19-field hea
   assert.equal(rows[0].values[3], "62020");
   assert.equal(rows[0].fragments?.length, 2);
   assert.ok(rows[0].error);
+});
+
+test("r4 R3-1 every continuation keeps a separate history owner boundary", async () => {
+  const columns = [
+    "id",
+    "definitionid",
+    "langid",
+    "valsiid",
+    ...new Array(13).fill("text"),
+  ];
+  const fragments = [
+    ["1", "74481", "2", "4", "definition"],
+    ["definition continuation", "notes"],
+    [
+      "2",
+      "4",
+      "2",
+      "4",
+      "another definition",
+      "another note",
+      ...new Array(6).fill("text"),
+    ],
+  ];
+  const input = await source(
+    Buffer.from(
+      `COPY public.definition_versions (${columns.join(", ")}) FROM stdin;\r\n${fragments.map((row) => row.join("\t")).join("\r\n")}\r\n\\.\r\n`,
+    ),
+  );
+  const rows = [];
+  for await (const row of readCopyRows(
+    input.path,
+    new Set(["definition_versions"]),
+  ))
+    rows.push(row);
+  assert.equal(rows.length, 3);
+  assert.deepEqual(
+    rows.map((row) => row.values[1]),
+    ["74481", "notes", "4"],
+  );
+  assert.ok(rows.every((row) => row.error && row.fragments === undefined));
+});
+
+test("r4 R3-1 fragment grouping respects the 64-row limit including its final fragment", async () => {
+  for (const count of [64, 65]) {
+    const fragments = [
+      "1\thead",
+      ...new Array(count - 2).fill("middle"),
+      "tail\tend",
+    ];
+    const input = await source(
+      Buffer.from(
+        `COPY public.test (id, value, tail) FROM stdin;\r\n${fragments.join("\r\n")}\r\n\\.\r\n`,
+      ),
+    );
+    const rows = [];
+    for await (const row of readCopyRows(input.path, new Set(["test"])))
+      rows.push(row);
+    if (count === 64) {
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].fragments?.length, 64);
+    } else {
+      assert.equal(rows.length, 65);
+      assert.ok(rows.every((row) => row.error && row.fragments === undefined));
+    }
+  }
+});
+
+test("r4 R3-1 fragment grouping respects the 32 MiB limit including its final fragment", async () => {
+  for (const extra of [0, 1]) {
+    const head = `1\t${"x".repeat(16 * 1024 * 1024)}`;
+    const tail = `${"y".repeat(16 * 1024 * 1024 - 1 + extra)}\t`;
+    const input = await source(
+      Buffer.from(
+        `COPY public.test (id, value, tail) FROM stdin;\r\n${head}\r\n${tail}\r\n\\.\r\n`,
+      ),
+    );
+    const rows = [];
+    for await (const row of readCopyRows(input.path, new Set(["test"])))
+      rows.push(row);
+    assert.equal(rows.length, extra === 0 ? 1 : 2);
+    if (extra === 0) assert.equal(rows[0].fragments?.length, 2);
+    else
+      assert.ok(rows.every((row) => row.error && row.fragments === undefined));
+  }
+});
+
+test("r4 R3-1 fragments that exceed the table width stay separate", async () => {
+  const input = await source(
+    Buffer.from(
+      "COPY public.test (id, first, second, third) FROM stdin;\r\n1\thead\r\nnext\tmiddle\r\ntail\tend\textra\r\n\\.\r\n",
+    ),
+  );
+  const rows = [];
+  for await (const row of readCopyRows(input.path, new Set(["test"])))
+    rows.push(row);
+  assert.equal(rows.length, 3);
+  assert.ok(rows.every((row) => row.error && row.fragments === undefined));
 });
