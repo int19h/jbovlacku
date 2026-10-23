@@ -972,6 +972,190 @@ test("a late acceptance found by the final recovery scan prevents a new signatur
   }
 });
 
+test("a late acceptance held only by a mirror blocks recovery before any signature", async ({
+  page,
+}) => {
+  const self = await acceptedHistoryFixture(page);
+  const mirror = await acceptedHistoryFixture(page, "/mirror/api/v1");
+  try {
+    const data = await transferFixture(page);
+    await mirror.admit({ envelope: data.transfer, body: null });
+    await page.evaluate(async () => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      await new LocalStore().setPreferences({
+        peers: [
+          { id: "self", base: "/api/v1", label: "this server" },
+          { id: "mirror", base: "/mirror/api/v1", label: "mirror" },
+        ],
+      });
+    });
+    await page.goto("/identity/transfer");
+    const form = page.getByRole("form", { name: "Recover a lost acceptance" });
+    await expect(form).toBeVisible();
+    await form.getByLabel("Successor backup file").setInputFiles({
+      name: "successor.json",
+      mimeType: "application/json",
+      buffer: Buffer.from(JSON.stringify(data.successor)),
+    });
+    await form.getByLabel("Successor backup passphrase").fill(PASSPHRASE);
+    for (const checkbox of await form.getByRole("checkbox").all())
+      await checkbox.check();
+    const ownBefore = await self.history(data.old.identity);
+    const mirrorBefore = await mirror.history(data.old.identity);
+    expect(ownBefore.heads).toEqual([data.transfer.id]);
+    expect(mirrorBefore.heads).toEqual(ownBefore.heads);
+    expect((await self.history(data.successor.identity)).events).toEqual([]);
+    expect((await mirror.history(data.successor.identity)).events).toEqual([]);
+
+    // Only the mirror receives this successor event. Old-key heads stay fixed.
+    mirror.hold();
+    const acceptance = await page.evaluate(
+      async ({ data, passphrase }) => {
+        const { unlockKey } = await import(String("/src/data/keys.ts"));
+        const { signWith } = await import(String("/src/data/lifecycle.ts"));
+        return signWith(
+          await unlockKey(data.successor, passphrase),
+          data.successor.identity,
+          [],
+          { kind: "identity.accept", transfer: data.transfer.id },
+        );
+      },
+      { data, passphrase: PASSPHRASE },
+    );
+    await mirror.admit(acceptance);
+    const captured = await mirror.pending();
+    expect(captured.accepted).not.toBe(captured.completed);
+    expect(await self.history(data.old.identity)).toEqual(ownBefore);
+    expect((await mirror.history(data.old.identity)).heads).toEqual(
+      mirrorBefore.heads,
+    );
+    expect((await self.history(data.successor.identity)).events).toEqual([]);
+    expect((await mirror.history(data.successor.identity)).events).toEqual([
+      acceptance.envelope.id,
+    ]);
+    expect(await mirror.history(data.successor.identity, false)).toEqual({
+      snapshot: captured.completed,
+      heads: [],
+      events: [],
+    });
+    expect(await mirror.ordinary()).toEqual([
+      captured.completed,
+      captured.completed,
+      captured.completed,
+    ]);
+    expect(
+      await page.evaluate(async (identity) => {
+        const { LocalStore } = await import(String("/src/data/store.ts"));
+        const { loadOwnHistory } = await import(String("/src/data/history.ts"));
+        const own = await loadOwnHistory(new LocalStore(), identity, {
+          accepted: true,
+        });
+        return { complete: own.complete, events: [...own.events.keys()] };
+      }, data.successor.identity),
+    ).toEqual({ complete: true, events: [] });
+
+    await mirror.watchSignatures();
+    await form
+      .getByRole("button", { name: "Sign one recovery acceptance" })
+      .click();
+    await expect(page.getByRole("status")).toContainText(
+      /acceptance search changed|One recovery acceptance is saved/,
+    );
+    expect(await mirror.signatures()).toBe(0);
+    expect(
+      await page.evaluate(async () => {
+        const { LocalStore } = await import(String("/src/data/store.ts"));
+        return (await new LocalStore().list("outbox")).length;
+      }),
+    ).toBe(0);
+    await expect(page.getByRole("status")).toContainText(
+      "acceptance search changed",
+    );
+    const recovery = page.getByRole("region", { name: "Acceptance recovery" });
+    await expect(recovery).toContainText(acceptance.envelope.id);
+    await expect(recovery).toContainText("authenticated acceptance");
+    expect(await self.history(data.old.identity)).toEqual(ownBefore);
+    expect((await self.history(data.successor.identity)).events).toEqual([]);
+    expect((await mirror.pending()).completed).toBe(captured.completed);
+  } finally {
+    await mirror.close();
+    await self.close();
+  }
+});
+
+test("recovery blocks signatures when a peer's final accepted snapshot keeps expiring", async ({
+  page,
+}) => {
+  const self = await acceptedHistoryFixture(page);
+  let expired = 0;
+  let pattern: string | null = null;
+  try {
+    const data = await transferFixture(page);
+    await page.goto("/identity/transfer");
+    const form = page.getByRole("form", { name: "Recover a lost acceptance" });
+    await expect(form).toBeVisible();
+    await form.getByLabel("Successor backup file").setInputFiles({
+      name: "successor.json",
+      mimeType: "application/json",
+      buffer: Buffer.from(JSON.stringify(data.successor)),
+    });
+    await form.getByLabel("Successor backup passphrase").fill(PASSPHRASE);
+    for (const checkbox of await form.getByRole("checkbox").all())
+      await checkbox.check();
+
+    // Only the final successor scan expires. The approved preview was complete.
+    pattern = `**/api/v1/identities/${encodeURIComponent(data.successor.identity)}/activity**`;
+    await page.route(pattern, async (route) => {
+      const url = new URL(route.request().url());
+      if (
+        url.searchParams.get("accepted") !== "1" ||
+        !url.searchParams.has("snapshot")
+      )
+        return route.fallback();
+      expired++;
+      await route.fulfill({
+        status: 410,
+        contentType: "application/json",
+        body: JSON.stringify({
+          code: "snapshot_expired",
+          message: "The fixture snapshot expired.",
+          event: null,
+          field: null,
+        }),
+      });
+    });
+    await self.watchSignatures();
+    await form
+      .getByRole("button", { name: "Sign one recovery acceptance" })
+      .click();
+    await expect(page.getByRole("status")).toContainText(
+      "acceptance search changed",
+    );
+    await expect(page.locator("main")).toContainText(
+      "incomplete: the server snapshots kept expiring. Retry before signing",
+    );
+    await expect(
+      page.getByRole("region", { name: "Acceptance recovery" }),
+    ).toContainText(
+      "Recovery needs a complete answer from every configured peer",
+    );
+    await expect(
+      page.getByRole("button", { name: "Sign one recovery acceptance" }),
+    ).toHaveCount(0);
+    expect(expired).toBe(3);
+    expect(await self.signatures()).toBe(0);
+    expect(
+      await page.evaluate(async () => {
+        const { LocalStore } = await import(String("/src/data/store.ts"));
+        return (await new LocalStore().list("outbox")).length;
+      }),
+    ).toBe(0);
+  } finally {
+    if (pattern) await page.unroute(pattern);
+    await self.close();
+  }
+});
+
 test("concurrent recovery writes save one acceptance and finish delivery with the original transfer", async ({
   page,
 }) => {

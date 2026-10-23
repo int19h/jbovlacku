@@ -151,6 +151,35 @@ export async function acceptedHistoryFixture(page: Page, base = "/api/v1") {
       await service.admitMany([utf8(JSON.stringify(transport))]);
       if (!gate) await service.flushMaterialization();
     },
+    async history(identity: string, accepted = true) {
+      const read = async (path: string) => {
+        const response = await service.fetch(
+          new Request("http://localhost/api/v1" + path),
+        );
+        if (!response.ok) throw new Error(await response.text());
+        return response.json();
+      };
+      const key = encodeURIComponent(identity);
+      const activity = await read(
+        `/identities/${key}/activity${accepted ? "?accepted=1" : ""}`,
+      );
+      const heads = await read(
+        `/identity-heads/${key}?snapshot=${encodeURIComponent(activity.snapshot)}`,
+      );
+      if (activity.next !== null || heads.next !== null)
+        throw new Error("The fixture history exceeds one page.");
+      if (heads.snapshot !== activity.snapshot)
+        throw new Error("The fixture history changed snapshots.");
+      if (accepted && activity.history !== "accepted")
+        throw new Error("The fixture did not return accepted history.");
+      return {
+        snapshot: activity.snapshot as string,
+        heads: heads.heads as string[],
+        events: activity.items.map(
+          (item: { id: string }) => item.id,
+        ) as string[],
+      };
+    },
     hold() {
       gate = deferred();
       entered = deferred();
