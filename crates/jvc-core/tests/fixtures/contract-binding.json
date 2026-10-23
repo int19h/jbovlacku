@@ -3,7 +3,7 @@
   "contract": "docs/format.md",
   "language_rule": "well-formed RFC 5646 section 2.1 syntax, lowercase ASCII, at most 63 bytes; no IANA registry membership test",
   "sha256": {
-    "docs/format.md": "sha256:bb8871848da3080d99c85b464de9816c44ff8887176fd0b3ac087162cec0f9b0",
+    "docs/format.md": "sha256:52d2c2be53bc5849351303ed7a970962eecb557e1d84cdc3929105f29a817f87",
     "tests/fixtures/provenance.json": "sha256:e3c5cc73cdb7d84775e94fbd43919d84556587501087ed6d5a3f29abef0ed74d",
     "tests/fixtures/corpus.json": "sha256:f0bb55fa96b4130609d3cd3e7b45c51bb1de7b13eb524e7d298647c0643e16e8",
     "tests/fixtures/definition.json": "sha256:db22b039c31d791c65189d872eb809ed1929fc4e9e0aaebe960ea9d856808e68"

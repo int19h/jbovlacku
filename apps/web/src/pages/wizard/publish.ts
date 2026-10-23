@@ -8,6 +8,7 @@
 import { rafsiPairId } from "../../../../../packages/core/src/index.ts";
 import {
   el,
+  inlineProse,
   p,
   text,
   link,
@@ -153,8 +154,7 @@ export async function publishPage(
               "display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 12px",
           },
           el("p", {
-            style:
-              "font-size:38px;line-height:1.1;font-weight:680;letter-spacing:-0.02em",
+            class: "builder-form",
             lang: "jbo",
             text: body.word.spelling,
           }),
@@ -201,7 +201,9 @@ export async function publishPage(
       el(
         "p",
         { class: "small", style: "margin-top:6px" },
-        link("Edit", draft.parents.length ? "/new/editor" : "/new/places"),
+        link("Edit", draft.parents.length ? "/new/editor" : "/new/places", {
+          class: "touch-link",
+        }),
         text(" returns to the retained draft."),
       ),
     );
@@ -245,16 +247,19 @@ export async function publishPage(
     );
     for (const claim of collisions) {
       const line = el("p", { class: "warn" });
-      line.append(text(`${claim.rafsi} is also claimed by `));
-      claim.competitors.forEach((competitor, index) => {
-        if (index) line.append(text(", "));
-        line.append(
-          link(competitor.spelling, routes.word(competitor.spelling), {
-            lang: "jbo",
-          }),
-        );
-      });
-      line.append(text(". Readers judge each pair separately."));
+      line.append(
+        inlineProse(
+          "The competing word links belong to this rafsi claim sentence.",
+          text(`${claim.rafsi} is also claimed by `),
+          ...claim.competitors.flatMap((competitor, index) => [
+            text(index ? ", " : ""),
+            link(competitor.spelling, routes.word(competitor.spelling), {
+              lang: "jbo",
+            }),
+          ]),
+          text(". Readers judge each pair separately."),
+        ),
+      );
       conflicts.append(line);
     }
   }
@@ -296,11 +301,14 @@ export async function publishPage(
         for (const c of foundRoots) {
           const line = el("p", { class: "warn" });
           line.append(
-            text(
-              `${newRoots.includes(c) ? "New since the recorded run: " : "Acknowledged in the recorded evidence: "}${c.rule} conflict with `,
+            inlineProse(
+              "The word link belongs to this root conflict sentence.",
+              text(
+                `${newRoots.includes(c) ? "New since the recorded run: " : "Acknowledged in the recorded evidence: "}${c.rule} conflict with `,
+              ),
+              link(c.spelling, routes.word(c.spelling), { lang: "jbo" }),
+              text("."),
             ),
-            link(c.spelling, routes.word(c.spelling), { lang: "jbo" }),
-            text("."),
           );
           conflicts.append(line);
         }
@@ -323,9 +331,12 @@ export async function publishPage(
         el(
           "p",
           { class: "warn" },
-          text(`${c.rafsi} is also claimed by `),
-          link(c.spelling, routes.word(c.spelling), { lang: "jbo" }),
-          text("."),
+          inlineProse(
+            "The word link belongs to this component rafsi conflict sentence.",
+            text(`${c.rafsi} is also claimed by `),
+            link(c.spelling, routes.word(c.spelling), { lang: "jbo" }),
+            text("."),
+          ),
         ),
       );
     }
@@ -350,7 +361,9 @@ export async function publishPage(
           text(
             `${existing.definitions.length} definition${existing.definitions.length === 1 ? "" : "s"} of ${body?.word.spelling} already exist in the selected view. Yours is added as an alternative. `,
           ),
-          link("Open the word", routes.word(body!.word.spelling)),
+          link("Open the word", routes.word(body!.word.spelling), {
+            class: "touch-link",
+          }),
         );
       else if (!existing.definitions.length)
         existingLine.append(
@@ -395,12 +408,15 @@ export async function publishPage(
     el(
       "p",
       { class: "small", style: "margin-top:10px" },
-      text("New definitions use "),
-      link("CC0 1.0", "https://creativecommons.org/publicdomain/zero/1.0/", {
-        rel: "noopener noreferrer",
-        target: "_blank",
-      }),
-      text(". By publishing, you release your contribution under CC0 1.0."),
+      inlineProse(
+        "The license link is part of the contribution rights sentence.",
+        text("New definitions use "),
+        link("CC0 1.0", "https://creativecommons.org/publicdomain/zero/1.0/", {
+          rel: "noopener noreferrer",
+          target: "_blank",
+        }),
+        text(". By publishing, you release your contribution under CC0 1.0."),
+      ),
     ),
   );
   if (draft.revisedImport)
@@ -416,14 +432,16 @@ export async function publishPage(
         "p",
         { class: "notice", style: "margin-top:12px" },
         text("Publishing needs your key. "),
-        link("Create or import a key", routes.localIdentity),
+        link("Create or import a key", routes.localIdentity, {
+          class: "touch-link",
+        }),
       ),
     );
   else if (!(await app.session.backupTested())) {
     if (!context.live()) return;
     panel.append(
       el(
-        "div",
+        "p",
         { class: "notice", style: "margin-top:12px" },
         text("Your key backup is untested. "),
         link("Test it", routes.localIdentity),
@@ -688,7 +706,9 @@ export async function publishPage(
                   "The local package changed during review. Review its current conflicts before publishing.",
                   "notice",
                 ),
-                link("Review updated conflicts", "/new/publish?review=1"),
+                link("Review updated conflicts", "/new/publish?review=1", {
+                  class: "touch-link",
+                }),
               );
               return;
             }
@@ -723,7 +743,9 @@ export async function publishPage(
                       "p",
                       { class: "notice" },
                       text(`${error.message} `),
-                      link("Review the newer draft", "/new/publish"),
+                      link("Review the newer draft", "/new/publish", {
+                        class: "touch-link",
+                      }),
                     ),
                   );
                   app.announce(error.message);
@@ -791,7 +813,8 @@ export async function publishPage(
     },
     {
       class: "btn btn-primary",
-      style: "margin-top:14px;width:100%;min-height:48px;font-size:17px",
+      style:
+        "margin-top:14px;width:100%;--target-min-height:48px;font-size:17px",
     },
   );
   if (blocking.length)
@@ -861,7 +884,7 @@ function renderSavedGroup(app: App, outcome: HTMLElement, items: OutboxItem[]) {
           ? `${unfinished.length} of ${items.length} signed records did not finish delivery. They are kept in this browser with their exact bytes and sent again automatically. Publishing again would create a second definition, so this page offers delivery of the saved records instead. `
           : `All ${items.length} signed records were accepted. `,
       ),
-      link("See Not delivered", routes.outbox),
+      link("See Not delivered", routes.outbox, { class: "touch-link" }),
     ),
   );
   const list = el("ul", { class: "small", style: "margin:8px 0 0" });
@@ -899,14 +922,13 @@ function renderSavedGroup(app: App, outcome: HTMLElement, items: OutboxItem[]) {
           retry.disabled = false;
         }
       },
-      { class: "btn", style: "min-height:40px" },
+      { class: "btn" },
     );
     actions.append(retry);
   }
   actions.append(
     link("Open the record", routes.definition(definition.id), {
       class: "btn btn-quiet",
-      style: "min-height:40px",
     }),
   );
   box.append(

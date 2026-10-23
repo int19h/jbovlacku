@@ -256,19 +256,9 @@ The bottom actions are Back and “Use <form>.”
 The source and candidate column uses a 520px basis. The selected-form column uses a 280px basis, with a 40px gap.
 
 Source rows show seven columns: Language, Weight, Word, Said, Stem, Stem said, and Letters.
-Language and Weight show the language and resolved weight. Word shows the native spelling, and Said shows its pronunciation with stress.
-Stem shows the part that supplies the letters. Stem said shows its pronunciation. Letters is the editable scoring input.
-
-The signed source fields are `language`, `weight`, `word`, `word_ipa`, `stem`, `ipa`, and `input`, respectively.
-If `input` is null, Letters stays empty. For `format: "lojbanized"`, Letters shows the exact `input.text`.
-
-For `format: "ipa"`, Letters shows a preview from the recorded versioned conversion rule when the app supports that rule.
-Otherwise, Letters stays empty and the screen shows that conversion is unavailable. It keeps the original IPA algorithm input visible beside Letters.
-That input stays distinct from the stem pronunciation `ipa`. The screen never guesses or fills `ipa` from it.
-The preview preserves the original stored `input` bytes.
-
-The pronunciation and stem fields remain published and do not affect the score.
-An absent or null pronunciation or stem field means unknown and stays empty for an older record.
+Language, Weight, Word, Said, and Letters map to signed source fields. Accepted Notes also enter the signed source.
+Stem and Stem said stay private in the draft and AI log.
+The [source input rules](frontend.md#step-3b-gismu-generator) define each column and its display for missing, Lojbanized, and IPA inputs.
 
 The preset select offers documented CLL 1995, CLL 1987, twelve-language, and custom profiles when their sourced parameters exist.
 Every named preset exposes pinned source evidence, resolved weights, normalization, and rule versions.
@@ -303,7 +293,8 @@ Repeated field labels include the place number in their accessible names.
 
 Kind of thing is a convenient view over the full `type_hints` schema.
 It preserves alternatives, tags, custom HTTPS tags, abstractors, relation arity, and notes.
-The mock menu's object, event, property, number, and unspecified choices are not a closed protocol enumeration.
+The mock menu's anything (referent), event, property, number, and unspecified choices are not a closed protocol enumeration.
+Anything (referent) includes events, numbers, and other referents. Several alternatives can read “event or number”.
 From edits `derivation`, with source word, nullable exact definition ID, source place, and explanation.
 It does not infer a source place from array position.
 
@@ -398,10 +389,15 @@ Each waiting record names its target and action, last attempt, next retry, Try n
 
 Stop retrying stops future attempts to all still-unfinished selected peers for that record.
 The app retains signed bytes and receipts. The row stays listed with “Stopped” in place of the next-retry sentence.
-It offers Resume, Save as file, and Discard. The header marker counts waiting and stopped records and stays while either exists.
+It offers Resume and Save as file. The header marker counts waiting and stopped records and stays while either exists.
 Stopping does not retract a public record or guarantee that an in-flight request stopped.
 
+Offer Discard only when no later local own record reaches this stopped record through predecessor links.
+Otherwise, explain that later records depend on it and keep Resume and Save as file. A server copy does not lift this restriction.
 Discard asks first, then deletes the local signed bytes and receipts. It does not retract a copy that a server already holds.
+
+The app removes the discarded ID and recomputes maximal own references from the remaining local graph.
+Retained predecessors return to the local frontier when no remaining own record succeeds them.
 
 Unknown delivery states explain that the client asks whether the record arrived before it sends the same bytes again.
 The app stores bounded retry and backoff state. Connectivity return and reload resume eligible retries while the app is active.

@@ -146,8 +146,6 @@ test("source comparison ignores key order and optional nulls but keeps exact evi
   const historical: FormationSource = {
     word: "book",
     word_ipa: null,
-    stem: null,
-    ipa: null,
     input: { text: " Buk ", format: "lojbanized" },
     language: "en",
     notes: [["A note\nline two"]],
@@ -181,8 +179,6 @@ test("source comparison treats blank optional pronunciation as unknown and keeps
     weight: null,
     notes: [],
     word_ipa: " \n",
-    stem: "\t",
-    ipa: " ",
   };
   const omitted: FormationSource = {
     language: "en",

@@ -53,6 +53,10 @@ export interface GismuRowState {
   /** Supplementary evidence, retained without parsing it into signed fields. */
   notes?: RichText;
   notesStale?: boolean;
+  /** Absent on older drafts until the author identifies earlier AI paragraphs. */
+  aiNoteGroup?: { index: number; paragraph: RichText[number] }[];
+  /** Retained evidence that the author must approve for a changed source word. */
+  sourceReview?: SourceReview[];
   language: string;
   name: string;
   word: string;
@@ -63,6 +67,12 @@ export interface GismuRowState {
   /** Original signed input, separate from the supported scoring letters. */
   inputOriginal?: FormationSource["input"];
   weight: { numerator: string; denominator: string } | null;
+}
+export interface SourceReview {
+  field: "word_ipa" | "stem" | "ipa" | "input" | "notes";
+  index?: number;
+  word: string;
+  value: unknown;
 }
 /** Migrate browser aliases only when the signed field is absent, including null. */
 export function normalizeSourceRow(row: GismuRowState): GismuRowState {
@@ -91,7 +101,8 @@ export function sourceRowsFromFormation(
       ...structuredClone(source),
       name: source.language,
       input: source.input?.format === "lojbanized" ? source.input.text : "",
-      inputOriginal: structuredClone(source.input),
+      inputOriginal: structuredClone(source.input ?? null),
+      aiNoteGroup: [],
       weight: source.weight
         ? {
             numerator: String(source.weight.numerator),
@@ -100,6 +111,115 @@ export function sourceRowsFromFormation(
         : null,
     }),
   );
+}
+/** Start another word without copying its evidence or private review state. */
+export function alternativeSourceRow(row: GismuRowState): GismuRowState {
+  return {
+    id: sourceRowId(),
+    language: row.language,
+    name: row.name,
+    word: "",
+    input: "",
+    word_ipa: null,
+    stem: null,
+    ipa: null,
+    weight: row.weight ? { ...row.weight } : null,
+    aiNoteGroup: [],
+  };
+}
+/** The author identifies earlier AI notes without relying on paragraph prefixes. */
+export function setSourceAiNoteGroup(row: GismuRowState, indexes: number[]) {
+  const notes = sourceNotes(row);
+  if (indexes.some((index) => !Number.isInteger(index) || !notes[index]))
+    throw new Error("Choose existing paragraphs for the earlier AI notes.");
+  row.aiNoteGroup = [...new Set(indexes)]
+    .sort((a, b) => a - b)
+    .map((index) => ({
+      index,
+      paragraph: structuredClone(notes[index]),
+    }));
+}
+const sameValue = (left: unknown, right: unknown) =>
+  JSON.stringify(left) === JSON.stringify(right);
+/** Edited AI paragraphs become authored notes. Exact retained paragraphs keep their group. */
+export function editSourceNotes(row: GismuRowState, notes: RichText) {
+  const before = sourceNotes(row);
+  if (sameValue(before, notes)) {
+    row.aiNoteGroup = row.aiNoteGroup?.filter((entry) =>
+      sameValue(before[entry.index], entry.paragraph),
+    );
+    row.notes = structuredClone(notes);
+    return;
+  }
+  const available = new Set(notes.map((_, index) => index));
+  const mapped = new Map<number, number>();
+  // Match exact paragraphs in their original order, including duplicate text.
+  for (let oldIndex = 0; oldIndex < before.length; oldIndex++) {
+    const index = [...available].find((index) =>
+      sameValue(before[oldIndex], notes[index]),
+    );
+    if (index === undefined) continue;
+    mapped.set(oldIndex, index);
+    available.delete(index);
+  }
+  if (row.aiNoteGroup)
+    row.aiNoteGroup = row.aiNoteGroup.flatMap((entry) => {
+      const index = mapped.get(entry.index);
+      const uniqueBefore =
+        before.filter((paragraph) => sameValue(paragraph, entry.paragraph))
+          .length === 1;
+      const uniqueAfter =
+        notes.filter((paragraph) => sameValue(paragraph, entry.paragraph))
+          .length === 1;
+      return uniqueBefore &&
+        uniqueAfter &&
+        index !== undefined &&
+        sameValue(before[entry.index], entry.paragraph)
+        ? [{ index, paragraph: structuredClone(notes[index]) }]
+        : [];
+    });
+  row.sourceReview = (row.sourceReview ?? []).flatMap((mark) => {
+    if (mark.field !== "notes") return [mark];
+    const index = mapped.get(mark.index!);
+    return index === undefined ? [] : [{ ...mark, index }];
+  });
+  row.notes = structuredClone(notes);
+}
+export function sourceReviewMarks(row: GismuRowState): SourceReview[] {
+  return row.sourceReview ?? [];
+}
+/** Keep approves one retained value. Clear removes only that value. */
+export function resolveSourceReview(
+  row: GismuRowState,
+  markIndex: number,
+  action: "keep" | "clear",
+) {
+  const mark = row.sourceReview?.[markIndex];
+  if (!mark) throw new Error("This source review no longer exists.");
+  if (action === "clear") {
+    if (mark.field === "notes") {
+      const index = mark.index!;
+      const notes = sourceNotes(row);
+      notes.splice(index, 1);
+      row.notes = notes;
+      row.aiNoteGroup = row.aiNoteGroup?.flatMap((entry) =>
+        entry.index === index
+          ? []
+          : [
+              {
+                ...entry,
+                index: entry.index > index ? entry.index - 1 : entry.index,
+              },
+            ],
+      );
+      for (const other of row.sourceReview!)
+        if (other.field === "notes" && other.index! > index) other.index!--;
+    } else if (mark.field === "input") {
+      row.input = "";
+      row.inputOriginal = null;
+    } else row[mark.field] = null;
+  }
+  row.sourceReview!.splice(markIndex, 1);
 }
 export interface GismuState {
   preset: string | null;
@@ -338,7 +458,7 @@ export function rational(value: { numerator: string; denominator: string }) {
   }
   return { numerator: Number(a), denominator: Number(b) };
 }
-/** Keep supplementary notes separate from signed pronunciation and stem fields. */
+/** Keep supplementary notes separate from pronunciation and private stem fields. */
 export function sourceNotes(row: GismuRowState) {
   if (row.notes) return structuredClone(row.notes);
   return [
@@ -362,10 +482,7 @@ export function formationSource(raw: GismuRowState): FormationSource {
     weight: row.weight ? rational(row.weight) : null,
     notes: sourceNotes(row),
   };
-  for (const field of ["word_ipa", "stem", "ipa"] as const) {
-    const value = row[field];
-    if (value?.trim()) source[field] = value;
-  }
+  if (row.word_ipa?.trim()) source.word_ipa = row.word_ipa;
   return source;
 }
 /** Compare interpreted evidence without changing exact input or note text. */
@@ -381,8 +498,6 @@ export function sameFormationSources(
         weight: source.weight ?? null,
         notes: source.notes ?? [],
         word_ipa: source.word_ipa?.trim() ? source.word_ipa : null,
-        stem: source.stem?.trim() ? source.stem : null,
-        ipa: source.ipa?.trim() ? source.ipa : null,
       })),
       (_name, value) =>
         value && typeof value === "object" && !Array.isArray(value)
@@ -419,7 +534,7 @@ export function formationSourcesFromRows(
         [row.word, row.input, row.sense, row.note].some((value) =>
           value?.trim(),
         ) ||
-        [row.word_ipa, row.stem, row.ipa].some((value) => !!value?.length) ||
+        !!row.word_ipa?.trim() ||
         Object.hasOwn(row, "inputOriginal") ||
         !!row.notes?.length,
     )
@@ -456,7 +571,7 @@ export function formationMetadata(options: {
   /** True when the form is the candidate the author chose from the run or entered under it. */
 }): Formation {
   const { result, candidate, rows, preset } = options;
-  const sources = rows.map(formationSource);
+  const sources = formationSourcesFromRows(rows);
   return {
     method: "algorithmic",
     algorithm: {

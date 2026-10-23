@@ -124,7 +124,7 @@ export function recomputePanel(
         run.disabled = false;
       }
     },
-    { class: "btn btn-quiet", style: "min-height:36px" },
+    { class: "btn btn-quiet" },
   );
   body.append(
     p(

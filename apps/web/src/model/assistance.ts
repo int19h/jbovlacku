@@ -6,6 +6,7 @@ import {
   coreProblems,
   draftToBody,
   hintForChoice,
+  signedFormation,
 } from "./draft.ts";
 import type { DraftProblem } from "./draft.ts";
 import type {
@@ -28,6 +29,10 @@ import {
   formationSource,
   normalizeSourceRow,
   syncFormationSources,
+  sourceNotes,
+  editSourceNotes,
+  type GismuRowState,
+  type SourceReview,
 } from "./builders.ts";
 
 export type Operation =
@@ -77,6 +82,7 @@ export interface AssistanceRecord {
   log_id?: string;
   error: string | null;
   state: "done" | "failed" | "accepted" | "dismissed" | "undone";
+  sourceTarget?: SourceTarget;
   patches?: { path: (string | number)[]; before: unknown; after: unknown }[];
   before?: Partial<Draft>;
   after?: Partial<Draft>;
@@ -159,7 +165,12 @@ export function currentDraft(draft: Draft): Current {
     text: draft.text,
     frame: body?.frame ?? frame,
     glosses: draft.glosses.map(gloss),
-    formation: draft.formation,
+    formation:
+      body?.etymology.formation ??
+      signedFormation(
+        draft.formation,
+        draft.gismu ? true : (draft.retainedFormationSources ?? false),
+      ),
     compound: draft.compound,
   });
 }
@@ -213,6 +224,7 @@ export function validateSuggestion(
     )
       throw new Error("The suggested selma'o is invalid.");
   }
+  if (operation === "gismu-sources") sourceProposal(s);
   if (operation === "lujvo" && !s.proposals.some((p) => p.path === "/compound"))
     throw new Error("A lujvo suggestion needs checked components.");
   // Provider metadata can exceed the browser's structured-clone nesting limit.
@@ -434,83 +446,207 @@ export function sourceCurrent(draft: Draft, id: string | number): Current {
   };
   return current;
 }
+export interface SourceTarget {
+  id: string;
+  index: number;
+  language: string;
+  row: GismuRowState;
+}
+export function captureSourceTarget(draft: Draft, id: string): SourceTarget {
+  const index = draft.gismu?.rows.findIndex((row) => row.id === id) ?? -1;
+  const row = draft.gismu?.rows[index];
+  if (!row) throw new Error("This source row no longer exists.");
+  return { id, index, language: row.language, row: structuredClone(row) };
+}
+/** Row order can change after comparison. Changed row values need a new request. */
+export function sourceTargetMatches(
+  draft: Draft,
+  target: SourceTarget,
+): boolean {
+  const row = draft.gismu?.rows.find((row) => row.id === target.id);
+  const values = (row: GismuRowState) => {
+    const { id, aiNoteGroup, sourceReview, notesStale, ...value } = row;
+    void id;
+    void aiNoteGroup;
+    void sourceReview;
+    void notesStale;
+    return semanticKey(value);
+  };
+  return (
+    !!row &&
+    row.language === target.language &&
+    values(row) === values(target.row)
+  );
+}
+/** A source proposal is a partial private edit, separate from a signed source. */
+export interface SourceProposal {
+  word?: string;
+  word_ipa?: string;
+  stem?: string;
+  ipa?: string;
+  input?: { format: "lojbanized"; text: string };
+  notes: RichText;
+}
+export function sourceProposal(result: Suggestion): SourceProposal {
+  const sources = result.proposals.find(
+    (proposal) => proposal.path === "/formation/sources",
+  )?.value;
+  const invalid = () => {
+    throw new Error("The source suggestion contains invalid draft edits.");
+  };
+  if (!Array.isArray(sources) || sources.length !== 1) return invalid();
+  const source = sources[0];
+  if (!source || typeof source !== "object" || Array.isArray(source))
+    return invalid();
+  const allowed = ["word", "word_ipa", "stem", "ipa", "input", "notes"];
+  if (Object.keys(source).some((key) => !allowed.includes(key)))
+    return invalid();
+  for (const key of ["word", "word_ipa", "stem", "ipa"])
+    if (
+      Object.hasOwn(source, key) &&
+      (typeof source[key] !== "string" || !source[key].trim())
+    )
+      return invalid();
+  if (
+    Object.hasOwn(source, "input") &&
+    (!source.input ||
+      typeof source.input !== "object" ||
+      Array.isArray(source.input) ||
+      Object.keys(source.input).sort().join(",") !== "format,text" ||
+      source.input.format !== "lojbanized" ||
+      typeof source.input.text !== "string" ||
+      !source.input.text.trim())
+  )
+    return invalid();
+  if (
+    !Array.isArray(source.notes) ||
+    source.notes.some(
+      (paragraph: unknown) =>
+        !Array.isArray(paragraph) ||
+        paragraph.length !== 1 ||
+        typeof paragraph[0] !== "string" ||
+        !/^(Sense|Note): [\s\S]*\S[\s\S]*$/.test(paragraph[0]),
+    )
+  )
+    return invalid();
+  // A model can provide only one new paragraph for each answer field.
+  if (
+    new Set(
+      source.notes.map((paragraph: string[]) => paragraph[0].split(": ")[0]),
+    ).size !== source.notes.length
+  )
+    return invalid();
+  return structuredClone(source) as SourceProposal;
+}
+/** Replace the tracked AI paragraphs and preserve authored notes in their order. */
+function replaceSourceAiNotes(
+  row: GismuRowState,
+  notes: RichText,
+): Set<number> {
+  if (!row.aiNoteGroup)
+    throw new Error(
+      "Identify the earlier AI notes or choose No earlier AI notes before accepting this source.",
+    );
+  // Direct edits that bypass the ordinary editor also become authored text.
+  const before = sourceNotes(row);
+  editSourceNotes(row, before);
+  const group = new Set(row.aiNoteGroup!.map((entry) => entry.index));
+  const insertion = group.size ? Math.min(...group) : before.length;
+  const after: RichText = [];
+  const retained = new Set<number>();
+  let aiStart = 0;
+  for (let index = 0; index <= before.length; index++) {
+    if (index === insertion) {
+      aiStart = after.length;
+      after.push(...structuredClone(notes));
+    }
+    if (index < before.length && !group.has(index)) {
+      retained.add(after.length);
+      after.push(before[index]);
+    }
+  }
+  // Preserve earlier review marks while their paragraphs move around the AI group.
+  for (const mark of row.sourceReview ?? []) {
+    if (mark.field !== "notes") continue;
+    const preceding = before
+      .slice(0, mark.index)
+      .filter((_, index) => !group.has(index)).length;
+    mark.index = preceding + (mark.index! >= insertion ? notes.length : 0);
+  }
+  row.sourceReview = row.sourceReview?.filter(
+    (mark) => mark.field !== "notes" || retained.has(mark.index!),
+  );
+  row.notes = after;
+  row.aiNoteGroup = notes.map((paragraph, index) => ({
+    index: aiStart + index,
+    paragraph: structuredClone(paragraph),
+  }));
+  return retained;
+}
 export function applySource(
   draft: Draft,
   id: string | number,
   result: Suggestion,
+  target?: SourceTarget,
 ) {
-  const index =
+  if (target && !sourceTargetMatches(draft, target))
+    throw new Error("This source row changed. Request a new suggestion.");
+  const old =
     typeof id === "number"
-      ? id
-      : (draft.gismu?.rows.findIndex((r) => r.id === id) ?? -1);
-  const sources = result.proposals.find((p) => p.path === "/formation/sources")
-    ?.value as Formation["sources"];
-  const old = draft.gismu?.rows[index];
-  if (
-    !old ||
-    !Array.isArray(sources) ||
-    sources.length !== 1 ||
-    sources[0].language !== old.language ||
-    typeof sources[0].word !== "string" ||
-    !(
-      sources[0].input === null ||
-      (["lojbanized", "ipa"].includes(sources[0].input.format) &&
-        typeof sources[0].input.text === "string")
-    )
-  )
-    throw new Error("The source suggestion does not match this language row.");
-  const source = sources[0];
-  const rows = draft.gismu!.rows;
-  const notes = source.notes
-    .flat()
-    .filter((n) => typeof n === "string")
-    .join("\n");
-  const labels = ["Sense", "Word IPA", "Stem", "Stem IPA", "Note"];
-  const extract = (label: string) => {
-    // New replies use one paragraph per supplementary field. Read the latest
-    // value and keep all of its whitespace and line breaks.
-    const paragraph = source.notes.findLast(
-      (parts) =>
-        typeof parts[0] === "string" && parts[0].startsWith(`${label}: `),
-    );
-    if (paragraph)
-      return paragraph
-        .filter((part) => typeof part === "string")
-        .join("")
-        .slice(label.length + 2);
-    const pattern = (name: string) =>
-      new RegExp(`(?:^|\\n)${name}: ?`, "i").exec(notes);
-    const match = pattern(label);
-    if (!match) return "";
-    const start = match.index + match[0].length;
-    const following = labels
-      .slice(labels.indexOf(label) + 1)
-      .map(pattern)
-      .filter(
-        (entry): entry is RegExpExecArray => !!entry && entry.index >= start,
-      );
-    const end = following.length
-      ? Math.min(...following.map((entry) => entry.index))
-      : notes.length;
-    return notes.slice(start, end);
+      ? draft.gismu?.rows[id]
+      : draft.gismu?.rows.find((row) => row.id === id);
+  if (!old) throw new Error("This source row no longer exists.");
+  const source = sourceProposal(result);
+  const row = normalizeSourceRow(structuredClone(old));
+  const before = formationSource(row);
+  const previous = {
+    word_ipa: row.word_ipa,
+    stem: row.stem,
+    ipa: row.ipa,
+    input: before.input,
   };
-  rows[index] = {
-    ...normalizeSourceRow(old),
-    word: source.word,
-    input: source.input?.format === "lojbanized" ? source.input.text : "",
-    inputOriginal: structuredClone(source.input),
-    notesStale: false,
-    sense: extract("Sense"),
-    word_ipa: source.word_ipa,
-    stem: source.stem,
-    ipa: source.ipa,
-    notes: structuredClone(source.notes),
-    note: source.notes.some(
-      (parts) => typeof parts[0] === "string" && parts[0].startsWith("Note: "),
-    )
-      ? extract("Note")
-      : extract("Note") || notes,
-  };
+  const retainedNotes = replaceSourceAiNotes(row, source.notes);
+  for (const field of ["word", "word_ipa", "stem", "ipa"] as const)
+    if (Object.hasOwn(source, field)) row[field] = source[field]!;
+  if (source.input) {
+    row.input = source.input.text;
+    row.inputOriginal = structuredClone(source.input);
+  }
+  if (source.word !== undefined && source.word !== old.word) {
+    const marks: SourceReview[] = [];
+    for (const field of ["word_ipa", "stem", "ipa", "input"] as const) {
+      const value = previous[field];
+      const current =
+        field === "input" ? formationSource(row).input : row[field];
+      if (
+        (typeof value === "string" ? value.trim() : value) &&
+        JSON.stringify(value) === JSON.stringify(current)
+      )
+        marks.push({ field, word: old.word, value: structuredClone(value) });
+    }
+    for (const index of retainedNotes) {
+      const paragraph = row.notes![index];
+      if (paragraph.length)
+        marks.push({
+          field: "notes",
+          index,
+          word: old.word,
+          value: structuredClone(paragraph),
+        });
+    }
+    row.sourceReview = marks;
+  }
+  // Keep legacy editor summaries in sync without deriving note ownership from prefixes.
+  const paragraphValue = (label: string) =>
+    source.notes.find(
+      (paragraph) =>
+        typeof paragraph[0] === "string" &&
+        paragraph[0].startsWith(`${label}: `),
+    )?.[0] as string | undefined;
+  row.sense = paragraphValue("Sense")?.slice(7) ?? "";
+  row.note = paragraphValue("Note")?.slice(6) ?? "";
+  row.notesStale = false;
+  Object.assign(old, row);
   draft.gismu!.selected = null;
   draft.gismu!.acknowledged = [];
   draft.publishAcknowledged = [];

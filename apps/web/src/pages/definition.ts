@@ -54,7 +54,7 @@ export async function definitionPage(
     main.append(
       el(
         "p",
-        { class: "small" },
+        { class: "small identity-meta" },
         text("Signed by "),
         identityLink(record.envelope.header.issuer),
       ),
@@ -297,7 +297,7 @@ export function comparison(
       { class: "meta" },
       text("Parent "),
       link(parent.envelope.id, routes.definition(parent.envelope.id), {
-        class: "fingerprint",
+        class: "fingerprint touch-link",
       }),
     ),
   );

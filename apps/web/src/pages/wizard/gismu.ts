@@ -36,6 +36,7 @@ import {
 import { navigate, type RenderContext, type Route } from "../../app/router.ts";
 import type { App } from "../../app/context.ts";
 import type { Draft } from "../../model/draft.ts";
+import type { RichText } from "../../model/types.ts";
 import { richTextToText, textToRichText } from "../../model/richtext.ts";
 import type { CachedPackage } from "../../data/search.ts";
 import {
@@ -51,6 +52,10 @@ import {
   sourceRowsFromFormation,
   sourceNotes,
   syncFormationSources,
+  alternativeSourceRow,
+  editSourceNotes,
+  sourceReviewMarks,
+  resolveSourceReview,
   type GismuRowState,
   type PackageInventory,
 } from "../../model/builders.ts";
@@ -74,6 +79,7 @@ function presetRows(
       language: language.language,
       name: language.name,
       word: old?.word ?? "",
+      ...(!old ? { aiNoteGroup: [] } : {}),
       input: old?.input ?? "",
       weight: {
         numerator: String(language.numerator),
@@ -174,7 +180,6 @@ export async function gismuPage(
   presetField.input.style.maxWidth = "100%";
   presetField.wrapper.style.maxWidth = "100%";
   presetField.wrapper.style.flexWrap = "wrap";
-  presetField.input.style.minHeight = "40px";
   presetField.input.addEventListener("change", () => {
     const chosen =
       presets.find((pr) => pr.id === presetField.input.value) ?? null;
@@ -250,6 +255,7 @@ export async function gismuPage(
         operation: "gismu-sources",
         current: () => sourceCurrent(draft, row.id!),
         apply: (d, r) => applySource(d, row.id!, r),
+        sourceRow: () => row,
       });
       control.dataset.sourceLabel = label;
       sourceControls.set(key, control);
@@ -389,7 +395,13 @@ export async function gismuPage(
   });
   const complete = () =>
     state.rows.length > 0 &&
-    state.rows.every((r) => r.input.trim() && r.weight && r.language.trim());
+    state.rows.every(
+      (r) =>
+        r.input.trim() &&
+        r.weight &&
+        r.language.trim() &&
+        !sourceReviewMarks(r).some((mark) => mark.field === "input"),
+    );
   const renderRows = () => {
     cleanupRows();
     const activeKeys = new Set(state.rows.map(sourceRowKey));
@@ -418,12 +430,16 @@ export async function gismuPage(
     if (preset) {
       presetNote.append(
         text(`${preset.description} Source: `),
-        link(preset.source_url, preset.source_url, { rel: "noreferrer" }),
+        link(preset.source_url, preset.source_url, {
+          class: "touch-link",
+          rel: "noreferrer",
+        }),
       );
       if (preset.reference_url)
         presetNote.append(
           text(" · reference: "),
           link(preset.reference_url, preset.reference_url, {
+            class: "touch-link",
             rel: "noreferrer",
           }),
         );
@@ -473,7 +489,7 @@ export async function gismuPage(
           class: "field",
           "aria-label": `Language tag of row ${index + 1}`,
           value: row.language,
-          style: "width:6rem;min-height:36px",
+          style: "width:6rem;",
         });
         code.addEventListener("change", () => {
           const previousName = row.name || row.language;
@@ -513,14 +529,14 @@ export async function gismuPage(
           "aria-label": `Weight numerator of row ${index + 1}`,
           value: row.weight?.numerator ?? "",
           inputmode: "numeric",
-          style: "width:4rem;min-height:36px",
+          style: "width:4rem;",
         });
         const d = el("input", {
           class: "field",
           "aria-label": `Weight denominator of row ${index + 1}`,
           value: row.weight?.denominator ?? "1",
           inputmode: "numeric",
-          style: "width:4rem;min-height:36px",
+          style: "width:4rem;",
         });
         const update = () => {
           const numerator = n.value.trim();
@@ -546,7 +562,7 @@ export async function gismuPage(
         class: "field",
         "aria-label": `Native word for ${row.name || row.language}`,
         value: row.word,
-        style: "min-width:8rem;min-height:36px",
+        style: "min-width:8rem;",
       });
       native.addEventListener("input", () => {
         if (row.word !== native.value && sourceNotes(row).length) {
@@ -564,7 +580,7 @@ export async function gismuPage(
         value: row.input,
         spellcheck: "false",
         lang: "jbo",
-        style: "width:9rem;min-height:36px",
+        style: "width:9rem;",
       });
       input.addEventListener("input", () => {
         row.input = input.value;
@@ -612,21 +628,13 @@ export async function gismuPage(
         button(
           "Alternative",
           () => {
-            state.rows.splice(index + 1, 0, {
-              id: sourceRowId(),
-              language: row.language,
-              name: row.name,
-              weight: row.weight ? { ...row.weight } : null,
-              word: "",
-              input: "",
-            });
+            state.rows.splice(index + 1, 0, alternativeSourceRow(row));
             saveSources();
             renderRows();
             schedule();
           },
           {
             class: "btn btn-quiet",
-            style: "min-height:36px",
             "aria-label": `Add an alternative word for ${row.name || row.language}`,
             title:
               "Another source word of the same language. It shares the weight and contributes its largest recognition.",
@@ -694,7 +702,7 @@ export async function gismuPage(
           hint: "Review all source notes. Edit the text or drop the notes before publication.",
         });
         notes.input.addEventListener("input", () => {
-          row.notes = textToRichText(notes.input.value, false);
+          editSourceNotes(row, textToRichText(notes.input.value, false));
           row.sense = "";
           row.note = "";
           row.notesStale = false;
@@ -707,7 +715,7 @@ export async function gismuPage(
           button(
             "Drop source notes",
             () => {
-              row.notes = [];
+              editSourceNotes(row, []);
               row.sense = "";
               row.note = "";
               row.notesStale = false;
@@ -737,9 +745,66 @@ export async function gismuPage(
           details.append(logButton);
         }
       }
+      const review = sourceReviewMarks(row);
+      if (review.length) {
+        const reviewBox = el("section", {
+          class: "notice source-review",
+          "aria-label": `Retained source evidence for ${row.name || row.language}`,
+        });
+        reviewBox.append(
+          p(
+            "The source word changed. Keep or clear each retained value before publication.",
+            "small",
+          ),
+        );
+        const labels = {
+          word_ipa: "Said",
+          stem: "Stem",
+          ipa: "Stem said",
+          input: "Letters",
+          notes: "Notes paragraph",
+        };
+        review.forEach((mark, markIndex) => {
+          const label = `${labels[mark.field]}${mark.field === "notes" ? ` ${(mark.index ?? 0) + 1}` : ""}`;
+          const value =
+            mark.field === "notes"
+              ? richTextToText([mark.value as RichText[number]])
+              : typeof mark.value === "string"
+                ? mark.value
+                : JSON.stringify(mark.value);
+          const line = el(
+            "div",
+            { class: "source-review-item" },
+            p(`${label}: earlier word "${mark.word}"`, "meta"),
+            el("pre", { text: value }),
+          );
+          for (const choice of ["keep", "clear"] as const)
+            line.append(
+              button(
+                choice === "keep" ? "Keep" : "Clear",
+                () => {
+                  resolveSourceReview(row, markIndex, choice);
+                  saveSources();
+                  renderRows();
+                  schedule();
+                },
+                {
+                  class: "btn btn-quiet",
+                  "aria-label": `${choice === "keep" ? "Keep" : "Clear"} ${label} for ${row.name || row.language}`,
+                },
+              ),
+            );
+          reviewBox.append(line);
+        });
+        details.append(reviewBox);
+      }
       details.append(control);
       const detailRow = el("tr", {}, details);
-      detailRows.set(sourceKey, { row: detailRow, notes: showNotes, control });
+      detailRows.set(sourceKey, {
+        row: detailRow,
+        notes: showNotes || review.length > 0,
+        control,
+      });
       tbody.append(detailRow);
     });
     table.append(tbody);
@@ -755,6 +820,7 @@ export async function gismuPage(
               language: "",
               name: "",
               word: "",
+              aiNoteGroup: [],
               input: "",
               weight: { numerator: "1", denominator: "1" },
             });
@@ -893,7 +959,6 @@ export async function gismuPage(
                 },
                 {
                   class: "btn btn-quiet",
-                  style: "min-height:36px",
                   "aria-label": `Choose ${candidate.form}`,
                 },
               ),
@@ -921,7 +986,7 @@ export async function gismuPage(
             saver.touch();
             schedule();
           },
-          { class: "btn btn-quiet", style: "min-height:36px" },
+          { class: "btn btn-quiet" },
         ),
       );
     for (const line of result.diagnostics) more.append(p(line, "meta"));
@@ -940,8 +1005,7 @@ export async function gismuPage(
       el("h2", {
         id: "sel-h",
         lang: "jbo",
-        style:
-          "margin:0;font-size:40px;line-height:1.1;font-weight:680;letter-spacing:-0.02em",
+        class: "builder-form",
         text: candidate.form,
       }),
     );
@@ -1045,15 +1109,19 @@ export async function gismuPage(
             "label",
             { class: "check" },
             input,
-            text(
-              ` ${conflict.rule === "identical" ? "identical to" : conflict.rule === "final-vowel" ? "differs only in the last vowel from" : "too close to"} `,
+            el(
+              "span",
+              { class: "acknowledgment-text" },
+              text(
+                `${conflict.rule === "identical" ? "identical to" : conflict.rule === "final-vowel" ? "differs only in the last vowel from" : "too close to"} `,
+              ),
+              link(
+                conflict.spelling,
+                `/word/${encodeURIComponent(conflict.spelling)}`,
+                { lang: "jbo", class: "touch-link" },
+              ),
+              text(` (${conflict.rule}). I keep this form.`),
             ),
-            link(
-              conflict.spelling,
-              `/word/${encodeURIComponent(conflict.spelling)}`,
-              { lang: "jbo" },
-            ),
-            text(` (${conflict.rule}). I keep this form.`),
           ),
         );
       }
@@ -1069,6 +1137,7 @@ export async function gismuPage(
             text(`${r.rafsi} is claimed by `),
             link(r.spelling, `/word/${encodeURIComponent(r.spelling)}`, {
               lang: "jbo",
+              class: "touch-link",
             }),
           ),
         );
@@ -1138,11 +1207,9 @@ export async function gismuPage(
   };
   const schedule = () => {
     clearTimeout(timer);
-    result = null;
-    resultFingerprint = null;
     failure = null;
-    renderCandidates();
-    renderSelected();
+    status.textContent = "Calculating…";
+    refreshPrimary();
     timer = setTimeout(run, 250);
   };
   let bar: HTMLElement;
@@ -1159,6 +1226,15 @@ export async function gismuPage(
     candidate: GismuCandidate | null;
     reason: string;
   } => {
+    if (
+      state.rows.some((row) =>
+        sourceReviewMarks(row).some((mark) => mark.field === "input"),
+      )
+    )
+      return {
+        candidate: null,
+        reason: "Keep or clear the retained Letters before generation.",
+      };
     if (result && resultFingerprint !== generationFingerprint())
       return {
         candidate: null,

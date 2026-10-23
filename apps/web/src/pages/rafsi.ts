@@ -89,7 +89,10 @@ async function pairCard(
     el(
       "p",
       { class: "prose" },
-      link(w.spelling, routes.word(w.spelling, w.language), { lang: "jbo" }),
+      link(w.spelling, routes.word(w.spelling, w.language), {
+        lang: "jbo",
+        class: "touch-link",
+      }),
       text(` with rafsi ${rafsi}`, "meta"),
     ),
   );
@@ -138,7 +141,10 @@ async function pairCard(
     for (const claim of assignment?.claims ?? []) {
       try {
         const record = await loadRecord<RafsiBody>(claim, word.snapshot);
-        const row = el("div", { class: "small", style: "margin-top:8px" });
+        const row = el("div", {
+          class: "small claim-source",
+          style: "margin-top:8px",
+        });
         row.append(
           text("Claimed by "),
           identityLink(record.envelope.header.issuer),
@@ -199,7 +205,10 @@ export async function rafsiPage(
     if (i) relation.append(text(" · "));
     relation.append(
       text(`${rafsi} ← `),
-      link(w.spelling, routes.word(w.spelling, w.language), { lang: "jbo" }),
+      link(w.spelling, routes.word(w.spelling, w.language), {
+        lang: "jbo",
+        class: "touch-link",
+      }),
     );
   });
   main.append(relation);
@@ -234,7 +243,10 @@ export async function claimPage(
       "p",
       { class: "muted", style: "margin-top:6px" },
       text("for "),
-      link(spelling, routes.word(spelling), { lang: "jbo" }),
+      link(spelling, routes.word(spelling), {
+        lang: "jbo",
+        class: "touch-link",
+      }),
     ),
   );
   if (!spelling) {
@@ -301,6 +313,7 @@ export async function claimPage(
           note.append(
             link(w.spelling, routes.word(w.spelling, w.language), {
               lang: "jbo",
+              class: "touch-link",
             }),
           );
         });
@@ -326,7 +339,10 @@ export async function claimPage(
           "p",
           { class: "small" },
           text(`Claim ${value} for `),
-          link(spelling, routes.word(spelling), { lang: "jbo" }),
+          link(spelling, routes.word(spelling), {
+            lang: "jbo",
+            class: "touch-link",
+          }),
           text(`. Pair ${pair}`, "fingerprint"),
         ),
         p(
@@ -476,9 +492,12 @@ export async function rafsiPairPage(
       text(`${found.rafsi} ← `),
       link(found.spelling, routes.word(found.spelling, found.language), {
         lang: "jbo",
+        class: "touch-link",
       }),
       text(" · "),
-      link(`all words with ${found.rafsi}`, routes.rafsi(found.rafsi)),
+      link(`all words with ${found.rafsi}`, routes.rafsi(found.rafsi), {
+        class: "touch-link",
+      }),
     ),
     await pairCard(app, context, found, found.rafsi),
     el("p", { class: "fingerprint", text: pair }),

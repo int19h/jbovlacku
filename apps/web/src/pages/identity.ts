@@ -97,7 +97,7 @@ export async function identityPage(
             }
             rerender();
           },
-          { class: "btn btn-primary", style: "min-height:40px" },
+          { class: "btn btn-primary" },
         ),
       );
     else resume.append(text("Unlock below to continue."));
@@ -150,7 +150,6 @@ export async function identityPage(
       ),
       button("Test the backup", () => (testForm.hidden = false), {
         class: "btn btn-primary",
-        style: "min-height:40px",
       }),
       button(
         "Download again",
@@ -159,7 +158,7 @@ export async function identityPage(
             `jbovlacku-key-backup-${backup.identity.slice(8, 16)}.json`,
             JSON.stringify(backup, null, 2),
           ),
-        { class: "btn btn-quiet", style: "min-height:40px;color:var(--warn)" },
+        { class: "btn btn-quiet", style: "color:var(--warn)" },
       ),
     );
     main.append(banner);
@@ -203,7 +202,7 @@ export async function identityPage(
           () => {
             session.lock();
           },
-          { class: "btn", style: "min-height:40px" },
+          { class: "btn" },
         ),
       );
     else {
@@ -308,7 +307,7 @@ export async function identityPage(
       () => {
         importForm.hidden = !importForm.hidden;
       },
-      { class: "btn", style: "min-height:40px" },
+      { class: "btn" },
     ),
   );
   rows.append(importRow);
@@ -331,7 +330,6 @@ export async function identityPage(
         ? el("span", { class: "meta", text: "Unavailable for this key" })
         : link("Start", "/identity/transfer", {
             class: "btn",
-            style: "min-height:40px",
           }),
     ),
     el(
@@ -347,7 +345,6 @@ export async function identityPage(
       ),
       link("Report", "/identity/compromise", {
         class: "btn btn-warn",
-        style: "min-height:40px",
       }),
     ),
   );

@@ -93,7 +93,7 @@ export async function typePage(
   }
   const saver = new DraftSaver(app, draft);
   main.append(stepBar(draft, 2));
-  const columns = el("div", { class: "two-col", style: "gap:32px 48px" });
+  const columns = el("div", { class: "two-col" });
   const section = el("section", { "aria-labelledby": "h1", class: "main-col" });
   section.append(
     el("h1", {
@@ -216,7 +216,9 @@ export async function typePage(
       "p",
       { class: "small", style: "margin-top:14px" },
       text("Have the spelling already? "),
-      link("Type it in and skip the builder", "/new/form?manual=1"),
+      link("Type it in and skip the builder", "/new/form?manual=1", {
+        class: "touch-link",
+      }),
     ),
   );
   section.append(

@@ -144,7 +144,7 @@ export async function preferencesPage(
             await app.store.delete("packages", key);
             await renderPackages();
           },
-          { class: "btn btn-quiet", style: "min-height:40px" },
+          { class: "btn btn-quiet" },
         ),
       );
       packages.append(row);

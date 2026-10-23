@@ -2,7 +2,7 @@
  * Shared rich-text rendering and the editor's text conventions.
  * Rendering never evaluates markup. Every string renders inside a bidi isolate.
  */
-import { el, link, sr, text } from "../lib/dom.ts";
+import { markRichProse, el, link, sr, text } from "../lib/dom.ts";
 import { placeGlyph } from "../lib/format.ts";
 import type { RichNode, RichText } from "./types.ts";
 
@@ -24,7 +24,12 @@ export function isRichText(value: unknown): value is RichText {
 }
 /** A place marker element. Its accessible name is "place N". */
 export function placeMarker(index: number, href: string | null): HTMLElement {
-  const node = href ? link(null, href) : el("span");
+  const node = href
+    ? link(null, href, {
+        "data-inline-place-reason":
+          "A structured place token stays inline and links to its declared place row, as ui-design.md permits.",
+      })
+    : el("span");
   node.className = index > 20 ? "pl badge" : "pl";
   node.append(sr("place "), text(String(index)));
   node.setAttribute("aria-label", `place ${index}`);
@@ -127,6 +132,10 @@ export function renderRichText(
       const rendered = renderInline(node, options);
       if (rendered) row.append(rendered);
     }
+    markRichProse(
+      row,
+      "Links in a complete dictionary prose sentence stay in the text line, as ui-design.md permits.",
+    );
     container.append(row);
   }
   return container;

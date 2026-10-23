@@ -29,6 +29,10 @@ import {
   restorePatches,
   mappingKind,
   hintLabel,
+  sourceProposal,
+  captureSourceTarget,
+  sourceTargetMatches,
+  type SourceTarget,
   type AssistanceRecord,
   type Current,
   type Operation,
@@ -36,6 +40,11 @@ import {
 } from "../model/assistance.ts";
 import { richTextToText, renderRichText } from "../model/richtext.ts";
 import type { Draft } from "../model/draft.ts";
+import {
+  setSourceAiNoteGroup,
+  sourceNotes,
+  type GismuRowState,
+} from "../model/builders.ts";
 import { confirmKindChange, type DraftSaver } from "../pages/wizard/common.ts";
 
 export interface AssistanceProfile {
@@ -368,6 +377,7 @@ interface ActionOptions {
   profile?: string;
   current?: () => Current;
   apply?: (draft: Draft, result: Suggestion) => void;
+  sourceRow?: () => GismuRowState;
 }
 function snapshot(draft: Draft): Partial<Draft> {
   const { ai, revision, updatedAt, ...rest } = draft;
@@ -444,7 +454,16 @@ export function assistanceAction(
     record = r;
     save();
   };
-  const apply = (target: Draft, result: Suggestion) => {
+  const apply = (
+    target: Draft,
+    result: Suggestion,
+    sourceTarget?: SourceTarget,
+  ) => {
+    if (
+      result.operation === "gismu-sources" &&
+      (!sourceTarget || !sourceTargetMatches(target, sourceTarget))
+    )
+      throw new Error("This source row changed. Request a new suggestion.");
     if (options.apply) options.apply(target, result);
     else applyProposals(target, result);
   };
@@ -630,23 +649,89 @@ export function assistanceAction(
           );
         section.append(el("div", { class: "table-scroll" }, table));
       } else if (proposal.path === "/formation/sources") {
-        for (const source of proposal.value as NonNullable<
-          Current["formation"]
-        >["sources"])
+        const source = sourceProposal(result);
+        const row = options.sourceRow?.();
+        if (!row) continue;
+        section.append(
+          p(
+            `${row.language}: ${(source.word ?? row.word) || "No single source word"}.`,
+          ),
+        );
+        const table = el("table", { class: "small ai-source-preview" });
+        table.append(
+          el(
+            "thead",
+            {},
+            el(
+              "tr",
+              {},
+              ...["Field", "Before", "After acceptance"].map((label) =>
+                el("th", { scope: "col", text: label }),
+              ),
+            ),
+          ),
+        );
+        const values: [string, string, unknown][] = [
+          ["Word", "word", row.word],
+          ["Said", "word_ipa", row.word_ipa],
+          ["Stem (private)", "stem", row.stem],
+          ["Stem said (private)", "ipa", row.ipa],
+          [
+            "Letters",
+            "input",
+            row.inputOriginal ??
+              (row.input ? { format: "lojbanized", text: row.input } : null),
+          ],
+        ];
+        const show = (value: unknown) =>
+          value == null || value === ""
+            ? "empty"
+            : typeof value === "string"
+              ? value
+              : json(value);
+        for (const [label, key, before] of values) {
+          const proposed = Object.hasOwn(source, key);
+          const after = proposed ? source[key as keyof typeof source] : before;
+          table.append(
+            el(
+              "tr",
+              {},
+              el("th", { scope: "row", text: label }),
+              el("td", { text: show(before) }),
+              el("td", {
+                text: `${show(after)}${proposed ? " (proposed)" : " (retained)"}`,
+              }),
+            ),
+          );
+        }
+        section.append(el("div", { class: "table-scroll" }, table));
+        const beforeNotes = sourceNotes(row);
+        const groupIndexes = new Set(
+          row.aiNoteGroup?.map((entry) => entry.index) ?? [],
+        );
+        section.append(
+          el("h4", { class: "small", text: "New AI notes" }),
+          source.notes.length
+            ? renderRichText(source.notes, { placeHref: null })
+            : p(
+                "No new AI notes. The earlier AI group will be removed.",
+                "meta",
+              ),
+        );
+        section.append(
+          el("h4", { class: "small", text: "Authored notes retained" }),
+          renderRichText(
+            beforeNotes.filter((_, index) => !groupIndexes.has(index)),
+            { placeHref: null },
+          ),
+        );
+        if (row.aiNoteGroup?.length)
           section.append(
-            p(
-              `${source.language}: ${source.word || "No single source word"}. Letters: ${source.input?.text || "unknown"}.`,
+            el("h4", { class: "small", text: "Earlier AI notes replaced" }),
+            renderRichText(
+              row.aiNoteGroup.map((entry) => entry.paragraph),
+              { placeHref: null },
             ),
-            p(
-              [
-                source.word_ipa ? `Said: ${source.word_ipa}.` : "",
-                source.stem ? `Stem: ${source.stem}.` : "",
-                source.ipa ? `Stem said: ${source.ipa}.` : "",
-              ]
-                .filter(Boolean)
-                .join(" "),
-            ),
-            renderRichText(source.notes, { placeHref: null }),
           );
       } else if (proposal.path === "/glosses")
         for (const g of proposal.value as Current["glosses"])
@@ -859,9 +944,48 @@ export function assistanceAction(
         ),
       );
     }
+    const sourceRow = options.sourceRow?.();
+    const needsNoteChoice =
+      result.operation === "gismu-sources" &&
+      sourceRow &&
+      !Object.hasOwn(sourceRow, "aiNoteGroup");
+    if (needsNoteChoice) {
+      const chosen = new Set<number>();
+      panel.append(
+        p(
+          "Identify the earlier AI notes before accepting this source. Edited and authored notes stay with the row.",
+          "notice",
+        ),
+      );
+      sourceNotes(sourceRow).forEach((paragraph, index) =>
+        panel.append(
+          checkbox(
+            `Earlier AI paragraph ${index + 1}: ${richTextToText([paragraph])}`,
+            false,
+            (checked) => (checked ? chosen.add(index) : chosen.delete(index)),
+          ),
+        ),
+      );
+      const establish = (indexes: number[]) => {
+        setSourceAiNoteGroup(sourceRow, indexes);
+        save();
+        render();
+      };
+      panel.append(
+        button(
+          "Use the selected earlier AI notes",
+          () => establish([...chosen]),
+          { class: "btn btn-quiet" },
+        ),
+        button("No earlier AI notes", () => establish([]), {
+          class: "btn btn-quiet",
+        }),
+      );
+    }
     let invalid = "";
     try {
-      apply(structuredClone(draft), result);
+      if (!needsNoteChoice)
+        apply(structuredClone(draft), result, r.sourceTarget);
     } catch (error) {
       invalid = describe(error);
     }
@@ -879,7 +1003,7 @@ export function assistanceAction(
     const accept = button(
       "Use this",
       async () => {
-        if (!reviewed) return;
+        if (!reviewed || needsNoteChoice) return;
         // Recheck at the time of the click. A late edit cannot bypass the stale comparison.
         if (draftFingerprint(draft) !== reviewedFingerprint) {
           render();
@@ -894,7 +1018,7 @@ export function assistanceAction(
           if (before.kind !== kind) candidate.selmaho = [];
         }
         try {
-          apply(candidate, result);
+          apply(candidate, result, r.sourceTarget);
         } catch (error) {
           app.announce(describe(error));
           return;
@@ -919,7 +1043,7 @@ export function assistanceAction(
       },
       { class: "btn btn-primary" },
     );
-    accept.disabled = !reviewed || !!invalid;
+    accept.disabled = !reviewed || !!invalid || !!needsNoteChoice;
     if (stale)
       panel.append(
         checkbox(
@@ -928,7 +1052,7 @@ export function assistanceAction(
           (value) => {
             reviewed = value;
             reviewedFingerprint = draftFingerprint(draft);
-            accept.disabled = !reviewed || !!invalid;
+            accept.disabled = !reviewed || !!invalid || !!needsNoteChoice;
             for (const add of panel.querySelectorAll<HTMLButtonElement>(
               'button[aria-label^="Add "]',
             ))
@@ -942,6 +1066,12 @@ export function assistanceAction(
           `This suggestion cannot be applied: ${invalid} You can copy its text and edit the fields by hand.`,
           "notice",
         ),
+      );
+    if (invalid && result.operation === "gismu-sources")
+      panel.append(
+        button("Request a new source suggestion", () => void start(), {
+          class: "btn btn-quiet",
+        }),
       );
     panel.append(
       el(
@@ -1027,6 +1157,7 @@ export function assistanceAction(
     active = run;
     const revision = crypto.randomUUID();
     let requested: Current | undefined;
+    let sourceTarget: SourceTarget | undefined;
     let fingerprint = "";
     let received = false;
     try {
@@ -1040,6 +1171,8 @@ export function assistanceAction(
       status.textContent = progress;
       render();
       requested = options.current?.() ?? currentDraft(draft);
+      const sourceRow = options.sourceRow?.();
+      if (sourceRow) sourceTarget = captureSourceTarget(draft, sourceRow.id!);
       fingerprint = draftFingerprint(draft);
       run.csrf = (await request(run, "/session")).value.csrf;
       if (!isCurrent()) return false;
@@ -1159,6 +1292,7 @@ export function assistanceAction(
         operation: options.operation,
         fingerprint,
         requested,
+        sourceTarget,
         result: checked,
         log: null,
         log_json: checked.log_json,
@@ -1184,6 +1318,7 @@ export function assistanceAction(
         operation: options.operation,
         fingerprint,
         requested,
+        sourceTarget,
         result: null,
         log: (error as { log?: Record<string, unknown> }).log ?? null,
         error: failureMessage(
@@ -1193,6 +1328,7 @@ export function assistanceAction(
         ),
         state: "failed",
       });
+      run.resultStored = true;
       status.textContent = record!.error;
       received = await saver.flush();
     } finally {

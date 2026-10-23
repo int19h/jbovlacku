@@ -89,8 +89,6 @@ export interface FormationSource {
   word: string;
   /** Optional source evidence. Absent or null values mean unknown. */
   word_ipa?: string | null;
-  stem?: string | null;
-  ipa?: string | null;
   input: { format: "lojbanized" | "ipa"; text: string } | null;
   weight: Rational | null;
   notes: RichText;

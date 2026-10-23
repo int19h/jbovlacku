@@ -86,8 +86,6 @@ test("publication uses descriptive source edits even when navigation skips the f
     weight: { numerator: 1, denominator: 1 },
     notes: [],
     word_ipa: "bʊk",
-    stem: "boo",
-    ipa: "bʊ",
   });
   assert.deepEqual(body?.etymology.formation?.selected_score, {
     numerator: "1",
@@ -377,15 +375,17 @@ test("accepting and undoing source text updates the publication copy immediately
   const draft = example();
   const before = structuredClone(draft.gismu);
   const changedSource = {
-    ...draft.formation!.sources[0],
     word: "books",
-    notes: [["Accepted note"]],
+    notes: [["Note: Accepted note"]],
   };
   applySource(draft, draft.gismu!.rows[0].id!, {
     proposals: [{ path: "/formation/sources", value: [changedSource] }],
   } as never);
   assert.equal(draft.formation!.sources[0].word, "books");
-  assert.deepEqual(draft.formation!.sources[0].notes, [["Accepted note"]]);
+  assert.deepEqual(draft.formation!.sources[0].notes, [
+    ["Original"],
+    ["Note: Accepted note"],
+  ]);
   const after = structuredClone(draft.gismu);
   const record = {
     key: `source-${draft.gismu!.rows[0].id!}`,

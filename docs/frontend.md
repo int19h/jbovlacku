@@ -332,26 +332,42 @@ The table shows these columns: Language, Weight, Word, Said, Stem, Stem said, an
 
 The pronunciation is there so that speakers of the language can check the word later and propose a better one. Only the letters count toward the score. Stress is shown and is never scored.
 
-The signed formation source keeps Word as `word`, Said as `word_ipa`, Stem as `stem`, and Stem said as `ipa`.
-Language and Weight use `language` and `weight`. If `input` is null, Letters stays empty.
-For `format: "lojbanized"`, Letters shows the exact `input.text`.
+The signed formation source keeps Word as `word` and Said as `word_ipa`.
+Language and Weight use `language` and `weight`. Accepted Notes enter the signed `notes` field.
+Stem and Stem said stay private as `stem` and `ipa` in the draft and AI log. Neither enters the signed body.
+
+If `input` is null, Letters stays empty. For `format: "lojbanized"`, Letters shows the exact `input.text`.
 
 For `format: "ipa"`, Letters shows a preview from the recorded versioned conversion rule when the app supports that rule.
 Otherwise, Letters stays empty and the app shows that conversion is unavailable. The app keeps the original IPA algorithm input visible beside Letters.
 That input stays distinct from the stem pronunciation `ipa`. The app never guesses or fills `ipa` from it.
 The preview preserves the original stored `input` bytes.
 
-The pronunciation and stem fields are optional. An absent or null field means unknown and stays empty when an older record opens.
+The signed `word_ipa` field is optional. An absent or null value means unknown and stays empty when a signed record opens.
+The private `stem` and `ipa` fields are optional and survive draft reload and export.
+When a signed record opens, Stem and Stem said start empty.
 The app never guesses a missing stem or pronunciation from the scoring input.
+
+The scoring input, `word_ipa`, `stem`, and `ipa` stay independent in draft rows.
+An author can keep known scoring letters without a stem or either pronunciation.
 
 IPA input requires an explicit, versioned conversion and a preview of the resulting scoring input.
 One source word per language is the simple-mode default. Advanced mode can add alternatives under an explicitly selected aggregation rule.
 An unfinished row does not acquire an invented source word or weight.
 
-“Suggest source words” is optional AI assistance for every language in the selected profile.
-The app makes one request per language. The model returns the word, its sense, its stem, the pronunciation of the word and of the stem, the scoring letters, and a note.
-The author accepts each row or a reviewed set. Missing suggestions leave editable empty rows rather than dropping a language.
-A language with no single word for the meaning keeps its row, with an empty editable Word field and the assistant's note under it.
+“Suggest source words” is optional AI assistance for the selected profile.
+The profile action selects every source row, including every alternative and rows with filled or empty Word fields.
+The app makes exactly one request per selected row. The individual row action selects only the row that the author chose.
+The model returns the word, its sense, its stem, the pronunciation of the word and of the stem, the scoring letters, and a note.
+
+The `sources` answer check requires `ipa` whenever the model gives non-null `sounds`.
+Step 7 in `sources.task.txt` derives scoring letters from the stem IPA.
+If the model cannot give `ipa`, `sounds` must be null and the note must explain why.
+A null model answer never clears a value that the author entered.
+
+The author accepts each row or a reviewed set. Missing suggestions keep existing rows and values rather than dropping a language.
+A language with no single word for the meaning keeps its row and its Word field unchanged, or empty when it had no word.
+The assistant's explanatory note appears under the row before acceptance.
 Sources remain attributed suggestions until the author accepts them. The model cannot claim dictionary evidence that the app did not retrieve.
 
 The deterministic generator returns candidate spellings, total scores, per-source contributions, potential rafsi, and conflict information.
@@ -384,8 +400,23 @@ The wizard does not pretend that all word types use the gismu or lujvo algorithm
 The author edits the current definition alongside a place table. All structured fields remain available without AI.
 Each place row provides Description, Gloss, Kind of thing, and From.
 Kind of thing edits the complete type_hints format, including alternatives, custom tags, abstractors, relation arity, and notes.
-The example choices object, event, property, number, and unspecified are shortcuts, not a closed schema. Object writes the `referent` tag.
-A place with several alternatives shows them together in the field, such as “object or event”.
+
+The example choices anything (referent), event, property, number, and unspecified are shortcuts, not a closed schema.
+Anything (referent) writes `referent`, which includes events, numbers, and other referents.
+A place with several alternatives shows them together in the field, such as “event or number”.
+
+An older signed hint can contain retired tags. The reader and draft preserve its alternatives without rewriting them.
+Before a new signature, the editor names each retired tag and requires deliberate replacement with a current tag, or removal.
+This also applies to saved custom hints.
+
+`entity` means `referent`. `tuple` means `sequence`.
+`mass` is an opaque legacy annotation outside the current tag tree and has no current alias.
+The problem offers “Replace entity with referent” or “Replace tuple with sequence” as an explicit action.
+These actions preserve the hint's abstractor, relation arity, and note. After replacement, identical tags or alternatives appear once.
+
+For `mass`, the author chooses a current tag or removes the annotation. The editor does not choose a replacement.
+The reassurance about the original signed body appears only for an unchanged alternative retained from that body's hint.
+
 From edits derivation entries with a source word, optional exact source definition, source place, and explanation.
 The frame controls support fixed, variadic, context-dependent, and unspecified structure.
 Defaults and constraints, Notes, Examples, Etymology, and Sources use named disclosures.
@@ -408,7 +439,12 @@ A null frame means unspecified structure. The wizard never substitutes a guessed
 “Suggest places and glosses” is an optional AI action based on the current meaning, word form, component evidence, and existing draft annotations.
 The result proposes typed fields and identifies unresolved mappings. The author reviews the rendered text and table before accepting changes.
 The definition of the whole word decides the meaning and the types. Component definitions only identify which role a place plays. Any word form that follows the selected morphology rules is accepted, including lower-scoring rafsi and optional hyphens.
-A type suggestion gives one to three alternatives for a place, each with a short reason. A line under the row lists each alternative and its reason. `unclear` means that the definition does not describe the place. The field then reads “unspecified”.
+A type suggestion gives one to three alternatives for a place, each with a short reason. A line under the row lists each alternative and its reason. `unclear` means that the definition does not describe the place. An empty hint then reads “unspecified”. An existing hint stays unchanged.
+
+For the AI type list, keep a broader entry with its own reason and drop a narrower entry beside it.
+For example, keep `referent` over `event`. This rule does not merge signed alternatives or discard their abstractors or relation arity.
+AI suggestions never create retired tags.
+
 A mapping suggestion lists, for each place, the component places that it corresponds to. Each has a kind and a one-sentence reason.
 The `reason` must start with `direct: `, `merged: `, `distributed: `, or `functional: `, followed by its explanation.
 The `none` and `unclear` sentinels instead require `none: ` and `unclear: `.
@@ -416,8 +452,59 @@ The `none` and `unclear` sentinels instead require `none: ` and `unclear: `.
 The answer check requires this prefix to match the entry. There is no separate `kind` field.
 The From field reads the prefix and shows the kind, such as “klama 2 · direct”.
 The line under the row offers Add for a component place that the row does not name yet.
+
 AI suggestions never manufacture historical source attribution, exact quotations, accepted rafsi, or endorsements.
 Accepted suggestions remain ordinary author-controlled draft data. The app does not assign them automatic trust weight.
+
+Accepting a suggestion writes these fields only after the author reviews their values:
+
+| Answer value                   | Draft field or panel behavior                                                                                                                    |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Source `word`, `word_ipa`      | The matching signed source fields in the draft. A null answer never clears an existing value. Unknown pronunciation stays omitted.               |
+| Source `stem`, `ipa`           | Private source fields in the draft and AI log. Neither enters a signed formation source. A null answer never clears an existing value.           |
+| Source `sounds`                | `input: {format: "lojbanized", text: sounds}`. A null answer preserves an existing input and leaves an unknown input null.                       |
+| Source `sense` and `note`      | On row acceptance, replace the earlier accepted AI paragraph group with new nonempty `Sense: ` and `Note: ` paragraphs. Preserve authored notes. |
+| Hint `type` and `reason`       | One alternative per current type, with null abstractor and relation arity. Hint `note` keeps one `type: reason` paragraph per alternative.       |
+| Hint `unclear`                 | Panel only. Accepting it preserves an existing hint and leaves an empty hint unspecified.                                                        |
+| Mapping component and `reason` | Add its word, exact supplied definition, and place to `derivation`. Keep the full kind prefix in `explanation`.                                  |
+| Mapping `none` or `unclear`    | Panel only. Do not clear existing derivations.                                                                                                   |
+
+The publication preview shows accepted source notes as the author's contribution, not as retrieved source evidence.
+For a null `word`, show the note under the row before acceptance. It enters `notes` only when the author accepts that row.
+
+Null source answers also preserve authored notes. Acceptance applies only `word`, `word_ipa`, `stem`, `ipa`, `input`, and the AI group in `notes`.
+It never changes the row's language, weight, or provenance. Null answers preserve existing values, including scoring input, without weakening the model's answer checks.
+
+The source preview shows before and after values for every proposed field, including fresh values and the new AI note group.
+It also shows each value that acceptance retains.
+If an accepted non-null suggested word changes Word or fills an empty Word field, retained nonempty evidence needs review.
+The app marks every nonempty old value that remains, even when the proposal repeats it.
+
+These marks name Letters, Said, Stem, and Stem said. Letters review includes a retained scoring input even when its conversion is unavailable.
+Each retained Notes paragraph also needs review, including word-specific authored notes.
+Each marked field or paragraph shows its earlier word and value beside explicit Keep and Clear actions.
+
+Acceptance retains these values until the author chooses an action. Clear removes only that field or paragraph, and Keep records approval for the new word.
+Generation waits until every row has usable, unmarked Letters, so clearing Letters keeps generation waiting until the author fills them. Signing is blocked while any retained field or paragraph remains unresolved.
+
+Review marks and choices stay private in the draft. They survive reload and mode changes, and undo restores them with the values.
+A later accepted suggested word that changes Word starts a new review for every retained nonempty value.
+
+The draft privately tracks which paragraphs form the last accepted AI note group for each source row.
+The app initializes new source rows with a known empty AI note group.
+Rows copied from signed records start with a known empty AI group because their signed notes are authored text.
+This group information survives reload and mode changes, and undo restores it with the notes.
+
+New AI paragraphs replace that group, rather than append to it. Replacement starts at the earlier group's first position and preserves the order of authored paragraphs.
+Without an earlier group, the new group follows the authored notes. An empty new group removes only the earlier AI group.
+An author edit to an AI paragraph removes that paragraph from the group, so later suggestions preserve it as authored text.
+
+If group information is absent, the preview requires the author to identify the earlier AI paragraphs or choose “No earlier AI notes”.
+Acceptance waits for that choice. The app never infers paragraph ownership from a `Sense: ` or `Note: ` prefix.
+The choice establishes private group information for this draft. Group information and review marks never enter signed records or assistance requests and responses.
+
+The From field reads a recognized kind prefix from the derivation explanation after reload.
+A human explanation without such a prefix shows no kind label. The app never infers a kind from its prose.
 
 ### Step 5: review and publication
 
@@ -774,10 +861,16 @@ Each waiting row also offers “Stop retrying.” It stops future attempts to ev
 The app retains signed bytes and receipts. The row stays with the status word “Stopped” in place of the next-retry sentence.
 Stopping does not retract a public record or guarantee that an in-flight request stopped.
 
-A stopped record stays on the Not delivered page with Resume, Save as file, and Discard.
+A stopped record stays on the Not delivered page with Resume and Save as file. Discard follows the dependency restriction below.
 The header marker counts waiting and stopped records and stays while either exists.
 
+Discard is available only when no later local own record reaches the stopped record through predecessor links.
+Otherwise, the row explains that later records depend on it and offers Resume and Save as file.
+This restriction also applies when a server already holds the stopped record.
 Discard asks first, then deletes the local signed bytes and receipts. It does not retract a copy that a server already holds.
+
+The app removes the discarded ID from its local frontier and recomputes maximal own references from the remaining local graph.
+Its retained predecessors return to that frontier when no remaining own record succeeds them.
 
 Resume uses the same stored bytes, selected recipients, and receipt lookup before retry.
 No new signature or silent recipient change occurs.
@@ -1225,10 +1318,11 @@ The implementer must demonstrate these end-to-end cases before public release:
 27. A nonzero exact score never displays as zero. “No judgments yet” requires known zero direct reviewers.
 28. First-signature copy explains public history before direct judgments or trust actions without adding per-action confirmation.
 29. Manual Form preserves spelling, classification, and notes, and private Ignore writes the scoped blocked entry.
-30. Stop retrying keeps the record listed as “Stopped”, with Resume, Save as file, and Discard. The marker still counts it.
+30. Stop retrying keeps the record listed as “Stopped”, with Resume and Save as file. Discard appears only when no later local own record depends on it. The marker still counts it.
 31. Resume delivery retrieves receipt state and retries identical bytes to the original recipients, including after reload.
 32. Permanent refusal stays auto-paused. Stopping neither retracts public records nor promises cancellation of an in-flight request.
 33. Outlined control boundaries meet 3:1 contrast in every enabled state in both themes.
+34. Discard refuses a stopped record when a later local own record depends on it, directly or transitively. Resume and Save as file remain available. Discarding an independent stopped leaf restores its retained predecessors to the frontier when they become maximal. No later signature names the discarded ID.
 
 The app must also measure cold package load, local search latency, signature latency, backup unlock time, and ranking cost on representative mobile devices.
 No target in this design constitutes a completed browser compatibility or accessibility audit.
@@ -1287,8 +1381,18 @@ The system prompt puts `explain.txt` after the task file. For `sources`, it foll
 The language block stays last. Without a language block, `explain.txt` is last.
 
 The Assistance group of Settings has one checkbox, “Use AI assistance”. It is on by default when the server offers assistance.
-When it is off, the app hides every AI tagged button, every suggestion panel and its notes, the consent dialog, the “by meaning” search mode, and every AI hint line. Nothing else moves, and every manual path stays complete. The app sends nothing to a provider.
-When the operator disables assistance, the app looks the same. The checkbox is replaced by the line “Not available on this server.” The user's own choice is kept for a server that offers assistance later.
+When it is off, the app hides every AI tagged button, every suggestion panel and its notes, the consent dialog, the “by meaning” search mode, and every AI hint line. Hidden controls leave no gap, and every manual path stays complete. The app sends nothing to a provider.
+When no assistance capability is available, the app looks the same. The checkbox is replaced by the line “Not available on this server.” The user's own choice is kept for a server that offers assistance later.
+
+The server offers assistance when capabilities expose a generation operation or a query-available embedding profile.
+A generation operation requires `features.assistance` and an `assistance_profiles` entry that lists the operation.
+Meaning search requires `features.semantic_search` and a `query_available` embedding profile. A partial setup keeps the checkbox and exposes only available actions.
+If neither capability is available, the checkbox gives way to “Not available on this server.”
+
+While assistance is off, search uses “by words” and keeps the stored mode unchanged.
+When assistance returns, the stored mode returns if its required capability is available.
+The same fallback applies whenever the stored mode's capability is unavailable, including when assistance is on for generation alone.
+Search uses “by words” and preserves the stored preference. The stored mode returns when its capability becomes available.
 
 The baseline provider interface is a documented subset of OpenAI-compatible Chat Completions and Embeddings over HTTP and JSON.
 It uses `/chat/completions` and `/embeddings` under a configured base URL. It does not depend on legacy text completions.
@@ -1297,8 +1401,15 @@ OpenRouter, Ollama, vLLM, and other compatible providers can use explicit adapte
 Required model parameters, structured-output support, and context limits are discovered or configured and then tested for that adapter.
 
 A provider without enforced JSON Schema output can still supply proposals after strict local parsing and validation.
-The model answers through one tool call. The app checks the answer. If the answer fails a check, the app returns the exact problems as the tool result, and the model sends a corrected answer. After three failed answers, the suggestion fails.
+The server checks each answer and runs the correction loop. The model answers through one `submit_answer` call.
+For a failed answer with one usable call, the server appends the assistant turn and returns the exact problems as its tool result.
+After three failed answers for one task, the suggestion fails.
 A response without a `submit_answer` call counts as one failed answer and gets no tool result.
+A response with multiple calls also counts as one failed answer.
+Missing or repeated calls add the problem “Call submit_answer exactly once with the complete answer.”
+For either case, the server appends the assistant text without tool calls, followed by a user message that lists the problems.
+The next request keeps the existing exchange and adds those turns. It uses the feedback text in the [answer checks](../prompts/README.md#checks-on-an-answer).
+It does not restart the request or add a tool result.
 After three failed answers, including responses without that call, show the same failed state.
 Invalid output never enters a signed body automatically.
 
@@ -1309,9 +1420,13 @@ Its header names the task, the model and reasoning level, and the provider. It l
 It shows the time and duration, and the number of answers and corrections.
 It shows tokens and cost only when the provider sent those figures. Omit each missing figure.
 One line says that the provider does not make the assistant's private reasoning available, and that the log holds the shared reasoning summary and everything that the assistant wrote.
-The rows are the system prompt, collapsed, and the app's request. Each answer then has its reasoning summary or the line “No reasoning summary was shared for this answer.”, any text that the assistant wrote, the tool call with its tokens, and the app's check. A failed check lists each problem that the app sent back to the assistant.
-“Export as Markdown” saves the log as shown. “Export raw JSON” saves every request and response exactly as sent and received.
-The log stays in the browser with the draft. The server keeps no copy, and nothing from the log is published with a definition.
+The rows start with the collapsed system prompt and the app's request.
+Each answer shows its shared reasoning summary or “No reasoning summary was shared for this answer.”
+It also shows the assistant text, tool calls, available token counts, and the server's check.
+A failed check lists each problem that the server sent back to the assistant.
+“Export as Markdown” saves the log as shown. “Export raw JSON” saves the retained request and response bodies with credentials and encrypted reasoning removed.
+The browser keeps the log with the draft. The server temporarily holds the private job result and log until expiry or explicit deletion.
+A publication does not include the log.
 
 Server configuration supplies provider base URL, authentication secret reference, models, task capabilities, request limits, and permitted provider-specific parameters.
 The browser receives capability names and disclosure metadata, never the operator's API key.
@@ -1326,7 +1441,7 @@ After consent, buttons use a small “AI” tag without repeated provider text.
 Suggestions appear in a quiet panel with “Use this” and “Dismiss.” Accepted text becomes ordinary draft text with undo.
 The service does not retain draft prompts or outputs in ordinary logs or peer sync.
 
-Queued inference jobs have an exposed expiry policy. Private outputs remain local draft data unless the author publishes selected content.
+Queued inference jobs have an exposed expiry policy. After the server's job expiry, private outputs remain local draft data unless the author publishes selected content.
 Cancel stops further local processing and requests upstream cancellation where supported. It cannot guarantee reversal of an already billed provider request.
 
 Provider output and retrieved definitions remain untrusted data. They cannot execute tools, install grammar rules, sign events, or make external writes.
@@ -1340,13 +1455,15 @@ An undo record survives draft reload and mode changes.
 
 The common API adds the following endpoints. Both standalone and Workers hosts implement identical contracts when they advertise each capability.
 
-| Endpoint                  | Contract                                                                 |
-| ------------------------- | ------------------------------------------------------------------------ |
-| `GET /embedding-profiles` | Available profiles, query availability, coverage, and provenance limits. |
-| `POST /search/semantic`   | Meaning search under one profile and one dictionary snapshot.            |
-| `POST /assist`            | One explicit draft-suggestion task, with no publication side effects.    |
-| `GET /jobs/ID`            | State and result of a permitted asynchronous request.                    |
-| `DELETE /jobs/ID`         | Request cancellation of that caller's job.                               |
+| Endpoint                   | Contract                                                                                |
+| -------------------------- | --------------------------------------------------------------------------------------- |
+| `GET /embedding-profiles`  | Available profiles, query availability, coverage, and provenance limits.                |
+| `POST /search/semantic`    | Meaning search under one profile and one dictionary snapshot.                           |
+| `GET /session`             | Establish or renew the caller's private assistance session and return its CSRF token.   |
+| `POST /assist`             | Start one private suggestion job and return HTTP 202, with no publication side effects. |
+| `GET /jobs/ID`             | State, progress, result, and log of the caller's job.                                   |
+| `DELETE /jobs/ID`          | Request cancellation of that caller's job.                                              |
+| `GET /assist/prompts/FILE` | Public text of a prompt file named by the inference log.                                |
 
 Embedding-profile responses contain exactly profiles. Each entry contains id, label, query_available, indexed, eligible, pending, and limitations.
 Id is a profile hash. Counts are nonnegative integers. Limitations is an array of strings. Query_available is a boolean.
@@ -1367,16 +1484,78 @@ Current contains exactly word_type, classification, spelling, text, frame, gloss
 
 Word_type and spelling are nullable draft strings. Classification is null or the definition classification object.
 When both word_type and classification are present, their lexical kinds must agree. Other fields use the corresponding definition shapes and permit empty values.
+`current.formation` uses signed source fields, so a request never carries private `stem` or `ipa` fields.
+
 Context is at most 32 exact definition event IDs. Profile names an advertised generation configuration, not an arbitrary provider URL.
 
 The total uncompressed request limit is 256 KiB. The server also enforces task-specific token and billing limits.
 
-A completed suggestion contains operation, draft_revision, proposals, explanation, provenance, and usage.
+A completed suggestion contains operation, draft_revision, proposals, explanation, provenance, usage, and log.
 Each proposal contains path and value. Path is a JSON Pointer into current, restricted by the operation's allowlist below.
-Explanation is literal text. Provenance contains provider, model, nullable revision, recipe, and nullable seed. Seed is a safe integer when present.
+Explanation is literal text. Provenance contains provider, model, revision, recipe, and seed. The reference service returns null for revision and seed.
+`revision` is a string or null. `seed` is a safe integer or null.
 
-Usage is null or contains input_tokens and output_tokens. Counts are nonnegative integers or null when unavailable.
+Usage contains input_tokens and output_tokens. Each count is a nonnegative integer or null when unavailable.
+Reasons for proposed field edits travel inside proposal values. Panel-only reasons travel in the accepted tool arguments described below.
+Type alternatives use `type_hints.note` paragraphs with `type: reason`. Derivations keep the full kind prefix in `explanation`.
+
+Proposed source `notes` contain only the new selected sense and note with `Sense: ` and `Note: ` prefixes.
 Proposals never target identity, signatures, publication status, trust records, source ownership, or delivery state.
+
+The result's `log` contains the complete private provider exchange:
+
+```text
+InferenceLog = {
+  operation: string, model: string, reasoning_effort: string, provider: string,
+  prompt_version: string, prompt_files: [string], started_at: UTC-string,
+  duration_ms: integer, answers: integer, corrections: integer,
+  input_tokens: integer | null, output_tokens: integer | null,
+  cost_usd: number | null, unknown_cost_attempts: integer,
+  exchanges: [{task: string, system_prompt: string, request: string,
+    attempts: [InferenceAttempt]}]
+}
+InferenceAttempt = {
+  attempt: integer, reasoning_summary: string | null, text: string,
+  usage: object | null, cost_usd: number | null,
+  request: object, response: unknown
+} & (
+  {tool_calls: [SubmitAnswerCall], check: {accepted: true, problems: []}} |
+  {tool_calls: [unknown], check: {accepted: false, problems: [string]}}
+)
+```
+
+Each exchange corresponds to one task. Its attempts keep request and response bodies with credentials and encrypted reasoning removed.
+The exchange's `request` is the initial user-message text for that task, including the requested-key list and any permitted-component-place list.
+The [prompt guide](../prompts/README.md#request) defines both lists.
+Each attempt's `request` is the full provider request body, including messages and tools. Neither field includes authentication headers.
+
+The log also keeps the assistant text, shared reasoning summary, calls, checks, timing, configured reasoning level, and available usage and cost.
+
+An accepted attempt has exactly one tool call of this shape. Its `function.arguments` is JSON text, decoded by the task's answer shape:
+
+```text
+SubmitAnswerCall = {
+  id: string, type: "function",
+  function: {name: "submit_answer", arguments: JSON-string}
+}
+HintsAnswer = {requested-place-key: [{type: current-tag | "unclear", reason: string}]}
+MappingsAnswer = {requested-place-key: [{component: supplied-component-place | "none" | "unclear", reason: string}]}
+```
+
+For a task exchange, the browser reads these arguments from the attempt whose `check.accepted` is true.
+The decoded answers use the [task shapes](../prompts/answer-shapes.json).
+`requested-place-key` is an `xN` key in the retained requested-key list.
+`supplied-component-place` is a label such as `klama[2]`: a supplied component spelling and a one-based place index listed in the request.
+The model sees and writes these spellings. Any internal component labels remain an application detail.
+
+The browser uses the requested place key, task, sentinel, and reason to show panel-only hints and mappings.
+An `unclear` hint or a `none` or `unclear` mapping produces no field edit for that item.
+
+An aggregate `/frame` proposal can carry other edits. For a panel-only item, it must retain the authored hint or derivations.
+Acceptance never applies an empty hint or derivation list in place of that retained metadata.
+
+Missing cost stays null. `unknown_cost_attempts` counts attempts without a known cost. `answers` and `corrections` count across all tasks in the job.
+The browser uses these fields for the inference log and its exports. No provider credential enters the log.
 
 | Operation      | Permitted proposal roots |
 | -------------- | ------------------------ |
@@ -1391,31 +1570,93 @@ A cmavo-class proposal requires the draft classification to be cmavo. The author
 A type proposal uses the ordinary type-change flow. Acceptance clears an incompatible classification to null and preserves its prior value in draft undo history.
 The author must complete the new classification before publication. The app never treats the old classification as valid for the new type.
 
-A gismu-sources request requires a non-null formation object. The manual builder initializes that object before requesting suggestions.
+A gismu-sources request requires a non-null formation object with exactly one source row.
+The browser copies `current` and reduces `formation.sources` to the selected row for that request.
+Its source language is `current.formation.sources[0].language`. The request's `language` still names the definition language.
+The server uses that row's language to choose the source-language prompt. An unsupported source language is rejected before provider work.
+
+The manual builder initializes the formation object before requesting suggestions. The response proposes edits for that one source row.
+
+The browser keeps a stable private ID for every row. It records that ID, the original index, language, row values, and draft revision when requesting.
+
+The proposal path stays `/formation/sources`, with a one-element array. Its first element is a partial object containing only proposed fields.
+It permits only `word`, `word_ipa`, `stem`, `ipa`, `input`, and `notes`. This object is a partial draft edit, separate from the signed formation schema.
+The proposal can carry private `stem` and `ipa` values even though `current.formation` and signed sources exclude them.
+
+Non-null `word`, `word_ipa`, `stem`, and `ipa` map to their matching fields. Non-null `sounds` maps to `input: {format: "lojbanized", text: sounds}`.
+A null `word`, `word_ipa`, `stem`, `ipa`, or `sounds` omits its matching proposal field.
+Every proposal includes `notes`, even when empty. It contains only new nonempty `Sense: ` and `Note: ` paragraphs, or an empty rich-text value.
+The proposal never echoes existing notes or carries language, weight, or provenance fields.
+
+Acceptance maps those edits to the recorded row ID through the source acceptance rules in [step 4](#step-4-places-glosses-and-supporting-fields).
+It applies only the permitted fields and replaces the tracked AI note group. It preserves every omitted field and all authored notes pending explicit review.
+It leaves every other row unchanged, including alternative rows of the same language. It never replaces the stored row with the partial object.
+
+Reordering marks the suggestion stale. After a comparison, the author can apply it to the same private ID if that row remains unchanged.
+If the row changed, changed language, or disappeared, the browser offers a new request and never applies to its former index.
 A lujvo proposal never bypasses deterministic construction and segmentation analysis.
 A places proposal must pass the frame and reference rules before acceptance. The author can edit rejected proposals as ordinary draft text.
 
-Synchronous success returns HTTP 200. Accepted asynchronous work returns HTTP 202 with job, expires_at, and poll_after_ms.
-Job state is queued, running, completed, failed, cancel_requested, or canceled. Its response contains state, result, error, and expires_at.
+Assistance success always starts with HTTP 202 and exactly job, expires_at, and poll_after_ms.
+The reference service returns `poll_after_ms: 100`.
+`poll_after_ms` is an integer from 100 through 60,000.
+Job state is queued, running, completed, failed, cancel_requested, or canceled.
+GET and DELETE return state, result, error, expires_at, and progress.
 
-Result and error are nullable. Errors use the common API error shape. A job ID is opaque, unpredictable, and scoped to its requesting session.
+Progress contains exactly task, attempt, and max_attempts. Before execution, task is null and attempt is zero.
+During execution, task names the current task, attempt ranges from 1 through 3, and max_attempts is 3.
+The attempt limit applies separately to each task in a job. The server runs the answer checks and correction loop.
+
+Completed, failed, and canceled jobs keep the last reported progress. If no task started, task stays null and attempt stays zero.
+`max_attempts` remains 3 in every state. DELETE does not reset progress.
+
+Result and error are nullable. Errors use the common API error shape and can add log for a failed private job.
+A job ID is opaque, unpredictable, and scoped to its requesting session. Expires_at uses the format specification's UTC timestamp syntax.
+
+The reference service keeps jobs, results, and logs in memory for at most ten minutes from admission.
+Each admitted job has a fixed expiry. Reads and session renewal never extend it.
+Expiry aborts execution and deletes all sensitive job content. A service restart loses these private jobs and their expiry markers too.
+
+The server publishes this retention limit in its assistance disclosure. It never copies these records into ordinary logs or peer synchronization.
+
 After result disposal, GET returns HTTP 410 with `result_discarded`. The browser explains the disposal and offers another request.
 An oversized spending request returns `billing_request_too_large` without a retry time.
 A temporary spending limit uses `billing_limit` and an actual expiry time when the remaining charges are known.
 Pending provider costs use `billing_pending` without a promised retry time. The browser preserves these distinctions and the server wording.
-Expires_at uses the format specification's UTC timestamp syntax. Poll_after_ms is an integer from 100 through 60,000.
 
 Successful DELETE returns HTTP 200 with the current job response. A queued job becomes canceled. A running job becomes cancel_requested until execution stops.
 Completed, failed, and canceled jobs retain their state. Cancellation cannot retract an already transmitted provider request or its charges.
+DELETE of a finished job clears result and any error.log while retaining its state until expiry.
 
 The reference deployment serves private jobs from the app's origin. GET /session returns a CSRF token and establishes a random session cookie.
-The response contains exactly csrf, an opaque token. The cookie uses Secure, HttpOnly, and SameSite=Strict. The server permits only its configured app Origin.
+The response contains exactly csrf, an opaque token. The cookie is `__Host-jvc-assist`, with Path=/, Secure, HttpOnly, and SameSite=Strict.
+Private assistance uses the configured app origin even when public dictionary routes permit cross-origin access.
+Each renewal extends the session by at most one hour. An admitted job keeps the session valid until that job expires.
 
 The browser sends that token in X-CSRF-Token when creating or canceling jobs. Anonymous sessions still receive network and billing quotas.
 Job reads require the same session cookie. A job ID alone never authorizes access. An expired session cannot retrieve its private jobs.
 
 Disabled capability returns HTTP 503 with code feature_disabled. Quotas use HTTP 429 with a retry interval.
-Expired jobs return HTTP 410. Retrying a private draft operation does not publish anything or create a dictionary event.
+
+Each session can retain at most 128 unexpired job records, including completed, failed, and canceled jobs.
+At that limit, admission returns HTTP 429 with code `session_job_limit` and an integer `Retry-After` header in seconds.
+Its value is `max(1, ceil((earliest_live_expiry_ms - now_ms) / 1000))`. Both times use milliseconds, and `earliest_live_expiry_ms` is the earliest retained job expiry.
+Job expiry frees a slot. Expiry markers never count toward this limit and never cause refusal of new work.
+
+Unknown job IDs and jobs owned by another session return HTTP 404 with code missing.
+For its owner's current session, an expired job with a retained expiry marker returns HTTP 410 with code job_expired.
+
+The service keeps a tombstone, a small expiry marker, after deleting the content.
+It contains only the job ID, owner session ID, and job expiry.
+A marker expires one hour after its job expiry, or when its session ends, whichever comes first. Session renewal never extends marker retention.
+
+Each session can retain at most 128 markers, separately from its unexpired job records.
+When a new marker exceeds that cap, the service evicts the oldest marker by job expiry, with lexicographic job ID as the tie-breaker.
+
+Evicted, aged-out, and restart-lost IDs return HTTP 404 with code missing, including for the former owner.
+The browser treats both 404 and 410 as a gone job. It stops polling and retains any outputs already saved with the local draft.
+
+Retrying a private draft operation does not publish anything or create a dictionary event.
 
 ## 17. Lensisku linking and cross-posting
 

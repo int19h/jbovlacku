@@ -1138,6 +1138,26 @@ test("two tabs that publish the same reviewed revision keep one group, and a new
   await expect(
     page.getByRole("link", { name: "Review the newer draft" }),
   ).toBeVisible();
+  for (const width of [1280, 360]) {
+    await page.setViewportSize({ width, height: 800 });
+    const link = page.getByRole("link", {
+      name: "Review the newer draft",
+      exact: true,
+    });
+    const bounds = (await link.boundingBox())!;
+    const evidence = process.env.JVC_LAYOUT_EVIDENCE_DIR;
+    if (evidence)
+      await page.screenshot({
+        path: `${evidence}/${process.env.JVC_LAYOUT_PHASE ?? "layout"}-publish-newer-draft-${width}.png`,
+        fullPage: true,
+      });
+    expect
+      .soft(bounds.width, `Newer draft action width at ${width}`)
+      .toBeGreaterThanOrEqual(44);
+    expect
+      .soft(bounds.height, `Newer draft action height at ${width}`)
+      .toBeGreaterThanOrEqual(44);
+  }
   const records = await outboxRecords(page);
   expect(records).toHaveLength(4);
   const state = await draftState(page);

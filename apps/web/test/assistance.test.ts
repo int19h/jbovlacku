@@ -161,22 +161,19 @@ function proposals(body: any): any[] {
           path: "/formation/sources",
           value: [
             {
-              ...row,
-              word: row.language === "en" ? "book" : "",
-              word_ipa: row.language === "en" ? "bʊk" : null,
-              stem: row.language === "en" ? "book" : null,
-              ipa: row.language === "en" ? "bʊk" : null,
-              input:
-                row.language === "en"
-                  ? { format: "lojbanized", text: "buk" }
-                  : null,
+              ...(row.language === "en"
+                ? {
+                    word: "book",
+                    word_ipa: "bʊk",
+                    stem: "book",
+                    ipa: "bʊk",
+                    input: { format: "lojbanized", text: "buk" },
+                  }
+                : {}),
               notes:
                 row.language === "en"
                   ? [
                       ["Sense: written work"],
-                      ["Word IPA: bʊk"],
-                      ["Stem: book"],
-                      ["Stem IPA: bʊk"],
                       [
                         "Note: The whole word is the stem.\nA second note line is kept.",
                       ],
@@ -202,6 +199,7 @@ interface MockOptions {
   unknownMapping?: "none" | "unclear";
   mappingKind?: "direct" | "merged" | "distributed" | "functional";
   log?: Record<string, unknown>;
+  sourceEdits?: Record<string, unknown>[];
 }
 async function mockAssistant(page: Page, options: MockOptions = {}) {
   const calls: any[] = [];
@@ -252,6 +250,19 @@ async function mockAssistant(page: Page, options: MockOptions = {}) {
       usage: { input_tokens: 30, output_tokens: 20 },
       log: options.log ?? log,
     };
+    if (body.operation === "gismu-sources" && options.sourceEdits)
+      result.proposals = [
+        {
+          path: "/formation/sources",
+          value: [
+            structuredClone(
+              options.sourceEdits[
+                Math.min(calls.length - 1, options.sourceEdits.length - 1)
+              ],
+            ),
+          ],
+        },
+      ];
     if (options.mappingKind && body.operation === "places-glosses") {
       result.proposals.find(
         (p: any) => p.path === "/frame",
@@ -783,6 +794,7 @@ test("source requests cover each language and retain empty rows, pronunciation, 
             name: "English",
             word: "",
             input: "",
+            aiNoteGroup: [],
             weight: { numerator: "1", denominator: "1" },
           },
           {
@@ -790,6 +802,7 @@ test("source requests cover each language and retain empty rows, pronunciation, 
             name: "Japanese",
             word: "",
             input: "",
+            aiNoteGroup: [],
             weight: { numerator: "1", denominator: "1" },
           },
         ],
@@ -1292,7 +1305,12 @@ test("actual service accepts an English source from the default language preset 
   expect(saved.gismu.rows.find((row: any) => row.language === "eng").word).toBe(
     "book",
   );
-  expect(saved.ai.records[0].result.proposals[0].value[0].language).toBe("eng");
+  expect(saved.ai.records[0].result.proposals[0].value[0]).not.toHaveProperty(
+    "language",
+  );
+  expect(saved.ai.records[0].result.proposals[0].value[0]).not.toHaveProperty(
+    "weight",
+  );
   expect(JSON.parse(saved.ai.records[0].log_json).exchanges[0].task).toBe(
     "sources",
   );
@@ -1362,9 +1380,9 @@ test("actual service accepts an English source from the default language preset 
   expect(source).toMatchObject({
     word: "book",
     word_ipa: "edited pronunciation",
-    ipa: "bʊk",
   });
   expect(source).not.toHaveProperty("stem");
+  expect(source).not.toHaveProperty("ipa");
   expect(bodyEvidence.revision.etymology.formation).toEqual(
     bodyEvidence.body.etymology.formation,
   );
@@ -1374,6 +1392,347 @@ test("actual service accepts an English source from the default language preset 
     await readFile((await (await exported).path())!, "utf8"),
   );
   expect(savedExport.formation).toEqual(bodyEvidence.body.etymology.formation);
+});
+
+async function sourceDraft(page: Page, row: Record<string, unknown>) {
+  await draft(
+    page,
+    {
+      kind: "gismu",
+      gismu: {
+        preset: null,
+        rows: [
+          {
+            id: "source-review-row",
+            language: "en",
+            name: "English",
+            word: "old",
+            input: "buk",
+            weight: { numerator: "1", denominator: "1" },
+            aiNoteGroup: [],
+            ...row,
+          },
+        ],
+        candidates: "source-letters",
+        selected: "makru",
+        manual: "makru",
+        acknowledged: [],
+        reason: "",
+        window: 12,
+      },
+    },
+    "/new/gismu",
+  );
+}
+
+async function sourceSuggestion(page: Page, first = true) {
+  await page
+    .getByRole("button", { name: "Suggest source for English", exact: true })
+    .click();
+  if (first) await allow(page);
+  const panel = page.getByRole("region", {
+    name: "Suggest source for English suggestion",
+  });
+  await expect(panel).toBeVisible();
+  return panel;
+}
+
+test("source preview preserves omitted values and replaces only the tracked AI notes", async ({
+  page,
+}) => {
+  await mockAssistant(page, {
+    sourceEdits: [
+      { notes: [["Sense: new meaning"], ["Note: new AI note"]] },
+      { notes: [] },
+    ],
+  });
+  const ai = ["Note: earlier AI note"];
+  await sourceDraft(page, {
+    word: "book",
+    word_ipa: "bʊk",
+    stem: "book",
+    ipa: "bʊk",
+    notes: [["Authored first"], ai, ["Authored last"]],
+    aiNoteGroup: [{ index: 1, paragraph: ai }],
+  });
+  const panel = await sourceSuggestion(page);
+  await expect(panel).toContainText("bʊk (retained)");
+  await expect(panel).toContainText("Earlier AI notes replaced");
+  await expect(panel).toContainText("Authored first");
+  await panel.getByRole("button", { name: "Use this", exact: true }).click();
+  await expect(
+    page.getByLabel("Source notes for English", { exact: true }),
+  ).toHaveValue(
+    "Authored first\n\nSense: new meaning\n\nNote: new AI note\n\nAuthored last",
+  );
+  await page
+    .getByLabel("Source notes for English", { exact: true })
+    .fill(
+      "Authored first\n\nSense: edited by author\n\nNote: new AI note\n\nAuthored last",
+    );
+  await page
+    .getByRole("button", { name: "Suggest again", exact: true })
+    .click();
+  const next = await sourceSuggestion(page, false);
+  await next.getByRole("button", { name: "Use this", exact: true }).click();
+  await expect(
+    page.getByLabel("Source notes for English", { exact: true }),
+  ).toHaveValue("Authored first\n\nSense: edited by author\n\nAuthored last");
+  const row = (await stored(page)).gismu.rows[0];
+  expect(row).toMatchObject({
+    word: "book",
+    word_ipa: "bʊk",
+    stem: "book",
+    ipa: "bʊk",
+    input: "buk",
+    aiNoteGroup: [],
+  });
+  expect(row.sourceReview ?? []).toEqual([]);
+});
+
+test("a changed source row requires a new request even after stale comparison", async ({
+  page,
+}) => {
+  const mock = await mockAssistant(page, {
+    delay: true,
+    sourceEdits: [{ word: "book", notes: [] }],
+  });
+  await sourceDraft(page, { word: "old" });
+  await page
+    .getByRole("button", { name: "Suggest source for English", exact: true })
+    .click();
+  await allow(page);
+  await expect.poll(() => mock.calls.length).toBe(1);
+  await page
+    .getByLabel("Native word for English", { exact: true })
+    .fill("author edit");
+  await expect(
+    page.getByLabel("Native word for English", { exact: true }),
+  ).toHaveValue("author edit");
+  await expect
+    .poll(async () => (await stored(page)).gismu.rows[0].word)
+    .toBe("author edit");
+  mock.release();
+  const panel = page.getByRole("region", {
+    name: "Suggest source for English suggestion",
+  });
+  await expect(panel).toContainText(
+    "This source row changed. Request a new suggestion.",
+  );
+  await panel
+    .getByRole("checkbox", {
+      name: "I reviewed the newer fields and want to replace them",
+      exact: true,
+    })
+    .check();
+  await expect(
+    panel.getByRole("button", { name: "Use this", exact: true }),
+  ).toHaveCount(0);
+  await panel
+    .getByRole("button", {
+      name: "Request a new source suggestion",
+      exact: true,
+    })
+    .click();
+  await expect.poll(() => mock.calls.length).toBe(2);
+  expect(mock.calls[1].current.formation.sources[0].word).toBe("author edit");
+  expect((await stored(page)).gismu.rows[0].word).toBe("author edit");
+});
+
+test("a reordered unchanged source applies to its stable private row after comparison", async ({
+  page,
+}) => {
+  await mockAssistant(page, { sourceEdits: [{ word: "book", notes: [] }] });
+  await sourceDraft(page, { word: "old" });
+  const panel = await sourceSuggestion(page);
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore();
+    const value = (await store.get("drafts", "current")) as any;
+    value.gismu.rows.unshift({
+      id: "other-source",
+      language: "en",
+      name: "English alternative",
+      word: "unchanged",
+      input: "buk",
+      aiNoteGroup: [],
+      weight: { numerator: "1", denominator: "1" },
+    });
+    await store.put("drafts", "current", value);
+  });
+  await page.reload();
+  await expect(
+    panel.getByRole("button", { name: "Use this", exact: true }),
+  ).toBeDisabled();
+  await panel
+    .getByRole("checkbox", {
+      name: "I reviewed the newer fields and want to replace them",
+      exact: true,
+    })
+    .check();
+  await panel.getByRole("button", { name: "Use this", exact: true }).click();
+  await expect(
+    page.getByLabel("Native word for English", { exact: true }),
+  ).toHaveValue("book");
+  const rows = (await stored(page)).gismu.rows;
+  expect(rows.map((row: any) => [row.id, row.word])).toEqual([
+    ["other-source", "unchanged"],
+    ["source-review-row", "book"],
+  ]);
+});
+
+test("legacy source notes require an explicit earlier AI group choice", async ({
+  page,
+}) => {
+  await mockAssistant(page, {
+    sourceEdits: [{ notes: [["Note: replacement"]] }],
+  });
+  await sourceDraft(page, {
+    notes: [["Sense: authored prefix"], ["Note: old AI"]],
+  });
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore();
+    const value = (await store.get("drafts", "current")) as any;
+    delete value.gismu.rows[0].aiNoteGroup;
+    await store.put("drafts", "current", value);
+  });
+  await page.reload();
+  const panel = await sourceSuggestion(page);
+  await expect(
+    panel.getByRole("button", { name: "Use this", exact: true }),
+  ).toBeDisabled();
+  await panel
+    .getByRole("checkbox", {
+      name: "Earlier AI paragraph 2: Note: old AI",
+      exact: true,
+    })
+    .check();
+  await panel
+    .getByRole("button", {
+      name: "Use the selected earlier AI notes",
+      exact: true,
+    })
+    .click();
+  await panel
+    .getByRole("checkbox", {
+      name: "I reviewed the newer fields and want to replace them",
+      exact: true,
+    })
+    .check();
+  await panel.getByRole("button", { name: "Use this", exact: true }).click();
+  await expect(
+    page.getByLabel("Source notes for English", { exact: true }),
+  ).toHaveValue("Sense: authored prefix\n\nNote: replacement");
+});
+
+test("a changed suggested word reviews retained identical values and original IPA input through reload and undo", async ({
+  page,
+}) => {
+  await mockAssistant(page, {
+    sourceEdits: [
+      {
+        word: "new",
+        word_ipa: "oʊld",
+        stem: "old",
+        ipa: "oʊld",
+        notes: [["Note: new source"]],
+      },
+    ],
+  });
+  await sourceDraft(page, {
+    word_ipa: "oʊld",
+    stem: "old",
+    ipa: "oʊld",
+    input: "",
+    inputOriginal: { format: "ipa", text: "oʊld" },
+    notes: [["Authored one"], ["Authored two"]],
+  });
+  const panel = await sourceSuggestion(page);
+  await expect(panel).toContainText("oʊld (proposed)");
+  await expect(panel).toContainText("ipa");
+  await panel.getByRole("button", { name: "Use this", exact: true }).click();
+  const review = page.getByRole("region", {
+    name: "Retained source evidence for English",
+  });
+  await expect(review).toContainText('earlier word "old"');
+  for (const label of [
+    "Said",
+    "Stem",
+    "Stem said",
+    "Letters",
+    "Notes paragraph 1",
+    "Notes paragraph 2",
+  ])
+    await expect(
+      review.getByRole("button", {
+        name: `Keep ${label} for English`,
+        exact: true,
+      }),
+    ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Use makru", exact: true }),
+  ).toBeDisabled();
+  const before = (await stored(page)).gismu.rows[0];
+  expect(before.sourceReview).toHaveLength(6);
+  await page.reload();
+  await expect(
+    review.getByRole("button", {
+      name: "Keep Letters for English",
+      exact: true,
+    }),
+  ).toBeVisible();
+  const problems = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { draftToBody } = await import(String("/src/model/draft.ts"));
+    return draftToBody((await new LocalStore().get("drafts", "current")) as any)
+      .problems;
+  });
+  expect(problems).toContainEqual(
+    expect.objectContaining({
+      field: "formation",
+      blocking: true,
+      message:
+        "The source evidence needs review. Keep or clear each retained value for its new word.",
+    }),
+  );
+  await page.goto("/new/publish");
+  await expect(page.locator("main")).toContainText(
+    "The source evidence needs review. Keep or clear each retained value for its new word.",
+  );
+  for (const publish of await page
+    .getByRole("button", { name: "Publish", exact: true })
+    .all())
+    await expect(publish).toBeDisabled();
+  await page.goto("/new/gismu");
+  await review
+    .getByRole("button", {
+      name: "Clear Notes paragraph 1 for English",
+      exact: true,
+    })
+    .click();
+  await expect(
+    page.getByLabel("Source notes for English", { exact: true }),
+  ).toHaveValue("Authored two\n\nNote: new source");
+  while (await review.getByRole("button", { name: /^Keep / }).count())
+    await review
+      .getByRole("button", { name: /^Keep / })
+      .first()
+      .click();
+  await expect(review).toHaveCount(0);
+  await page
+    .getByRole("button", {
+      name: "Undo Suggest source for English",
+      exact: true,
+    })
+    .click();
+  await expect(
+    page.getByLabel("Native word for English", { exact: true }),
+  ).toHaveValue("old");
+  // A review choice is an author edit. Undo preserves that edit and restores unchanged values.
+  const undone = (await stored(page)).gismu.rows[0];
+  expect(undone.sourceReview ?? []).toEqual([]);
+  expect(undone.word_ipa).toBe("oʊld");
 });
 
 test("operator-disabled assistance hides saved AI decorations and preserves accepted fields and the preference", async ({
@@ -1844,6 +2203,7 @@ test("accepted source evidence survives a generated form independently of edited
             name: "English",
             word: "",
             input: "",
+            aiNoteGroup: [],
             weight: { numerator: "1", denominator: "1" },
           },
         ],
@@ -1879,10 +2239,10 @@ test("accepted source evidence survives a generated form independently of edited
   expect(saved.formation.sources[0]).toMatchObject({
     word: "book",
     word_ipa: "bʊk",
-    stem: "book",
-    ipa: "bʊk",
     input: { format: "lojbanized", text: "makru" },
   });
+  expect(saved.formation.sources[0]).not.toHaveProperty("stem");
+  expect(saved.formation.sources[0]).not.toHaveProperty("ipa");
   await page.reload();
   expect((await stored(page)).formation).toEqual(saved.formation);
 });
@@ -2635,6 +2995,27 @@ for (const input of ["letters", "language", "weight"]) {
   });
 }
 
+test("scoring edits preserve the selected form while recalculation disables its action", async ({
+  page,
+}) => {
+  await scoredGismu(page);
+  const selected = page.getByRole("region", { name: "Selected form" });
+  const before = await selected.textContent();
+  await page
+    .getByRole("textbox", { name: "Scoring letters for English" })
+    .fill("makru");
+  await expect(selected).toHaveText(before!);
+  await expect(selected).not.toContainText("No form chosen yet");
+  await expect(
+    page.getByRole("button", { name: "Use makru", exact: true }),
+  ).toBeDisabled();
+  await expect(page.locator("main")).toContainText("Calculating…");
+  await page.clock.runFor(251);
+  await expect(
+    page.getByRole("button", { name: "Use makru", exact: true }),
+  ).toBeEnabled();
+});
+
 test("the primary handler refuses a stale generated result even if its button is enabled", async ({
   page,
 }) => {
@@ -2741,6 +3122,50 @@ test("Cancel during a completed suggestion save keeps its ready status", async (
   await expect(panel).toBeVisible();
   expect((await stored(page)).ai.records.at(-1).state).toBe("done");
   expect(mock.deletions()).toBe(1);
+});
+
+test("Cancel during a failed suggestion save preserves the failure announcement", async ({
+  page,
+}) => {
+  const mock = await mockAssistant(page, {
+    failure: "Fixture inference failure.",
+  });
+  await draft(page);
+  await page.evaluate(async () => {
+    const { DraftSaver } = await import(String("/src/pages/wizard/common.ts"));
+    const original = DraftSaver.prototype.flush;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const fixture = { saving: false, release };
+    Object.assign(window, { failedSuggestionSave: fixture });
+    DraftSaver.prototype.flush = async function () {
+      const saved = await original.call(this);
+      if (this.draft.ai?.records.at(-1)?.state === "failed") {
+        fixture.saving = true;
+        await gate;
+      }
+      return saved;
+    };
+  });
+  await page
+    .getByRole("button", { name: "Recommend a type", exact: true })
+    .click();
+  await allow(page);
+  await expect
+    .poll(() =>
+      page.evaluate(() => (window as any).failedSuggestionSave.saving),
+    )
+    .toBe(true);
+  const status = page.locator(".ai-action [role=status]");
+  const failure = await status.textContent();
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(status).toHaveText(failure!);
+  expect(mock.deletions()).toBe(0);
+  await page.evaluate(() => (window as any).failedSuggestionSave.release());
+  await expect(page.locator(".ai-action .notice")).toHaveText(failure!);
+  await expect.poll(() => mock.deletions()).toBe(1);
 });
 
 test("Dismiss clears the completed suggestion announcement", async ({
