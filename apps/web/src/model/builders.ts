@@ -302,11 +302,11 @@ function formationSource(row: GismuRowState): FormationSource {
     weight: row.weight ? rational(row.weight) : null,
     notes: [],
   };
-  for (const field of ["word_ipa", "stem", "ipa"] as const) {
-    const value = row[field];
-    if (value?.trim()) source[field] = value;
-  }
+  if (row.word_ipa?.trim()) source.word_ipa = row.word_ipa;
   return source;
+}
+function hasSignedSourceEvidence(row: GismuRowState): boolean {
+  return [row.word, row.input, row.word_ipa].some((value) => !!value?.trim());
 }
 /** Formation metadata for a generated or manual gismu under the recorded run. */
 export function formationMetadata(options: {
@@ -323,7 +323,7 @@ export function formationMetadata(options: {
   /** True when the form is the candidate the author chose from the run or entered under it. */
 }): Formation {
   const { result, candidate, rows, preset } = options;
-  const sources = rows.map(formationSource);
+  const sources = rows.filter(hasSignedSourceEvidence).map(formationSource);
   return {
     method: "algorithmic",
     algorithm: {
@@ -367,13 +367,7 @@ export function manualFormation(
   rows: GismuRowState[],
   reason: string,
 ): Formation | null {
-  const sources: FormationSource[] = rows
-    .filter((row) =>
-      [row.word, row.input, row.word_ipa, row.stem, row.ipa].some((value) =>
-        value?.trim(),
-      ),
-    )
-    .map(formationSource);
+  const sources = rows.filter(hasSignedSourceEvidence).map(formationSource);
   if (!sources.length && !reason.trim()) return null;
   return {
     method: "non-algorithmic",

@@ -422,8 +422,10 @@ test("builder metadata for a chosen lujvo and a generated gismu satisfies the bo
   assert.equal(formation.selected_score!.numerator, "1");
   assert.equal(formation.selected_rank, 1);
   assert.equal(formation.sources[0].word_ipa, "ˈmakru");
-  assert.equal(formation.sources[0].stem, "makr");
-  assert.equal(formation.sources[0].ipa, "makr");
+  assert.equal(Object.hasOwn(formation.sources[0], "stem"), false);
+  assert.equal(Object.hasOwn(formation.sources[0], "ipa"), false);
+  assert.equal(rows[0].stem, "makr");
+  assert.equal(rows[0].ipa, "makr");
   assert.equal(formation.weights_profile!.name, "CLL 1995");
   assert.equal(
     formation.algorithm!.parameters.weighting,
@@ -463,7 +465,7 @@ test("builder metadata for a chosen lujvo and a generated gismu satisfies the bo
   );
 });
 
-test("builders omit blank source evidence and preserve meaningful values before admission", () => {
+test("builders sign word pronunciation and keep stem evidence in their input rows", () => {
   const row: GismuRowState = {
     language: "en",
     name: "English",
@@ -489,61 +491,59 @@ test("builders omit blank source evidence and preserve meaningful values before 
   const builders = [
     {
       name: "manual",
-      build: (source: GismuRowState) =>
-        manualFormation([source], "A manual root.")!,
+      build: (rows: GismuRowState[]) =>
+        manualFormation(rows, "A manual root.")!,
     },
     {
       name: "generated",
-      build: (source: GismuRowState) =>
+      build: (rows: GismuRowState[]) =>
         formationMetadata({
           result,
           candidate: result.manual!,
-          rows: [source],
+          rows,
           preset: null,
           acknowledged: [],
           reason: "A generated root.",
         }),
     },
   ];
-  const fields = ["word_ipa", "stem", "ipa"] as const;
   for (const builder of builders) {
-    for (const field of fields) {
-      for (const value of [null, "", " ", "\t", " \t\n "]) {
-        const context = `${builder.name}: ${field} = ${JSON.stringify(value)}`;
-        const formation = builder.build({ ...row, [field]: value });
-        const source = formation.sources[0];
-        assert.equal(Object.hasOwn(source, field), false, context);
-        for (const other of fields) {
-          if (other !== field) assert.equal(source[other], row[other], context);
-        }
-        const built = draftToBody(
-          newDraft({
-            spelling: "makru",
-            kind: "gismu",
-            text: "A fixture meaning.",
-            formation,
-            evidenceForm: "makru",
-          }),
-        );
-        assert.deepEqual(built.problems, [], context);
-        assert.ok(admissible(built.body), context);
-      }
+    for (const word_ipa of [
+      undefined,
+      null,
+      "",
+      " ",
+      "\t",
+      " \t\n ",
+      row.word_ipa,
+    ]) {
+      const rows = [{ ...row, word_ipa }];
+      const before = structuredClone(rows);
+      const formation = builder.build(rows);
+      const source = formation.sources[0];
+      assert.equal(Object.hasOwn(source, "stem"), false, builder.name);
+      assert.equal(Object.hasOwn(source, "ipa"), false, builder.name);
+      if (word_ipa?.trim())
+        assert.equal(source.word_ipa, word_ipa, builder.name);
+      else assert.equal(Object.hasOwn(source, "word_ipa"), false, builder.name);
+      assert.deepEqual(rows, before, builder.name);
+      const built = draftToBody(
+        newDraft({
+          spelling: "makru",
+          kind: "gismu",
+          text: "A fixture meaning.",
+          formation,
+          evidenceForm: "makru",
+          gismu: { ...newGismuState(), rows },
+        }),
+      );
+      assert.deepEqual(built.problems, [], builder.name);
+      assert.ok(admissible(built.body), builder.name);
     }
-    const formation = builder.build(row);
-    for (const field of fields) {
-      assert.equal(formation.sources[0][field], row[field], builder.name);
-    }
-    const built = draftToBody(
-      newDraft({
-        spelling: "makru",
-        kind: "gismu",
-        text: "A fixture meaning.",
-        formation,
-        evidenceForm: "makru",
-      }),
-    );
-    assert.deepEqual(built.problems, [], builder.name);
-    assert.ok(admissible(built.body), builder.name);
+    const privateRows = [{ ...row, word: "", input: "", word_ipa: null }];
+    const before = structuredClone(privateRows);
+    assert.deepEqual(builder.build(privateRows).sources, [], builder.name);
+    assert.deepEqual(privateRows, before, builder.name);
   }
 });
 
@@ -766,7 +766,7 @@ test("only a retained parent hint gives the reassurance for repeated places", ()
   assert.ok(admissible(built.body, draft.parents));
 });
 
-test("source pronunciations and stems survive draft reload, publication, and revision", () => {
+test("source stems stay private through draft reload, export, publication, and Revise", () => {
   const row = {
     language: "en",
     name: "English",
@@ -782,8 +782,6 @@ test("source pronunciations and stems survive draft reload, publication, and rev
     language: "en",
     word: "running",
     word_ipa: "ˈrʌnɪŋ",
-    stem: "run",
-    ipa: "rʌn",
     input: { format: "lojbanized", text: "ran" },
     weight: null,
     notes: [],
@@ -796,14 +794,27 @@ test("source pronunciations and stems survive draft reload, publication, and rev
     evidenceForm: "broda",
     gismu: { ...newGismuState(), rows: [row] },
   });
-  const restored = normalizeDraft(JSON.parse(JSON.stringify(draft)));
+  const exported = JSON.stringify(draft);
+  const restored = normalizeDraft(JSON.parse(exported));
   assert.deepEqual(restored.gismu!.rows[0], row);
+  const before = structuredClone(restored);
   const built = draftToBody(restored);
   assert.deepEqual(built.problems, []);
   assert.deepEqual(built.body!.etymology.formation, formation);
+  assert.deepEqual(restored, before);
   assert.ok(admissible(built.body));
   const parent = "jve1:" + "1".repeat(64);
-  const revision = draftToBody(draftFromBody(built.body!, parent, "native"));
+  const revisionDraft = draftFromBody(built.body!, parent, "native");
+  assert.equal(revisionDraft.gismu, null);
+  assert.equal(
+    Object.hasOwn(revisionDraft.formation!.sources[0], "stem"),
+    false,
+  );
+  assert.equal(
+    Object.hasOwn(revisionDraft.formation!.sources[0], "ipa"),
+    false,
+  );
+  const revision = draftToBody(revisionDraft);
   assert.deepEqual(revision.problems, []);
   assert.deepEqual(revision.body!.etymology.formation, formation);
   assert.ok(admissible(revision.body, [parent]));
@@ -813,9 +824,7 @@ test("source pronunciations and stems survive draft reload, publication, and rev
   assert.equal(stem, "run");
   assert.equal(ipa, "rʌn");
   const unknown = manualFormation([older], "Older evidence.")!;
-  for (const field of ["word_ipa", "stem", "ipa"] as const) {
-    assert.equal(Object.hasOwn(unknown.sources[0], field), false);
-  }
+  assert.equal(Object.hasOwn(unknown.sources[0], "word_ipa"), false);
   const nulls = manualFormation(
     [{ ...older, word_ipa: null, stem: null, ipa: null }],
     "Unknown evidence.",
@@ -827,9 +836,139 @@ test("source pronunciations and stems survive draft reload, publication, and rev
   )!;
   assert.equal(evidenceOnly.sources.length, 1);
   assert.equal(evidenceOnly.sources[0].word_ipa, row.word_ipa);
-  assert.equal(evidenceOnly.sources[0].stem, row.stem);
-  assert.equal(evidenceOnly.sources[0].ipa, row.ipa);
+  assert.equal(Object.hasOwn(evidenceOnly.sources[0], "stem"), false);
+  assert.equal(Object.hasOwn(evidenceOnly.sources[0], "ipa"), false);
   assert.equal(evidenceOnly.sources[0].input, null);
+});
+
+test("cached draft formation keeps private evidence but publishes signed source fields only", () => {
+  const formation = manualFormation(
+    [
+      {
+        language: "en",
+        name: "English",
+        word: "running",
+        input: "ran",
+        weight: null,
+      },
+    ],
+    "Retained evidence.",
+  )!;
+  const notes = [["A retained source note."]];
+  for (const structured of [true, false]) {
+    for (const format of ["lojbanized", "ipa"] as const) {
+      for (const word_ipa of [undefined, null, "", " \t ", "ˈrʌnɪŋ"]) {
+        const source = {
+          ...formation.sources[0],
+          word_ipa,
+          stem: "run",
+          ipa: "rʌn",
+          notes,
+          input: { format, text: format === "ipa" ? "rʌn" : "ran" },
+        };
+        const draft = newDraft({
+          spelling: "broda",
+          kind: "gismu",
+          text: "A running thing.",
+          structured,
+          formation: { ...formation, sources: [source] },
+          evidenceForm: "broda",
+        });
+        // A stored or exported draft can carry private values even without generator state.
+        assert.equal(draft.gismu, null);
+        const restored = normalizeDraft(JSON.parse(JSON.stringify(draft)));
+        assert.equal(restored.formation!.sources[0].stem, "run");
+        assert.equal(restored.formation!.sources[0].ipa, "rʌn");
+        const before = structuredClone(restored);
+        const built = draftToBody(restored);
+        assert.deepEqual(built.problems, []);
+        const signed = built.body!.etymology.formation!.sources[0];
+        assert.deepEqual(signed, {
+          ...formation.sources[0],
+          notes,
+          input: source.input,
+          ...(word_ipa?.trim() ? { word_ipa } : {}),
+        });
+        assert.deepEqual(restored, before);
+        assert.ok(admissible(built.body));
+      }
+    }
+  }
+});
+
+test("private-only draft sources stay in the draft without creating signed source rows", () => {
+  const formation = manualFormation([], "A manual root.")!;
+  const privateRow = {
+    language: "en",
+    word: "",
+    input: null,
+    weight: { numerator: 1, denominator: 2 },
+    notes: [],
+    word_ipa: null,
+    stem: "run",
+    ipa: "rʌn",
+  };
+  const draft = newDraft({
+    spelling: "broda",
+    kind: "gismu",
+    text: "A running thing.",
+    formation: { ...formation, sources: [privateRow] },
+    evidenceForm: "broda",
+  });
+  const restored = normalizeDraft(JSON.parse(JSON.stringify(draft)));
+  const before = structuredClone(restored);
+  const built = draftToBody(restored);
+  assert.deepEqual(built.problems, []);
+  assert.deepEqual(built.body!.etymology.formation!.sources, []);
+  assert.deepEqual(restored, before);
+  assert.ok(admissible(built.body));
+  // Authored notes are signed evidence even without a word or scoring input.
+  restored.formation!.sources[0].notes = [["The base form is uncertain."]];
+  const withNotes = draftToBody(restored);
+  assert.equal(withNotes.body!.etymology.formation!.sources.length, 1);
+  assert.deepEqual(withNotes.body!.etymology.formation!.sources[0].notes, [
+    ["The base form is uncertain."],
+  ]);
+  assert.equal(
+    Object.hasOwn(withNotes.body!.etymology.formation!.sources[0], "stem"),
+    false,
+  );
+  assert.equal(
+    Object.hasOwn(withNotes.body!.etymology.formation!.sources[0], "ipa"),
+    false,
+  );
+  assert.deepEqual(withNotes.problems, []);
+  assert.ok(admissible(withNotes.body));
+});
+
+test("an empty signed source with a known weight survives publication and Revise unchanged", () => {
+  const source = {
+    language: "en",
+    word: "",
+    input: null,
+    weight: { numerator: 1, denominator: 2 },
+    notes: [],
+  };
+  const formation = {
+    ...manualFormation([], "Retained historical evidence.")!,
+    sources: [source],
+  };
+  const draft = newDraft({
+    spelling: "broda",
+    kind: "gismu",
+    text: "A fixture meaning.",
+    formation,
+    evidenceForm: "broda",
+  });
+  const built = draftToBody(normalizeDraft(JSON.parse(JSON.stringify(draft))));
+  assert.deepEqual(built.problems, []);
+  assert.deepEqual(built.body!.etymology.formation, formation);
+  assert.ok(admissible(built.body));
+  const parent = "jve1:" + "1".repeat(64);
+  const revised = draftToBody(draftFromBody(built.body!, parent, "native"));
+  assert.deepEqual(revised.problems, []);
+  assert.deepEqual(revised.body!.etymology.formation, formation);
+  assert.ok(admissible(revised.body, [parent]));
 });
 
 /** An independent body that uses every field the format offers, not one the draft serializer made. */

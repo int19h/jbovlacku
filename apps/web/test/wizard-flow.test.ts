@@ -349,6 +349,93 @@ test("another source word starts without the first word's pronunciation or stem"
   });
 });
 
+test("draft export keeps private source evidence while publication and Revise keep signed fields only", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await seed(page, { formation: true, spelling: "brodo" });
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore();
+    const draft: any = await store.get("drafts", "current");
+    const privateEvidence = { word_ipa: "bʊk", stem: "book", ipa: "bʊk" };
+    Object.assign(draft.gismu.rows[0], privateEvidence);
+    Object.assign(draft.formation.sources[0], privateEvidence, {
+      notes: [["An authored source note."]],
+    });
+    draft.formation.sources.push({
+      language: "es",
+      word: "",
+      input: null,
+      weight: null,
+      notes: [],
+      stem: "cant",
+      ipa: "kant",
+    });
+    await store.put("drafts", "current", draft);
+  });
+  await open(page, "/new/publish");
+  await page.reload();
+  await expect(
+    page.getByRole("button", { name: "Export draft" }),
+  ).toBeVisible();
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export draft" }).click();
+  const file = await (await download).path();
+  const exported = JSON.parse(
+    await (await import("node:fs/promises")).readFile(file!, "utf8"),
+  );
+  expect(exported.gismu.rows[0]).toMatchObject({
+    word_ipa: "bʊk",
+    stem: "book",
+    ipa: "bʊk",
+  });
+  expect(exported.formation.sources[0]).toMatchObject({
+    word_ipa: "bʊk",
+    stem: "book",
+    ipa: "bʊk",
+  });
+  expect(exported.formation.sources[1]).toMatchObject({
+    stem: "cant",
+    ipa: "kant",
+  });
+  await page
+    .locator("aside")
+    .getByRole("button", { name: "Publish", exact: true })
+    .click();
+  const unlock = page.getByRole("dialog", { name: "Unlock your key" });
+  await unlock.getByLabel("Passphrase").fill(PASSPHRASE);
+  await unlock.getByRole("button", { name: "Unlock", exact: true }).click();
+  await acceptFirstSignature(page);
+  await expect(page).toHaveURL(/\/word\/brodo/);
+  const published = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const items = await new LocalStore().list("outbox");
+    return JSON.parse(items.find((item: any) => item.order === 0).transport);
+  });
+  expect(published.body.etymology.formation.sources).toEqual([
+    {
+      language: "en",
+      word: "book",
+      word_ipa: "bʊk",
+      input: { format: "lojbanized", text: "cukta" },
+      weight: { numerator: 1, denominator: 1 },
+      notes: [["An authored source note."]],
+    },
+  ]);
+  await page.goto(
+    `/new/editor?revise=${encodeURIComponent(published.envelope.id)}`,
+  );
+  await expect
+    .poll(async () => (await stored(page))?.parents)
+    .toEqual([published.envelope.id]);
+  const revision = await stored(page);
+  expect(revision.gismu).toBeNull();
+  expect(revision.formation.sources).toEqual(
+    published.body.etymology.formation.sources,
+  );
+});
+
 test("F4 manual entry and Etymology can remove evidence after confirmation", async ({
   page,
 }) => {

@@ -256,7 +256,9 @@ The bottom actions are Back and “Use <form>.”
 The source and candidate column uses a 520px basis. The selected-form column uses a 280px basis, with a 40px gap.
 
 Source rows show seven columns: Language, Weight, Word, Said, Stem, Stem said, and Letters.
-The [source input rules](frontend.md#step-3b-gismu-generator) define each column, its signed field, and its display for missing, Lojbanized, and IPA inputs.
+Language, Weight, Word, Said, and Letters map to signed source fields. Accepted Notes also enter the signed source.
+Stem and Stem said stay private in the draft and AI log.
+The [source input rules](frontend.md#step-3b-gismu-generator) define each column and its display for missing, Lojbanized, and IPA inputs.
 
 The preset select offers documented CLL 1995, CLL 1987, twelve-language, and custom profiles when their sourced parameters exist.
 Every named preset exposes pinned source evidence, resolved weights, normalization, and rule versions.

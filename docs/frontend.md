@@ -333,18 +333,23 @@ The table shows these columns: Language, Weight, Word, Said, Stem, Stem said, an
 
 The pronunciation is there so that speakers of the language can check the word later and propose a better one. Only the letters count toward the score. Stress is shown and is never scored.
 
-The signed formation source keeps Word as `word`, Said as `word_ipa`, Stem as `stem`, and Stem said as `ipa`.
-Language and Weight use `language` and `weight`. If `input` is null, Letters stays empty.
-For `format: "lojbanized"`, Letters shows the exact `input.text`.
+The signed formation source keeps Word as `word` and Said as `word_ipa`.
+Language and Weight use `language` and `weight`. Accepted Notes enter the signed `notes` field.
+Stem and Stem said stay private as `stem` and `ipa` in the draft and AI log. Neither enters the signed body.
+
+If `input` is null, Letters stays empty. For `format: "lojbanized"`, Letters shows the exact `input.text`.
 
 For `format: "ipa"`, Letters shows a preview from the recorded versioned conversion rule when the app supports that rule.
 Otherwise, Letters stays empty and the app shows that conversion is unavailable. The app keeps the original IPA algorithm input visible beside Letters.
 That input stays distinct from the stem pronunciation `ipa`. The app never guesses or fills `ipa` from it.
 The preview preserves the original stored `input` bytes.
 
-The pronunciation and stem fields are optional. An absent or null field means unknown and stays empty when an older record opens.
+The signed `word_ipa` field is optional. An absent or null value means unknown and stays empty when a signed record opens.
+The private `stem` and `ipa` fields are optional and survive draft reload and export.
+When a signed record opens, Stem and Stem said start empty.
 The app never guesses a missing stem or pronunciation from the scoring input.
-The scoring input, `word_ipa`, `stem`, and `ipa` stay independent in authored rows and signed records.
+
+The scoring input, `word_ipa`, `stem`, and `ipa` stay independent in draft rows.
 An author can keep known scoring letters without a stem or either pronunciation.
 
 IPA input requires an explicit, versioned conversion and a preview of the resulting scoring input.
@@ -456,7 +461,8 @@ Accepting a suggestion writes these fields only after the author reviews their v
 
 | Answer value | Draft field or panel behavior |
 | --- | --- |
-| Source `word`, `word_ipa`, `stem`, `ipa` | The matching formation source fields. A null answer never clears an existing value. Unknown evidence stays omitted when no value exists. |
+| Source `word`, `word_ipa` | The matching signed source fields in the draft. A null answer never clears an existing value. Unknown pronunciation stays omitted. |
+| Source `stem`, `ipa` | Private source fields in the draft and AI log. Neither enters a signed formation source. A null answer never clears an existing value. |
 | Source `sounds` | `input: {format: "lojbanized", text: sounds}`. A null answer preserves an existing input and leaves an unknown input null. |
 | Source `sense` and `note` | On row acceptance, replace the earlier accepted AI paragraph group with new nonempty `Sense: ` and `Note: ` paragraphs. Preserve authored notes. |
 | Hint `type` and `reason` | One alternative per current type, with null abstractor and relation arity. Hint `note` keeps one `type: reason` paragraph per alternative. |
@@ -471,7 +477,8 @@ Null source answers also preserve authored notes. Acceptance applies only `word`
 It never changes the row's language, weight, or provenance. Null answers preserve existing values, including scoring input, without weakening the model's answer checks.
 
 The source preview shows before and after values for every proposed field, including fresh values and the new AI note group.
-It also shows each value that acceptance retains. If a non-null suggested word changes a nonempty Word field, acceptance starts a field review.
+It also shows each value that acceptance retains.
+Acceptance of any non-null suggested word starts a field review if it retains nonempty evidence, including when Word was empty.
 The app marks every nonempty old value that remains, even when the proposal repeats it.
 
 These marks name Letters, Said, Stem, and Stem said. Letters review includes a retained scoring input even when its conversion is unavailable.
@@ -479,13 +486,14 @@ Each retained Notes paragraph also needs review, including word-specific authore
 Each marked field or paragraph shows its earlier word and value beside explicit Keep and Clear actions.
 
 Acceptance retains these values until the author chooses an action. Clear removes only that field or paragraph, and Keep records approval for the new word.
-The generator cannot score with marked Letters until the author keeps or clears them. Signing is blocked while any retained field or paragraph remains unresolved.
+Generation waits until every row has usable, unmarked Letters, so clearing Letters keeps generation waiting until the author fills them. Signing is blocked while any retained field or paragraph remains unresolved.
 
 Review marks and choices stay private in the draft. They survive reload and mode changes, and undo restores them with the values.
 A later accepted suggested word starts a new review for every retained value.
 
 The draft privately tracks which paragraphs form the last accepted AI note group for each source row.
 The app initializes new source rows with a known empty AI note group.
+Rows copied from signed records start with a known empty AI group because their signed notes are authored text.
 This group information survives reload and mode changes, and undo restores it with the notes.
 
 New AI paragraphs replace that group, rather than append to it. Replacement starts at the earlier group's first position and preserves the order of authored paragraphs.
@@ -1471,6 +1479,8 @@ Current contains exactly word_type, classification, spelling, text, frame, gloss
 
 Word_type and spelling are nullable draft strings. Classification is null or the definition classification object.
 When both word_type and classification are present, their lexical kinds must agree. Other fields use the corresponding definition shapes and permit empty values.
+`current.formation` uses signed source fields, so a request never carries private `stem` or `ipa` fields.
+
 Context is at most 32 exact definition event IDs. Profile names an advertised generation configuration, not an arbitrary provider URL.
 
 The total uncompressed request limit is 256 KiB. The server also enforces task-specific token and billing limits.
@@ -1565,7 +1575,8 @@ The manual builder initializes the formation object before requesting suggestion
 The browser keeps a stable private ID for every row. It records that ID, the original index, language, row values, and draft revision when requesting.
 
 The proposal path stays `/formation/sources`, with a one-element array. Its first element is a partial object containing only proposed fields.
-It permits only `word`, `word_ipa`, `stem`, `ipa`, `input`, and `notes`. This object is an edit proposal, not a complete formation source.
+It permits only `word`, `word_ipa`, `stem`, `ipa`, `input`, and `notes`. This object is a partial draft edit, separate from the signed formation schema.
+The proposal can carry private `stem` and `ipa` values even though `current.formation` and signed sources exclude them.
 
 Non-null `word`, `word_ipa`, `stem`, and `ipa` map to their matching fields. Non-null `sounds` maps to `input: {format: "lojbanized", text: sounds}`.
 A null `word`, `word_ipa`, `stem`, `ipa`, or `sounds` omits its matching proposal field.

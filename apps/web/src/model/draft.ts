@@ -29,6 +29,7 @@ import {
   type DefinitionBody,
   type Example,
   type Formation,
+  type FormationSource,
   type Gloss,
   type LexicalKind,
   type Operand,
@@ -179,6 +180,14 @@ interface LiteralModeSnapshot {
   /** Earlier visible values that an undo can restore after renumbering. */
   previousLiterals?: RichText[];
 }
+/** Private source evidence survives draft reload and export, but never enters a signed body. */
+export interface DraftFormationSource extends FormationSource {
+  stem?: string | null;
+  ipa?: string | null;
+}
+export interface DraftFormation extends Omit<Formation, "sources"> {
+  sources: DraftFormationSource[];
+}
 export interface Draft {
   version: 2;
   id: string;
@@ -216,7 +225,7 @@ export interface Draft {
   notes: RichText;
   examples: DraftExample[];
   etymologyText: RichText;
-  formation: Formation | null;
+  formation: DraftFormation | null;
   compound: Compound | null;
   /** The spelling that the formation or compound evidence describes. */
   evidenceForm: string | null;
@@ -1446,6 +1455,29 @@ export function coreProblems(
     ];
   }
 }
+/** Copy signed fields only, including when a stored draft contains private source evidence. */
+function signedFormation(formation: DraftFormation | null): Formation | null {
+  if (!formation) return null;
+  const sources: FormationSource[] = [];
+  for (const row of formation.sources) {
+    const source: FormationSource = {
+      language: row.language,
+      word: row.word,
+      input: row.input,
+      weight: row.weight,
+      notes: row.notes,
+    };
+    if (row.word_ipa?.trim()) source.word_ipa = row.word_ipa;
+    const privateOnly =
+      (Object.hasOwn(row, "stem") || Object.hasOwn(row, "ipa")) &&
+      !source.word.trim() &&
+      !source.word_ipa &&
+      source.input === null &&
+      !countNodes(source.notes);
+    if (!privateOnly) sources.push(source);
+  }
+  return { ...formation, sources };
+}
 /** Builds the signed body from the draft and lists every problem. */
 export function draftToBody(input: Draft): {
   body: DefinitionBody | null;
@@ -1455,6 +1487,7 @@ export function draftToBody(input: Draft): {
   // Literal mode publishes no place references, whatever set the mode. A
   // reference that reached a field becomes the circled character as text.
   const draft = input.structured ? input : literalView(input);
+  const formation = signedFormation(draft.formation);
   const problems: DraftProblem[] = [];
   const rich: RichField[] = [];
   const spelling = draft.spelling.trim().normalize("NFC");
@@ -1715,8 +1748,8 @@ export function draftToBody(input: Draft): {
       message: `The ${draft.compound ? "compound" : "generation"} evidence describes "${draft.evidenceForm}", not "${spelling}". Build the form again, or remove the evidence.`,
       blocking: true,
     });
-  if (draft.formation)
-    draft.formation.sources.forEach((row, i) => {
+  if (formation)
+    formation.sources.forEach((row, i) => {
       if (!language(row.language))
         problems.push({
           field: "formation",
@@ -1761,7 +1794,7 @@ export function draftToBody(input: Draft): {
     notes,
     etymology: {
       text: etymologyText,
-      formation: draft.formation,
+      formation,
       compound: draft.compound,
     },
     examples,

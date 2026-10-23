@@ -508,7 +508,7 @@ fn type_hint_uniqueness_compares_signed_tags_without_alias_substitution() {
 }
 
 #[test]
-fn formation_source_evidence_is_optional_and_preserves_original_bytes() {
+fn formation_source_word_pronunciation_is_optional_and_preserves_original_bytes() {
     let mut body = parse_stored_json(include_bytes!("fixtures/definition.json")).unwrap();
     body["etymology"]["formation"] = json!({
         "method":"unknown", "algorithm":null,
@@ -525,34 +525,54 @@ fn formation_source_evidence_is_optional_and_preserves_original_bytes() {
     let older = canonical_value(&body).unwrap();
     assert!(validate_body(&make(&body), &body).is_ok());
     assert_eq!(canonical_value(&body).unwrap(), older);
-    let fields = [("word_ipa", "ˈrʌnɪŋ"), ("stem", "run"), ("ipa", "rʌn")];
-    for (field, value) in fields {
-        let mut single = body.clone();
-        single["etymology"]["formation"]["sources"][0][field] = json!(value);
-        assert!(validate_body(&make(&single), &single).is_ok(), "{field}");
-        assert_ne!(canonical_value(&single).unwrap(), older);
-        for invalid in [json!(""), json!(false), json!(1), json!([]), json!({})] {
-            single["etymology"]["formation"]["sources"][0][field] = invalid;
-            assert!(validate_body(&make(&single), &single).is_err(), "{field}");
-        }
-        single["etymology"]["formation"]["sources"][0][field] = Value::Null;
-        assert!(
-            validate_body(&make(&single), &single).is_ok(),
-            "{field}: null"
-        );
-    }
-    for (field, value) in fields {
-        body["etymology"]["formation"]["sources"][0][field] = json!(value);
-    }
-    let with_evidence = canonical_value(&body).unwrap();
-    assert!(validate_body(&make(&body), &body).is_ok());
-    assert_eq!(canonical_value(&body).unwrap(), with_evidence);
+    body["etymology"]["formation"]["sources"][0]["word_ipa"] = json!("ˈrʌnɪŋ");
+    let with_pronunciation = canonical_value(&body).unwrap();
+    let envelope = sign_header(&[7; 32], make(&body)).unwrap();
+    assert!(matches!(
+        inspect_body(&envelope, Some(&with_pronunciation)),
+        BodyAvailability::Valid { .. }
+    ));
+    assert_eq!(canonical_value(&body).unwrap(), with_pronunciation);
     assert_ne!(
         body_descriptor(&older).unwrap().hash,
-        body_descriptor(&with_evidence).unwrap().hash
+        body_descriptor(&with_pronunciation).unwrap().hash
     );
-    body["etymology"]["formation"]["sources"][0]["pronunciation"] = json!("rʌn");
-    assert!(validate_body(&make(&body), &body).is_err());
+    // Full pronunciation does not require a scoring input or private stem evidence.
+    body["etymology"]["formation"]["sources"][0]["input"] = Value::Null;
+    assert!(validate_body(&make(&body), &body).is_ok());
+    body["etymology"]["formation"]["sources"][0]["input"] = json!({"format":"ipa", "text":"rʌn"});
+    assert!(validate_body(&make(&body), &body).is_ok());
+    for invalid in [json!(""), json!(false), json!(1), json!([]), json!({})] {
+        body["etymology"]["formation"]["sources"][0]["word_ipa"] = invalid;
+        assert!(validate_body(&make(&body), &body).is_err());
+    }
+    body["etymology"]["formation"]["sources"][0]["word_ipa"] = Value::Null;
+    assert!(validate_body(&make(&body), &body).is_ok());
+
+    for field in ["stem", "ipa", "pronunciation"] {
+        for value in [
+            json!("run"),
+            Value::Null,
+            json!(""),
+            json!(false),
+            json!(1),
+            json!([]),
+            json!({}),
+        ] {
+            let mut forbidden = body.clone();
+            forbidden["etymology"]["formation"]["sources"][0][field] = value.clone();
+            assert!(
+                validate_body(&make(&forbidden), &forbidden).is_err(),
+                "{field}: {value}"
+            );
+            let bytes = canonical_value(&forbidden).unwrap();
+            let envelope = sign_header(&[7; 32], make(&forbidden)).unwrap();
+            assert!(matches!(
+                inspect_body(&envelope, Some(&bytes)),
+                BodyAvailability::Invalid { .. }
+            ));
+        }
+    }
 }
 
 #[test]

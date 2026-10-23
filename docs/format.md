@@ -444,7 +444,7 @@ Removing a field from an object still must satisfy that object's other rules.
 | License | `url: null`, `attribution: ""`, subject to the contribution and source-rights rules below. |
 | Etymology | `text: []`, `formation: null`, `compound: null`. |
 | Formation | `algorithm: null`, `sources: []`, `weights_profile: null`, `generated: null`, `selected_score: null`, `selected_rank: null`, `selection_reason: []`, `candidates: []`, `conflicts: []`. |
-| Formation source | `input: null`, `weight: null`, `notes: []`, `word_ipa: null`, `stem: null`, `ipa: null`. |
+| Formation source | `input: null`, `weight: null`, `notes: []`, `word_ipa: null`. |
 | Formation algorithm | `implementation: null`. |
 | Weight profile | `name: null`, `source: null`. |
 | Formation candidate | `score: null`, `rank: null`. |
@@ -635,18 +635,20 @@ A lexical classification never implies that a generation algorithm produced the 
 The formation object requires method.
 It also permits algorithm, sources, weights_profile, generated, selected_score, selected_rank, selection_reason, candidates, and conflicts, with the defaults above.
 Method is algorithmic, non-algorithmic, or unknown. Non-algorithmic requires a null algorithm. These claims can describe roots, borrowings, or names.
-Sources is an ordered array with at most 64 entries. Each entry permits language, word, input, weight, notes, word_ipa, stem, and ipa.
+
+Sources is an ordered array with at most 64 entries. Each entry permits language, word, input, weight, notes, and word_ipa.
 
 Language is a definition-language tag. Word preserves the original source spelling. Input is the exact algorithm input, or null when unknown.
 Weight is a nonnegative rational under section 8, or null when historical evidence supplies none. Notes is rich text.
 
-`word_ipa` is the whole-word pronunciation in IPA, with stress where known. `stem` is the source part that supplies the scoring letters.
-`ipa` is the pronunciation of that stem in IPA. Each of these three fields is a nonempty string or null.
-An omitted or null field means unknown. Older records keep that meaning and never acquire a guessed stem or pronunciation.
+`word_ipa` is the whole-word pronunciation in IPA, with stress where known. It is a nonempty string or null.
+An omitted or null `word_ipa` means unknown. Older records keep that meaning and never acquire a guessed pronunciation.
 
-The scoring input, `word_ipa`, `stem`, and `ipa` stay independent in signed records.
-An author can keep known scoring input without a stem or either pronunciation.
-The pronunciation and stem fields stay in the signed body when supplied. They do not replace `input` or affect the generation score.
+The scoring input and `word_ipa` stay independent in signed records.
+An author can keep known scoring input without a pronunciation.
+The pronunciation stays in the signed body when supplied. It does not replace `input` or affect the generation score.
+
+`stem` and `ipa` are not signed source fields. The version 1 unknown-field rule rejects them, including null and empty values.
 
 An input contains exactly format and text. Format is `lojbanized` or `ipa`, and text is nonempty.
 IPA input requires a versioned conversion rule before a letter-based generator can use it.

@@ -633,11 +633,9 @@ fn formation(v: &Value, r: &mut Rich) -> Result<()> {
     })?;
     for s in array(&v["sources"], 64)? {
         let mut names = vec!["language", "word", "input", "weight", "notes"];
-        for name in ["word_ipa", "stem", "ipa"] {
-            if let Some(value) = s.get(name) {
-                names.push(name);
-                nullable(value, |v| nonempty(v).map(|_| ()))?;
-            }
+        if let Some(value) = s.get("word_ipa") {
+            names.push("word_ipa");
+            nullable(value, |v| nonempty(v).map(|_| ()))?;
         }
         fields(s, &names)?;
         language(&s["language"])?;

@@ -89,6 +89,10 @@ For `sources`, if `word` is null, `sense`, `word_ipa`, `stem`, `ipa`, and `sound
 A null `stem` or `word_ipa` requires null `ipa` and `sounds`. A null `ipa` requires null `sounds`.
 A missing stem never discards a known `word_ipa`. The note explains any unknown field.
 
+The answer keeps `stem` and `ipa` because the model needs them to derive the scoring letters.
+The application keeps these fields only in the private draft and AI log. It never copies them into a signed formation source.
+Signed sources can keep `word_ipa` independently.
+
 ## Rules that the application keeps
 
 - The definition of the whole word decides the meaning. Component definitions only identify roles.
