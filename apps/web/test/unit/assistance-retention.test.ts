@@ -100,6 +100,12 @@ test("log Markdown uses the displayed rows and fences untrusted content safely",
       },
     ],
   };
+  const promptHeading = assistance
+    .assistanceLogRows(r)
+    .find(
+      (row) => row.kind === "heading" && row.text === "System prompt: type",
+    );
+  assert.equal((promptHeading as { collapsed?: boolean }).collapsed, true);
   const markdown = (assistance as any).assistanceLogMarkdown(r);
   assert.match(markdown, /line one\nline two/);
   assert.doesNotMatch(markdown, /line one\\nline two/);

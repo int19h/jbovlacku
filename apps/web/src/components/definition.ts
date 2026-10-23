@@ -638,13 +638,14 @@ export function etymologyNodes(body: DefinitionBody): Node[] {
           ["Stem said", s.ipa],
         ])
           if (value) source.append(p(`${label}: ${value}`, "meta"));
-        if (s.notes.length)
-          source.append(
-            renderRichText(s.notes, {
-              placeHref: null,
-              className: "source-notes",
-            }),
-          );
+        if (s.notes.length) {
+          const notes = renderRichText(s.notes, {
+            placeHref: null,
+            className: "source-notes",
+          });
+          notes.style.whiteSpace = "pre-wrap";
+          source.append(notes);
+        }
         list.append(source);
       }
       nodes.push(list);

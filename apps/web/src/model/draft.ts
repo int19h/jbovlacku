@@ -22,6 +22,7 @@ import {
 } from "./richtext.ts";
 import { placeGlyph } from "../lib/format.ts";
 import { cloneAssistance } from "./assistance.ts";
+import { syncFormationSources } from "./builders.ts";
 import {
   lexicalKinds,
   type Arity,
@@ -1454,6 +1455,13 @@ export function draftToBody(input: Draft): {
   // reference that reached a field becomes the circled character as text.
   const draft = input.structured ? input : literalView(input);
   const problems: DraftProblem[] = [];
+  if (syncFormationSources(draft))
+    problems.push({
+      field: "formation",
+      message:
+        "The source scoring inputs changed. Use the form again to refresh its scores, enter it without generation, or remove the evidence.",
+      blocking: true,
+    });
   const rich: RichField[] = [];
   const spelling = draft.spelling.trim().normalize("NFC");
   if (!spelling)

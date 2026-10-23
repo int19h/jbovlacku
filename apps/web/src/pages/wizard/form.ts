@@ -8,11 +8,7 @@ import { el, p, text, field, link, button } from "../../lib/dom.ts";
 import { navigate, type RenderContext, type Route } from "../../app/router.ts";
 import type { App } from "../../app/context.ts";
 import type { Draft } from "../../model/draft.ts";
-import {
-  formationSource,
-  manualFormation,
-  sameFormationSources,
-} from "../../model/builders.ts";
+import { manualFormation, syncFormationSources } from "../../model/builders.ts";
 import {
   actionBar,
   DraftSaver,
@@ -66,6 +62,13 @@ export async function formPage(route: Route, context: RenderContext, app: App) {
         { class: "btn btn-quiet" },
       ),
     );
+    if (syncFormationSources(draft))
+      evidenceNotice.append(
+        p(
+          "The source scoring inputs changed. Using this form without generation removes the old scores.",
+          "small",
+        ),
+      );
   };
   if (kind === "lujvo" || kind === "gismu")
     section.append(
@@ -177,11 +180,7 @@ export async function formPage(route: Route, context: RenderContext, app: App) {
         if (
           kind === "gismu" &&
           draft.gismu &&
-          (!draft.formation ||
-            !sameFormationSources(
-              draft.formation.sources,
-              draft.gismu.rows.map(formationSource),
-            ))
+          (!draft.formation || syncFormationSources(draft))
         ) {
           draft.formation = manualFormation(
             draft.gismu.rows,

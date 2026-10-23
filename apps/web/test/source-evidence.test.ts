@@ -422,7 +422,7 @@ test("bulk suggestions disable repeated starts and stop on cancellation", async 
     exact: true,
   });
   await bulk.click();
-  await expect(bulk).toBeDisabled();
+  await expect(bulk).toHaveAttribute("aria-disabled", "true");
   await allow(page);
   await expect.poll(() => assistant.calls.length).toBe(1);
   await page.getByRole("button", { name: "Cancel", exact: true }).click();
@@ -502,7 +502,7 @@ test("saved source notes remain ordinary author fields when assistance is unavai
   ).toHaveValue("Sense: a work\n\nNote: line one\nline two");
 });
 
-test("manual selection rebuilds changed source evidence and removes stale scores", async ({
+test("manual selection keeps scores after descriptive source edits", async ({
   page,
 }) => {
   await mock(page, { disabled: true });
@@ -527,13 +527,17 @@ test("manual selection rebuilds changed source evidence and removes stale scores
       weights_profile: null,
       generated: "brodu",
       selected_score: { numerator: 1, denominator: 2 },
-      selected_rank: "1",
+      selected_rank: 1,
       selection_reason: [],
       candidates: [],
       conflicts: [],
     },
   });
   await page.getByLabel("Native word for English", { exact: true }).fill("new");
+  await page.getByLabel("Said for English", { exact: true }).fill("nuː");
+  await page
+    .getByLabel("Source notes for English", { exact: true })
+    .fill("Reviewed note");
   await page
     .getByRole("link", { name: "Enter without generation", exact: true })
     .click();
@@ -541,8 +545,13 @@ test("manual selection rebuilds changed source evidence and removes stale scores
   await expect(page).toHaveURL(/\/new\/places$/);
   const draft = await stored(page);
   expect(draft.formation.sources[0].word).toBe("new");
-  expect(draft.formation.method).toBe("non-algorithmic");
-  expect(draft.formation.selected_score).toBeNull();
+  expect(draft.formation.method).toBe("algorithmic");
+  expect(draft.formation.selected_score).toEqual({
+    numerator: 1,
+    denominator: 2,
+  });
+  expect(draft.formation.sources[0].notes).toEqual([["Reviewed note"]]);
+  expect(draft.formation.sources[0].word_ipa).toBe("nuː");
 });
 
 test("a custom language edit updates its source action and cancels an old-language job", async ({
@@ -631,7 +640,7 @@ test("manual selection preserves unchanged canonical source evidence and histori
     weights_profile: null,
     generated: "brodu",
     selected_score: { numerator: 1, denominator: 2 },
-    selected_rank: "1",
+    selected_rank: 1,
     selection_reason: [["Original selection"]],
     candidates: [],
     conflicts: [],
@@ -667,4 +676,206 @@ test("changing a source language keeps the next weight input attached and preser
   await expect(
     page.getByLabel("Scoring letters for deu", { exact: true }),
   ).toBeVisible();
+});
+
+const scoredFormation = () => ({
+  method: "algorithmic",
+  algorithm: null,
+  sources: [
+    {
+      language: "en",
+      word: "book",
+      input: { format: "lojbanized", text: "buk" },
+      weight: { numerator: 1, denominator: 1 },
+      notes: [["Original note"]],
+    },
+  ],
+  weights_profile: { name: "Historical", source: null },
+  generated: "brodu",
+  selected_score: { numerator: 1, denominator: 2 },
+  selected_rank: 3,
+  selection_reason: [["Author chose this form."]],
+  candidates: [
+    { form: "brodu", score: { numerator: 1, denominator: 2 }, rank: 3 },
+  ],
+  conflicts: [],
+});
+
+test("a blank alternative keeps the scored formation and its selection reason", async ({
+  page,
+}) => {
+  await mock(page, { disabled: true });
+  const formation = scoredFormation();
+  await seed(page, { formation, evidenceForm: "brodu" }, false);
+  await page
+    .getByRole("button", {
+      name: "Add an alternative word for en",
+      exact: true,
+    })
+    .click();
+  await page
+    .getByRole("link", { name: "Enter without generation", exact: true })
+    .click();
+  await page.getByRole("button", { name: "Use brodu", exact: true }).click();
+  await expect(page).toHaveURL(/\/new\/places$/);
+  expect((await stored(page)).formation).toEqual(formation);
+});
+
+test("dropping notes after Use this form then publishing through the step bar signs current source text", async ({
+  page,
+}) => {
+  test.setTimeout(45000);
+  await mock(page);
+  await seed(page, { gismu: state([source()]) });
+  await page
+    .getByRole("button", { name: "Suggest source for English", exact: true })
+    .click();
+  await allow(page);
+  await page.getByRole("button", { name: "Use this", exact: true }).click();
+  await expect(
+    page.getByLabel("Source notes for English", { exact: true }),
+  ).toBeVisible();
+  await page
+    .getByLabel("Scoring letters for English", { exact: true })
+    .fill("buktu");
+  await page
+    .getByRole("region", { name: "Candidates", exact: true })
+    .getByRole("button", { name: /^Choose / })
+    .first()
+    .click();
+  await page.locator("button.btn-primary").filter({ hasText: /^Use / }).click();
+  await expect(page).toHaveURL(/\/new\/places$/);
+  expect(
+    (await stored(page)).formation.sources[0].notes.length,
+  ).toBeGreaterThan(0);
+  await page.locator(".step-bar").getByRole("link", { name: /^Form/ }).click();
+  await page
+    .getByRole("button", { name: "Drop source notes for English", exact: true })
+    .click();
+  await page.getByLabel("Native word for English", { exact: true }).fill("");
+  await page.getByLabel("Said for English", { exact: true }).fill("ˈbʊks");
+  await page.getByLabel("Stem for English", { exact: true }).fill("new stem");
+  await page.getByLabel("Stem said for English", { exact: true }).fill("bʊks");
+  await page
+    .locator(".step-bar")
+    .getByRole("link", { name: /^Publish/ })
+    .click();
+  await expect(page).toHaveURL(/\/new\/publish$/);
+  await createIdentity(page);
+  await page.evaluate(async () => {
+    const { navigate } = await import(String("/src/app/router.ts"));
+    navigate("/new/publish");
+  });
+  const published: any[] = [];
+  await page.route("**/api/v1/events", async (route) => {
+    const payload = route.request().postDataJSON();
+    if (payload?.envelope?.header?.action?.kind === "definition.publish")
+      published.push(payload);
+    await route.continue();
+  });
+  await page
+    .locator("aside")
+    .getByRole("button", { name: "Publish", exact: true })
+    .click();
+  await acceptFirstSignature(page);
+  await expect(page).toHaveURL(/\/word\//);
+  expect(published).toHaveLength(1);
+  expect(published[0].body.etymology.formation.sources[0]).toMatchObject({
+    word: "",
+    notes: [],
+    word_ipa: "ˈbʊks",
+    stem: "new stem",
+    ipa: "bʊks",
+  });
+  expect(published[0].body.etymology.formation.method).toBe("algorithmic");
+  expect(published[0].envelope.signature).toEqual(expect.any(String));
+});
+
+test("scoring edits block publication through the step bar until the author removes the old scores", async ({
+  page,
+}) => {
+  await mock(page, { disabled: true });
+  await seed(
+    page,
+    { formation: scoredFormation(), evidenceForm: "brodu" },
+    false,
+  );
+  await page
+    .getByLabel("Scoring letters for en", { exact: true })
+    .fill("buksa");
+  await page
+    .locator(".step-bar")
+    .getByRole("link", { name: /^Publish/ })
+    .click();
+  await expect(page.locator("main")).toContainText(
+    "The source scoring inputs changed.",
+  );
+  await expect(
+    page.locator("aside").getByRole("button", { name: "Publish", exact: true }),
+  ).toBeDisabled();
+  await page.locator(".step-bar").getByRole("link", { name: /^Form/ }).click();
+  await page
+    .getByRole("link", { name: "Enter without generation", exact: true })
+    .click();
+  await expect(page.locator("main")).toContainText(
+    "Using this form without generation removes the old scores.",
+  );
+  await page.getByRole("button", { name: "Use brodu", exact: true }).click();
+  await expect(page).toHaveURL(/\/new\/places$/);
+  expect((await stored(page)).formation.selected_score).toBeNull();
+});
+
+test("bulk source suggestions keep focus after a completed loop and declined consent", async ({
+  page,
+}) => {
+  await mock(page);
+  await seed(page, { gismu: state([source(), source("zh", "Chinese")]) });
+  const bulk = page.getByRole("button", {
+    name: "Suggest source words",
+    exact: true,
+  });
+  await bulk.focus();
+  await bulk.press("Enter");
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Not now", exact: true })
+    .click();
+  await expect(bulk).toBeFocused();
+  await bulk.press("Enter");
+  await allow(page);
+  await expect(page.getByText("Mock source.", { exact: true })).toHaveCount(2);
+  await expect(bulk).toBeFocused();
+});
+
+test("source note review preserves visible line breaks", async ({ page }) => {
+  await mock(page, { disabled: true });
+  const formation = scoredFormation();
+  formation.sources[0].notes = [["line one\nline two"]];
+  await seed(page, { formation, evidenceForm: "brodu" }, false);
+  await page
+    .locator(".step-bar")
+    .getByRole("link", { name: /^Publish/ })
+    .click();
+  await page.getByText("Etymology", { exact: true }).click();
+  const note = page.locator(".source-notes").first();
+  await expect(note).toHaveCSS("white-space", "pre-wrap");
+  await expect(note).toContainText("line one\nline two");
+});
+
+test("source notes edit plain text without token escapes", async ({ page }) => {
+  await mock(page, { disabled: true });
+  const formation = scoredFormation();
+  const value = "pronounced [buk] `literal` \\ {place 2} ②";
+  formation.sources[0].notes = [[value]];
+  await seed(page, { formation, evidenceForm: "brodu" }, false);
+  const notes = page.getByLabel("Source notes for en", { exact: true });
+  await expect(notes).toHaveValue(value);
+  await notes.fill(value + "\nsecond line");
+  await page
+    .locator(".step-bar")
+    .getByRole("link", { name: /^Publish/ })
+    .click();
+  expect((await stored(page)).formation.sources[0].notes).toEqual([
+    [value + "\nsecond line"],
+  ]);
 });

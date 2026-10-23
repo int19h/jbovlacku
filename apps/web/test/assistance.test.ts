@@ -346,6 +346,9 @@ async function mockAssistant(page: Page, options: MockOptions = {}) {
     release: () => {
       released = true;
     },
+    hold: () => {
+      released = false;
+    },
     deletions: () => deleted,
     capabilityReads: () => capabilityReads,
   };
@@ -2236,4 +2239,228 @@ test("an unversioned draft converts legacy deep logs before its first storage cl
     };
   });
   expect(outcome).toEqual({ loaded: true, storedType: "string", rawLog: null });
+});
+
+for (const failure of [undefined, "The mock service failed."]) {
+  test(`restored ${failure ? "failed" : "ready"} suggestions do not announce a new result`, async ({
+    page,
+  }) => {
+    await mockAssistant(page, { failure });
+    await draft(page);
+    await page
+      .getByRole("button", { name: "Recommend a type", exact: true })
+      .click();
+    await allow(page);
+    await expect(page.locator(".ai-action [role=status]")).not.toHaveText("");
+    await expect(page.locator(".ai-working")).toHaveCount(0);
+    await page.reload();
+    await expect(
+      page.getByRole("button", {
+        name: failure ? "Try again" : "Use this",
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(page.locator(".ai-action [role=status]")).toHaveText("");
+  });
+}
+
+test("Cancel announces cancellation instead of a restored failure", async ({
+  page,
+}) => {
+  const mock = await mockAssistant(page, { failure: "An earlier failure." });
+  await draft(page);
+  await page
+    .getByRole("button", { name: "Recommend a type", exact: true })
+    .click();
+  await allow(page);
+  await expect(
+    page.getByRole("button", { name: "Try again", exact: true }),
+  ).toBeVisible();
+  mock.hold();
+  await page.getByRole("button", { name: "Try again", exact: true }).click();
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(page.locator(".ai-action [role=status]")).toHaveText(
+    "Canceled.",
+  );
+});
+
+test("Cancel returns focus to Suggest again beside accepted Undo", async ({
+  page,
+}) => {
+  const mock = await mockAssistant(page);
+  await draft(page);
+  await page
+    .getByRole("button", { name: "Recommend a type", exact: true })
+    .click();
+  await allow(page);
+  await page.getByRole("button", { name: "Use this", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Suggest again", exact: true })
+    .click();
+  mock.hold();
+  await page
+    .getByRole("button", { name: "Recommend a type", exact: true })
+    .click();
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  const suggest = page.getByRole("button", {
+    name: "Suggest again",
+    exact: true,
+  });
+  await expect(suggest).toBeFocused();
+  await expect(
+    page.getByRole("button", { name: "Undo Recommend a type", exact: true }),
+  ).not.toBeFocused();
+  await expect(page.getByRole("radio", { name: /^cmavo/ })).toBeChecked();
+});
+
+test("Cancel returns focus to the action beside accepted mapping Undo", async ({
+  page,
+}) => {
+  const mock = await mockAssistant(page);
+  await draft(
+    page,
+    {
+      kind: "lujvo",
+      spelling: "ckusni",
+      frameMode: "fixed",
+      places: [
+        {
+          index: 1,
+          description: [["Original place."]],
+          glosses: [],
+          kind: "unspecified",
+          hint: null,
+          derivations: [],
+          defaults: [],
+          constraints: [],
+        },
+      ],
+    },
+    "/new/places",
+  );
+  const action = page.getByRole("button", {
+    name: "Suggest places and glosses",
+    exact: true,
+  });
+  await action.click();
+  await allow(page);
+  await page
+    .getByRole("button", { name: "Add klama 2 to place 1", exact: true })
+    .click();
+  await page.getByRole("button", { name: "Dismiss", exact: true }).click();
+  mock.hold();
+  await action.click();
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(action).toBeFocused();
+  await expect(
+    page.getByRole("button", {
+      name: "Undo mapping klama 2 to place 1",
+      exact: true,
+    }),
+  ).not.toBeFocused();
+  expect((await stored(page)).places[0].derivations).toHaveLength(1);
+});
+
+for (const stale of [false, true]) {
+  test(`places completion focuses ${stale ? "the stale review checkbox" : "Use this"}`, async ({
+    page,
+  }) => {
+    const mock = await mockAssistant(page, { delay: true });
+    await draft(
+      page,
+      {
+        kind: "lujvo",
+        spelling: "ckusni",
+        frameMode: "fixed",
+        places: [
+          {
+            index: 1,
+            description: [["Original place."]],
+            glosses: [],
+            kind: "unspecified",
+            hint: null,
+            derivations: [],
+            defaults: [],
+            constraints: [],
+          },
+        ],
+      },
+      "/new/places",
+    );
+    await page
+      .getByRole("button", { name: "Suggest places and glosses", exact: true })
+      .click();
+    await allow(page);
+    const cancel = page.getByRole("button", { name: "Cancel", exact: true });
+    await expect(cancel).toBeFocused();
+    if (stale) {
+      await page
+        .getByLabel("Description for place 1", { exact: true })
+        .fill("Newer prose.");
+      await cancel.focus();
+    }
+    mock.release();
+    const panel = page.getByRole("region", {
+      name: "Suggest places and glosses suggestion",
+    });
+    await expect(panel).toBeVisible();
+    await expect(
+      stale
+        ? panel.getByRole("checkbox", {
+            name: "I reviewed the newer fields and want to replace them",
+          })
+        : panel.getByRole("button", { name: "Use this", exact: true }),
+    ).toBeFocused();
+  });
+}
+
+test("the inference log collapses the full system prompt and exports it unchanged", async ({
+  page,
+}) => {
+  await mockAssistant(page);
+  await draft(page);
+  await page
+    .getByRole("button", { name: "Recommend a type", exact: true })
+    .click();
+  await allow(page);
+  await page
+    .getByRole("button", { name: "How the assistant decided", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog", {
+    name: "How the assistant decided",
+  });
+  const prompt = dialog.locator("details").filter({
+    has: page.locator("summary", { hasText: "System prompt: type" }),
+  });
+  await expect(prompt).toHaveCount(1);
+  await expect(prompt).not.toHaveAttribute("open");
+  await expect(prompt.locator("pre")).toHaveText(
+    log.exchanges[0].system_prompt,
+  );
+  await expect(prompt.locator("pre")).toBeHidden();
+  await prompt.locator("summary").click();
+  await expect(prompt.locator("pre")).toBeVisible();
+  const download = page.waitForEvent("download");
+  await dialog.getByRole("button", { name: "Export as Markdown" }).click();
+  const markdown = await readFile((await (await download).path())!, "utf8");
+  expect(markdown).toContain(
+    `### System prompt: type\n\n\`\`\`text\n${log.exchanges[0].system_prompt}\n\`\`\``,
+  );
+});
+
+test("network failures add manual guidance once", async ({ page }) => {
+  await mockAssistant(page);
+  await page.route("**/api/v1/assist", (route) => route.abort("failed"));
+  await draft(page);
+  await page
+    .getByRole("button", { name: "Recommend a type", exact: true })
+    .click();
+  await allow(page);
+  await expect(page.locator(".ai-action .notice")).toHaveText(
+    "Failed to fetch. Try again or fill the fields in by hand.",
+  );
+  await expect(
+    page.getByRole("button", { name: "Try again", exact: true }),
+  ).toBeFocused();
+  expect((await stored(page)).kind).toBe("gismu");
 });

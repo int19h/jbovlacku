@@ -26,6 +26,7 @@ import {
   componentId,
   formationSource,
   normalizeSourceRow,
+  syncFormationSources,
 } from "./builders.ts";
 
 export type Operation =
@@ -464,6 +465,7 @@ export function applySource(
   draft.gismu!.selected = null;
   draft.gismu!.acknowledged = [];
   draft.publishAcknowledged = [];
+  syncFormationSources(draft);
 }
 
 /** Rich-field IDs belong to the editor, so they do not change a field value. */
@@ -551,6 +553,7 @@ export function restorePatches(draft: Draft, record: AssistanceRecord): number {
       else parent[key] = structuredClone(patch.before);
     } else kept++;
   }
+  syncFormationSources(draft);
   return kept;
 }
 
@@ -733,6 +736,7 @@ export type LogRow = {
   text: string;
   level?: number;
   href?: string;
+  collapsed?: boolean;
 };
 const logJson = compactJson;
 function logUsage(usage: Record<string, unknown>): string {
@@ -794,7 +798,12 @@ export function assistanceLogRows(
   for (const exchange of (Array.isArray(log.exchanges)
     ? log.exchanges
     : []) as Record<string, unknown>[]) {
-    heading(`System prompt: ${String(exchange.task)}`);
+    rows.push({
+      kind: "heading",
+      text: `System prompt: ${String(exchange.task)}`,
+      level: 3,
+      collapsed: true,
+    });
     code(exchange.system_prompt ?? "");
     heading("App request");
     code(exchange.request);

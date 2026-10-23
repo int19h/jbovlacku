@@ -286,6 +286,15 @@ async function consent(
   });
 }
 const json = (value: unknown) => JSON.stringify(value, null, 2);
+function failureMessage(message = "No usable answer.") {
+  if (
+    /Try again or fill the (?:fields|rows) in by hand\.$/.test(
+      message.trimEnd(),
+    )
+  )
+    return message;
+  return `${message}${/[.!?]$/.test(message) ? "" : "."} Try again or fill the fields in by hand.`;
+}
 export function inferenceLog(record: AssistanceRecord, draft?: Draft) {
   const log = assistanceLog(record, draft);
   const dialog = el("dialog", {
@@ -295,18 +304,25 @@ export function inferenceLog(record: AssistanceRecord, draft?: Draft) {
   dialog.append(
     el("h2", { id: "ai-log-title", text: "How the assistant decided" }),
   );
+  let section: HTMLElement = dialog;
   for (const row of assistanceLogRows(record, log)) {
-    if (row.kind === "heading")
-      dialog.append(el(`h${row.level ?? 3}` as "h3", { text: row.text }));
-    else if (row.kind === "code") dialog.append(el("pre", { text: row.text }));
+    if (row.kind === "heading") {
+      section = dialog;
+      if (row.collapsed) {
+        section = el("details", {}, el("summary", { text: row.text }));
+        dialog.append(section);
+      } else
+        dialog.append(el(`h${row.level ?? 3}` as "h3", { text: row.text }));
+    } else if (row.kind === "code")
+      section.append(el("pre", { text: row.text }));
     else if (row.kind === "link")
-      dialog.append(
+      section.append(
         link(row.text, row.href!, {
           target: "_blank",
           rel: "noopener noreferrer",
         }),
       );
-    else dialog.append(p(row.text));
+    else section.append(p(row.text));
   }
   const close = button("Close", () => dialog.close(), { class: "btn" });
   dialog.append(
@@ -374,6 +390,17 @@ export function assistanceAction(
   });
   const content = el("div");
   box.append(status, content);
+  const focusControl = () =>
+    (
+      content.querySelector<HTMLElement>(
+        ".ai-suggestion .btn-primary:not([disabled])",
+      ) ??
+      content.querySelector<HTMLElement>(
+        '.ai-suggestion input[type="checkbox"]',
+      ) ??
+      content.querySelector<HTMLElement>(".ai-suggestion") ??
+      content.querySelector<HTMLElement>("[data-ai-focus]:not([disabled])")
+    )?.focus();
   let workingLine: HTMLElement | null = null;
   let workingText: HTMLElement | null = null;
   let showIdle = false;
@@ -431,7 +458,10 @@ export function assistanceAction(
     active = null;
     working = false;
     run.controller.abort();
-    if (context.live()) render();
+    if (context.live()) {
+      status.textContent = "Canceled.";
+      render();
+    }
     await acknowledge(run);
   };
   const abortRun = () => void cancel();
@@ -656,7 +686,7 @@ export function assistanceAction(
             const idle = content.lastElementChild;
             if (idle instanceof HTMLButtonElement) idle.focus();
           },
-          { class: "btn btn-quiet" },
+          { class: "btn btn-quiet", "data-ai-focus": "" },
         ),
       ),
     );
@@ -712,21 +742,12 @@ export function assistanceAction(
       document.activeElement instanceof HTMLElement &&
       content.contains(document.activeElement);
     const replace = () => {
-      if (focused)
-        (
-          content.querySelector<HTMLElement>(
-            ".ai-suggestion button:not([disabled]), .notice + button",
-          ) ??
-          content.querySelector<HTMLElement>(
-            "button:not([disabled]), input, [tabindex]",
-          )
-        )?.focus();
+      if (focused) focusControl();
     };
     box.hidden = !enabled();
     if (!enabled()) return;
     if (working && workingLine?.isConnected) {
       workingText!.textContent = progress;
-      status.textContent = progress;
       return;
     }
     content.replaceChildren();
@@ -738,18 +759,16 @@ export function assistanceAction(
         { class: "ai-working" },
         el("span", { class: "ai-spinner", "aria-hidden": "true" }),
         workingText,
-        button("Cancel", () => void cancel(), { class: "btn btn-quiet" }),
+        button("Cancel", () => void cancel(), {
+          class: "btn btn-quiet",
+          "data-ai-focus": "",
+        }),
       );
       content.append(workingLine);
-      status.textContent = progress;
       replace();
       return;
     }
     if (record?.state !== "done" || showIdle) renderOtherMappingUndos();
-    if (record?.state === "done") status.textContent = "Suggestion ready.";
-    else if (record?.state === "failed")
-      status.textContent = record.error ?? "No usable answer.";
-    else status.textContent = "";
     const accepted = draft.ai?.records.findLast(
       (r) => r.key === options.key && r.state === "accepted",
     );
@@ -759,7 +778,11 @@ export function assistanceAction(
         button(
           el("span", {}, text("AI", "ai-tag"), text(` ${options.label}`)),
           () => void start(),
-          { class: "btn btn-quiet", "aria-label": options.label },
+          {
+            class: "btn btn-quiet",
+            "aria-label": options.label,
+            "data-ai-focus": "",
+          },
         ),
       );
     if (
@@ -779,12 +802,11 @@ export function assistanceAction(
     }
     if (record.state === "failed") {
       content.append(
-        p(
-          record.error ||
-            "No usable answer. Try again or fill the fields in by hand.",
-          "notice",
-        ),
-        button("Try again", () => void start(), { class: "btn btn-quiet" }),
+        p(failureMessage(record.error || undefined), "notice"),
+        button("Try again", () => void start(), {
+          class: "btn btn-quiet",
+          "data-ai-focus": "",
+        }),
         logButton(record),
       );
       replace();
@@ -801,6 +823,7 @@ export function assistanceAction(
       {
         class: "card ai-suggestion",
         "aria-label": `${options.label} suggestion`,
+        tabindex: "-1",
       },
       el("div", {}, text("AI", "ai-tag"), text(` ${options.label}`)),
       p(result.explanation),
@@ -1002,6 +1025,7 @@ export function assistanceAction(
       working = true;
       showIdle = false;
       progress = "The assistant is working.";
+      status.textContent = progress;
       render();
       requested = options.current?.() ?? currentDraft(draft);
       fingerprint = draftFingerprint(draft);
@@ -1064,29 +1088,33 @@ export function assistanceAction(
             run.signal.addEventListener("abort", abort, { once: true });
             if (run.signal.aborted) abort();
           });
-          const status = (
+          const jobStatus = (
             await request(run, `/jobs/${encodeURIComponent(run.job!)}`)
           ).value;
           if (!isCurrent()) return false;
-          if (status.progress?.attempt > 1) {
-            progress = `The first answer had errors, so the assistant is trying again (${status.progress.attempt} of ${status.progress.max_attempts || 3}).`;
-            render();
+          if (jobStatus.progress?.attempt > 1) {
+            const nextProgress = `The first answer had errors, so the assistant is trying again (${jobStatus.progress.attempt} of ${jobStatus.progress.max_attempts || 3}).`;
+            if (progress !== nextProgress) {
+              progress = nextProgress;
+              status.textContent = progress;
+              render();
+            }
           }
-          if (status.state === "completed") {
-            result = status.result;
+          if (jobStatus.state === "completed") {
+            result = jobStatus.result;
             break;
           }
-          if (status.state === "failed")
+          if (jobStatus.state === "failed")
             throw Object.assign(
               new Error(
-                status.error?.message ||
+                jobStatus.error?.message ||
                   "No usable answer after 3 tries. Try again or fill the fields in by hand.",
               ),
-              { log: status.error?.log ?? status.result?.log },
+              { log: jobStatus.error?.log ?? jobStatus.result?.log },
             );
           if (
-            status.state === "canceled" ||
-            status.state === "cancel_requested"
+            jobStatus.state === "canceled" ||
+            jobStatus.state === "cancel_requested"
           )
             throw new DOMException("Canceled", "AbortError");
         }
@@ -1122,6 +1150,7 @@ export function assistanceAction(
         error: null,
         state: "done",
       });
+      status.textContent = "Suggestion ready.";
       received = await saver.flush();
     } catch (error) {
       if (
@@ -1141,9 +1170,10 @@ export function assistanceAction(
         requested,
         result: null,
         log: (error as { log?: Record<string, unknown> }).log ?? null,
-        error: describe(error),
+        error: failureMessage(describe(error)),
         state: "failed",
       });
+      status.textContent = record!.error;
       received = await saver.flush();
     } finally {
       if (run.job && received) await acknowledge(run);
@@ -1158,16 +1188,7 @@ export function assistanceAction(
           render();
           if (restore && document.activeElement === document.body) {
             if (opener?.isConnected) opener.focus();
-            else if (enabled())
-              content
-                .querySelector<HTMLButtonElement>(
-                  record?.state === "done"
-                    ? ".ai-suggestion button:not([disabled])"
-                    : record?.state === "failed"
-                      ? ".notice + button"
-                      : "button",
-                )
-                ?.focus();
+            else if (enabled()) focusControl();
           }
         }
       }

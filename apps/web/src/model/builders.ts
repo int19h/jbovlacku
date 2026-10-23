@@ -393,6 +393,54 @@ export function sameFormationSources(
     );
   return key(left) === key(right);
 }
+/** Only language, exact algorithm input, and weight determine the source score. */
+export function sameScoringSources(
+  left: FormationSource[],
+  right: FormationSource[],
+): boolean {
+  const scoring = (sources: FormationSource[]) =>
+    sources.map((source) => ({
+      language: source.language,
+      word: "",
+      input: source.input,
+      weight: source.weight,
+      notes: [],
+    }));
+  return sameFormationSources(scoring(left), scoring(right));
+}
+/** Ignore empty editor rows when building source evidence. */
+export function formationSourcesFromRows(
+  rows: GismuRowState[],
+): FormationSource[] {
+  return rows
+    .map(normalizeSourceRow)
+    .filter(
+      (row) =>
+        [row.word, row.input, row.sense, row.note].some((value) =>
+          value?.trim(),
+        ) ||
+        [row.word_ipa, row.stem, row.ipa].some((value) => !!value?.length) ||
+        !!row.inputOriginal ||
+        !!row.notes?.length,
+    )
+    .map(formationSource);
+}
+/** Update the publication copy after descriptive edits. Return true for stale scores. */
+export function syncFormationSources(draft: {
+  formation: Formation | null;
+  gismu: GismuState | null;
+}): boolean {
+  if (!draft.formation || !draft.gismu) return false;
+  const sources = formationSourcesFromRows(draft.gismu.rows);
+  if (
+    draft.formation.method === "algorithmic" &&
+    !sameScoringSources(draft.formation.sources, sources)
+  )
+    return true;
+  if (!sameFormationSources(draft.formation.sources, sources))
+    draft.formation.sources = sources;
+  return false;
+}
 /** Formation metadata for a generated or manual gismu under the recorded run. */
 export function formationMetadata(options: {
   result: GismuResult;
@@ -452,18 +500,7 @@ export function manualFormation(
   rows: GismuRowState[],
   reason: string,
 ): Formation | null {
-  const sources: FormationSource[] = rows
-    .map(normalizeSourceRow)
-    .filter(
-      (row) =>
-        [row.word, row.input, row.sense, row.note].some((value) =>
-          value?.trim(),
-        ) ||
-        [row.word_ipa, row.stem, row.ipa].some((value) => !!value?.length) ||
-        !!row.inputOriginal ||
-        !!row.notes?.length,
-    )
-    .map(formationSource);
+  const sources = formationSourcesFromRows(rows);
   if (!sources.length && !reason.trim()) return null;
   return {
     method: "non-algorithmic",

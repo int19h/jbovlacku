@@ -35,11 +35,8 @@ import {
 } from "../../lib/dom.ts";
 import { navigate, type RenderContext, type Route } from "../../app/router.ts";
 import type { App } from "../../app/context.ts";
-import {
-  editorToRichText,
-  richTextToEditor,
-  type Draft,
-} from "../../model/draft.ts";
+import type { Draft } from "../../model/draft.ts";
+import { richTextToText, textToRichText } from "../../model/richtext.ts";
 import type { CachedPackage } from "../../data/search.ts";
 import {
   cachedPackage,
@@ -53,6 +50,7 @@ import {
   sourceRowKey,
   sourceRowsFromFormation,
   sourceNotes,
+  syncFormationSources,
   type GismuRowState,
   type PackageInventory,
 } from "../../model/builders.ts";
@@ -137,6 +135,16 @@ export async function gismuPage(
       el("bdi", { text: draft.meaning || "(no meaning yet)" }),
     ),
   );
+  const staleFormation = p(
+    "The source scoring inputs changed. Use the form again to refresh its scores, enter it without generation, or remove the evidence before publication.",
+    "small",
+  );
+  staleFormation.hidden = !syncFormationSources(draft);
+  section.append(staleFormation);
+  const saveSources = () => {
+    staleFormation.hidden = !syncFormationSources(draft);
+    saver.touch();
+  };
   // Preset select.
   const head = el("div", {
     style:
@@ -173,7 +181,7 @@ export async function gismuPage(
     state.preset = chosen?.id ?? null;
     if (chosen) state.rows = presetRows(chosen, state.rows);
     state.acknowledged = [];
-    saver.touch();
+    saveSources();
     renderRows();
     schedule();
   });
@@ -281,7 +289,7 @@ export async function gismuPage(
     async () => {
       if (bulkRunning) return;
       bulkRunning = true;
-      fillSources.disabled = true;
+      fillSources.setAttribute("aria-disabled", "true");
       try {
         for (const control of [...sourceControls.values()]) {
           if (!context.live() || !visibility.enabled || !control.isConnected)
@@ -290,7 +298,9 @@ export async function gismuPage(
         }
       } finally {
         bulkRunning = false;
-        fillSources.disabled = false;
+        fillSources.removeAttribute("aria-disabled");
+        if (document.activeElement === document.body && context.live())
+          fillSources.focus();
       }
     },
     { class: "btn btn-quiet", "aria-label": "Suggest source words" },
@@ -459,7 +469,7 @@ export async function gismuPage(
             details.row.firstElementChild?.append(details.control);
           }
           syncSourceVisibility();
-          saver.touch();
+          saveSources();
           schedule();
         });
         languageCell.append(code);
@@ -500,7 +510,7 @@ export async function gismuPage(
             /^\d+$/.test(numerator) && /^[1-9]\d*$/.test(denominator)
               ? { numerator, denominator }
               : null;
-          saver.touch();
+          saveSources();
           schedule();
         };
         n.addEventListener("change", update);
@@ -525,7 +535,7 @@ export async function gismuPage(
           staleNotes.hidden = false;
         }
         row.word = native.value;
-        saver.touch();
+        saveSources();
       });
       nativeCell.append(native);
       const inputCell = el("td");
@@ -540,7 +550,7 @@ export async function gismuPage(
       input.addEventListener("input", () => {
         row.input = input.value;
         delete row.inputOriginal;
-        saver.touch();
+        saveSources();
         schedule();
       });
       inputCell.append(input);
@@ -568,7 +578,7 @@ export async function gismuPage(
               )
                 return;
               delete row.inputOriginal;
-              saver.touch();
+              saveSources();
               renderRows();
             },
             {
@@ -591,7 +601,7 @@ export async function gismuPage(
               word: "",
               input: "",
             });
-            saver.touch();
+            saveSources();
             renderRows();
           },
           {
@@ -618,7 +628,7 @@ export async function gismuPage(
           icon("close", "", 16),
           () => {
             state.rows.splice(index, 1);
-            saver.touch();
+            saveSources();
             renderRows();
             schedule();
           },
@@ -637,7 +647,7 @@ export async function gismuPage(
         });
         input.addEventListener("input", () => {
           row[key] = input.value || null;
-          saver.touch();
+          saveSources();
         });
         return el("td", {}, input);
       };
@@ -660,16 +670,16 @@ export async function gismuPage(
         const notes = field(`Source notes for ${row.name || row.language}`, {
           multiline: true,
           rows: 4,
-          value: richTextToEditor(sourceNotes(row)),
+          value: richTextToText(sourceNotes(row)),
           hint: "Review all source notes. Edit the text or drop the notes before publication.",
         });
         notes.input.addEventListener("input", () => {
-          row.notes = editorToRichText(notes.input.value, true, false);
+          row.notes = textToRichText(notes.input.value, false);
           row.sense = "";
           row.note = "";
           row.notesStale = false;
           staleNotes.hidden = true;
-          saver.touch();
+          saveSources();
         });
         details.append(
           notes.wrapper,
@@ -682,7 +692,7 @@ export async function gismuPage(
               row.note = "";
               row.notesStale = false;
               notesEditing.delete(sourceKey);
-              saver.touch();
+              saveSources();
               renderRows();
             },
             {
@@ -728,7 +738,7 @@ export async function gismuPage(
               input: "",
               weight: { numerator: "1", denominator: "1" },
             });
-            saver.touch();
+            saveSources();
             renderRows();
           },
           { class: "btn btn-quiet" },
