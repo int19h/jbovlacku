@@ -958,15 +958,14 @@ export class DictionaryService {
         complete?.snapshot.snapshot +
         "|" +
         (this.options.selectedView ?? zeroView);
-      if (complete?.snapshot.snapshot === snapshot.snapshot)
+      const previous = complete?.snapshot.events[id];
+      if (
+        previous?.envelope_hash === event.envelope_hash &&
+        previous?.body_hash === event.body_hash
+      )
         derived = this.sessions.get(key)?.state.receipts[id];
-      else {
-        const previous = complete?.snapshot.events[id];
-        receiptSnapshot =
-          previous?.envelope_hash === event.envelope_hash &&
-          previous?.body_hash === event.body_hash
-            ? complete!.snapshot.snapshot
-            : null;
+      receiptSnapshot = derived ? complete!.snapshot.snapshot : null;
+      if (!derived) {
         reasons = ["index_lag", "evaluation_pending"];
         if (event.body_hash) {
           const envelope = await this.objects.get(event.envelope_hash);

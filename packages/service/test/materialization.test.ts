@@ -332,6 +332,78 @@ test("background writes keep complete reads and cursors until the latest snapsho
   }
 });
 
+test("receipts use a completed evaluation while a later write is still pending", async () => {
+  const { service, coordinator, definition, profile } = await fixture();
+  const first = judgment(
+    definition.envelope.id,
+    "4",
+    [profile.envelope.id],
+    "bless",
+  );
+  await service.admitMany([utf8(JSON.stringify(first))]);
+  await service.flushMaterialization();
+  const evaluated = await read(service, "/receipts/" + first.envelope.id);
+  const definitionReceipt = await read(
+    service,
+    "/receipts/" + definition.envelope.id,
+  );
+  const gate = deferred();
+  const entered = deferred();
+  const compute = (service as any).computeEvaluation.bind(service);
+  (service as any).computeEvaluation = async (...args: any[]) => {
+    entered.resolve();
+    await gate.promise;
+    return compute(...args);
+  };
+  try {
+    const second = judgment(
+      definition.envelope.id,
+      "5",
+      [first.envelope.id],
+      "curse",
+    );
+    await service.admitMany([utf8(JSON.stringify(second))]);
+    await entered.promise;
+    assert.notEqual(coordinator.state.snapshot, evaluated.snapshot);
+    // The browser's receipt wait can finish without waiting for host-wide idle.
+    const available = await read(service, "/receipts/" + first.envelope.id);
+    assert.deepEqual(available, evaluated);
+    assert.ok(available.snapshot);
+    assert.ok(!available.reasons.includes("index_lag"));
+    assert.ok(!available.reasons.includes("evaluation_pending"));
+    assert.deepEqual(
+      await read(service, "/receipts/" + definition.envelope.id),
+      definitionReceipt,
+    );
+    const pending = await read(service, "/receipts/" + second.envelope.id);
+    assert.equal(pending.snapshot, null);
+    assert.equal(pending.interpretation, "unavailable");
+    assert.deepEqual(pending.reasons, ["index_lag", "evaluation_pending"]);
+    const key = evaluated.snapshot + "|" + service.options.selectedView;
+    const sessions = (service as any).sessions;
+    const session = sessions.get(key);
+    const receipts = { ...session.state.receipts };
+    delete receipts[first.envelope.id];
+    sessions.set(key, { ...session, state: { ...session.state, receipts } });
+    try {
+      const missingDerived = await read(
+        service,
+        "/receipts/" + first.envelope.id,
+      );
+      assert.equal(missingDerived.snapshot, null);
+      assert.deepEqual(missingDerived.reasons, [
+        "index_lag",
+        "evaluation_pending",
+      ]);
+    } finally {
+      sessions.set(key, session);
+    }
+  } finally {
+    gate.resolve();
+    await service.flushMaterialization();
+  }
+});
+
 test("a write during cold evaluation replaces a missing staged index base", async () => {
   const { objects, coordinator, options, definition, profile } =
     await fixture();
