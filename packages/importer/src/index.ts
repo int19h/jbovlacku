@@ -17,7 +17,7 @@ import {
   type SourceValue,
 } from "./source-json.ts";
 
-export const EXTRACTION = "lensisku-list-literal-v1";
+export const EXTRACTION = "lensisku-list-literal-v2";
 const FIELDS = [
   "word",
   "language",
@@ -32,7 +32,7 @@ const FIELDS = [
   "official_rafsi",
   "experimental_rafsi",
 ] as const;
-type Lexical = Record<
+export type Lexical = Record<
   (typeof FIELDS)[number],
   { known: unknown } | { unknown: true }
 >;
@@ -75,6 +75,7 @@ interface Entry {
     coverage: string[];
     publication: string;
     disposition: string;
+    extraction?: string;
     original: unknown;
   }[];
 }
@@ -85,6 +86,8 @@ export interface Journal {
   head: string | null;
   entries: Record<string, Entry>;
   views: Carrier[];
+  /** Last durable run read by this proposal. It prevents stale writes. */
+  ledger_run?: number;
 }
 export interface ImportOptions {
   sourceBytes: Uint8Array;
@@ -189,7 +192,10 @@ function extract(
   };
   return {
     word: field("valsiword"),
-    language: field("langid"),
+    language:
+      Object.hasOwn(row, "langid") && !unavailable.has("langid")
+        ? known({ source_id: encodeOriginal(row.langid), tag: "en" })
+        : unknown(),
     text: field("definition"),
     notes: field("notes"),
     etymology: field("etymology"),
@@ -237,6 +243,34 @@ function sourceReference(
   };
 }
 
+const OMITTED_FIELDS = new Set([
+  "embedding",
+  "similarity",
+  "can_edit",
+  "user_vote",
+  "comment_count",
+  "has_image",
+  "sound_url",
+  "langrealname",
+  "username",
+  "metadata",
+  "canonical_word",
+  "processed_text",
+]);
+function retainedOriginal(row: Record<string, SourceValue>): unknown {
+  const original = encodeOriginal(row) as Record<string, unknown>;
+  const escaped =
+    Object.hasOwn(row, "$source_number") ||
+    Object.hasOwn(row, "$source_object");
+  const pairs = escaped
+    ? (original.$source_object as [string, unknown][])
+    : Object.entries(original);
+  const retained = pairs.filter(
+    ([key]) => !OMITTED_FIELDS.has(key) && !key.startsWith("cached_"),
+  );
+  return escaped ? { $source_object: retained } : Object.fromEntries(retained);
+}
+
 function definition(
   row: Record<string, SourceValue>,
   id: number,
@@ -274,7 +308,7 @@ function definition(
     Number.isSafeInteger(Number(filteredAuthor))
       ? Number(filteredAuthor)
       : null);
-  const username = stringOrNull(row.username);
+  const username = null;
   const kind = sourceKind(row, manifest);
   const classification =
     (
@@ -300,6 +334,8 @@ function definition(
     "The source capture does not include a rights statement. Rights remain unknown.",
     `Unavailable endpoint fields: ${manifest.unavailable_fields.join(", ")}.`,
     "Rafsi authority stays in its original source fields. This extraction does not publish rafsi claims.",
+    "The extraction omits embedding, similarity, can_edit, user_vote, comment_count, has_image, sound_url, langrealname, username, metadata, cached_*, canonical_word, and processed_text. These derived, display, and viewer values remain in the exact source archive.",
+    "Joined user names do not establish author names. Numeric source account evidence remains separate.",
   ];
   const omittedFields = [
     "notes",
@@ -371,7 +407,7 @@ function definition(
       extraction: manifest.extraction,
       record: { kind: "definition", id },
       locator,
-      original: encodeOriginal(row),
+      original: retainedOriginal(row),
       attribution: {
         author: username,
         editor: null,
@@ -475,6 +511,56 @@ export function importCapture(options: ImportOptions): ImportResult {
           "The journal source record or lexical digest is inconsistent.",
         );
     }
+  }
+  const retainedPrevious = retained.flatMap(
+    (carrier) => carrier.envelope.header.previous,
+  );
+  if (retainedPrevious.some((id) => !retainedIds.has(id)))
+    throw new Error("The journal lacks a retained predecessor envelope.");
+  const predecessors = new Set(retainedPrevious);
+  const maxima = [...retainedIds].filter((id) => !predecessors.has(id));
+  if (
+    maxima.length !== (retainedIds.size ? 1 : 0) ||
+    (maxima.length && maxima[0] !== journal.head)
+  )
+    throw new Error(
+      "The journal head does not name its complete signed frontier.",
+    );
+  // Old lexical bookkeeping can change. Original signed carriers stay unchanged.
+  for (const entry of Object.values(journal.entries)) {
+    for (const version of entry.versions) {
+      const language = version.lexical.language;
+      if (
+        "known" in language &&
+        !(
+          language.known &&
+          typeof language.known === "object" &&
+          "source_id" in language.known
+        )
+      ) {
+        version.lexical.language = known({
+          source_id: language.known,
+          tag: version.carrier.body.language,
+        });
+        version.digest = digest(version.lexical);
+      }
+    }
+    const selected = entry.versions.find(
+      (version) => version.carrier.envelope.id === entry.selected,
+    )!;
+    const language = entry.baseline.language;
+    if (
+      "known" in language &&
+      !(
+        language.known &&
+        typeof language.known === "object" &&
+        "source_id" in language.known
+      )
+    )
+      entry.baseline.language = known({
+        source_id: language.known,
+        tag: selected.carrier.body.language,
+      });
   }
   const parsed = sourceObject(
     parseSourceJson(
@@ -591,7 +677,7 @@ export function importCapture(options: ImportOptions): ImportResult {
         )!;
         const original = encodeOriginal(row) as Record<string, unknown>;
         if (
-          ["username", "user_id", "created_at", "updated_at"].some(
+          ["user_id", "created_at", "updated_at"].some(
             (field) =>
               Object.hasOwn(original, field) &&
               !same(
@@ -641,15 +727,28 @@ export function importCapture(options: ImportOptions): ImportResult {
             );
         } else {
           const body = definition(row, id, manifest, current);
-          const sameContext =
-            same(body.word, current.carrier.body.word) &&
-            body.language === current.carrier.body.language;
+          const sameContext = (version: Version) =>
+            same(body.word, version.carrier.body.word) &&
+            body.language === version.carrier.body.language;
+          const observedParent = [...entry.observations]
+            .reverse()
+            .map((observation) =>
+              entry.versions.find(
+                (version) =>
+                  version.carrier.envelope.id === observation.publication,
+              ),
+            )
+            .find((version) => version !== undefined && sameContext(version));
+          const contextParent = sameContext(current)
+            ? current
+            : (observedParent ??
+              [...entry.versions].reverse().find(sameContext));
           const carrier = sign(
             {
               kind: "definition.publish",
               word: wordId(body.word),
               language: body.language,
-              parents: sameContext ? [current.carrier.envelope.id] : [],
+              parents: contextParent ? [contextParent.carrier.envelope.id] : [],
               origin: "import",
             },
             body,
@@ -683,8 +782,10 @@ export function importCapture(options: ImportOptions): ImportResult {
       const final = journal.entries[String(id)];
       const lastObservation = final.observations.at(-1);
       if (
+        journal.ledger_run !== undefined ||
         lastObservation?.snapshot !== manifest.sha256 ||
-        lastObservation?.lexical_digest !== lexicalDigest
+        lastObservation?.lexical_digest !== lexicalDigest ||
+        lastObservation?.extraction !== manifest.extraction
       )
         final.observations.push({
           snapshot: manifest.sha256,
@@ -692,7 +793,11 @@ export function importCapture(options: ImportOptions): ImportResult {
           coverage: coverage(lexical),
           publication: final.selected,
           disposition,
-          original: encodeOriginal(row),
+          extraction: manifest.extraction,
+          original: {
+            archive: manifest.sha256,
+            locator: `definitions/definitionid=${id}`,
+          },
         });
     } catch (error) {
       unresolved(

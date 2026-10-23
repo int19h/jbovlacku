@@ -46,11 +46,23 @@ The Not delivered page lists unfinished delivery only. It supports receipt looku
 Downloaded search packages permit local search without a request for each query. Version 2 packages carry authors, notes, and rafsi for result rows.
 Signing needs localhost or HTTPS. A plain HTTP Tailscale address supports reading only.
 
-The importer prepares signed proposals from pinned local Lensisku JSON captures. Repeat imports reuse signed records and retain source evidence.
+The importer prepares signed proposals from pinned local Lensisku JSON captures and SQL snapshots. Repeat imports reuse signed records and retain source evidence.
 It keeps definitions literal and preserves unknown fields as unknown. It does not infer places or individual votes.
+New SQL and REST publications omit derived vectors and caches with explicit source limitations.
+REST publications also omit viewer-specific values.
 The current importer records unknown rights. The source-notice convention below remains a target change.
+
 The committed adapter comparison uses one signed profile event. Importer tests include a two-row fixture derived from a pinned 2,429-row API capture.
-Full-capture runs are separate development evidence, not part of these committed tests. This capture does not represent the general SQL migration.
+
+The SQL fixture retains four source definitions in English, French, and Russian, with available version history and numbered keywords.
+SQL extraction streams COPY blocks and joins source rows on disk. It retains separate language tags and separate word-level and definition-level rafsi evidence.
+Unsupported rows receive unresolved notices. The source archive keeps the original manifest and records the digest and path of the external dump.
+Split rows retain their owner across breaks in different fields. The size estimate counts new publications separately from staged observations.
+The SQL `--check-existing` mode requires a copied journal in fresh scratch output and refuses an existing proposal.
+
+An offline command loads signed carriers, their selection, and their view into a Node data directory. Repeat loads preserve receipt positions.
+Node startup restores the loaded view and its explicit state work budget. The server and loader require exclusive access to that directory.
+Full-capture runs remain separate development evidence, not part of the committed fixture tests.
 The [importer guide](packages/importer/README.md) describes its input, journal, signing command, and limits.
 
 The guided wizard has five steps: Meaning, Type, Form, Places, and Publish. The full editor opens every field section and permits manual headword and type entry.
@@ -110,7 +122,7 @@ They cover populated builders, key states, delivery records, expanded place fiel
 They measure retired-key reporting, trust without a key, delivered outbox links, and the untested-backup action on Publish.
 They check sentences in the first-signature dialog, identity continuity, and Publish root, component, and competing claim notices.
 
-The general SQL migration, automatic rafsi publications, and structured import conversion also remain unfinished.
+Automatic rafsi publications and structured import conversion remain unfinished.
 The complete `jvc` command catalog in the format specification remains a target interface.
 The [development guide](docs/development.md) describes the implemented native commands.
 
@@ -141,6 +153,10 @@ A local 2,430-event batch uses 17,010 R2 operations. Cold search uses 9,727 R2 o
 Local Wrangler success does not prove deployed quota, memory, or CPU compliance. Larger imports need bounded incremental jobs.
 The current default state work budget can run out at roughly 4,500 events in a flat history.
 This is an approximate limit. Histories with more edges can reach it sooner, and the requested state also affects the work.
+The Node loader can retain a larger explicit traversal budget for a local import.
+That configuration does not remove memory limits or establish performance for the full corpus.
+The first full SQL evaluation reached WebAssembly's 4 GiB memory limit with derived source vectors in every body.
+The current extraction omits derived vectors and caches. Full dictionary serving with that extraction remains untested.
 
 [Issue 9](https://github.com/int19h/jbovlacku/issues/9) tracks ranking CPU limits.
 [Issue 11](https://github.com/int19h/jbovlacku/issues/11) tracks state evaluation beyond the local corpus.

@@ -86,6 +86,7 @@ The Node adapter accepts these environment variables:
 | `JVC_ASSETS_DIR`      | Browser assets. The source default is `apps/web/dist`.                                        |
 | `JVC_SERVER_ID`       | Service identifier. The source default is `local-node`.                                       |
 | `JVC_VIEW`            | Explicit selected view event ID. A fresh service has no dictionary view.                      |
+| `JVC_STATE_TRAVERSAL_LIMIT` | Explicit state work budget from 1 through 1,000,000,000. It overrides the saved import limit. |
 | `JVC_PUBLIC_ORIGIN`   | Explicit public origin permitted to submit browser writes through a reverse proxy.            |
 | `JVC_SNAPSHOT_LIMIT`  | Retained snapshot count. The default is 16. Allowed values are 1 through 64.                  |
 | `JVC_CORS_ORIGINS`    | Comma-separated additional permitted origins.                                                 |
@@ -123,6 +124,57 @@ It reports unavailable interpretation with `evaluation_resource_unavailable`. A 
 Use a separate data directory for each test service. Do not point a disposable test at another service's database.
 A selected view and explicit import selection determine which imported publications appear.
 The [importer guide](../packages/importer/README.md) describes local signed proposals and their disposable key inputs.
+
+### Initial Lensisku data
+
+The importer reads pinned REST captures and PostgreSQL COPY snapshots under one canonical Lensisku source origin.
+Both extraction commands share one journal for that origin and importer key.
+The SQL extraction uses every source definition language that the format can represent.
+It preserves authored source fields and available history. It omits derived vectors and caches with explicit source limitations.
+Malformed related rows leave affected definitions unresolved. They never create false source removals.
+Split COPY fragments retain their first readable owner and remain malformed, including breaks in different fields.
+Missing lookup rows block only their dependent definitions.
+The importer guide describes both extraction commands, source manifests, and unresolved reports.
+
+SQL extraction uses a calibrated disk estimate before signing and reports measured proposal bytes afterward.
+It counts definitions that need new publications before estimating carrier growth and added space for the loaded copy.
+Observation growth still covers all staged definition rows.
+The normal estimate includes a projected loaded copy, while `--check-existing` covers only its scratch proposal and staging.
+That check reparses the source with retained envelopes and refuses new publications.
+Use a new scratch directory with a copied journal. The command refuses existing `carriers.jsonl` or `source-archive` paths before opening the journal.
+Its 1.5 GB budget does not authorize a service load.
+
+After preparing a signed proposal, stop the Node server for the target data directory.
+From the repository root, load the proposal into that directory:
+
+```sh
+npx tsx packages/importer/src/load-cli.ts \
+  --proposal .cache/import-sql \
+  --data .cache/node \
+  --state-traversal-limit 1000000000
+JVC_DATA_DIR="$PWD/.cache/node" npm run start
+```
+
+The loader admits signed carriers, their import selection, and their selected view.
+It records the selected view and explicit traversal budget in `loaded-view.json`.
+Node startup reads that file. `JVC_VIEW` and `JVC_STATE_TRAVERSAL_LIMIT` provide explicit overrides.
+A repeat load reuses accepted event positions. It does not create new signatures.
+
+The loader and Node server hold an exclusive `.node-data-lock` in the target directory.
+If a process leaves that lock, settle the process before removing its exact lock directory.
+Keep the proposal journal and external source archive available for retries and source inspection.
+The SQL archive records the digest and path of the external dump instead of copying it into the proposal.
+Rights remain unknown in this extraction. Local loading grants no publication authority.
+
+Large imports need a larger explicit state work budget and enough memory.
+The traversal flag changes the work limit only. It does not remove memory or event limits.
+The loader completes admission before the server builds its snapshot, indexes, and search packages.
+Successful admission alone does not establish successful dictionary evaluation.
+Evaluation requests use UTF-8 byte encoding without one combined JSON string.
+The complete request and source bodies still count toward memory use.
+The first full SQL evaluation reached WebAssembly's 4 GiB memory limit with derived source vectors in every body.
+The current extraction omits those vectors. Full dictionary serving with that extraction remains untested.
+An explicit traversal limit or a larger Node heap does not remove the WebAssembly memory limit.
 
 ## Browser development
 
@@ -248,6 +300,7 @@ npm run typecheck
 npm run test:service
 JVC_TEST_ROOT="$PWD/.cache/adapter-tests" npm run test:adapters
 npx tsx --test packages/importer/test/*.test.ts
+npx tsx --test packages/core/test/evaluation-request.test.ts
 ```
 
 The adapter tests start a built Node server and local Wrangler on available loopback ports.
@@ -271,7 +324,8 @@ npx tsx scripts/test-server-security.ts
 The probe verifies real runtime WebAssembly, blocked JavaScript evaluation, blocked inline scripts, and blocked framing.
 `scripts/measure-service-io.ts` uses the same corpus variables to count object operations and sample Node and Wasm memory.
 `JVC_IO_REPORT` selects an output report file. Its disposable database is removed when the measurement finishes.
-The importer tests use pinned JSON captures. General SQL migration, inferred place conversion, and automatic rafsi publication remain unfinished.
+The importer tests use pinned JSON captures and a small SQL fixture with source provenance.
+Inferred place conversion and automatic rafsi publication remain unfinished.
 Use disposable contributor keys and synthetic account evidence. Do not use real contributor keys or change a Lensisku account.
 Read imported SQL as data. Do not execute an import dump against a service database.
 Use mocked providers before real inference tests.

@@ -1,4 +1,5 @@
 import init, * as wasm from "../generated/jvc_runtime.js";
+import { encodeEvaluationRequest } from "./evaluation-request.ts";
 const encoder = new TextEncoder();
 export const utf8 = (value: string) => encoder.encode(value);
 let ready: Promise<unknown> | undefined;
@@ -81,7 +82,7 @@ export const evaluate = (input: {
   overlay?: unknown;
   limits?: { events: number; traversal: number; claim_depth: number };
 }): Evaluation =>
-  JSON.parse(wasm.evaluate_records(utf8(JSON.stringify(input))));
+  JSON.parse(wasm.evaluate_records(encodeEvaluationRequest(input)));
 export const signHeader = (seed: Uint8Array, header: Header) =>
   JSON.parse(wasm.sign_record(seed, utf8(JSON.stringify(header))));
 export const identityFromSeed = (seed: Uint8Array): string =>
@@ -175,7 +176,7 @@ export function finishSigning(
 
 export type EvaluationRequest = Parameters<typeof evaluate>[0];
 export function evaluateSession(input: EvaluationRequest) {
-  const session = new wasm.EvaluationSession(utf8(JSON.stringify(input)));
+  const session = new wasm.EvaluationSession(encodeEvaluationRequest(input));
   return {
     state: JSON.parse(session.state()) as Evaluation,
     /**
@@ -193,7 +194,7 @@ export function evaluateSession(input: EvaluationRequest) {
   };
 }
 export const rankWord = (input: EvaluationRequest, word: string) =>
-  JSON.parse(wasm.rank_word(utf8(JSON.stringify(input)), word));
+  JSON.parse(wasm.rank_word(encodeEvaluationRequest(input), word));
 
 /** Canonical local wrappers allow enclosing containers around validated records. */
 export const canonicalizeStorageWrapper = (bytes: Uint8Array): string =>

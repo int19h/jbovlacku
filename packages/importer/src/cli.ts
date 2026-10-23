@@ -86,7 +86,7 @@ async function main() {
     throw error;
   }
   try {
-    const journal = await readJournal(output);
+    const journal = await readJournal(output, { migrateMetadata: true });
     const sourceBytes = await readFile(sourcePath);
     const result = importCapture({
       sourceBytes,
