@@ -495,6 +495,7 @@ Their current sense and uncertainty appear as `Sense:` and `Note:` paragraphs. A
 A new suggestion replaces these notes. The author can edit or remove accepted notes before publication.
 Source edits update the publication copy even after form selection or navigation through the step bar.
 Descriptive edits preserve historical scores. Changed language, algorithm input, or weight blocks publication until the author selects or removes the evidence.
+Definition and place suggestions need a valid word type and spelling for core validation before acceptance.
 Whole-word IPA, stem, and stem IPA use the separate `word_ipa`, `stem`, and `ipa` fields.
 The additional prompts cover type, components, selma'o, definition text, and an initial place structure.
 To update the runtime prompt bundle after editing a prompt, run `node prompts/build-bundle.mjs`.

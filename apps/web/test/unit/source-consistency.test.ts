@@ -401,3 +401,37 @@ test("accepting and undoing source text updates the publication copy immediately
     denominator: "2",
   });
 });
+
+for (const missing of ["kind", "spelling"] as const) {
+  for (const operation of ["definition", "places-glosses"] as const) {
+    test(`${operation} acceptance requires a body and word ID when ${missing} is missing`, () => {
+      const draft = example();
+      if (missing === "kind") draft.kind = null;
+      else draft.spelling = "";
+      draft.frameMode = "fixed";
+      draft.places = [newPlace(1)];
+      draft.places[0].description = [["A valid place."]];
+      const checked = draftToBody(draft);
+      assert.equal(checked.body, null);
+      assert.equal(checked.wordId, null);
+      const frame = currentDraft(draft).frame!;
+      frame.places[0].description = [[]];
+      assert.throws(
+        () =>
+          applyProposals(draft, {
+            operation,
+            proposals:
+              operation === "definition"
+                ? [
+                    {
+                      path: "/text",
+                      value: [["A definition with an invalid paragraph."], []],
+                    },
+                  ]
+                : [{ path: "/frame", value: frame }],
+          } as never),
+        /Choose the word type and enter its spelling before applying this suggestion/,
+      );
+    });
+  }
+}

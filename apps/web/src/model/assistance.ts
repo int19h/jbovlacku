@@ -360,6 +360,15 @@ function assistanceProblems(draft: Draft): DraftProblem[] {
   const invalid = checked.problems.filter(
     (p) => p.blocking && p.field !== "numbering",
   );
+  if (!checked.body || !checked.wordId) {
+    invalid.push({
+      field: "body",
+      message:
+        "Choose the word type and enter its spelling before applying this suggestion.",
+      blocking: true,
+    });
+    return invalid;
+  }
   if (checked.body && checked.wordId) {
     for (const problem of coreProblems(
       checked.body,
