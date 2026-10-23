@@ -35,6 +35,8 @@ Signing needs localhost or HTTPS. A plain HTTP Tailscale address supports readin
 
 The importer prepares signed proposals from pinned local Lensisku JSON captures and SQL snapshots. Repeat imports reuse signed records and retain source evidence.
 It keeps definitions literal and preserves unknown fields as unknown. It does not infer places or individual votes.
+New SQL and REST publications omit derived vectors and caches with explicit source limitations.
+REST publications also omit viewer-specific values.
 The current importer records unknown rights. The source-notice convention below remains a target change.
 
 The committed adapter comparison uses one signed profile event. Importer tests include a two-row fixture derived from a pinned 2,429-row API capture.
