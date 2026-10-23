@@ -6,6 +6,7 @@ import { mkdir, writeFile, copyFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fixture, PASSPHRASE } from "./helpers.ts";
 import { BROWSER_HEADERS } from "../../server/src/security.ts";
+import type { CachedPackage } from "../src/data/search.ts";
 
 test.beforeAll(async () => {
   test.setTimeout(120000);
@@ -44,6 +45,57 @@ async function beginDraft(page: Page, kind?: "lujvo" | "gismu") {
       })
       .click();
   }
+}
+
+async function addCompetingClaimFixture(page: Page) {
+  // This synthetic browser fixture is not authenticated package evidence.
+  // A third-party claim must conflict with both selected cku components.
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve, reject) => {
+        const request = indexedDB.open("jbovlacku-browser-v1", 3);
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => {
+          const db = request.result;
+          const tx = db.transaction("packages", "readwrite");
+          tx.oncomplete = () => {
+            db.close();
+            resolve();
+          };
+          tx.onerror = () => {
+            db.close();
+            reject(tx.error);
+          };
+          tx.onabort = () => {
+            db.close();
+            reject(new Error("Fixture package update aborted."));
+          };
+          const store = tx.objectStore("packages");
+          const get = store.get("en");
+          get.onsuccess = () => {
+            const pkg = get.result as CachedPackage;
+            const entries = pkg?.entries.filter(
+              (entry) => entry.word.spelling === "vlacku",
+            );
+            if (
+              pkg?.version !== 2 ||
+              !entries?.length ||
+              entries.some((entry) => !("rafsi" in entry))
+            ) {
+              tx.abort();
+              return;
+            }
+            for (const entry of entries) {
+              const row = entry as CachedPackage["entries"][number] & {
+                rafsi: string[];
+              };
+              row.rafsi = [...new Set([...row.rafsi, "cku"])].sort();
+            }
+            store.put(pkg, "en");
+          };
+        };
+      }),
+  );
 }
 
 async function populateGismu(page: Page) {
@@ -169,12 +221,15 @@ async function inventory(page: Page) {
       let target: HTMLElement = node;
       let exception: string | null = null;
       let labelTarget = false;
+      let labelAssociation: boolean | null = null;
       if (
         node instanceof HTMLInputElement &&
         ["checkbox", "radio"].includes(node.type)
       ) {
         target = node.labels?.[0] ?? node;
         labelTarget = target !== node;
+        labelAssociation =
+          node.labels?.length === 1 && node.labels[0].control === node;
       }
       const style = getComputedStyle(target);
       if (
@@ -226,6 +281,7 @@ async function inventory(page: Page) {
         elementBounds: rect(node),
         targetBounds: rect(target),
         labelTarget,
+        labelAssociation,
         exception,
       });
     }
@@ -476,6 +532,14 @@ for (const viewport of [
           )
           .toEqual([]);
         expect
+          .soft(
+            data.entries
+              .filter((entry) => entry.labelAssociation === false)
+              .map((entry) => entry.path),
+            `${state}: each checkbox or radio has exactly one label for its own control`,
+          )
+          .toEqual([]);
+        expect
           .soft(data.pageWidth, `${state} fits the viewport`)
           .toBeLessThanOrEqual(viewport.width);
       };
@@ -498,6 +562,7 @@ for (const viewport of [
       await expect(page.getByRole("status")).toContainText(
         "saved in this browser",
       );
+      await addCompetingClaimFixture(page);
       await open(page, "/identity");
       await expandDetails(page);
       await check("identity-new");
@@ -605,8 +670,8 @@ for (const viewport of [
       ).toContainText("ckusinxa");
       await expandDetails(page);
       await check("lujvo-two-parts");
-      // The baseline package claims cku for cukta. Entering it for sinxa
-      // creates a conflict without relying on records from earlier tests.
+      // The fixture claims cku for cukta and vlacku. Entering it for sinxa
+      // repeats the vlacku conflict across two parts with one review key.
       await page.getByLabel("Other rafsi you know").nth(1).fill("cku");
       await page.getByLabel("Other rafsi you know").nth(1).press("Tab");
       const competing = page.getByRole("group", {
@@ -616,6 +681,64 @@ for (const viewport of [
       await expect(
         competing.getByRole("link", { name: "cukta", exact: true }),
       ).toBeVisible();
+      const rows = competing.locator("label.check");
+      const associations = await rows.evaluateAll((labels) =>
+        labels.map((node) => {
+          const label = node as HTMLLabelElement;
+          const input = label.querySelector("input")!;
+          return {
+            id: input.id,
+            spelling: label.querySelector("a")!.textContent!.trim(),
+            ownControl: label.control === input,
+            ownLabel: input.labels?.length === 1 && input.labels[0] === label,
+          };
+        }),
+      );
+      await artifact(info, `competing-labels-${viewport.name}`, associations);
+      expect
+        .soft(
+          associations.map((row) => row.spelling).sort(),
+          "One row per retained claim",
+        )
+        .toEqual(["cukta", "vlacku"]);
+      expect
+        .soft(
+          new Set(associations.map((row) => row.id)).size,
+          "Acknowledgment IDs are unique",
+        )
+        .toBe(associations.length);
+      expect
+        .soft(
+          associations.every((row) => row.ownControl && row.ownLabel),
+          "Every label identifies its own checkbox",
+        )
+        .toBe(true);
+      const checked = () =>
+        rows
+          .locator("input")
+          .evaluateAll((inputs) =>
+            inputs.map((input) => (input as HTMLInputElement).checked),
+          );
+      for (let index = 0; index < (await rows.count()); index++) {
+        const label = rows.nth(index);
+        const input = label.locator("input");
+        const before = await checked();
+        const desired = before.map((value, i) =>
+          i === index ? !value : value,
+        );
+        await label.locator(".inline-prose > span").first().click();
+        expect
+          .soft(await checked(), `Label ${index} toggles only its own checkbox`)
+          .toEqual(desired);
+        const afterClick = await checked();
+        await input.focus();
+        await input.press("Space");
+        expect
+          .soft(await checked(), `Space toggles only checkbox ${index}`)
+          .toEqual(
+            afterClick.map((value, i) => (i === index ? !value : value)),
+          );
+      }
       for (const label of await competing.locator("label.check").all()) {
         const anchor = label.getByRole("link");
         const spelling = (await anchor.textContent())!.trim();
