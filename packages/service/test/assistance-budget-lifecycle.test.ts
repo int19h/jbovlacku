@@ -629,3 +629,120 @@ test("unreserved terminal failures remain readable until eviction or their read-
   });
   assert.equal((await app.route("/session"))!.status, 200);
 });
+
+test("active retained and session capacity retries include the terminal read window", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  for (const limits of [
+    { ttlMs: 600000, terminalReadMs: 2000, deadlineMs: 5000, releaseMs: 7000 },
+    { ttlMs: 6000, terminalReadMs: 2000, deadlineMs: 4500, releaseMs: 6000 },
+    {
+      ttlMs: 600000,
+      terminalReadMs: 200000,
+      deadlineMs: 5000,
+      releaseMs: 125000,
+    },
+    {
+      ttlMs: 600000,
+      terminalReadMs: 2000,
+      deadlineMs: 5000,
+      releaseMs: 7000,
+      lateCompletionMs: 1,
+    },
+  ]) {
+    const gate = deferred();
+    const secondTurn = deferred();
+    let calls = 0;
+    const app = fixture(
+      config({
+        timeoutMs: 5000,
+        fetch: (async () => {
+          if (++calls === 1) {
+            const value = completion();
+            value.choices[0].message.tool_calls[0].function.arguments = "{}";
+            return Response.json(value);
+          }
+          if (calls === 2) {
+            secondTurn.resolve();
+            await gate.promise;
+          }
+          return Response.json(completion());
+        }) as typeof fetch,
+      }),
+      { ...limits, retainedJobs: 1, networkSessions: 1 },
+    );
+    const first = await accepted(app, "192.0.2.1", false);
+    await secondTurn.promise;
+    const other = await app.session("192.0.2.2");
+    const retained = (await app.route("/assist", other, draft(), "192.0.2.2"))!;
+    const session = (await app.route("/session", {}, undefined, "192.0.2.1"))!;
+    const completionMs = limits.deadlineMs + (limits.lateCompletionMs ?? 0);
+    t.mock.timers.tick(completionMs);
+    gate.resolve();
+    assert.equal((await app.poll(first.id, first.headers)).state, "completed");
+    const stillRetained = (await app.route(
+      "/assist",
+      other,
+      draft(),
+      "192.0.2.2",
+    ))!;
+    const stillProtected = (await app.route(
+      "/session",
+      {},
+      undefined,
+      "192.0.2.1",
+    ))!;
+    assert.equal(
+      stillRetained.status,
+      429,
+      "Completion retains the paid result past the execution deadline.",
+    );
+    assert.equal(
+      stillProtected.status,
+      429,
+      "The result owner's session stays protected during its read window.",
+    );
+    assert.equal(retained.status, 429);
+    assert.equal(session.status, 429);
+    assert.equal(
+      retained.headers.get("retry-after"),
+      String(limits.releaseMs / 1000),
+    );
+    assert.equal(
+      session.headers.get("retry-after"),
+      String(limits.releaseMs / 1000),
+    );
+    t.mock.timers.tick(limits.releaseMs - completionMs);
+    const retried = (await app.route("/assist", other, draft(), "192.0.2.2"))!;
+    assert.equal(retried.status, 202);
+    await app.poll(((await retried.json()) as any).job, other);
+    assert.equal(
+      (await app.route("/session", {}, undefined, "192.0.2.1"))!.status,
+      200,
+    );
+  }
+});
+
+test("execution concurrency without a retained-capacity block still retries at the execution deadline", async () => {
+  const gate = deferred();
+  const app = fixture(
+    config({
+      timeoutMs: 5000,
+      concurrency: 1,
+      fetch: (async () => {
+        await gate.promise;
+        return Response.json(completion());
+      }) as typeof fetch,
+    }),
+  );
+  const first = await accepted(app, "192.0.2.1", false);
+  const response = (await app.route(
+    "/assist",
+    await app.session("192.0.2.2"),
+    draft(),
+    "192.0.2.2",
+  ))!;
+  gate.resolve();
+  await app.poll(first.id, first.headers);
+  assert.equal(response.status, 429);
+  assert.equal(response.headers.get("retry-after"), "5");
+});

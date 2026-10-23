@@ -242,17 +242,56 @@ for (const operation of ["definition", "places-glosses", "mapping"] as const) {
   });
 }
 
-test("existing frame errors do not block unrelated definition edits", () => {
+test("an existing opaque core frame error blocks an unrelated definition edit", () => {
   const draft = example();
   draft.frameMode = "fixed";
   draft.places = [newPlace(2)];
-  assert.doesNotThrow(() =>
-    applyProposals(draft, {
-      operation: "definition",
-      proposals: [{ path: "/text", value: [["An improved definition."]] }],
-    } as never),
+  assert.throws(
+    () =>
+      applyProposals(draft, {
+        operation: "definition",
+        proposals: [{ path: "/text", value: [["An improved definition."]] }],
+      } as never),
+    /frame places must form a contiguous prefix/,
   );
 });
+
+for (const operation of ["definition", "places-glosses"] as const) {
+  test(`${operation} acceptance rejects a new empty paragraph hidden by the same core error`, () => {
+    const draft = example();
+    draft.notes = [[]];
+    draft.frameMode = "fixed";
+    draft.places = [newPlace(1)];
+    draft.places[0].description = [["A valid place."]];
+    const frame = currentDraft(draft).frame!;
+    frame.places[0].description = [[]];
+    const baseline = draftToBody(draft).problems.filter(
+      (problem) => problem.blocking,
+    );
+    assert.equal(baseline.length, 1);
+    assert.equal(baseline[0].field, "body");
+    assert.match(
+      baseline[0].message,
+      /rich text paragraph must contain a node/,
+    );
+    assert.throws(
+      () =>
+        applyProposals(draft, {
+          operation,
+          proposals:
+            operation === "definition"
+              ? [
+                  {
+                    path: "/text",
+                    value: [["A definition with an invalid paragraph."], []],
+                  },
+                ]
+              : [{ path: "/frame", value: frame }],
+        } as never),
+      /rich text paragraph must contain a node/,
+    );
+  });
+}
 
 for (const operation of ["definition", "places-glosses", "mapping"] as const) {
   test(`${operation} acceptance rejects new references despite existing publication errors`, () => {

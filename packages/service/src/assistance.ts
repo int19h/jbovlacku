@@ -1267,9 +1267,12 @@ export class AssistanceService {
     job.result = null;
     if (job.error) delete job.error.log;
   }
+  private terminalReadMs() {
+    return Math.min(this.options.terminalReadMs ?? 120000, 120000);
+  }
   private retainedRelease(job: Job) {
     return ["queued", "running", "cancel_requested"].includes(job.state)
-      ? job.deadline
+      ? Math.min(job.expires, job.deadline + this.terminalReadMs())
       : Math.min(job.readUntil, job.expires);
   }
   capabilities() {
@@ -1823,9 +1826,11 @@ export class AssistanceService {
     } finally {
       if (log) log.duration_ms = Date.now() - started;
       if (!log?.answers) job.reserved = false;
+      const terminalReadMs = this.terminalReadMs();
       job.readUntil = Math.min(
         job.expires,
-        Date.now() + Math.min(this.options.terminalReadMs ?? 120000, 120000),
+        Date.now() + terminalReadMs,
+        job.deadline + terminalReadMs,
       );
       const discard = setTimeout(
         () => this.releaseRetained(job),

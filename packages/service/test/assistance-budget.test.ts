@@ -452,7 +452,8 @@ test("unknown provider usage and transport failure retain estimated charges with
   }
 });
 
-test("a full network keeps sessions that own jobs and gives a running deadline as retry time", async () => {
+test("a full network protects active results through the projected terminal read window", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
   let release!: () => void;
   const gate = new Promise<void>((resolve) => (release = resolve));
   const app = fixture(
@@ -473,7 +474,8 @@ test("a full network keeps sessions that own jobs and gives a running deadline a
   assert.equal(session.status, 429);
   const blocked = (await app.route("/assist", headers, draft()))!;
   assert.equal(blocked.status, 429);
-  assert.ok(Number(blocked.headers.get("retry-after")) <= 5);
+  assert.equal(blocked.headers.get("retry-after"), "125");
+  assert.equal(session.headers.get("retry-after"), "125");
   release();
   assert.equal((await app.poll(id, headers)).state, "completed");
 });

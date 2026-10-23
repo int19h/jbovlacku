@@ -391,6 +391,9 @@ export function checkAssistanceDraft(
       (remaining.get(key(problem)) ?? 0) + (problem.occurrences ?? 1),
     );
   const invalid = assistanceProblems(draft).filter((problem) => {
+    // The core reports only its first body error. The same message can hide
+    // a new invalid field, so opaque body errors cannot use the baseline.
+    if (problem.field === "body") return true;
     const count = remaining.get(key(problem)) ?? 0;
     const occurrences = problem.occurrences ?? 1;
     if (count < occurrences) return true;

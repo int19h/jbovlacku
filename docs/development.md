@@ -461,6 +461,8 @@ At most 128 sessions exist at once. A new visitor can replace the oldest idle se
 `GET /session` refreshes a session for one hour. Job admission also extends it through the job's expiry.
 Refreshing a session does not reset its hourly job quota.
 Quota failures include a retry interval based on the exhausted limit.
+A retained slot can last through the job deadline plus its reading window, capped by job expiry.
+Capacity retry times include that window. Completion cannot extend the window beyond that bound.
 
 Accepted work returns HTTP 202 with an opaque job ID, expiry, and polling interval.
 Job reads expose the current task and answer count. Cancel aborts the outbound request and stops further local turns.
