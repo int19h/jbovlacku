@@ -717,7 +717,9 @@ test("rediscovery shows the author a notice for an owned key that is not selecte
   page,
 }) => {
   await page.goto("/outbox");
-  await page.evaluate(async () => {
+  await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
     const { LocalStore } = await import(String("/src/data/store.ts"));
     const { createKey } = await import(String("/src/data/keys.ts"));
     const { signWith } = await import(String("/src/data/lifecycle.ts"));
@@ -756,7 +758,7 @@ test("rediscovery shows the author a notice for an owned key that is not selecte
       },
     );
     await store.restoreServerOwn(retired.backup.identity, [record.envelope]);
-  });
+  }, corePath);
   const shell = page.locator("#nonselected-key-shell");
   const notice = shell.getByRole("region", {
     name: "Rediscovered public record",
