@@ -77,6 +77,10 @@ These checks apply:
 - `mappings`: each entry names a supplied component place, `none` or `unclear`. A place does not list the same component place twice. `none` and `unclear` stand alone. A link's `reason` must start with `direct: `, `merged: `, `distributed: `, or `functional: `, followed by its explanation. A sentinel's reason must instead start with its matching `none: ` or `unclear: `. The check rejects a missing or mismatched prefix. There is no separate `kind` field.
 - `sources`: `word` is one word. `word_ipa` and `ipa` contain no space or dot. `sounds` has 1 to 64 letters from `a b c d e f g i j k l m n o p r s t u v x z`. A stem equal to the whole word needs a reason in the note.
 
+In a model answer, non-null `sounds` requires `ipa`.
+Step 7 in `sources.task.txt` derives scoring letters from the stem IPA.
+If the model cannot give `ipa`, `sounds` must be null and the note must explain why.
+
 For `sources`, if `word` is null, `sense`, `word_ipa`, `stem`, `ipa`, and `sounds` must be null.
 A null `stem` or `word_ipa` requires null `ipa` and `sounds`. A null `ipa` requires null `sounds`.
 A missing stem never discards a known `word_ipa`. The note explains any unknown field.

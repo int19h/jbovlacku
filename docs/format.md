@@ -644,8 +644,9 @@ Weight is a nonnegative rational under section 8, or null when historical eviden
 `ipa` is the pronunciation of that stem in IPA. Each of these three fields is a nonempty string or null.
 An omitted or null field means unknown. Older records keep that meaning and never acquire a guessed stem or pronunciation.
 
-The fields are independent. A missing stem does not discard a known whole-word pronunciation or scoring input.
-These fields stay in the signed body when supplied. They do not replace `input` or affect the generation score.
+The scoring input, `word_ipa`, `stem`, and `ipa` stay independent in signed records.
+An author can keep known scoring input without a stem or either pronunciation.
+The pronunciation and stem fields stay in the signed body when supplied. They do not replace `input` or affect the generation score.
 
 An input contains exactly format and text. Format is `lojbanized` or `ipa`, and text is nonempty.
 IPA input requires a versioned conversion rule before a letter-based generator can use it.

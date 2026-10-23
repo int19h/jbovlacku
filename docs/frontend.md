@@ -344,6 +344,8 @@ The preview preserves the original stored `input` bytes.
 
 The pronunciation and stem fields are optional. An absent or null field means unknown and stays empty when an older record opens.
 The app never guesses a missing stem or pronunciation from the scoring input.
+The scoring input, `word_ipa`, `stem`, and `ipa` stay independent in authored rows and signed records.
+An author can keep known scoring letters without a stem or either pronunciation.
 
 IPA input requires an explicit, versioned conversion and a preview of the resulting scoring input.
 One source word per language is the simple-mode default. Advanced mode can add alternatives under an explicitly selected aggregation rule.
@@ -352,6 +354,12 @@ An unfinished row does not acquire an invented source word or weight.
 “Suggest source words” is optional AI assistance for every language in the selected profile.
 The app makes one request per selected source row. An individual action uses the row that the author chose, including an alternative row.
 The model returns the word, its sense, its stem, the pronunciation of the word and of the stem, the scoring letters, and a note.
+
+The `sources` answer check requires `ipa` whenever the model gives non-null `sounds`.
+Step 7 in `sources.task.txt` derives scoring letters from the stem IPA.
+If the model cannot give `ipa`, `sounds` must be null and the note must explain why.
+A null model answer never clears a value that the author entered.
+
 The author accepts each row or a reviewed set. Missing suggestions leave editable empty rows rather than dropping a language.
 A language with no single word for the meaning keeps its row, with an empty editable Word field and the assistant's note under it.
 Sources remain attributed suggestions until the author accepts them. The model cannot claim dictionary evidence that the app did not retrieve.
