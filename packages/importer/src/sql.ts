@@ -2,6 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { randomBytes, randomUUID } from "node:crypto";
 import {
   access,
+  lstat,
   mkdir,
   open,
   readFile,
@@ -29,6 +30,11 @@ import {
   openLedger as openJournal,
   validateLedger as validateJournal,
 } from "./ledger.ts";
+import {
+  compareImportSize,
+  estimateImportArtifacts,
+  type ImportSizeEstimate,
+} from "./import-estimate.ts";
 
 export const SQL_EXTRACTION = "lensisku-sql-literal-v2";
 export const SQL_SOURCE = "https://lensisku.lojban.org";
@@ -74,15 +80,14 @@ export interface SqlImportOptions {
   output: string;
   seed: Uint8Array;
   roots: ImportOptions["roots"];
+  /** Reparse an existing ledger without signing any publication or view. */
+  checkExisting?: boolean;
   /** This test hook runs after durable state changes. */
   checkpoint?: (
     stage: "source-durable" | "journal-durable" | "carriers-written",
   ) => Promise<void>;
-  estimate?: (value: {
-    stage_bytes: number;
-    estimated_total_bytes: number;
-    definition_rows: number;
-  }) => void;
+  estimate?: (value: ImportSizeEstimate) => void;
+  measurement?: (value: ReturnType<typeof compareImportSize>) => void;
 }
 const TABLES = new Set([
   "languages",
@@ -439,9 +444,16 @@ const issueKey = (table: string) =>
     }) as Record<string, string>
   )[table];
 function assertComplete(stage: DatabaseSync, table: string, key: number) {
+  const lookup = [
+    "definitions",
+    "languages",
+    "valsitypes",
+    "valsi",
+    "natlangwords",
+  ].includes(table);
   const issue = stage
     .prepare(
-      `SELECT locator FROM issues WHERE table_name=? AND (source_key=?${table === "definitions" ? "" : " OR source_key IS NULL"}) LIMIT 1`,
+      `SELECT locator FROM issues WHERE table_name=? AND (source_key=?${lookup ? "" : " OR source_key IS NULL"}) LIMIT 1`,
     )
     .get(table, key);
   if (issue)
@@ -459,7 +471,9 @@ async function stageSource(path: string, db: DatabaseSync, output: SqlReport) {
     for await (const copy of readCopyRows(path, TABLES, (table, rows) => {
       output.table_rows[table] = rows;
     })) {
-      const locator = `${copy.table}/COPY-row=${copy.row}/line=${copy.line}`;
+      const locator = (copy.fragments ?? [copy])
+        .map(({ row, line }) => `${copy.table}/COPY-row=${row}/line=${line}`)
+        .join(" + ");
       const recovered = recoveredId(copy, issueKey(copy.table));
       const definitionId =
         copy.table === "definitions" ? recoveredId(copy, "definitionid") : null;
@@ -956,12 +970,116 @@ function precedingContext(
   }
   return [];
 }
+
+/** Use the same source checks and reuse rules before the budget and signing. */
+function planDefinition(
+  stage: DatabaseSync,
+  journal: DatabaseSync,
+  id: number,
+  manifest: SqlManifest,
+  result: SqlReport,
+) {
+  const rows = getRows(stage, "definitions", "source_id", id);
+  if (rows.length > 1) {
+    if (!rows.every((row) => same(row, rows[0]))) {
+      result.conflicts.push(id);
+      throw new SourceRowError(
+        "Conflicting duplicate source rows share this definition ID.",
+      );
+    }
+    result.duplicates += rows.length - 1;
+  }
+  const { body, lexical } = extract(stage, rows[0], manifest, result);
+  sourceWordId(body.word);
+  if (Buffer.byteLength(canonical(body)) > 256 * 1024)
+    throw new SourceRowError(
+      "The retained definition and source history exceed the 256 KiB body limit.",
+    );
+  const lexicalDigest = digest(lexical);
+  const entry = journal
+    .prepare("SELECT * FROM entries WHERE record=?")
+    .get(id) as any;
+  const current = entry
+    ? (journal
+        .prepare("SELECT * FROM versions WHERE event=?")
+        .get(entry.selected) as any)
+    : undefined;
+  const baseline: Lexical | undefined = entry
+    ? JSON.parse(entry.baseline)
+    : undefined;
+  if (
+    current &&
+    !same(
+      body.legacy.attribution,
+      JSON.parse(current.carrier).body.legacy.attribution,
+    )
+  )
+    result.notices.push(
+      `Definition ${id}: attribution or source dates changed. This provenance observation does not create a lexical edit.`,
+    );
+  const conflict = (a: Lexical, b: Lexical) =>
+    FIELDS.some(
+      (field) =>
+        "known" in a[field] && "known" in b[field] && !same(a[field], b[field]),
+    );
+  let reuse: { event: string; disposition: "reused" | "reverted" } | undefined;
+  if (
+    entry &&
+    !conflict(baseline!, lexical) &&
+    glossEvidenceMatches(
+      JSON.parse(current.lexical),
+      JSON.parse(current.carrier).body,
+      lexical,
+      body,
+    )
+  ) {
+    reuse = { event: entry.selected, disposition: "reused" };
+  } else {
+    const old = journal
+      .prepare("SELECT * FROM versions WHERE record=? AND digest=?")
+      .all(id, lexicalDigest)
+      .filter((version) =>
+        glossEvidenceMatches(
+          JSON.parse(version.lexical as string),
+          JSON.parse(version.carrier as string).body,
+          lexical,
+          body,
+        ),
+      );
+    if (old.length > 1)
+      throw new Error(
+        "The SQL journal contains ambiguous publication reuse associations.",
+      );
+    if (old.length === 1)
+      reuse = { event: old[0].event as string, disposition: "reverted" };
+  }
+  return { body, lexical, lexicalDigest, entry, current, baseline, reuse };
+}
+
+async function requireCheckScratch(output: string) {
+  for (const name of ["carriers.jsonl", "source-archive"]) {
+    const existing = await lstat(join(output, name)).catch((error) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    });
+    if (existing)
+      throw new Error(
+        "The proposal check requires a scratch output directory without carriers.jsonl or source-archive. Copy only the retained journal into a new scratch directory.",
+      );
+  }
+}
+
 function sign(
   db: DatabaseSync,
   seed: Uint8Array,
   action: Row,
   body: Row,
+  checkExisting = false,
 ): Carrier {
+  if (checkExisting)
+    throw new Error(
+      "The proposal check cannot sign a new publication or view. Compare the changed source or extraction before another import.",
+    );
   const head = (
     db.prepare("SELECT value FROM state WHERE key='head'").get() as any
   )?.value;
@@ -1030,6 +1148,7 @@ function publishView(
     options.seed,
     { kind: "view.publish", parents: prior ? [prior.value] : [] },
     body,
+    options.checkExisting,
   );
   db.prepare("INSERT INTO views VALUES(?,?,?)").run(
     carrier.envelope.id,
@@ -1102,11 +1221,39 @@ async function exportProposal(
   };
 }
 
+async function allocatedProposalBytes(
+  directory: string,
+  excluded: Set<string>,
+): Promise<number> {
+  let bytes = 0;
+  const visit = async (path: string) => {
+    if (excluded.has(path)) return;
+    const current = await lstat(path);
+    bytes += current.blocks * 512;
+    if (current.isDirectory())
+      for (const name of await readdir(path)) await visit(join(path, name));
+  };
+  await visit(directory);
+  return bytes;
+}
+
 /** Stage joins on disk, retain signed envelopes, then write one carrier at a time. */
 export async function importSqlSnapshot(options: SqlImportOptions) {
   const output = resolve(options.output);
   const sourcePath = resolve(options.sourcePath);
   const manifestPath = resolve(options.manifestPath);
+  const journalPath = join(output, "journal.sqlite");
+  if (options.checkExisting) {
+    await requireCheckScratch(output);
+    const existing = await stat(journalPath).catch((error) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    });
+    if (!existing?.isFile() || existing.size === 0)
+      throw new Error(
+        "The proposal check requires an existing SQL journal. Copy the retained journal before the check.",
+      );
+  }
   const manifestBytes = await readFile(manifestPath);
   const manifest = parseSqlManifest(manifestBytes, sourcePath);
   if (
@@ -1145,7 +1292,7 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
   let stage: DatabaseSync | undefined;
   const stagePath = join(output, `.sql-stage-${randomUUID()}.sqlite`);
   try {
-    const journalPath = join(output, "journal.sqlite");
+    if (options.checkExisting) await requireCheckScratch(output);
     let exists = false;
     try {
       await access(journalPath);
@@ -1178,6 +1325,68 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
     journal = openJournal(journalPath, manifest.source, importer);
     validateJournal(journal, manifest.source, importer);
     migrateLanguageEvidence(journal);
+    let sizeEstimate: ImportSizeEstimate;
+    const estimateSize = async (
+      stageBytes: number,
+      definitionRows: number,
+      newPublications: number,
+      reuseCommitted = false,
+    ) => {
+      const retained = journal!
+        .prepare(
+          "SELECT COUNT(*) AS count,COALESCE(SUM(length(CAST(carrier AS BLOB))+1),0) AS bytes FROM (SELECT carrier FROM versions UNION ALL SELECT carrier FROM views)",
+        )
+        .get()!;
+      const oldCarriers = await stat(join(output, "carriers.jsonl")).catch(
+        (error) => {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT")
+            return undefined;
+          throw error;
+        },
+      );
+      sizeEstimate = estimateImportArtifacts({
+        stage_bytes: stageBytes,
+        definition_rows: definitionRows,
+        new_publication_count: newPublications,
+        existing_journal_bytes: (await stat(journalPath)).size,
+        retained_carrier_bytes: Number(retained.bytes),
+        retained_carrier_count: Number(retained.count),
+        existing_output_carrier_bytes: oldCarriers?.size ?? 0,
+        check_existing: options.checkExisting,
+        reuse_committed_snapshot: reuseCommitted,
+      });
+      options.estimate?.(sizeEstimate);
+      if (!sizeEstimate.within_budget)
+        throw new Error(
+          `The estimated ${sizeEstimate.scope} artifacts exceed the ${sizeEstimate.budget_bytes} byte limit. No publications were signed.`,
+        );
+    };
+    const finish = async (run: number) => {
+      const result = await exportProposal(
+        journal!,
+        output,
+        run,
+        importer,
+        options.checkpoint,
+      );
+      const measurement = compareImportSize(sizeEstimate, {
+        proposal_bytes: await allocatedProposalBytes(
+          output,
+          new Set([
+            stagePath,
+            `${stagePath}-journal`,
+            join(output, ".import-lock"),
+          ]),
+        ),
+        stage_bytes: sizeEstimate.stage_bytes,
+      });
+      options.measurement?.(measurement);
+      return {
+        ...result,
+        size_estimate: sizeEstimate,
+        size_measurement: measurement,
+      };
+    };
     const archive = join(output, "source-archive");
     await mkdir(archive, { recursive: true });
     for (const name of await readdir(archive)) {
@@ -1252,11 +1461,20 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
           .prepare("SELECT * FROM batches WHERE run=?")
           .get(currentRun) as any)
       : undefined;
-    if (committed && committed.snapshot === manifest.sha256) {
-      if (committed.manifest !== canonical(manifest))
-        throw new Error(
-          "The committed SQL batch uses different manifest evidence. Reuse its original manifest.",
-        );
+    if (
+      committed &&
+      committed.snapshot === manifest.sha256 &&
+      committed.manifest !== canonical(manifest)
+    )
+      throw new Error(
+        "The committed SQL batch uses different manifest evidence. Reuse its original manifest.",
+      );
+    if (
+      committed &&
+      committed.snapshot === manifest.sha256 &&
+      !options.checkExisting
+    ) {
+      await estimateSize(0, JSON.parse(committed.report).source_rows, 0, true);
       journal.exec("BEGIN IMMEDIATE");
       let run: number;
       try {
@@ -1315,13 +1533,7 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
       }
       await syncDirectory(output);
       await options.checkpoint?.("journal-durable");
-      return await exportProposal(
-        journal,
-        output,
-        run!,
-        importer,
-        options.checkpoint,
-      );
+      return await finish(run!);
     }
     const result = report();
     result.declared_rows = manifest.expected_rows;
@@ -1337,17 +1549,28 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
           .get() as any
       ).count,
     );
-    // This includes the proposal, journal, service copy, and temporary staging.
-    const estimatedTotal = stageBytes * 4 + definitionRows * 8192;
-    options.estimate?.({
-      stage_bytes: stageBytes,
-      estimated_total_bytes: estimatedTotal,
-      definition_rows: definitionRows,
-    });
-    if (estimatedTotal > 3_000_000_000)
-      throw new Error(
-        "The estimated local artifacts exceed the 3 GB limit. No publications were signed.",
-      );
+    let newPublications = 0;
+    for (const group of stage
+      .prepare(
+        "SELECT DISTINCT source_id FROM rows WHERE table_name='definitions' ORDER BY source_id",
+      )
+      .iterate()) {
+      try {
+        if (
+          !planDefinition(
+            stage,
+            journal,
+            group.source_id as number,
+            manifest,
+            report(),
+          ).reuse
+        )
+          newPublications++;
+      } catch (error) {
+        if (!(error instanceof SourceRowError)) throw error;
+      }
+    }
+    await estimateSize(stageBytes, definitionRows, newPublications);
     for (const [table, expected] of Object.entries(manifest.expected_rows)) {
       if (result.table_rows[table] !== expected) {
         result.incomplete = true;
@@ -1391,133 +1614,63 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
         seen.add(id);
         journal.exec("SAVEPOINT source_row");
         try {
-          const rows = getRows(stage, "definitions", "source_id", id);
-          if (rows.length > 1) {
-            if (!rows.every((row) => same(row, rows[0]))) {
-              result.conflicts.push(id);
-              throw new SourceRowError(
-                "Conflicting duplicate source rows share this definition ID.",
-              );
-            }
-            result.duplicates += rows.length - 1;
-          }
-          const { body, lexical } = extract(stage, rows[0], manifest, result);
-          // Size and word rules fail before the journal changes.
-          sourceWordId(body.word);
-          if (Buffer.byteLength(canonical(body)) > 256 * 1024)
-            throw new SourceRowError(
-              "The retained definition and source history exceed the 256 KiB body limit.",
-            );
-          const lexicalDigest = digest(lexical);
-          const entry = journal
-            .prepare("SELECT * FROM entries WHERE record=?")
-            .get(id) as any;
+          const {
+            body,
+            lexical,
+            lexicalDigest,
+            entry,
+            current,
+            baseline,
+            reuse,
+          } = planDefinition(stage, journal, id, manifest, result);
           let selected: string;
           let disposition: string;
-          const current = entry
-            ? (journal
-                .prepare("SELECT * FROM versions WHERE event=?")
-                .get(entry.selected) as any)
-            : undefined;
-          const baseline: Lexical | undefined = entry
-            ? JSON.parse(entry.baseline)
-            : undefined;
-          if (
-            current &&
-            !same(
-              body.legacy.attribution,
-              JSON.parse(current.carrier).body.legacy.attribution,
-            )
-          )
-            result.notices.push(
-              `Definition ${id}: attribution or source dates changed. This provenance observation does not create a lexical edit.`,
-            );
-          const conflict = (a: Lexical, b: Lexical) =>
-            FIELDS.some(
-              (field) =>
-                "known" in a[field] &&
-                "known" in b[field] &&
-                !same(a[field], b[field]),
-            );
-          if (
-            entry &&
-            !conflict(baseline!, lexical) &&
-            glossEvidenceMatches(
-              JSON.parse(current.lexical),
-              JSON.parse(current.carrier).body,
-              lexical,
-              body,
-            )
-          ) {
-            selected = entry.selected;
-            disposition = "reused";
-            result.reused++;
+          if (reuse) {
+            selected = reuse.event;
+            disposition = reuse.disposition;
+            result[reuse.disposition]++;
           } else {
-            const old = journal
-              .prepare("SELECT * FROM versions WHERE record=? AND digest=?")
-              .all(id, lexicalDigest)
-              .filter((version) =>
-                glossEvidenceMatches(
-                  JSON.parse(version.lexical as string),
-                  JSON.parse(version.carrier as string).body,
-                  lexical,
+            const priorBody = current
+              ? JSON.parse(current.carrier).body
+              : undefined;
+            if (priorBody)
+              body.sources.push({
+                label: "Prior imported source version",
+                url: null,
+                event: entry.selected,
+                locator: `definitions/definitionid=${id}`,
+              });
+            const carrier = sign(
+              journal,
+              options.seed,
+              {
+                kind: "definition.publish",
+                word: sourceWordId(body.word),
+                language: body.language,
+                parents: precedingContext(
+                  journal,
+                  id,
+                  current ? JSON.parse(current.carrier) : undefined,
                   body,
                 ),
-              ) as any[];
-            if (old.length > 1)
-              throw new Error(
-                "The SQL journal contains ambiguous publication reuse associations.",
+                origin: "import",
+              },
+              body,
+              options.checkExisting,
+            );
+            selected = carrier.envelope.id;
+            journal
+              .prepare("INSERT INTO versions VALUES(?,?,?,?,?)")
+              .run(
+                id,
+                lexicalDigest,
+                canonical(lexical),
+                canonical(carrier),
+                selected,
               );
-            if (old.length === 1) {
-              selected = old[0].event;
-              disposition = "reverted";
-              result.reverted++;
-            } else {
-              const priorBody = current
-                ? JSON.parse(current.carrier).body
-                : undefined;
-              if (priorBody)
-                body.sources.push({
-                  label: "Prior imported source version",
-                  url: null,
-                  event: entry.selected,
-                  locator: `definitions/definitionid=${id}`,
-                });
-              const sameContext =
-                priorBody &&
-                same(body.word, priorBody.word) &&
-                body.language === priorBody.language;
-              const carrier = sign(
-                journal,
-                options.seed,
-                {
-                  kind: "definition.publish",
-                  word: sourceWordId(body.word),
-                  language: body.language,
-                  parents: precedingContext(
-                    journal,
-                    id,
-                    current ? JSON.parse(current.carrier) : undefined,
-                    body,
-                  ),
-                  origin: "import",
-                },
-                body,
-              );
-              selected = carrier.envelope.id;
-              journal
-                .prepare("INSERT INTO versions VALUES(?,?,?,?,?)")
-                .run(
-                  id,
-                  lexicalDigest,
-                  canonical(lexical),
-                  canonical(carrier),
-                  selected,
-                );
-              disposition = entry ? "revised" : "added";
-              if (entry) result.revised++;
-              else result.added++;
-            }
+            disposition = entry ? "revised" : "added";
+            if (entry) result.revised++;
+            else result.added++;
           }
           journal
             .prepare("INSERT OR REPLACE INTO entries VALUES(?,?,?)")
@@ -1624,13 +1777,7 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
     }
     await syncDirectory(output);
     await options.checkpoint?.("journal-durable");
-    return await exportProposal(
-      journal,
-      output,
-      run!,
-      importer,
-      options.checkpoint,
-    );
+    return await finish(run!);
   } finally {
     stage?.close();
     journal?.close();

@@ -100,6 +100,7 @@ async function exists(path: string): Promise<boolean> {
 
 export async function readJournal(
   output: string,
+  options: { migrateMetadata?: boolean } = {},
 ): Promise<Journal | undefined> {
   const sqlite = join(output, "journal.sqlite"),
     json = join(output, "journal.json");
@@ -108,6 +109,26 @@ export async function readJournal(
       throw new Error(
         "Both import journals exist. Resolve the two authorities through explicit recovery before another import.",
       );
+    if (options.migrateMetadata) {
+      const metadata = new DatabaseSync(sqlite, { readOnly: true });
+      let source: string, importer: string;
+      try {
+        source = metadata
+          .prepare("SELECT value FROM state WHERE key='source'")
+          .get()?.value as string;
+        importer = metadata
+          .prepare("SELECT value FROM state WHERE key='importer'")
+          .get()?.value as string;
+      } finally {
+        metadata.close();
+      }
+      if (new URL(source).origin !== source)
+        throw new Error(
+          "The ledger uses an old source namespace. Explicit recovery must preserve its signed bodies.",
+        );
+      const migrated = openLedger(sqlite, source, importer);
+      migrated.close();
+    }
     const db = new DatabaseSync(sqlite, { readOnly: true });
     try {
       const source = db
@@ -260,6 +281,14 @@ async function commitJournal(
           result.selection.canonical,
         );
       const run = Number(batch.lastInsertRowid);
+      const observationCounts = new Map(
+        db
+          .prepare(
+            "SELECT record,COUNT(*) AS count FROM observations GROUP BY record",
+          )
+          .all()
+          .map((row) => [Number(row.record), Number(row.count)]),
+      );
       for (const [record, entry] of Object.entries(result.journal.entries)) {
         for (const version of entry.versions)
           db.prepare(
@@ -276,14 +305,8 @@ async function commitJournal(
           entry.selected,
           canonical(entry.baseline),
         );
-        const oldCount = Number(
-          db
-            .prepare(
-              "SELECT COUNT(*) AS count FROM observations WHERE record=?",
-            )
-            .get(Number(record))!.count,
-        );
-        // Each REST run retains the exact raw observation and its field coverage.
+        const oldCount = observationCounts.get(Number(record)) ?? 0;
+        // Each REST run retains exact source coverage and an archive reference.
         const observation = entry.observations.at(-1);
         if (observation && entry.observations.length > oldCount) {
           db.prepare("INSERT INTO observations VALUES(?,?,?,?,?,?)").run(

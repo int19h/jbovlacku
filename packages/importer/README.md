@@ -6,7 +6,18 @@ The current extraction supports the audited definitions-list endpoint and Englis
 
 The importer signs the extraction with the supplied disposable key. Numeric author evidence comes from an explicit `user_id` field or the audited endpoint's numeric `user_id` filter. A username alone does not establish account authorship.
 
-Original strings and source number tokens remain in `legacy.original`. Source fields with endpoint placeholders remain unknown in the lexical digest. This recipe marks `official_rafsi`, `experimental_rafsi`, `rafsi`, `gloss_keywords`, and `place_keywords` unavailable in the pinned listing.
+Authored strings and source number tokens remain in `legacy.original`. Source fields with endpoint placeholders remain unknown in the lexical digest. This recipe marks `official_rafsi`, `experimental_rafsi`, `rafsi`, `gloss_keywords`, and `place_keywords` unavailable in the pinned listing.
+
+REST extraction `lensisku-list-literal-v2` omits derived, display, and viewer-specific fields from new publications.
+The omitted fields include `embedding`, `similarity`, `can_edit`, `user_vote`, `comment_count`, `has_image`, `sound_url`, `langrealname`, and `username`.
+It also omits `metadata`, `processed_text`, `canonical_word`, and `cached_*` fields.
+The legacy limitations name those fields. Their exact values remain in the archived capture.
+The extraction keeps source scores, authored restrictions, dates, and numeric account evidence.
+Joined user names do not become author names.
+
+New observations retain an archive reference and exact field coverage instead of another copy of the raw row.
+Earlier signed publications and observations remain unchanged.
+A compatible capture can reuse an earlier publication. A later known-field edit creates a new publication under the current extraction.
 
 Text remains literal rich text with a null frame. The importer does not infer place structure, place keyword indices, or individual votes. It preserves rafsi fields at their source locations without publishing automatic rafsi claims.
 
@@ -28,7 +39,7 @@ The tests use the operating system's temporary directory by default. Set `JVC_TE
 
 Create an external file that contains a disposable seed as 64 lowercase hexadecimal digits. Create a roots file that contains the operator's explicit array of identity allocations, or `[]`. Keep the seed outside the output directory.
 
-The manifest names `source`, `url`, `retrieved_at`, `sha256`, `extraction`, `recipe`, and `unavailable_fields`. Use `extraction: "lensisku-list-literal-v1"` and `recipe: "lensisku-definitions-list-v1"`. The optional `expected_rows` field makes the row count mandatory.
+The manifest names `source`, `url`, `retrieved_at`, `sha256`, `extraction`, `recipe`, and `unavailable_fields`. Use `extraction: "lensisku-list-literal-v2"` and `recipe: "lensisku-definitions-list-v1"`. The optional `expected_rows` field makes the row count mandatory.
 
 For this local example, put the disposable seed and roots files in `.cache/import-input`.
 The output goes into a separate directory. These paths are examples, not capture provenance.
@@ -127,13 +138,39 @@ Keep the journal with the proposal. Repeat imports reuse the retained envelopes.
 The JSON report names unresolved rows and groups them by reason.
 Read its `incomplete` field before loading the proposal. A saved proposal can contain unresolved source rows.
 Malformed related rows leave affected definitions unresolved and preserve their prior selections.
-If a damaged row has no readable owner, the importer treats its dependent table as incomplete.
-The estimate before signing includes staging, the proposal, the journal, and a loaded service copy.
-The SQL command stops when that estimate exceeds 3,000,000,000 bytes.
+The reader groups matching adjacent short fragments into one malformed record and reports every physical location.
+It retains the first fragment's owner without repairing or signing the damaged record.
+The field count spans every fragment, including breaks in different source fields.
+Each group stays within 64 physical rows and 32 MiB of decoded field bytes.
+An adjacent damaged row with its own identifier prefix retains its separate owner.
+An unreadable lookup row blocks definitions that reference its missing key, rather than the whole snapshot.
+An unpaired owner row without a readable owner still makes that dependent table incomplete.
+
+The calibrated estimate before signing includes staging, the existing journal, proposed carriers, journal growth, temporary reserves, and a projected loaded copy.
+Before estimating, the importer counts staged definitions that need a new publication under its ordinary reuse rules.
+New carrier bytes and added space for the loaded copy use that count, with a reserve for one new view.
+Observation growth still uses every staged definition row.
+It uses measured SQL v2 costs and file-allocation allowances. It is not a strict filesystem upper bound.
+The normal SQL command stops when that estimate exceeds 3,000,000,000 bytes.
+The final output compares measured proposal files with their estimate and reports a miss above ten percent.
+It labels the projected loaded copy separately because extraction does not create that copy.
+
+If you compare an existing proposal, copy its journal into a new scratch output directory.
+Add `--check-existing` to the SQL command for that directory.
+The command refuses an output directory that contains `carriers.jsonl` or `source-archive`.
+It refuses before opening or migrating the journal, so a retained proposal stays unchanged.
+This mode reparses the full source, refuses every new signed publication or view, and retains the original envelopes.
+It writes observations and exported proposal files only in that scratch directory.
+For another comparison, copy the retained journal into another new scratch directory.
+Its estimate covers the proposal and staging only, with a 1,500,000,000-byte budget.
+It does not load or start a service. Compare the exported carriers before using the result.
 
 Both commands append a run record and retain separate observations for source reversions.
 The REST adapter reads the shared journal into memory, as its earlier JSON implementation did.
 The SQL extraction continues to stream carriers and use disk storage for joins.
+The journal indexes observations by record and run.
+The REST CLI migrates that metadata index under its import lock before reading an existing ledger.
+The default library journal reader stays read-only. Library callers can request metadata migration explicitly.
 
 An existing canonical REST `journal.json` migrates on its next successful REST import.
 The command commits `journal.sqlite`, then renames the old file to `journal.json.migrated`.

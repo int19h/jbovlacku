@@ -398,3 +398,142 @@ test("SQL rejects a second active JSON authority beside the shared ledger", asyn
     /JSON journal|authorities/,
   );
 });
+
+test("r3 N4 observation lookups use a record-first index on fresh and reopened ledgers", async () => {
+  const f = await fixture();
+  const result = await rest(f);
+  const { openLedger } = await import("../src/ledger.ts");
+  let db = new DatabaseSync(join(f.output, "journal.sqlite"));
+  const plans = () =>
+    [
+      "SELECT * FROM observations WHERE record=? ORDER BY run",
+      "SELECT observations.*,observation_details.details FROM observations LEFT JOIN observation_details USING(run,record) WHERE record=? ORDER BY run",
+      "SELECT event FROM observations WHERE record=? ORDER BY run DESC",
+    ].map((sql) =>
+      db
+        .prepare(`EXPLAIN QUERY PLAN ${sql}`)
+        .all(4)
+        .map((row) => row.detail)
+        .join("\n"),
+    );
+  assert.deepEqual(
+    db
+      .prepare("PRAGMA index_info(observations_record)")
+      .all()
+      .map((row) => row.name),
+    ["record", "run"],
+  );
+  for (const plan of plans())
+    assert.match(
+      plan,
+      /SEARCH observations USING (?:COVERING )?INDEX observations_record/,
+    );
+  db.exec("DROP INDEX observations_record");
+  db.close();
+  db = openLedger(
+    join(f.output, "journal.sqlite"),
+    result.journal.source,
+    result.journal.importer,
+  );
+  for (const plan of plans())
+    assert.match(
+      plan,
+      /SEARCH observations USING (?:COVERING )?INDEX observations_record/,
+    );
+  db.close();
+});
+
+test("r3 N4 REST commits count retained observations in one grouped query", async (context) => {
+  const f = await fixture();
+  await rest(f);
+  const result = importCapture({
+    sourceBytes: f.restBytes,
+    manifest: f.restManifest,
+    seed,
+    roots: [],
+    journal: await readJournal(f.output),
+  });
+  const queries: string[] = [];
+  const original = DatabaseSync.prototype.prepare;
+  context.mock.method(
+    DatabaseSync.prototype,
+    "prepare",
+    function (this: DatabaseSync, sql: string) {
+      queries.push(sql);
+      return original.call(this, sql);
+    },
+  );
+  await publishProposal(f.output, f.restBytes, f.restManifest, result);
+  assert.equal(
+    queries.filter((sql) =>
+      /SELECT COUNT\(\*\).*FROM observations WHERE record/i.test(sql),
+    ).length,
+    0,
+  );
+  assert.equal(
+    queries.filter((sql) => /FROM observations GROUP BY record/i.test(sql))
+      .length,
+    1,
+  );
+});
+
+test("r3 N4 default ledger reads stay read only and explicit metadata migration installs the record index", async () => {
+  const f = await fixture();
+  const original = await rest(f);
+  let db = new DatabaseSync(join(f.output, "journal.sqlite"));
+  db.exec("DROP INDEX observations_record");
+  db.close();
+  assert.equal((await readJournal(f.output))!.head, original.journal.head);
+  db = new DatabaseSync(join(f.output, "journal.sqlite"), { readOnly: true });
+  assert.equal(
+    db
+      .prepare("PRAGMA index_list(observations)")
+      .all()
+      .some((row) => row.name === "observations_record"),
+    false,
+  );
+  db.close();
+  assert.equal(
+    (await readJournal(f.output, { migrateMetadata: true }))!.head,
+    original.journal.head,
+  );
+  db = new DatabaseSync(join(f.output, "journal.sqlite"), { readOnly: true });
+  assert.deepEqual(
+    db
+      .prepare("PRAGMA index_info(observations_record)")
+      .all()
+      .map((row) => row.name),
+    ["record", "run"],
+  );
+  db.close();
+});
+
+test("r3 N2 new REST observations reference the exact archive instead of copying derived viewer values", async () => {
+  const f = await fixture();
+  f.rows[0].embedding = [0.1, 0.2];
+  f.rows[0].user_vote = 1;
+  const bytes = utf8(JSON.stringify({ definitions: f.rows }));
+  const manifest = { ...f.restManifest, sha256: contentHash(bytes) };
+  const result = await rest(f, bytes, manifest);
+  const observation = (await readJournal(f.output))!.entries[
+    "4"
+  ].observations.at(-1)!;
+  assert.deepEqual(observation.original, {
+    archive: manifest.sha256,
+    locator: "definitions/definitionid=4",
+  });
+  assert.equal(observation.extraction, "lensisku-list-literal-v2");
+  assert.deepEqual(
+    await readFile(
+      join(f.output, "source-archive", `${manifest.sha256.slice(7)}.json`),
+    ),
+    Buffer.from(bytes),
+  );
+  assert.equal(
+    Object.hasOwn(
+      result.journal.entries["4"].versions[0].carrier.body.legacy.original,
+      "embedding",
+    ),
+    false,
+  );
+});

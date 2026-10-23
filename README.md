@@ -35,6 +35,8 @@ Signing needs localhost or HTTPS. A plain HTTP Tailscale address supports readin
 
 The importer prepares signed proposals from pinned local Lensisku JSON captures and SQL snapshots. Repeat imports reuse signed records and retain source evidence.
 It keeps definitions literal and preserves unknown fields as unknown. It does not infer places or individual votes.
+New SQL and REST publications omit derived vectors and caches with explicit source limitations.
+REST publications also omit viewer-specific values.
 The current importer records unknown rights. The source-notice convention below remains a target change.
 
 The committed adapter comparison uses one signed profile event. Importer tests include a two-row fixture derived from a pinned 2,429-row API capture.
@@ -42,6 +44,8 @@ The committed adapter comparison uses one signed profile event. Importer tests i
 The SQL fixture retains four source definitions in English, French, and Russian, with available version history and numbered keywords.
 SQL extraction streams COPY blocks and joins source rows on disk. It retains separate language tags and separate word-level and definition-level rafsi evidence.
 Unsupported rows receive unresolved notices. The source archive keeps the original manifest and records the digest and path of the external dump.
+Split rows retain their owner across breaks in different fields. The size estimate counts new publications separately from staged observations.
+The SQL `--check-existing` mode requires a copied journal in fresh scratch output and refuses an existing proposal.
 
 An offline command loads signed carriers, their selection, and their view into a Node data directory. Repeat loads preserve receipt positions.
 Node startup restores the loaded view and its explicit state work budget. The server and loader require exclusive access to that directory.
