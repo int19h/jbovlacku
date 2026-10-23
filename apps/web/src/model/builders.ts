@@ -61,6 +61,8 @@ export interface GismuRowState {
   name: string;
   word: string;
   word_ipa?: string | null;
+  /** Only an explicit null copied from signed history keeps its field presence. */
+  wordIpaNullOriginal?: true;
   stem?: string | null;
   ipa?: string | null;
   input: string;
@@ -73,6 +75,9 @@ export interface SourceReview {
   index?: number;
   word: string;
   value: unknown;
+  /** Preserve the private scoring preview and original-input presence on Keep. */
+  inputText?: string;
+  inputOriginal?: FormationSource["input"];
 }
 /** Migrate browser aliases only when the signed field is absent, including null. */
 export function normalizeSourceRow(row: GismuRowState): GismuRowState {
@@ -83,6 +88,7 @@ export function normalizeSourceRow(row: GismuRowState): GismuRowState {
   canonical.id ||= sourceRowId();
   if (!Object.hasOwn(row, "word_ipa") && wordIpa) canonical.word_ipa = wordIpa;
   if (!Object.hasOwn(row, "ipa") && stemIpa) canonical.ipa = stemIpa;
+  if (canonical.word_ipa !== null) delete canonical.wordIpaNullOriginal;
   return canonical;
 }
 /** Browser identity never enters the signed formation source. */
@@ -95,13 +101,19 @@ export function sourceRowKey(row: GismuRowState): string {
 /** Open signed evidence without guessing scoring letters or pronunciation. */
 export function sourceRowsFromFormation(
   sources: FormationSource[],
+  nullPronunciations = sources.flatMap((source, index) =>
+    source.word_ipa === null ? [index] : [],
+  ),
 ): GismuRowState[] {
-  return sources.map((source) =>
+  return sources.map((source, index) =>
     normalizeSourceRow({
       ...structuredClone(source),
       name: source.language,
       input: source.input?.format === "lojbanized" ? source.input.text : "",
       inputOriginal: structuredClone(source.input ?? null),
+      ...(source.word_ipa === null && nullPronunciations.includes(index)
+        ? { wordIpaNullOriginal: true as const }
+        : {}),
       aiNoteGroup: [],
       weight: source.weight
         ? {
@@ -165,14 +177,13 @@ export function editSourceNotes(row: GismuRowState, notes: RichText) {
   if (row.aiNoteGroup)
     row.aiNoteGroup = row.aiNoteGroup.flatMap((entry) => {
       const index = mapped.get(entry.index);
-      const uniqueBefore =
-        before.filter((paragraph) => sameValue(paragraph, entry.paragraph))
-          .length === 1;
-      const uniqueAfter =
-        notes.filter((paragraph) => sameValue(paragraph, entry.paragraph))
-          .length === 1;
-      return uniqueBefore &&
-        uniqueAfter &&
+      const copiesBefore = before.filter((paragraph) =>
+        sameValue(paragraph, entry.paragraph),
+      ).length;
+      const copiesAfter = notes.filter((paragraph) =>
+        sameValue(paragraph, entry.paragraph),
+      ).length;
+      return copiesBefore === copiesAfter &&
         index !== undefined &&
         sameValue(before[entry.index], entry.paragraph)
         ? [{ index, paragraph: structuredClone(notes[index]) }]
@@ -188,6 +199,22 @@ export function editSourceNotes(row: GismuRowState, notes: RichText) {
 export function sourceReviewMarks(row: GismuRowState): SourceReview[] {
   return row.sourceReview ?? [];
 }
+/** A review applies only to the exact retained value that the author saw. */
+export function sourceReviewMatches(
+  row: GismuRowState,
+  mark: SourceReview,
+): boolean {
+  if (mark.field === "input") {
+    const input = formationSource(row).input;
+    const retained = mark.value as FormationSource["input"];
+    return input === null
+      ? retained === null
+      : input.format === retained?.format && input.text === retained?.text;
+  }
+  const value =
+    mark.field === "notes" ? sourceNotes(row)[mark.index!] : row[mark.field];
+  return sameValue(value, mark.value);
+}
 /** Keep approves one retained value. Clear removes only that value. */
 export function resolveSourceReview(
   row: GismuRowState,
@@ -196,7 +223,30 @@ export function resolveSourceReview(
 ) {
   const mark = row.sourceReview?.[markIndex];
   if (!mark) throw new Error("This source review no longer exists.");
-  if (action === "clear") {
+  if (action === "keep") {
+    if (mark.field === "notes") {
+      const notes = sourceNotes(row);
+      if (!notes[mark.index!])
+        throw new Error(
+          "This source paragraph moved. Review the current source notes.",
+        );
+      notes[mark.index!] = structuredClone(mark.value) as RichText[number];
+      row.notes = notes;
+    } else if (mark.field === "input") {
+      const value = structuredClone(mark.value) as FormationSource["input"];
+      row.input =
+        mark.inputText ?? (value?.format === "lojbanized" ? value.text : "");
+      if (Object.hasOwn(mark, "inputOriginal"))
+        row.inputOriginal = structuredClone(mark.inputOriginal ?? null);
+      else if (mark.inputText !== undefined) delete row.inputOriginal;
+      else row.inputOriginal = value;
+    } else row[mark.field] = structuredClone(mark.value) as string | null;
+  } else if (
+    sourceReviewMatches(row, mark) &&
+    (mark.field !== "input" ||
+      mark.inputText === undefined ||
+      row.input === mark.inputText)
+  ) {
     if (mark.field === "notes") {
       const index = mark.index!;
       const notes = sourceNotes(row);
@@ -219,6 +269,7 @@ export function resolveSourceReview(
       row.inputOriginal = null;
     } else row[mark.field] = null;
   }
+  if (mark.field === "word_ipa") delete row.wordIpaNullOriginal;
   row.sourceReview!.splice(markIndex, 1);
 }
 export interface GismuState {
@@ -482,7 +533,10 @@ export function formationSource(raw: GismuRowState): FormationSource {
     weight: row.weight ? rational(row.weight) : null,
     notes: sourceNotes(row),
   };
-  if (row.word_ipa === null || row.word_ipa?.trim())
+  if (
+    (row.word_ipa === null && row.wordIpaNullOriginal) ||
+    row.word_ipa?.trim()
+  )
     source.word_ipa = row.word_ipa;
   return source;
 }

@@ -485,7 +485,10 @@ export function confirmKindChange(
     );
     if (!ok) return false;
     if (kind !== "lujvo") draft.compound = null;
-    if (kind !== "gismu") draft.formation = null;
+    if (kind !== "gismu") {
+      draft.formation = null;
+      for (const row of draft.gismu?.rows ?? []) delete row.sourceReview;
+    }
     if (!draft.compound && !draft.formation) draft.evidenceForm = null;
   }
   draft.kind = kind;
@@ -502,6 +505,7 @@ export function removeFormationEvidence(draft: Draft): boolean {
     return false;
   draft.compound = null;
   draft.formation = null;
+  for (const row of draft.gismu?.rows ?? []) delete row.sourceReview;
   draft.evidenceForm = null;
   draft.publishAcknowledged = [];
   return true;

@@ -115,7 +115,10 @@ export async function gismuPage(
   const state = (draft.gismu ??= newGismuState());
   const presets = builderPresets();
   if (!existingBuilder && draft.formation?.sources.length) {
-    state.rows = sourceRowsFromFormation(draft.formation.sources);
+    state.rows = sourceRowsFromFormation(
+      draft.formation.sources,
+      draft.retainedWordIpaNullSources ?? [],
+    );
     saver.touch();
   } else if (state.preset === null && !state.rows.length && !existingBuilder) {
     state.preset = presets[0].id;
@@ -249,13 +252,14 @@ export async function gismuPage(
       control = undefined;
     }
     if (!control) {
+      const id = row.id!;
       control = assistanceAction(app, draft, saver, context, {
         key,
         label,
         operation: "gismu-sources",
-        current: () => sourceCurrent(draft, row.id!),
-        apply: (d, r) => applySource(d, row.id!, r),
-        sourceRow: () => row,
+        current: () => sourceCurrent(draft, id),
+        apply: (d, r) => applySource(d, id, r),
+        sourceRow: () => state.rows.find((current) => current.id === id),
       });
       control.dataset.sourceLabel = label;
       sourceControls.set(key, control);
@@ -393,15 +397,15 @@ export async function gismuPage(
   context.signal.addEventListener("abort", () => clearTimeout(timer), {
     once: true,
   });
+  const pendingLetters = () =>
+    state.rows.some((row) =>
+      sourceReviewMarks(row).some((mark) => mark.field === "input"),
+    );
+  const lettersReviewMessage =
+    "Keep or clear the retained Letters before the generator runs.";
   const complete = () =>
     state.rows.length > 0 &&
-    state.rows.every(
-      (r) =>
-        r.input.trim() &&
-        r.weight &&
-        r.language.trim() &&
-        !sourceReviewMarks(r).some((mark) => mark.field === "input"),
-    );
+    state.rows.every((r) => r.input.trim() && r.weight && r.language.trim());
   const renderRows = () => {
     cleanupRows();
     const activeKeys = new Set(state.rows.map(sourceRowKey));
@@ -477,6 +481,8 @@ export async function gismuPage(
     const tbody = el("tbody");
     state.rows.forEach((row, index) => {
       const sourceKey = sourceRowKey(row);
+      const marked = (field: "input" | "word_ipa" | "stem" | "ipa") =>
+        sourceReviewMarks(row).some((mark) => mark.field === field);
       const tr = el("tr");
       const languageCell = el("td");
       if (preset)
@@ -578,11 +584,13 @@ export async function gismuPage(
         class: "field",
         "aria-label": `Scoring letters for ${row.name || row.language}`,
         value: row.input,
+        readonly: marked("input"),
         spellcheck: "false",
         lang: "jbo",
         style: "width:9rem;",
       });
       input.addEventListener("input", () => {
+        if (marked("input")) return;
         row.input = input.value;
         delete row.inputOriginal;
         saveSources();
@@ -606,6 +614,7 @@ export async function gismuPage(
           button(
             "Replace IPA input with scoring letters",
             () => {
+              if (marked("input")) return;
               if (
                 !confirm(
                   "Replace the original IPA input with scoring letters? The original input will be removed from this source row.",
@@ -618,6 +627,7 @@ export async function gismuPage(
             },
             {
               class: "btn btn-quiet small",
+              disabled: marked("input"),
               "aria-label": `Replace IPA input for ${row.name || row.language}`,
             },
           ),
@@ -671,10 +681,13 @@ export async function gismuPage(
           class: "field",
           "aria-label": `${label} for ${row.name || row.language}`,
           value: row[key] ?? "",
+          readonly: marked(key),
           style: "width:8rem;min-height:36px",
         });
         input.addEventListener("input", () => {
+          if (marked(key)) return;
           row[key] = input.value || null;
+          if (key === "word_ipa") delete row.wordIpaNullOriginal;
           saveSources();
         });
         return el("td", {}, input);
@@ -857,6 +870,10 @@ export async function gismuPage(
     candidatesBox.replaceChildren();
     more.replaceChildren();
     candidatesHead.replaceChildren(text("Candidates"));
+    if (pendingLetters()) {
+      status.textContent = lettersReviewMessage;
+      return;
+    }
     if (failure) {
       status.textContent = failure;
       return;
@@ -1167,6 +1184,12 @@ export async function gismuPage(
     clearTimeout(timer);
     timer = undefined;
     failure = null;
+    if (pendingLetters()) {
+      renderCandidates();
+      if (!result) renderSelected();
+      else refreshPrimary();
+      return;
+    }
     result = null;
     resultFingerprint = null;
     if (!complete()) {
@@ -1208,7 +1231,9 @@ export async function gismuPage(
   const schedule = () => {
     clearTimeout(timer);
     failure = null;
-    status.textContent = "Calculating…";
+    status.textContent = pendingLetters()
+      ? lettersReviewMessage
+      : "Calculating…";
     refreshPrimary();
     timer = setTimeout(run, 250);
   };
@@ -1226,14 +1251,10 @@ export async function gismuPage(
     candidate: GismuCandidate | null;
     reason: string;
   } => {
-    if (
-      state.rows.some((row) =>
-        sourceReviewMarks(row).some((mark) => mark.field === "input"),
-      )
-    )
+    if (pendingLetters())
       return {
         candidate: null,
-        reason: "Keep or clear the retained Letters before generation.",
+        reason: lettersReviewMessage,
       };
     if (result && resultFingerprint !== generationFingerprint())
       return {

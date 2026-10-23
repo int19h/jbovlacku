@@ -1614,12 +1614,15 @@ test("legacy source notes require an explicit earlier AI group choice", async ({
       exact: true,
     })
     .click();
-  await panel
-    .getByRole("checkbox", {
+  await expect(
+    panel.getByRole("checkbox", {
       name: "I reviewed the newer fields and want to replace them",
       exact: true,
-    })
-    .check();
+    }),
+  ).toHaveCount(0);
+  await expect(panel).not.toContainText(
+    "The draft changed while this suggestion was made.",
+  );
   await panel.getByRole("button", { name: "Use this", exact: true }).click();
   await expect(
     page.getByLabel("Source notes for English", { exact: true }),
@@ -1648,6 +1651,11 @@ test("a changed suggested word reviews retained identical values and original IP
     inputOriginal: { format: "ipa", text: "oʊld" },
     notes: [["Authored one"], ["Authored two"]],
   });
+  await page
+    .getByRole("link", { name: "Enter without generation", exact: true })
+    .click();
+  await page.getByRole("button", { name: "Use brodu", exact: true }).click();
+  await page.goto("/new/gismu");
   const panel = await sourceSuggestion(page);
   await expect(panel).toContainText("oʊld (proposed)");
   await expect(panel).toContainText("ipa");

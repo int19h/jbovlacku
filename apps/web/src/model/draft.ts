@@ -22,7 +22,11 @@ import {
 } from "./richtext.ts";
 import { placeGlyph } from "../lib/format.ts";
 import { cloneAssistance } from "./assistance.ts";
-import { syncFormationSources } from "./builders.ts";
+import {
+  syncFormationSources,
+  formationSourcesFromRows,
+  sameFormationSources,
+} from "./builders.ts";
 import {
   lexicalKinds,
   type Arity,
@@ -237,6 +241,8 @@ export interface Draft {
   formation: DraftFormation | null;
   /** Empty source rows copied from authenticated history remain authored evidence. */
   retainedFormationSources?: number[];
+  /** Explicit null pronunciations copied from signed history without builder state. */
+  retainedWordIpaNullSources?: number[];
   compound: Compound | null;
   /** The spelling that the formation or compound evidence describes. */
   evidenceForm: string | null;
@@ -1565,6 +1571,7 @@ export function coreProblems(
 export function signedFormation(
   formation: DraftFormation | null,
   keepEmptySources: boolean | number[] = false,
+  keepNullPronunciations: number[] = [],
 ): Formation | null {
   if (!formation) return null;
   const sources: FormationSource[] = [];
@@ -1576,7 +1583,10 @@ export function signedFormation(
       weight: row.weight,
       notes: row.notes,
     };
-    if (row.word_ipa === null || row.word_ipa?.trim())
+    if (
+      (row.word_ipa === null && keepNullPronunciations.includes(index)) ||
+      row.word_ipa?.trim()
+    )
       source.word_ipa = row.word_ipa;
     const hasSignedEvidence =
       source.word.trim() ||
@@ -1592,6 +1602,25 @@ export function signedFormation(
       sources.push(source);
   }
   return { ...formation, sources };
+}
+/** Match exact projected evidence so filtered or reordered rows keep their own presence. */
+export function retainedNullPronunciations(
+  draft: Pick<Draft, "formation" | "gismu" | "retainedWordIpaNullSources">,
+): number[] {
+  if (!draft.formation) return [];
+  if (!draft.gismu) return draft.retainedWordIpaNullSources ?? [];
+  const originals = formationSourcesFromRows(draft.gismu.rows).filter(
+    (source) => source.word_ipa === null,
+  );
+  return draft.formation.sources.flatMap((source, index) => {
+    if (source.word_ipa !== null) return [];
+    const originalIndex = originals.findIndex((original) =>
+      sameFormationSources([source], [original]),
+    );
+    if (originalIndex === -1) return [];
+    originals.splice(originalIndex, 1);
+    return [index];
+  });
 }
 /** Builds the signed body from the draft and lists every problem. */
 export function draftToBody(input: Draft): {
@@ -1624,7 +1653,7 @@ export function draftToBody(input: Draft): {
         "The source scoring inputs changed. Use the form again to refresh its scores, enter it without generation, or remove the evidence.",
       blocking: true,
     });
-  for (const row of draft.gismu?.rows ?? []) {
+  for (const row of draft.formation ? (draft.gismu?.rows ?? []) : []) {
     if (row.sourceReview?.length)
       problems.push({
         field: "formation",
@@ -1905,6 +1934,7 @@ export function draftToBody(input: Draft): {
   const formation = signedFormation(
     draft.formation,
     draft.gismu ? true : (draft.retainedFormationSources ?? false),
+    retainedNullPronunciations(draft),
   );
   if (formation)
     formation.sources.forEach((row, i) => {
@@ -2088,6 +2118,9 @@ export function draftFromBody(
     formation: body.etymology.formation,
     retainedFormationSources: body.etymology.formation?.sources.map(
       (_, index) => index,
+    ),
+    retainedWordIpaNullSources: body.etymology.formation?.sources.flatMap(
+      (source, index) => (source.word_ipa === null ? [index] : []),
     ),
     compound: body.etymology.compound,
     evidenceForm:

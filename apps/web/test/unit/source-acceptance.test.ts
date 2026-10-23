@@ -17,6 +17,7 @@ import {
 } from "../../src/model/assistance.ts";
 import {
   newGismuState,
+  manualFormation,
   sourceRowsFromFormation,
   formationSource,
   setSourceAiNoteGroup,
@@ -205,6 +206,7 @@ for (const aiIndex of [0, 1]) {
 
 test("changed words mark retained identical evidence and notes, and block signing until each choice", () => {
   const draft = example();
+  draft.formation = manualFormation(draft.gismu!.rows, "");
   const row = draft.gismu!.rows[0];
   row.input = "";
   row.inputOriginal = { format: "ipa", text: "bʊk" };

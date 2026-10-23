@@ -485,10 +485,13 @@ Each retained Notes paragraph also needs review, including word-specific authore
 Each marked field or paragraph shows its earlier word and value beside explicit Keep and Clear actions.
 
 Acceptance retains these values until the author chooses an action. Clear removes only that field or paragraph, and Keep records approval for the new word.
-Generation waits until every row has usable, unmarked Letters, so clearing Letters keeps generation waiting until the author fills them. Signing is blocked while any retained field or paragraph remains unresolved.
+Marked Letters, Said, Stem, and Stem said remain read-only until Keep or Clear. Keep preserves the marked value, and Clear permits new input.
+Generation waits until every row has usable, unmarked Letters. Clearing Letters keeps generation waiting until the author fills them.
+Unresolved marks block signing only while their formation exists. A type change that removes the formation also removes its marks.
 
 Review marks and choices stay private in the draft. They survive reload and mode changes, and undo restores them with the values.
 A later accepted suggested word that changes Word starts a new review for every retained nonempty value.
+A later proposal that replaces a marked value removes its old mark. Repeating that value preserves its mark.
 
 The draft privately tracks which paragraphs form the last accepted AI note group for each source row.
 The app initializes new source rows with a known empty AI note group.
@@ -498,10 +501,13 @@ This group information survives reload and mode changes, and undo restores it wi
 New AI paragraphs replace that group, rather than append to it. Replacement starts at the earlier group's first position and preserves the order of authored paragraphs.
 Without an earlier group, the new group follows the authored notes. An empty new group removes only the earlier AI group.
 An author edit to an AI paragraph removes that paragraph from the group, so later suggestions preserve it as authored text.
+An unrelated edit preserves ownership of identical AI paragraphs when their copy count stays unchanged.
+Adding or removing identical copies makes their ownership ambiguous, so the app treats those paragraphs as authored text.
 
 If group information is absent, the preview requires the author to identify the earlier AI paragraphs or choose “No earlier AI notes”.
 Acceptance waits for that choice. The app never infers paragraph ownership from a `Sense: ` or `Note: ` prefix.
 The choice establishes private group information for this draft. Group information and review marks never enter signed records or assistance requests and responses.
+That private choice alone never marks a suggestion stale. Row comparisons use current values after a weight preset change.
 
 The From field reads a recognized kind prefix from the derivation explanation after reload.
 A human explanation without such a prefix shows no kind label. The app never infers a kind from its prose.
@@ -1489,6 +1495,7 @@ When both word_type and classification are present, their lexical kinds must agr
 Context is at most 32 exact definition event IDs. Profile names an advertised generation configuration, not an arbitrary provider URL.
 
 The total uncompressed request limit is 256 KiB. The server also enforces task-specific token and billing limits.
+A request body that does not arrive within ten seconds returns HTTP 408 with code `request_timeout`.
 
 A completed suggestion contains operation, draft_revision, proposals, explanation, provenance, usage, and log.
 Each proposal contains path and value. Path is a JSON Pointer into current, restricted by the operation's allowlist below.

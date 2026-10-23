@@ -377,7 +377,7 @@ interface ActionOptions {
   profile?: string;
   current?: () => Current;
   apply?: (draft: Draft, result: Suggestion) => void;
-  sourceRow?: () => GismuRowState;
+  sourceRow?: () => GismuRowState | undefined;
 }
 function snapshot(draft: Draft): Partial<Draft> {
   const { ai, revision, updatedAt, ...rest } = draft;
@@ -967,7 +967,9 @@ export function assistanceAction(
         ),
       );
       const establish = (indexes: number[]) => {
-        setSourceAiNoteGroup(sourceRow, indexes);
+        const current = options.sourceRow?.();
+        if (!current) return;
+        setSourceAiNoteGroup(current, indexes);
         save();
         render();
       };

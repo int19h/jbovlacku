@@ -7,6 +7,7 @@ import {
   draftToBody,
   hintForChoice,
   signedFormation,
+  retainedNullPronunciations,
 } from "./draft.ts";
 import type { DraftProblem } from "./draft.ts";
 import type {
@@ -31,6 +32,7 @@ import {
   syncFormationSources,
   sourceNotes,
   editSourceNotes,
+  sourceReviewMatches,
   type GismuRowState,
   type SourceReview,
 } from "./builders.ts";
@@ -94,11 +96,28 @@ export interface AssistanceData {
 
 /** Revision changes from saving do not make an otherwise unchanged suggestion stale. */
 export function draftFingerprint(draft: Draft): string {
-  const { revision, updatedAt, ai, ...fields } = draft;
+  const { revision, updatedAt, ai, retainedWordIpaNullSources, ...fields } =
+    draft;
   void revision;
   void updatedAt;
   void ai;
-  return semanticKey(fields)!;
+  void retainedWordIpaNullSources;
+  return semanticKey({
+    ...fields,
+    gismu: fields.gismu
+      ? {
+          ...fields.gismu,
+          rows: fields.gismu.rows.map(
+            ({ aiNoteGroup, sourceReview, wordIpaNullOriginal, ...row }) => {
+              void aiNoteGroup;
+              void sourceReview;
+              void wordIpaNullOriginal;
+              return row;
+            },
+          ),
+        }
+      : null,
+  })!;
 }
 export function currentDraft(draft: Draft): Current {
   const body = draftToBody(draft).body;
@@ -170,6 +189,7 @@ export function currentDraft(draft: Draft): Current {
       signedFormation(
         draft.formation,
         draft.gismu ? true : (draft.retainedFormationSources ?? false),
+        retainedNullPronunciations(draft),
       ),
     compound: draft.compound,
   });
@@ -465,11 +485,19 @@ export function sourceTargetMatches(
 ): boolean {
   const row = draft.gismu?.rows.find((row) => row.id === target.id);
   const values = (row: GismuRowState) => {
-    const { id, aiNoteGroup, sourceReview, notesStale, ...value } = row;
+    const {
+      id,
+      aiNoteGroup,
+      sourceReview,
+      notesStale,
+      wordIpaNullOriginal,
+      ...value
+    } = row;
     void id;
     void aiNoteGroup;
     void sourceReview;
     void notesStale;
+    void wordIpaNullOriginal;
     return semanticKey(value);
   };
   return (
@@ -608,6 +636,7 @@ export function applySource(
   const retainedNotes = replaceSourceAiNotes(row, source.notes);
   for (const field of ["word", "word_ipa", "stem", "ipa"] as const)
     if (Object.hasOwn(source, field)) row[field] = source[field]!;
+  if (Object.hasOwn(source, "word_ipa")) delete row.wordIpaNullOriginal;
   if (source.input) {
     row.input = source.input.text;
     row.inputOriginal = structuredClone(source.input);
@@ -616,13 +645,25 @@ export function applySource(
     const marks: SourceReview[] = [];
     for (const field of ["word_ipa", "stem", "ipa", "input"] as const) {
       const value = previous[field];
-      const current =
-        field === "input" ? formationSource(row).input : row[field];
       if (
         (typeof value === "string" ? value.trim() : value) &&
-        JSON.stringify(value) === JSON.stringify(current)
+        sourceReviewMatches(row, { field, word: old.word, value })
       )
-        marks.push({ field, word: old.word, value: structuredClone(value) });
+        marks.push({
+          field,
+          word: old.word,
+          value: structuredClone(value),
+          ...(field === "input"
+            ? {
+                inputText: old.input,
+                ...(Object.hasOwn(old, "inputOriginal")
+                  ? {
+                      inputOriginal: structuredClone(old.inputOriginal ?? null),
+                    }
+                  : {}),
+              }
+            : {}),
+        });
     }
     for (const index of retainedNotes) {
       const paragraph = row.notes![index];
@@ -635,7 +676,10 @@ export function applySource(
         });
     }
     row.sourceReview = marks;
-  }
+  } else
+    row.sourceReview = row.sourceReview?.filter((mark) =>
+      sourceReviewMatches(row, mark),
+    );
   // Keep legacy editor summaries in sync without deriving note ownership from prefixes.
   const paragraphValue = (label: string) =>
     source.notes.find(
@@ -646,6 +690,7 @@ export function applySource(
   row.sense = paragraphValue("Sense")?.slice(7) ?? "";
   row.note = paragraphValue("Note")?.slice(6) ?? "";
   row.notesStale = false;
+  if (!row.wordIpaNullOriginal) delete old.wordIpaNullOriginal;
   Object.assign(old, row);
   draft.gismu!.selected = null;
   draft.gismu!.acknowledged = [];

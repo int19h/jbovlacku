@@ -683,7 +683,11 @@ test("manual selection preserves unchanged canonical source evidence and histori
     candidates: [],
     conflicts: [],
   };
-  await seed(page, { formation, evidenceForm: "brodu" }, false);
+  await seed(
+    page,
+    { formation, evidenceForm: "brodu", retainedWordIpaNullSources: [0] },
+    false,
+  );
   await expect(
     page.getByLabel("Native word for en", { exact: true }),
   ).toHaveValue("book");

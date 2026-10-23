@@ -79,6 +79,7 @@ The gismu generator offers the CLL 1987, CLL 1995, and Ilmen presets with pinned
 The core and builders keep the optional full pronunciation, `word_ipa`, in signed formation sources.
 Draft reload preserves private `stem` and `ipa` values. Neither enters a signed formation source.
 Publication keeps each source row's word, `word_ipa`, scoring input, weight, and notes.
+New unknown pronunciations omit `word_ipa`. Revisions preserve an authenticated original null value without copying it into fresh source rows.
 Known weights, including zero, survive regardless of private `stem` or `ipa` values.
 The gismu source editor has seven columns. It keeps pronunciation and stem evidence separate from scoring letters.
 It preserves original IPA inputs and shows that conversion to scoring letters is unavailable.
@@ -92,6 +93,8 @@ The [morphology profiles](docs/morphology.md) name the rules and versions that t
 Optional AI assistance offers suggestions for type, components, lujvo, cmavo class, source words, definition text, places, and glosses.
 The browser asks for consent before it sends draft fields. Suggestions need manual acceptance and support undo.
 Source acceptance replaces earlier AI notes and preserves authored notes. A changed suggested word requires review of retained source evidence.
+Marked fields stay read-only until Keep or Clear. Removing the formation removes its review marks, and undo restores both.
+Source previews read current rows after a weight preset change. Private note ownership choices do not mark suggestions stale.
 Component suggestions keep selected exact source definitions.
 Place mappings also preserve exact definitions for repeated component words.
 The model keeps studied names such as `klama[2]`. Ambiguous repeated definitions require an `unclear` mapping.
@@ -102,7 +105,8 @@ Both local adapters offer operator-controlled assistance, off by default, with s
 They reserve costs before admission and enforce server and network spending limits that survive a restart.
 IPv6 limits also count /48 prefixes. The Worker stores large spending ledgers in atomic parts.
 A discarded result returns a clear status. Spending failures distinguish pending costs, timed limits, and requests that cannot fit.
-The default spending share admits every enabled operation. Each task uses an output cap based on recorded prompt tests.
+The default spending share admits every enabled operation at each reasoning effort, with decision reports enabled or disabled.
+Each task uses an output cap based on recorded prompt tests. An explicit operator limit replaces the automatic caps.
 Mocked providers cover the request and correction loop. These tests do not establish live model accuracy.
 The [development guide](docs/development.md#optional-ai-assistance) gives the configuration and retention limits.
 
