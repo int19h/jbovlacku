@@ -282,6 +282,148 @@ fn forks_and_host_checkpoints_keep_parent_results_unchanged() {
 }
 
 #[test]
+fn missing_publication_targets_and_parents_force_reference_rebuilds() {
+    for judgment_target in [true, false] {
+        let mut f = Fixture::new();
+        let missing = f.publication();
+        let held = f.input.events.pop().unwrap();
+        let dependent = if judgment_target {
+            f.event(
+                1,
+                vec![],
+                json!({"kind":"judgment.set","target":missing,"value":"bless"}),
+                None,
+            )
+        } else {
+            f.event(9, vec![], json!({"kind":"definition.publish","word":f.word,"language":"en","parents":[missing],"origin":"native"}), Some(f.body()))
+        };
+        let state = EvaluatedState::from_input(&f.input);
+        if judgment_target {
+            assert!(
+                state.evaluation().receipts[&dependent]
+                    .reasons
+                    .contains("target_pending")
+            );
+        } else {
+            assert_eq!(
+                state.evaluation().publications[&dependent].lineage[&missing],
+                "pending"
+            );
+        }
+        f.input.events.push(held);
+        let state = f.advance(state, std::slice::from_ref(&missing), &[]);
+        assert_eq!(
+            state.statistics().reason.as_deref(),
+            Some("reference_completed")
+        );
+        if judgment_target {
+            assert!(
+                !state.evaluation().receipts[&dependent]
+                    .reasons
+                    .contains("target_pending")
+            );
+            assert_eq!(
+                state.evaluation().judgments[&missing][&key(1)],
+                jvc_state::Judgment::Bless
+            );
+        } else {
+            assert_eq!(
+                state.evaluation().publications[&dependent].lineage[&missing],
+                "resolved"
+            );
+        }
+    }
+}
+
+#[test]
+fn repeated_appends_rebase_after_restore_without_changing_tight_work_results() {
+    let mut complete = Fixture::new();
+    let base = complete.input.clone();
+    let mut previous = Vec::new();
+    for index in 0..72 {
+        let id = complete.judgment(previous, if index % 2 == 0 { "bless" } else { "curse" });
+        previous = vec![id];
+    }
+    let minimum = minimum_budget(&complete.input);
+    for budget in [minimum - 1, minimum] {
+        let mut f = Fixture::new();
+        f.input = base.clone();
+        f.input.limits.traversal = budget;
+        let mut state = EvaluatedState::from_input(&f.input);
+        let mut rebases = 0;
+        for (index, event) in complete.input.events[base.events.len()..]
+            .iter()
+            .enumerate()
+        {
+            f.input.events.push(event.clone());
+            let id = event.id().to_owned();
+            state = f.advance(state, std::slice::from_ref(&id), &[]);
+            assert_eq!(state.evaluation().available, evaluate(&f.input).available);
+            if state.statistics().reason.as_deref() == Some("ancestry_rebase") {
+                rebases += 1;
+            }
+            if index == 6 {
+                let checkpoint = state.checkpoint("tight-work-sequence").unwrap();
+                state = EvaluatedState::restore_host_checkpoint(&checkpoint, "tight-work-sequence")
+                    .unwrap();
+                assert_eq!(state.evaluation(), &evaluate(&f.input));
+            }
+        }
+        assert_eq!(rebases, 1);
+        assert_eq!(
+            state.statistics().reason.as_deref(),
+            Some("ancestry_rebase")
+        );
+        assert_eq!(state.evaluation().available, budget >= minimum);
+    }
+}
+
+#[test]
+fn host_checkpoint_rejects_invalid_fields_and_changed_options_keep_parent_isolated() {
+    let mut f = Fixture::new();
+    let parent = EvaluatedState::from_input(&f.input);
+    let expected = parent.evaluation().clone();
+    let bytes = parent.checkpoint("guard-checks").unwrap();
+    let saved: Value = serde_json::from_slice(&bytes).unwrap();
+    let mut missing = saved.clone();
+    missing.as_object_mut().unwrap().remove("nodes");
+    let mut wrong_id = saved.clone();
+    let id = wrong_id["nodes"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .next()
+        .unwrap()
+        .clone();
+    wrong_id["nodes"][&id]["id"] = json!(format!("jve1:{}", "f".repeat(64)));
+    let mut excess_work = saved;
+    excess_work["remaining_work"] = json!(f.input.limits.traversal + 1);
+    for invalid in [missing, wrong_id, excess_work] {
+        assert!(
+            EvaluatedState::restore_host_checkpoint(
+                &serde_json::to_vec(&invalid).unwrap(),
+                "guard-checks"
+            )
+            .is_err()
+        );
+    }
+    let restored = EvaluatedState::restore_host_checkpoint(&bytes, "guard-checks").unwrap();
+    let restored_expected = restored.evaluation().clone();
+    f.input.limits.traversal += 1000;
+    f.input.overlay = Some(
+        json!({"version":1,"base_view":f.input.selected_view,"root_changes":[{"identity":key(1),"q":{"numerator":2,"denominator":1}}],"trust":[],"blocked":[],"work":null}),
+    );
+    let child = f.advance(restored.clone(), &[], &[]);
+    assert_eq!(
+        child.statistics().reason.as_deref(),
+        Some("configuration_changed")
+    );
+    assert_eq!(parent.evaluation(), &expected);
+    assert_eq!(restored.evaluation(), &restored_expected);
+    assert_ne!(child.evaluation().overlay, restored.evaluation().overlay);
+}
+
+#[test]
 fn body_replacement_removal_and_late_arrival_rebuild() {
     let mut f = Fixture::new();
     let bytes = f.input.bodies.remove(&f.definition).unwrap();
