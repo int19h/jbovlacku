@@ -141,7 +141,7 @@ export async function personPage(
               "p",
               { class: "meta" },
               link(claim.event, routes.definition(claim.event), {
-                class: "fingerprint",
+                class: "fingerprint touch-link",
               }),
             ),
           ),
@@ -157,7 +157,11 @@ export async function personPage(
         for (const url of body.links)
           line.append(
             text(line.childElementCount ? " · " : ""),
-            link(url, url, { rel: "noopener noreferrer", target: "_blank" }),
+            link(url, url, {
+              class: "touch-link",
+              rel: "noopener noreferrer",
+              target: "_blank",
+            }),
           );
         main.append(line);
       } else if (profile.claims[0]) {
@@ -178,7 +182,7 @@ export async function personPage(
       main.append(
         el(
           "p",
-          { class: "small" },
+          { class: "small identity-meta" },
           text("Known successor: "),
           identityLink(response.successor),
           text(". Ordinary actions from this key are retired."),
@@ -214,7 +218,7 @@ export async function personPage(
         "p",
         { class: "small" },
         text("This is your key. "),
-        link("Manage it", routes.localIdentity),
+        link("Manage it", routes.localIdentity, { class: "touch-link" }),
       ),
     );
     const current =
@@ -285,7 +289,7 @@ export async function personPage(
       parts.push(`Ignored privately (${scopeKey(block.scope)})`);
     status.append(
       text(`Your choices: ${parts.join("; ")}. `),
-      link("Manage on the Trust page", routes.trust),
+      link("Manage on the Trust page", routes.trust, { class: "touch-link" }),
     );
     main.append(status);
   }
@@ -638,7 +642,11 @@ function profileEditor(
     for (const url of body.links)
       line.append(
         text(line.childElementCount ? " · " : ""),
-        link(url, url, { rel: "noopener noreferrer", target: "_blank" }),
+        link(url, url, {
+          class: "touch-link",
+          rel: "noopener noreferrer",
+          target: "_blank",
+        }),
       );
     preview.append(
       el("h3", { class: "section", style: "margin-top:0", text: "Preview" }),

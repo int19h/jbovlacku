@@ -200,7 +200,9 @@ export async function publishPage(
       el(
         "p",
         { class: "small", style: "margin-top:6px" },
-        link("Edit", draft.parents.length ? "/new/editor" : "/new/places"),
+        link("Edit", draft.parents.length ? "/new/editor" : "/new/places", {
+          class: "touch-link",
+        }),
         text(" returns to the retained draft."),
       ),
     );
@@ -349,7 +351,9 @@ export async function publishPage(
           text(
             `${existing.definitions.length} definition${existing.definitions.length === 1 ? "" : "s"} of ${body?.word.spelling} already exist in the selected view. Yours is added as an alternative. `,
           ),
-          link("Open the word", routes.word(body!.word.spelling)),
+          link("Open the word", routes.word(body!.word.spelling), {
+            class: "touch-link",
+          }),
         );
       else if (!existing.definitions.length)
         existingLine.append(
@@ -415,7 +419,9 @@ export async function publishPage(
         "p",
         { class: "notice", style: "margin-top:12px" },
         text("Publishing needs your key. "),
-        link("Create or import a key", routes.localIdentity),
+        link("Create or import a key", routes.localIdentity, {
+          class: "touch-link",
+        }),
       ),
     );
   else if (!(await app.session.backupTested())) {
@@ -687,7 +693,9 @@ export async function publishPage(
                   "The local package changed during review. Review its current conflicts before publishing.",
                   "notice",
                 ),
-                link("Review updated conflicts", "/new/publish?review=1"),
+                link("Review updated conflicts", "/new/publish?review=1", {
+                  class: "touch-link",
+                }),
               );
               return;
             }
@@ -722,7 +730,9 @@ export async function publishPage(
                       "p",
                       { class: "notice" },
                       text(`${error.message} `),
-                      link("Review the newer draft", "/new/publish"),
+                      link("Review the newer draft", "/new/publish", {
+                        class: "touch-link",
+                      }),
                     ),
                   );
                   app.announce(error.message);
@@ -860,7 +870,7 @@ function renderSavedGroup(app: App, outcome: HTMLElement, items: OutboxItem[]) {
           ? `${unfinished.length} of ${items.length} signed records did not finish delivery. They are kept in this browser with their exact bytes and sent again automatically. Publishing again would create a second definition, so this page offers delivery of the saved records instead. `
           : `All ${items.length} signed records were accepted. `,
       ),
-      link("See Not delivered", routes.outbox),
+      link("See Not delivered", routes.outbox, { class: "touch-link" }),
     ),
   );
   const list = el("ul", { class: "small", style: "margin:8px 0 0" });

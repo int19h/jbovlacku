@@ -656,6 +656,44 @@ for (const viewport of [
       await expect(selected).toContainText("identical to cukta");
       await expect(selected).toContainText("cku is claimed by cukta");
       await check("gismu-root-and-rafsi-conflicts");
+      for (const label of await selected.locator("label.check").all()) {
+        await expect
+          .soft(label.locator(":scope > .inline-prose"))
+          .toHaveCount(1);
+        const labelBox = (await label.boundingBox())!;
+        const anchorBox = (await label.getByRole("link").boundingBox())!;
+        expect.soft(anchorBox.x).toBeGreaterThanOrEqual(labelBox.x);
+        expect.soft(anchorBox.y).toBeGreaterThanOrEqual(labelBox.y);
+        expect
+          .soft(anchorBox.x + anchorBox.width)
+          .toBeLessThanOrEqual(labelBox.x + labelBox.width);
+        expect
+          .soft(anchorBox.y + anchorBox.height)
+          .toBeLessThanOrEqual(labelBox.y + labelBox.height);
+      }
+      await expect
+        .soft(
+          selected
+            .locator("label.check")
+            .filter({
+              has: page.getByRole("link", { name: "cukta", exact: true }),
+            }),
+        )
+        .toHaveText("identical to cukta (identical). I keep this form.");
+      const conflictLinks = (await inventory(page)).entries.filter(
+        (entry) => entry.href === "/word/cukta",
+      );
+      expect(conflictLinks).toHaveLength(2);
+      for (const entry of conflictLinks) {
+        expect
+          .soft(
+            entry.exception,
+            "Gismu conflict links have no inline exception",
+          )
+          .toBeNull();
+        expect.soft(entry.targetBounds.width).toBeGreaterThanOrEqual(44);
+        expect.soft(entry.targetBounds.height).toBeGreaterThanOrEqual(44);
+      }
       await preparePublish(page);
       await page.getByRole("link", { name: "Edit", exact: true }).click();
       await open(page, "/new/editor");

@@ -408,7 +408,7 @@ export async function placesPage(
         { class: "small", style: "margin-top:8px" },
         text("Revision of "),
         link(draft.parents[0], routes.definition(draft.parents[0]), {
-          class: "fingerprint",
+          class: "fingerprint touch-link",
         }),
         text(
           draft.revisedImport

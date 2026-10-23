@@ -120,7 +120,10 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
     ),
   );
   main.append(head);
-  const composition = el("p", { class: "muted", style: "margin-top:6px" });
+  const composition = el("p", {
+    class: "muted composition-line",
+    style: "margin-top:6px",
+  });
   const rafsiLine = el("p", {
     class: "muted rafsi-line",
     style: "margin-top:4px",
@@ -563,7 +566,7 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
         text: "See also",
       }),
     );
-    const line = el("p", { class: "muted" });
+    const line = el("p", { class: "muted related-words" });
     [...related].sort().forEach((s, i) => {
       if (i) line.append(text(" · "));
       line.append(link(s, routes.word(s), { lang: "jbo" }));

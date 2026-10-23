@@ -247,13 +247,17 @@ a.hw,
 .revision-notice .identity-link,
 .definition .disclosure li .identity-link,
 .claim-source a,
+.composition-line a,
+.related-words a,
 .rafsi-line a,
+.identity-meta .identity-link,
 .trust-roots a,
 .word-head > a,
 .row .identity-link,
 .row .fingerprint {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   min-height: 44px;
   min-width: 44px;
   max-width: 100%;

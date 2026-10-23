@@ -712,15 +712,19 @@ export async function gismuPage(
             "label",
             { class: "check" },
             input,
-            text(
-              ` ${conflict.rule === "identical" ? "identical to" : conflict.rule === "final-vowel" ? "differs only in the last vowel from" : "too close to"} `,
+            el(
+              "span",
+              { class: "inline-prose" },
+              text(
+                `${conflict.rule === "identical" ? "identical to" : conflict.rule === "final-vowel" ? "differs only in the last vowel from" : "too close to"} `,
+              ),
+              link(
+                conflict.spelling,
+                `/word/${encodeURIComponent(conflict.spelling)}`,
+                { lang: "jbo", class: "touch-link" },
+              ),
+              text(` (${conflict.rule}). I keep this form.`),
             ),
-            link(
-              conflict.spelling,
-              `/word/${encodeURIComponent(conflict.spelling)}`,
-              { lang: "jbo" },
-            ),
-            text(` (${conflict.rule}). I keep this form.`),
           ),
         );
       }
@@ -736,6 +740,7 @@ export async function gismuPage(
             text(`${r.rafsi} is claimed by `),
             link(r.spelling, `/word/${encodeURIComponent(r.spelling)}`, {
               lang: "jbo",
+              class: "touch-link",
             }),
           ),
         );
