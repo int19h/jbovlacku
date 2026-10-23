@@ -3,15 +3,22 @@ import type { ObjectStore } from "./storage.ts";
 export const RECORD_READ_WINDOW = 16;
 type Outcome<T> = { ok: true; result: T } | { ok: false; error: unknown };
 
-/** Overlap a small window of reads and consume results in the input order. */
+/** Overlap a small window of operations and consume results in input order. */
 export async function* orderedPrefetch<T, R>(
   values: Iterable<T>,
   load: (value: T) => Promise<R>,
+  windowSize = RECORD_READ_WINDOW,
 ): AsyncGenerator<{ value: T; result: R }> {
+  if (
+    !Number.isInteger(windowSize) ||
+    windowSize < 1 ||
+    windowSize > RECORD_READ_WINDOW
+  )
+    throw new RangeError("Prefetch window must be an integer from 1 to 16.");
   const iterator = values[Symbol.iterator]();
   const pending: { value: T; outcome: Promise<Outcome<R>> }[] = [];
   function fill() {
-    while (pending.length < RECORD_READ_WINDOW) {
+    while (pending.length < windowSize) {
       const item = iterator.next();
       if (item.done) break;
       let read: Promise<R>;

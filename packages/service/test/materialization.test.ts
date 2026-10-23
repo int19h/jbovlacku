@@ -368,6 +368,35 @@ test("a failed background job keeps the old snapshot and a read retries it", asy
   );
 });
 
+test("a failed rebased manifest write keeps the previous publication and can retry", async () => {
+  const { service, objects, definition, profile } = await fixture();
+  const initial = await read(service, "/manifest");
+  const entry = judgment(
+    definition.envelope.id,
+    "4",
+    [profile.envelope.id],
+    "bless",
+  );
+  const put = objects.put.bind(objects);
+  let fail = true;
+  objects.put = async (hash, bytes) => {
+    const value = JSON.parse(new TextDecoder().decode(bytes));
+    if (fail && value.parts && value.snapshot !== initial.snapshot)
+      throw new Error("Manifest write failed.");
+    await put(hash, bytes);
+  };
+  await service.admitMany([utf8(JSON.stringify(entry))]);
+  await assert.rejects(service.flushMaterialization(), /Manifest write failed/);
+  assert.equal((service as any).completed.snapshot.snapshot, initial.snapshot);
+  fail = false;
+  assert.equal((await read(service, "/manifest")).snapshot, initial.snapshot);
+  await service.flushMaterialization();
+  assert.notEqual(
+    (await read(service, "/manifest")).snapshot,
+    initial.snapshot,
+  );
+});
+
 test("a late-body receipt does not name an older snapshot with a different body mapping", async () => {
   const { service, profile } = await fixture();
   const late = createEvent(

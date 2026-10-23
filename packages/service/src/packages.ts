@@ -351,15 +351,29 @@ export async function rebasePackages(
   snapshot: string,
   objects: ObjectStore,
 ): Promise<MaterializedPackages> {
-  const rebase = async (packages: Record<string, MaterializedPackage>) => {
-    const result: Record<string, MaterializedPackage> = {};
-    for (const [language, value] of Object.entries(packages))
-      result[language] = await rebasePackage(value, snapshot, objects);
-    return result;
-  };
+  const packages: Record<string, MaterializedPackage> = {};
+  const packages2: Record<string, MaterializedPackage> = {};
+  const jobs = [
+    { previous: previous.packages, result: packages },
+    { previous: previous.packages2, result: packages2 },
+  ].flatMap(({ previous, result }) =>
+    Object.keys(previous)
+      .sort()
+      .map((language) => ({
+        language,
+        previous: previous[language],
+        result,
+      })),
+  );
+  for await (const { value: job, result } of orderedPrefetch(
+    jobs,
+    (job) => rebasePackage(job.previous, snapshot, objects),
+    8,
+  ))
+    job.result[job.language] = result;
   return {
     entries: previous.entries,
-    packages: await rebase(previous.packages),
-    packages2: await rebase(previous.packages2),
+    packages,
+    packages2,
   };
 }
