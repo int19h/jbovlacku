@@ -928,6 +928,23 @@ test("a fully disconnected author signs a complete definition into storage and l
   await acceptFirstSignature(page);
   const saved = page.getByRole("region", { name: "Saved publication" });
   await expect(saved).toContainText("Saved. Not delivered yet.");
+  // Keep the whole first attempt disconnected before restoring manual delivery.
+  await expect
+    .poll(() =>
+      page.evaluate(async () => {
+        const { LocalStore } = await import(String("/src/data/store.ts"));
+        const items = await new LocalStore().list("outbox");
+        return (
+          items.length === 4 &&
+          items.every((item: any) =>
+            Object.values(item.peers).every(
+              (peer: any) => peer.attempts > 0 && peer.state === "unknown",
+            ),
+          )
+        );
+      }),
+    )
+    .toBe(true);
   const before = await outboxRecords(page);
   expect(before).toHaveLength(4);
   expect(before.map((r: any) => r.state)).not.toContain("accepted");
