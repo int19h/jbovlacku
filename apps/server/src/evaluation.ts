@@ -18,6 +18,51 @@ export interface EvaluationWorkerData {
 interface Options {
   workerFactory?: (data: EvaluationWorkerData) => Worker;
 }
+interface SerializedState {
+  kind: "state" | "delta";
+  bytes: Uint8Array;
+}
+interface SessionBasis {
+  identity: string;
+  state: Evaluation;
+}
+interface StateDelta {
+  version: number;
+  base_session: string;
+  receipts: Evaluation["receipts"];
+  registers: Record<string, unknown>;
+  judgments: Record<string, Record<string, unknown>>;
+  lifecycle: {
+    key_actor: Record<string, string>;
+    groups: Record<string, string[]>;
+  };
+}
+function freezeState<T>(value: T): T {
+  if (value && typeof value === "object" && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const child of Object.values(value)) freezeState(child);
+  }
+  return value;
+}
+/** Version 1 patches change only judgments, their receipts, and actor entries. */
+function applyStateDelta(parent: Evaluation, delta: StateDelta): Evaluation {
+  const oldJudgments = parent.judgments as StateDelta["judgments"];
+  const judgments = { ...oldJudgments };
+  for (const [target, actors] of Object.entries(delta.judgments))
+    judgments[target] = { ...oldJudgments[target], ...actors };
+  const lifecycle = parent.lifecycle as StateDelta["lifecycle"];
+  return {
+    ...parent,
+    receipts: { ...parent.receipts, ...delta.receipts },
+    registers: { ...(parent.registers as object), ...delta.registers },
+    judgments,
+    lifecycle: {
+      ...lifecycle,
+      key_actor: { ...lifecycle.key_actor, ...delta.lifecycle.key_actor },
+      groups: { ...lifecycle.groups, ...delta.lifecycle.groups },
+    },
+  };
+}
 
 class Connection {
   private sequence = 0;
@@ -45,6 +90,10 @@ class Connection {
       }
       const pending = this.pending.get(message.id);
       this.pending.delete(message.id);
+      if (message.terminal) {
+        this.fail(new Error(message.error));
+        this.free();
+      }
       if (message.error) pending?.reject(new Error(message.error));
       else pending?.resolve(message.value);
     });
@@ -159,17 +208,20 @@ export class NodeEvaluationRuntime implements EvaluationRuntime {
   ): Promise<EvaluationSession> {
     const connection = await this.connect();
     try {
-      const state = await connection.request<Evaluation>("restore", {
+      const state = await connection.request<SerializedState>("restore", {
         bytes,
         binding,
       });
-      return this.session(connection, state);
+      return await this.readSession(connection, state);
     } catch (error) {
       connection.free();
       throw error;
     }
   }
-  private builder(connection: Connection): EvaluationBuilder {
+  private builder(
+    connection: Connection,
+    parent?: SessionBasis,
+  ): EvaluationBuilder {
     let closed = false;
     let transferred = false;
     const requireOpen = () => {
@@ -194,15 +246,48 @@ export class NodeEvaluationRuntime implements EvaluationRuntime {
       finish: async () => {
         requireOpen();
         closed = true;
-        const state = await connection.request<Evaluation>("finish");
-        transferred = true;
-        return this.session(connection, state);
+        try {
+          const value = await connection.request<SerializedState>("finish");
+          const session = await this.readSession(connection, value, parent);
+          transferred = true;
+          return session;
+        } catch (error) {
+          connection.free();
+          throw error;
+        } finally {
+          parent = undefined;
+        }
       },
       free() {
         closed = true;
+        parent = undefined;
         if (!transferred) connection.free();
       },
     };
+  }
+  private async readSession(
+    connection: Connection,
+    value: SerializedState,
+    parent?: SessionBasis,
+  ): Promise<EvaluationSession> {
+    const parsed = JSON.parse(new TextDecoder().decode(value.bytes));
+    if (value.kind === "delta") {
+      const delta = parsed as StateDelta;
+      if (
+        parent &&
+        delta.version === 1 &&
+        delta.base_session === parent.identity
+      )
+        return this.session(
+          connection,
+          freezeState(applyStateDelta(parent.state, delta)),
+        );
+      return this.readSession(
+        connection,
+        await connection.request<SerializedState>("state"),
+      );
+    }
+    return this.session(connection, freezeState(parsed as Evaluation));
   }
   private session(
     connection: Connection,
@@ -223,10 +308,12 @@ export class NodeEvaluationRuntime implements EvaluationRuntime {
         );
         const next = await this.connect();
         try {
-          await next.request("fork", { bytes, binding, options }, [
-            bytes.buffer as ArrayBuffer,
-          ]);
-          return this.builder(next);
+          const identity = await next.request<string>(
+            "fork",
+            { bytes, binding, options },
+            [bytes.buffer as ArrayBuffer],
+          );
+          return this.builder(next, { identity, state });
         } catch (error) {
           next.free();
           throw error;

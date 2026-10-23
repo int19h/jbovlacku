@@ -1,17 +1,24 @@
 import { parentPort, workerData } from "node:worker_threads";
+import { initializeCore } from "../../../packages/core/src/index.ts";
 import {
-  initializeCore,
-  createEvaluationSession,
-  restoreHostEvaluationSession,
-  type EvaluationBuilder,
-  type EvaluationSessionHandle,
-} from "../../../packages/core/src/index.ts";
+  EvaluationSession,
+  EvaluationSessionBuilder,
+} from "../../../packages/core/generated/jvc_runtime.js";
+import { encodeEvaluationRequest } from "../../../packages/core/src/evaluation-request.ts";
 
 /** The optional hook belongs to fixture workers. Production supplies none. */
 export async function serveEvaluationWorker(beforeFinish?: () => void) {
   const port = parentPort!;
-  let builder: EvaluationBuilder | undefined;
-  let session: EvaluationSessionHandle | undefined;
+  let builder: EvaluationSessionBuilder | undefined;
+  let session: EvaluationSession | undefined;
+  let faulted = false;
+  const encoder = new TextEncoder();
+  const sendState = (id: number, allowDelta = false) => {
+    const delta = allowDelta ? session!.state_delta() : "null";
+    const kind = delta === "null" ? "state" : "delta";
+    const bytes = encoder.encode(kind === "state" ? session!.state() : delta);
+    port.postMessage({ id, value: { kind, bytes } }, [bytes.buffer]);
+  };
   try {
     await initializeCore(workerData.wasm);
     port.postMessage({ id: 0 });
@@ -20,43 +27,59 @@ export async function serveEvaluationWorker(beforeFinish?: () => void) {
     return;
   }
   port.on("message", ({ id, operation, value }) => {
+    if (faulted) return;
     try {
       let result: unknown;
       switch (operation) {
         case "create":
-          builder = createEvaluationSession(value);
+          builder = new EvaluationSessionBuilder(
+            encodeEvaluationRequest(value),
+          );
           break;
         case "restore":
-          session = restoreHostEvaluationSession(value.bytes, value.binding);
-          result = session.state;
-          break;
+          session = EvaluationSession.restore_host_checkpoint(
+            value.bytes,
+            value.binding,
+          );
+          sendState(id);
+          return;
         case "fork":
           {
-            const base = restoreHostEvaluationSession(
+            const base = EvaluationSession.restore_host_checkpoint(
               value.bytes,
               value.binding,
             );
             try {
-              builder = base.fork(value.options);
-            } finally {
-              base.free();
+              builder = base.fork(encodeEvaluationRequest(value.options));
+              result = base.state_identity();
+            } catch (error) {
+              if (!(error instanceof WebAssembly.RuntimeError)) base.free();
+              throw error;
             }
+            base.free();
           }
           break;
         case "add":
-          result = builder!.addRecord(value.envelope, value.body);
+          result = JSON.parse(builder!.add_record(value.envelope, value.body));
           break;
         case "remove":
-          builder!.removeRecord(value);
+          builder!.remove_record(value);
           break;
         case "finish":
           beforeFinish?.();
           session = builder!.finish();
           builder = undefined;
-          result = session.state;
-          break;
+          sendState(id, true);
+          return;
+        case "state":
+          sendState(id);
+          return;
         case "rank":
-          result = session!.rankWord(value.word, value.reviewers);
+          result = JSON.parse(
+            value.reviewers === undefined
+              ? session!.rank(value.word)
+              : session!.rank_with_reviewers(value.word, value.reviewers),
+          );
           break;
         case "checkpoint": {
           const bytes = session!.checkpoint(value);
@@ -68,7 +91,11 @@ export async function serveEvaluationWorker(beforeFinish?: () => void) {
       }
       port.postMessage({ id, value: result });
     } catch (error) {
-      port.postMessage({ id, error: String(error) });
+      const terminal = error instanceof WebAssembly.RuntimeError;
+      faulted = terminal;
+      port.postMessage({ id, error: String(error), terminal });
+      // A trap can leave Rust borrows and allocations unfinished. Never reuse it.
+      if (terminal) port.close();
     }
   });
 }

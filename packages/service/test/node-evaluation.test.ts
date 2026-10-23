@@ -9,7 +9,13 @@ import {
   canonicalize,
   utf8,
   evaluateSession,
+  identityFromSeed,
 } from "../../core/src/index.ts";
+import {
+  canonical,
+  importCapture,
+  type CaptureManifest,
+} from "../../importer/src/index.ts";
 
 const wasm = await readFile(
   new URL("../../core/generated/jvc_runtime_bg.wasm", import.meta.url),
@@ -20,7 +26,7 @@ const options = {
   import_selections: {},
 };
 
-test("Node sessions authenticate originals, preserve fork parity, and release failed restore slots", async () => {
+test("Node sessions reject a changed signature and preserve additions and removals across forks", async () => {
   const runtime = new NodeEvaluationRuntime(wasm);
   const seed = new Uint8Array(32).fill(83);
   const record = createEvent(
@@ -35,10 +41,34 @@ test("Node sessions authenticate originals, preserve fork parity, and release fa
     events: [canonicalize(utf8(JSON.stringify(record.envelope)))],
     bodies: {},
   });
+  const second = createEvent(
+    seed,
+    [record.envelope.id],
+    "2".repeat(32),
+    { kind: "identity.merge" },
+    null,
+  );
+  const addedInline = evaluateSession({
+    ...options,
+    events: [record, second].map((value) =>
+      canonicalize(utf8(JSON.stringify(value.envelope))),
+    ),
+    bodies: {},
+  });
+  const removedInline = evaluateSession({
+    ...options,
+    events: [canonicalize(utf8(JSON.stringify(second.envelope)))],
+    bodies: {},
+  });
   try {
     const invalid = await runtime.create(options);
+    const forged = structuredClone(record.envelope);
+    const signature = Buffer.from(forged.signature, "base64");
+    signature[signature.length - 1] ^= 1;
+    forged.signature = signature.toString("base64");
     await assert.rejects(
-      Promise.resolve(invalid.addRecord(utf8("invalid original bytes"))),
+      Promise.resolve(invalid.addRecord(utf8(JSON.stringify(forged)))),
+      /signature/i,
     );
     invalid.free();
     const builder = await runtime.create(options);
@@ -47,22 +77,200 @@ test("Node sessions authenticate originals, preserve fork parity, and release fa
     builder.free();
     assert.deepEqual(parent.state, inline.state);
     const childBuilder = await parent.fork(options);
+    await childBuilder.addRecord(utf8(JSON.stringify(second.envelope)));
     const child = await childBuilder.finish();
     childBuilder.free();
-    assert.deepEqual(child.state, parent.state);
+    assert.deepEqual(child.state, addedInline.state);
+    assert.notDeepEqual(child.state, parent.state);
     assert.equal(runtime.liveWorkers, 2);
+    parent.free();
+    const removalBuilder = await child.fork(options);
+    await removalBuilder.removeRecord(record.envelope.id);
+    const removed = await removalBuilder.finish();
+    removalBuilder.free();
+    assert.deepEqual(removed.state, removedInline.state);
+    assert.notDeepEqual(removed.state, child.state);
+    removed.free();
     const bytes = await child.checkpoint("private-test-binding");
     child.free();
     await assert.rejects(runtime.restore(bytes, "wrong-binding"));
     const restored = await runtime.restore(bytes, "private-test-binding");
+    assert.deepEqual(restored.state, child.state);
+    restored.free();
+  } finally {
+    inline.free();
+    addedInline.free();
+    removedInline.free();
+    await runtime.close();
+  }
+  assert.equal(runtime.liveWorkers, 0);
+});
+
+function guardedRuntime(configuration: Record<string, boolean>) {
+  return new NodeEvaluationRuntime(wasm, {
+    workerFactory: (data) =>
+      new Worker(
+        new URL("./fixtures/guarded-evaluation-worker.ts", import.meta.url),
+        {
+          workerData: { ...data, entry: "test", ...configuration },
+          execArgv: ["--experimental-transform-types"],
+        },
+      ),
+  });
+}
+
+test("a Wasm trap makes a Node session unavailable before the error reaches its caller", async () => {
+  const runtime = guardedRuntime({ trapRank: true });
+  try {
+    const builder = await runtime.create(options);
+    const session = await builder.finish();
+    builder.free();
+    const ranking = Promise.resolve(session.rankWord("test"));
+    const pendingCheckpoint = assert.rejects(
+      Promise.resolve(session.checkpoint("queued-with-trap")),
+      /unreachable|closed|stopped/,
+    );
+    await assert.rejects(ranking, /unreachable/);
+    assert.equal(session.isAvailable?.(), false);
+    await pendingCheckpoint;
+    await assert.rejects(
+      Promise.resolve(session.checkpoint("after-trap")),
+      /unreachable|closed|stopped/,
+    );
+    await assert.rejects(
+      Promise.resolve(session.fork(options)),
+      /unreachable|closed|stopped/,
+    );
+    const replacement = await runtime.create(options);
+    const recovered = await replacement.finish();
+    replacement.free();
+    assert.equal(recovered.isAvailable?.(), true);
+    assert.ok(runtime.liveWorkers <= 2);
+    recovered.free();
+  } finally {
+    await runtime.close();
+  }
+  assert.equal(runtime.liveWorkers, 0);
+});
+
+test("Node workers transfer evaluated state without parsing a full JavaScript state", async () => {
+  const runtime = guardedRuntime({ rejectParsedState: true });
+  try {
+    const builder = await runtime.create(options);
+    const parent = await builder.finish();
+    builder.free();
+    const childBuilder = await parent.fork(options);
+    const child = await childBuilder.finish();
+    childBuilder.free();
+    assert.deepEqual(child.state, parent.state);
+    const bytes = await child.checkpoint("unparsed-state");
+    child.free();
+    const restored = await runtime.restore(bytes, "unparsed-state");
     assert.deepEqual(restored.state, parent.state);
     restored.free();
     parent.free();
   } finally {
-    inline.free();
     await runtime.close();
   }
-  assert.equal(runtime.liveWorkers, 0);
+});
+
+test("Node judgment forks share unchanged state and match full evaluation after a checkpoint transfer", async () => {
+  const sourceBytes = await readFile(
+    new URL("../../importer/fixtures/lensisku-sample.json", import.meta.url),
+  );
+  const manifest = JSON.parse(
+    await readFile(
+      new URL(
+        "../../importer/fixtures/lensisku-sample.manifest.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  ) as CaptureManifest;
+  const reviewer = new Uint8Array(32).fill(73);
+  const imported = importCapture({
+    sourceBytes,
+    manifest,
+    seed: new Uint8Array(32).fill(72),
+    roots: [
+      {
+        identity: identityFromSeed(reviewer),
+        q: { numerator: 1, denominator: 1 },
+      },
+    ],
+  });
+  const context = {
+    selected_view: imported.view.envelope.id,
+    import_selections: { [imported.selection.hash]: imported.selection.ids },
+  };
+  const runtime = guardedRuntime({ rejectParsedState: true });
+  const input = {
+    ...context,
+    events: imported.carriers.map((record) => canonical(record.envelope)),
+    bodies: Object.fromEntries(
+      imported.carriers.map((record) => [
+        record.envelope.id,
+        canonical(record.body),
+      ]),
+    ),
+  };
+  try {
+    const builder = await runtime.create(context);
+    for (const record of imported.carriers) {
+      const envelope = utf8(JSON.stringify(record.envelope));
+      const body = utf8(canonical(record.body));
+      const originals = [envelope.slice(), body.slice()];
+      await builder.addRecord(envelope, body);
+      assert.deepEqual(envelope, originals[0]);
+      assert.deepEqual(body, originals[1]);
+    }
+    const parent = await builder.finish();
+    builder.free();
+    assert.equal(parent.state.available, true);
+    const original = structuredClone(parent.state);
+    const target = Object.values(parent.state.publications)[0];
+    const rank = await parent.rankWord(target.word);
+    const judgment = createEvent(
+      reviewer,
+      [],
+      "9".repeat(32),
+      { kind: "judgment.set", target: target.id, value: "bless" },
+      null,
+    );
+    const childBuilder = await parent.fork(context);
+    await childBuilder.addRecord(utf8(JSON.stringify(judgment.envelope)));
+    const child = await childBuilder.finish();
+    childBuilder.free();
+    const full = evaluateSession({
+      ...input,
+      events: [...input.events, canonical(judgment.envelope)],
+    });
+    try {
+      assert.deepEqual(child.state, full.state);
+      assert.notDeepEqual(child.state, parent.state);
+      assert.equal(child.state.publications, parent.state.publications);
+      assert.equal(
+        child.state.publication_statuses,
+        parent.state.publication_statuses,
+      );
+      assert.deepEqual(parent.state, original);
+      assert.deepEqual(await parent.rankWord(target.word), rank);
+      assert.deepEqual(
+        await child.rankWord(target.word),
+        full.rankWord(target.word),
+      );
+      assert.throws(() => {
+        child.state.receipts[judgment.envelope.id].body = "forged";
+      }, TypeError);
+      assert.ok(Object.isFrozen(child.state.lifecycle));
+    } finally {
+      full.free();
+      child.free();
+      parent.free();
+    }
+  } finally {
+    await runtime.close();
+  }
 });
 
 test("Node worker slots stay bounded and an exited worker does not prevent recovery", async () => {
