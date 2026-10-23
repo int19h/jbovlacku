@@ -42,7 +42,6 @@
     "JVC_AI_PROVIDER_NAME": "OpenRouter",
     "JVC_AI_REASONING_EFFORT": "medium",
     "JVC_AI_DECISION_REPORTS": "disabled",
-    "JVC_AI_MAX_TOKENS": "16384",
     "JVC_AI_TIMEOUT_MS": "120000",
     "JVC_AI_CONCURRENCY": "2",
     "JVC_AI_INPUT_PRICE": "0.1",

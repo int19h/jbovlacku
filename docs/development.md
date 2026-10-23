@@ -78,20 +78,20 @@ Build the WebAssembly bindings before either command.
 
 The Node adapter accepts these environment variables:
 
-| Variable              | Purpose                                                                                       |
-| --------------------- | --------------------------------------------------------------------------------------------- |
-| `JVC_DATA_DIR`        | Persistent objects and SQLite databases. The default is `data/node` relative to the checkout. |
-| `HOST`                | Listen address. The source default is `127.0.0.1`.                                            |
-| `PORT`                | Listen port. The default is `8789`.                                                           |
-| `JVC_ASSETS_DIR`      | Browser assets. The source default is `apps/web/dist`.                                        |
-| `JVC_SERVER_ID`       | Service identifier. The source default is `local-node`.                                       |
-| `JVC_VIEW`            | Explicit selected view event ID. A fresh service has no dictionary view.                      |
+| Variable                    | Purpose                                                                                       |
+| --------------------------- | --------------------------------------------------------------------------------------------- |
+| `JVC_DATA_DIR`              | Persistent objects and SQLite databases. The default is `data/node` relative to the checkout. |
+| `HOST`                      | Listen address. The source default is `127.0.0.1`.                                            |
+| `PORT`                      | Listen port. The default is `8789`.                                                           |
+| `JVC_ASSETS_DIR`            | Browser assets. The source default is `apps/web/dist`.                                        |
+| `JVC_SERVER_ID`             | Service identifier. The source default is `local-node`.                                       |
+| `JVC_VIEW`                  | Explicit selected view event ID. A fresh service has no dictionary view.                      |
 | `JVC_STATE_TRAVERSAL_LIMIT` | Explicit state work budget from 1 through 1,000,000,000. It overrides the saved import limit. |
-| `JVC_PUBLIC_ORIGIN`   | Explicit public origin permitted to submit browser writes through a reverse proxy.            |
-| `JVC_SNAPSHOT_LIMIT`  | Retained snapshot count. The default is 16. Allowed values are 1 through 64.                  |
-| `JVC_CORS_ORIGINS`    | Comma-separated additional permitted origins.                                                 |
-| `JVC_POLICY_URL`      | Operator policy URL. The prototype placeholder is not a published policy.                     |
-| `JVC_PROTOTYPE_BATCH` | Set `enabled` only for authorized local batch fixtures. The default disables batch admission. |
+| `JVC_PUBLIC_ORIGIN`         | Explicit public origin permitted to submit browser writes through a reverse proxy.            |
+| `JVC_SNAPSHOT_LIMIT`        | Retained snapshot count. The default is 16. Allowed values are 1 through 64.                  |
+| `JVC_CORS_ORIGINS`          | Comma-separated additional permitted origins.                                                 |
+| `JVC_POLICY_URL`            | Operator policy URL. The prototype placeholder is not a published policy.                     |
+| `JVC_PROTOTYPE_BATCH`       | Set `enabled` only for authorized local batch fixtures. The default disables batch admission. |
 
 A browser write is allowed when its `Origin` equals the request URL's origin.
 Set `JVC_PUBLIC_ORIGIN` when an HTTPS reverse proxy gives the browser a different public origin.
@@ -294,11 +294,11 @@ Admission receipts reported durable acceptance, `index_lag`, `evaluation_pending
 Reads used the preceding completed snapshot while the new snapshot evaluated.
 Every update used the incremental path for one record.
 
-| Definition package | Warm word request | Search | Package manifest |
-| --- | ---: | ---: | ---: |
-| English | 62.7 ms | 75.8 ms | 2.0 ms |
-| French | 250.9 ms | 18.7 ms | 2.6 ms |
-| Russian | 61.0 ms | 20.8 ms | 1.5 ms |
+| Definition package | Warm word request |  Search | Package manifest |
+| ------------------ | ----------------: | ------: | ---------------: |
+| English            |           62.7 ms | 75.8 ms |           2.0 ms |
+| French             |          250.9 ms | 18.7 ms |           2.6 ms |
+| Russian            |           61.0 ms | 20.8 ms |           1.5 ms |
 
 The word route returns candidates across definition languages.
 Each warm request used a headword from the named language package and included that package's exact definition.
@@ -526,7 +526,7 @@ Both local adapters accept these variables:
 | `JVC_AI_REASONING_EFFORT`          | Reasoning level. The default is `medium`.                                                                                                                            |
 | `JVC_AI_OPERATIONS`                | Comma-separated permitted operations. The default contains all six operations below. An empty value disables every operation.                                        |
 | `JVC_AI_DECISION_REPORTS`          | Set `enabled` to request a written decision report before the tool call. The default is disabled.                                                                    |
-| `JVC_AI_MAX_TOKENS`                | Operator ceiling for output tokens per provider turn. The default is 16,384. Each task also has a lower cap. The permitted range is 128 through 32,768.              |
+| `JVC_AI_MAX_TOKENS`                | Optional output limit per provider turn. An explicit value replaces all automatic task, effort, and report limits. The permitted range is 128 through 32,768.        |
 | `JVC_AI_TIMEOUT_MS`                | Time limit for the complete job. The default is 120,000 milliseconds. The permitted range is 10 through 540,000. Job expiry leaves a reading window after this time. |
 | `JVC_AI_CONCURRENCY`               | Maximum active jobs. The default is two. Node permits one through four. The Worker caps this value at two.                                                           |
 | `JVC_AI_INPUT_PRICE`               | Model input price in USD per million tokens. The default is 0.10.                                                                                                    |
@@ -601,25 +601,52 @@ reservation(task) = 2 × sum(a = 0..2) [ (B + G + aC) × Pi + M × Po ] / 1,000,
 reservation(job) = sum(reservation(task))
 ```
 
-The configured `JVC_AI_MAX_TOKENS` is an operator ceiling. Each turn uses the smaller of that ceiling and its task cap.
-These caps use observed completion tokens, including the provider's reported reasoning tokens.
-The four studied tasks use medium-reasoning observations from prompt study v19. The other tasks use the recorded local live checks.
-No new provider requests are needed to apply these measurements.
+Without `JVC_AI_MAX_TOKENS`, the service selects the automatic limits below. Completion counts include the provider's reported reasoning tokens.
+The medium limits retain the measured margin for medium effort with decision reports disabled.
+For each studied task, another effort uses `ceil(observed_effort × medium_limit / observed_medium / 256) × 256`.
+This preserves that task's margin and rounds upward to 256 tokens.
 
-| Task          | Largest observed output | Task cap |
-| ------------- | ----------------------: | -------: |
-| `glosses`     |                   3,044 |    4,096 |
-| `hints`       |                   6,603 |    8,192 |
-| `mappings`    |                   3,657 |    6,144 |
-| `sources`     |                   5,687 |    8,192 |
-| `type`        |                   1,552 |    2,048 |
-| `components`  |                   1,376 |    2,048 |
-| `cmavo-class` |                   1,174 |    2,048 |
-| `definition`  |                   3,996 |    6,144 |
-| `places`      |                   1,017 |    2,048 |
+| Task       | Observed low | Observed medium | Observed high | Observed xhigh |
+| ---------- | -----------: | --------------: | ------------: | -------------: |
+| `glosses`  |        1,697 |           3,044 |         3,583 |          8,387 |
+| `hints`    |        2,189 |           6,603 |         8,223 |          8,365 |
+| `mappings` |        2,663 |           3,657 |         7,244 |          8,420 |
+| `sources`  |        3,488 |           5,687 |        11,973 |         17,053 |
 
-Every task cap exceeds its observed maximum by at least 24 percent. These observations do not guarantee completion for every future request.
-Changing the model or reasoning effort needs new evidence before these caps change.
+The low, medium, and high observations come from `spark-v19-panel/ledger.jsonl`, under conditions `c08`, `c10`, and `c09` respectively.
+Its SHA-256 is `9cec7aa76febcd5dcb0e0271c625613c2057e49de136c4ed90bd38377b4a1323`.
+Each condition includes 17 successful rows per core task and 132 successful source rows. Probe rows are excluded.
+The xhigh observations come from `new-cases-v7/ledger.jsonl`, condition `c11`, with earlier prompts.
+Its SHA-256 is `fe6ec750a544e9ac4d42ddae4595b497f577a112f17c8e7ccc60f67153ae52f8`.
+It includes nine successful transport responses per core task across eight cases, plus 72 source responses.
+
+The xhigh hints maximum of 8,365 ended at the output limit without a complete answer. It is a lower bound on required output.
+Completed xhigh hints reached 8,075 tokens. The automatic limit uses the larger observation with the medium margin.
+These archived evidence artifacts remain outside the application repository. The hashes identify the exact evidence used for these limits.
+
+The five editor tasks have one accepted medium observation each, with decision reports disabled.
+Their maxima are 1,552 for type, 1,376 for components, 1,174 for cmavo class, 3,996 for definition, and 1,017 for places.
+The source is `ai-smoke-r2-AstIZS/summary.json`, SHA-256 `5343faf31b442f0bfcb1023023cd7708e245dd76f0b168f93f2c6e18bb9a91ae`.
+Their medium limits exceed those observations by at least 24 percent. Other efforts lack direct editor measurements.
+Low editor effort keeps the medium limits. Higher editor effort scales them by the largest studied effort-to-medium ratio, rounded upward to 256 tokens.
+Those ratios are `11973 / 5687` for high and `17053 / 5687` for xhigh.
+
+| Task          | Low limit | Medium limit | High limit | Xhigh limit |
+| ------------- | --------: | -----------: | ---------: | ----------: |
+| `glosses`     |     2,304 |        4,096 |      4,864 |      11,520 |
+| `hints`       |     2,816 |        8,192 |     10,240 |      10,496 |
+| `mappings`    |     4,608 |        6,144 |     12,288 |      14,336 |
+| `sources`     |     5,120 |        8,192 |     17,408 |      24,576 |
+| `type`        |     2,048 |        2,048 |      4,352 |       6,144 |
+| `components`  |     2,048 |        2,048 |      4,352 |       6,144 |
+| `cmavo-class` |     2,048 |        2,048 |      4,352 |       6,144 |
+| `definition`  |     6,144 |        6,144 |     13,056 |      18,432 |
+| `places`      |     2,048 |        2,048 |      4,352 |       6,144 |
+
+Efforts `none` and `minimal` use the low limits without direct measurements. The provider still receives the requested effort unchanged.
+Decision reports double each automatic limit, with a ceiling of 32,768. The factor of two is an unmeasured allowance for written reports.
+An explicit `JVC_AI_MAX_TOKENS` replaces this entire calculation, including the report factor. It applies unchanged to every task and effort.
+Node and Worker defaults both omit this override. These observations and extrapolations do not guarantee completion for every future request.
 
 The operation determines which tasks remain. An absent initial frame includes the places task and up to sixteen generated places.
 An existing frame uses its actual place keys. The reservation includes mappings only when selected definitions supply component places.
@@ -636,14 +663,15 @@ Generated-frame follow-up tasks add at most `G` bytes to that bound.
 A conservative four-task ceiling uses the largest task cap for every task and adds `G` to all three follow-up tasks:
 
 ```text
-ceiling = 4 × 6 × ((2,097,152 + 626,688) × 0.10 + 8,192 × 0.20) / 1,000,000
+ceiling = 4 × 6 × ((2,097,152 + 626,688) × 0.10 + 32,768 × 0.20) / 1,000,000
         + 3 × 6 × 528,384 × 0.10 / 1,000,000
-        = 7.5276288 USD
+        = 7.6455936 USD
 ```
 
-The 8 USD hourly network share exceeds that ceiling by 0.4723712 USD. Its 40 USD daily share also covers every operation.
+The 8 USD hourly network share exceeds that ceiling by 0.3544064 USD. Its 40 USD daily share also covers every operation.
 
-Every enabled operation fits within the default network share, including a generated frame with glosses, hints, and mappings.
+Every enabled operation fits within the default network share at each effort, with reports enabled or disabled.
+This includes a generated frame with glosses, hints, and mappings, and an explicit maximum override of 32,768.
 The exact reservation depends on the actual prompts, input, and tool schemas. Model prices remain separate from spending allowances.
 Smaller operator allowances can exclude operations from the advertised capabilities.
 
@@ -717,7 +745,8 @@ Each session can start 12 jobs per hour. Each client network bucket can start 48
 One bucket holds at most eight sessions and one retained job. A failed job with no provider turn releases its retained slot.
 A new visitor can replace the oldest idle session within a full bucket.
 A parsed request protects its session during context loading and admission. Running jobs and readable retained results also protect their sessions.
-The service limits body reads to ten seconds. Slow uploads never protect their sessions from idle eviction.
+The service limits body reads to ten seconds. A body that exceeds that time returns HTTP 408 with `request_timeout`.
+Slow uploads never protect their sessions from idle eviction.
 Dismissed and discarded terminal records do not prevent idle eviction. Eviction removes their remaining job records.
 At most 128 sessions exist at once. A new visitor can replace the oldest idle session at that limit.
 `GET /session` refreshes a session for one hour. Job admission also extends it through the job's expiry.
@@ -756,7 +785,7 @@ Source suggestions run once per requested language row. Supported short language
 The preset codes `eng`, `cmn`, `hin`, `spa`, `rus`, `ara`, `ben`, `por`, `fra`, `msa`, `deu`, and `jpn` select the same respective prompts.
 Proposals keep each source row's original language code.
 English gloss suggestions keep language `en` even when the definition uses another language. Existing glosses in other languages remain present.
-Source proposals preserve missing words as empty editable rows.
+A null word omits the proposal field, so acceptance keeps the row's existing word.
 Their current sense and uncertainty appear as `Sense:` and `Note:` paragraphs. A null sense adds no paragraph.
 Acceptance replaces the tracked AI note group and preserves authored notes. The author can edit or remove accepted notes before publication.
 Source edits update the publication copy even after form selection or navigation through the step bar.

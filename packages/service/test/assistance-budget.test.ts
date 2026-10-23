@@ -248,109 +248,144 @@ function enabledRequests() {
   return cases;
 }
 
+const effortSettings = [
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+].flatMap((reasoningEffort) =>
+  [false, true].map((decisionReports) => ({
+    reasoningEffort,
+    decisionReports,
+  })),
+);
+
 test("every enabled operation is admitted with empty default server and network allowances", async () => {
-  for (const { label, request, context } of enabledRequests()) {
-    const provider = config();
-    const estimate = estimateAssistanceCost(request, context, provider);
-    assert.ok(
-      estimate <
-        Math.min(
-          provider.hourlyBudgetUsd,
-          provider.dailyBudgetUsd,
-          provider.networkHourlyBudgetUsd,
-          provider.networkDailyBudgetUsd,
-        ),
-      `${label}: ${estimate}`,
-    );
-    const app = fixture(provider, {}, context);
-    const headers = await app.session();
-    const response = (await app.route("/assist", headers, request))!;
-    assert.equal(
-      response.status,
-      202,
-      `${label}: ${await response.clone().text()}`,
-    );
-    const job = ((await response.json()) as any).job;
-    await app.poll(job, headers);
-  }
+  for (const setting of effortSettings)
+    for (const { label, request, context } of enabledRequests()) {
+      const provider = config(setting);
+      const estimate = estimateAssistanceCost(request, context, provider);
+      assert.ok(
+        estimate <
+          Math.min(
+            provider.hourlyBudgetUsd,
+            provider.dailyBudgetUsd,
+            provider.networkHourlyBudgetUsd,
+            provider.networkDailyBudgetUsd,
+          ),
+        `${setting.reasoningEffort}/${setting.decisionReports}/${label}: ${estimate}`,
+      );
+      const app = fixture(provider, {}, context);
+      const headers = await app.session();
+      const response = (await app.route("/assist", headers, request))!;
+      assert.equal(
+        response.status,
+        202,
+        `${label}: ${await response.clone().text()}`,
+      );
+      const job = ((await response.json()) as any).job;
+      await app.poll(job, headers);
+    }
 });
 
 test("every enabled operation fits defaults at the request and context byte limits with escaped text", (t) => {
-  for (const { label, request, context } of enabledRequests()) {
-    if (request.current.compound) {
-      const parts = request.current.compound.components;
-      request.current.compound.components = Array.from(
-        { length: 64 },
-        (_, index) => parts[index % parts.length],
-      );
-      for (const entry of context) {
-        const frame = onePlace();
-        frame.arity.count = 256;
-        frame.places = Array.from({ length: 256 }, (_, index) => ({
-          ...frame.places[0],
-          index: index + 1,
-        }));
-        entry.body.frame = frame;
+  for (const setting of effortSettings)
+    for (const { label, request, context } of enabledRequests()) {
+      if (request.current.compound) {
+        const parts = request.current.compound.components;
+        request.current.compound.components = Array.from(
+          { length: 64 },
+          (_, index) => parts[index % parts.length],
+        );
+        for (const entry of context) {
+          const frame = onePlace();
+          frame.arity.count = 256;
+          frame.places = Array.from({ length: 256 }, (_, index) => ({
+            ...frame.places[0],
+            index: index + 1,
+          }));
+          entry.body.frame = frame;
+        }
       }
+      while (context.length < 32) {
+        const event = `jve1:${context.length.toString(16).padStart(64, "0")}`;
+        if (context.some((entry) => entry.event === event)) continue;
+        context.push({
+          event,
+          body: { word: { language: "jbo", spelling: "broda" }, text: [] },
+        });
+      }
+      request.context = context.map((entry) => entry.event);
+      request.meaning = "M".repeat(16384);
+      request.current.text = [[""]];
+      const bodyRoom =
+        262144 - new TextEncoder().encode(JSON.stringify(request)).byteLength;
+      request.current.text = [['"'.repeat(Math.floor(bodyRoom / 2))]];
+      context[0].body.text = [[""]];
+      const contextRoom =
+        131072 - new TextEncoder().encode(JSON.stringify(context)).byteLength;
+      context[0].body.text = [['"'.repeat(Math.floor(contextRoom / 2))]];
+      assert.ok(
+        new TextEncoder().encode(JSON.stringify(request)).byteLength >= 262143,
+        label,
+      );
+      assert.ok(
+        new TextEncoder().encode(JSON.stringify(context)).byteLength >= 131071,
+        label,
+      );
+      parseAssistRequest(request);
+      const provider = config(setting);
+      const estimate = estimateAssistanceCost(request, context, provider);
+      t.diagnostic(
+        `${setting.reasoningEffort}/${setting.decisionReports}/${label}: ${estimate.toFixed(7)} USD`,
+      );
+      assert.ok(
+        estimate < provider.networkHourlyBudgetUsd,
+        `${setting.reasoningEffort}/${setting.decisionReports}/${label}: ${estimate}`,
+      );
     }
-    while (context.length < 32) {
-      const event = `jve1:${context.length.toString(16).padStart(64, "0")}`;
-      if (context.some((entry) => entry.event === event)) continue;
-      context.push({
-        event,
-        body: { word: { language: "jbo", spelling: "broda" }, text: [] },
-      });
-    }
-    request.context = context.map((entry) => entry.event);
-    request.meaning = "M".repeat(16384);
-    request.current.text = [[""]];
-    const bodyRoom =
-      262144 - new TextEncoder().encode(JSON.stringify(request)).byteLength;
-    request.current.text = [['"'.repeat(Math.floor(bodyRoom / 2))]];
-    context[0].body.text = [[""]];
-    const contextRoom =
-      131072 - new TextEncoder().encode(JSON.stringify(context)).byteLength;
-    context[0].body.text = [['"'.repeat(Math.floor(contextRoom / 2))]];
-    assert.ok(
-      new TextEncoder().encode(JSON.stringify(request)).byteLength >= 262143,
-      label,
-    );
-    assert.ok(
-      new TextEncoder().encode(JSON.stringify(context)).byteLength >= 131071,
-      label,
-    );
-    parseAssistRequest(request);
-    const provider = config();
-    const estimate = estimateAssistanceCost(request, context, provider);
-    t.diagnostic(`${label}: ${estimate.toFixed(7)} USD`);
-    assert.ok(
-      estimate < provider.networkHourlyBudgetUsd,
-      `${label}: ${estimate}`,
-    );
-  }
 });
 
 test("the conservative ceiling for all twelve answers fits one default network share", () => {
-  const provider = config();
-  // Every task starts below 2 MiB. At most three tasks also receive a generated frame.
-  const ceiling =
-    4 *
-      [0, 1, 2].reduce(
-        (total, prior) =>
-          total +
-          inferenceTurnCost(
-            provider,
-            INFERENCE_INITIAL_REQUEST_BYTES +
-              prior * INFERENCE_CORRECTION_BYTES,
-            8192,
-          ),
-        0,
-      ) +
-    (3 * 3 * 2 * INFERENCE_GENERATED_FRAME_BYTES * provider.inputPrice) /
-      1000000;
-  assert.ok(Math.abs(ceiling - 7.5276288) < 1e-12);
-  assert.ok(ceiling < provider.networkHourlyBudgetUsd);
-  assert.ok(ceiling < provider.networkDailyBudgetUsd);
+  for (const setting of effortSettings) {
+    const provider = config(setting);
+    const cap = Math.max(
+      ...[
+        "glosses",
+        "hints",
+        "mappings",
+        "sources",
+        "type",
+        "components",
+        "cmavo-class",
+        "definition",
+        "places",
+      ].map((task) =>
+        taskMaxTokens(provider, task as Parameters<typeof taskMaxTokens>[1]),
+      ),
+    );
+    // Every task starts below 2 MiB. At most three tasks also receive a generated frame.
+    const ceiling =
+      4 *
+        [0, 1, 2].reduce(
+          (total, prior) =>
+            total +
+            inferenceTurnCost(
+              provider,
+              INFERENCE_INITIAL_REQUEST_BYTES +
+                prior * INFERENCE_CORRECTION_BYTES,
+              cap,
+            ),
+          0,
+        ) +
+      (3 * 3 * 2 * INFERENCE_GENERATED_FRAME_BYTES * provider.inputPrice) /
+        1000000;
+    assert.ok(ceiling <= 7.6455936);
+    assert.ok(ceiling < provider.networkHourlyBudgetUsd);
+    assert.ok(ceiling < provider.networkDailyBudgetUsd);
+  }
 });
 
 test("server budget refuses a new job before acceptance or any paid turn", async () => {

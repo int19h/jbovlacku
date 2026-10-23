@@ -133,7 +133,7 @@ export interface ProviderConfig {
   reasoningEffort: string;
   key: () => Promise<string>;
   decisionReports: boolean;
-  maxTokens: number;
+  maxTokens?: number;
   timeoutMs: number;
   concurrency: number;
   maxCostUsd?: number;
@@ -165,8 +165,8 @@ export const INFERENCE_FEEDBACK_BYTES = 32 * 512 * 6 + 4096;
 export const INFERENCE_CORRECTION_BYTES =
   2 * INFERENCE_RESPONSE_BYTES + INFERENCE_FEEDBACK_BYTES;
 export const INFERENCE_LOG_BYTES = 64 * 1024 * 1024;
-// These caps include a margin above the prompt studies and local live checks.
-const taskTokenCaps: Record<Task, number> = {
+// Medium caps keep the margins from the prompt studies and local live checks.
+const mediumTaskTokenCaps: Record<Task, number> = {
   glosses: 4096,
   hints: 8192,
   mappings: 6144,
@@ -177,10 +177,56 @@ const taskTokenCaps: Record<Task, number> = {
   definition: 6144,
   places: 2048,
 };
-export const taskMaxTokens = (
-  config: Pick<ProviderConfig, "maxTokens">,
+// Completion counts include reasoning. The xhigh study uses earlier prompts.
+const studiedOutputMaxima = {
+  low: { glosses: 1697, hints: 2189, mappings: 2663, sources: 3488 },
+  medium: { glosses: 3044, hints: 6603, mappings: 3657, sources: 5687 },
+  high: { glosses: 3583, hints: 8223, mappings: 7244, sources: 11973 },
+  xhigh: { glosses: 8387, hints: 8365, mappings: 8420, sources: 17053 },
+};
+type StudiedTask = keyof typeof studiedOutputMaxima.medium;
+type StudiedEffort = keyof typeof studiedOutputMaxima;
+const taskTokenCaps = Object.fromEntries(
+  Object.entries(studiedOutputMaxima).map(([effort, maxima]) => {
+    // The five editor tasks have only medium observations. Keep those caps at
+    // lower effort and use the largest observed growth ratio at higher effort.
+    const editorRatio = Math.max(
+      1,
+      ...Object.entries(maxima).map(
+        ([task, count]) =>
+          count / studiedOutputMaxima.medium[task as StudiedTask],
+      ),
+    );
+    return [
+      effort,
+      Object.fromEntries(
+        Object.entries(mediumTaskTokenCaps).map(([task, cap]) => {
+          const ratio = Object.hasOwn(maxima, task)
+            ? maxima[task as StudiedTask] /
+              studiedOutputMaxima.medium[task as StudiedTask]
+            : editorRatio;
+          return [task, Math.ceil((cap * ratio) / 256) * 256];
+        }),
+      ) as Record<Task, number>,
+    ];
+  }),
+) as Record<StudiedEffort, Record<Task, number>>;
+export function taskMaxTokens(
+  config: Pick<
+    ProviderConfig,
+    "maxTokens" | "reasoningEffort" | "decisionReports"
+  >,
   task: Task,
-) => Math.min(config.maxTokens, taskTokenCaps[task]);
+): number {
+  if (config.maxTokens !== undefined) return config.maxTokens;
+  const effort = ["none", "minimal"].includes(config.reasoningEffort)
+    ? "low"
+    : (config.reasoningEffort as StudiedEffort);
+  return Math.min(
+    32768,
+    taskTokenCaps[effort][task] * (config.decisionReports ? 2 : 1),
+  );
+}
 type ProviderEnv = Partial<
   Record<
     | "JVC_AI_ENABLED"
@@ -245,7 +291,10 @@ export function providerConfig(
   const effort = env.JVC_AI_REASONING_EFFORT ?? "medium";
   if (!["none", "minimal", "low", "medium", "high", "xhigh"].includes(effort))
     throw new Error("Unknown AI reasoning effort.");
-  const maxTokens = Math.floor(number("JVC_AI_MAX_TOKENS", 16384, 128, 32768));
+  const maxTokens =
+    env.JVC_AI_MAX_TOKENS === undefined
+      ? undefined
+      : Math.floor(number("JVC_AI_MAX_TOKENS", 0, 128, 32768));
   const maxPrice = number("JVC_AI_MAX_PRICE", 10, 0.001, 100);
   const hourlyBudgetUsd = number(
     "JVC_AI_HOURLY_BUDGET_USD",
@@ -534,11 +583,6 @@ export function checkAnswer(spec: TaskCase, value: unknown): string[] {
       fields.slice(1).some((field) => value[field] !== null)
     )
       problems.push("word is null, so every later field must be null.");
-    if (
-      value.sense === null &&
-      fields.slice(2).some((field) => value[field] !== null)
-    )
-      problems.push("sense is null, so every later field must be null.");
     if (
       value.stem === null &&
       ["ipa", "sounds"].some((field) => value[field] !== null)
@@ -908,7 +952,7 @@ function prepareInference(
 export function inferenceTurnCost(
   config: ProviderConfig,
   requestBytes: number,
-  outputTokens = config.maxTokens,
+  outputTokens: number,
 ): number {
   return (
     (2 *
@@ -1179,7 +1223,9 @@ export class InferenceRunner {
         }
       }
       if (choice?.finish_reason === "length")
-        problems.push("The answer reached the output token limit.");
+        problems.push(
+          "The answer reached the output token limit. Shorten the reasoning and any decision report, then call submit_answer with the complete answer.",
+        );
       problems = (publicResponse(problems.slice(0, 32), key) as string[]).map(
         (problem) => problem.slice(0, 512),
       );

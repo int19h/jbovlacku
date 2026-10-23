@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { before, test } from "node:test";
 import { readFile } from "node:fs/promises";
+import { parseConfigFileTextToJson } from "typescript";
 import { initializeCore } from "../../core/src/index.ts";
 import {
   AssistanceService,
@@ -360,6 +361,140 @@ test("each task uses its studied output cap for all answers and its reservation"
       128,
     );
   }
+});
+
+test("effort caps, decision reports, and explicit overrides agree across requests, reservations, and unknown charges", async () => {
+  const tasks: TaskCase["task"][] = [
+    "glosses",
+    "hints",
+    "mappings",
+    "sources",
+    "type",
+    "components",
+    "cmavo-class",
+    "definition",
+    "places",
+  ];
+  const caps = {
+    low: [2304, 2816, 4608, 5120, 2048, 2048, 2048, 6144, 2048],
+    medium: [4096, 8192, 6144, 8192, 2048, 2048, 2048, 6144, 2048],
+    high: [4864, 10240, 12288, 17408, 4352, 4352, 4352, 13056, 4352],
+    xhigh: [11520, 10496, 14336, 24576, 6144, 6144, 6144, 18432, 6144],
+  };
+  for (const [effort, limits] of Object.entries(caps))
+    for (const reports of [false, true])
+      for (const explicit of [undefined, "128", "32768"])
+        for (const [index, task] of tasks.entries()) {
+          const cap =
+            explicit === undefined
+              ? Math.min(32768, limits[index] * (reports ? 2 : 1))
+              : Number(explicit);
+          const label = `${task}/${effort}/${reports}/${explicit}`;
+          const spec: TaskCase = {
+            task,
+            input: "A traveler.",
+            language: "en",
+            check: () => ["Correct this answer."],
+          };
+          const charges: number[] = [];
+          const provider = providerConfig(
+            {
+              JVC_AI_ENABLED: "enabled",
+              JVC_AI_REASONING_EFFORT: effort,
+              JVC_AI_DECISION_REPORTS: reports ? "enabled" : "disabled",
+              JVC_AI_MAX_TOKENS: explicit,
+            },
+            async () => "disposable-effort-key",
+          )!;
+          assert.equal(
+            provider.maxTokens,
+            explicit === undefined ? undefined : Number(explicit),
+            label,
+          );
+          let turns = 0;
+          let firstBytes = 0;
+          provider.onCost = async (reported, estimated) => {
+            assert.equal(reported, null);
+            charges.push(estimated);
+          };
+          provider.fetch = (async (_url, init) => {
+            const body = String(init?.body);
+            const bytes = new TextEncoder().encode(body).byteLength;
+            const request = JSON.parse(body);
+            assert.equal(request.max_tokens, cap, label);
+            assert.equal(request.reasoning.effort, effort);
+            assert.equal(
+              request.messages[0].content.includes(
+                "Before you call submit_answer, write a report",
+              ),
+              reports,
+            );
+            if (!turns++) firstBytes = bytes;
+            assert.equal(charges.length, (turns - 1) * 2);
+            charges.push(inferenceTurnCost(provider, bytes, cap));
+            return Response.json(completion({}));
+          }) as typeof fetch;
+          await assert.rejects(
+            new InferenceRunner(
+              provider,
+              newLog(task, provider, "effort-caps"),
+              AbortSignal.timeout(2000),
+            ).run(spec),
+            { code: "invalid_answer" },
+          );
+          assert.equal(turns, 3, label);
+          for (let i = 0; i < 6; i += 2)
+            assert.equal(charges[i + 1], charges[i], label);
+          const reservation = [0, 1, 2].reduce(
+            (sum, prior) =>
+              sum +
+              inferenceTurnCost(
+                provider,
+                firstBytes + prior * INFERENCE_CORRECTION_BYTES,
+                cap,
+              ),
+            0,
+          );
+          assert.equal(
+            estimateInferenceCost(provider, spec),
+            reservation,
+            label,
+          );
+          assert.ok(
+            charges
+              .filter((_charge, i) => i % 2 === 1)
+              .reduce((sum, charge) => sum + charge, 0) <= reservation,
+            label,
+          );
+        }
+});
+
+test("none and minimal effort use the low-effort caps without changing the provider effort", () => {
+  for (const effort of ["none", "minimal"])
+    for (const task of ["glosses", "sources", "definition"] as const) {
+      const provider = config({ reasoningEffort: effort });
+      assert.equal(
+        taskMaxTokens(provider, task),
+        taskMaxTokens({ ...provider, reasoningEffort: "low" }, task),
+      );
+    }
+});
+
+test("ordinary Worker variables select the same automatic caps as Node", async () => {
+  const path = new URL("../../../apps/worker/wrangler.jsonc", import.meta.url);
+  const { config: worker, error } = parseConfigFileTextToJson(
+    path.pathname,
+    await readFile(path, "utf8"),
+  );
+  assert.equal(error, undefined);
+  assert.equal(Object.hasOwn(worker.vars, "JVC_AI_MAX_TOKENS"), false);
+  const node = config();
+  const provider = providerConfig(
+    { ...worker.vars, JVC_AI_ENABLED: "enabled" },
+    async () => "disposable-worker-key",
+  )!;
+  for (const task of ["type", "hints", "sources", "definition"] as const)
+    assert.equal(taskMaxTokens(provider, task), taskMaxTokens(node, task));
 });
 
 test("initial inference requests enforce the same byte limit before reservation and provider work", async () => {

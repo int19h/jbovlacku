@@ -40,6 +40,73 @@ test("a source keeps known whole-word IPA when its stem is unknown", () => {
   );
 });
 
+for (const known of ["word_ipa", "stem"] as const)
+  test(`a null source sense keeps a known ${known}`, () => {
+    const source = {
+      word: "book",
+      sense: null,
+      word_ipa: known === "word_ipa" ? "bʊk" : null,
+      stem: known === "stem" ? "book" : null,
+      ipa: null,
+      sounds: null,
+      note: "The sense is unknown. No removable suffix is known.",
+    };
+    const spec: TaskCase = { task: "sources", language: "en", input: "" };
+    assert.deepEqual(checkAnswer(spec, source), []);
+    assert.ok(checkAnswer(spec, { ...source, note: " " }).length > 0);
+    assert.ok(checkAnswer(spec, { ...source, word: null }).length > 0);
+    assert.ok(checkAnswer(spec, { ...source, sounds: "buk" }).length > 0);
+  });
+
+test("a truncated answer asks for a shorter report and a complete tool call", async () => {
+  let turn = 0;
+  const config = providerConfig(
+    { JVC_AI_ENABLED: "enabled", JVC_AI_DECISION_REPORTS: "enabled" },
+    async () => "disposable-length-secret",
+  )!;
+  config.fetch = (async (_url, init) => {
+    const request = JSON.parse(String(init?.body));
+    if (turn++ === 0)
+      return Response.json({
+        choices: [
+          { finish_reason: "length", message: { content: "Partial report" } },
+        ],
+        usage: {},
+      });
+    const feedback = request.messages.at(-1).content;
+    assert.match(feedback, /output token limit/);
+    assert.match(feedback, /Shorten.*report/);
+    assert.match(feedback, /call submit_answer.*complete answer/);
+    return Response.json({
+      choices: [
+        {
+          finish_reason: "tool_calls",
+          message: {
+            tool_calls: [
+              {
+                id: "answer",
+                type: "function",
+                function: {
+                  name: "submit_answer",
+                  arguments: JSON.stringify(answer),
+                },
+              },
+            ],
+          },
+        },
+      ],
+      usage: {},
+    });
+  }) as typeof fetch;
+  const log = newLog("places-glosses", config, "length-fixture");
+  assert.deepEqual(
+    await new InferenceRunner(config, log, AbortSignal.timeout(2000)).run(spec),
+    answer,
+  );
+  assert.equal(log.answers, 2);
+  assert.equal(log.corrections, 1);
+});
+
 test("correction feedback names missing and unknown answer fields", async () => {
   const { x2, ...partial } = answer;
   const wrong = { ...partial, x3: x2 };
