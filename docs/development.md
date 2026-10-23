@@ -340,6 +340,11 @@ A replacement restores a matching checkpoint when available and otherwise authen
 Word scores can remain unavailable until that runtime returns.
 
 After publication, the service releases older runtimes after their active read, fork, or export calls finish.
+It retains their completed state and packages as ordinary entries in the two-entry caches.
+A pinned read of a retained entry starts no repair or rebuild after intentional runtime retirement.
+Its word scores report unavailable without a live runtime. The next evaluation can evict that older cached entry when it needs the slot.
+An older snapshot outside these caches can still require evaluation while the coordinator retains its wrapper.
+
 Workers transfer full state or a bounded judgment delta as bytes, without retaining another parsed JavaScript state.
 The main thread applies matching deltas to immutable maps and shares unchanged objects.
 

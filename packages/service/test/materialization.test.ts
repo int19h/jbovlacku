@@ -17,6 +17,10 @@ import {
   createEvaluationSession,
 } from "../../core/src/index.ts";
 import { DictionaryService } from "../src/service.ts";
+import type {
+  EvaluationBuilder,
+  EvaluationSession,
+} from "../src/evaluation.ts";
 import {
   emptyState,
   type State,
@@ -232,7 +236,7 @@ function judgment(
   );
 }
 
-test("publication releases the superseded configured runtime and unused state", async () => {
+test("publication releases the superseded configured runtime and keeps cached results", async () => {
   const { service, coordinator, definition, profile } = await fixture();
   service.options.evaluationRuntime = {
     create: createEvaluationSession,
@@ -257,7 +261,173 @@ test("publication releases the superseded configured runtime and unused state", 
   await service.flushMaterialization();
   assert.equal(released, true);
   assert.equal((service as any).sessions.has(oldKey), false);
-  assert.equal((service as any).evaluationCache.has(oldKey), false);
+  assert.equal((service as any).evaluationCache.has(oldKey), true);
+  assert.equal((service as any).packageCache.has(oldKey.split("|")[0]), true);
+  assert.equal((service as any).retiredSessions.has(oldKey), true);
+});
+
+test("pinned previous-snapshot reads reuse cached results while another write completes", async () => {
+  const { service, coordinator, definition, profile } = await fixture();
+  const internals = service as any;
+  const historical = coordinator.state.snapshot!;
+  const oldKey = historical + "|" + service.options.selectedView;
+  let live = 0;
+  let peak = 0;
+  let creates = 0;
+  let forks = 0;
+  function allocate() {
+    live++;
+    peak = Math.max(peak, live);
+    let released = false;
+    return () => {
+      if (!released) live--;
+      released = true;
+    };
+  }
+  function trackSession(
+    session: EvaluationSession,
+    release: () => void,
+  ): EvaluationSession {
+    return {
+      state: session.state,
+      isAvailable: () => session.isAvailable?.() !== false,
+      rankWord: (...args) => session.rankWord(...args),
+      checkpoint: (binding) => session.checkpoint(binding),
+      async fork(options) {
+        forks++;
+        return trackBuilder(await session.fork(options));
+      },
+      free() {
+        session.free();
+        release();
+      },
+    };
+  }
+  function trackBuilder(builder: EvaluationBuilder): EvaluationBuilder {
+    const release = allocate();
+    let finished = false;
+    return {
+      addRecord: (...args) => builder.addRecord(...args),
+      removeRecord: (id) => builder.removeRecord(id),
+      async finish() {
+        const session = await builder.finish();
+        finished = true;
+        return trackSession(session, release);
+      },
+      free() {
+        builder.free();
+        if (!finished) release();
+      },
+    };
+  }
+  internals.sessions.set(
+    oldKey,
+    trackSession(internals.sessions.get(oldKey), allocate()),
+  );
+  service.options.evaluationRuntime = {
+    create(options) {
+      creates++;
+      return trackBuilder(createEvaluationSession(options));
+    },
+    restore() {
+      throw new Error("Unexpected checkpoint restore.");
+    },
+  };
+  const first = judgment(
+    definition.envelope.id,
+    "4",
+    [profile.envelope.id],
+    "bless",
+  );
+  await service.admitMany([utf8(JSON.stringify(first))]);
+  await service.flushMaterialization();
+  const previous = coordinator.state.snapshot!;
+  const beforeReads = { creates, forks };
+  const evaluations: string[] = [];
+  const readGate = deferred();
+  const rebuildGate = deferred();
+  const entered = deferred();
+  const compute = internals.computeEvaluation.bind(service);
+  const evaluate = internals.evaluation.bind(service);
+  const packages = internals.packages.bind(service);
+  let pinnedEvaluations = 0;
+  internals.computeEvaluation = async (snapshot: Snapshot, ...args: any[]) => {
+    evaluations.push(snapshot.snapshot);
+    // Keep an unintended historical rebuild in flight during the next write.
+    if (snapshot.snapshot === historical) await rebuildGate.promise;
+    return compute(snapshot, ...args);
+  };
+  internals.evaluation = (snapshot: Snapshot, ...args: any[]) => {
+    if (snapshot.snapshot === historical && ++pinnedEvaluations === 2)
+      entered.resolve();
+    return evaluate(snapshot, ...args);
+  };
+  internals.packages = async (snapshot: Snapshot) => {
+    const result = packages(snapshot);
+    // Cached reads keep their results while the next write evicts this entry.
+    if (snapshot.snapshot === historical) await readGate.promise;
+    return result;
+  };
+  const reading = [
+    read(service, "/search?q=klama&language=en&snapshot=" + historical),
+    read(service, "/words/" + wordId(word) + "?snapshot=" + historical),
+  ];
+  try {
+    await entered.promise;
+    const second = judgment(
+      definition.envelope.id,
+      "5",
+      [first.envelope.id],
+      "curse",
+    );
+    await service.admitMany([utf8(JSON.stringify(second))]);
+    await service.flushMaterialization();
+    const latest = coordinator.state.snapshot!;
+    assert.equal(coordinator.state.materialized_snapshot, latest);
+    assert.deepEqual(evaluations, [latest]);
+    assert.deepEqual(
+      { creates, forks },
+      {
+        creates: beforeReads.creates,
+        forks: beforeReads.forks + 1,
+      },
+    );
+    assert.equal(internals.sessionRepairs.size, 0);
+    assert.equal(internals.evaluationCache.has(oldKey), false);
+    assert.equal(internals.packageCache.has(historical), false);
+    assert.equal(internals.retiredSessions.has(oldKey), false);
+    assert.ok(
+      internals.retiredSessions.has(
+        previous + "|" + service.options.selectedView,
+      ),
+    );
+    assert.equal(internals.evaluationCache.size, 2);
+    assert.equal(internals.packageCache.size, 2);
+    assert.equal(internals.retiredSessions.size, 1);
+    assert.equal(live, 1);
+    assert.equal(peak, 2);
+    readGate.resolve();
+    const [search, detail] = await Promise.all(reading);
+    assert.equal(search.snapshot, historical);
+    assert.ok(search.hits.some((hit: any) => hit.word_id === wordId(word)));
+    assert.equal(detail.snapshot, historical);
+    assert.ok(detail.definitions.includes(definition.envelope.id));
+    assert.deepEqual(detail.scores, []);
+    assert.deepEqual(detail.unavailable_scores, [definition.envelope.id]);
+    assert.deepEqual(evaluations, [latest]);
+    assert.deepEqual(
+      { creates, forks },
+      {
+        creates: beforeReads.creates,
+        forks: beforeReads.forks + 1,
+      },
+    );
+  } finally {
+    readGate.resolve();
+    rebuildGate.resolve();
+    await Promise.allSettled(reading);
+    await service.flushMaterialization().catch(() => {});
+  }
 });
 
 test("publication keeps an active ranking runtime until that read finishes", async () => {

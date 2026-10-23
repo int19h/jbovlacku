@@ -976,12 +976,11 @@ export class DictionaryService {
         this.inFlightPackages.has(snapshot)
       )
         continue;
-      this.retiredSessions.delete(key);
       this.sessions.get(key)?.free();
       this.sessions.delete(key);
       this.sessionSnapshots.delete(key);
-      this.evaluationCache.delete(key);
-      this.packageCache.delete(snapshot);
+      // Keep completed results until ordinary cache eviction needs their slot.
+      if (!this.evaluationCache.has(key)) this.retiredSessions.delete(key);
     }
     this.prunePackageRecords();
   }
@@ -1069,6 +1068,7 @@ export class DictionaryService {
     const cached = this.evaluationCache.get(key);
     if (cached) {
       if (
+        this.retiredSessions.has(key) ||
         (this.sessions.has(key) &&
           this.sessions.get(key)!.isAvailable?.() !== false) ||
         this.inFlightEvaluations.has(key)
@@ -1108,6 +1108,7 @@ export class DictionaryService {
           ),
         );
       this.evaluationCache.delete(evicted);
+      this.retiredSessions.delete(evicted);
       this.sessions.get(evicted)?.free();
       this.sessions.delete(evicted);
       this.sessionSnapshots.delete(evicted);
@@ -1128,8 +1129,10 @@ export class DictionaryService {
       },
       () => {
         this.inFlightEvaluations.delete(key);
-        if (this.evaluationCache.get(key) === result)
+        if (this.evaluationCache.get(key) === result) {
           this.evaluationCache.delete(key);
+          this.retiredSessions.delete(key);
+        }
       },
     );
     return result;

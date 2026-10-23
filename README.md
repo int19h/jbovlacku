@@ -193,6 +193,11 @@ The extraction omits derived vectors and cache fields from signed bodies.
 The adapter retains an evaluated checkpoint and uses separate Node worker threads for completed reads and new evaluation.
 A worker thread runs code independently within the same process. At most two evaluation runtimes remain live.
 After publication, the host releases the older runtime when its active calls finish.
+
+It keeps that snapshot's completed state and packages in the bounded cache.
+Pinned reads use those results without restarting evaluation. Word scores remain unavailable after the older runtime stops.
+The next evaluation can evict the older cached result when it needs the slot.
+
 Workers transfer state bytes without retaining another parsed JavaScript state. Judgment updates share unchanged result objects on the main thread.
 
 The adapter normally captures at most one checkpoint per minute. A failed live export can retry once immediately.
