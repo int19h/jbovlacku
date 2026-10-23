@@ -187,6 +187,12 @@ test("the referent shortcut names its broad meaning and retired hints need delib
   await expect(page.locator("main")).toContainText(
     'keeps the retired tag "mass"',
   );
+  await expect(page.locator("main")).toContainText(
+    "mass is an opaque legacy annotation outside the current tag tree and has no current alias.",
+  );
+  await expect(page.getByRole("button", { name: /Replace mass/ })).toHaveCount(
+    0,
+  );
   expect((await stored(page)).places[0].hint.alternatives[0].tags).toEqual([
     "mass",
   ]);
@@ -205,6 +211,78 @@ test("the referent shortcut names its broad meaning and retired hints need delib
   });
   expect(hints[0].alternatives[0].tags).toEqual(["referent"]);
 });
+
+for (const [tag, replacement] of [
+  ["entity", "referent"],
+  ["tuple", "sequence"],
+]) {
+  test(`the author explicitly replaces ${tag} with ${replacement} without changing other annotations`, async ({
+    page,
+  }) => {
+    await createIdentity(page);
+    await seed(page);
+    await page.evaluate(
+      async ({ tag, replacement }) => {
+        const { LocalStore } = await import(String("/src/data/store.ts"));
+        const { newPlace } = await import(String("/src/model/draft.ts"));
+        const store = new LocalStore();
+        const draft: any = await store.get("drafts", "current");
+        draft.structured = true;
+        draft.text = [[1, " has a fixture meaning."]];
+        draft.frameMode = "fixed";
+        draft.numberingApproved = true;
+        draft.places = [
+          {
+            ...newPlace(1),
+            kind: "custom",
+            hint: {
+              alternatives: [
+                {
+                  tags: [tag, replacement].sort(),
+                  abstractor: "ka",
+                  relation_arity: { mode: "fixed", count: 2 },
+                },
+              ],
+              note: [[1, " keeps this exact note."]],
+            },
+          },
+        ];
+        await store.put("drafts", "current", draft);
+      },
+      { tag, replacement },
+    );
+    await open(page, "/new/editor");
+    await expect(page.locator("main")).toContainText(
+      `${tag} means ${replacement}.`,
+    );
+    await expect(page.locator("main")).not.toContainText(
+      "The original signed body stays valid.",
+    );
+    const before = (await stored(page)).places[0].hint;
+    expect(before.alternatives[0].tags).toContain(tag);
+    await page
+      .getByRole("button", {
+        name: `Replace ${tag} with ${replacement}`,
+        exact: true,
+      })
+      .click();
+    await expect
+      .poll(
+        async () => (await stored(page)).places[0].hint.alternatives[0].tags,
+      )
+      .toEqual([replacement]);
+    const after = (await stored(page)).places[0].hint;
+    expect(after.note).toEqual(before.note);
+    expect(after.alternatives[0].abstractor).toBe("ka");
+    expect(after.alternatives[0].relation_arity).toEqual({
+      mode: "fixed",
+      count: 2,
+    });
+    await expect(page.locator("main")).not.toContainText(
+      `keeps the retired tag "${tag}"`,
+    );
+  });
+}
 
 test("another source word starts without the first word's pronunciation or stem", async ({
   page,

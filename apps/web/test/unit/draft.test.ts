@@ -34,11 +34,14 @@ import {
   referenceFields,
   remapPlaces,
   rewriteReferences,
+  retiredTagMeaning,
+  replaceRetiredHintTag,
   richTextToEditor,
   switchMode,
   LENSISKU_RIGHTS_REFERENCE,
 } from "../../src/model/draft.ts";
 import { textToRichText, richTextToText } from "../../src/model/richtext.ts";
+import type { TypeHint } from "../../src/model/types.ts";
 
 before(async () =>
   initializeCore(
@@ -597,6 +600,12 @@ test("retired signed hints survive reading while a new signature needs an explic
       ),
       tag,
     );
+    assert.ok(
+      built.problems.some((problem) =>
+        problem.message.includes("The original signed body stays valid."),
+      ),
+      tag,
+    );
     const fresh = newDraft({
       spelling: "broda",
       kind: "gismu",
@@ -612,12 +621,149 @@ test("retired signed hints survive reading while a new signature needs an explic
       ),
       tag,
     );
-    restored.places[0].hint!.alternatives[0].tags = ["event"];
+    fresh.parents = [...restored.parents];
+    assert.ok(
+      draftToBody(fresh).problems.every(
+        (problem) =>
+          !problem.message.includes("The original signed body stays valid."),
+      ),
+      tag,
+    );
+    restored.places[0].hint!.alternatives[0].abstractor = "nu";
+    assert.ok(
+      draftToBody(restored).problems.every(
+        (problem) =>
+          !problem.message.includes("The original signed body stays valid."),
+      ),
+      tag,
+    );
+    restored.places[0].hint = structuredClone(hint);
+    if (tag === "mass")
+      restored.places[0].hint!.alternatives[0].tags = ["event"];
+    else
+      restored.places[0].hint = replaceRetiredHintTag(
+        restored.places[0].hint!,
+        tag,
+      );
     const replaced = draftToBody(restored);
     assert.deepEqual(replaced.problems, [], tag);
     assert.ok(admissible(replaced.body, restored.parents), tag);
     assert.deepEqual(parent.frame.places[0].type_hints, [hint], tag);
   }
+});
+
+test("retired alias pairs remain admissible without folding signed tag strings", () => {
+  const alternative = (tags: string[]) => ({
+    tags,
+    abstractor: null,
+    relation_arity: null,
+  });
+  for (const alternatives of [
+    [alternative(["sequence", "tuple"])],
+    [alternative(["entity", "referent"])],
+    [alternative(["sequence"]), alternative(["tuple"])],
+    [alternative(["entity"]), alternative(["referent"])],
+  ]) {
+    const parent = richParent();
+    parent.frame.places[0].type_hints = [{ alternatives, note: [] }] as never;
+    const before = JSON.stringify(parent);
+    assert.ok(admissible(parent), JSON.stringify(alternatives));
+    assert.equal(JSON.stringify(parent), before);
+  }
+});
+
+test("retired-tag replacement is explicit and preserves every other annotation", () => {
+  const hint: TypeHint = {
+    alternatives: [
+      {
+        tags: ["entity", "referent"],
+        abstractor: "nu",
+        relation_arity: { mode: "fixed", count: 2 },
+      },
+      {
+        tags: ["entity"],
+        abstractor: "nu",
+        relation_arity: { mode: "fixed", count: 2 },
+      },
+      {
+        tags: ["referent"],
+        abstractor: "nu",
+        relation_arity: { mode: "fixed", count: 2 },
+      },
+      { tags: ["entity"], abstractor: "ka", relation_arity: null },
+      {
+        tags: ["tuple"],
+        abstractor: null,
+        relation_arity: { mode: "fixed", count: 1 },
+      },
+    ],
+    note: [[1, " keeps this exact note."]],
+  };
+  const original = structuredClone(hint);
+  const replaced = replaceRetiredHintTag(hint, "entity");
+  assert.deepEqual(replaced.alternatives, [
+    {
+      tags: ["referent"],
+      abstractor: "nu",
+      relation_arity: { mode: "fixed", count: 2 },
+    },
+    { tags: ["referent"], abstractor: "ka", relation_arity: null },
+    {
+      tags: ["tuple"],
+      abstractor: null,
+      relation_arity: { mode: "fixed", count: 1 },
+    },
+  ]);
+  assert.deepEqual(replaced.note, original.note);
+  const sequence = replaceRetiredHintTag(replaced, "tuple");
+  assert.deepEqual(sequence.alternatives[2], {
+    tags: ["sequence"],
+    abstractor: null,
+    relation_arity: { mode: "fixed", count: 1 },
+  });
+  assert.deepEqual(sequence.note, original.note);
+  assert.deepEqual(hint, original);
+  assert.equal(retiredTagMeaning("entity"), "entity means referent.");
+  assert.equal(retiredTagMeaning("tuple"), "tuple means sequence.");
+  assert.equal(
+    retiredTagMeaning("mass"),
+    "mass is an opaque legacy annotation outside the current tag tree and has no current alias.",
+  );
+  assert.throws(() => replaceRetiredHintTag(hint, "mass"), /no current alias/);
+});
+
+test("only a retained parent hint gives the reassurance for repeated places", () => {
+  const parent = richParent();
+  const hint = {
+    alternatives: [{ tags: ["tuple"], abstractor: null, relation_arity: null }],
+    note: [],
+  };
+  parent.frame.arity = { mode: "variadic", minimum: 1 } as never;
+  parent.frame.tail = { from: 2, description: [], type_hints: [hint] } as never;
+  assert.ok(admissible(parent));
+  const draft = draftFromBody(
+    parent as never,
+    "jve1:" + "1".repeat(64),
+    "native",
+  );
+  assert.ok(
+    draftToBody(draft).problems.some(
+      (problem) =>
+        problem.field === "tail" &&
+        problem.message.includes("The original signed body stays valid."),
+    ),
+  );
+  draft.tail!.parentHint = null;
+  assert.ok(
+    draftToBody(draft).problems.every(
+      (problem) =>
+        !problem.message.includes("The original signed body stays valid."),
+    ),
+  );
+  draft.tail!.hint = replaceRetiredHintTag(draft.tail!.hint!, "tuple");
+  const built = draftToBody(draft);
+  assert.deepEqual(built.problems, []);
+  assert.ok(admissible(built.body, draft.parents));
 });
 
 test("source pronunciations and stems survive draft reload, publication, and revision", () => {

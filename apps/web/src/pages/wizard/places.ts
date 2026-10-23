@@ -27,6 +27,8 @@ import {
   revisionChanges,
   hintForChoice,
   kindChoices,
+  retiredTagMeaning,
+  replaceRetiredHintTag,
   editorText,
   editorToRichText,
   fieldsReferencing,
@@ -143,6 +145,38 @@ function hintEditor(
         "meta",
       ),
     );
+    for (const tag of new Set(
+      alternatives.flatMap((alternative) => alternative.tags),
+    )) {
+      const meaning = retiredTagMeaning(tag);
+      if (!meaning) continue;
+      const retired = el("div", { class: "notice" }, p(meaning));
+      if (tag === "entity" || tag === "tuple") {
+        const replacement = tag === "entity" ? "referent" : "sequence";
+        retired.append(
+          button(
+            `Replace ${tag} with ${replacement}`,
+            () => {
+              const updated = replaceRetiredHintTag(
+                { alternatives, note },
+                tag,
+              );
+              alternatives.splice(
+                0,
+                alternatives.length,
+                ...updated.alternatives,
+              );
+              note = updated.note;
+              emit();
+              render();
+              box.querySelector<HTMLInputElement>("input")?.focus();
+            },
+            { class: "btn btn-quiet" },
+          ),
+        );
+      }
+      box.append(retired);
+    }
     alternatives.forEach((alt, index) => {
       const row = el("div", {
         style:

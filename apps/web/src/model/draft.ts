@@ -37,6 +37,7 @@ import {
   type RichText,
   type SourceReference,
   type TypeHint,
+  type TypeAlternative,
 } from "./types.ts";
 
 export const CC0_LICENSE = {
@@ -146,6 +147,8 @@ export interface DraftPlace {
   kind: KindChoice;
   /** Full type hint when kind is custom. The format allows one hint per place. */
   hint: TypeHint | null;
+  /** The parent's exact hint, for a warning about retained annotations only. */
+  parentHint?: TypeHint | null;
   /** Every derivation of this place, in order. */
   derivations: DraftDerivation[];
   defaults: DraftDefault[];
@@ -206,6 +209,7 @@ export interface Draft {
     description: RichText;
     kind: KindChoice;
     hint: TypeHint | null;
+    parentHint?: TypeHint | null;
   } | null;
   frameConstraints: RichText[];
   glosses: { language: string; text: string; sense: string }[];
@@ -260,6 +264,7 @@ export type DraftInput = Partial<
     description: RichInput;
     kind: KindChoice;
     hint: TypeHint | null;
+    parentHint?: TypeHint | null;
   } | null;
   places?: PlaceInput[];
   examples?: (Omit<DraftExample, "translation" | "notes"> & {
@@ -975,6 +980,52 @@ const KNOWN_TAGS = new Set([
   "sequence",
 ]);
 const RETIRED_TAGS = new Set(["entity", "mass", "tuple"]);
+export function retiredTagMeaning(tag: string): string | null {
+  if (tag === "entity") return "entity means referent.";
+  if (tag === "tuple") return "tuple means sequence.";
+  if (tag === "mass")
+    return "mass is an opaque legacy annotation outside the current tag tree and has no current alias.";
+  return null;
+}
+function alternativeKey(alternative: TypeAlternative): string {
+  const arity = alternative.relation_arity;
+  return JSON.stringify([
+    alternative.tags,
+    alternative.abstractor,
+    arity?.mode ?? null,
+    arity && "count" in arity
+      ? arity.count
+      : arity && "minimum" in arity
+        ? arity.minimum
+        : null,
+  ]);
+}
+/** Replace an alias only after the author asks. Keep every other annotation. */
+export function replaceRetiredHintTag(hint: TypeHint, tag: string): TypeHint {
+  const replacement =
+    tag === "entity" ? "referent" : tag === "tuple" ? "sequence" : null;
+  if (!replacement) throw new Error("The retired tag has no current alias.");
+  const result = structuredClone(hint);
+  const seen = new Set<string>();
+  result.alternatives = result.alternatives
+    .map((alternative) => ({
+      ...alternative,
+      tags: [
+        ...new Set(
+          alternative.tags.map((value) =>
+            value === tag ? replacement : value,
+          ),
+        ),
+      ].sort(),
+    }))
+    .filter((alternative) => {
+      const key = alternativeKey(alternative);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  return result;
+}
 const ABSTRACTORS = new Set([
   "nu",
   "du'u",
@@ -995,6 +1046,7 @@ function hintProblems(
   field: string,
   label: string,
   problems: DraftProblem[],
+  parentHint?: TypeHint | null,
 ): TypeHint {
   const alternatives = hint.alternatives.map((a) => ({
     tags: [...new Set(a.tags.map((t) => t.trim()).filter(Boolean))].sort(),
@@ -1009,7 +1061,7 @@ function hintProblems(
     });
   const seen = new Set<string>();
   for (const a of alternatives) {
-    const key = JSON.stringify(a);
+    const key = alternativeKey(a);
     if (seen.has(key))
       problems.push({
         field,
@@ -1024,13 +1076,20 @@ function hintProblems(
         blocking: true,
       });
     for (const tag of a.tags)
-      if (RETIRED_TAGS.has(tag))
+      if (RETIRED_TAGS.has(tag)) {
+        const change =
+          tag === "mass"
+            ? "Choose a current tag or remove it before a new signature. A replacement changes its meaning."
+            : `Use Replace ${tag} with ${tag === "entity" ? "referent" : "sequence"}, or remove it, before a new signature.`;
+        const fromParent = parentHint?.alternatives.some(
+          (original) => alternativeKey(original) === key,
+        );
         problems.push({
           field,
-          message: `${label} keeps the retired tag "${tag}". Replace it with a current tag or remove it before a new signature. The original signed body stays valid.`,
+          message: `${label} keeps the retired tag "${tag}". ${retiredTagMeaning(tag)} ${change}${fromParent ? " The original signed body stays valid." : ""}`,
           blocking: true,
         });
-      else if (!KNOWN_TAGS.has(tag) && !/^https:\/\/[^\s/]+/u.test(tag))
+      } else if (!KNOWN_TAGS.has(tag) && !/^https:\/\/[^\s/]+/u.test(tag))
         problems.push({
           field,
           message: `${label} uses the tag "${tag}". A tag is one of the named kinds or an HTTPS URL.`,
@@ -1073,6 +1132,7 @@ function buildFrame(draft: Draft, problems: DraftProblem[], rich: RichField[]) {
               field,
               `${label}'s kind of thing`,
               problems,
+              draft.parents.length ? place.parentHint : null,
             )
           : null
         : hintForChoice(place.kind);
@@ -1278,6 +1338,7 @@ function buildFrame(draft: Draft, problems: DraftProblem[], rich: RichField[]) {
             "tail",
             "The repeated places' kind of thing",
             problems,
+            draft.parents.length ? draft.tail.parentHint : null,
           )
         : null
       : hintForChoice(draft.tail.kind)
@@ -1755,6 +1816,7 @@ export function draftFromBody(
       })),
       kind: choice,
       hint: choice === "custom" ? hint : null,
+      parentHint: hint ? structuredClone(hint) : null,
       derivations: place.derivation.map((d) => ({
         word: d.word.spelling,
         definition: d.definition,
@@ -1814,6 +1876,7 @@ export function draftFromBody(
           description: structuredClone(frame.tail.description),
           kind: choiceForHint(tailHint),
           hint: choiceForHint(tailHint) === "custom" ? tailHint : null,
+          parentHint: tailHint ? structuredClone(tailHint) : null,
         }
       : null,
     frameConstraints: frame?.constraints.map((c) => structuredClone(c)) ?? [],

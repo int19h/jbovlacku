@@ -571,12 +571,20 @@ At least one tag, abstractor, or relation-arity value must supply information. E
 
 Standard tags are `referent`, `agent`, `event`, `state`, `process`, `relation`, `proposition`, `number`, `text`, `set`, and `sequence`.
 Version 1 still accepts the retired tags `entity`, `mass`, and `tuple` in signed bodies.
-`entity` has the meaning of `referent`, and `tuple` has the meaning of `sequence`. Their original signed spellings stay unchanged.
-`mass` keeps its earlier mass annotation. It has no automatic subtype relationship and no replacement alias.
+`entity` means `referent`. `tuple` means `sequence`.
+`mass` is an opaque legacy annotation outside the current tag tree and has no current alias.
+The aliases replace the earlier no-subtype rule for `entity` and `tuple` with their broadest current reading.
+
+These meanings affect reading only. Validation, sorting, and uniqueness compare signed tag strings without alias substitution.
+The same rule applies after defaults supply an interpreted alternative. Defaults still apply to the alternative's other fields before uniqueness is checked.
+A retired tag beside its current equivalent stays valid, in one alternative or in distinct alternatives.
+Their original signed spellings stay unchanged.
 
 Readers preserve these tags. New authoring uses only current standard tags or custom HTTPS tags.
 
-The standard tags form a tree. `referent` is anything that a place can refer to, and every other standard tag is narrower than it. `state` and `process` are narrower than `event`, because they are ways of viewing an event.
+The current standard tags form a tree. `referent` is anything that a place can refer to, and every other current standard tag is narrower than it. `state` and `process` are narrower than `event`, because they are ways of viewing an event.
+The tree and the plural rule below describe current tags only.
+
 Every place takes a plural reference: one thing, several things, or some stuff. A tag describes what the place refers to, and it does not change with number. A collective reading comes from the predicate, not from a tag.
 `agent` is a referent that carries out the action of the definition. `relation` is a property or relation itself, not its bearer. `proposition` is content that can be true or false.
 `number` is a numerical value or a measured amount. The dimension of a measurement is a `relation`, and a system of units is a `referent`.

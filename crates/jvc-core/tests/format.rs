@@ -461,6 +461,53 @@ fn signed_bodies_with_retired_tags_keep_their_original_bytes() {
 }
 
 #[test]
+fn type_hint_uniqueness_compares_signed_tags_without_alias_substitution() {
+    let mut body = parse_stored_json(include_bytes!("fixtures/definition.json")).unwrap();
+    let alternative = |tags: Value| json!({"tags":tags,"abstractor":null,"relation_arity":null});
+    let make = |body: &Value| {
+        header(
+            json!({"kind":"definition.publish","word":word_id(&body["word"]).unwrap(),"language":"en","parents":[],"origin":"native"}),
+            Some(body_descriptor(&canonical_value(body).unwrap()).unwrap()),
+        )
+    };
+    for alternatives in [
+        json!([alternative(json!(["sequence", "tuple"]))]),
+        json!([alternative(json!(["entity", "referent"]))]),
+        json!([
+            alternative(json!(["sequence"])),
+            alternative(json!(["tuple"]))
+        ]),
+        json!([
+            alternative(json!(["entity"])),
+            alternative(json!(["referent"]))
+        ]),
+    ] {
+        body["frame"]["places"][0]["type_hints"] = json!([{"alternatives":alternatives,"note":[]}]);
+        let bytes = canonical_value(&body).unwrap();
+        let envelope = sign_header(&[7; 32], make(&body)).unwrap();
+        assert!(
+            matches!(
+                inspect_body(&envelope, Some(&bytes)),
+                BodyAvailability::Valid { .. }
+            ),
+            "{alternatives}"
+        );
+        assert_eq!(canonical_value(&body).unwrap(), bytes);
+    }
+    for alternatives in [
+        json!([alternative(json!(["referent", "entity"]))]),
+        json!([alternative(json!(["sequence", "sequence"]))]),
+        json!([alternative(json!(["tuple"])), alternative(json!(["tuple"]))]),
+    ] {
+        body["frame"]["places"][0]["type_hints"] = json!([{"alternatives":alternatives,"note":[]}]);
+        assert!(
+            validate_body(&make(&body), &body).is_err(),
+            "{alternatives}"
+        );
+    }
+}
+
+#[test]
 fn formation_source_evidence_is_optional_and_preserves_original_bytes() {
     let mut body = parse_stored_json(include_bytes!("fixtures/definition.json")).unwrap();
     body["etymology"]["formation"] = json!({

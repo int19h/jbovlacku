@@ -423,6 +423,11 @@ fn type_hints(v: &Value, r: &mut Rich) -> Result<()> {
                     return Err(bad("type tags must be sorted and unique"));
                 }
                 last = Some(t);
+                // Tag meanings are reading rules, never validation aliases.
+                // entity means referent. tuple means sequence.
+                // mass is an opaque legacy annotation outside the current tag tree
+                // and has no current alias.
+                // See docs/format.md, "Glosses, types, and defaults".
                 if ![
                     "referent",
                     "agent",
