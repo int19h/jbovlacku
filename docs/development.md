@@ -597,6 +597,8 @@ The image runs as the `node` user with UID `1000`. It listens on port `8789` and
 Use a named volume or writable mount at that path. Keep the volume when you recreate a service container.
 The smoke script creates a unique disposable volume and binds an available loopback port.
 It tests a signed write, process restart, exact retry, receipt deduplication, browser assets, and clean shutdown.
+The initial admission receipt can name no snapshot while background evaluation waits.
+The script waits for a completed receipt before restart, then compares the receipt position, stored bytes, and completed inventory after retry.
 Its cleanup removes only its own named container and volume. It retains test files in the selected directory.
 
 The image retains application notices, font licenses, and the Rust standard library notices.
