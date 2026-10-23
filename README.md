@@ -57,6 +57,8 @@ It preserves original IPA inputs and shows that conversion to scoring letters is
 Source notes stay editable when assistance is off. The publication review shows all source evidence.
 Source edits also update the publication copy after form selection. Descriptive edits keep the recorded scores.
 Changes to scoring inputs block publication until the author selects the form again or removes its evidence.
+Unrelated suggestions remain usable, and pending calculations cannot attach an older score to new inputs.
+Reopening a signed source with a null algorithm input preserves that evidence.
 The [morphology profiles](docs/morphology.md) name the rules and versions that the metadata records.
 
 Optional AI assistance offers suggestions for type, components, lujvo, cmavo class, source words, definition text, places, and glosses.
@@ -68,7 +70,10 @@ Turning assistance off reaches other open tabs and cancels their active jobs.
 
 The private attempt log offers Markdown and JSON export. Signed publications omit AI logs.
 Both local adapters offer operator-controlled assistance, off by default, with server-held keys and bounded private jobs.
-They reserve costs before admission and enforce server spending limits that survive a restart.
+They reserve costs before admission and enforce server and network spending limits that survive a restart.
+IPv6 limits also count /48 prefixes. The Worker stores large spending ledgers in atomic parts.
+A discarded result returns a clear status. Spending failures distinguish pending costs, timed limits, and requests that cannot fit.
+The default limits refuse some operations with several tasks. Operators can raise both server and network allowances.
 Mocked providers cover the request and correction loop. These tests do not establish live model accuracy.
 The [development guide](docs/development.md#optional-ai-assistance) gives the configuration and retention limits.
 

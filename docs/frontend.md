@@ -457,7 +457,11 @@ It also preserves field edit history and conflict acknowledgments. Unsigned priv
 Changing a component or weight invalidates dependent candidate scores and cached suggestions, while retaining human prose and place annotations.
 For gismu sources, language, algorithm input, and weight determine the scores. Notes, native words, and pronunciation fields do not change those scores.
 Source edits update the copy used for publication. An empty alternative row does not change the formation.
+A source reopened from signed evidence remains present even when its algorithm input is null.
+Validation preserves the draft. Loading an older draft synchronizes descriptive source edits once.
 If scoring inputs change, publication waits for a new form selection or removal of the old evidence.
+Unrelated definition and place suggestions remain usable. Acceptance refuses any new blocking frame or reference problem.
+The form action stays disabled while the generator recalculates. A chosen score must describe the exact current scoring inputs.
 Changing the chosen form invalidates morphology and conflict review. It marks formation-dependent annotations for review rather than deleting them.
 
 A language change marks translations and language-specific glosses for review. It never relabels their text silently.
@@ -1395,6 +1399,10 @@ Synchronous success returns HTTP 200. Accepted asynchronous work returns HTTP 20
 Job state is queued, running, completed, failed, cancel_requested, or canceled. Its response contains state, result, error, and expires_at.
 
 Result and error are nullable. Errors use the common API error shape. A job ID is opaque, unpredictable, and scoped to its requesting session.
+After result disposal, GET returns HTTP 410 with `result_discarded`. The browser explains the disposal and offers another request.
+An oversized spending request returns `billing_request_too_large` without a retry time.
+A temporary spending limit uses `billing_limit` and an actual expiry time when the remaining charges are known.
+Pending provider costs use `billing_pending` without a promised retry time. The browser preserves these distinctions and the server wording.
 Expires_at uses the format specification's UTC timestamp syntax. Poll_after_ms is an integer from 100 through 60,000.
 
 Successful DELETE returns HTTP 200 with the current job response. A queued job becomes canceled. A running job becomes cancel_requested until execution stops.

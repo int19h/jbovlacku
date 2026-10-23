@@ -289,25 +289,27 @@ After three failed answers for one task, that task fails. A provider or transpor
 
 Both local adapters accept these variables:
 
-| Variable                   | Purpose                                                                                                                                                              |
-| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `JVC_AI_ENABLED`           | Set `enabled` to offer assistance. The default is disabled.                                                                                                          |
-| `JVC_AI_BASE_URL`          | Provider base URL. The default is `https://openrouter.ai/api/v1`. Use HTTPS, or HTTP on loopback for a local provider.                                               |
-| `JVC_AI_KEY_FILE`          | Path to the server-held provider key. Node reads the file for each model turn. The local Worker launcher reads it at startup.                                        |
-| `JVC_AI_PROVIDER_NAME`     | Public provider name. The default is `OpenRouter`. Capability metadata uses this name and the route, without the private endpoint URL.                               |
-| `JVC_AI_MODEL`             | Model name. The default is `meta/muse-spark-1.3-contributor`.                                                                                                        |
-| `JVC_AI_PROVIDER_ROUTE`    | Single permitted route. The default is `meta`.                                                                                                                       |
-| `JVC_AI_REASONING_EFFORT`  | Reasoning level. The default is `medium`.                                                                                                                            |
-| `JVC_AI_OPERATIONS`        | Comma-separated permitted operations. The default contains all six operations below. An empty value disables every operation.                                        |
-| `JVC_AI_DECISION_REPORTS`  | Set `enabled` to request a written decision report before the tool call. The default is disabled.                                                                    |
-| `JVC_AI_MAX_TOKENS`        | Maximum output tokens for each provider turn. The default is 16,384. The permitted range is 128 through 32,768.                                                      |
-| `JVC_AI_TIMEOUT_MS`        | Time limit for the complete job. The default is 120,000 milliseconds. The permitted range is 10 through 540,000. Job expiry leaves a reading window after this time. |
-| `JVC_AI_CONCURRENCY`       | Maximum active jobs. The default is two. Node permits one through four. The Worker caps this value at two.                                                           |
-| `JVC_AI_INPUT_PRICE`       | Model input price in USD per million tokens. The default is 0.10.                                                                                                    |
-| `JVC_AI_OUTPUT_PRICE`      | Model output price in USD per million tokens. The default is 0.20.                                                                                                   |
-| `JVC_AI_HOURLY_BUDGET_USD` | Server spending limit for the past hour. The default is 1 USD.                                                                                                       |
-| `JVC_AI_DAILY_BUDGET_USD`  | Server spending limit for the past day. The default is 5 USD.                                                                                                        |
-| `JVC_AI_MAX_PRICE`         | Maximum input and output price in USD per million tokens. The default is 10. The permitted range is 0.001 through 100.                                               |
+| Variable                           | Purpose                                                                                                                                                              |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `JVC_AI_ENABLED`                   | Set `enabled` to offer assistance. The default is disabled.                                                                                                          |
+| `JVC_AI_BASE_URL`                  | Provider base URL. The default is `https://openrouter.ai/api/v1`. Use HTTPS, or HTTP on loopback for a local provider.                                               |
+| `JVC_AI_KEY_FILE`                  | Path to the server-held provider key. Node reads the file for each model turn. The local Worker launcher reads it at startup.                                        |
+| `JVC_AI_PROVIDER_NAME`             | Public provider name. The default is `OpenRouter`. Capability metadata uses this name and the route, without the private endpoint URL.                               |
+| `JVC_AI_MODEL`                     | Model name. The default is `meta/muse-spark-1.3-contributor`.                                                                                                        |
+| `JVC_AI_PROVIDER_ROUTE`            | Single permitted route. The default is `meta`.                                                                                                                       |
+| `JVC_AI_REASONING_EFFORT`          | Reasoning level. The default is `medium`.                                                                                                                            |
+| `JVC_AI_OPERATIONS`                | Comma-separated permitted operations. The default contains all six operations below. An empty value disables every operation.                                        |
+| `JVC_AI_DECISION_REPORTS`          | Set `enabled` to request a written decision report before the tool call. The default is disabled.                                                                    |
+| `JVC_AI_MAX_TOKENS`                | Maximum output tokens for each provider turn. The default is 16,384. The permitted range is 128 through 32,768.                                                      |
+| `JVC_AI_TIMEOUT_MS`                | Time limit for the complete job. The default is 120,000 milliseconds. The permitted range is 10 through 540,000. Job expiry leaves a reading window after this time. |
+| `JVC_AI_CONCURRENCY`               | Maximum active jobs. The default is two. Node permits one through four. The Worker caps this value at two.                                                           |
+| `JVC_AI_INPUT_PRICE`               | Model input price in USD per million tokens. The default is 0.10.                                                                                                    |
+| `JVC_AI_OUTPUT_PRICE`              | Model output price in USD per million tokens. The default is 0.20.                                                                                                   |
+| `JVC_AI_HOURLY_BUDGET_USD`         | Server spending limit for the past hour. The default is 1 USD.                                                                                                       |
+| `JVC_AI_DAILY_BUDGET_USD`          | Server spending limit for the past day. The default is 5 USD.                                                                                                        |
+| `JVC_AI_NETWORK_HOURLY_BUDGET_USD` | Hourly allowance for each network. The default is half the configured server hourly limit.                                                                           |
+| `JVC_AI_NETWORK_DAILY_BUDGET_USD`  | Daily allowance for each network. The default is half the configured server daily limit.                                                                             |
+| `JVC_AI_MAX_PRICE`                 | Maximum input and output price in USD per million tokens. The default is 10. The permitted range is 0.001 through 100.                                               |
 
 Operations are `type`, `lujvo`, `gismu-sources`, `cmavo-class`, `definition`, and `places-glosses`.
 The `default` profile covers the enabled operations. The `components` profile proposes lujvo components.
@@ -350,6 +352,7 @@ Set `JVC_CLIENT_IP_HEADER` to one header that the proxy replaces with the real c
 The proxy must replace the header with one IP address rather than append client input or a forwarding chain.
 Restrict the Node listener to that proxy. Requests from other peers or without a valid single IP cannot start private jobs.
 The address used for a quota is the IPv4 address or the IPv6 /64 prefix. IPv4-mapped IPv6 addresses use the IPv4 bucket.
+Spending and retained-job limits also count each IPv6 /48. Prefix changes within one /48 do not create more spending shares or retained slots.
 
 The operator sets input and output prices separately in USD per million tokens.
 The defaults come from [OpenRouter's Muse Spark 1.3 Contributor page](https://openrouter.ai/meta/muse-spark-1.3-contributor), read on October 22, 2026.
@@ -362,9 +365,9 @@ A reservation is a cost estimate held before job admission.
 The service constructs each possible task's actual initial provider request, including its prompt and tool schema.
 Let `B` be that request's UTF-8 byte count. Each byte counts as one input token.
 Let `M` be `max_tokens`, `Pi` the input price, and `Po` the output price.
-The correction estimate is `C = 4M + F`, where `F = 32 × 512 × 6 + 4,096 = 102,400` bytes.
-The factor four estimates the previous answer's text. The factor six covers JSON escaping in bounded feedback.
-For tasks after a generated frame, add `G = 8M + 4,096` bytes. Other tasks use `G = 0`.
+The response cap is `R = 262,144` bytes. The feedback allowance is `F = 32 × 512 × 6 + 4,096 = 102,400` bytes.
+The correction bound is `C = 2R + F = 626,688` bytes. It includes echoed reasoning, tool arguments, and escaped feedback.
+For tasks after a generated frame, add `G = 2R + 4,096 = 528,384` bytes. Other tasks use `G = 0`.
 Each task reserves three possible answers with a safety margin of two:
 
 ```text
@@ -374,28 +377,52 @@ reservation(job) = sum(reservation(task))
 
 The operation determines which tasks remain. An absent initial frame includes the places task and up to sixteen generated places.
 An existing frame uses its actual place keys. The reservation includes mappings only when selected definitions supply component places.
-Before admission, both rolling limits must cover existing charges plus the new reservation.
-The defaults are 1 USD over the past hour and 5 USD over the past day.
-A refusal returns HTTP 429 with `billing_limit`, a clear message, and `Retry-After` seconds.
-A request that exceeds an entire window's allowance needs a smaller request or a higher operator limit.
+Before admission, every server and network allowance must cover existing charges plus the new reservation.
+The server defaults are 1 USD over the past hour and 5 USD over the past day.
+Each network receives half of each configured server limit by default: 0.50 USD per hour and 2.50 USD per day.
+IPv6 requests count against both their /64 and /48 allowances. One IPv4 address has one allowance.
+The durable ledger stores keyed SHA-256 hashes of these units. It stores no client address or prefix.
+A private random key remains stable across restarts. Legacy records with no network identity count against every network until their windows end.
+
+A small type request reserves about 0.398 USD at the defaults. A small generated places request without mappings reserves about 1.846 USD.
+The exact amounts depend on the actual prompts, input, and tool schemas. The latter request exceeds the default hourly allowance.
+To permit larger operations, raise both the server allowance and the network allowance. Model prices remain separate from those allowances.
+
+A request above any empty allowance or the optional per-job ceiling returns `billing_request_too_large` without `Retry-After`.
+Its message explains that waiting cannot help. Reduce the request or raise the named operator allowance.
+A temporary spending refusal returns HTTP 429. For settled charges, `billing_limit` includes the computed `Retry-After` seconds.
+The calculation projects each blocking record's expiry and chooses the earliest time that clears every exhausted allowance.
+An active job can still report a missing or larger cost. Such a refusal uses `billing_pending` without a promised retry time.
+The response explains that active work holds the allowance and that its final charge remains unknown.
+When no pending cost can alter the release, the service uses the actual reservation release or charge expiry.
+An active charge uses the job deadline as the latest possible answer time before its hourly or daily window starts.
 The service never reduces `max_tokens` to spend a remainder. Accepted jobs finish even if reported costs exceed their reservations.
 
 Each reported turn cost replaces that turn's estimate when the job settles.
 If a paid turn reports no cost, its charge remains twice the sum of its input estimate and full output allowance.
 The log leaves unknown provider usage unknown. A transport failure also retains that turn's estimated charge.
 While a job runs, admission counts the larger of its complete reservation and accumulated charges.
-When it finishes, admission counts settled charges and releases the unused reservation.
+When every answer reports a cost, completion releases the unused reservation. Otherwise the complete reservation remains within the spending window.
 The last paid answer sets the spending window for all charges in that job.
 Every turn sends `usage: { include: true }`, including correction turns.
 [OpenRouter's usage guide](https://openrouter.ai/docs/cookbook/administration/usage-accounting) says that this field is deprecated because usage is automatic.
 The field does not guarantee a usage report.
 
 Node stores the cost ledger in `assistance-spending.sqlite` within `JVC_DATA_DIR`.
-The Worker stores it in the existing admission Durable Object. Reservations reach durable storage before any provider request.
+The Worker stores it in the existing admission Durable Object. It splits snapshots into 64 KiB binary parts with a checksummed manifest.
+One storage transaction replaces the parts and manifest together. A failed write preserves the preceding complete snapshot.
+Reservations reach durable storage before any provider request.
 A restart keeps interrupted jobs' outstanding reservations until their spending windows expire.
-Recovery starts those windows at the restart time because the lost job cannot report its final cost.
-The ledger contains cost records, not draft text or credentials. An unreadable or unwritable ledger blocks new assistance jobs.
+Recovery starts those windows at the later of the restart time and the stored job deadline.
+A legacy record without a deadline uses the restart time. The lost job cannot report its final cost.
+The ledger contains cost records, network hashes, and its private hash key. It contains no draft text or provider credential.
+An unreadable or unwritable ledger blocks new assistance jobs.
 At most 16,384 cost records remain within a day. Reaching this bound also refuses new jobs with a retry interval.
+A local workerd test measured a valid maximum ledger with escaped 128-character IDs and two hashes per record.
+Its JSON occupied 17,858,669 bytes. The old single stored value occupied 6,324,340 bytes.
+The split form used 273 parts. Its largest stored part occupied 65,549 bytes, including serialization overhead. The manifest occupied 112 bytes.
+The test restored the complete ledger after a runtime restart. An injected write failure preserved the preceding ledger.
+Local workerd accepted the oversized old value. This does not remove the hosted 2 MB value limit or prove hosted quota compliance.
 These estimates require accurate operator prices. They do not guarantee charges from an untested compatible provider.
 
 The log bounds use separate size allowances. The initial request allowance is `B = 2,097,152` bytes.
@@ -427,7 +454,9 @@ Private requests use the configured `JVC_PUBLIC_ORIGIN` on Node or `PUBLIC_ORIGI
 Extra origins permitted for public dictionary reads cannot use private jobs.
 Each session can start 12 jobs per hour. Each client network bucket can start 48 jobs per hour.
 One bucket holds at most eight sessions and one retained job. A failed job with no provider turn releases its retained slot.
-A new visitor can replace the oldest idle session within a full bucket. Sessions with jobs remain protected.
+A new visitor can replace the oldest idle session within a full bucket.
+A context load, pending admission, running job, or readable retained result protects its session.
+Dismissed and discarded terminal records do not prevent idle eviction. Eviction removes their remaining job records.
 At most 128 sessions exist at once. A new visitor can replace the oldest idle session at that limit.
 `GET /session` refreshes a session for one hour. Job admission also extends it through the job's expiry.
 Refreshing a session does not reset its hourly job quota.
@@ -443,7 +472,8 @@ They use transient memory rather than the dictionary object store, indexes, rece
 
 The browser saves a terminal result with its draft, then sends `DELETE` as an acknowledgment.
 Until acknowledgment, expiry, or two minutes after completion, the service holds the result so a lost response can be read again.
-After that reading window, the service discards the result and log and releases its retained slot. The terminal state remains until job expiry.
+After that reading window, the service discards the result and log and releases its retained slot.
+Later job reads return HTTP 410 with `result_discarded`. The browser explains that the result was discarded and that the author can ask again.
 Acknowledgment preserves the terminal state and discards the result and log. It does not cancel a completed action.
 The browser keeps the durable log copy. Publication and peer synchronization omit that log.
 The browser stores each retained log as JSON text before it copies or saves the draft.
