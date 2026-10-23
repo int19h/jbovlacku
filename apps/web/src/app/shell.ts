@@ -2,7 +2,7 @@
  * The shared shell: header with search, "Add a word", the delivery marker,
  * and the identity link; the footer; and the status region.
  */
-import { el, link, icon, sr, text, append } from "../lib/dom.ts";
+import { el, link, icon, sr, text, append, button } from "../lib/dom.ts";
 import { navigate, routes, type Route } from "./router.ts";
 import type { Session } from "./session.ts";
 import type { DeliveryEngine } from "../data/delivery.ts";
@@ -106,7 +106,45 @@ export function buildShell(
     }),
   );
   footer.append(footerInner);
-  root.replaceChildren(header, main, status, footer);
+  const recovered = el("section", {
+    class: "notice",
+    "aria-label": "Rediscovered public record",
+    role: "region",
+    "aria-live": "polite",
+    style: "margin:16px 20px",
+  });
+  recovered.hidden = true;
+  root.replaceChildren(header, recovered, main, status, footer);
+  const showRediscovery = async (identity = session.identity) => {
+    if (!session.storageAvailable || !identity) return;
+    const ids = await session.store
+      .takeOwnRediscoveries(identity)
+      .catch(() => []);
+    if (!ids.length) return;
+    recovered.hidden = false;
+    recovered.replaceChildren(
+      el("p", {
+        text:
+          ids.length === 1
+            ? "A record you discarded from this browser reached a server after all. It is part of your public history. You can keep signing."
+            : "Records you discarded from this browser reached a server after all. They are part of your public history. You can keep signing.",
+      }),
+      button(
+        "Dismiss",
+        () => {
+          recovered.hidden = true;
+        },
+        { class: "btn btn-quiet" },
+      ),
+    );
+  };
+  session.store.onOwnRediscovery = (identity) => {
+    void showRediscovery(identity);
+  };
+  session.subscribe(() => {
+    void showRediscovery();
+  });
+  void showRediscovery();
 
   const renderIdentity = () => {
     identityLink.replaceChildren();

@@ -313,14 +313,11 @@ export async function compromisePage(
     previewBody.replaceChildren();
     actionBox.replaceChildren();
     try {
-      storedHeads = [
-        ...((await app.store.get<string[]>("heads", keyField.input.value)) ??
-          []),
-      ].sort();
       history = await loadOwnHistory(app.store, keyField.input.value, {
         offline: app.offlineSigning.value,
         signal: context.signal,
       });
+      storedHeads = history.storedHeads;
     } catch (error) {
       failure = describe(error);
     }

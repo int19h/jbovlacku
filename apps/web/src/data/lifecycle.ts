@@ -358,6 +358,7 @@ export async function fetchBranches(
   signal?: AbortSignal,
 ): Promise<{ fetched: number }> {
   let fetched = 0;
+  let committedHeads: string[] | undefined;
   for (const k of knowledge) {
     if (k.outcome !== "complete" || !k.snapshot) continue;
     const learned = new Map<string, Envelope>();
@@ -392,7 +393,9 @@ export async function fetchBranches(
     if (!learned.size) continue;
     // Keep the complete verified branch and its heads locally in one write, so
     // later history loads do not depend on that peer.
-    await store.recordBranch(history.identity, [...learned.values()]);
+    committedHeads = await store.restoreServerOwn(history.identity, [
+      ...learned.values(),
+    ]);
     for (const [id, envelope] of learned) history.events.set(id, envelope);
     fetched += learned.size;
   }
@@ -403,6 +406,13 @@ export async function fetchBranches(
     history.frontier = [...history.events.keys()]
       .filter((id) => !ancestors.has(id))
       .sort();
+    if (committedHeads) {
+      if (committedHeads.join(" ") !== history.frontier.join(" "))
+        throw new Error(
+          "The local own history changed during refresh. Refresh the history before signing.",
+        );
+      history.storedHeads = committedHeads;
+    }
   }
   return { fetched };
 }

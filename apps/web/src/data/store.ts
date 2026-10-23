@@ -2,6 +2,7 @@
  * Local IndexedDB storage. Version 2 adds preferences, the private overlay,
  * delivery groups, and own-history caches, and migrates version 1 outbox rows.
  */
+import { utf8, verifyEnvelope } from "../../../../packages/core/src/index.ts";
 import {
   ownGraph,
   hasOwnDependent,
@@ -759,6 +760,111 @@ export class LocalStore {
       tx.onerror = () => {};
     });
   }
+  /** Called after verified server evidence restores a discarded own record. */
+  onOwnRediscovery: ((identity: string) => void) | null = null;
+
+  /** Saves verified server history and clears matching discard markers in one transaction. */
+  async restoreServerOwn(
+    identity: string,
+    envelopes: Envelope[],
+  ): Promise<string[]> {
+    if (!envelopes.length) return [];
+    for (const envelope of envelopes) {
+      verifyEnvelope(utf8(JSON.stringify(envelope)));
+      if (envelope.header.issuer !== identity)
+        throw new Error("A server record does not belong to this identity.");
+    }
+    const db = await this.database;
+    let restored = false;
+    let committedHeads: string[] = [];
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(
+        ["ownhistory", "outbox", "heads", "keys", "prefs"],
+        "readwrite",
+      );
+      const own = tx.objectStore("ownhistory");
+      const heads = tx.objectStore("heads");
+      const keys = tx.objectStore("keys");
+      const prefs = tx.objectStore("prefs");
+      const history = own.getAll();
+      const items = tx.objectStore("outbox").getAll();
+      const current = heads.get(identity);
+      const noticeKey = `rediscovered:${identity}`;
+      const notice = prefs.get(noticeKey);
+      const markers = envelopes.map((envelope) =>
+        keys.get(`discarded:${envelope.id}`),
+      );
+      const reads = [history, items, current, notice, ...markers];
+      let remaining = reads.length;
+      let failure: Error | undefined;
+      for (const request of reads)
+        request.onsuccess = () => {
+          if (--remaining) return;
+          try {
+            const graph = ownGraph(
+              items.result as OutboxItem[],
+              history.result as Envelope[],
+              identity,
+            );
+            const rediscovered = new Set<string>(notice.result ?? []);
+            for (const [index, envelope] of envelopes.entries()) {
+              own.put(envelope, envelope.id);
+              graph.set(envelope.id, envelope.header.previous);
+              if (markers[index].result) {
+                keys.delete(`discarded:${envelope.id}`);
+                rediscovered.add(envelope.id);
+                restored = true;
+              }
+            }
+            committedHeads = remainingHeads(graph, current.result ?? []);
+            heads.put(committedHeads, identity);
+            if (restored) prefs.put([...rediscovered].sort(), noticeKey);
+          } catch (error) {
+            failure =
+              error instanceof Error
+                ? error
+                : new Error(
+                    "The local history could not be read. Nothing was restored.",
+                  );
+            tx.abort();
+          }
+        };
+      tx.oncomplete = () => resolve();
+      tx.onabort = () =>
+        reject(
+          failure ??
+            tx.error ??
+            new Error("Local storage did not restore the public history."),
+        );
+      tx.onerror = () => {};
+    });
+    if (restored) this.onOwnRediscovery?.(identity);
+    return committedHeads;
+  }
+
+  /** Claims pending notices once across concurrent tabs. The visible notice stays until dismissed. */
+  async takeOwnRediscoveries(identity: string): Promise<string[]> {
+    const db = await this.database;
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction("prefs", "readwrite");
+      const prefs = tx.objectStore("prefs");
+      const key = `rediscovered:${identity}`;
+      const request = prefs.get(key);
+      let ids: string[] = [];
+      request.onsuccess = () => {
+        ids = request.result ?? [];
+        if (ids.length) prefs.delete(key);
+      };
+      tx.oncomplete = () => resolve(ids);
+      tx.onabort = () =>
+        reject(
+          tx.error ??
+            new Error("Local storage did not read the public history notice."),
+        );
+      tx.onerror = () => {};
+    });
+  }
+
   /**
    * Records own records learned from another peer: the verified envelopes and
    * the heads they add, in one transaction that merges with the heads stored

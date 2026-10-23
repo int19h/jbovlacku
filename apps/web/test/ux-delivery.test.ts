@@ -1,4 +1,10 @@
 import { test, expect } from "@playwright/test";
+import {
+  createIdentity,
+  openWord,
+  acceptFirstSignature,
+  corePath,
+} from "./helpers.ts";
 import type { OutboxItem, PeerDelivery } from "../src/data/store.ts";
 
 /** Saves synthetic own records without sending them to a peer. */
@@ -213,7 +219,7 @@ test("a stopped in-flight row clears when all recipients accept", async ({
   ).toBeVisible();
 });
 
-test("lifecycle commits refuse a rediscovered discarded predecessor", async ({
+test("lifecycle commits refuse an unverified discarded predecessor", async ({
   page,
 }) => {
   await seed(page);
@@ -225,7 +231,7 @@ test("lifecycle commits refuse a rediscovered discarded predecessor", async ({
     const store = new LocalStore();
     const leaf = await store.get("outbox", "leaf");
     await store.discardOutbox("leaf");
-    // A server can still expose the discarded ID. Keep that evidence and refuse a new descendant.
+    // An ID without its authenticated server envelope cannot clear the discard marker.
     await store.put("heads", "test", ["leaf"]);
     const old = { identity: "test" };
     const successor = { identity: "next" };
@@ -287,4 +293,477 @@ test("lifecycle commits refuse a rediscovered discarded predecessor", async ({
   expect(result.transfer).toBeUndefined();
   expect(result.selected).toEqual({ identity: "test" });
   expect(result.heads).toEqual(["leaf"]);
+});
+
+test("authenticated rediscovery restores signing and shows its notice once across navigation", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await openWord(page, "cukta");
+  // The server stores the signed record, but the first client sees no receipt.
+  await page.route("**/api/v1/events", async (route) => {
+    await route.fetch();
+    await route.abort("failed");
+  });
+  await page
+    .locator("article.definition")
+    .first()
+    .getByRole("button", { name: "Endorse", exact: true })
+    .click();
+  await acceptFirstSignature(page);
+  await expect(
+    page.getByRole("link", { name: "1 not delivered" }),
+  ).toBeVisible();
+  await page.getByRole("link", { name: "1 not delivered" }).click();
+  await page
+    .getByRole("button", { name: "Stop retrying", exact: true })
+    .click();
+  const saved = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    return (await new LocalStore().list("outbox"))[0];
+  });
+  // Admission can precede the completed snapshot that supplies identity heads.
+  await expect
+    .poll(async () => {
+      const response = await page.request.get(
+        `/api/v1/identity-heads/${encodeURIComponent(saved.identity)}?limit=256`,
+      );
+      return (await response.json()).heads ?? [];
+    })
+    .toContain(saved.id);
+  page.once("dialog", (dialog) => void dialog.accept());
+  await page.getByRole("button", { name: "Discard", exact: true }).click();
+  await expect(page.getByText("No unfinished records.")).toBeVisible();
+  expect(
+    await page.evaluate(async (id) => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      return new LocalStore().get("keys", `discarded:${id}`);
+    }, saved.id),
+  ).toBe(true);
+  await page.unroute("**/api/v1/events");
+  // The next ordinary public action loads authenticated server history and signs after it.
+  await openWord(page, "ckusro");
+  await page
+    .locator("article.definition")
+    .first()
+    .getByRole("button", { name: "Endorse", exact: true })
+    .click();
+  await expect(page.getByRole("status")).toContainText(
+    "Your endorsement is published.",
+  );
+  const notice = page.getByRole("region", {
+    name: "Rediscovered public record",
+    exact: true,
+  });
+  await expect(notice).toHaveCount(1);
+  await expect(notice).toContainText("reached a server after all");
+  await expect(notice).toContainText("You can keep signing.");
+  const after = await page.evaluate(async ({ id, identity }) => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore();
+    const records = await store.list("outbox");
+    return {
+      marker: await store.get("keys", `discarded:${id}`),
+      recovered: await store.get("ownhistory", id),
+      heads: await store.get("heads", identity),
+      records,
+    };
+  }, saved);
+  expect(after.marker).toBeUndefined();
+  expect(after.recovered.id).toBe(saved.id);
+  expect(after.records).toHaveLength(1);
+  expect(
+    JSON.parse(after.records[0].transport).envelope.header.previous,
+  ).toEqual([saved.id]);
+  expect(after.records[0].peers.self.state).toBe("accepted");
+  expect(after.heads).toEqual([after.records[0].id]);
+  await page.getByRole("link", { name: "Settings", exact: true }).click();
+  await expect(notice).toBeVisible();
+  await notice.getByRole("button", { name: "Dismiss", exact: true }).click();
+  await expect(notice).toBeHidden();
+  await page.evaluate(async ({ id, identity }) => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { loadOwnHistory } = await import(String("/src/data/history.ts"));
+    const store = new LocalStore();
+    await store.delete("ownhistory", id);
+    await loadOwnHistory(store, identity);
+    await loadOwnHistory(store, identity);
+  }, saved);
+  await page.reload();
+  await expect(page.locator("main h1")).toBeVisible();
+  await expect(notice).toBeHidden();
+});
+
+test("only verified server evidence clears a discard marker and notice claims are atomic", async ({
+  page,
+}) => {
+  await page.goto("/outbox");
+  const result = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { freshPeer } = await import(String("/src/data/delivery.ts"));
+    const store = new LocalStore("rediscovery-negative");
+    const record = core.createEvent(
+      new Uint8Array(32).fill(91),
+      [],
+      "1".repeat(32),
+      { kind: "identity.merge" },
+      null,
+    );
+    const envelope = record.envelope;
+    const identity = envelope.header.issuer;
+    const marker = `discarded:${envelope.id}`;
+    await store.put("keys", marker, true);
+    await store.recordBranch(identity, [envelope]);
+    await store.rememberOwn(identity, [envelope]);
+    const localMarker = await store.get("keys", marker);
+    const localNotice = await store.takeOwnRediscoveries(identity);
+    const stale = core.createEvent(
+      new Uint8Array(32).fill(91),
+      [envelope.id],
+      "2".repeat(32),
+      { kind: "identity.merge" },
+      null,
+    );
+    const item = {
+      id: stale.envelope.id,
+      identity,
+      transport: JSON.stringify(stale),
+      group: "stale",
+      order: 0,
+      label: { subject: "test", action: "profile", href: "/" },
+      peers: { self: freshPeer() },
+      stopped: false,
+      signedAt: 1,
+    };
+    const staleBlocked = await store.queueGroup([item]).then(
+      () => false,
+      () => true,
+    );
+    const invalid = structuredClone(envelope);
+    invalid.header.nonce = "3".repeat(32);
+    const invalidBlocked = await store
+      .restoreServerOwn(identity, [invalid])
+      .then(
+        () => false,
+        () => true,
+      );
+    const wrongIdentityBlocked = await store
+      .restoreServerOwn("ed25519:" + "0".repeat(64), [envelope])
+      .then(
+        () => false,
+        () => true,
+      );
+    const { loadOwnHistory } = await import(String("/src/data/history.ts"));
+    const oldFetch = window.fetch;
+    // Remove the local cache so the requested head must come from this synthetic server.
+    await store.delete("ownhistory", envelope.id);
+    const snapshot = "sha256:" + "a".repeat(64);
+    let mismatchedBlocked = false;
+    try {
+      window.fetch = async (input, options) => {
+        const path = String(input);
+        if (!path.includes("/rediscovery-test/"))
+          return oldFetch(input, options);
+        if (path.endsWith("/manifest"))
+          return new Response(JSON.stringify({ snapshot, packages: [] }));
+        if (path.includes("/identity-heads/"))
+          return new Response(
+            JSON.stringify({
+              snapshot,
+              identity,
+              heads: [envelope.id],
+              next: null,
+            }),
+          );
+        return new Response(JSON.stringify(stale.envelope));
+      };
+      mismatchedBlocked = await loadOwnHistory(store, identity, {
+        peer: { id: "test", base: "/rediscovery-test", label: "test" },
+      }).then(
+        () => false,
+        () => true,
+      );
+    } finally {
+      window.fetch = oldFetch;
+    }
+    const negativeMarker = await store.get("keys", marker);
+    const negativeNotice = await store.takeOwnRediscoveries(identity);
+    // A separately authenticated server fetch can now restore the same public record.
+    const unknownHead = "jve1:" + "e".repeat(64);
+    await store.put("heads", identity, [unknownHead]);
+    await store.restoreServerOwn(identity, [envelope]);
+    const restoredHeads = await store.get("heads", identity);
+    const claims = await Promise.all([
+      store.takeOwnRediscoveries(identity),
+      new LocalStore("rediscovery-negative").takeOwnRediscoveries(identity),
+    ]);
+    await store.queueGroup([item]);
+    await store.restoreServerOwn(identity, [envelope]);
+    const duplicateNotice = await store.takeOwnRediscoveries(identity);
+    return {
+      id: envelope.id,
+      localMarker,
+      localNotice,
+      staleBlocked,
+      invalidBlocked,
+      wrongIdentityBlocked,
+      mismatchedBlocked,
+      negativeMarker,
+      negativeNotice,
+      restoredHeads,
+      unknownHead,
+      claims,
+      duplicateNotice,
+      marker: await store.get("keys", marker),
+    };
+  }, corePath);
+  expect(result.localMarker).toBe(true);
+  expect(result.localNotice).toEqual([]);
+  expect(result.staleBlocked).toBe(true);
+  expect(result.invalidBlocked).toBe(true);
+  expect(result.wrongIdentityBlocked).toBe(true);
+  expect(result.mismatchedBlocked).toBe(true);
+  expect(result.negativeMarker).toBe(true);
+  expect(result.negativeNotice).toEqual([]);
+  expect(result.restoredHeads).toEqual([result.id, result.unknownHead].sort());
+  expect(result.claims.flat()).toEqual([result.id]);
+  expect(result.duplicateNotice).toEqual([]);
+  expect(result.marker).toBeUndefined();
+});
+
+test("handover branch refresh restores authenticated discarded server history", async ({
+  page,
+}) => {
+  await page.goto("/outbox");
+  const result = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { fetchBranches } = await import(String("/src/data/lifecycle.ts"));
+    const store = new LocalStore("branch-rediscovery");
+    const envelope = core.createEvent(
+      new Uint8Array(32).fill(92),
+      [],
+      "4".repeat(32),
+      { kind: "identity.merge" },
+      null,
+    ).envelope;
+    const identity = envelope.header.issuer;
+    await store.put("keys", `discarded:${envelope.id}`, true);
+    const history = {
+      identity,
+      snapshot: null,
+      events: new Map(),
+      frontier: [],
+      complete: true,
+    };
+    const knowledge = [
+      {
+        peer: { id: "test", base: "/branch-test", label: "test" },
+        snapshot: "sha256:" + "a".repeat(64),
+        outcome: "complete",
+        heads: [envelope.id],
+      },
+    ];
+    const oldFetch = window.fetch;
+    try {
+      window.fetch = async (input, options) =>
+        String(input).includes("/branch-test/events/")
+          ? new Response(JSON.stringify(envelope))
+          : oldFetch(input, options);
+      await fetchBranches(store, history, knowledge);
+      const notices = await store.takeOwnRediscoveries(identity);
+      await fetchBranches(store, history, knowledge);
+      return {
+        id: envelope.id,
+        marker: await store.get("keys", `discarded:${envelope.id}`),
+        saved: (await store.get("ownhistory", envelope.id)).id,
+        heads: await store.get("heads", identity),
+        frontier: history.frontier,
+        notices,
+        repeatedNotices: await store.takeOwnRediscoveries(identity),
+      };
+    } finally {
+      window.fetch = oldFetch;
+    }
+  }, corePath);
+  expect(result.marker).toBeUndefined();
+  expect(result.saved).toBe(result.id);
+  expect(result.heads).toEqual([result.id]);
+  expect(result.frontier).toEqual([result.id]);
+  expect(result.notices).toEqual([result.id]);
+  expect(result.repeatedNotices).toEqual([]);
+});
+
+test("history refresh keeps its exact stored-head guard and rejects an unseen concurrent branch", async ({
+  page,
+}) => {
+  await page.goto("/outbox");
+  const result = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { loadOwnHistory } = await import(String("/src/data/history.ts"));
+    const { fetchBranches } = await import(String("/src/data/lifecycle.ts"));
+    const { freshPeer } = await import(String("/src/data/delivery.ts"));
+    const seed = new Uint8Array(32).fill(94);
+    const remote = core.createEvent(
+      seed,
+      [],
+      "5".repeat(32),
+      { kind: "identity.merge" },
+      null,
+    );
+    const concurrent = core.createEvent(
+      seed,
+      [],
+      "6".repeat(32),
+      { kind: "identity.merge" },
+      null,
+    );
+    const identity = remote.envelope.header.issuer;
+    const snapshot = "sha256:" + "a".repeat(64);
+    const peer = { id: "test", base: "/guard-test", label: "test" };
+    const oldFetch = window.fetch;
+    const failures: boolean[] = [];
+    const heads: string[][] = [];
+    const item = {
+      id: concurrent.envelope.id,
+      identity,
+      transport: JSON.stringify(concurrent),
+      group: "concurrent",
+      order: 0,
+      label: { subject: "test", action: "merge", href: "/" },
+      peers: { self: freshPeer() },
+      stopped: false,
+      signedAt: 1,
+    };
+    try {
+      window.fetch = async (input, options) => {
+        const path = String(input);
+        if (!path.includes("/guard-test/")) return oldFetch(input, options);
+        if (path.endsWith("/manifest"))
+          return new Response(JSON.stringify({ snapshot, packages: [] }));
+        if (path.includes("/identity-heads/"))
+          return new Response(
+            JSON.stringify({
+              snapshot,
+              identity,
+              heads: [remote.envelope.id],
+              next: null,
+            }),
+          );
+        return new Response(JSON.stringify(remote.envelope));
+      };
+      for (const branch of [false, true]) {
+        const store = new LocalStore(`guard-concurrent-${branch}`);
+        const restore = store.restoreServerOwn.bind(store);
+        store.restoreServerOwn = async (identity: string, envelopes: any[]) => {
+          await store.queueGroup([item]);
+          return restore(identity, envelopes);
+        };
+        const history = {
+          identity,
+          snapshot: null,
+          events: new Map(),
+          frontier: [],
+          storedHeads: [],
+          complete: true,
+        };
+        const work = branch
+          ? fetchBranches(store, history, [
+              {
+                peer,
+                snapshot,
+                outcome: "complete",
+                heads: [remote.envelope.id],
+              },
+            ])
+          : loadOwnHistory(store, identity, { peer });
+        failures.push(
+          await work.then(
+            () => false,
+            (error: Error) => error.message.includes("changed during refresh"),
+          ),
+        );
+        heads.push(await store.get("heads", identity));
+      }
+      const failedCache = new LocalStore("guard-cache-failure");
+      failedCache.restoreServerOwn = async () => {
+        throw new Error("Storage failed");
+      };
+      const uncached = await loadOwnHistory(failedCache, identity, { peer });
+      return {
+        failures,
+        heads,
+        expected: [remote.envelope.id, concurrent.envelope.id].sort(),
+        initialGuard: uncached.storedHeads,
+        reviewedFrontier: uncached.frontier,
+        remote: remote.envelope.id,
+      };
+    } finally {
+      window.fetch = oldFetch;
+    }
+  }, corePath);
+  expect(result.failures).toEqual([true, true]);
+  expect(result.heads).toEqual([result.expected, result.expected]);
+  expect(result.initialGuard).toEqual([]);
+  expect(result.reviewedFrontier).toEqual([result.remote]);
+});
+
+test("rediscovery shows the author a notice for an owned key that is not selected", async ({
+  page,
+}) => {
+  await page.goto("/outbox");
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { createKey } = await import(String("/src/data/keys.ts"));
+    const { signWith } = await import(String("/src/data/lifecycle.ts"));
+    const { buildShell } = await import(String("/src/app/shell.ts"));
+    const retired = await createKey("disposable retired passphrase");
+    const selected = await createKey("disposable selected passphrase");
+    const store = new LocalStore("nonselected-key-rediscovery");
+    await store.installIdentity(selected.backup);
+    await store.put(
+      "keys",
+      `retired:${retired.backup.identity}`,
+      retired.backup,
+    );
+    const record = await signWith(retired.key, retired.backup.identity, [], {
+      kind: "identity.merge",
+    });
+    await store.put("keys", `discarded:${record.envelope.id}`, true);
+    const root = document.createElement("div");
+    root.id = "nonselected-key-shell";
+    document.body.append(root);
+    buildShell(
+      root,
+      {
+        store,
+        storageAvailable: true,
+        backup: selected.backup,
+        identity: selected.backup.identity,
+        unlocked: false,
+        subscribe: () => () => {},
+      },
+      {
+        subscribe: (listener: (items: unknown[]) => void) => {
+          listener([]);
+          return () => {};
+        },
+      },
+    );
+    await store.restoreServerOwn(retired.backup.identity, [record.envelope]);
+  });
+  const shell = page.locator("#nonselected-key-shell");
+  const notice = shell.getByRole("region", {
+    name: "Rediscovered public record",
+    exact: true,
+  });
+  await expect(notice).toBeVisible();
+  await expect(notice).toContainText("reached a server after all");
+  await notice.getByRole("button", { name: "Dismiss", exact: true }).click();
+  await expect(notice).toBeHidden();
 });

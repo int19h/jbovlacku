@@ -37,6 +37,8 @@ export interface OwnHistory {
   snapshot: string | null;
   /** Maximal own event IDs. */
   frontier: string[];
+  /** The exact stored heads that a lifecycle preview must compare at commit. */
+  storedHeads: string[];
   /** Every authenticated own envelope by ID. */
   events: Map<string, Envelope>;
   /** True when every reachable predecessor was loaded. */
@@ -177,16 +179,26 @@ export async function loadOwnHistory(
       "Own history has more than 64 branches, which is the format limit for one record. Signing with this key is unavailable here. Export the outbox from Not delivered to keep your signed records.",
     );
   // Every ancestor was walked, so the fetched records are authenticated
-  // history. Keeping them makes the next load local. A storage failure here
-  // only costs the next load a fetch.
+  // history. Restore server evidence and any matching discard markers together.
+  // A failed restore leaves those markers in place, so saving a descendant still fails safely.
+  let storedHeads = [...remembered].sort();
+  let committedHeads: string[] | undefined;
   if (fetched.length)
     try {
-      await timed(store.rememberOwn(identity, fetched));
+      committedHeads = await timed(store.restoreServerOwn(identity, fetched));
     } catch {}
+  if (committedHeads) {
+    if (committedHeads.join(" ") !== frontier.join(" "))
+      throw new Error(
+        "The local own history changed during refresh. Refresh the history before signing.",
+      );
+    storedHeads = committedHeads;
+  }
   return {
     identity,
     snapshot: manifest?.snapshot ?? null,
     frontier,
+    storedHeads,
     events: verified,
     complete,
   };

@@ -41,10 +41,10 @@ export function hasOwnDependent(graph: Map<string, string[]>, id: string) {
 export function remainingHeads(
   graph: Map<string, string[]>,
   remembered: string[],
-  discarded: string,
+  discarded?: string,
 ) {
   const candidates = new Set([...remembered, ...graph.keys()]);
-  candidates.delete(discarded);
+  if (discarded) candidates.delete(discarded);
   for (const previous of graph.values())
     for (const id of previous) candidates.delete(id);
   return [...candidates].sort();

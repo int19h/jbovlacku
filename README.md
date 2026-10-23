@@ -44,6 +44,8 @@ The local key edits its public profile, with a signed preview of the name, biogr
 The browser keeps the key's own records that it fetched from a server, so later signatures read them locally. It handles at most 4,096 own events per key and 64 concurrent branches. Above those limits it refuses to sign in this browser and says so.
 The Not delivered page lists waiting and stopped records. The header marker counts both, and stopped rows offer Resume and Save as file.
 Discard asks first and removes a stopped record only when no later local own record depends on it. The storage transaction restores retained predecessors to the frontier.
+If authenticated server history later includes a discarded record, the browser restores its history and permits later signatures to follow it.
+The app tells the author once that the record reached a server. The notice stays through navigation until dismissed.
 Delivery supports receipt lookup before retry, identical retries, Retry-After, and Stop retrying. A first online publication shows neutral progress until delivery returns an outcome.
 Delivered records leave the list but keep their receipts in retained history. With no waiting or stopped records, the page shows a short empty state.
 Downloaded search packages permit local search without a request for each query. Version 2 packages carry authors, notes, and rafsi for result rows.

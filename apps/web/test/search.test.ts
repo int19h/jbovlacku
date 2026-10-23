@@ -7,7 +7,7 @@ import {
   fixture,
 } from "./helpers.ts";
 
-test("downloaded search queries work without an API request and offline signing uses saved history", async ({
+test("downloaded search queries work without sending a search request and offline signing uses saved history", async ({
   page,
 }) => {
   await page.goto("/preferences");
@@ -18,7 +18,8 @@ test("downloaded search queries work without an API request and offline signing 
   await expect(page.getByText(/\d+ definitions · snapshot/)).toBeVisible();
   let requests = 0;
   await page.route("**/api/v1/**", (route) => {
-    requests++;
+    if (new URL(route.request().url()).pathname === "/api/v1/search")
+      requests++;
     return route.abort();
   });
   await page.goto("/search?q=book&lang=en");
@@ -217,6 +218,11 @@ test("object and package waits expire and oversized streams are cancelled", asyn
     const { api, getEnvelope } = await import(String("/src/data/api.ts"));
     const { downloadPackage } = await import(String("/src/data/search.ts"));
     const oldFetch = window.fetch;
+    const peer = {
+      id: "isolated",
+      base: "/request-count-test",
+      label: "test peer",
+    };
     const oldTimeout = AbortSignal.timeout;
     const requestedTimeouts: number[] = [];
     AbortSignal.timeout = (ms) => {
@@ -257,6 +263,8 @@ test("object and package waits expire and oversized streams are cancelled", asyn
       ]) {
         window.fetch = async (url, options) => {
           const path = String(url);
+          if (!path.includes("/request-count-test/"))
+            return oldFetch(url, options);
           if (stage.includes("package") || stage.includes("part")) {
             if (path.endsWith("/manifest"))
               return new Response(JSON.stringify(manifest));
@@ -286,18 +294,23 @@ test("object and package waits expire and oversized streams are cancelled", asyn
         };
         try {
           if (stage === "generic custom signal")
-            await api("/unused", { signal: new AbortController().signal });
+            await api("/unused", {
+              signal: new AbortController().signal,
+              peer,
+            });
           else if (stage.startsWith("envelope"))
-            await getEnvelope("jve1:" + "1".repeat(64));
-          else await downloadPackage("en");
+            await getEnvelope("jve1:" + "1".repeat(64), undefined, { peer });
+          else await downloadPackage("en", { peer });
           outcomes.push("accepted");
         } catch (error) {
           outcomes.push((error as Error).name + ":" + (error as any).kind);
         }
       }
       for (const withLength of [true, false]) {
-        window.fetch = async () =>
-          new Response(
+        window.fetch = async (url, options) => {
+          if (!String(url).includes("/request-count-test/"))
+            return oldFetch(url, options);
+          return new Response(
             new ReadableStream({
               start(controller) {
                 if (!withLength) controller.enqueue(new Uint8Array(20481));
@@ -308,8 +321,9 @@ test("object and package waits expire and oversized streams are cancelled", asyn
             }),
             { headers: withLength ? { "content-length": "20481" } : {} },
           );
+        };
         try {
-          await getEnvelope("jve1:" + "1".repeat(64));
+          await getEnvelope("jve1:" + "1".repeat(64), undefined, { peer });
           outcomes.push("accepted");
         } catch (error) {
           outcomes.push((error as Error).message);
@@ -372,7 +386,8 @@ test("local search ranks match classes, keeps the strongest match, and sends not
     }, corePath);
     let requests = 0;
     await page.route("**/api/v1/**", (route) => {
-      requests++;
+      if (new URL(route.request().url()).pathname === "/api/v1/search")
+        requests++;
       return route.abort();
     });
     await page.goto("/search?q=I&lang=en");
@@ -553,7 +568,8 @@ test("local search pages through many results in stable order, keeps equal-class
   }, corePath);
   let apiRequests = 0;
   await page.route("**/api/v1/**", (route) => {
-    apiRequests++;
+    if (new URL(route.request().url()).pathname === "/api/v1/search")
+      apiRequests++;
     return route.abort();
   });
   await page.goto("/search?q=needle&lang=en");

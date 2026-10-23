@@ -26,7 +26,9 @@ test("a failed local write never reports a saved group and sends nothing", async
     const created = await createKey("storage failure");
     let calls = 0;
     const oldFetch = window.fetch;
-    window.fetch = async () => {
+    window.fetch = async (input, options) => {
+      if (!String(input).includes("/failed-write-test/"))
+        return oldFetch(input, options);
       calls++;
       return new Response("{}");
     };
@@ -39,7 +41,7 @@ test("a failed local write never reports a saved group and sends nothing", async
     };
     const session = {
       preferences: {
-        peers: [{ id: "self", base: "/api/v1", label: "this server" }],
+        peers: [{ id: "self", base: "/failed-write-test", label: "test peer" }],
       },
       storageAvailable: true,
       backup: created.backup,
@@ -174,7 +176,20 @@ test("own-history pagination rejects loops and malformed pages while preserving 
   const results = await page.evaluate(async (corePath) => {
     const core = await import(corePath);
     await core.initializeCore();
-    const { ownHeads } = await import(String("/src/data/history.ts"));
+    const { loadOwnHistory } = await import(String("/src/data/history.ts"));
+    const peer = {
+      id: "isolated",
+      base: "/own-history-test",
+      label: "test peer",
+    };
+    const ownHeads = async (
+      store: any,
+      identity: string,
+      offline = false,
+      signal?: AbortSignal,
+    ) =>
+      (await loadOwnHistory(store, identity, { offline, signal, peer }))
+        .frontier;
     const seed = new Uint8Array(32).fill(103);
     const parent = core.createEvent(
       seed,
@@ -278,8 +293,10 @@ test("own-history pagination rejects loops and malformed pages while preserving 
                 ]
               : [],
         };
-        window.fetch = async (url) => {
+        window.fetch = async (url, options) => {
           const path = String(url);
+          if (!path.includes("/own-history-test/"))
+            return oldFetch(url, options);
           if (path.endsWith("/manifest"))
             return new Response(JSON.stringify({ snapshot, packages: [] }));
           if (path.includes("/identity-heads/")) {
@@ -344,7 +361,20 @@ test("own-history has an overall deadline and respects caller cancellation", asy
 }) => {
   await page.goto("/");
   const results = await page.evaluate(async () => {
-    const { ownHeads } = await import(String("/src/data/history.ts"));
+    const { loadOwnHistory } = await import(String("/src/data/history.ts"));
+    const peer = {
+      id: "isolated",
+      base: "/own-history-test",
+      label: "test peer",
+    };
+    const ownHeads = async (
+      store: any,
+      identity: string,
+      offline = false,
+      signal?: AbortSignal,
+    ) =>
+      (await loadOwnHistory(store, identity, { offline, signal, peer }))
+        .frontier;
     const oldFetch = window.fetch;
     const oldTimeout = AbortSignal.timeout;
     const timeouts: number[] = [];
@@ -356,7 +386,9 @@ test("own-history has an overall deadline and respects caller cancellation", asy
       );
     };
     let requests = 0;
-    window.fetch = async (_, options) => {
+    window.fetch = async (input, options) => {
+      if (!String(input).includes("/own-history-test/"))
+        return oldFetch(input, options);
       requests++;
       return new Promise((_, reject) =>
         options!.signal!.addEventListener(
