@@ -8,6 +8,7 @@ import {
   createEvaluationSession,
   createEvent,
   restoreHostEvaluationSession,
+  identityFromSeed,
   initializeCore,
   rankWord,
   utf8,
@@ -373,5 +374,94 @@ test("session forks and host checkpoints preserve their parent and full evaluati
     child.free();
     expected.free();
     branch.free();
+  }
+});
+
+test("judgment delta exports share immutable state without trusting caller changes", async () => {
+  const sourceBytes = await readFile(
+    new URL("../../importer/fixtures/lensisku-sample.json", import.meta.url),
+  );
+  const manifest = JSON.parse(
+    await readFile(
+      new URL(
+        "../../importer/fixtures/lensisku-sample.manifest.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  ) as CaptureManifest;
+  const reviewer = new Uint8Array(32).fill(73);
+  const imported = importCapture({
+    sourceBytes,
+    manifest,
+    seed: new Uint8Array(32).fill(72),
+    roots: [
+      {
+        identity: identityFromSeed(reviewer),
+        q: { numerator: 1, denominator: 1 },
+      },
+    ],
+  });
+  const input = request({
+    events: imported.carriers.map((carrier) => canonical(carrier.envelope)),
+    bodies: Object.fromEntries(
+      imported.carriers.map((carrier) => [
+        carrier.envelope.id,
+        canonical(carrier.body),
+      ]),
+    ),
+    selected_view: imported.view.envelope.id,
+    import_selections: { [imported.selection.hash]: imported.selection.ids },
+  });
+  const parent = evaluateSession(input);
+  const target = Object.values(parent.state.publications)[0];
+  const original = structuredClone(parent.state);
+  assert.throws(() => {
+    parent.state.publications[target.id].status = "forged";
+  }, TypeError);
+  assert.throws(() => {
+    (parent as any).state = { ...parent.state, available: false };
+  }, TypeError);
+  const judgment = createEvent(
+    reviewer,
+    [],
+    "9".repeat(32),
+    { kind: "judgment.set", target: target.id, value: "bless" },
+    null,
+  );
+  const builder = parent.fork({
+    selected_view: input.selected_view,
+    import_selections: input.import_selections,
+  });
+  builder.addRecord(utf8(canonical(judgment.envelope)));
+  const child = builder.finish();
+  const full = evaluateSession({
+    ...input,
+    events: [...input.events, canonical(judgment.envelope)],
+  });
+  try {
+    assert.equal(child.updateStatistics().rebuilt, false);
+    assert.equal(child.updateStatistics().incremental_records, 1);
+    assert.deepEqual(child.state, full.state);
+    assert.deepEqual(parent.state, original);
+    assert.equal(child.state.publications, parent.state.publications);
+    assert.equal(
+      child.state.publication_statuses,
+      parent.state.publication_statuses,
+    );
+    assert.throws(() => {
+      child.state.receipts[judgment.envelope.id].body = "forged";
+    }, TypeError);
+    assert.throws(() => {
+      (child.state.judgments as any)[target.id][identityFromSeed(reviewer)] =
+        "curse";
+    }, TypeError);
+    assert.ok(Object.isFrozen(child.state.receipts));
+    assert.ok(Object.isFrozen(child.state.lifecycle));
+  } finally {
+    parent.free();
+    child.free();
+    full.free();
+    builder.free();
   }
 });

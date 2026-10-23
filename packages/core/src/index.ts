@@ -189,7 +189,7 @@ export interface EvaluationPackageRecord {
   body: Record<string, unknown> | null;
 }
 export interface EvaluationSessionHandle {
-  state: Evaluation;
+  readonly state: Evaluation;
   rankWord(word: string, reviewers?: number): any;
   fork(options: EvaluationSessionOptions): EvaluationBuilder;
   checkpoint(binding: string): Uint8Array;
@@ -199,6 +199,50 @@ export interface EvaluationSessionHandle {
     reason: string | null;
   };
   free(): void;
+}
+interface SessionBasis {
+  state: Evaluation;
+  identity: string;
+}
+interface StateDelta {
+  version: 1;
+  base_session: string;
+  receipts: Evaluation["receipts"];
+  registers: Record<string, unknown>;
+  judgments: Record<string, Record<string, unknown>>;
+  lifecycle: {
+    key_actor: Record<string, string>;
+    groups: Record<string, string[]>;
+  };
+}
+function freezeState<T>(value: T): T {
+  if (value && typeof value === "object" && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const child of Object.values(value)) freezeState(child);
+  }
+  return value;
+}
+function applyStateDelta(parent: Evaluation, delta: StateDelta): Evaluation {
+  const oldJudgments = parent.judgments as StateDelta["judgments"];
+  const judgments = { ...oldJudgments };
+  for (const [target, actors] of Object.entries(delta.judgments))
+    judgments[target] = { ...oldJudgments[target], ...actors };
+  const lifecycle = parent.lifecycle as StateDelta["lifecycle"] &
+    Record<string, unknown>;
+  return {
+    ...parent,
+    receipts: { ...parent.receipts, ...delta.receipts },
+    registers: {
+      ...(parent.registers as Record<string, unknown>),
+      ...delta.registers,
+    },
+    judgments,
+    lifecycle: {
+      ...lifecycle,
+      key_actor: { ...lifecycle.key_actor, ...delta.lifecycle.key_actor },
+      groups: { ...lifecycle.groups, ...delta.lifecycle.groups },
+    },
+  };
 }
 export interface EvaluationBuilder {
   addRecord(
@@ -211,16 +255,28 @@ export interface EvaluationBuilder {
 }
 function wrapEvaluationSession(
   session: wasm.EvaluationSession,
+  parent?: SessionBasis,
 ): EvaluationSessionHandle {
   let state: Evaluation;
+  let identity: string;
   try {
-    state = JSON.parse(session.state()) as Evaluation;
+    identity = session.state_identity();
+    const delta = parent
+      ? (JSON.parse(session.state_delta()) as StateDelta | null)
+      : null;
+    state = freezeState(
+      delta?.version === 1 && delta.base_session === parent?.identity
+        ? applyStateDelta(parent.state, delta)
+        : (JSON.parse(session.state()) as Evaluation),
+    );
   } catch (error) {
     session.free();
     throw error;
   }
   return {
-    state,
+    get state() {
+      return state;
+    },
     /**
      * Ranks one word. `reviewers` asks for at most that many reviewer details
      * per score, bounded inside the core. Without it the aggregate lookup does
@@ -233,7 +289,10 @@ function wrapEvaluationSession(
           : session.rank_with_reviewers(word, reviewers),
       ),
     fork: (options) =>
-      wrapEvaluationBuilder(session.fork(encodeEvaluationRequest(options))),
+      wrapEvaluationBuilder(session.fork(encodeEvaluationRequest(options)), {
+        state,
+        identity,
+      }),
     checkpoint: (binding) => session.checkpoint(binding),
     updateStatistics: () => JSON.parse(session.update_statistics()),
     free: () => session.free(),
@@ -252,6 +311,7 @@ export function createEvaluationSession(options: EvaluationSessionOptions) {
 }
 function wrapEvaluationBuilder(
   builder: wasm.EvaluationSessionBuilder,
+  parent?: SessionBasis,
 ): EvaluationBuilder {
   let closed = false;
   function requireOpen() {
@@ -271,7 +331,7 @@ function wrapEvaluationBuilder(
     finish() {
       requireOpen();
       closed = true;
-      return wrapEvaluationSession(builder.finish());
+      return wrapEvaluationSession(builder.finish(), parent);
     },
     free() {
       if (!closed) {
