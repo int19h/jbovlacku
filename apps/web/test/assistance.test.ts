@@ -2464,3 +2464,302 @@ test("network failures add manual guidance once", async ({ page }) => {
   ).toBeFocused();
   expect((await stored(page)).kind).toBe("gismu");
 });
+
+for (const refusal of [
+  {
+    code: "billing_limit",
+    message:
+      "Try again after the retry time, or reduce the request. Retry in 35 seconds.",
+  },
+  {
+    code: "billing_request_too_large",
+    message: "This request exceeds the spending limit. Reduce the request.",
+  },
+  {
+    code: "billing_pending",
+    message:
+      "Active inference work holds this allowance while its final costs are unknown. Wait for that work to finish, then request the suggestion again.",
+  },
+]) {
+  test(`coded ${refusal.code} keeps the server guidance without another retry instruction`, async ({
+    page,
+  }) => {
+    await mockAssistant(page);
+    await page.route("**/api/v1/assist", (route) =>
+      route.fulfill({
+        status: 429,
+        json: refusal,
+      }),
+    );
+    await draft(page);
+    await page
+      .getByRole("button", { name: "Recommend a type", exact: true })
+      .click();
+    await allow(page);
+    const expected = `${refusal.message} You can fill the fields in by hand.`;
+    await expect(page.locator(".ai-action .notice")).toHaveText(expected);
+    await expect
+      .poll(async () => (await stored(page)).ai.records.at(-1).error)
+      .toBe(expected);
+    await page.reload();
+    await expect(page.locator(".ai-action .notice")).toHaveText(expected);
+  });
+}
+
+test("coded source failures give manual row guidance once", async ({
+  page,
+}) => {
+  await mockAssistant(page);
+  await page.route("**/api/v1/assist", (route) =>
+    route.fulfill({
+      status: 503,
+      json: {
+        code: "capacity",
+        message: "The assistant is at capacity. Retry in 5 seconds.",
+      },
+    }),
+  );
+  await draft(page, { kind: "gismu" }, "/new/gismu");
+  await page
+    .getByRole("button", { name: "Suggest source for English", exact: true })
+    .click();
+  await allow(page);
+  await expect(
+    page.locator('.ai-action[data-ai-action^="source-"] .notice'),
+  ).toHaveText(
+    "The assistant is at capacity. Retry in 5 seconds. You can fill the rows in by hand.",
+  );
+});
+
+test("an expired result displays discarded status and keeps manual editing available", async ({
+  page,
+}) => {
+  await mockAssistant(page);
+  await page.route("**/api/v1/jobs/local-job", (route) =>
+    route.request().method() === "GET"
+      ? route.fulfill({
+          status: 410,
+          json: {
+            code: "result_discarded",
+            message:
+              "This private result and its log were discarded. Request a new suggestion to continue.",
+          },
+        })
+      : route.fallback(),
+  );
+  await draft(page);
+  await page
+    .getByRole("button", { name: "Recommend a type", exact: true })
+    .click();
+  await allow(page);
+  const expected =
+    "This private result and its log were discarded. Request a new suggestion to continue. You can fill the fields in by hand.";
+  await expect(page.locator(".ai-action .notice")).toHaveText(expected);
+  await expect(page.locator(".ai-action [role=status]")).toHaveText(expected);
+  await expect(page.getByRole("radio", { name: /^gismu/ })).toBeEnabled();
+  await expect(
+    page.getByRole("button", { name: "Try again", exact: true }),
+  ).toBeEnabled();
+});
+
+async function scoredGismu(page: Page) {
+  await draft(
+    page,
+    {
+      kind: "gismu",
+      gismu: {
+        preset: null,
+        rows: [
+          {
+            language: "en",
+            name: "English",
+            word: "book",
+            input: "buk",
+            weight: { numerator: "1", denominator: "1" },
+          },
+        ],
+        candidates: "source-letters",
+        selected: "makru",
+        manual: "makru",
+        acknowledged: [],
+        reason: "",
+        window: 12,
+      },
+    },
+    "/new/gismu",
+  );
+  await expect(
+    page.getByRole("button", { name: "Use makru", exact: true }),
+  ).toBeEnabled();
+  await page.clock.install();
+  await page.clock.pauseAt(new Date());
+}
+
+for (const input of ["letters", "language", "weight"]) {
+  test(`changing ${input} disables the old generated form during the calculation wait`, async ({
+    page,
+  }) => {
+    await scoredGismu(page);
+    const disabled = await page.evaluate((input) => {
+      const selector =
+        input === "letters"
+          ? '[aria-label="Scoring letters for English"]'
+          : input === "language"
+            ? '[aria-label="Language tag of row 1"]'
+            : '[aria-label="Weight numerator of row 1"]';
+      const field = document.querySelector<HTMLInputElement>(selector)!;
+      field.value =
+        input === "letters" ? "makru" : input === "language" ? "fr" : "2";
+      field.dispatchEvent(
+        new Event(input === "letters" ? "input" : "change", { bubbles: true }),
+      );
+      return document.querySelector<HTMLButtonElement>(
+        ".action-bar .btn-primary",
+      )?.disabled;
+    }, input);
+    expect(disabled).toBe(true);
+    await page.clock.runFor(251);
+    await expect(
+      page.getByRole("button", { name: "Use makru", exact: true }),
+    ).toBeEnabled();
+    await page.getByRole("button", { name: "Use makru", exact: true }).click();
+    await expect(page).toHaveURL(/\/new\/places$/);
+    const saved = await stored(page);
+    expect(saved.formation.sources[0]).toMatchObject(
+      input === "letters"
+        ? { input: { format: "lojbanized", text: "makru" } }
+        : input === "language"
+          ? { language: "fr" }
+          : { weight: { numerator: 2, denominator: 1 } },
+    );
+  });
+}
+
+test("the primary handler refuses a stale generated result even if its button is enabled", async ({
+  page,
+}) => {
+  await scoredGismu(page);
+  await page.evaluate(() => {
+    const field = document.querySelector<HTMLInputElement>(
+      '[aria-label="Scoring letters for English"]',
+    )!;
+    field.value = "makru";
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    const use = document.querySelector<HTMLButtonElement>(
+      ".action-bar .btn-primary",
+    )!;
+    use.disabled = false;
+    use.click();
+  });
+  await expect(page).toHaveURL(/\/new\/gismu$/);
+  // Navigation would flush immediately. An ordinary pending edit flushes at 300 ms.
+  await page.clock.runFor(1);
+  expect((await stored(page)).formation).toBeNull();
+});
+
+test("closing the generator clears its pending calculation", async ({
+  page,
+}) => {
+  await scoredGismu(page);
+  await page.evaluate(async () => {
+    const selected = document.querySelector('[aria-label="Selected form"]')!;
+    const fixture = { changes: 0, writes: 0, selected };
+    Object.assign(window, { closedGenerator: fixture });
+    const field = document.querySelector<HTMLInputElement>(
+      '[aria-label="Scoring letters for English"]',
+    )!;
+    field.value = "makru";
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    const { navigate } = await import(String("/src/app/router.ts"));
+    navigate("/search");
+  });
+  await expect(page).toHaveURL(/\/search$/);
+  await page.evaluate(async () => {
+    const fixture = (window as any).closedGenerator;
+    new MutationObserver(() => fixture.changes++).observe(fixture.selected, {
+      childList: true,
+    });
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const original = LocalStore.prototype.saveDraft;
+    LocalStore.prototype.saveDraft = function (...args: any[]) {
+      fixture.writes++;
+      return original.apply(this, args);
+    };
+  });
+  await page.clock.runFor(300);
+  expect(
+    await page.evaluate(() => (window as any).closedGenerator.changes),
+  ).toBe(0);
+  expect(
+    await page.evaluate(() => (window as any).closedGenerator.writes),
+  ).toBe(0);
+});
+
+test("Cancel during a completed suggestion save keeps its ready status", async ({
+  page,
+}) => {
+  const mock = await mockAssistant(page, { delay: true });
+  await draft(page);
+  await page.evaluate(async () => {
+    const { DraftSaver } = await import(String("/src/pages/wizard/common.ts"));
+    const original = DraftSaver.prototype.flush;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const fixture = { saving: false, release };
+    Object.assign(window, { suggestionSave: fixture });
+    DraftSaver.prototype.flush = async function () {
+      const saved = await original.call(this);
+      if (this.draft.ai?.records.at(-1)?.state === "done") {
+        fixture.saving = true;
+        await gate;
+      }
+      return saved;
+    };
+  });
+  await page
+    .getByRole("button", { name: "Recommend a type", exact: true })
+    .click();
+  await allow(page);
+  mock.release();
+  await expect
+    .poll(() => page.evaluate(() => (window as any).suggestionSave.saving))
+    .toBe(true);
+  await expect(page.locator(".ai-action [role=status]")).toHaveText(
+    "Suggestion ready.",
+  );
+  // The old Cancel control remains reachable while the final save is pending.
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(page.locator(".ai-action [role=status]")).toHaveText(
+    "Suggestion ready.",
+  );
+  await page.evaluate(() => (window as any).suggestionSave.release());
+  const panel = page.getByRole("region", {
+    name: "Recommend a type suggestion",
+  });
+  await expect(panel).toBeVisible();
+  expect((await stored(page)).ai.records.at(-1).state).toBe("done");
+  expect(mock.deletions()).toBe(1);
+});
+
+test("Dismiss clears the completed suggestion announcement", async ({
+  page,
+}) => {
+  await mockAssistant(page);
+  await draft(page);
+  await page
+    .getByRole("button", { name: "Recommend a type", exact: true })
+    .click();
+  await allow(page);
+  const panel = page.getByRole("region", {
+    name: "Recommend a type suggestion",
+  });
+  await expect(panel).toBeVisible();
+  await expect(page.locator(".ai-action [role=status]")).toHaveText(
+    "Suggestion ready.",
+  );
+  await panel.getByRole("button", { name: "Dismiss", exact: true }).click();
+  await expect(panel).toHaveCount(0);
+  await expect(page.locator(".ai-action [role=status]")).toHaveText("");
+});

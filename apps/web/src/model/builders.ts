@@ -420,7 +420,7 @@ export function formationSourcesFromRows(
           value?.trim(),
         ) ||
         [row.word_ipa, row.stem, row.ipa].some((value) => !!value?.length) ||
-        !!row.inputOriginal ||
+        Object.hasOwn(row, "inputOriginal") ||
         !!row.notes?.length,
     )
     .map(formationSource);

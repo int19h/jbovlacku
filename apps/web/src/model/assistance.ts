@@ -7,6 +7,7 @@ import {
   draftToBody,
   hintForChoice,
 } from "./draft.ts";
+import type { DraftProblem } from "./draft.ts";
 import type {
   DefinitionBody,
   Compound,
@@ -269,6 +270,10 @@ export function applyFrame(draft: Draft, frame: Frame | null) {
 }
 /** Proposals remain ordinary editable data. Publication uses the existing signer. */
 export function applyProposals(draft: Draft, result: Suggestion) {
+  const baseline =
+    result.operation === "definition" || result.operation === "places-glosses"
+      ? assistanceProblems(draft)
+      : undefined;
   for (const proposal of result.proposals) {
     const value = structuredClone(proposal.value);
     switch (proposal.path) {
@@ -346,20 +351,52 @@ export function applyProposals(draft: Draft, result: Suggestion) {
     result.operation === "definition" ||
     result.operation === "places-glosses"
   ) {
-    checkAssistanceDraft(draft);
+    checkAssistanceDraft(draft, baseline);
   }
 }
 
-/** Full and partial acceptance use the same frame and reference rules. */
-export function checkAssistanceDraft(draft: Draft) {
+function assistanceProblems(draft: Draft): DraftProblem[] {
   const checked = draftToBody(draft);
   const invalid = checked.problems.filter(
     (p) => p.blocking && p.field !== "numbering",
   );
-  if (checked.body && checked.wordId)
-    invalid.push(
-      ...coreProblems(checked.body, checked.wordId, draft.parents, "native"),
+  if (checked.body && checked.wordId) {
+    for (const problem of coreProblems(
+      checked.body,
+      checked.wordId,
+      draft.parents,
+      "native",
+    )) {
+      if (
+        !invalid.some(
+          (p) => p.field === problem.field && p.message === problem.message,
+        )
+      )
+        invalid.push(problem);
+    }
+  }
+  return invalid;
+}
+/** Full and partial acceptance refuse new problems, including repeated problems. */
+export function checkAssistanceDraft(
+  draft: Draft,
+  baseline: DraftProblem[] = [],
+) {
+  const key = (problem: DraftProblem) =>
+    JSON.stringify([problem.field, problem.message]);
+  const remaining = new Map<string, number>();
+  for (const problem of baseline)
+    remaining.set(
+      key(problem),
+      (remaining.get(key(problem)) ?? 0) + (problem.occurrences ?? 1),
     );
+  const invalid = assistanceProblems(draft).filter((problem) => {
+    const count = remaining.get(key(problem)) ?? 0;
+    const occurrences = problem.occurrences ?? 1;
+    if (count < occurrences) return true;
+    remaining.set(key(problem), count - occurrences);
+    return false;
+  });
   if (invalid.length) throw new Error(invalid.map((p) => p.message).join(" "));
 }
 
@@ -611,7 +648,8 @@ export function mappingRecordMatches(
 }
 /** A rejected partial proposal leaves the complete author draft untouched. */
 export function applyMapping(draft: Draft, index: number, derivation: Mapping) {
-  const candidate = structuredClone(draft);
+  const baseline = assistanceProblems(draft);
+  const candidate = { ...draft, places: structuredClone(draft.places) };
   const target = candidate.places.find((p) => p.index === index);
   if (!target) throw new Error("This place no longer exists.");
   target.derivations.push({
@@ -620,7 +658,7 @@ export function applyMapping(draft: Draft, index: number, derivation: Mapping) {
     place: derivation.place,
     explanation: structuredClone(derivation.explanation),
   });
-  checkAssistanceDraft(candidate);
+  checkAssistanceDraft(candidate, baseline);
   draft.places = candidate.places;
 }
 /** Older mapping records copied the parent result and complete log. */

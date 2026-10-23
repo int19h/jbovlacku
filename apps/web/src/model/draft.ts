@@ -484,7 +484,7 @@ export function normalizeDraft(stored: Draft): Draft {
       });
     }
   }
-  return newDraft({
+  const draft = newDraft({
     ...rest,
     gismu,
     ...(ai ? { ai } : {}),
@@ -494,6 +494,9 @@ export function normalizeDraft(stored: Draft): Draft {
       old.evidenceForm ??
       (old.formation || old.compound ? (old.spelling ?? "") : null),
   });
+  if (draft.formation) draft.formation = { ...draft.formation };
+  syncFormationSources(draft);
+  return draft;
 }
 /** Renumbers places 1 through N in their current order. */
 export function renumber(places: DraftPlace[]): DraftPlace[] {
@@ -520,6 +523,8 @@ export function numberPlaceholders(meaning: string): {
 export interface DraftProblem {
   field: string;
   message: string;
+  /** Repeated invalid nodes share one displayed problem but retain their count. */
+  occurrences?: number;
   /** The exact rich field that a place-reference conversion can change. */
   richFieldKey?: string;
   /** Problems that block signing. Warnings do not. */
@@ -668,15 +673,40 @@ export interface ReferenceField {
   get: () => RichText;
   set: (value: RichText) => void;
 }
-function richFieldKey(owner: object, property: string): string {
-  const metadata = owner as { richFieldIds?: Record<string, string> };
-  metadata.richFieldIds ??= {};
-  return (metadata.richFieldIds[property] ??= crypto.randomUUID());
+const transientRichIds = new WeakMap<object, Record<string, string>>();
+const transientConstraintIds = new WeakMap<object, string[]>();
+function transientIds<T>(
+  cache: WeakMap<object, T>,
+  owner: object,
+  create: () => T,
+): T {
+  let ids = cache.get(owner);
+  if (!ids) cache.set(owner, (ids = create()));
+  return ids;
 }
-function constraintKey(owner: object, index: number): string {
+function richFieldKey(owner: object, property: string, persist = true): string {
+  const metadata = owner as { richFieldIds?: Record<string, string> };
+  const transient = transientIds<Record<string, string>>(
+    transientRichIds,
+    owner,
+    () => ({}),
+  );
+  const key =
+    metadata.richFieldIds?.[property] ??
+    (transient[property] ??= crypto.randomUUID());
+  if (!persist) return key;
+  metadata.richFieldIds ??= {};
+  return (metadata.richFieldIds[property] = key);
+}
+function constraintKey(owner: object, index: number, persist = true): string {
   const metadata = owner as { constraintIds?: string[] };
+  const transient = transientIds(transientConstraintIds, owner, () => []);
+  const key =
+    metadata.constraintIds?.[index] ??
+    (transient[index] ??= crypto.randomUUID());
+  if (!persist) return key;
   metadata.constraintIds ??= [];
-  return (metadata.constraintIds[index] ??= crypto.randomUUID());
+  return (metadata.constraintIds[index] = key);
 }
 /**
  * Rich fields with stable draft-only identities. Nonlocal fields are included
@@ -961,7 +991,9 @@ export function switchMode(draft: Draft, structured: boolean) {
 }
 /** A copy of the draft with every place reference as literal text. */
 function literalView(draft: Draft): Draft {
-  const copy = structuredClone(draft);
+  const { ai, ...fields } = draft;
+  void ai;
+  const copy = structuredClone(fields) as Draft;
   copy.structured = true;
   rewriteReferences(copy, () => "literal", true);
   copy.structured = false;
@@ -984,17 +1016,22 @@ function richProblems(
   operands: Set<string>,
   problems: DraftProblem[],
 ) {
-  const seen = new Set<string>();
+  const seen = new Map<string, DraftProblem>();
   const report = (message: string, convertPlaceReference = false) => {
     const key = `${entry.field}:${message}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-    problems.push({
+    const existing = seen.get(key);
+    if (existing) {
+      existing.occurrences = (existing.occurrences ?? 1) + 1;
+      return;
+    }
+    const problem: DraftProblem = {
       field: entry.field,
       message,
       blocking: true,
       ...(convertPlaceReference ? { richFieldKey: entry.key } : {}),
-    });
+    };
+    seen.set(key, problem);
+    problems.push(problem);
   };
   for (const paragraph of entry.value)
     for (const node of paragraph) {
@@ -1139,7 +1176,7 @@ function buildFrame(draft: Draft, problems: DraftProblem[], rich: RichField[]) {
     const description = place.description;
     rich.push({
       field,
-      key: richFieldKey(place, "description"),
+      key: richFieldKey(place, "description", false),
       label: `${label}'s description`,
       value: description,
       local: true,
@@ -1148,7 +1185,7 @@ function buildFrame(draft: Draft, problems: DraftProblem[], rich: RichField[]) {
     if (hint)
       rich.push({
         field,
-        key: richFieldKey(place, "hintNote"),
+        key: richFieldKey(place, "hintNote", false),
         label: `${label}'s type note`,
         value: hintNote,
         local: true,
@@ -1177,14 +1214,14 @@ function buildFrame(draft: Draft, problems: DraftProblem[], rich: RichField[]) {
         rich.push(
           {
             field,
-            key: richFieldKey(d, "condition"),
+            key: richFieldKey(d, "condition", false),
             label: `${label}'s default ${i + 1} condition`,
             value: condition,
             local: true,
           },
           {
             field,
-            key: richFieldKey(d, "explanation"),
+            key: richFieldKey(d, "explanation", false),
             label: `${label}'s default ${i + 1} explanation`,
             value: explanation,
             local: true,
@@ -1212,7 +1249,7 @@ function buildFrame(draft: Draft, problems: DraftProblem[], rich: RichField[]) {
       const value = c;
       rich.push({
         field,
-        key: constraintKey(place, i),
+        key: constraintKey(place, i, false),
         label: `${label}'s constraint ${i + 1}`,
         value,
         local: true,
@@ -1257,7 +1294,7 @@ function buildFrame(draft: Draft, problems: DraftProblem[], rich: RichField[]) {
         const explanation = d.explanation;
         rich.push({
           field,
-          key: richFieldKey(d, "explanation"),
+          key: richFieldKey(d, "explanation", false),
           label: `${which}'s explanation`,
           value: explanation,
           local: false,
@@ -1349,7 +1386,7 @@ function buildFrame(draft: Draft, problems: DraftProblem[], rich: RichField[]) {
   if (tailDescription)
     rich.push({
       field: "tail",
-      key: richFieldKey(draft.tail!, "description"),
+      key: richFieldKey(draft.tail!, "description", false),
       label: "The repeated places' description",
       value: tailDescription,
       local: true,
@@ -1357,7 +1394,7 @@ function buildFrame(draft: Draft, problems: DraftProblem[], rich: RichField[]) {
   if (tailHint && draft.frameMode === "variadic")
     rich.push({
       field: "tail",
-      key: richFieldKey(draft.tail!, "hintNote"),
+      key: richFieldKey(draft.tail!, "hintNote", false),
       label: "The repeated places' type note",
       value: tailHint.note,
       local: true,
@@ -1367,7 +1404,7 @@ function buildFrame(draft: Draft, problems: DraftProblem[], rich: RichField[]) {
     const value = c;
     rich.push({
       field: "frame",
-      key: constraintKey(draft, i),
+      key: constraintKey(draft, i, false),
       label: `Frame constraint ${i + 1}`,
       value,
       local: true,
@@ -1453,7 +1490,20 @@ export function draftToBody(input: Draft): {
 } {
   // Literal mode publishes no place references, whatever set the mode. A
   // reference that reached a field becomes the circled character as text.
-  const draft = input.structured ? input : literalView(input);
+  const view = input.structured ? input : literalView(input);
+  const draft = {
+    ...view,
+    formation: view.formation ? { ...view.formation } : null,
+  };
+  // Pure reads and later editors use the same keys before metadata is saved.
+  transientRichIds.set(
+    draft,
+    transientIds(transientRichIds, input, () => ({})),
+  );
+  transientConstraintIds.set(
+    draft,
+    transientIds(transientConstraintIds, input, () => []),
+  );
   const problems: DraftProblem[] = [];
   if (syncFormationSources(draft))
     problems.push({
@@ -1499,7 +1549,7 @@ export function draftToBody(input: Draft): {
   const text = draft.text;
   rich.push({
     field: "text",
-    key: richFieldKey(draft, "text"),
+    key: richFieldKey(draft, "text", false),
     label: "The definition",
     value: text,
     local: true,
@@ -1547,7 +1597,7 @@ export function draftToBody(input: Draft): {
       const description = o.description;
       rich.push({
         field: "operands",
-        key: richFieldKey(o, "description"),
+        key: richFieldKey(o, "description", false),
         label: `Operand "${id}"'s description`,
         value: description,
         local: true,
@@ -1563,7 +1613,7 @@ export function draftToBody(input: Draft): {
   const notes = draft.notes;
   rich.push({
     field: "notes",
-    key: richFieldKey(draft, "notes"),
+    key: richFieldKey(draft, "notes", false),
     label: "The notes",
     value: notes,
     local: true,
@@ -1571,7 +1621,7 @@ export function draftToBody(input: Draft): {
   const etymologyText = [...draft.etymologyText, ...plainRich(draft.formNotes)];
   rich.push({
     field: "etymology",
-    key: richFieldKey(draft, "etymologyText"),
+    key: richFieldKey(draft, "etymologyText", false),
     label: "The etymology",
     value: etymologyText,
     local: false,
@@ -1584,14 +1634,14 @@ export function draftToBody(input: Draft): {
       rich.push(
         {
           field: "examples",
-          key: richFieldKey(e, "translation"),
+          key: richFieldKey(e, "translation", false),
           label: `Example ${i + 1}'s translation`,
           value: translation,
           local: false,
         },
         {
           field: "examples",
-          key: richFieldKey(e, "notes"),
+          key: richFieldKey(e, "notes", false),
           label: `Example ${i + 1}'s notes`,
           value: exampleNotes,
           local: false,
@@ -1625,6 +1675,11 @@ export function draftToBody(input: Draft): {
       if (!declared.has(n))
         problems.push({
           field: entry.field,
+          occurrences: entry.value.reduce(
+            (count, paragraph) =>
+              count + paragraph.filter((node) => node === n).length,
+            0,
+          ),
           richFieldKey: entry.key,
           message: frame
             ? `Place ${n} is referenced in ${entry.label.toLowerCase()} but not declared. Add the place, change the number, or convert it to literal text.`
@@ -1634,6 +1689,11 @@ export function draftToBody(input: Draft): {
       if (n > 65535)
         problems.push({
           field: entry.field,
+          occurrences: entry.value.reduce(
+            (count, paragraph) =>
+              count + paragraph.filter((node) => node === n).length,
+            0,
+          ),
           richFieldKey: entry.key,
           message: `Place ${n} exceeds the limit of 65,535.`,
           blocking: true,

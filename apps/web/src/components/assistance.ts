@@ -286,14 +286,20 @@ async function consent(
   });
 }
 const json = (value: unknown) => JSON.stringify(value, null, 2);
-function failureMessage(message = "No usable answer.") {
+function failureMessage(
+  message = "No usable answer.",
+  operation?: Operation,
+  serviceCode?: string,
+) {
   if (
-    /Try again or fill the (?:fields|rows) in by hand\.$/.test(
+    /(?:Try again or|You can) fill the (?:fields|rows) in by hand\.$/.test(
       message.trimEnd(),
     )
   )
     return message;
-  return `${message}${/[.!?]$/.test(message) ? "" : "."} Try again or fill the fields in by hand.`;
+  const target = operation === "gismu-sources" ? "rows" : "fields";
+  const guidance = serviceCode ? "You can" : "Try again or";
+  return `${message}${/[.!?]$/.test(message) ? "" : "."} ${guidance} fill the ${target} in by hand.`;
 }
 export function inferenceLog(record: AssistanceRecord, draft?: Draft) {
   const log = assistanceLog(record, draft);
@@ -411,6 +417,7 @@ export function assistanceAction(
     job: string | null;
     csrf: string;
     signal: AbortSignal;
+    resultStored: boolean;
   }
   let active: Run | null = null;
   let working = false;
@@ -454,7 +461,7 @@ export function assistanceAction(
   }
   const cancel = async () => {
     const run = active;
-    if (!run) return;
+    if (!run || run.resultStored) return;
     active = null;
     working = false;
     run.controller.abort();
@@ -802,7 +809,10 @@ export function assistanceAction(
     }
     if (record.state === "failed") {
       content.append(
-        p(failureMessage(record.error || undefined), "notice"),
+        p(
+          failureMessage(record.error || undefined, options.operation),
+          "notice",
+        ),
         button("Try again", () => void start(), {
           class: "btn btn-quiet",
           "data-ai-focus": "",
@@ -942,6 +952,7 @@ export function assistanceAction(
           "Dismiss",
           async () => {
             r.state = "dismissed";
+            status.textContent = "";
             save();
             await saver.flush();
             render();
@@ -982,7 +993,7 @@ export function assistanceAction(
     if (!response.ok)
       throw Object.assign(
         new Error(value.message || `Request failed (${response.status}).`),
-        { log: value.log },
+        { code: value.code, log: value.log },
       );
     return { response, value };
   }
@@ -1005,6 +1016,7 @@ export function assistanceAction(
       controller,
       job: null,
       csrf: "",
+      resultStored: false,
       signal: AbortSignal.any([
         controller.signal,
         AbortSignal.timeout(15 * 60 * 1000),
@@ -1110,7 +1122,10 @@ export function assistanceAction(
                 jobStatus.error?.message ||
                   "No usable answer after 3 tries. Try again or fill the fields in by hand.",
               ),
-              { log: jobStatus.error?.log ?? jobStatus.result?.log },
+              {
+                code: jobStatus.error?.code,
+                log: jobStatus.error?.log ?? jobStatus.result?.log,
+              },
             );
           if (
             jobStatus.state === "canceled" ||
@@ -1150,6 +1165,7 @@ export function assistanceAction(
         error: null,
         state: "done",
       });
+      run.resultStored = true;
       status.textContent = "Suggestion ready.";
       received = await saver.flush();
     } catch (error) {
@@ -1170,7 +1186,11 @@ export function assistanceAction(
         requested,
         result: null,
         log: (error as { log?: Record<string, unknown> }).log ?? null,
-        error: failureMessage(describe(error)),
+        error: failureMessage(
+          describe(error),
+          options.operation,
+          (error as { code?: string }).code,
+        ),
         state: "failed",
       });
       status.textContent = record!.error;

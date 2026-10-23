@@ -366,8 +366,27 @@ export async function gismuPage(
   columns.append(section, aside);
   main.append(columns);
   let result: GismuResult | null = null;
+  let resultFingerprint: string | null = null;
   let failure: string | null = null;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  // Native words, notes, and pronunciation do not affect the scores.
+  const generationFingerprint = () =>
+    JSON.stringify({
+      preset: state.preset,
+      sources: state.rows.map((row) => ({
+        language: row.language.trim(),
+        input: row.input,
+        weight: row.weight,
+      })),
+      candidates: state.candidates,
+      window: Math.max(state.window, 32),
+      manual: state.manual.trim() || null,
+      inventory,
+      limits: { work: 60_000_000 },
+    });
+  context.signal.addEventListener("abort", () => clearTimeout(timer), {
+    once: true,
+  });
   const complete = () =>
     state.rows.length > 0 &&
     state.rows.every((r) => r.input.trim() && r.weight && r.language.trim());
@@ -603,6 +622,7 @@ export async function gismuPage(
             });
             saveSources();
             renderRows();
+            schedule();
           },
           {
             class: "btn btn-quiet",
@@ -740,6 +760,7 @@ export async function gismuPage(
             });
             saveSources();
             renderRows();
+            schedule();
           },
           { class: "btn btn-quiet" },
         ),
@@ -1073,14 +1094,19 @@ export async function gismuPage(
     refreshPrimary();
   };
   const run = () => {
+    if (!context.live()) return;
+    clearTimeout(timer);
+    timer = undefined;
     failure = null;
     result = null;
+    resultFingerprint = null;
     if (!complete()) {
       renderCandidates();
       renderSelected();
       return;
     }
     try {
+      const fingerprint = generationFingerprint();
       result = generateGismu({
         sources: state.rows.map((r) => ({
           language: r.language.trim(),
@@ -1098,6 +1124,7 @@ export async function gismuPage(
         manual: state.manual.trim() || null,
         limits: { work: 60_000_000 },
       });
+      resultFingerprint = fingerprint;
     } catch (error) {
       failure =
         error instanceof BuilderError
@@ -1111,7 +1138,11 @@ export async function gismuPage(
   };
   const schedule = () => {
     clearTimeout(timer);
-    status.textContent = complete() ? "Calculating…" : status.textContent;
+    result = null;
+    resultFingerprint = null;
+    failure = null;
+    renderCandidates();
+    renderSelected();
     timer = setTimeout(run, 250);
   };
   let bar: HTMLElement;
@@ -1128,6 +1159,11 @@ export async function gismuPage(
     candidate: GismuCandidate | null;
     reason: string;
   } => {
+    if (result && resultFingerprint !== generationFingerprint())
+      return {
+        candidate: null,
+        reason: "Wait for the current scoring inputs to be checked.",
+      };
     const candidate = chosen();
     if (candidate) return { candidate, reason: "" };
     const manual = state.manual.trim();
@@ -1164,6 +1200,10 @@ export async function gismuPage(
       label: "Use this form",
       disabled: true,
       action: async () => {
+        if (!result || resultFingerprint !== generationFingerprint()) {
+          schedule();
+          return;
+        }
         const { candidate } = usable();
         if (candidate && result) {
           if (unacknowledged(candidate).length) return;
