@@ -63,9 +63,12 @@ The user message contains the case: the word, its definition, the component defi
 A place key such as `klama[2]` becomes `x2` in the tool arguments, and the whole word becomes `word`.
 The user message includes that key list, such as "In submit_answer, use these keys: word for klama, x1 for klama[1]."
 If the draft has no spelling, the key list uses "the whole word" and "place 1" instead.
-For `mappings`, request-local labels `c1`, `c2`, and so on name component occurrences in their original order.
-The `component_places` metadata maps each label to its word, exact definition event or null, and available place indices.
-The request lists the permitted names, such as `c2[1]`. Repeated words keep distinct labels and exact definitions.
+For `mappings`, the prompt, tool schema, and answer use component spellings and place indices, such as `klama[2]`.
+The `component_places` metadata lists each component word, exact definition event or null, and available place indices.
+The request groups the permitted indices by spelling and uses one full permitted name as its example.
+After the answer check, the application resolves each name to its exact selected definition.
+Repeated spellings with the same exact definition share a name.
+If one name refers to distinct selected definitions, the check asks for `unclear` instead of choosing a definition.
 A `sources` request covers one target meaning and one language.
 
 The tool arguments are the answer. For `glosses`, `hints` and `mappings`, the tool schema lists each requested key as an explicit property.

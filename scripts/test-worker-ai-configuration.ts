@@ -6,7 +6,7 @@ import { resolve, join } from "node:path";
 
 const scratch = join(
   resolve(process.env.JVC_TEST_ROOT ?? ".cache"),
-  "worker-ai-r4",
+  "worker-ai-configuration",
 );
 await mkdir(scratch, { recursive: true });
 const directory = await mkdtemp(`${scratch}/case-`);

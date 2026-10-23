@@ -17,9 +17,11 @@ import {
   newLog,
   promptVersion,
   sourceLanguages,
+  estimateInferenceCost,
   type ProviderConfig,
   type InferenceLog,
   type Task,
+  type TaskCase,
 } from "./inference.ts";
 import { promptFiles } from "./prompt-bundle.ts";
 export { AssistanceError } from "./inference.ts";
@@ -80,6 +82,23 @@ export interface AssistanceOptions {
   retainedJobs?: number;
   networkRetainedJobs?: number;
   networkSessions?: number;
+  terminalReadMs?: number;
+  budgetStore?: AssistanceBudgetStore;
+}
+export interface AssistanceBudgetEntry {
+  id: string;
+  at: number;
+  reservedUsd: number;
+  settledUsd: number;
+  active: boolean;
+}
+export interface AssistanceBudgetSnapshot {
+  version: 1;
+  entries: AssistanceBudgetEntry[];
+}
+export interface AssistanceBudgetStore {
+  load(): Promise<AssistanceBudgetSnapshot | null>;
+  save(snapshot: AssistanceBudgetSnapshot): Promise<void>;
 }
 const allOperations: Operation[] = [
   "type",
@@ -426,6 +445,96 @@ function checkComponentContext(
       );
   }
 }
+/** Estimate all possible tasks before the service admits a paid job. */
+export function estimateAssistanceCost(
+  request: AssistRequest,
+  context: ContextDefinition[],
+  config: ProviderConfig,
+): number {
+  const input = caseText(request, context);
+  const cases: { spec: TaskCase; extra?: number }[] = [];
+  if (request.operation === "places-glosses") {
+    const generated = request.current.frame === null;
+    if (generated) cases.push({ spec: { task: "places", input } });
+    const keys = generated
+      ? Array.from({ length: 16 }, (_, index) => `x${index + 1}`)
+      : placeKeys(request.current.frame);
+    // A generated frame can use the full output allowance. Its descriptions
+    // pass through two JSON string layers in the following task requests.
+    const extra = generated ? config.maxTokens * 8 + 4096 : 0;
+    const common = { input, word: request.current.spelling || undefined };
+    cases.push({
+      spec: { ...common, task: "glosses", keys: ["word", ...keys] },
+      extra,
+    });
+    if (keys.length)
+      cases.push({ spec: { ...common, task: "hints", keys }, extra });
+    const components: string[] = [];
+    const componentDefinitions = (
+      request.current.compound?.components ?? []
+    ).map((component: Data) => {
+      const source = context.find(
+        (entry) =>
+          entry.event === component.definition &&
+          entry.body.word?.language === component.word?.language &&
+          entry.body.word?.spelling === component.word?.spelling,
+      );
+      const places = (source?.body.frame?.places ?? []).map(
+        (place: Data) => place.index,
+      );
+      for (const place of places)
+        components.push(`${component.word.spelling}[${place}]`);
+      return { word: component.word, definition: component.definition, places };
+    });
+    if (keys.length && components.length)
+      cases.push({
+        spec: {
+          ...common,
+          task: "mappings",
+          input: JSON.stringify({
+            ...JSON.parse(input),
+            component_places: componentDefinitions,
+          }),
+          keys,
+          components: [...new Set(components)],
+        },
+        extra,
+      });
+  } else if (request.operation === "lujvo") {
+    const definitions = context.map((entry, index) => ({
+      ...entry,
+      label: `d${index + 1}`,
+    }));
+    const byEvent = new Map(definitions.map((entry) => [entry.event, entry]));
+    const labeled = structuredClone(request);
+    for (const component of labeled.current.compound?.components ?? [])
+      if (component.definition !== null)
+        component.definition = byEvent.get(component.definition)!.label;
+    cases.push({
+      spec: {
+        task: "components",
+        input: caseText(labeled, definitions),
+        definitionLabels: definitions.map((entry) => entry.label),
+      },
+    });
+  } else
+    cases.push({
+      spec: {
+        task:
+          request.operation === "gismu-sources" ? "sources" : request.operation,
+        input,
+        language:
+          request.operation === "gismu-sources"
+            ? request.current.formation!.sources[0].language
+            : undefined,
+      },
+    });
+  return cases.reduce(
+    (total, { spec, extra }) =>
+      total + estimateInferenceCost(config, spec, extra),
+    0,
+  );
+}
 /** The caller owns the log. This function does not persist draft data. */
 export async function runAssistance(
   request: AssistRequest,
@@ -436,6 +545,15 @@ export async function runAssistance(
   progress: (task: Task, attempt: number) => void,
 ): Promise<AssistResult> {
   checkComponentContext(request, context);
+  if (
+    config.maxCostUsd !== undefined &&
+    estimateAssistanceCost(request, context, config) > config.maxCostUsd
+  )
+    throw new AssistanceError(
+      429,
+      "billing_limit",
+      "The complete inference job exceeds the configured budget.",
+    );
   const runner = new InferenceRunner(config, log, signal, progress);
   const input = caseText(request, context);
   const proposals: AssistResult["proposals"] = [];
@@ -672,30 +790,31 @@ export async function runAssistance(
     const suppliedComponents = request.current.compound?.components ?? [];
     const componentByPlace = new Map<
       string,
-      { component: Data; place: number }
+      { component: Data; place: number }[]
     >();
-    const componentLabels = suppliedComponents.map(
-      (component: Data, index: number) => {
-        const source = context.find(
-          (entry) =>
-            entry.event === component.definition &&
-            entry.body.word?.language === component.word?.language &&
-            entry.body.word?.spelling === component.word?.spelling,
-        );
-        const label = `c${index + 1}`;
-        const places = (source?.body.frame?.places ?? []).map(
-          (place: Data) => place.index,
-        );
-        for (const place of places)
-          componentByPlace.set(`${label}[${place}]`, { component, place });
-        return {
-          label,
-          word: component.word,
-          definition: component.definition,
-          places,
-        };
-      },
-    );
+    const componentDefinitions = suppliedComponents.map((component: Data) => {
+      const source = context.find(
+        (entry) =>
+          entry.event === component.definition &&
+          entry.body.word?.language === component.word?.language &&
+          entry.body.word?.spelling === component.word?.spelling,
+      );
+      const places = (source?.body.frame?.places ?? []).map(
+        (place: Data) => place.index,
+      );
+      for (const place of places) {
+        const name = `${component.word.spelling}[${place}]`;
+        const candidates = componentByPlace.get(name) ?? [];
+        if (
+          !candidates.some(
+            (entry) => entry.component.definition === component.definition,
+          )
+        )
+          candidates.push({ component, place });
+        componentByPlace.set(name, candidates);
+      }
+      return { word: component.word, definition: component.definition, places };
+    });
     const componentPlaces = [...componentByPlace.keys()];
     const mappings =
       keys.length && componentPlaces.length
@@ -704,10 +823,20 @@ export async function runAssistance(
             word: request.current.spelling || undefined,
             input: JSON.stringify({
               ...JSON.parse(placeInput),
-              component_places: componentLabels,
+              component_places: componentDefinitions,
             }),
             keys,
             components: componentPlaces,
+            check(answer) {
+              const problems: string[] = [];
+              for (const [key, rows] of Object.entries(answer))
+                for (const entry of rows)
+                  if ((componentByPlace.get(entry.component)?.length ?? 0) > 1)
+                    problems.push(
+                      `${key}: ${entry.component} refers to distinct selected definitions. Use unclear for this mapping.`,
+                    );
+              return problems;
+            },
           })
         : {};
     for (const place of frame!.places ?? []) {
@@ -746,7 +875,9 @@ export async function runAssistance(
             (entry: Data) => !["none", "unclear"].includes(entry.component),
           )
           .map((entry: Data) => {
-            const { component, place } = componentByPlace.get(entry.component)!;
+            const [{ component, place }] = componentByPlace.get(
+              entry.component,
+            )!;
             return {
               word: component.word,
               definition: component.definition,
@@ -802,6 +933,9 @@ interface Session {
 }
 interface Job {
   reserved: boolean;
+  readUntil: number;
+  budgetId: string;
+  costReports: number;
   owner: string;
   network: string;
   deadline: number;
@@ -820,20 +954,180 @@ interface Job {
 }
 export class AssistanceService {
   private sessions = new Map<string, Session>();
+  private admitting = new Set<string>();
   private jobs = new Map<string, Job>();
   private network = new Map<string, { expires: number; count: number }>();
   private running = 0;
+  private budgetEntries = new Map<string, AssistanceBudgetEntry>();
+  private budgetLoaded = false;
+  private budgetUnavailable = false;
+  private budgetTail: Promise<void> = Promise.resolve();
   private version = promptVersion();
   constructor(
     private options: AssistanceOptions,
     private server: string,
     private context: (events: string[]) => Promise<ContextDefinition[]>,
   ) {}
+  private async budgetLock<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.budgetTail;
+    let release!: () => void;
+    this.budgetTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      if (!this.budgetLoaded) {
+        const snapshot = await this.options.budgetStore?.load();
+        if (snapshot !== null && snapshot !== undefined) {
+          if (
+            !isObject(snapshot) ||
+            snapshot.version !== 1 ||
+            Object.keys(snapshot).sort().join(",") !== "entries,version" ||
+            !Array.isArray(snapshot.entries) ||
+            snapshot.entries.length > 16384
+          )
+            throw new Error("Invalid private spending state.");
+          const entries = new Map<string, AssistanceBudgetEntry>();
+          for (const entry of snapshot.entries) {
+            if (
+              !isObject(entry) ||
+              Object.keys(entry).sort().join(",") !==
+                "active,at,id,reservedUsd,settledUsd" ||
+              typeof entry.id !== "string" ||
+              !entry.id ||
+              entries.has(entry.id) ||
+              typeof entry.active !== "boolean" ||
+              !Number.isSafeInteger(entry.at) ||
+              entry.at < 0 ||
+              ![entry.reservedUsd, entry.settledUsd].every(
+                (value) =>
+                  typeof value === "number" &&
+                  Number.isFinite(value) &&
+                  value >= 0,
+              )
+            )
+              throw new Error("Invalid private spending state.");
+            // A restart loses private jobs. Keep their full outstanding charge.
+            entries.set(entry.id, {
+              ...entry,
+              at: entry.active ? Math.max(entry.at, Date.now()) : entry.at,
+              active: false,
+            });
+          }
+          this.budgetEntries = entries;
+          if (snapshot.entries.some((entry) => entry.active))
+            await this.saveBudget();
+        }
+        this.budgetLoaded = true;
+      }
+      return await operation();
+    } catch (error) {
+      if (error instanceof AssistanceError) throw error;
+      throw new AssistanceError(
+        503,
+        "billing_unavailable",
+        "The server cannot read or save its private spending limits. Try again later.",
+      );
+    } finally {
+      release();
+    }
+  }
+  private async saveBudget() {
+    try {
+      await this.options.budgetStore?.save({
+        version: 1,
+        entries: [...this.budgetEntries.values()].map((entry) => ({
+          ...entry,
+        })),
+      });
+      this.budgetUnavailable = false;
+    } catch (error) {
+      this.budgetUnavailable = true;
+      throw error;
+    }
+  }
+  private spendingLimit(
+    estimate: number,
+    config: ProviderConfig,
+  ): Response | null {
+    const now = Date.now();
+    for (const [id, entry] of this.budgetEntries)
+      if (!entry.active && entry.at + 86400000 <= now)
+        this.budgetEntries.delete(id);
+    const releases: number[] = [];
+    for (const [window, limit] of [
+      [3600000, config.hourlyBudgetUsd],
+      [86400000, config.dailyBudgetUsd],
+    ]) {
+      const entries = [...this.budgetEntries.values()].filter(
+        (entry) => entry.active || entry.at + window > now,
+      );
+      let total = entries.reduce(
+        (sum, entry) => sum + Math.max(entry.reservedUsd, entry.settledUsd),
+        0,
+      );
+      if (total + estimate <= limit) continue;
+      let retry = now + window;
+      for (const entry of entries.sort((a, b) => a.at - b.at)) {
+        total -= Math.max(entry.reservedUsd, entry.settledUsd);
+        // Active reservations can settle sooner, but the full window is safe.
+        retry = Math.max(now + 1000, entry.at + window);
+        if (total + estimate <= limit) break;
+      }
+      releases.push(retry);
+    }
+    if (this.budgetEntries.size >= 16384)
+      releases.push(
+        Math.min(
+          ...[...this.budgetEntries.values()].map(
+            (entry) => entry.at + 86400000,
+          ),
+        ),
+      );
+    if (config.maxCostUsd !== undefined && estimate > config.maxCostUsd)
+      releases.push(now + 3600000);
+    return releases.length
+      ? this.retry(
+          "The server's inference spending limit cannot cover this new job. Try again after the retry time, or reduce the request.",
+          [Math.max(...releases)],
+          "billing_limit",
+        )
+      : null;
+  }
+  private async settleCost(
+    id: string,
+    reported: number | null,
+    estimate: number,
+  ) {
+    try {
+      await this.budgetLock(async () => {
+        const entry = this.budgetEntries.get(id);
+        if (!entry) return;
+        entry.settledUsd += reported ?? estimate;
+        // Keep all charges for a full window after the latest paid answer.
+        entry.at = Math.max(entry.at, Date.now());
+        await this.saveBudget();
+      });
+    } catch {
+      // Keep admitted work running. Later admissions fail closed until saving works.
+      this.budgetUnavailable = true;
+    }
+  }
+  private releaseRetained(job: Job) {
+    job.reserved = false;
+    job.result = null;
+    if (job.error) delete job.error.log;
+  }
+  private retainedRelease(job: Job) {
+    return ["queued", "running", "cancel_requested"].includes(job.state)
+      ? job.deadline
+      : Math.min(job.readUntil, job.expires);
+  }
   capabilities() {
     const provider = this.options.provider;
     if (!provider || !provider.operations.length) return [];
     const name = `${provider.providerName ?? "OpenRouter"} (${provider.route})`;
-    const disclosure = `Server ${this.server} sends draft fields to ${name}. These include your original meaning, definition language and current definition. They also include word type, classification, spelling, places and glosses. Formation, components and selected exact source definitions are also sent. These fields cover all declared tasks: ${provider.operations.join(", ")}. Private jobs expire after ten minutes or service restart. Cancel cannot reverse a provider charge.`;
+    const disclosure = `Server ${this.server} sends draft fields to ${name}. These include your original meaning, definition language and current definition. They also include word type, classification, spelling, places and glosses. Formation, components and selected exact source definitions are also sent. These fields cover all declared tasks: ${provider.operations.join(", ")}. Private jobs expire after ten minutes or service restart. Results and logs remain available for two minutes after completion unless you dismiss them sooner. Cancel cannot reverse a provider charge.`;
     return [
       "default",
       ...(provider.operations.includes("lujvo") ? ["components", "lujvo"] : []),
@@ -865,11 +1159,13 @@ export class AssistanceService {
             this.jobs.delete(jobId);
           }
       }
-    for (const [id, job] of this.jobs)
+    for (const [id, job] of this.jobs) {
+      if (job.reserved && job.readUntil <= now) this.releaseRetained(job);
       if (job.expires <= now) {
         job.controller.abort();
         this.jobs.delete(id);
       }
+    }
     for (const [key, quota] of this.network)
       if (quota.expires <= now) this.network.delete(key);
   }
@@ -902,14 +1198,23 @@ export class AssistanceService {
     );
     return `__Host-jvc-assist=${id}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=${seconds}`;
   }
-  private retry(message: string, releases: number[]) {
+  private retry(message: string, releases: number[], code = "quota") {
     const seconds = Math.max(
       1,
       Math.ceil((Math.min(...releases) - Date.now()) / 1000),
     );
-    return json(errorShape("quota", message), 429, {
-      "retry-after": String(seconds),
-    });
+    return json(
+      errorShape(
+        code,
+        code === "billing_limit"
+          ? `${message} Retry in ${seconds} seconds.`
+          : message,
+      ),
+      429,
+      {
+        "retry-after": String(seconds),
+      },
+    );
   }
   private admissionLimit(
     session: Session,
@@ -937,9 +1242,11 @@ export class AssistanceService {
     const retained = jobs.filter((job) => job.reserved);
     const own = retained.filter((job) => job.network === network);
     if (own.length >= (this.options.networkRetainedJobs ?? 1))
-      limits.push(Math.min(...own.map((job) => job.expires)));
+      limits.push(Math.min(...own.map((job) => this.retainedRelease(job))));
     if (retained.length >= Math.min(this.options.retainedJobs ?? 4, 4))
-      limits.push(Math.min(...retained.map((job) => job.expires)));
+      limits.push(
+        Math.min(...retained.map((job) => this.retainedRelease(job))),
+      );
     if (this.running >= config.concurrency) {
       const running = jobs.filter((job) =>
         ["queued", "running", "cancel_requested"].includes(job.state),
@@ -1023,15 +1330,27 @@ export class AssistanceService {
         const own = [...this.sessions.values()].filter(
           (value) => value.network === network,
         );
-        if (own.length >= (this.options.networkSessions ?? 8))
-          return this.retry(
-            "Private sessions for this network are at capacity.",
-            own.map((value) => value.expires),
-          );
+        if (own.length >= (this.options.networkSessions ?? 8)) {
+          const idle = [...this.sessions.entries()]
+            .filter(
+              ([sessionId, value]) =>
+                value.network === network &&
+                !this.admitting.has(sessionId) &&
+                ![...this.jobs.values()].some((job) => job.owner === sessionId),
+            )
+            .sort((a, b) => a[1].touched - b[1].touched)[0];
+          if (idle) this.sessions.delete(idle[0]);
+          else
+            return this.retry(
+              "Private sessions for this network are at capacity.",
+              own.map((value) => value.expires),
+            );
+        }
         if (this.sessions.size >= 128) {
           const idle = [...this.sessions.entries()]
             .filter(
               ([owner]) =>
+                !this.admitting.has(owner) &&
                 ![...this.jobs.values()].some((job) => job.owner === owner),
             )
             .sort((a, b) => a[1].touched - b[1].touched)[0];
@@ -1102,69 +1421,113 @@ export class AssistanceService {
           "Selected definition context exceeds the byte limit.",
         );
       checkComponentContext(input, context);
-      this.session(request, true);
-      // Admission is synchronous after context loading, so quotas and slots are reserved together.
-      const limited = this.admissionLimit(session, network, config);
-      if (limited) return limited;
-      const now = Date.now();
-      const previousQuota = this.network.get(network);
-      const quota =
-        previousQuota && previousQuota.expires > now
-          ? previousQuota
-          : { expires: now + 3600000, count: 0 };
-      quota.count++;
-      session.count++;
-      this.network.set(network, quota);
-      const id = crypto.randomUUID();
-      const job: Job = {
-        reserved: true,
-        owner,
-        network,
-        deadline:
-          now +
-          Math.min(
-            config.timeoutMs,
-            this.ttl() - Math.min(60000, this.ttl() / 4),
-          ),
-        expires: now + this.ttl(),
-        state: "queued",
-        result: null,
-        error: null,
-        progress: { task: null, attempt: 0, max_attempts: 3 },
-        controller: new AbortController(),
-      };
-      session.expires = Math.max(
-        session.expires,
-        now + this.sessionTtl(),
-        job.expires,
-      );
-      session.touched = now;
-      this.jobs.set(id, job);
-      const expiry = setTimeout(
-        () => {
-          job.controller.abort();
-          job.result = null;
-          job.error = null;
-          this.jobs.delete(id);
-        },
-        Math.max(0, job.expires - Date.now()),
-      );
-      expiry.unref?.();
-      this.running++;
-      const work = this.execute(job, input, config, context);
-      if (this.options.waitUntil) this.options.waitUntil(work);
-      else void work;
-      return json(
-        {
-          job: id,
-          expires_at: new Date(job.expires)
-            .toISOString()
-            .replace(/\.\d{3}Z$/, "Z"),
-          poll_after_ms: 100,
-        },
-        202,
-        { "set-cookie": this.cookie(owner, session) },
-      );
+      const estimate = estimateAssistanceCost(input, context, config);
+      return this.budgetLock(async () => {
+        this.sweep();
+        this.session(request, true);
+        if (this.budgetUnavailable) await this.saveBudget();
+        // One lock covers durable spending, quotas, retained slots and execution slots.
+        const limited = this.admissionLimit(session, network, config);
+        if (limited) return limited;
+        const spending = this.spendingLimit(estimate, config);
+        if (spending) return spending;
+        const now = Date.now();
+        const id = crypto.randomUUID();
+        this.budgetEntries.set(id, {
+          id,
+          at: now,
+          reservedUsd: estimate,
+          settledUsd: 0,
+          active: true,
+        });
+        this.admitting.add(owner);
+        try {
+          await this.saveBudget();
+          try {
+            this.session(request, true);
+          } catch (error) {
+            this.budgetEntries.delete(id);
+            await this.saveBudget();
+            throw error;
+          }
+        } catch (error) {
+          this.budgetEntries.delete(id);
+          throw error;
+        } finally {
+          this.admitting.delete(owner);
+        }
+        const previousQuota = this.network.get(network);
+        const quota =
+          previousQuota && previousQuota.expires > now
+            ? previousQuota
+            : { expires: now + 3600000, count: 0 };
+        quota.count++;
+        session.count++;
+        this.network.set(network, quota);
+        const job: Job = {
+          reserved: true,
+          readUntil: Infinity,
+          budgetId: id,
+          costReports: 0,
+          owner,
+          network,
+          deadline:
+            now +
+            Math.min(
+              config.timeoutMs,
+              this.ttl() - Math.min(60000, this.ttl() / 4),
+            ),
+          expires: now + this.ttl(),
+          state: "queued",
+          result: null,
+          error: null,
+          progress: { task: null, attempt: 0, max_attempts: 3 },
+          controller: new AbortController(),
+        };
+        session.expires = Math.max(
+          session.expires,
+          now + this.sessionTtl(),
+          job.expires,
+        );
+        session.touched = now;
+        this.jobs.set(id, job);
+        const expiry = setTimeout(
+          () => {
+            job.controller.abort();
+            job.result = null;
+            job.error = null;
+            this.jobs.delete(id);
+          },
+          Math.max(0, job.expires - Date.now()),
+        );
+        expiry.unref?.();
+        this.running++;
+        const work = this.execute(
+          job,
+          input,
+          {
+            ...config,
+            onCost: async (reported, estimated) => {
+              job.costReports++;
+              await this.settleCost(id, reported, estimated);
+            },
+          },
+          context,
+        );
+        if (this.options.waitUntil) this.options.waitUntil(work);
+        else void work;
+        return json(
+          {
+            job: id,
+            expires_at: new Date(job.expires)
+              .toISOString()
+              .replace(/\.\d{3}Z$/, "Z"),
+            poll_after_ms: 100,
+          },
+          202,
+          { "set-cookie": this.cookie(owner, session) },
+        );
+      });
     }
     if (
       path.startsWith("/jobs/") &&
@@ -1261,7 +1624,29 @@ export class AssistanceService {
     } finally {
       if (log) log.duration_ms = Date.now() - started;
       if (!log?.answers) job.reserved = false;
+      job.readUntil = Math.min(
+        job.expires,
+        Date.now() + Math.min(this.options.terminalReadMs ?? 120000, 120000),
+      );
+      const discard = setTimeout(
+        () => this.releaseRetained(job),
+        Math.max(0, job.readUntil - Date.now()),
+      );
+      discard.unref?.();
       this.running--;
+      try {
+        await this.budgetLock(async () => {
+          const entry = this.budgetEntries.get(job.budgetId);
+          if (!entry) return;
+          entry.active = false;
+          if (job.costReports === (log?.answers ?? 0)) entry.reservedUsd = 0;
+          if (entry.settledUsd === 0 && entry.reservedUsd === 0)
+            this.budgetEntries.delete(job.budgetId);
+          await this.saveBudget();
+        });
+      } catch {
+        this.budgetUnavailable = true;
+      }
     }
   }
 }

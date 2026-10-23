@@ -1,4 +1,5 @@
 import { D1IndexStore } from "./index-store.ts";
+import { workerAssistanceBudgetStore } from "./assistance.ts";
 import { SqlRowsCoordinator } from "../../../packages/service/src/sql-coordinator.ts";
 import { DurableObject } from "cloudflare:workers";
 import wasmModule from "../../../packages/core/generated/jvc_runtime_bg.wasm";
@@ -86,6 +87,7 @@ export class AdmissionCoordinator
     this.service = new DictionaryService(this.objects, this, {
       assistance: {
         provider,
+        budgetStore: workerAssistanceBudgetStore(ctx.storage),
         retainedJobs: 2,
         waitUntil: (promise) => this.ctx.waitUntil(promise),
       },

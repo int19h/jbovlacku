@@ -9,7 +9,7 @@ import {
 } from "../src/inference.ts";
 import * as inferenceModule from "../src/inference.ts";
 
-const key = "disposable-round4-secret";
+const key = "disposable-inference-secret";
 function config(fetcher: typeof fetch) {
   return {
     ...providerConfig({ JVC_AI_ENABLED: "enabled" }, async () => key)!,
@@ -157,25 +157,6 @@ test("defaults reserve all twelve bounded answers and their correction histories
   assert.equal(log.answers, 12);
 });
 
-test("an operator budget refuses the full turn before any provider request", async () => {
-  let turns = 0;
-  const settings = {
-    ...config((async () => {
-      turns++;
-      return Response.json(completion({ text: "x", reason: "x" }));
-    }) as typeof fetch),
-    maxCostUsd: 0.1,
-  };
-  const runner = new InferenceRunner(
-    settings,
-    newLog("definition", settings, "test"),
-    new AbortController().signal,
-  );
-  await assert.rejects(runner.run({ task: "definition", input: "x" }), {
-    code: "billing_limit",
-  });
-  assert.equal(turns, 0);
-});
 
 test("known secrets in an otherwise valid answer cannot enter a proposal or correction", async () => {
   const requests: any[] = [];

@@ -136,8 +136,13 @@ export interface ProviderConfig {
   maxTokens: number;
   timeoutMs: number;
   concurrency: number;
-  maxCostUsd: number;
+  maxCostUsd?: number;
   maxPrice: number;
+  inputPrice: number;
+  outputPrice: number;
+  hourlyBudgetUsd: number;
+  dailyBudgetUsd: number;
+  onCost?: (reportedUsd: number | null, estimatedUsd: number) => Promise<void>;
   operations: string[];
   maxLogBytes?: number;
   fetch?: typeof fetch;
@@ -156,20 +161,6 @@ export const INFERENCE_FEEDBACK_BYTES = 32 * 512 * 6 + 4096;
 export const INFERENCE_CORRECTION_BYTES =
   2 * INFERENCE_RESPONSE_BYTES + INFERENCE_FEEDBACK_BYTES;
 export const INFERENCE_LOG_BYTES = 64 * 1024 * 1024;
-/** Four tasks each receive three full output reservations and two corrections. */
-export function defaultInferenceBudget(
-  maxTokens = 16384,
-  maxPrice = 10,
-): number {
-  return Math.ceil(
-    (4 *
-      (3 * INFERENCE_INITIAL_REQUEST_BYTES +
-        3 * INFERENCE_CORRECTION_BYTES +
-        3 * (1024 + maxTokens)) *
-      maxPrice) /
-      1000000,
-  );
-}
 type ProviderEnv = Partial<
   Record<
     | "JVC_AI_ENABLED"
@@ -184,6 +175,10 @@ type ProviderEnv = Partial<
     | "JVC_AI_CONCURRENCY"
     | "JVC_AI_MAX_COST_USD"
     | "JVC_AI_MAX_PRICE"
+    | "JVC_AI_INPUT_PRICE"
+    | "JVC_AI_OUTPUT_PRICE"
+    | "JVC_AI_HOURLY_BUDGET_USD"
+    | "JVC_AI_DAILY_BUDGET_USD"
     | "JVC_AI_OPERATIONS",
     string
   >
@@ -241,13 +236,15 @@ export function providerConfig(
     maxTokens,
     timeoutMs: Math.floor(number("JVC_AI_TIMEOUT_MS", 120000, 10, 540000)),
     concurrency: Math.floor(number("JVC_AI_CONCURRENCY", 2, 1, 4)),
-    maxCostUsd: number(
-      "JVC_AI_MAX_COST_USD",
-      defaultInferenceBudget(maxTokens, maxPrice),
-      0.001,
-      10000,
-    ),
+    maxCostUsd:
+      env.JVC_AI_MAX_COST_USD === undefined
+        ? undefined
+        : number("JVC_AI_MAX_COST_USD", 0, 0.000001, 10000),
     maxPrice,
+    inputPrice: number("JVC_AI_INPUT_PRICE", 0.1, 0, 1000),
+    outputPrice: number("JVC_AI_OUTPUT_PRICE", 0.2, 0, 1000),
+    hourlyBudgetUsd: number("JVC_AI_HOURLY_BUDGET_USD", 1, 0.000001, 10000),
+    dailyBudgetUsd: number("JVC_AI_DAILY_BUDGET_USD", 5, 0.000001, 100000),
     operations: configured,
   };
 }
@@ -368,26 +365,29 @@ function shapeProblems(
   )
     problems.push(`${path} must be nonempty text.`);
   if (isObject(value)) {
-    if (
-      Object.keys(value).some(
-        (key) => !Object.hasOwn(schema.properties ?? {}, key),
-      )
-    )
-      return [`${path} contains fields that are not allowed.`];
-    for (const key of schema.required ?? [])
+    const properties = schema.properties ?? {};
+    const unknown = Object.keys(value).filter(
+      (key) => !Object.hasOwn(properties, key),
+    );
+    // Reserve space for both missing and unknown fields in the correction.
+    for (const key of schema.required ?? []) {
+      if (problems.length >= 32 - Math.min(unknown.length, 8)) break;
       if (!Object.hasOwn(value, key))
         problems.push(`${path}.${key} is missing.`);
-    if (problems.length) return problems.slice(0, 32);
+    }
+    for (const key of unknown.slice(0, 8))
+      problems.push(
+        `${path}.${key.slice(0, 64)}${key.length > 64 ? "..." : ""} is not allowed.`,
+      );
     for (const [key, child] of Object.entries(value)) {
       if (problems.length >= 32) break;
-      if (!Object.hasOwn(schema.properties ?? {}, key))
-        problems.push(`${path}.${key} is not allowed.`);
-      else
+      if (Object.hasOwn(properties, key))
         problems.push(
-          ...shapeProblems(schema.properties[key], child, `${path}.${key}`),
+          ...shapeProblems(properties[key], child, `${path}.${key}`),
         );
     }
   }
+
   if (Array.isArray(value)) {
     if (
       value.length < (schema.minItems ?? 0) ||
@@ -443,7 +443,14 @@ export function checkAnswer(spec: TaskCase, value: unknown): string[] {
           )
         )
           problems.push(
-            `${key}: ${entry.component} is not a supplied component place.`,
+            `${key}: ${entry.component.slice(0, 64)} is not a supplied component place. Use ${(
+              spec.components ?? []
+            )
+              .slice(0, 4)
+              .map((name) => name.slice(0, 64))
+              .join(
+                ", ",
+              )}${(spec.components?.length ?? 0) > 4 ? ", ..." : ""}, none, or unclear.`,
           );
         const sentinel = ["none", "unclear"].includes(entry.component);
         const kinds = sentinel
@@ -735,8 +742,114 @@ async function boundedResponse(
   }
   return new TextDecoder("utf-8", { fatal: true }).decode(buffer);
 }
+export function taskMessages(
+  config: Pick<ProviderConfig, "decisionReports">,
+  spec: TaskCase,
+) {
+  const files = ["common.system.txt", `${spec.task}.task.txt`];
+  if (spec.task === "sources") {
+    const language =
+      sourceLanguages[spec.language?.toLowerCase().split("-")[0] ?? ""];
+    if (!language)
+      throw new AssistanceError(
+        400,
+        "language",
+        "No source prompt is available for this language.",
+      );
+    files.push("sound-guide.txt");
+    if (config.decisionReports) files.push("explain.txt");
+    files.push(`languages/${language}.txt`);
+  } else if (config.decisionReports) files.push("explain.txt");
+  const system = files.map((file) => promptFiles[file].trim()).join("\n\n");
+  const legend = spec.keys?.length
+    ? `\n\nIn submit_answer, use these keys: ${spec.keys.map((key) => (key === "word" ? `word for ${spec.word ?? "the whole word"}` : spec.word ? `${key} for ${spec.word}[${key.slice(1)}]` : `${key} for place ${key.slice(1)}`)).join(", ")}.`
+    : "";
+  const grouped = new Map<string, string[]>();
+  for (const component of spec.components ?? []) {
+    const match = /^(.*)\[(\d+)\]$/.exec(component);
+    if (match)
+      grouped.set(match[1], [...(grouped.get(match[1]) ?? []), match[2]]);
+  }
+  const componentLegend =
+    spec.task === "mappings" && spec.components?.length
+      ? `\n\nPermitted component places: ${Array.from(grouped, ([spelling, indices]) => `${spelling}[${indices.join(",")}]`).join("; ")}. Each listed index names a separate place. Use one full spelling and index in each entry, for example ${spec.components[0]}. If a name refers to distinct selected definitions, use unclear.`
+      : "";
+  const input = spec.input + legend + componentLegend;
+  return {
+    files,
+    system,
+    input,
+    messages: [
+      { role: "system", content: system },
+      { role: "user", content: input },
+    ] as JsonObject[],
+  };
+}
+function answerTool(spec: TaskCase): JsonObject {
+  return {
+    type: "function",
+    function: {
+      name: "submit_answer",
+      description:
+        "Submit the complete answer. The tool checks it and reports every problem to fix.",
+      parameters: schemaFor(spec),
+    },
+  };
+}
+function inferenceBody(
+  config: ProviderConfig,
+  messages: JsonObject[],
+  tool: JsonObject,
+): JsonObject {
+  return {
+    model: config.model,
+    stream: false,
+    usage: { include: true },
+    max_tokens: config.maxTokens,
+    reasoning: { effort: config.reasoningEffort },
+    provider: {
+      only: [config.route],
+      allow_fallbacks: false,
+      max_price: { prompt: config.maxPrice, completion: config.maxPrice },
+    },
+    tools: [tool],
+    tool_choice: "auto",
+    parallel_tool_calls: false,
+    messages: messages.slice(),
+  };
+}
+/** Each UTF-8 request byte reserves one input token. The safety margin is two. */
+export function inferenceTurnCost(
+  config: ProviderConfig,
+  requestBytes: number,
+): number {
+  return (
+    (2 *
+      (requestBytes * config.inputPrice +
+        config.maxTokens * config.outputPrice)) /
+    1000000
+  );
+}
+/** Reserve three answers, with estimated prior output and bounded feedback for corrections. */
+export function estimateInferenceCost(
+  config: ProviderConfig,
+  spec: TaskCase,
+  extraInputBytes = 0,
+): number {
+  const { messages } = taskMessages(config, spec);
+  const initialBytes =
+    new TextEncoder().encode(
+      compactJson(inferenceBody(config, messages, answerTool(spec))),
+    ).byteLength + extraInputBytes;
+  const correctionBytes = config.maxTokens * 4 + INFERENCE_FEEDBACK_BYTES;
+  return [0, 1, 2].reduce(
+    (total, priorAnswers) =>
+      total +
+      inferenceTurnCost(config, initialBytes + priorAnswers * correctionBytes),
+    0,
+  );
+}
 export class InferenceRunner {
-  private reservedCost = 0;
   private publicCopies = new WeakMap<object, unknown>();
   private publicKey = "";
   // Metadata and number growth fit inside this fixed allowance.
@@ -748,38 +861,10 @@ export class InferenceRunner {
     private progress: (task: Task, attempt: number) => void = () => {},
   ) {}
   async run(spec: TaskCase): Promise<JsonObject> {
-    const files = ["common.system.txt", `${spec.task}.task.txt`];
-    if (spec.task === "sources") {
-      const language =
-        sourceLanguages[spec.language?.toLowerCase().split("-")[0] ?? ""];
-      if (!language)
-        throw new AssistanceError(
-          400,
-          "language",
-          "No source prompt is available for this language.",
-        );
-      files.push("sound-guide.txt");
-      if (this.config.decisionReports) files.push("explain.txt");
-      files.push(`languages/${language}.txt`);
-    } else if (this.config.decisionReports) files.push("explain.txt");
+    const { files, system, input, messages } = taskMessages(this.config, spec);
     for (const file of files)
       if (!this.log.prompt_files.includes(`/api/v1/assist/prompts/${file}`))
         this.log.prompt_files.push(`/api/v1/assist/prompts/${file}`);
-    const system = files.map((file) => promptFiles[file].trim()).join("\n\n");
-    const legend = spec.keys?.length
-      ? `\n\nIn submit_answer, use these keys: ${spec.keys.map((key) => (key === "word" ? `word for ${spec.word ?? "the whole word"}` : spec.word ? `${key} for ${spec.word}[${key.slice(1)}]` : `${key} for place ${key.slice(1)}`)).join(", ")}.`
-      : "";
-    const grouped = new Map<string, string[]>();
-    for (const component of spec.components ?? []) {
-      const match = /^(.*)\[(\d+)\]$/.exec(component);
-      if (match)
-        grouped.set(match[1], [...(grouped.get(match[1]) ?? []), match[2]]);
-    }
-    const componentLegend =
-      spec.task === "mappings"
-        ? `\n\nPermitted component places: ${Array.from(grouped, ([label, indices]) => `${label}[${indices.join(",")}]`).join("; ")}. Each listed index names a separate place, for example c2[1].`
-        : "";
-    const input = spec.input + legend + componentLegend;
     const exchange: ExchangeLog = {
       task: spec.task,
       system_prompt: system,
@@ -790,55 +875,12 @@ export class InferenceRunner {
     const encodeSize = (value: unknown) =>
       new TextEncoder().encode(compactJson(value)).byteLength;
     this.logBytes += encodeSize(exchange) + 1;
-    const messages: JsonObject[] = [
-      { role: "system", content: system },
-      { role: "user", content: input },
-    ];
-    const tool = {
-      type: "function",
-      function: {
-        name: "submit_answer",
-        description:
-          "Submit the complete answer. The tool checks it and reports every problem to fix.",
-        parameters: schemaFor(spec),
-      },
-    };
+    const tool = answerTool(spec);
     for (let attempt = 1; attempt <= 3; attempt++) {
       this.signal.throwIfAborted();
       this.progress(spec.task, attempt);
-      // UTF-8 bytes conservatively reserve input tokens, including tool metadata.
-      const inputBound =
-        new TextEncoder().encode(compactJson({ messages, tools: [tool] }))
-          .byteLength + 1024;
-      const maxTokens = this.config.maxTokens;
-      const reservation =
-        ((inputBound + maxTokens) * this.config.maxPrice) / 1000000;
-      if (this.reservedCost + reservation > this.config.maxCostUsd)
-        throw new AssistanceError(
-          429,
-          "billing_limit",
-          "The inference budget is exhausted.",
-        );
-      this.reservedCost += reservation;
-      const body: JsonObject = {
-        model: this.config.model,
-        stream: false,
-        usage: { include: true },
-        max_tokens: maxTokens,
-        reasoning: { effort: this.config.reasoningEffort },
-        provider: {
-          only: [this.config.route],
-          allow_fallbacks: false,
-          max_price: {
-            prompt: this.config.maxPrice,
-            completion: this.config.maxPrice,
-          },
-        },
-        tools: [tool],
-        tool_choice: "auto",
-        parallel_tool_calls: false,
-        messages: messages.slice(),
-      };
+      const body = inferenceBody(this.config, messages, tool);
+      const turnEstimate = inferenceTurnCost(this.config, encodeSize(body));
       // Reserve space for the complete bounded response and the visible fields
       // that also appear separately in the log. Never discard an admitted turn.
       const logLimit = Math.min(
@@ -894,6 +936,12 @@ export class InferenceRunner {
       };
       let raw: string;
       let response: Response;
+      let costRecorded = false;
+      const recordCost = async (cost: number | null) => {
+        if (costRecorded) return;
+        costRecorded = true;
+        await this.config.onCost?.(cost, turnEstimate);
+      };
       try {
         response = await abortable(
           (this.config.fetch ?? fetch)(
@@ -918,6 +966,7 @@ export class InferenceRunner {
             ? "The provider request stopped before usage was reported."
             : "The provider request failed.",
         );
+        await recordCost(null);
         this.signal.throwIfAborted();
         if (error instanceof AssistanceError) throw error;
         entry.check.problems = ["The provider request failed."];
@@ -933,6 +982,7 @@ export class InferenceRunner {
       } catch {
         entry.response = publicResponse(raw, key);
         unknown("The provider returned invalid JSON.");
+        await recordCost(null);
         throw new AssistanceError(
           502,
           "provider_error",
@@ -943,6 +993,7 @@ export class InferenceRunner {
       compactField(entry, "response", visible);
       if (!isObject(value)) {
         unknown("The provider response must contain a JSON object.");
+        await recordCost(null);
         throw new AssistanceError(
           502,
           "provider_error",
@@ -958,6 +1009,7 @@ export class InferenceRunner {
           ? usage.cost
           : null;
       entry.cost_usd = cost;
+      await recordCost(cost);
       this.log.input_tokens = sum(
         this.log.answers === 1 ? 0 : this.log.input_tokens,
         count(usage?.prompt_tokens),
@@ -979,16 +1031,6 @@ export class InferenceRunner {
           502,
           "provider_error",
           `The provider returned HTTP ${response.status}.`,
-        );
-      }
-      if ((this.log.cost_usd ?? 0) > this.config.maxCostUsd) {
-        entry.check.problems = [
-          "The provider reported a cost above the inference budget.",
-        ];
-        throw new AssistanceError(
-          429,
-          "billing_limit",
-          "The provider reported a cost above the inference budget.",
         );
       }
       const choice = Array.isArray(value.choices) ? value.choices[0] : null;

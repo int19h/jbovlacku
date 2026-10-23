@@ -1,5 +1,9 @@
 import { BROWSER_HEADERS } from "./security.ts";
-import { nodeAssistance } from "./assistance.ts";
+import {
+  nodeAssistance,
+  SqliteAssistanceBudgetStore,
+  trustedProxyAddresses,
+} from "./assistance.ts";
 import { Readable } from "node:stream";
 import { sendResponseBody } from "./response.ts";
 import { createServer } from "node:http";
@@ -10,7 +14,6 @@ import { DictionaryService } from "../../../packages/service/src/service.ts";
 import {
   nodeClientNetwork,
   nodeAssistanceIdentityAvailable,
-  normalizeClientNetwork,
 } from "../../../packages/service/src/inference.ts";
 import {
   durableDirectory,
@@ -29,13 +32,9 @@ await initializeCore(
   ),
 );
 const index = new SqliteIndexStore(join(directory, "indexes.sqlite"));
-const trustedProxies = (process.env.JVC_TRUSTED_PROXY_ADDRESSES ?? "")
-  .split(",")
-  .filter(Boolean);
-if (trustedProxies.some((address) => !normalizeClientNetwork(address)))
-  throw new Error(
-    "JVC_TRUSTED_PROXY_ADDRESSES must contain exact IP addresses.",
-  );
+const trustedProxies = trustedProxyAddresses(
+  process.env.JVC_TRUSTED_PROXY_ADDRESSES ?? "",
+);
 const clientIpHeader = (
   process.env.JVC_CLIENT_IP_HEADER ?? "x-real-ip"
 ).toLowerCase();
@@ -50,11 +49,19 @@ const coordinator = new SqliteCoordinator(
   join(directory, "coordinator.sqlite"),
   Number(process.env.JVC_SNAPSHOT_LIMIT ?? 16),
 );
+const assistanceBudget =
+  identityAvailable && String(process.env.JVC_AI_ENABLED) === "enabled"
+    ? new SqliteAssistanceBudgetStore(
+        join(directory, "assistance-spending.sqlite"),
+      )
+    : undefined;
 const service = new DictionaryService(
   new FileObjectStore(join(directory, "objects")),
   coordinator,
   {
-    assistance: identityAvailable ? nodeAssistance(process.env) : {},
+    assistance: identityAvailable
+      ? nodeAssistance(process.env, assistanceBudget)
+      : {},
     index,
     reportError:
       process.env.JVC_LOG_ERRORS === "enabled"
@@ -193,6 +200,7 @@ for (const signal of ["SIGTERM", "SIGINT"] as const)
     server.close(() => {
       coordinator.close();
       index.close();
+      assistanceBudget?.close();
       process.exit(0);
     }),
   );
