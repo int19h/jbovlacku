@@ -629,6 +629,132 @@ test("checkpoint startup restores index metadata and rejects publication failure
   );
 });
 
+test("checkpoint writes capture only the latest pending session and share unchanged package records", async () => {
+  const checkpoints = new MemoryCheckpoints();
+  const { service, definition, profile, coordinator } =
+    await fixture(checkpoints);
+  const initialRecords = (service as any).packageRecords.get(
+    coordinator.state.snapshot,
+  );
+  const gate = deferred();
+  const entered = deferred();
+  const save = checkpoints.save.bind(checkpoints);
+  let saves = 0;
+  checkpoints.save = async (binding, payload) => {
+    if (++saves === 1) {
+      entered.resolve();
+      await gate.promise;
+    }
+    await save(binding, payload);
+  };
+  const captured: string[] = [];
+  const capture = (service as any).saveCheckpoint.bind(service);
+  (service as any).saveCheckpoint = (
+    snapshot: Snapshot,
+    position: number,
+    packages: unknown,
+  ) => {
+    const session = (service as any).sessions.get(
+      snapshot.snapshot + "|" + service.options.selectedView,
+    );
+    const exportCheckpoint = session.checkpoint.bind(session);
+    session.checkpoint = (binding: string) => {
+      captured.push(snapshot.snapshot);
+      return exportCheckpoint(binding);
+    };
+    return capture(snapshot, position, packages);
+  };
+  const snapshots: string[] = [];
+  let previous = profile.envelope.id;
+  for (const [index, value] of ["bless", "curse", "bless"].entries()) {
+    const entry = judgment(
+      definition.envelope.id,
+      String(index + 4),
+      [previous],
+      value,
+    );
+    previous = entry.envelope.id;
+    await service.admitMany([utf8(JSON.stringify(entry))]);
+    while ((service as any).background) await (service as any).background;
+    snapshots.push(coordinator.state.snapshot!);
+    assert.equal(
+      (service as any).packageRecords.get(coordinator.state.snapshot),
+      initialRecords,
+    );
+  }
+  await entered.promise;
+  assert.deepEqual(captured, [snapshots[0]]);
+  gate.resolve();
+  await service.flushMaterialization();
+  assert.deepEqual(captured, [snapshots[0], snapshots[2]]);
+  assert.equal(checkpoints.saved?.binding.snapshot, snapshots[2]);
+  assert.equal(saves, 2);
+});
+
+test(
+  "checkpoint completion reschedules a descriptor queued before its finalizer",
+  { timeout: 2000 },
+  async () => {
+    const checkpoints = new MemoryCheckpoints();
+    const { service, coordinator } = await fixture(checkpoints);
+    const gate = deferred();
+    const second = deferred();
+    let saves = 0;
+    checkpoints.save = () => {
+      if (++saves === 1) return gate.promise;
+      second.resolve();
+      return Promise.resolve();
+    };
+    const snapshot = await coordinator.getSnapshot(coordinator.state.snapshot!);
+    const packages = await (service as any).packageCache.get(
+      snapshot!.snapshot,
+    );
+    (service as any).saveCheckpoint(
+      snapshot,
+      coordinator.state.position,
+      packages,
+    );
+    gate.resolve();
+    queueMicrotask(() =>
+      (service as any).saveCheckpoint(
+        snapshot,
+        coordinator.state.position,
+        packages,
+      ),
+    );
+    await second.promise;
+    await service.flushMaterialization();
+    assert.equal(saves, 2);
+  },
+);
+
+test(
+  "a failed latest checkpoint save stops without repeating the export",
+  { timeout: 2000 },
+  async () => {
+    const checkpoints = new MemoryCheckpoints();
+    const { service, coordinator } = await fixture(checkpoints);
+    let saves = 0;
+    checkpoints.save = async () => {
+      saves++;
+      throw new Error("Checkpoint save failed.");
+    };
+    const snapshot = await coordinator.getSnapshot(coordinator.state.snapshot!);
+    const packages = await (service as any).packageCache.get(
+      snapshot!.snapshot,
+    );
+    (service as any).saveCheckpoint(
+      snapshot,
+      coordinator.state.position,
+      packages,
+    );
+    await service.flushMaterialization();
+    assert.equal(saves, 1);
+    assert.equal((service as any).checkpointJob, undefined);
+    assert.equal((service as any).pendingCheckpoint, undefined);
+  },
+);
+
 test("damaged or mismatched checkpoint data falls back to original records", async () => {
   const checkpoints = new MemoryCheckpoints();
   const { objects, coordinator, options, definition, reads } =

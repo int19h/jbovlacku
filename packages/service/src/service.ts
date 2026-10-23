@@ -110,18 +110,32 @@ export class DictionaryService {
   >();
   private completed?: { snapshot: Snapshot; position: number };
   private snapshotPositions = new Map<string, number>();
+  private snapshotDeltas = new Map<
+    string,
+    { base: string | null; changed: string[] }
+  >();
   private initialized?: Promise<void>;
   private pendingMaterialization?: Snapshot;
   private background?: Promise<void>;
   private backgroundError?: unknown;
   private pendingCheckpoint?: {
-    binding: CheckpointBinding;
-    payload: ServiceCheckpoint;
+    snapshot: Snapshot;
+    position: number;
+    packages: MaterializedPackages;
   };
   private checkpointJob?: Promise<void>;
   private publication: Promise<void> = Promise.resolve();
   private metadata(): Promise<StateMetadata> {
     return this.coordinator.loadMetadata?.() ?? this.coordinator.load();
+  }
+  private rememberDelta(
+    snapshot: string,
+    base: string | null,
+    changed: string[],
+  ) {
+    this.snapshotDeltas.set(snapshot, { base, changed });
+    while (this.snapshotDeltas.size > 4)
+      this.snapshotDeltas.delete(this.snapshotDeltas.keys().next().value!);
   }
   private binding(snapshot: Snapshot, position: number): CheckpointBinding {
     return {
@@ -252,7 +266,10 @@ export class DictionaryService {
   async flushMaterialization(): Promise<void> {
     await this.initialize();
     while (this.background) await this.background;
-    while (this.checkpointJob) await this.checkpointJob;
+    while (this.checkpointJob || this.pendingCheckpoint) {
+      if (!this.checkpointJob) this.drainCheckpoints();
+      await this.checkpointJob;
+    }
     if (this.backgroundError) throw this.backgroundError;
   }
   private saveCheckpoint(
@@ -265,20 +282,7 @@ export class DictionaryService {
     );
     if (!session || !this.options.checkpoints || !this.options.coreVersion)
       return;
-    const binding = this.binding(snapshot, position);
-    this.pendingCheckpoint = {
-      binding,
-      payload: {
-        core: session.checkpoint(JSON.stringify(binding)),
-        package_records: this.packageRecords.get(snapshot.snapshot) ?? [],
-        packages,
-        envelopes: [
-          ...new Set(
-            Object.values(snapshot.events).map((event) => event.envelope_hash),
-          ),
-        ].map((hash) => [hash, this.canonicalEnvelopes.get(hash)!]),
-      },
-    };
+    this.pendingCheckpoint = { snapshot, position, packages };
     this.drainCheckpoints();
   }
   private drainCheckpoints() {
@@ -287,11 +291,31 @@ export class DictionaryService {
       while (this.pendingCheckpoint) {
         const checkpoint = this.pendingCheckpoint;
         this.pendingCheckpoint = undefined;
+        const session = this.sessions.get(
+          checkpoint.snapshot.snapshot +
+            "|" +
+            (this.options.selectedView ?? zeroView),
+        );
+        if (!session) continue;
+        const binding = this.binding(checkpoint.snapshot, checkpoint.position);
         try {
-          await this.options.checkpoints!.save(
-            checkpoint.binding,
-            checkpoint.payload,
-          );
+          const envelopes: [string, string][] = [];
+          const seen = new Set<string>();
+          for (const event of Object.values(checkpoint.snapshot.events))
+            if (!seen.has(event.envelope_hash)) {
+              seen.add(event.envelope_hash);
+              envelopes.push([
+                event.envelope_hash,
+                this.canonicalEnvelopes.get(event.envelope_hash)!,
+              ]);
+            }
+          await this.options.checkpoints!.save(binding, {
+            core: session.checkpoint(JSON.stringify(binding)),
+            package_records:
+              this.packageRecords.get(checkpoint.snapshot.snapshot) ?? [],
+            packages: checkpoint.packages,
+            envelopes,
+          });
         } catch (error) {
           this.options.reportError?.(error);
         }
@@ -765,29 +789,47 @@ export class DictionaryService {
     const builder = baseEntry
       ? baseEntry[1].fork(options)
       : createEvaluationSession(options);
-    const packageRecords = new Map(
-      (baseSnapshot ? this.packageRecords.get(baseSnapshot.snapshot) : [])?.map(
-        (record) => [record.id, record],
-      ),
-    );
+    const baseRecords =
+      (baseSnapshot
+        ? this.packageRecords.get(baseSnapshot.snapshot)
+        : undefined) ?? [];
+    let packageRecords: Map<string, PackageRecord> | undefined;
+    const mutableRecords = () => {
+      if (!packageRecords) {
+        packageRecords = new Map();
+        for (const record of baseRecords) packageRecords.set(record.id, record);
+      }
+      return packageRecords;
+    };
     const changedPackages: PackageRecord[] = [];
-    if (baseSnapshot)
+    const hint = this.snapshotDeltas.get(snapshot.snapshot);
+    const exactHint = baseSnapshot && hint?.base === baseSnapshot.snapshot;
+    if (baseSnapshot && !exactHint)
       for (const id of Object.keys(baseSnapshot.events))
         if (!snapshot.events[id]) {
           builder.removeRecord(id);
-          const old = packageRecords.get(id);
-          if (old) changedPackages.push(old);
-          packageRecords.delete(id);
+          if (
+            ["definition.publish", "rafsi.publish"].includes(
+              String(baseSnapshot.events[id].header.action.kind),
+            )
+          ) {
+            const records = mutableRecords();
+            const old = records.get(id);
+            if (old) changedPackages.push(old);
+            records.delete(id);
+          }
         }
-    const changedIds = sorted(Object.keys(snapshot.events)).filter((id) => {
-      const previous = baseSnapshot?.events[id];
-      const next = snapshot.events[id];
-      return (
-        !previous ||
-        previous.envelope_hash !== next.envelope_hash ||
-        previous.body_hash !== next.body_hash
-      );
-    });
+    const changedIds = exactHint
+      ? sorted(hint.changed)
+      : sorted(Object.keys(snapshot.events)).filter((id) => {
+          const previous = baseSnapshot?.events[id];
+          const next = snapshot.events[id];
+          return (
+            !previous ||
+            previous.envelope_hash !== next.envelope_hash ||
+            previous.body_hash !== next.body_hash
+          );
+        });
     try {
       for await (const { value: id, result: loaded } of orderedPrefetch(
         changedIds,
@@ -815,17 +857,25 @@ export class DictionaryService {
           contentHash(envelope),
           new TextDecoder().decode(envelope),
         );
-        const old = packageRecords.get(id);
-        if (old) changedPackages.push(old);
-        packageRecords.delete(id);
-        if (record) {
-          const prepared: PackageRecord = {
-            ...record,
-            envelope_hash: contentHash(envelope),
-            missing: event.body_hash !== null && body === null,
-          };
-          packageRecords.set(id, prepared);
-          changedPackages.push(prepared);
+        if (
+          record ||
+          ["definition.publish", "rafsi.publish"].includes(
+            String(baseSnapshot?.events[id]?.header.action.kind),
+          )
+        ) {
+          const records = mutableRecords();
+          const old = records.get(id);
+          if (old) changedPackages.push(old);
+          records.delete(id);
+          if (record) {
+            const prepared: PackageRecord = {
+              ...record,
+              envelope_hash: contentHash(envelope),
+              missing: event.body_hash !== null && body === null,
+            };
+            records.set(id, prepared);
+            changedPackages.push(prepared);
+          }
         }
       }
       const session = builder.finish();
@@ -836,9 +886,11 @@ export class DictionaryService {
         if (!this.packageRecords.has(snapshot.snapshot))
           this.packageRecords.set(
             snapshot.snapshot,
-            [...packageRecords.values()].sort((a, b) =>
-              a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
-            ),
+            packageRecords
+              ? [...packageRecords.values()].sort((a, b) =>
+                  a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
+                )
+              : baseRecords,
           );
         if (baseSnapshot && baseSnapshot.snapshot !== snapshot.snapshot)
           this.packageBases.set(snapshot.snapshot, {
@@ -1053,6 +1105,7 @@ export class DictionaryService {
           ...changedIds,
         ])
       ) {
+        this.rememberDelta(snapshot.snapshot, state.snapshot, [...changedIds]);
         if (this.options.asyncMaterialization)
           this.queueMaterialization(snapshot);
         return {
@@ -1263,6 +1316,7 @@ export class DictionaryService {
             [],
           )
         ) {
+          this.rememberDelta(snapshot.snapshot, state.snapshot, []);
           if (this.options.asyncMaterialization)
             this.queueMaterialization(snapshot);
           return json(
