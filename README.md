@@ -151,12 +151,36 @@ The expansion budget does not bound total CPU time. These measurements do not es
 
 A local 2,430-event batch uses 17,010 R2 operations. Cold search uses 9,727 R2 operations before D1 and Durable Object work.
 Local Wrangler success does not prove deployed quota, memory, or CPU compliance. Larger imports need bounded incremental jobs.
+
 The current default state work budget can run out at roughly 4,500 events in a flat history.
 This is an approximate limit. Histories with more edges can reach it sooner, and the requested state also affects the work.
 The Node loader can retain a larger explicit traversal budget for a local import.
-That configuration does not remove memory limits or establish performance for the full corpus.
-The first full SQL evaluation reached WebAssembly's 4 GiB memory limit with derived source vectors in every body.
-The current extraction omits derived vectors and caches. Full dictionary serving with that extraction remains untested.
+
+The Node adapter serves the revised SQL import with 59,125 definitions in 44 languages.
+The extraction omits derived vectors and cache fields from signed bodies.
+The adapter retains an evaluated checkpoint and keeps completed reads available during new evaluation.
+It captures at most one checkpoint per minute and flushes the latest state on shutdown.
+After publication, the browser shows a pending notice until the accepted records reach the evaluated word view.
+
+On this VM, readiness with a checkpoint took 6.49 seconds, and the first `klama` request took 0.053 seconds.
+Five consecutive signed endorsements became visible in 3.47, 1.84, 1.94, 1.81, and 1.97 seconds.
+Warm word requests took 61 to 251 milliseconds across English, French, and Russian definition packages.
+Search took 19 to 76 milliseconds. Package manifests took 1.5 to 2.6 milliseconds.
+
+The checkpoint used 63.80 MiB. Peak process memory reached 3.69 GiB, including 1.67 GiB of Wasm linear memory.
+
+After a crash, the adapter can restore an older valid checkpoint and evaluate the later records.
+If the checkpoint predates the stored materialized snapshot, interpreted reads wait for catch-up.
+Recovery does not expose that older checkpoint as the current public snapshot.
+A full-data crash restart reached readiness in 6.79 seconds and returned the latest word state 1.78 seconds later.
+Startup through that first response took 8.56 seconds. The manifest and changes endpoint kept the same materialized cursor.
+Recovery replayed one record without a rebuild and peaked at 3.02 GiB of process memory.
+
+Process startup through the first word response with a checkpoint took 6.54 seconds.
+Without a checkpoint, initial readiness took 31.15 seconds, and the first word request then took 66.64 seconds.
+That cold request still exceeds the original 30-second target.
+The [development guide](docs/development.md#initial-lensisku-data) describes state reuse, checkpoint costs, and the measurement limits.
+A larger traversal budget does not remove memory limits.
 
 [Issue 9](https://github.com/int19h/jbovlacku/issues/9) tracks ranking CPU limits.
 [Issue 11](https://github.com/int19h/jbovlacku/issues/11) tracks state evaluation beyond the local corpus.

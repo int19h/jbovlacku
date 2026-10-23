@@ -107,19 +107,74 @@ Reusing an identical retained snapshot ID refreshes its retention position.
 A wrapper becomes visible only in the transaction that publishes its current pointer.
 
 An older prototype database has no trusted snapshot publication order.
-Migration rebuilds and retains its current snapshot only. Other old snapshot IDs expire.
+Migration from the first prototype retains its current snapshot only. Other old snapshot IDs expire.
 A rebuilt inventory must match the stored current pointer. A mismatch reports storage unavailable.
 Legacy object-store wrappers and the old snapshot-ID table remain as one-time cleanup debt.
 Anonymous event and selection admission has no contributor quota. Signed object retention remains unbounded.
+
+A generation is an index copy for one snapshot. An alias points to a generation with the same entries.
+The Node search index retains its current generation, one rollback generation, active staged generations, and the source generations that aliases use.
+Index publication removes obsolete rows, aliases, and markers in the same SQLite transaction.
+Historical API reads use immutable packages. If an index base is absent, the service rebuilds it from the completed package entries.
+
 This prototype needs an admission policy and resource limits before public use.
 New admissions store wrappers in bounded coordinator rows and create no more legacy wrapper objects.
 
 At most two distinct evaluation jobs and two package jobs run at once.
 Requests for the same snapshot and view share evaluation work.
+An evaluation keeps its cache slot until its package publication finishes.
 An unknown or invalid requested view is rejected before full evaluation.
 Alternate views cannot evict the most recent configured-view evaluation.
 If a committed admission cannot obtain an evaluation slot, its receipt still reports the durable acceptance and cursor.
 It reports unavailable interpretation with `evaluation_resource_unavailable`. A later receipt read or retry can evaluate it.
+
+The Node adapter evaluates new snapshots in the background.
+Without an explicit snapshot, word, search, identity, account, and package reads use the last completed snapshot.
+The manifest also names that completed snapshot. Interpreted results name their snapshot and view.
+Raw replication reads can expose the newer accepted inventory and name its snapshot.
+
+The accepted cursor advances after durable admission. The materialized cursor advances after evaluation, packages, and index publication complete.
+During that gap, a new event receipt reports `index_lag` and `evaluation_pending`, with unavailable interpretation and a null snapshot.
+A late-body receipt also uses a null snapshot until the completed snapshot contains the same body mapping.
+An unchanged event keeps the completed snapshot and its derived receipt while later writes wait.
+This receipt lets the browser finish its wait without waiting for every other write.
+If a completed snapshot contains the exact event representation without a derived receipt, the receipt names that snapshot with `evaluation_unavailable`.
+The receipt rebuilds a missing evaluated session before it answers.
+The service retains the preceding completed snapshot during a backlog. Failed jobs leave it available, and later reads retry the latest inventory.
+
+After local publication, a fresh browser word read waits for accepted records from this server to finish evaluation.
+The page shows that the server stored the records while its word view updates.
+This page session tracks only receipts whose envelope and required body match the saved delivery.
+The wait lasts at most 15 seconds and stops when the reader leaves the page.
+A temporary network failure or HTTP 5xx response triggers another poll within that same deadline.
+A failed wait keeps delivery accepted and offers a refresh. Ordinary reads and explicit snapshot reads still use their completed snapshot.
+
+A checkpoint is a saved evaluated state.
+The Node adapter keeps one pinned checkpoint under `evaluation-cache` in `JVC_DATA_DIR`.
+The file contains compressed Node binary data. An independent SQLite row pins its digest and calculation context.
+That context includes the exact snapshot, logical inventory, event position, selected view, work limits, and Wasm artifact digest.
+The pin also retains one private base wrapper. This wrapper does not extend public snapshot retention.
+
+The core also compares its checkpoint schema and binding before restore.
+Missing, damaged, incompatible, or incorrectly bound checkpoints return to full evaluation from original records.
+The cache limits are 256 MiB compressed and 768 MiB decoded. A cache failure does not change protocol results.
+
+Startup can restore a valid older checkpoint after a crash.
+The adapter requires the same selected view, work limits, and core version, and the exact saved base inventory.
+It then reads and authenticates only new or changed record bytes from the latest inventory.
+The core applies its ordinary rules for incremental updates and full rebuilds from retained authenticated records.
+If the pin differs from the durable materialized snapshot, startup uses it only for calculation, even when public retention still includes it.
+Startup does not publish that base's index or mark it as completed.
+Without a current completed state, interpreted reads wait for catch-up. Recovery never moves the served snapshot or its materialized cursor backward.
+An expired private base also supports calculation only and remains unavailable through public snapshot routes.
+
+Shutdown drains pending evaluation and checkpoint work before it closes SQLite.
+Checkpoint recovery rebuilds a missing search index from the saved entries before readiness.
+The service captures at most one checkpoint per minute after a 100 ms quiet period.
+It keeps only the latest pending snapshot during that interval. A failed capture also counts toward the interval.
+Shutdown bypasses the interval and saves the latest completed state.
+Core export and binary serialization still run synchronously on the Node event loop.
+The interval limits their frequency, not their duration.
 
 Use a separate data directory for each test service. Do not point a disposable test at another service's database.
 A selected view and explicit import selection determine which imported publications appear.
@@ -170,10 +225,127 @@ Large imports need a larger explicit state work budget and enough memory.
 The traversal flag changes the work limit only. It does not remove memory or event limits.
 The loader completes admission before the server builds its snapshot, indexes, and search packages.
 Successful admission alone does not establish successful dictionary evaluation.
-Evaluation requests use UTF-8 byte encoding without one combined JSON string.
-The complete request and source bodies still count toward memory use.
-The first full SQL evaluation reached WebAssembly's 4 GiB memory limit with derived source vectors in every body.
-The current extraction omits those vectors. Full dictionary serving with that extraction remains untested.
+
+The service streams original envelopes and bodies into the shared core, with at most 16 record reads in progress per job.
+The core authenticates each envelope and the complete original body before it retains the fields needed for state.
+These fields include source selection evidence and numeric source-account evidence. Stored bodies and signed identifiers keep their original bytes.
+Sessions retain evaluated state instead of all source bodies. Small ancestor sets use sparse storage.
+Identical history caches share storage when the snapshot contains no acceptance events. Work charges stay unchanged.
+
+When the event limit is exceeded, the core returns `resource_unavailable` before it builds ancestry caches.
+It retains authenticated records so that a later limit change can recover them.
+
+New snapshots reuse authenticated compact records and the preceding evaluation.
+A complete issuer with one active key can update a judgment register or publish a native definition without a full rebuild.
+The new event cannot resolve an old missing reference. The evaluator also requires enough work for the equivalent full result.
+
+Trust, lifecycle, view, account, status, rafsi, profile, report, and bridge changes rebuild state from the retained authenticated records.
+Changed bodies, import selections, calculation configuration, or unavailable history also force a rebuild.
+These rules follow the [history and authority rules](format.md#4-causal-order-and-acceptance) and the [ranking rules](format.md#8-editorial-trust-and-ranking).
+
+Forks share immutable ancestor payloads. After 64 appended records, a rebuild incorporates the new IDs into the ancestor universe.
+The evaluator retains the full logical work charge. Uncertain work at an ancestor-width boundary forces a rebuild.
+
+Judgment updates can return a patch of at most 1 MiB for the exact parent session.
+The facade applies that patch to immutable result maps. Other changes return the full result.
+Differential tests compare the complete state and ranking with full evaluation.
+The external Lensisku slice test is ignored in an ordinary Cargo test run.
+It requires a local file of signed carriers through `JVC_LENSISKU_CARRIERS`.
+If you request this test without that variable, the test fails with a setup message.
+
+From the repository root, run the external test with the carrier file that your task authorizes:
+
+```sh
+JVC_LENSISKU_CARRIERS=/absolute/path/to/carriers.jsonl \
+  cargo test -p jvc-state --test incremental \
+  lensisku_slice_mixed_writes_equal_full_evaluation -- --ignored --exact --nocapture
+```
+
+Search packages reuse authenticated text and attribution fields from unchanged records.
+New or changed record bytes pass the original validators. Stored objects remain immutable.
+Judgments reuse package parts and search entries. Changed publications rebuild the affected language packages.
+
+Missing, changed, or late body bytes retain their separate handling. The verifier caches at most 1,024 validated public keys per builder.
+Every signature still passes the point, scalar, embedded-key, and equation rules.
+The existing combined-request API remains available for smaller browser snapshots. It still allocates the complete request.
+
+The full local measurement used the revised SQL extraction without derived vectors or cache fields in signed bodies.
+It contained 59,125 definitions in 44 languages and used the saved 1,000,000,000-unit traversal budget.
+The run began with 59,126 events and ended with 59,131 after five signed endorsements.
+Definition bodies, the selected view, and the import selection remained unchanged.
+The source listened on `127.0.0.1:8951` and used the default Node heap configuration.
+
+The first launch had no checkpoint. Initial readiness took 31.15 seconds.
+The first `klama` request then took 66.64 seconds, and startup through that response took 97.80 seconds.
+
+The initial evaluation session took 52.31 seconds, including record reads, authentication, and evaluation.
+Its final core evaluation took 2.18 seconds. This profile does not separate file reads from authentication.
+The first launch also built the initial snapshot and packages.
+
+With a checkpoint, readiness took 6.49 seconds. The first word request took 0.053 seconds.
+Process startup through that response took 6.54 seconds.
+A second restart restored all five writes, with 6.09-second readiness and a 0.311-second first word request.
+That second startup took 6.40 seconds through the first word response.
+
+The five endorsements became visible in 3.47, 1.84, 1.94, 1.81, and 1.97 seconds.
+The timer ran from the signed POST until the first word response with the new reviewer count.
+Later receipt and event reads made sure that the named snapshot contained each signed event.
+Admission receipts reported durable acceptance, `index_lag`, `evaluation_pending`, and a null snapshot.
+Reads used the preceding completed snapshot while the new snapshot evaluated.
+Every update used the incremental path for one record.
+
+| Definition package | Warm word request | Search | Package manifest |
+| --- | ---: | ---: | ---: |
+| English | 62.7 ms | 75.8 ms | 2.0 ms |
+| French | 250.9 ms | 18.7 ms | 2.6 ms |
+| Russian | 61.0 ms | 20.8 ms | 1.5 ms |
+
+The word route returns candidates across definition languages.
+Each warm request used a headword from the named language package and included that package's exact definition.
+The run also read package parts and original bodies, with matching counts and languages.
+Package parts took 9.6 to 44.4 milliseconds, and body reads took 2.9 to 7.9 milliseconds.
+
+The final checkpoint used 66,900,700 bytes, or 63.80 MiB.
+Peak Wasm linear memory reached 1,794,899,968 bytes, or 1.67 GiB.
+Linux reported peak process memory of 3,959,283,712 bytes, or 3.69 GiB, including Wasm.
+The initial launch peaked at 2.64 GiB, and the five-write process reached the overall peak.
+The Node process remained below 4,000,000,000 bytes by about 41 MB in this run.
+
+The profiler measured synchronous core export separately from synchronous V8 serialization.
+Initial shutdown took 305 ms for export and 411 ms for serialization.
+The first automatic capture took 355 ms and 654 ms. The final shutdown capture took 171 ms and 568 ms.
+
+There was one automatic capture during the five writes, plus the forced final capture.
+The one-minute interval limits these pauses' frequency. It does not remove the pauses from the Node event loop.
+
+The word request with a checkpoint and all five writes met the five-second request targets.
+Startup plus the first response still exceeded five seconds, and the first cold request still exceeded 30 seconds.
+Initial evaluation authenticates every record, and initial package generation rereads retained bytes to detect storage failures.
+The cold-start readiness probe used three-second request deadlines and can start overlapping initial snapshot builds.
+These single-process measurements use the VM's existing filesystem cache and do not establish performance on another host or under concurrent imports.
+They also do not establish hosted Worker resource compliance.
+
+A separate crash probe retained the same definitions and added two disposable endorsements, for 59,135 events.
+The first endorsement reached checkpoint position 59,134. The second reached accepted and materialized position 59,135 without another capture.
+The probe killed its exact child 2.23 seconds after the second POST began.
+After the child exited, the probe removed only that dead process's exact stale data lock.
+
+Crash recovery reached readiness in 6.79 seconds. Its first word request then took 1.78 seconds and returned the latest materialized snapshot.
+Startup through that response took 8.56 seconds. Concurrent manifest and changes reads both reported materialized cursor `local-node.59135`.
+The manifest named the same latest snapshot as the word response.
+The core received one later record and reported one incremental update without a rebuild.
+
+Crash recovery peaked at 3,243,741,184 bytes, or 3.02 GiB, including 1.52 GiB of Wasm linear memory.
+The final checkpoint used 66,904,504 bytes, or 63.81 MiB.
+The data directory grew by 9.12 MiB, without a directory copy.
+The source listened only on `127.0.0.1:8951`, and all probe servers stopped afterward.
+
+The probe reused an existing compatible checkpoint. It did not repeat full cold evaluation.
+Crash recovery still exceeds the five-second target from startup through the first response.
+These results use the same VM and filesystem cache. Other histories and concurrent workloads can take longer.
+
+The first combined full-data request before streaming reached WebAssembly's 4 GiB memory limit.
+The current measurement uses the streaming path and the revised source bodies.
 An explicit traversal limit or a larger Node heap does not remove the WebAssembly memory limit.
 
 ## Browser development
@@ -425,6 +597,8 @@ The image runs as the `node` user with UID `1000`. It listens on port `8789` and
 Use a named volume or writable mount at that path. Keep the volume when you recreate a service container.
 The smoke script creates a unique disposable volume and binds an available loopback port.
 It tests a signed write, process restart, exact retry, receipt deduplication, browser assets, and clean shutdown.
+The initial admission receipt can name no snapshot while background evaluation waits.
+The script waits for a completed receipt before restart, then compares the receipt position, stored bytes, and completed inventory after retry.
 Its cleanup removes only its own named container and volume. It retains test files in the selected directory.
 
 The image retains application notices, font licenses, and the Rust standard library notices.

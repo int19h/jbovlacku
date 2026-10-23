@@ -121,6 +121,58 @@ const api = (index: number, path: string, body?: unknown) =>
           body: JSON.stringify(body),
         },
   );
+const completedManifests = new Map<number, any>();
+async function waitMaterialized(index: number, posted?: any) {
+  const until =
+    Date.now() +
+    Number(process.env.JVC_ADAPTER_MATERIALIZATION_TIMEOUT_MS ?? 120000);
+  while (Date.now() < until) {
+    const response = await api(index, "/manifest");
+    if (response.status === 503) {
+      await new Promise((done) => setTimeout(done, 25));
+      continue;
+    }
+    assert.equal(response.status, 200, await response.clone().text());
+    const manifest: any = await response.json();
+    let receipt: any;
+    if (posted) {
+      const received = await api(index, "/receipts/" + posted.id);
+      assert.equal(received.status, 200, await received.clone().text());
+      receipt = await received.json();
+      assert.equal(receipt.cursor, posted.cursor);
+      assert.equal(receipt.envelope_hash, posted.envelope_hash);
+      assert.equal(receipt.body_hash, posted.body_hash);
+      assert.equal(receipt.body_status, posted.body_status);
+      if (receipt.reasons.includes("index_lag"))
+        assert.equal(receipt.interpretation, "unavailable");
+    }
+    if (
+      manifest.accepted_cursor === manifest.materialized_cursor &&
+      (!posted ||
+        (receipt.snapshot === manifest.snapshot &&
+          !receipt.reasons.includes("evaluation_pending")))
+    ) {
+      completedManifests.set(index, manifest);
+      return {
+        manifest,
+        receipt: posted
+          ? { ...receipt, admission: posted.admission }
+          : undefined,
+      };
+    }
+    const previous = completedManifests.get(index);
+    if (previous && manifest.accepted_cursor !== manifest.materialized_cursor) {
+      assert.equal(manifest.snapshot, previous.snapshot);
+      assert.equal(manifest.materialized_cursor, previous.materialized_cursor);
+    }
+    await new Promise((done) => setTimeout(done, 25));
+  }
+  throw new Error(
+    "The adapter did not materialize the accepted snapshot before the deadline.",
+  );
+}
+const materializedReceipt = async (index: number, posted: any) =>
+  (await waitMaterialized(index, posted)).receipt;
 try {
   const receipts: any[] = [];
   const indexes =
@@ -134,10 +186,16 @@ try {
     if (process.env.JVC_ADAPTER_CORPUS_ONLY !== "enabled") {
       const missing = await api(index, "/events", { ...entry, body: null });
       assert.equal(missing.status, 201);
-      const original: any = await missing.json();
+      const original: any = await materializedReceipt(
+        index,
+        await missing.json(),
+      );
       const complete = await api(index, "/events", entry);
       assert.equal(complete.status, 200);
-      const receipt: any = await complete.json();
+      const receipt: any = await materializedReceipt(
+        index,
+        await complete.json(),
+      );
       assert.equal(receipt.cursor, original.cursor);
       assert.notEqual(receipt.snapshot, original.snapshot);
       assert.equal(
@@ -154,7 +212,10 @@ try {
       await start(index);
       const retry = await api(index, "/events", entry);
       assert.equal(retry.status, 200);
-      assert.deepEqual(await retry.json(), receipt);
+      assert.deepEqual(
+        await materializedReceipt(index, await retry.json()),
+        receipt,
+      );
       const changes: any = await (await api(index, "/changes")).json();
       assert.equal(changes.items.length, 1);
       assert.equal(changes.items[0].id, entry.envelope.id);
@@ -198,6 +259,7 @@ try {
       );
       const published = await api(index, "/events", definition);
       assert.equal(published.status, 201, await published.clone().text());
+      await materializedReceipt(index, await published.json());
       // The newer read routes answer on both adapters with the same shapes.
       const manifest: any = await (await api(index, "/manifest")).json();
       assert.ok(Array.isArray(manifest.package_versions));
@@ -286,6 +348,7 @@ try {
       );
       const viewResponse = await api(index, "/events", view);
       assert.equal(viewResponse.status, 201, await viewResponse.clone().text());
+      await materializedReceipt(index, await viewResponse.json());
       // A second signed view selects the route-refusal profile. Each view
       // reports its own profile through both adapters.
       const shunView = createEvent(
@@ -316,6 +379,7 @@ try {
       );
       const shunResponse = await api(index, "/events", shunView);
       assert.equal(shunResponse.status, 201, await shunResponse.clone().text());
+      await materializedReceipt(index, await shunResponse.json());
       const wordPath = `/words/${encodeURIComponent(wordId(definitionWord))}`;
       for (const [chosen, algorithm] of [
         [view, "simple-routes-bounds-v1"],
@@ -412,7 +476,7 @@ try {
         );
         const response = await api(index, "/events", extra);
         assert.equal(response.status, 201);
-        latest = await response.json();
+        latest = await materializedReceipt(index, await response.json());
       }
       assert.equal(
         (
@@ -443,7 +507,10 @@ try {
         ).status,
         410,
       );
-      const finalRetry: any = await (await api(index, "/events", entry)).json();
+      const finalRetry: any = await materializedReceipt(
+        index,
+        await (await api(index, "/events", entry)).json(),
+      );
       assert.equal(finalRetry.cursor, receipt.cursor);
       assert.equal(finalRetry.snapshot, latest.snapshot);
       receipts[index].retained_snapshot = latest.snapshot;
@@ -483,6 +550,7 @@ try {
         assert.equal(selection.status, 201, await selection.clone().text());
       }
       if (process.env.JVC_ADAPTER_VIEW) {
+        await waitMaterialized(index);
         const search = await api(
           index,
           `/search?q=klama&language=en&view=${process.env.JVC_ADAPTER_VIEW}`,
@@ -490,7 +558,7 @@ try {
         assert.equal(search.status, 200, await search.clone().text());
         assert(((await search.json()) as any).hits.length > 0);
       }
-      const manifest: any = await (await api(index, "/manifest")).json();
+      const manifest: any = (await waitMaterialized(index)).manifest;
       receipts[index].corpus_snapshot = manifest.snapshot;
       await stop(index);
       await start(index);

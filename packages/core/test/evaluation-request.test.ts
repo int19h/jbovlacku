@@ -5,6 +5,10 @@ import { encodeEvaluationRequest } from "../src/evaluation-request.ts";
 import {
   evaluate,
   evaluateSession,
+  createEvaluationSession,
+  createEvent,
+  restoreHostEvaluationSession,
+  identityFromSeed,
   initializeCore,
   rankWord,
   utf8,
@@ -196,8 +200,19 @@ test("evaluation, sessions, and ranking preserve the original core wire results"
   assert.deepEqual(evaluate(input), expected);
   const original = new wasm.EvaluationSession(originalBytes);
   const session = evaluateSession(input);
+  const builder = createEvaluationSession({
+    selected_view: input.selected_view,
+    import_selections: input.import_selections,
+    limits: input.limits,
+  });
+  for (const envelope of input.events) {
+    const { id } = JSON.parse(envelope);
+    builder.addRecord(utf8(envelope), utf8(input.bodies[id]));
+  }
+  const streamed = builder.finish();
   try {
     assert.deepEqual(session.state, JSON.parse(original.state()));
+    assert.deepEqual(streamed.state, session.state);
     const word = Object.values(expected.publications)[0] as { word: string };
     assert.deepEqual(
       rankWord(input, word.word),
@@ -207,8 +222,246 @@ test("evaluation, sessions, and ranking preserve the original core wire results"
       session.rankWord(word.word),
       JSON.parse(original.rank(word.word)),
     );
+    assert.deepEqual(streamed.rankWord(word.word), session.rankWord(word.word));
+    assert.deepEqual(
+      streamed.rankWord(word.word, 4),
+      session.rankWord(word.word, 4),
+    );
+    assert.throws(() => builder.finish(), /builder is closed/);
+    assert.throws(
+      () => builder.addRecord(utf8(input.events[0])),
+      /builder is closed/,
+    );
   } finally {
     original.free();
     session.free();
+    streamed.free();
+    builder.free();
+  }
+});
+
+test("streamed original bodies preserve absent and invalid body outcomes", () => {
+  const entry = createEvent(
+    new Uint8Array(32).fill(33),
+    [],
+    "f".repeat(32),
+    { kind: "identity.profile" },
+    { name: "Original profile", bio: [], links: [] },
+  );
+  const envelope = canonical(entry.envelope);
+  for (const body of [
+    undefined,
+    canonical(entry.body),
+    '{"name":"tampered"}',
+  ]) {
+    const input = request({
+      events: [envelope],
+      bodies: body === undefined ? {} : { [entry.envelope.id]: body },
+    });
+    const expected = evaluateSession(input);
+    const builder = createEvaluationSession({
+      selected_view: input.selected_view,
+      import_selections: {},
+    });
+    builder.addRecord(
+      utf8(envelope),
+      body === undefined ? undefined : utf8(body),
+    );
+    const actual = builder.finish();
+    try {
+      assert.deepEqual(actual.state, expected.state);
+    } finally {
+      expected.free();
+      actual.free();
+      builder.free();
+    }
+  }
+});
+
+test("streaming rejects a changed signed envelope and releases unfinished builders", () => {
+  const entry = createEvent(
+    new Uint8Array(32).fill(34),
+    [],
+    "e".repeat(32),
+    { kind: "identity.merge" },
+    null,
+  );
+  entry.envelope.header.nonce = "d".repeat(32);
+  const builder = createEvaluationSession({
+    selected_view: view,
+    import_selections: {},
+  });
+  try {
+    assert.throws(() => builder.addRecord(utf8(canonical(entry.envelope))));
+  } finally {
+    builder.free();
+    builder.free();
+  }
+  assert.throws(() => builder.finish(), /builder is closed/);
+});
+
+test("session forks and host checkpoints preserve their parent and full evaluation", () => {
+  const seed = new Uint8Array(32).fill(57);
+  const profile = createEvent(
+    seed,
+    [],
+    "1".repeat(32),
+    { kind: "identity.profile" },
+    {
+      name: "Checkpoint fixture",
+      bio: [],
+      links: [],
+    },
+  );
+  const input = request({
+    events: [canonical(profile.envelope)],
+    bodies: { [profile.envelope.id]: canonical(profile.body) },
+  });
+  const parent = evaluateSession(input);
+  const original = structuredClone(parent.state);
+  const checkpoint = parent.checkpoint("exact-host-binding");
+  const restored = restoreHostEvaluationSession(
+    checkpoint,
+    "exact-host-binding",
+  );
+  assert.throws(() =>
+    restoreHostEvaluationSession(checkpoint, "another-binding"),
+  );
+  const merge = createEvent(
+    seed,
+    [profile.envelope.id],
+    "2".repeat(32),
+    { kind: "identity.merge" },
+    null,
+  );
+  const options = { selected_view: input.selected_view, import_selections: {} };
+  const branch = restored.fork(options);
+  branch.addRecord(utf8(canonical(merge.envelope)));
+  const child = branch.finish();
+  const expected = evaluateSession({
+    ...input,
+    events: [...input.events, canonical(merge.envelope)],
+  });
+  try {
+    assert.deepEqual(parent.state, original);
+    assert.deepEqual(restored.state, original);
+    assert.deepEqual(child.state, expected.state);
+    const missing = child.fork(options);
+    missing.addRecord(utf8(canonical(profile.envelope)));
+    const missingSession = missing.finish();
+    const expectedMissing = evaluateSession({
+      ...input,
+      bodies: {},
+      events: [...input.events, canonical(merge.envelope)],
+    });
+    try {
+      assert.deepEqual(missingSession.state, expectedMissing.state);
+    } finally {
+      missingSession.free();
+      expectedMissing.free();
+    }
+    const removed = child.fork(options);
+    removed.removeRecord(merge.envelope.id);
+    const back = removed.finish();
+    try {
+      assert.deepEqual(back.state, original);
+    } finally {
+      back.free();
+    }
+  } finally {
+    parent.free();
+    restored.free();
+    child.free();
+    expected.free();
+    branch.free();
+  }
+});
+
+test("judgment delta exports share immutable state without trusting caller changes", async () => {
+  const sourceBytes = await readFile(
+    new URL("../../importer/fixtures/lensisku-sample.json", import.meta.url),
+  );
+  const manifest = JSON.parse(
+    await readFile(
+      new URL(
+        "../../importer/fixtures/lensisku-sample.manifest.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  ) as CaptureManifest;
+  const reviewer = new Uint8Array(32).fill(73);
+  const imported = importCapture({
+    sourceBytes,
+    manifest,
+    seed: new Uint8Array(32).fill(72),
+    roots: [
+      {
+        identity: identityFromSeed(reviewer),
+        q: { numerator: 1, denominator: 1 },
+      },
+    ],
+  });
+  const input = request({
+    events: imported.carriers.map((carrier) => canonical(carrier.envelope)),
+    bodies: Object.fromEntries(
+      imported.carriers.map((carrier) => [
+        carrier.envelope.id,
+        canonical(carrier.body),
+      ]),
+    ),
+    selected_view: imported.view.envelope.id,
+    import_selections: { [imported.selection.hash]: imported.selection.ids },
+  });
+  const parent = evaluateSession(input);
+  const target = Object.values(parent.state.publications)[0];
+  const original = structuredClone(parent.state);
+  assert.throws(() => {
+    parent.state.publications[target.id].status = "forged";
+  }, TypeError);
+  assert.throws(() => {
+    (parent as any).state = { ...parent.state, available: false };
+  }, TypeError);
+  const judgment = createEvent(
+    reviewer,
+    [],
+    "9".repeat(32),
+    { kind: "judgment.set", target: target.id, value: "bless" },
+    null,
+  );
+  const builder = parent.fork({
+    selected_view: input.selected_view,
+    import_selections: input.import_selections,
+  });
+  builder.addRecord(utf8(canonical(judgment.envelope)));
+  const child = builder.finish();
+  const full = evaluateSession({
+    ...input,
+    events: [...input.events, canonical(judgment.envelope)],
+  });
+  try {
+    assert.equal(child.updateStatistics().rebuilt, false);
+    assert.equal(child.updateStatistics().incremental_records, 1);
+    assert.deepEqual(child.state, full.state);
+    assert.deepEqual(parent.state, original);
+    assert.equal(child.state.publications, parent.state.publications);
+    assert.equal(
+      child.state.publication_statuses,
+      parent.state.publication_statuses,
+    );
+    assert.throws(() => {
+      child.state.receipts[judgment.envelope.id].body = "forged";
+    }, TypeError);
+    assert.throws(() => {
+      (child.state.judgments as any)[target.id][identityFromSeed(reviewer)] =
+        "curse";
+    }, TypeError);
+    assert.ok(Object.isFrozen(child.state.receipts));
+    assert.ok(Object.isFrozen(child.state.lifecycle));
+  } finally {
+    parent.free();
+    child.free();
+    full.free();
+    builder.free();
   }
 });

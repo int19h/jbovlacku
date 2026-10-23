@@ -2,6 +2,7 @@ use crate::{Error, Result, canonical_value, parse_json, parse_stored_json, schem
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use unicode_normalization::UnicodeNormalization;
 
 pub const MAX_HEADER_BYTES: usize = 16 * 1024;
@@ -102,6 +103,12 @@ pub fn sorted_ids(values: &[String], prefix: &str, max: usize) -> Result<()> {
     Ok(())
 }
 pub fn validate_header(header: &Header) -> Result<Vec<u8>> {
+    validate_header_with_key_check(header, signature::validate_public_key)
+}
+fn validate_header_with_key_check(
+    header: &Header,
+    validate_key: impl FnOnce(&[u8; 32]) -> Result<()>,
+) -> Result<Vec<u8>> {
     if header.version != 1 {
         return Err(Error::new("version", "header version must be 1"));
     }
@@ -111,7 +118,7 @@ pub fn validate_header(header: &Header) -> Result<Vec<u8>> {
             "issuer must be a lowercase Ed25519 identity",
         ));
     }
-    signature::validate_public_key(
+    validate_key(
         &hex::decode(&header.issuer[8..])
             .unwrap()
             .try_into()
@@ -194,51 +201,84 @@ pub fn body_descriptor(bytes: &[u8]) -> Result<ContentDescriptor> {
         bytes: canonical.len() as u64,
     })
 }
+const VERIFIED_KEY_CACHE_LIMIT: usize = 1024;
+/// A bounded, local cache of public keys that passed the static profile checks.
+/// Every record still checks its signature point, scalar, and equation.
+#[derive(Default)]
+pub struct EnvelopeVerifier {
+    keys: BTreeMap<[u8; 32], signature::ValidatedPublicKey>,
+}
+impl EnvelopeVerifier {
+    pub fn verify(&mut self, bytes: &[u8]) -> Result<VerifiedEnvelope> {
+        if bytes.len() > MAX_ENVELOPE_BYTES {
+            return Err(Error::new("size", "complete envelope exceeds 20 KiB"));
+        }
+        self.verify_value(parse_json(bytes)?)
+    }
+    fn public_key(&mut self, bytes: &[u8; 32]) -> Result<signature::ValidatedPublicKey> {
+        if let Some(key) = self.keys.get(bytes) {
+            return Ok(key.clone());
+        }
+        let key = signature::ValidatedPublicKey::new(bytes)?;
+        if self.keys.len() < VERIFIED_KEY_CACHE_LIMIT {
+            self.keys.insert(*bytes, key.clone());
+        }
+        Ok(key)
+    }
+    fn verify_value(&mut self, value: Value) -> Result<VerifiedEnvelope> {
+        // Option fields still require an explicit null on the wire.
+        let h = value
+            .get("header")
+            .and_then(Value::as_object)
+            .ok_or_else(|| Error::new("header", "header must be an object"))?;
+        schema::fields(
+            &Value::Object(h.clone()),
+            &[
+                "version", "issuer", "previous", "nonce", "action", "content",
+            ],
+        )?;
+        if let Some(c) = h.get("content").filter(|c| !c.is_null()) {
+            schema::fields(c, &["hash", "bytes"])?;
+        }
+        let envelope: Envelope =
+            serde_json::from_value(value).map_err(|e| Error::new("envelope", e.to_string()))?;
+        let mut public_key = None;
+        let canonical_header = validate_header_with_key_check(&envelope.header, |bytes| {
+            public_key = Some(self.public_key(bytes)?);
+            Ok(())
+        })?;
+        if envelope.id != hash_id("jve1:", EVENT_DOMAIN, &canonical_header) {
+            return Err(Error::new(
+                "event_id",
+                "event identifier does not match its header",
+            ));
+        }
+        let mut message = EVENT_DOMAIN.to_vec();
+        message.extend(&canonical_header);
+        let signature_bytes = signature::verify_sshsig(
+            &envelope.header.issuer,
+            &message,
+            &envelope.signature,
+            &public_key.unwrap(),
+        )?;
+        let size = canonical_value(&serde_json::to_value(&envelope).unwrap())?.len();
+        if size > MAX_ENVELOPE_BYTES {
+            return Err(Error::new("size", "complete envelope exceeds 20 KiB"));
+        }
+        Ok(VerifiedEnvelope {
+            envelope,
+            canonical_header,
+            signature_bytes,
+        })
+    }
+}
 fn verify_value(value: Value) -> Result<VerifiedEnvelope> {
-    // Option fields still require an explicit null on the wire.
-    let h = value
-        .get("header")
-        .and_then(Value::as_object)
-        .ok_or_else(|| Error::new("header", "header must be an object"))?;
-    schema::fields(
-        &Value::Object(h.clone()),
-        &[
-            "version", "issuer", "previous", "nonce", "action", "content",
-        ],
-    )?;
-    if let Some(c) = h.get("content").filter(|c| !c.is_null()) {
-        schema::fields(c, &["hash", "bytes"])?;
-    }
-    let envelope: Envelope =
-        serde_json::from_value(value).map_err(|e| Error::new("envelope", e.to_string()))?;
-    let canonical_header = validate_header(&envelope.header)?;
-    if envelope.id != hash_id("jve1:", EVENT_DOMAIN, &canonical_header) {
-        return Err(Error::new(
-            "event_id",
-            "event identifier does not match its header",
-        ));
-    }
-    let mut message = EVENT_DOMAIN.to_vec();
-    message.extend(&canonical_header);
-    let signature_bytes =
-        signature::verify_sshsig(&envelope.header.issuer, &message, &envelope.signature)?;
-    let size = canonical_value(&serde_json::to_value(&envelope).unwrap())?.len();
-    if size > MAX_ENVELOPE_BYTES {
-        return Err(Error::new("size", "complete envelope exceeds 20 KiB"));
-    }
-    Ok(VerifiedEnvelope {
-        envelope,
-        canonical_header,
-        signature_bytes,
-    })
+    EnvelopeVerifier::default().verify_value(value)
 }
 /// The 20 KiB raw transport cap is local read policy. Canonical envelopes also
 /// have the format's 20 KiB limit; extra transport whitespace uses this local cap.
 pub fn verify_envelope(bytes: &[u8]) -> Result<VerifiedEnvelope> {
-    if bytes.len() > MAX_ENVELOPE_BYTES {
-        return Err(Error::new("size", "complete envelope exceeds 20 KiB"));
-    }
-    verify_value(parse_json(bytes)?)
+    EnvelopeVerifier::default().verify(bytes)
 }
 pub fn verify_stored_envelope(bytes: &[u8]) -> Result<VerifiedEnvelope> {
     if bytes.len() > MAX_ENVELOPE_BYTES {
@@ -291,7 +331,7 @@ pub fn inspect_body(event: &VerifiedEnvelope, bytes: Option<&[u8]>) -> BodyAvail
                 "body hash does not match the descriptor",
             ));
         }
-        schema::validate_body(event.header(), &body)?;
+        schema::validate_parsed_body(event.header(), &body)?;
         Ok(body)
     })();
     match result {

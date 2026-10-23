@@ -3,10 +3,12 @@
 mod accounts;
 mod api;
 mod graph;
+mod incremental;
 mod policy;
 pub use api::{
     AccountControl, Authority, Certificate, PublicationStatus, account_control, publication_status,
 };
+pub use incremental::{CHECKPOINT_VERSION, EvaluatedState, JudgmentChanges, UpdateStatistics};
 
 use jvc_core::{BodyAvailability, VerifiedEnvelope, inspect_body, validate_action};
 pub use policy::{Context, ContextGraph, PositiveEdge, evaluate_context};
@@ -26,7 +28,63 @@ pub struct EvaluationInput {
     pub import_selections: BTreeMap<String, Vec<String>>,
     pub limits: Limits,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// State configuration without record payloads.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct EvaluationOptions {
+    pub selected_view: String,
+    pub import_selections: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    pub overlay: Option<Value>,
+    #[serde(default)]
+    pub limits: Limits,
+}
+/// Authenticated records with only the content that state evaluation needs.
+/// Fields stay private so callers cannot supply an unvalidated projection.
+#[derive(Clone)]
+pub struct PreparedEvaluationInput {
+    options: EvaluationOptions,
+    nodes: BTreeMap<String, graph::Node>,
+    event_limit_exceeded: bool,
+}
+impl PreparedEvaluationInput {
+    pub fn new(options: EvaluationOptions) -> Self {
+        Self {
+            options,
+            nodes: BTreeMap::new(),
+            event_limit_exceeded: false,
+        }
+    }
+    /// Inspect the original body before retaining its state fields.
+    /// Duplicate event IDs keep their first record, as in ordinary evaluation.
+    pub fn add_record(&mut self, event: &VerifiedEnvelope, body: Option<&[u8]>) {
+        self.add_record_with(event, body, |_| ());
+    }
+    /// Read the complete body-validation result before its state projection.
+    /// This callback cannot change the validation result or stored fields.
+    pub fn add_record_with<T>(
+        &mut self,
+        event: &VerifiedEnvelope,
+        body: Option<&[u8]>,
+        inspect: impl FnOnce(&BodyAvailability) -> T,
+    ) -> T {
+        let (node, content) = graph::Node::new_with(event, body, inspect);
+        if !self.nodes.contains_key(event.id()) {
+            if self.nodes.len() >= self.options.limits.events {
+                self.event_limit_exceeded = true;
+            }
+            self.nodes.insert(event.id().into(), node);
+        }
+        content
+    }
+    pub fn evaluate(self) -> Evaluation {
+        evaluate_prepared(self)
+    }
+    pub fn into_state(self) -> EvaluatedState {
+        EvaluatedState::new(self)
+    }
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Limits {
     pub events: usize,
@@ -182,7 +240,31 @@ pub(crate) struct TrustRule {
 }
 
 pub fn evaluate(input: &EvaluationInput) -> Evaluation {
-    let mut result = Evaluation {
+    let mut prepared = PreparedEvaluationInput::new(EvaluationOptions {
+        selected_view: input.selected_view.clone(),
+        import_selections: input.import_selections.clone(),
+        overlay: input.overlay.clone(),
+        limits: input.limits.clone(),
+    });
+    for event in &input.events {
+        prepared.add_record(event, input.bodies.get(event.id()).map(Vec::as_slice));
+    }
+    prepared.evaluate()
+}
+fn evaluate_prepared(prepared: PreparedEvaluationInput) -> Evaluation {
+    if prepared.event_limit_exceeded {
+        return event_limit_evaluation(&prepared.options);
+    }
+    let PreparedEvaluationInput {
+        options: input,
+        nodes,
+        ..
+    } = prepared;
+    let graph = graph::Graph::new(nodes, &input.limits);
+    evaluate_graph(&input, &graph)
+}
+fn empty_evaluation(input: &EvaluationOptions) -> Evaluation {
+    Evaluation {
         selected_view: input.selected_view.clone(),
         available: true,
         reasons: BTreeSet::new(),
@@ -205,20 +287,16 @@ pub fn evaluate(input: &EvaluationInput) -> Evaluation {
         policy_history: BTreeMap::new(),
         selections: BTreeMap::new(),
         trust: Vec::new(),
-    };
-    if input
-        .events
-        .iter()
-        .map(|e| e.id())
-        .collect::<BTreeSet<_>>()
-        .len()
-        > input.limits.events
-    {
-        result.available = false;
-        result.reasons.insert("resource_unavailable".into());
-        return result;
     }
-    let graph = graph::Graph::new(input);
+}
+fn event_limit_evaluation(input: &EvaluationOptions) -> Evaluation {
+    let mut result = empty_evaluation(input);
+    result.available = false;
+    result.reasons.insert("resource_unavailable".into());
+    result
+}
+fn evaluate_graph(input: &EvaluationOptions, graph: &graph::Graph) -> Evaluation {
+    let mut result = empty_evaluation(input);
     if graph.resource.get() {
         resource_unavailable(&mut result);
         return result;
@@ -258,7 +336,7 @@ pub fn evaluate(input: &EvaluationInput) -> Evaluation {
             },
         );
     }
-    policy::select(&graph, input, &mut result);
+    policy::select(graph, input, &mut result);
     if result.reasons.contains("resource_unavailable") {
         resource_unavailable(&mut result);
         return result;
@@ -281,16 +359,16 @@ pub fn evaluate(input: &EvaluationInput) -> Evaluation {
             .reasons
             .insert("public_shun_issuer_unavailable".into());
     }
-    publications(&graph, input, &mut result);
-    reconcile_selections(&graph, &mut result);
-    accounts::evaluate(&graph, input, &mut result);
+    publications(graph, &mut result);
+    reconcile_selections(graph, &mut result);
+    accounts::evaluate(graph, input, &mut result);
     if graph.resource.get() {
         resource_unavailable(&mut result);
         return result;
     }
-    native_status(&graph, &mut result);
-    action_targets(&graph, &mut result);
-    registers(&graph, &mut result);
+    native_status(graph, &mut result);
+    action_targets(graph, &mut result);
+    registers(graph, &mut result);
     rafsi_gate(&mut result);
     result
 }
@@ -324,8 +402,18 @@ fn resource_unavailable(result: &mut Evaluation) {
     }
 }
 
-fn publications(graph: &graph::Graph, _input: &EvaluationInput, result: &mut Evaluation) {
+fn publications(graph: &graph::Graph, result: &mut Evaluation) {
+    publications_for(graph, result, None);
+}
+fn publications_for(
+    graph: &graph::Graph,
+    result: &mut Evaluation,
+    only: Option<&BTreeSet<String>>,
+) {
     for (id, node) in &graph.nodes {
+        if only.is_some_and(|ids| !ids.contains(id)) {
+            continue;
+        }
         if !node.semantic || !matches!(node.kind.as_str(), "definition.publish" | "rafsi.publish") {
             continue;
         }
@@ -429,7 +517,24 @@ fn publications(graph: &graph::Graph, _input: &EvaluationInput, result: &mut Eva
     }
 }
 fn native_status(graph: &graph::Graph, result: &mut Evaluation) {
-    for publication in result.publications.values_mut().filter(|p| !p.imported) {
+    native_status_for(graph, result, None);
+}
+fn native_status_for(graph: &graph::Graph, result: &mut Evaluation, only: Option<&str>) {
+    let mut status_records: BTreeMap<&str, Vec<&graph::Node>> = BTreeMap::new();
+    for node in graph
+        .nodes
+        .values()
+        .filter(|n| n.semantic && n.kind == "status.set")
+    {
+        if let Some(target) = node.action["target"].as_str() {
+            status_records.entry(target).or_default().push(node);
+        }
+    }
+    for publication in result
+        .publications
+        .values_mut()
+        .filter(|p| !p.imported && only.is_none_or(|id| p.id == id))
+    {
         let actor = graph.actor(&publication.issuer);
         let keys = graph.downstream(&publication.issuer);
         if !graph.suspended(&publication.issuer)
@@ -447,14 +552,13 @@ fn native_status(graph: &graph::Graph, result: &mut Evaluation) {
             publication.reasons.insert("incomplete_group".into());
             continue;
         }
-        let records: Vec<_> = graph
-            .nodes
-            .values()
+        let records: Vec<_> = status_records
+            .get(publication.id.as_str())
+            .into_iter()
+            .flatten()
+            .copied()
             .filter(|n| {
-                n.semantic
-                    && n.kind == "status.set"
-                    && n.action["target"].as_str() == Some(&publication.id)
-                    && graph.structurally_connected(&publication.issuer, &n.issuer, &n.id)
+                graph.structurally_connected(&publication.issuer, &n.issuer, &n.id)
                     && graph.transfers.get(&n.issuer).is_none_or(|ts| {
                         ts.iter()
                             .all(|t| t != &n.id && graph.own[t].ids.contains(&n.id))
@@ -592,7 +696,17 @@ fn rafsi_gate(result: &mut Evaluation) {
         p.kind == "definition.publish" && p.word.is_empty() && p.eligible == Eligibility::Unknown
     });
     let mut assignments: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut definition_gates: BTreeMap<String, (bool, bool)> = BTreeMap::new();
     for (id, p) in &result.publications {
+        if p.kind == "definition.publish" && p.eligible != Eligibility::NotSelected {
+            let (active, deprecated) = definition_gates
+                .entry(p.word.clone())
+                .or_insert((false, true));
+            *active |= p.eligible == Eligibility::Eligible
+                && p.content_available
+                && p.status == Status::Active;
+            *deprecated &= p.eligible == Eligibility::Eligible && p.status == Status::Deprecated;
+        }
         if p.kind == "rafsi.publish" {
             if let Some(a) = &p.assignment {
                 assignments.entry(a.clone()).or_default().push(id.clone());
@@ -601,24 +715,9 @@ fn rafsi_gate(result: &mut Evaluation) {
     }
     for ids in assignments.values() {
         let word = &result.publications[&ids[0]].word;
-        let definitions: Vec<_> = result
-            .publications
-            .values()
-            .filter(|p| {
-                p.kind == "definition.publish"
-                    && p.word == *word
-                    && p.eligible != Eligibility::NotSelected
-            })
-            .collect();
-        let active_definition = definitions.iter().any(|p| {
-            p.eligible == Eligibility::Eligible && p.content_available && p.status == Status::Active
-        });
-        let all_deprecated = !definitions.is_empty()
-            && definitions
-                .iter()
-                .all(|p| p.eligible == Eligibility::Eligible && p.status == Status::Deprecated)
-            && !missing_selection
-            && !unknown_word;
+        let (active_definition, deprecated) =
+            definition_gates.get(word).copied().unwrap_or_default();
+        let all_deprecated = deprecated && !missing_selection && !unknown_word;
         let active_claim = ids.iter().any(|id| {
             let p = &result.publications[id];
             p.content_available && p.eligible == Eligibility::Eligible && p.status == Status::Active
@@ -669,7 +768,13 @@ fn lineage(graph: &graph::Graph, node: &graph::Node) -> BTreeMap<String, String>
         .collect()
 }
 fn action_targets(graph: &graph::Graph, result: &mut Evaluation) {
+    action_targets_for(graph, result, None);
+}
+fn action_targets_for(graph: &graph::Graph, result: &mut Evaluation, only: Option<&str>) {
     for (id, node) in &graph.nodes {
+        if only.is_some_and(|only| id != only) {
+            continue;
+        }
         if !node.semantic {
             continue;
         }
@@ -805,5 +910,90 @@ fn reconcile_selections(graph: &graph::Graph, result: &mut Evaluation) {
             p.status = Status::Unavailable;
             p.reasons.insert("source_selection_conflict".into());
         }
+    }
+}
+
+#[cfg(test)]
+mod event_limit_tests {
+    use super::*;
+    use jvc_core::{Header, identity_from_seed, sign_header, verify_envelope};
+    use serde_json::json;
+
+    fn records() -> Vec<VerifiedEnvelope> {
+        let issuer = identity_from_seed(&[1; 32]);
+        let subject = identity_from_seed(&[2; 32]);
+        let mut records: Vec<VerifiedEnvelope> = Vec::new();
+        for nonce in 0..3 {
+            let signed = sign_header(&[1; 32], Header {
+                version: 1,
+                issuer: issuer.clone(),
+                previous: records.last().map(|e| vec![e.id().into()]).unwrap_or_default(),
+                nonce: format!("{nonce:032x}"),
+                action: json!({"kind":"trust.set","subject":subject,"scope":{"kind":"*","word":"*","language":"*"},"value":"heed"}),
+                content: None,
+            }).unwrap();
+            records.push(verify_envelope(&signed.canonical_envelope().unwrap()).unwrap());
+        }
+        records
+    }
+
+    fn prepared(records: &[VerifiedEnvelope], limit: usize) -> PreparedEvaluationInput {
+        let limits = Limits {
+            events: limit,
+            ..Limits::default()
+        };
+        let mut prepared = PreparedEvaluationInput::new(EvaluationOptions {
+            selected_view: format!("jve1:{}", "0".repeat(64)),
+            import_selections: BTreeMap::new(),
+            overlay: None,
+            limits,
+        });
+        for record in records {
+            prepared.add_record(record, None);
+        }
+        prepared
+    }
+
+    #[test]
+    fn prepared_event_limit_stops_before_graph_construction() {
+        let prepared = prepared(&records(), 1);
+        let before = graph::construction_count();
+        let result = prepared.evaluate();
+        assert!(!result.available);
+        assert_eq!(
+            result.reasons,
+            BTreeSet::from(["resource_unavailable".into()])
+        );
+        assert_eq!(
+            graph::construction_count(),
+            before,
+            "over-limit preparation constructed a graph"
+        );
+    }
+
+    #[test]
+    fn retained_event_limit_stops_before_graph_and_recovers_every_authenticated_node() {
+        let records = records();
+        let before = graph::construction_count();
+        let mut state = prepared(&records, 1).into_state();
+        assert!(!state.evaluation().available);
+        assert_eq!(
+            graph::construction_count(),
+            before,
+            "over-limit state constructed a graph"
+        );
+        let options = prepared(&[], 1).options;
+        state = state.advance(PreparedEvaluationInput::new(options), &[]);
+        assert_eq!(
+            graph::construction_count(),
+            before,
+            "over-limit advance constructed a graph"
+        );
+        let expected = prepared(&records, records.len());
+        state = state.advance(PreparedEvaluationInput::new(expected.options.clone()), &[]);
+        assert_eq!(graph::construction_count(), before + 1);
+        assert_eq!(state.evaluation().receipts.len(), records.len());
+        assert!(!state.evaluation().reasons.contains("resource_unavailable"));
+        assert_eq!(state.evaluation(), &expected.evaluate());
     }
 }

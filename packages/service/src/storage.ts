@@ -21,6 +21,14 @@ export interface State {
   materialized_position: number;
   materialized_snapshot: string | null;
 }
+export type StateMetadata = Pick<
+  State,
+  | "revision"
+  | "position"
+  | "snapshot"
+  | "materialized_position"
+  | "materialized_snapshot"
+>;
 export const emptyState = (): State => ({
   revision: 0,
   position: 0,
@@ -34,11 +42,16 @@ export const emptyState = (): State => ({
 });
 export interface Coordinator {
   load(): Promise<State>;
+  loadMetadata?(): Promise<StateMetadata>;
+  markMaterialized?(snapshot: string, position: number): Promise<boolean>;
   getSnapshot(id: string): Promise<Snapshot | null>;
+  /** The host retains at most one private checkpoint base outside public expiry. */
+  getCheckpointSnapshot?(id: string): Promise<Snapshot | null>;
   compareAndSwap(
     revision: number,
     state: State,
     snapshot?: Snapshot,
+    changedIds?: string[],
   ): Promise<boolean>;
 }
 export interface Snapshot {

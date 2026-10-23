@@ -1,0 +1,537 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
+import { serialize, deserialize } from "node:v8";
+import { gzip, gunzip } from "node:zlib";
+import test from "node:test";
+import {
+  FileCheckpointStore,
+  type CheckpointPins,
+} from "../../../apps/server/src/checkpoint.ts";
+import {
+  SqliteCoordinator,
+  type CheckpointPin,
+} from "../../../apps/server/src/storage.ts";
+import {
+  checkpointBindingKey,
+  parseCheckpointBinding,
+  type CheckpointBinding,
+  type ServiceCheckpoint,
+} from "../src/checkpoint.ts";
+
+const compress = promisify(gzip);
+const decompress = promisify(gunzip);
+const hash = (n: number) => "sha256:" + String(n).padStart(64, "0");
+const binding: CheckpointBinding = {
+  schema: 1,
+  snapshot: hash(1),
+  logical_inventory: hash(2),
+  position: 7,
+  view: "jve1:" + "3".repeat(64),
+  core_version: "actual-wasm-digest:core-v1:service-v1",
+  limits: { events: 200000, traversal: 1000000, claim_depth: 1024 },
+};
+const wrapper = (id = binding.snapshot) => ({
+  snapshot: id,
+  logical_inventory: binding.logical_inventory,
+  manifest: {
+    version: 1 as const,
+    events: { count: 0, hash: hash(0) },
+    bodies: { count: 0, hash: hash(0) },
+    import_selections: { count: 0, hash: hash(0) },
+  },
+  events: {},
+  bodies: [],
+  import_selections: [],
+});
+const payload: ServiceCheckpoint = {
+  core: Uint8Array.of(1, 2, 3, 255),
+  package_records: [],
+  packages: { entries: [], packages: {}, packages2: {} },
+  envelopes: [[hash(4), "canonical envelope"]],
+};
+async function fixture() {
+  const root = process.env.JVC_TEST_ROOT ?? tmpdir();
+  await mkdir(root, { recursive: true });
+  const directory = await mkdtemp(join(root, "checkpoint-"));
+  let pin: CheckpointPin | null = null;
+  let failure = false;
+  let accepted = true;
+  const pins: CheckpointPins = {
+    checkpointPin: () => pin,
+    pinCheckpoint(_binding, value) {
+      if (failure) throw new Error("injected pin failure");
+      if (!accepted) return false;
+      pin = value;
+      return true;
+    },
+  };
+  return {
+    directory,
+    pins,
+    store: new FileCheckpointStore(directory, pins),
+    pin: () => pin!,
+    fail(value: boolean) {
+      failure = value;
+    },
+    accept(value: boolean) {
+      accepted = value;
+    },
+    async close() {
+      await rm(directory, { recursive: true });
+    },
+  };
+}
+
+test("checkpoint roundtrip uses a separately stored hash and binds every calculation input", async () => {
+  const f = await fixture();
+  try {
+    assert.equal(await f.store.load(binding), null);
+    await f.store.save(binding, payload);
+    assert.deepEqual(await f.store.load(binding), payload);
+    assert.deepEqual(
+      await new FileCheckpointStore(f.directory, f.pins).load(binding),
+      payload,
+    );
+    const changed: CheckpointBinding[] = [
+      { ...binding, schema: 2 as 1 },
+      { ...binding, snapshot: hash(99) },
+      { ...binding, logical_inventory: hash(99) },
+      { ...binding, position: 8 },
+      { ...binding, view: "other" },
+      { ...binding, core_version: "other" },
+      { ...binding, limits: null },
+      { ...binding, limits: { ...binding.limits!, events: 1 } },
+      { ...binding, limits: { ...binding.limits!, traversal: 1 } },
+      { ...binding, limits: { ...binding.limits!, claim_depth: 1 } },
+    ];
+    for (const different of changed)
+      assert.equal(await f.store.load(different), null);
+    assert.equal(
+      f.pin().hash,
+      createHash("sha256")
+        .update(await readFile(join(f.directory, f.pin().file)))
+        .digest("hex"),
+    );
+  } finally {
+    await f.close();
+  }
+});
+
+test("missing and damaged checkpoints fall back even when a file claims its own valid digest", async () => {
+  const f = await fixture();
+  try {
+    await f.store.save(binding, payload);
+    const path = join(f.directory, f.pin().file);
+    const original = await readFile(path);
+    const decoded = deserialize(await decompress(original));
+    decoded.payload.core = Uint8Array.of(99, 98, 97);
+    decoded.hash = createHash("sha256")
+      .update(JSON.stringify(decoded.payload))
+      .digest("hex");
+    await writeFile(path, await compress(serialize(decoded)));
+    assert.equal(await f.store.load(binding), null);
+    await writeFile(path, original.subarray(0, 12));
+    assert.equal(await f.store.load(binding), null);
+    await rm(path);
+    assert.equal(await f.store.load(binding), null);
+  } finally {
+    await f.close();
+  }
+});
+
+test("failed pin commits preserve the previous checkpoint and remove only exact owned files", async () => {
+  const f = await fixture();
+  try {
+    await f.store.save(binding, payload);
+    const previous = { ...f.pin() };
+    await writeFile(join(f.directory, "keep-other-data.txt"), "retain");
+    f.fail(true);
+    await assert.rejects(
+      f.store.save(binding, { ...payload, core: Uint8Array.of(99) }),
+      /injected pin failure/,
+    );
+    assert.deepEqual(f.pin(), previous);
+    assert.deepEqual(await f.store.load(binding), payload);
+    assert.deepEqual(
+      (await readdir(f.directory)).sort(),
+      [previous.file, "keep-other-data.txt"].sort(),
+    );
+    f.fail(false);
+    f.accept(false);
+    await f.store.save(binding, { ...payload, core: Uint8Array.of(88) });
+    assert.deepEqual(f.pin(), previous);
+    assert.deepEqual(await f.store.load(binding), payload);
+    f.accept(true);
+    const next = { ...payload, core: Uint8Array.of(77) };
+    await Promise.all([
+      f.store.save(binding, payload),
+      f.store.save(binding, next),
+    ]);
+    assert.deepEqual(await f.store.load(binding), next);
+    assert.equal(
+      (await readdir(f.directory)).filter((name) => name.endsWith(".bin.gz"))
+        .length,
+      1,
+    );
+    assert.equal(
+      await readFile(join(f.directory, "keep-other-data.txt"), "utf8"),
+      "retain",
+    );
+  } finally {
+    await f.close();
+  }
+});
+
+test("startup removes orphan checkpoint files and leaves unrelated files in place", async () => {
+  const f = await fixture();
+  try {
+    await f.store.save(binding, payload);
+    await writeFile(
+      join(f.directory, "evaluation-" + "a".repeat(64) + ".json.gz"),
+      "orphan",
+    );
+    await writeFile(
+      join(
+        f.directory,
+        ".evaluation-pending-00000000-0000-0000-0000-000000000000",
+      ),
+      "pending",
+    );
+    await writeFile(
+      join(f.directory, "evaluation-operator-notes.json.gz"),
+      "retain",
+    );
+    const reopened = new FileCheckpointStore(f.directory, f.pins);
+    assert.deepEqual(await reopened.load(binding), payload);
+    assert.deepEqual(
+      (await readdir(f.directory)).sort(),
+      [f.pin().file, "evaluation-operator-notes.json.gz"].sort(),
+    );
+  } finally {
+    await f.close();
+  }
+});
+
+test("SQLite pins permit only the exact last materialized snapshot", async () => {
+  const f = await fixture();
+  const coordinator = new SqliteCoordinator(
+    join(f.directory, "coordinator.sqlite"),
+  );
+  try {
+    const state = await coordinator.load();
+    const materialized = {
+      ...state,
+      revision: 1,
+      position: binding.position,
+      snapshot: binding.snapshot,
+      materialized_snapshot: binding.snapshot,
+      materialized_position: binding.position,
+    };
+    assert.equal(
+      await coordinator.compareAndSwap(0, materialized, wrapper()),
+      true,
+    );
+    const accepted = {
+      ...materialized,
+      revision: 2,
+      position: 8,
+      snapshot: hash(8),
+    };
+    assert.equal(
+      await coordinator.compareAndSwap(1, accepted, wrapper(accepted.snapshot)),
+      true,
+    );
+    const pin = {
+      binding: checkpointBindingKey(binding),
+      hash: "a".repeat(64),
+      file: "evaluation-" + "a".repeat(64) + ".json.gz",
+    };
+    assert.equal(
+      coordinator.pinCheckpoint(binding, {
+        ...pin,
+        binding: "file supplied binding",
+      }),
+      false,
+    );
+    assert.equal(coordinator.pinCheckpoint(binding, pin), true);
+    assert.deepEqual(
+      await coordinator.getCheckpointSnapshot(binding.snapshot),
+      wrapper(),
+    );
+    assert.deepEqual(coordinator.checkpointPin(), pin);
+    assert.equal(
+      coordinator.pinCheckpoint(
+        { ...binding, snapshot: hash(5) },
+        { ...pin, hash: "b".repeat(64) },
+      ),
+      false,
+    );
+    assert.deepEqual(coordinator.checkpointPin(), pin);
+    assert.equal(
+      coordinator.pinCheckpoint(
+        { ...binding, snapshot: accepted.snapshot, position: 8 },
+        { ...pin, hash: "c".repeat(64) },
+      ),
+      false,
+    );
+    assert.equal(
+      await coordinator.markMaterialized(binding.snapshot, binding.position),
+      false,
+    );
+    assert.equal(
+      await coordinator.markMaterialized(accepted.snapshot, 8),
+      true,
+    );
+  } finally {
+    coordinator.close();
+    await f.close();
+  }
+});
+
+test("checkpoint bytes and the independent SQLite pin survive closing and reopening storage", async () => {
+  const f = await fixture();
+  const path = join(f.directory, "persistent-coordinator.sqlite");
+  let coordinator = new SqliteCoordinator(path);
+  try {
+    const state = await coordinator.load();
+    assert.equal(
+      await coordinator.compareAndSwap(
+        0,
+        {
+          ...state,
+          revision: 1,
+          position: binding.position,
+          snapshot: binding.snapshot,
+          materialized_snapshot: binding.snapshot,
+          materialized_position: binding.position,
+        },
+        wrapper(),
+      ),
+      true,
+    );
+    const directory = join(f.directory, "evaluation-cache");
+    await new FileCheckpointStore(directory, coordinator).save(
+      binding,
+      payload,
+    );
+    const trustedPin = coordinator.checkpointPin();
+    coordinator.close();
+    coordinator = new SqliteCoordinator(path);
+    assert.deepEqual(coordinator.checkpointPin(), trustedPin);
+    assert.deepEqual(
+      await new FileCheckpointStore(directory, coordinator).load(binding),
+      payload,
+    );
+  } finally {
+    coordinator.close();
+    await f.close();
+  }
+});
+
+test("a failed immutable file write preserves the previous checkpoint pin and bytes", async () => {
+  const f = await fixture();
+  const other = await fixture();
+  try {
+    await f.store.save(binding, payload);
+    const previous = { ...f.pin() };
+    const next = { ...payload, core: Uint8Array.of(91) };
+    await other.store.save(binding, next);
+    const obstruction = join(f.directory, other.pin().file);
+    await mkdir(obstruction);
+    await assert.rejects(f.store.save(binding, next));
+    assert.deepEqual(f.pin(), previous);
+    assert.deepEqual(await f.store.load(binding), payload);
+    await rm(obstruction, { recursive: true });
+    assert.deepEqual(await readdir(f.directory), [previous.file]);
+  } finally {
+    await f.close();
+    await other.close();
+  }
+});
+
+test("a valid checkpoint can rebuild a deleted disposable Node search index", async () => {
+  const { SqliteIndexStore } =
+    await import("../../../apps/server/src/storage.ts");
+  const { DatabaseSync } = await import("node:sqlite");
+  const f = await fixture();
+  const entries = [
+    {
+      event: "a",
+      word: { language: "jbo" as const, spelling: "klama" },
+      language: "en",
+      glosses: [],
+      plain_text: "go",
+      classification: {},
+      body: hash(2),
+    },
+  ];
+  const path = join(f.directory, "disposable-index.sqlite");
+  let index = new SqliteIndexStore(path, true);
+  try {
+    await index.replace(binding.snapshot, entries);
+    await index.publish!(binding.snapshot);
+    index.close();
+    await rm(path);
+    await f.store.save(binding, {
+      ...payload,
+      packages: { ...payload.packages, entries },
+    });
+    const loaded = await new FileCheckpointStore(f.directory, f.pins).load(
+      binding,
+    );
+    assert.ok(loaded);
+    index = new SqliteIndexStore(path, true);
+    await index.restore(binding.snapshot, loaded.packages.entries);
+    await index.publish!(binding.snapshot);
+    const database = new DatabaseSync(path);
+    try {
+      assert.equal(
+        database.prepare("SELECT COUNT(*) AS n FROM search_entries").get()!.n,
+        1,
+      );
+      assert.equal(
+        database.prepare("SELECT snapshot FROM search_current").get()!.snapshot,
+        binding.snapshot,
+      );
+    } finally {
+      database.close();
+    }
+  } finally {
+    index.close();
+    await f.close();
+  }
+});
+
+test("binary checkpoints keep typed core bytes and load only the declared cache schema", async () => {
+  const f = await fixture();
+  try {
+    await f.store.save(binding, payload);
+    assert.match(f.pin().file, /^evaluation-v2-[a-f0-9]{64}\.bin\.gz$/);
+    const decoded = deserialize(
+      await decompress(await readFile(join(f.directory, f.pin().file))),
+    );
+    assert.equal(decoded.cache_schema, 2);
+    assert.ok(decoded.payload.core instanceof Uint8Array);
+    assert.deepEqual(decoded.payload.core, payload.core);
+    for (const invalid of [
+      serialize({ ...decoded, cache_schema: 1 }),
+      serialize({
+        ...decoded,
+        payload: { ...decoded.payload, core: "old string core" },
+      }),
+      Buffer.from("an incompatible binary format"),
+    ]) {
+      const bytes = await compress(invalid);
+      const digest = createHash("sha256").update(bytes).digest("hex");
+      const name = `evaluation-v2-${digest}.bin.gz`;
+      await writeFile(join(f.directory, name), bytes);
+      f.pins.pinCheckpoint(binding, {
+        binding: f.pin().binding,
+        hash: digest,
+        file: name,
+      });
+      assert.equal(
+        await new FileCheckpointStore(f.directory, f.pins).load(binding),
+        null,
+      );
+    }
+  } finally {
+    await f.close();
+  }
+});
+
+test("an independently pinned legacy JSON checkpoint loads and upgrades on the next save", async () => {
+  const f = await fixture();
+  try {
+    await f.store.save(binding, payload);
+    const expected = f.pin().binding;
+    const bytes = await compress(
+      JSON.stringify({
+        binding: expected,
+        payload: {
+          ...payload,
+          core: Buffer.from(payload.core).toString("base64"),
+        },
+      }),
+    );
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    const legacy = `evaluation-${digest}.json.gz`;
+    await writeFile(join(f.directory, legacy), bytes);
+    f.pins.pinCheckpoint(binding, {
+      binding: expected,
+      hash: digest,
+      file: legacy,
+    });
+    const reopened = new FileCheckpointStore(f.directory, f.pins);
+    assert.deepEqual(await reopened.load(binding), payload);
+    await writeFile(
+      join(f.directory, legacy),
+      await compress("damaged legacy bytes"),
+    );
+    assert.equal(await reopened.load(binding), null);
+    await writeFile(join(f.directory, legacy), bytes);
+    await reopened.save(binding, payload);
+    assert.match(f.pin().file, /^evaluation-v2-/);
+    assert.deepEqual(await reopened.load(binding), payload);
+    assert.deepEqual(await readdir(f.directory), [f.pin().file]);
+  } finally {
+    await f.close();
+  }
+});
+
+test("checkpoint discovery reads only a guarded independent pin and preserves exact load checks", async () => {
+  const f = await fixture();
+  try {
+    assert.equal(await f.store.latestBinding(), null);
+    await f.store.save(binding, payload);
+    assert.deepEqual(await f.store.latestBinding(), binding);
+    const pin = { ...f.pin() };
+    await writeFile(
+      join(f.directory, pin.file),
+      "a file cannot nominate its own context",
+    );
+    assert.deepEqual(await f.store.latestBinding(), binding);
+    assert.equal(await f.store.load(binding), null);
+    for (const malformed of [
+      "null",
+      "[]",
+      "{}",
+      "[1]",
+      JSON.stringify([
+        1,
+        binding.snapshot,
+        binding.logical_inventory,
+        -1,
+        binding.view,
+        binding.core_version,
+        null,
+      ]),
+      JSON.stringify([
+        1,
+        binding.snapshot,
+        binding.logical_inventory,
+        7,
+        binding.view,
+        binding.core_version,
+        [1, "bad", 3],
+      ]),
+    ]) {
+      assert.equal(parseCheckpointBinding(malformed), null);
+      f.pins.pinCheckpoint(binding, { ...pin, binding: malformed });
+      assert.equal(await f.store.latestBinding(), null);
+    }
+  } finally {
+    await f.close();
+  }
+});

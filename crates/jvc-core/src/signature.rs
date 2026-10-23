@@ -24,6 +24,19 @@ fn point(bytes: &[u8; 32], public: bool) -> Result<()> {
 pub(crate) fn validate_public_key(bytes: &[u8; 32]) -> Result<()> {
     point(bytes, true)
 }
+/// Construction proves the static public-point requirements.
+#[derive(Clone)]
+pub(crate) struct ValidatedPublicKey {
+    key: VerifyingKey,
+}
+impl ValidatedPublicKey {
+    pub(crate) fn new(bytes: &[u8; 32]) -> Result<Self> {
+        validate_public_key(bytes)?;
+        Ok(Self {
+            key: VerifyingKey::from_bytes(bytes).map_err(|e| crypto_error(e.to_string()))?,
+        })
+    }
+}
 
 /// Apply the specified uncofactored equation after point and scalar checks.
 pub fn verify_ed25519_profile(
@@ -31,15 +44,23 @@ pub fn verify_ed25519_profile(
     message: &[u8],
     signature: &[u8; 64],
 ) -> Result<()> {
-    validate_public_key(public_key)?;
+    let key = ValidatedPublicKey::new(public_key)?;
+    verify_with_public_key(&key, message, signature)
+}
+fn verify_with_public_key(
+    public_key: &ValidatedPublicKey,
+    message: &[u8],
+    signature: &[u8; 64],
+) -> Result<()> {
     point(signature[..32].try_into().unwrap(), false)?;
     let scalar: [u8; 32] = signature[32..].try_into().unwrap();
     if !bool::from(Scalar::from_canonical_bytes(scalar).is_some()) {
         return Err(crypto_error("signature scalar is not below L"));
     }
     // Dalek computes R = [S]B - [k]A. Its strict method also rejects identity R.
-    let key = VerifyingKey::from_bytes(public_key).map_err(|e| crypto_error(e.to_string()))?;
-    key.verify(message, &Signature::from_bytes(signature))
+    public_key
+        .key
+        .verify(message, &Signature::from_bytes(signature))
         .map_err(|_| crypto_error("Ed25519 equation failed"))
 }
 
@@ -76,7 +97,12 @@ pub(crate) fn sign_sshsig(seed: &[u8; 32], message: &[u8]) -> Result<String> {
         .map_err(|e| crypto_error(e.to_string()))?;
     Ok(STANDARD.encode(encode(&sig)?))
 }
-pub(crate) fn verify_sshsig(issuer: &str, message: &[u8], encoded: &str) -> Result<Vec<u8>> {
+pub(crate) fn verify_sshsig(
+    issuer: &str,
+    message: &[u8],
+    encoded: &str,
+    validated_key: &ValidatedPublicKey,
+) -> Result<Vec<u8>> {
     let bytes = STANDARD
         .decode(encoded)
         .map_err(|_| crypto_error("signature base64 is invalid"))?;
@@ -99,7 +125,9 @@ pub(crate) fn verify_sshsig(issuer: &str, message: &[u8], encoded: &str) -> Resu
         .ed25519()
         .ok_or_else(|| crypto_error("SSHSIG public key is not ssh-ed25519"))?;
     let public_bytes: &[u8; 32] = public.as_ref();
-    if format!("ed25519:{}", hex::encode(public_bytes)) != issuer {
+    if format!("ed25519:{}", hex::encode(public_bytes)) != issuer
+        || validated_key.key.as_bytes() != public_bytes
+    {
         return Err(crypto_error("SSHSIG public key differs from the issuer"));
     }
     let signature: &[u8; 64] = sig
@@ -108,7 +136,7 @@ pub(crate) fn verify_sshsig(issuer: &str, message: &[u8], encoded: &str) -> Resu
         .map_err(|_| crypto_error("Ed25519 signature has an invalid length"))?;
     let signed_data = SshSig::signed_data(NAMESPACE, HashAlg::Sha512, message)
         .map_err(|e| crypto_error(e.to_string()))?;
-    verify_ed25519_profile(public_bytes, &signed_data, signature)?;
+    verify_with_public_key(validated_key, &signed_data, signature)?;
     Ok(bytes)
 }
 pub fn sshsig_armor(encoded: &str) -> Result<String> {

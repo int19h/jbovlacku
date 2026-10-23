@@ -1,10 +1,15 @@
 import { BROWSER_HEADERS } from "./security.ts";
 import { Readable } from "node:stream";
+import { createHash } from "node:crypto";
+import { FileCheckpointStore } from "./checkpoint.ts";
 import { sendResponseBody } from "./response.ts";
 import { createServer } from "node:http";
 import { readFile, stat } from "node:fs/promises";
 import { resolve, join, extname } from "node:path";
-import { initializeCore } from "../../../packages/core/src/index.ts";
+import {
+  initializeCore,
+  coreCheckpointVersion,
+} from "../../../packages/core/src/index.ts";
 import { DictionaryService } from "../../../packages/service/src/service.ts";
 import { lockDataDirectory } from "../../../packages/importer/src/load-lock.ts";
 import {
@@ -25,15 +30,15 @@ async function initializeService() {
   let index: SqliteIndexStore | undefined;
   let coordinator: SqliteCoordinator | undefined;
   try {
-    await initializeCore(
-      await readFile(
-        new URL(
-          "../../../packages/core/generated/jvc_runtime_bg.wasm",
-          import.meta.url,
-        ),
+    const coreBytes = await readFile(
+      new URL(
+        "../../../packages/core/generated/jvc_runtime_bg.wasm",
+        import.meta.url,
       ),
     );
-    index = new SqliteIndexStore(join(directory, "indexes.sqlite"));
+    await initializeCore(coreBytes);
+    const coreVersion = `${createHash("sha256").update(coreBytes).digest("hex")}:${coreCheckpointVersion()}:service-checkpoint-v1`;
+    index = new SqliteIndexStore(join(directory, "indexes.sqlite"), true);
     coordinator = new SqliteCoordinator(
       join(directory, "coordinator.sqlite"),
       Number(process.env.JVC_SNAPSHOT_LIMIT ?? 16),
@@ -47,6 +52,12 @@ async function initializeService() {
     );
     const service = new DictionaryService(objects, coordinator, {
       index,
+      checkpoints: new FileCheckpointStore(
+        join(directory, "evaluation-cache"),
+        coordinator,
+      ),
+      coreVersion,
+      asyncMaterialization: true,
       reportError:
         process.env.JVC_LOG_ERRORS === "enabled"
           ? (error) =>
@@ -76,6 +87,7 @@ async function initializeService() {
         .split(",")
         .filter(Boolean),
     });
+    await service.initialize();
     return { service, index, coordinator, release };
   } catch (error) {
     coordinator?.close();
@@ -175,11 +187,31 @@ const server = createServer(async (incoming, outgoing) => {
     outgoing.end();
   }
 });
+let closing: Promise<void> | undefined;
+function closeService(): Promise<void> {
+  return (closing ??= (async () => {
+    try {
+      await service.flushMaterialization();
+    } finally {
+      try {
+        coordinator.close();
+      } finally {
+        try {
+          index.close();
+        } finally {
+          await release();
+        }
+      }
+    }
+  })());
+}
 server.once("error", async (error) => {
-  coordinator.close();
-  index.close();
-  await release();
   console.error(String(error));
+  try {
+    await closeService();
+  } catch (failure) {
+    console.error(String(failure));
+  }
   process.exitCode = 1;
 });
 server.listen(
@@ -198,9 +230,12 @@ server.listen(
 for (const signal of ["SIGTERM", "SIGINT"] as const)
   process.once(signal, () =>
     server.close(async () => {
-      coordinator.close();
-      index.close();
-      await release();
-      process.exit(0);
+      try {
+        await closeService();
+        process.exit(0);
+      } catch (error) {
+        console.error(String(error));
+        process.exit(1);
+      }
     }),
   );

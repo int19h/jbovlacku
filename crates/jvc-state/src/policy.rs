@@ -31,7 +31,7 @@ pub struct ContextGraph {
     pub available: bool,
     pub reasons: BTreeSet<String>,
 }
-pub(crate) fn select(graph: &graph::Graph, input: &EvaluationInput, result: &mut Evaluation) {
+pub(crate) fn select(graph: &graph::Graph, input: &EvaluationOptions, result: &mut Evaluation) {
     let mut todo = vec![input.selected_view.clone()];
     let mut seen = BTreeSet::new();
     while let Some(id) = todo.pop() {
@@ -439,7 +439,10 @@ fn evaluate_context_with_limit(
     }
 }
 
-pub(crate) fn valid_selection<'a>(input: &'a EvaluationInput, id: &str) -> Option<&'a Vec<String>> {
+pub(crate) fn valid_selection<'a>(
+    input: &'a EvaluationOptions,
+    id: &str,
+) -> Option<&'a Vec<String>> {
     let ids = input.import_selections.get(id)?;
     jvc_core::sorted_ids(ids, "jve1:", 200_000).ok()?;
     let bytes = jvc_core::canonical_value(&serde_json::json!(ids)).ok()?;
