@@ -15,7 +15,12 @@ import {
   type RafsiInventoryClaim,
 } from "../../../../packages/core/src/index.ts";
 import type { CachedPackage } from "../data/search.ts";
-import type { Compound, Formation, FormationSource } from "./types.ts";
+import type {
+  Compound,
+  Formation,
+  FormationSource,
+  RichText,
+} from "./types.ts";
 import { textToRichText } from "./richtext.ts";
 
 /** One component row of the lujvo builder. */
@@ -42,9 +47,9 @@ export interface LujvoState {
 }
 export interface GismuRowState {
   sense?: string;
-  wordIpa?: string;
-  stemIpa?: string;
   note?: string;
+  /** Supplementary evidence, retained without parsing it into signed fields. */
+  notes?: RichText;
   language: string;
   name: string;
   word: string;
@@ -53,6 +58,16 @@ export interface GismuRowState {
   ipa?: string | null;
   input: string;
   weight: { numerator: string; denominator: string } | null;
+}
+/** Migrate browser aliases only when the signed field is absent, including null. */
+export function normalizeSourceRow(row: GismuRowState): GismuRowState {
+  const { wordIpa, stemIpa, ...canonical } = row as GismuRowState & {
+    wordIpa?: string;
+    stemIpa?: string;
+  };
+  if (!Object.hasOwn(row, "word_ipa") && wordIpa) canonical.word_ipa = wordIpa;
+  if (!Object.hasOwn(row, "ipa") && stemIpa) canonical.ipa = stemIpa;
+  return canonical;
 }
 export interface GismuState {
   preset: string | null;
@@ -291,24 +306,19 @@ export function rational(value: { numerator: string; denominator: string }) {
   }
   return { numerator: Number(a), denominator: Number(b) };
 }
-/** Native source details remain editable and travel as attributed source notes. */
+/** Keep supplementary notes separate from signed pronunciation and stem fields. */
 export function sourceNotes(row: GismuRowState) {
-  return textToRichText(
-    [
-      ["Sense", row.sense],
-      ["Word IPA", row.wordIpa],
-      ["Stem", row.stem],
-      ["Stem IPA", row.stemIpa],
-      ["Note", row.note],
-    ]
-      .filter(([, value]) => value)
-      .map(([label, value]) => `${label}: ${value}`)
-      .join("\n"),
-    false,
-  );
+  if (row.notes) return structuredClone(row.notes);
+  return [
+    ["Sense", row.sense],
+    ["Note", row.note],
+  ]
+    .filter(([, value]) => value)
+    .map(([label, value]) => [`${label}: ${value}`]);
 }
 /** Keep source evidence separate from the letters used for scoring. */
-function formationSource(row: GismuRowState): FormationSource {
+export function formationSource(raw: GismuRowState): FormationSource {
+  const row = normalizeSourceRow(raw);
   const source: FormationSource = {
     language: row.language,
     word: row.word,
@@ -318,13 +328,8 @@ function formationSource(row: GismuRowState): FormationSource {
     weight: row.weight ? rational(row.weight) : null,
     notes: sourceNotes(row),
   };
-  const evidence = {
-    word_ipa: Object.hasOwn(row, "word_ipa") ? row.word_ipa : row.wordIpa,
-    stem: row.stem,
-    ipa: Object.hasOwn(row, "ipa") ? row.ipa : row.stemIpa,
-  };
   for (const field of ["word_ipa", "stem", "ipa"] as const) {
-    if (evidence[field] != null) source[field] = evidence[field];
+    if (row[field]) source[field] = row[field];
   }
   return source;
 }
@@ -388,18 +393,14 @@ export function manualFormation(
   reason: string,
 ): Formation | null {
   const sources: FormationSource[] = rows
-    .filter((row) =>
-      [
-        row.word,
-        row.input,
-        row.word_ipa,
-        row.stem,
-        row.ipa,
-        row.sense,
-        row.wordIpa,
-        row.stemIpa,
-        row.note,
-      ].some((value) => value?.trim()),
+    .map(normalizeSourceRow)
+    .filter(
+      (row) =>
+        [row.word, row.input, row.sense, row.note].some((value) =>
+          value?.trim(),
+        ) ||
+        [row.word_ipa, row.stem, row.ipa].some((value) => !!value?.length) ||
+        !!row.notes?.length,
     )
     .map(formationSource);
   if (!sources.length && !reason.trim()) return null;

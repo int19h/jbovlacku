@@ -157,7 +157,11 @@ export interface DraftExample {
   translation: RichText;
   notes: RichText;
 }
-import type { GismuState, LujvoState } from "./builders.ts";
+import {
+  normalizeSourceRow,
+  type GismuState,
+  type LujvoState,
+} from "./builders.ts";
 export interface DraftRafsiClaim {
   rafsi: string;
   rationale: string;
@@ -423,6 +427,9 @@ export function normalizeDraft(stored: Draft): Draft {
   void original;
   return newDraft({
     ...rest,
+    gismu: old.gismu
+      ? { ...old.gismu, rows: old.gismu.rows.map(normalizeSourceRow) }
+      : null,
     places,
     frameRole: old.frameRole ?? "predicate",
     evidenceForm:

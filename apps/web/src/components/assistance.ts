@@ -277,6 +277,35 @@ async function consent(
   });
 }
 const json = (value: unknown) => JSON.stringify(value, null, 2);
+/** Show each provider figure only when it is known. Zero remains a figure. */
+function usageSummary(usage: Record<string, unknown>): string {
+  return [
+    usage.input_tokens == null
+      ? ""
+      : `Input tokens: ${String(usage.input_tokens)}.`,
+    usage.output_tokens == null
+      ? ""
+      : `Output tokens: ${String(usage.output_tokens)}.`,
+    usage.cost_usd == null ? "" : `Cost: ${String(usage.cost_usd)} USD.`,
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+function attemptUsage(attempt: Record<string, unknown>): string {
+  const usage =
+    attempt.usage && typeof attempt.usage === "object"
+      ? (attempt.usage as Record<string, unknown>)
+      : {};
+  return usageSummary({
+    input_tokens: Object.hasOwn(usage, "prompt_tokens")
+      ? usage.prompt_tokens
+      : usage.input_tokens,
+    output_tokens: Object.hasOwn(usage, "completion_tokens")
+      ? usage.completion_tokens
+      : usage.output_tokens,
+    cost_usd: attempt.cost_usd,
+  });
+}
 function logMarkdown(
   log: Record<string, unknown>,
   record: AssistanceRecord,
@@ -288,7 +317,7 @@ function logMarkdown(
     `Prompt version: ${String(log.prompt_version ?? "")}.`,
     `Started: ${String(log.started_at ?? "")}. Duration: ${String(log.duration_ms ?? "")} ms.`,
     `Answers: ${String(log.answers ?? "")}. Corrections: ${String(log.corrections ?? "")}.`,
-    `Input tokens: ${String(log.input_tokens ?? "unknown")}. Output tokens: ${String(log.output_tokens ?? "unknown")}. Cost: ${String(log.cost_usd ?? "unknown")} USD.`,
+    usageSummary(log),
     "",
     "The provider does not make the assistant’s private reasoning available. This log holds the shared reasoning summary and everything that the assistant wrote.",
   ];
@@ -329,7 +358,7 @@ function logMarkdown(
         json(attempt.tool_calls),
         "```",
         "",
-        `Usage: ${json(attempt.usage)}. Cost: ${String(attempt.cost_usd ?? "unknown")} USD.`,
+        attemptUsage(attempt),
         "",
         "App check:",
         "",
@@ -378,9 +407,7 @@ export function inferenceLog(record: AssistanceRecord) {
     p(
       `Time: ${String(log.started_at ?? "unavailable")}. Duration: ${String(log.duration_ms ?? "unavailable")} ms. Answers: ${String(log.answers ?? 0)}. Corrections: ${String(log.corrections ?? 0)}.`,
     ),
-    p(
-      `Input tokens: ${String(log.input_tokens ?? "unknown")}. Output tokens: ${String(log.output_tokens ?? "unknown")}. Cost: ${String(log.cost_usd ?? "unknown")} USD.${Number(log.unknown_cost_attempts) > 0 ? " Some answer costs are unknown." : ""}`,
-    ),
+    p(usageSummary(log)),
     p(
       "The provider does not make the assistant’s private reasoning available. This log holds the shared reasoning summary and everything that the assistant wrote.",
       "small",
@@ -427,9 +454,7 @@ export function inferenceLog(record: AssistanceRecord) {
         }),
         el("h4", { text: "Tool call" }),
         el("pre", { text: json(attempt.tool_calls) }),
-        p(
-          `Tokens: ${json(attempt.usage)}. Cost: ${String(attempt.cost_usd ?? "unknown")} USD.`,
-        ),
+        p(attemptUsage(attempt)),
         el("h4", { text: "App check" }),
         el("pre", { text: json(attempt.check) }),
       );
@@ -700,6 +725,15 @@ export function assistanceAction(
           section.append(
             p(
               `${source.language}: ${source.word || "No single source word"}. Letters: ${source.input?.text || "unknown"}.`,
+            ),
+            p(
+              [
+                source.word_ipa ? `Said: ${source.word_ipa}.` : "",
+                source.stem ? `Stem: ${source.stem}.` : "",
+                source.ipa ? `Stem said: ${source.ipa}.` : "",
+              ]
+                .filter(Boolean)
+                .join(" "),
             ),
             renderRichText(source.notes, { placeHref: null }),
           );

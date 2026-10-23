@@ -8,6 +8,7 @@ import { el, p, text, field, link, button } from "../../lib/dom.ts";
 import { navigate, type RenderContext, type Route } from "../../app/router.ts";
 import type { App } from "../../app/context.ts";
 import type { Draft } from "../../model/draft.ts";
+import { manualFormation } from "../../model/builders.ts";
 import {
   actionBar,
   DraftSaver,
@@ -169,6 +170,13 @@ export async function formPage(route: Route, context: RenderContext, app: App) {
       disabled: !draft.spelling.trim(),
       action: async () => {
         if (!draft.spelling.trim()) return;
+        if (kind === "gismu" && !draft.formation && draft.gismu) {
+          draft.formation = manualFormation(
+            draft.gismu.rows,
+            draft.gismu.reason,
+          );
+          if (draft.formation) draft.evidenceForm = draft.spelling;
+        }
         draft.step = Math.max(draft.step, 4) as Draft["step"];
         if (!(await saver.flush())) return;
         navigate("/new/places");

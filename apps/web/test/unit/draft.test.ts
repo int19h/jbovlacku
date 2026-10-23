@@ -18,6 +18,7 @@ import {
   formationMetadata,
   manualFormation,
   newGismuState,
+  formationSource,
 } from "../../src/model/builders.ts";
 import {
   draftFromBody,
@@ -48,6 +49,12 @@ before(async () =>
     ),
   ),
 );
+import {
+  applySource,
+  sourceCurrent,
+  mappingKind,
+  type Suggestion,
+} from "../../src/model/assistance.ts";
 const seed = new Uint8Array(32).fill(77);
 /** Signs the body and checks it against the version 1 action and body rules. */
 function admissible(body: unknown, parents: string[] = []) {
@@ -1995,3 +2002,178 @@ for (const change of ["move", "remove"]) {
     assert.equal(draft.numberingApproved, false);
   });
 }
+
+test("browser source aliases migrate once with null precedence and independent signed evidence", () => {
+  const old = {
+    language: "en",
+    name: "English",
+    word: "running",
+    input: "",
+    weight: null,
+    wordIpa: "old word",
+    stemIpa: "old stem",
+    stem: "run",
+  };
+  const draft = normalizeDraft(
+    newDraft({
+      gismu: {
+        ...newGismuState(),
+        rows: [
+          old,
+          { ...old, word_ipa: null, ipa: "new stem" },
+          {
+            language: "fr",
+            name: "French",
+            word: "",
+            input: "",
+            weight: null,
+            notes: [["Word IPA: never infer this"]],
+          },
+        ],
+      },
+    }),
+  );
+  assert.deepEqual(draft.gismu!.rows[0], {
+    language: "en",
+    name: "English",
+    word: "running",
+    input: "",
+    weight: null,
+    word_ipa: "old word",
+    ipa: "old stem",
+    stem: "run",
+  });
+  assert.equal(draft.gismu!.rows[1].word_ipa, null);
+  assert.equal(draft.gismu!.rows[1].ipa, "new stem");
+  assert.equal(Object.hasOwn(draft.gismu!.rows[2], "word_ipa"), false);
+  draft.gismu!.rows[0].word_ipa = "edited word";
+  Object.assign(draft.gismu!.rows[0], { ipa: null });
+  const source = sourceCurrent(draft, 0).formation!.sources[0];
+  assert.equal(source.word_ipa, "edited word");
+  assert.equal(Object.hasOwn(source, "ipa"), false);
+  assert.equal(source.stem, "run");
+  for (const field of ["word_ipa", "stem", "ipa"] as const) {
+    const row = {
+      language: "en",
+      name: "English",
+      word: "",
+      input: "",
+      weight: null,
+      [field]: "evidence",
+    };
+    const source = manualFormation([row], "")!.sources[0];
+    assert.equal(source[field], "evidence");
+    assert.equal(source.input, null);
+    for (const other of ["word_ipa", "stem", "ipa"] as const)
+      if (other !== field) assert.equal(Object.hasOwn(source, other), false);
+  }
+  const blank = formationSource({ ...old, word_ipa: "", ipa: "" });
+  assert.equal(Object.hasOwn(blank, "word_ipa"), false);
+  assert.equal(Object.hasOwn(blank, "ipa"), false);
+  assert.equal(
+    manualFormation(
+      [
+        {
+          language: "en",
+          name: "English",
+          word: "",
+          input: "",
+          weight: null,
+          word_ipa: " ",
+        },
+      ],
+      "",
+    )!.sources[0].word_ipa,
+    " ",
+  );
+});
+
+test("accepted sources preserve signed fields and exact supplementary notes through publication and revision", () => {
+  const draft = newDraft({
+    kind: "gismu",
+    spelling: "broda",
+    text: "A source.",
+    gismu: {
+      ...newGismuState(),
+      rows: [
+        {
+          language: "en",
+          name: "English",
+          word: "old",
+          input: "old",
+          weight: null,
+          word_ipa: "stale",
+          stem: "stale",
+          ipa: "stale",
+          sense: "stale",
+          note: "stale",
+        },
+      ],
+    },
+  });
+  const notes = [
+    ["Manual evidence."],
+    ["Sense: previous"],
+    ["Note: previous"],
+    ["Word IPA: this must never override null"],
+    ["Sense:  sense line 1\n\nNote: part of the sense  "],
+    ["Note:  note line 1\n\nSense: part of the note  "],
+  ];
+  const source = {
+    language: "en",
+    word: "running",
+    word_ipa: null,
+    ipa: "rʌn",
+    input: null,
+    weight: null,
+    notes,
+  };
+  applySource(draft, 0, {
+    proposals: [{ path: "/formation/sources", value: [source] }],
+  } as Suggestion);
+  const row = draft.gismu!.rows[0];
+  assert.equal(row.word_ipa, null);
+  assert.equal(Object.hasOwn(JSON.parse(JSON.stringify(row)), "stem"), false);
+  assert.equal(row.ipa, "rʌn");
+  assert.equal(row.sense, " sense line 1\n\nNote: part of the sense  ");
+  assert.equal(row.note, " note line 1\n\nSense: part of the note  ");
+  assert.deepEqual(row.notes, notes);
+  assert.deepEqual(sourceCurrent(draft, 0).formation!.sources[0].notes, notes);
+  draft.formation = manualFormation(draft.gismu!.rows, "Manual evidence.");
+  draft.evidenceForm = "broda";
+  const restored = normalizeDraft(JSON.parse(JSON.stringify(draft)));
+  const built = draftToBody(restored);
+  assert.deepEqual(built.problems, []);
+  assert.equal(built.body!.etymology.formation!.sources[0].ipa, "rʌn");
+  assert.deepEqual(built.body!.etymology.formation!.sources[0].notes, notes);
+  assert.ok(admissible(built.body));
+  const parent = "jve1:" + "1".repeat(64);
+  const revised = draftToBody(draftFromBody(built.body!, parent, "native"));
+  assert.deepEqual(
+    revised.body!.etymology.formation,
+    built.body!.etymology.formation,
+  );
+  assert.ok(admissible(revised.body, [parent]));
+  const clearedNotes = [...notes, ["Sense: "], ["Note: "]];
+  applySource(draft, 0, {
+    proposals: [
+      {
+        path: "/formation/sources",
+        value: [{ ...source, notes: clearedNotes }],
+      },
+    ],
+  } as Suggestion);
+  assert.equal(draft.gismu!.rows[0].sense, "");
+  assert.equal(draft.gismu!.rows[0].note, "");
+  assert.deepEqual(draft.gismu!.rows[0].notes, clearedNotes);
+  for (const kind of ["direct", "merged", "distributed", "functional"])
+    assert.equal(mappingKind([[`${kind}: A reason.`]]), kind);
+  for (const reason of [
+    "Direct: A reason.",
+    " direct: A reason.",
+    "direct:No space",
+    "direct:",
+    "none: A reason.",
+  ])
+    assert.equal(mappingKind([[reason]]), null);
+});

@@ -21,7 +21,11 @@ import {
   rafsiPairId,
   wordId,
 } from "../../../../packages/core/src/index.ts";
-import { componentId, rational } from "./builders.ts";
+import {
+  componentId,
+  formationSource,
+  normalizeSourceRow,
+} from "./builders.ts";
 
 export type Operation =
   | "type"
@@ -343,15 +347,7 @@ export function sourceCurrent(draft: Draft, index: number): Current {
   current.formation = {
     method: "non-algorithmic",
     algorithm: null,
-    sources: [
-      {
-        language: row.language,
-        word: row.word,
-        input: row.input ? { format: "lojbanized", text: row.input } : null,
-        weight: row.weight ? rational(row.weight) : null,
-        notes: [],
-      },
-    ],
+    sources: [formationSource(row)],
     weights_profile: null,
     generated: null,
     selected_score: null,
@@ -387,8 +383,19 @@ export function applySource(draft: Draft, index: number, result: Suggestion) {
     .join("\n");
   const labels = ["Sense", "Word IPA", "Stem", "Stem IPA", "Note"];
   const extract = (label: string) => {
+    // New replies use one paragraph per supplementary field. Read the latest
+    // value and keep all of its whitespace and line breaks.
+    const paragraph = source.notes.findLast(
+      (parts) =>
+        typeof parts[0] === "string" && parts[0].startsWith(`${label}: `),
+    );
+    if (paragraph)
+      return paragraph
+        .filter((part) => typeof part === "string")
+        .join("")
+        .slice(label.length + 2);
     const pattern = (name: string) =>
-      new RegExp(`(?:^|\\n)${name}:[ \t]*`, "i").exec(notes);
+      new RegExp(`(?:^|\\n)${name}: ?`, "i").exec(notes);
     const match = pattern(label);
     if (!match) return "";
     const start = match.index + match[0].length;
@@ -401,17 +408,22 @@ export function applySource(draft: Draft, index: number, result: Suggestion) {
     const end = following.length
       ? Math.min(...following.map((entry) => entry.index))
       : notes.length;
-    return notes.slice(start, end).trim();
+    return notes.slice(start, end);
   };
   rows[index] = {
-    ...old,
+    ...normalizeSourceRow(old),
     word: source.word,
     input: source.input?.text ?? "",
     sense: extract("Sense"),
-    wordIpa: extract("Word IPA"),
-    stem: extract("Stem"),
-    stemIpa: extract("Stem IPA"),
-    note: extract("Note") || notes,
+    word_ipa: source.word_ipa,
+    stem: source.stem,
+    ipa: source.ipa,
+    notes: structuredClone(source.notes),
+    note: source.notes.some(
+      (parts) => typeof parts[0] === "string" && parts[0].startsWith("Note: "),
+    )
+      ? extract("Note")
+      : extract("Note") || notes,
   };
   draft.gismu!.selected = null;
   draft.gismu!.acknowledged = [];
@@ -509,8 +521,7 @@ export function mappingKind(explanation: RichText): string | null {
     .filter((n) => typeof n === "string")
     .join(" ");
   return (
-    /^(direct|merged|distributed|functional):/i
-      .exec(words.trim())?.[1]
-      .toLowerCase() ?? null
+    /^(direct|merged|distributed|functional): [\s\S]*\S/.exec(words)?.[1] ??
+    null
   );
 }

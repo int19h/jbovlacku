@@ -163,6 +163,9 @@ function proposals(body: any): any[] {
             {
               ...row,
               word: row.language === "en" ? "book" : "",
+              word_ipa: row.language === "en" ? "bʊk" : null,
+              stem: row.language === "en" ? "book" : null,
+              ipa: row.language === "en" ? "bʊk" : null,
               input:
                 row.language === "en"
                   ? { format: "lojbanized", text: "buk" }
@@ -196,6 +199,8 @@ interface MockOptions {
   disabled?: boolean;
   emptyHints?: boolean;
   unknownMapping?: "none" | "unclear";
+  mappingKind?: "direct" | "merged" | "distributed" | "functional";
+  log?: Record<string, unknown>;
 }
 async function mockAssistant(page: Page, options: MockOptions = {}) {
   const calls: any[] = [];
@@ -244,8 +249,15 @@ async function mockAssistant(page: Page, options: MockOptions = {}) {
         seed: null,
       },
       usage: { input_tokens: 30, output_tokens: 20 },
-      log,
+      log: options.log ?? log,
     };
+    if (options.mappingKind && body.operation === "places-glosses") {
+      result.proposals.find(
+        (p: any) => p.path === "/frame",
+      ).value.places[0].derivation[0].explanation = [
+        [`${options.mappingKind}: This place names the destination.`],
+      ];
+    }
     if (options.emptyHints && body.operation === "places-glosses") {
       const frame = result.proposals.find(
         (p: any) => p.path === "/frame",
@@ -1116,6 +1128,84 @@ test("actual service accepts an English source from the default language preset 
   );
   expect(saved.ai.records[0].result.proposals[0].value[0].language).toBe("eng");
   expect(saved.ai.records[0].log.exchanges[0].task).toBe("sources");
+  expect(saved.ai.records[0].result.proposals[0].value[0]).toMatchObject({
+    word_ipa: "bʊk",
+    stem: "book",
+    ipa: "bʊk",
+  });
+  const originalProfile = await page
+    .getByLabel("Weights", { exact: true })
+    .inputValue();
+  await page.getByLabel("Weights", { exact: true }).selectOption("custom");
+  await page
+    .getByLabel("Weights", { exact: true })
+    .selectOption(originalProfile);
+  await expect(
+    page.getByLabel("Said for English", { exact: true }),
+  ).toHaveValue("bʊk");
+  await expect(
+    page.getByLabel("Stem for English", { exact: true }),
+  ).toHaveValue("book");
+  await expect(
+    page.getByLabel("Stem said for English", { exact: true }),
+  ).toHaveValue("bʊk");
+  await page
+    .getByLabel("Said for English", { exact: true })
+    .fill("edited pronunciation");
+  await page.getByLabel("Stem for English", { exact: true }).fill("");
+  await expect
+    .poll(
+      async () =>
+        (await stored(page)).gismu.rows.find(
+          (row: any) => row.language === "eng",
+        ).word_ipa,
+    )
+    .toBe("edited pronunciation");
+  await page.reload();
+  await expect(
+    page.getByLabel("Said for English", { exact: true }),
+  ).toHaveValue("edited pronunciation");
+  await expect(
+    page.getByLabel("Stem for English", { exact: true }),
+  ).toHaveValue("");
+  await page.getByRole("link", { name: "Enter without generation" }).click();
+  await page.getByRole("button", { name: "Use brodu", exact: true }).click();
+  await expect(page).toHaveURL(/\/new\/places$/);
+  const bodyEvidence = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { draftToBody, draftFromBody } = await import(
+      String("/src/model/draft.ts")
+    );
+    const draft = await new LocalStore().get("drafts", "current");
+    const built = draftToBody(draft);
+    const revision = draftToBody(
+      draftFromBody(built.body, "jve1:" + "1".repeat(64), "native"),
+    );
+    return {
+      body: built.body,
+      problems: built.problems,
+      revision: revision.body,
+    };
+  });
+  expect(bodyEvidence.problems).toEqual([]);
+  const source = bodyEvidence.body.etymology.formation.sources.find(
+    (row: any) => row.language === "eng",
+  );
+  expect(source).toMatchObject({
+    word: "book",
+    word_ipa: "edited pronunciation",
+    ipa: "bʊk",
+  });
+  expect(source).not.toHaveProperty("stem");
+  expect(bodyEvidence.revision.etymology.formation).toEqual(
+    bodyEvidence.body.etymology.formation,
+  );
+  const exported = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export draft", exact: true }).click();
+  const savedExport = JSON.parse(
+    await readFile((await (await exported).path())!, "utf8"),
+  );
+  expect(savedExport.formation).toEqual(bodyEvidence.body.etymology.formation);
 });
 
 test("operator-disabled assistance hides saved AI decorations and preserves accepted fields and the preference", async ({
@@ -1183,9 +1273,9 @@ test("operator-disabled assistance hides saved AI decorations and preserves acce
           word: "book",
           input: "buk",
           weight: { numerator: "1", denominator: "1" },
-          wordIpa: "bʊk",
+          word_ipa: "bʊk",
           stem: "book",
-          stemIpa: "bʊk",
+          ipa: "bʊk",
           sense: "written work",
           note: "Accepted source note.",
         },
@@ -1368,3 +1458,251 @@ for (const mode of ["Cancel", "navigation"] as const) {
     }
   });
 }
+
+for (const kind of ["direct", "merged", "distributed", "functional"] as const) {
+  test(`From shows the exact ${kind} prefix in proposals and accepted places`, async ({
+    page,
+  }) => {
+    await mockAssistant(page, { mappingKind: kind });
+    await draft(
+      page,
+      { kind: "lujvo", spelling: "ckusni", frameMode: "none" },
+      "/new/places",
+    );
+    await page
+      .getByRole("button", { name: "Suggest places and glosses", exact: true })
+      .click();
+    await allow(page);
+    const panel = page.getByRole("region", {
+      name: "Suggest places and glosses suggestion",
+    });
+    await expect(panel).toContainText(`klama 2 · ${kind}`);
+    await panel.getByRole("button", { name: "Use this", exact: true }).click();
+    await expect(page.locator("p.meta.span-3")).toContainText(
+      `klama 2 · ${kind}`,
+    );
+    await page.reload();
+    await expect(page.locator("p.meta.span-3")).toContainText(
+      `klama 2 · ${kind}`,
+    );
+  });
+}
+
+for (const figures of [
+  { name: "null", input_tokens: null, output_tokens: null, cost_usd: null },
+  { name: "input only", input_tokens: 12, output_tokens: null, cost_usd: null },
+  { name: "output only", input_tokens: null, output_tokens: 8, cost_usd: null },
+  {
+    name: "cost only",
+    input_tokens: null,
+    output_tokens: null,
+    cost_usd: 0.05,
+  },
+  { name: "zero", input_tokens: 0, output_tokens: 0, cost_usd: 0 },
+]) {
+  test(`inference logs omit missing figures and preserve ${figures.name} provider usage`, async ({
+    page,
+  }) => {
+    const providerLog: any = structuredClone(log);
+    Object.assign(providerLog, figures);
+    for (const attempt of providerLog.exchanges[0].attempts) {
+      attempt.usage =
+        figures.name === "null"
+          ? null
+          : {
+              prompt_tokens: figures.input_tokens,
+              completion_tokens: figures.output_tokens,
+            };
+      attempt.cost_usd = figures.cost_usd;
+      if (figures.name === "input only") {
+        delete providerLog.output_tokens;
+        delete providerLog.cost_usd;
+        delete attempt.usage.completion_tokens;
+        delete attempt.cost_usd;
+      }
+      attempt.response = { provider_fact: "unchanged", usage: attempt.usage };
+    }
+    const expected = [
+      figures.input_tokens == null
+        ? ""
+        : `Input tokens: ${figures.input_tokens}.`,
+      figures.output_tokens == null
+        ? ""
+        : `Output tokens: ${figures.output_tokens}.`,
+      figures.cost_usd == null ? "" : `Cost: ${figures.cost_usd} USD.`,
+    ]
+      .filter(Boolean)
+      .join(" ");
+    await mockAssistant(page, { log: providerLog });
+    await draft(page);
+    await page
+      .getByRole("button", { name: "Recommend a type", exact: true })
+      .click();
+    await allow(page);
+    const panel = page.getByRole("region", {
+      name: "Recommend a type suggestion",
+    });
+    await panel
+      .getByRole("button", { name: "How the assistant decided" })
+      .click();
+    const dialog = page.getByRole("dialog", {
+      name: "How the assistant decided",
+    });
+    if (expected)
+      await expect(dialog.getByText(expected, { exact: true })).toHaveCount(3);
+    for (const [field, label] of [
+      ["input_tokens", "Input tokens:"],
+      ["output_tokens", "Output tokens:"],
+      ["cost_usd", "Cost:"],
+    ] as const)
+      if (figures[field] == null) await expect(dialog).not.toContainText(label);
+    await expect(dialog).not.toContainText("unknown");
+    const mdDownload = page.waitForEvent("download");
+    await dialog.getByRole("button", { name: "Export as Markdown" }).click();
+    const markdown = await readFile((await (await mdDownload).path())!, "utf8");
+    if (expected) expect(markdown.split(expected)).toHaveLength(4);
+    for (const [field, label] of [
+      ["input_tokens", "Input tokens:"],
+      ["output_tokens", "Output tokens:"],
+      ["cost_usd", "Cost:"],
+    ] as const)
+      if (figures[field] == null) expect(markdown).not.toContain(label);
+    const rawDownload = page.waitForEvent("download");
+    await dialog.getByRole("button", { name: "Export raw JSON" }).click();
+    expect(
+      JSON.parse(await readFile((await (await rawDownload).path())!, "utf8")),
+    ).toEqual(providerLog);
+  });
+}
+
+test("old browser source aliases migrate without inventing null or missing evidence", async ({
+  page,
+}) => {
+  const mock = await mockAssistant(page);
+  await draft(
+    page,
+    {
+      kind: "gismu",
+      gismu: {
+        preset: null,
+        rows: [
+          {
+            language: "en",
+            name: "English",
+            word: "book",
+            input: "",
+            weight: null,
+            wordIpa: "old pronunciation",
+            stemIpa: "old stem pronunciation",
+            word_ipa: null,
+            notes: [["Stem: a note cannot invent the missing stem"]],
+          },
+        ],
+        candidates: "source-letters",
+        selected: null,
+        manual: "",
+        acknowledged: [],
+        reason: "",
+        window: 12,
+      },
+    },
+    "/new/gismu",
+  );
+  await expect(
+    page.getByLabel("Said for English", { exact: true }),
+  ).toHaveValue("");
+  await expect(
+    page.getByLabel("Stem for English", { exact: true }),
+  ).toHaveValue("");
+  await expect(
+    page.getByLabel("Stem said for English", { exact: true }),
+  ).toHaveValue("old stem pronunciation");
+  await page
+    .getByLabel("Said for English", { exact: true })
+    .fill("new pronunciation");
+  await page.getByLabel("Stem said for English", { exact: true }).fill("");
+  await expect
+    .poll(async () => (await stored(page)).gismu.rows[0].word_ipa)
+    .toBe("new pronunciation");
+  await page.reload();
+  await expect(
+    page.getByLabel("Said for English", { exact: true }),
+  ).toHaveValue("new pronunciation");
+  await expect(
+    page.getByLabel("Stem said for English", { exact: true }),
+  ).toHaveValue("");
+  await page
+    .getByRole("button", { name: "Suggest source for English", exact: true })
+    .click();
+  await allow(page);
+  await expect(
+    page.getByRole("region", { name: "Suggest source for English suggestion" }),
+  ).toBeVisible();
+  expect(mock.calls[0].current.formation.sources[0]).toMatchObject({
+    word_ipa: "new pronunciation",
+  });
+  expect(mock.calls[0].current.formation.sources[0]).not.toHaveProperty("stem");
+  expect(mock.calls[0].current.formation.sources[0]).not.toHaveProperty("ipa");
+  const saved = (await stored(page)).gismu.rows[0];
+  expect(saved).not.toHaveProperty("wordIpa");
+  expect(saved).not.toHaveProperty("stemIpa");
+});
+
+test("accepted source evidence survives a generated form independently of edited scoring letters", async ({
+  page,
+}) => {
+  await mockAssistant(page);
+  await draft(
+    page,
+    {
+      kind: "gismu",
+      gismu: {
+        preset: null,
+        rows: [
+          {
+            language: "en",
+            name: "English",
+            word: "",
+            input: "",
+            weight: { numerator: "1", denominator: "1" },
+          },
+        ],
+        candidates: "source-letters",
+        selected: null,
+        manual: "",
+        acknowledged: [],
+        reason: "",
+        window: 12,
+      },
+    },
+    "/new/gismu",
+  );
+  await page
+    .getByRole("button", { name: "Suggest source for English", exact: true })
+    .click();
+  await allow(page);
+  const panel = page.getByRole("region", {
+    name: "Suggest source for English suggestion",
+  });
+  await panel.getByRole("button", { name: "Use this", exact: true }).click();
+  await expect(
+    page.getByLabel("Native word for English", { exact: true }),
+  ).toHaveValue("book");
+  await page.getByLabel("Scoring letters for English").fill("makru");
+  await page.getByLabel("Type a form yourself").fill("makru");
+  const use = page.getByRole("button", { name: "Use makru", exact: true });
+  await expect(use).toBeEnabled();
+  await use.click();
+  await expect(page).toHaveURL(/\/new\/places$/);
+  const saved = await stored(page);
+  expect(saved.formation.method).toBe("algorithmic");
+  expect(saved.formation.sources[0]).toMatchObject({
+    word: "book",
+    word_ipa: "bʊk",
+    stem: "book",
+    ipa: "bʊk",
+    input: { format: "lojbanized", text: "makru" },
+  });
+  await page.reload();
+  expect((await stored(page)).formation).toEqual(saved.formation);
+});

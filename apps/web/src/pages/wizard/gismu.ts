@@ -40,7 +40,6 @@ import {
   inventoryFromPackage,
   inventoryCoverage,
   rootConflictKey,
-  manualFormation,
   newGismuState,
   type GismuRowState,
   type PackageInventory,
@@ -413,7 +412,13 @@ export async function gismuPage(
         button(
           "Alternative",
           () => {
-            state.rows.splice(index + 1, 0, { ...row, word: "", input: "" });
+            state.rows.splice(index + 1, 0, {
+              language: row.language,
+              name: row.name,
+              weight: row.weight ? { ...row.weight } : null,
+              word: "",
+              input: "",
+            });
             saver.touch();
             renderRows();
           },
@@ -439,10 +444,7 @@ export async function gismuPage(
           },
         ),
       );
-      const detailCell = (
-        label: string,
-        key: "wordIpa" | "stem" | "stemIpa",
-      ) => {
+      const detailCell = (label: string, key: "word_ipa" | "stem" | "ipa") => {
         const input = el("input", {
           class: "field",
           "aria-label": `${label} for ${row.name || row.language}`,
@@ -450,7 +452,7 @@ export async function gismuPage(
           style: "width:8rem;min-height:36px",
         });
         input.addEventListener("input", () => {
-          row[key] = input.value;
+          row[key] = input.value || null;
           saver.touch();
         });
         return el("td", {}, input);
@@ -459,9 +461,9 @@ export async function gismuPage(
         languageCell,
         weightCell,
         nativeCell,
-        detailCell("Said", "wordIpa"),
+        detailCell("Said", "word_ipa"),
         detailCell("Stem", "stem"),
-        detailCell("Stem said", "stemIpa"),
+        detailCell("Stem said", "ipa"),
         inputCell,
         tools,
       );
