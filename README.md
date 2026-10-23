@@ -51,6 +51,8 @@ If authenticated server history later includes a discarded record, the browser r
 The app tells the author once that the record reached a server. The notice stays through navigation until dismissed.
 Delivery supports receipt lookup before retry, identical retries, Retry-After, and Stop retrying. A first online publication shows neutral progress until delivery returns an outcome.
 Saved publication pages keep receiving delivery updates after a reload and stop listening when the author leaves the page.
+Updates keep focus on delivery controls and announce only short status changes. Try now stays disabled through the group retry and final refresh.
+If storage cannot be read, the saved page keeps known records and offers Retry reading. It reports missing records only after a successful read.
 Delivered records leave the list but keep their receipts in retained history. With no waiting or stopped records, the page shows a short empty state.
 Downloaded search packages permit local search without a request for each query. Version 2 packages carry authors, notes, and rafsi for result rows.
 Signing needs localhost or HTTPS. A plain HTTP Tailscale address supports reading only.
@@ -91,7 +93,8 @@ Publication keeps each source row's word, `word_ipa`, scoring input, weight, and
 New unknown pronunciations omit `word_ipa`. Revisions preserve an authenticated original null value without copying it into fresh source rows.
 Known weights, including zero, survive regardless of private `stem` or `ipa` values.
 The gismu source editor has seven readable columns inside its own scrolling region at 360 and 1280 CSS pixels.
-Each Remove action names its source language, including after a custom language edit.
+Each Remove action includes a row number and names its source language when known, including after a custom language edit.
+The names stay unique for alternatives and rows with no language yet.
 It keeps pronunciation and stem evidence separate from scoring letters.
 It preserves original IPA inputs and shows that conversion to scoring letters is unavailable.
 Source notes stay editable when assistance is off. The publication review shows all signed source evidence.
