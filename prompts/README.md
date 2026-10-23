@@ -24,7 +24,7 @@ The request keeps each label beside its exact event ID for the author's inferenc
 Selected component constraints use those labels too. Unknown labels, event IDs, prose, and labels for another word fail the answer checks.
 
 The application maps accepted labels to exact event IDs before construction and public proposals. The raw tool log keeps the labels.
-The other answer schemas require no event ID or hash. `mappings` uses short component-place names such as `cukta[1]`.
+The other answer schemas require no event ID or hash. `mappings` uses short component-place names such as `c2[1]`.
 
 ## Files
 
@@ -61,7 +61,11 @@ Providers can then cache that prefix.
 
 The user message contains the case: the word, its definition, the component definitions where the task uses them, and the requested keys.
 A place key such as `klama[2]` becomes `x2` in the tool arguments, and the whole word becomes `word`.
-The user message ends with that key list, such as "In submit_answer, use these keys: word for klama, x1 for klama[1]."
+The user message includes that key list, such as "In submit_answer, use these keys: word for klama, x1 for klama[1]."
+If the draft has no spelling, the key list uses "the whole word" and "place 1" instead.
+For `mappings`, request-local labels `c1`, `c2`, and so on name component occurrences in their original order.
+The `component_places` metadata maps each label to its word, exact definition event or null, and available place indices.
+The request lists the permitted names, such as `c2[1]`. Repeated words keep distinct labels and exact definitions.
 A `sources` request covers one target meaning and one language.
 
 The tool arguments are the answer. For `glosses`, `hints` and `mappings`, the tool schema lists each requested key as an explicit property.

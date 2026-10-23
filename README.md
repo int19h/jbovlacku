@@ -53,11 +53,15 @@ Choosing [optional hyphens](docs/morphology.md) in the lujvo builder remains a t
 The gismu generator offers the CLL 1987, CLL 1995, and Ilmen presets with pinned sources, custom weights, exact scores, tied ranks, per-language contributions, root and rafsi conflicts, and manual forms without fabricated evidence.
 The core and draft model keep the optional word pronunciation, stem, and stem pronunciation in signed formation sources.
 The gismu source editor has seven columns. It keeps pronunciation and stem evidence separate from scoring letters.
+It preserves original IPA inputs and shows that conversion to scoring letters is unavailable.
+Source notes stay editable when assistance is off. The publication review shows all source evidence.
 The [morphology profiles](docs/morphology.md) name the rules and versions that the metadata records.
 
 Optional AI assistance offers suggestions for type, components, lujvo, cmavo class, source words, definition text, places, and glosses.
 The browser asks for consent before it sends draft fields. Suggestions need manual acceptance and support undo.
 Component suggestions keep selected exact source definitions.
+Place mappings also preserve exact definitions for repeated component words.
+Turning assistance off reaches other open tabs and cancels their active jobs.
 
 The private attempt log offers Markdown and JSON export. Signed publications omit AI logs.
 Both local adapters offer operator-controlled assistance, off by default, with server-held keys and bounded private jobs.

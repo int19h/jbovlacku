@@ -289,22 +289,22 @@ After three failed answers for one task, that task fails. A provider or transpor
 
 Both local adapters accept these variables:
 
-| Variable | Purpose |
-| --- | --- |
-| `JVC_AI_ENABLED` | Set `enabled` to offer assistance. The default is disabled. |
-| `JVC_AI_BASE_URL` | Provider base URL. The default is `https://openrouter.ai/api/v1`. Use HTTPS, or HTTP on loopback for a local provider. |
-| `JVC_AI_KEY_FILE` | Path to the server-held provider key. Node reads the file for each model turn. The local Worker launcher reads it at startup. |
-| `JVC_AI_PROVIDER_NAME` | Public provider name. The default is `OpenRouter`. Capability metadata uses this name and the route, without the private endpoint URL. |
-| `JVC_AI_MODEL` | Model name. The default is `meta/muse-spark-1.3-contributor`. |
-| `JVC_AI_PROVIDER_ROUTE` | Single permitted route. The default is `meta`. |
-| `JVC_AI_REASONING_EFFORT` | Reasoning level. The default is `medium`. |
-| `JVC_AI_OPERATIONS` | Comma-separated permitted operations. The default contains all six operations below. An empty value disables every operation. |
-| `JVC_AI_DECISION_REPORTS` | Set `enabled` to request a written decision report before the tool call. The default is disabled. |
-| `JVC_AI_MAX_TOKENS` | Maximum output tokens for each provider turn. The default is 16,384. The permitted range is 128 through 32,768. |
-| `JVC_AI_TIMEOUT_MS` | Time limit for the complete job. The default is 120,000 milliseconds. The permitted range is 10 through 900,000. Job expiry also bounds this time. |
-| `JVC_AI_CONCURRENCY` | Maximum active jobs. The default is two. The permitted range is one through four. |
-| `JVC_AI_MAX_COST_USD` | Maximum reserved cost for one job. The default is 2 USD. The permitted range is 0.001 through 10. |
-| `JVC_AI_MAX_PRICE` | Maximum input and output price in USD per million tokens. The default is 10. The permitted range is 0.001 through 100. |
+| Variable                  | Purpose                                                                                                                                                              |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `JVC_AI_ENABLED`          | Set `enabled` to offer assistance. The default is disabled.                                                                                                          |
+| `JVC_AI_BASE_URL`         | Provider base URL. The default is `https://openrouter.ai/api/v1`. Use HTTPS, or HTTP on loopback for a local provider.                                               |
+| `JVC_AI_KEY_FILE`         | Path to the server-held provider key. Node reads the file for each model turn. The local Worker launcher reads it at startup.                                        |
+| `JVC_AI_PROVIDER_NAME`    | Public provider name. The default is `OpenRouter`. Capability metadata uses this name and the route, without the private endpoint URL.                               |
+| `JVC_AI_MODEL`            | Model name. The default is `meta/muse-spark-1.3-contributor`.                                                                                                        |
+| `JVC_AI_PROVIDER_ROUTE`   | Single permitted route. The default is `meta`.                                                                                                                       |
+| `JVC_AI_REASONING_EFFORT` | Reasoning level. The default is `medium`.                                                                                                                            |
+| `JVC_AI_OPERATIONS`       | Comma-separated permitted operations. The default contains all six operations below. An empty value disables every operation.                                        |
+| `JVC_AI_DECISION_REPORTS` | Set `enabled` to request a written decision report before the tool call. The default is disabled.                                                                    |
+| `JVC_AI_MAX_TOKENS`       | Maximum output tokens for each provider turn. The default is 16,384. The permitted range is 128 through 32,768.                                                      |
+| `JVC_AI_TIMEOUT_MS`       | Time limit for the complete job. The default is 120,000 milliseconds. The permitted range is 10 through 540,000. Job expiry leaves a reading window after this time. |
+| `JVC_AI_CONCURRENCY`      | Maximum active jobs. The default is two. Node permits one through four. The Worker caps this value at two.                                                           |
+| `JVC_AI_MAX_COST_USD`     | Maximum reserved cost for one job. The derived default is 329 USD at the default token and price limits. The permitted range is 0.001 through 10,000.                |
+| `JVC_AI_MAX_PRICE`        | Maximum input and output price in USD per million tokens. The default is 10. The permitted range is 0.001 through 100.                                               |
 
 Operations are `type`, `lujvo`, `gismu-sources`, `cmavo-class`, `definition`, and `places-glosses`.
 The `default` profile covers the enabled operations. The `components` profile proposes lujvo components.
@@ -315,7 +315,8 @@ The components request labels each supplied definition `d1`, `d2`, and so on, in
 The model returns a label for the matching word, or null. The application maps labels back to exact event IDs before construction and proposals.
 The private request log includes label-to-event metadata. Raw tool calls retain their labels, including failed answers.
 
-The other answer schemas require no event ID or hash. Place mappings use names such as `cukta[1]`.
+The other answer schemas require no event ID or hash. Place mappings use occurrence labels such as `c2[1]`.
+The request maps each label to its component word, selected exact definition, and permitted place indices.
 
 Explicit rafsi locks enter construction as draft choices. They do not claim accepted assignment standing or an endorsement.
 A lujvo draft can contain zero or one component before the author completes it. The service preserves those draft constraints during inference.
@@ -329,11 +330,27 @@ Set `JVC_WORKER_DATA_DIR` to its task-specific local storage directory. `HOST` a
 The launcher reads the named key file into an in-memory Worker binding. It never writes another credential file or passes the key in command arguments.
 It suppresses Wrangler binding output and reports only a fixed startup error on failure.
 The Worker runtime cannot read a host file path. Its provider key binding is `JVC_AI_KEY`.
-The ordinary Wrangler command leaves assistance off unless the operator supplies that binding and enables the configuration.
+The local launcher permits assistance only on loopback with a loopback HTTP origin.
+It marks local requests with an internal binding and ignores every client IP header.
+The ordinary Wrangler command leaves assistance off unless the operator supplies the key, enables assistance, and configures trusted edge identity.
+For an edge host, set `JVC_TRUST_CF_CONNECTING_IP=enabled` only where Cloudflare controls `CF-Connecting-IP`.
+The Worker also requires platform request metadata and a valid IP address. Synthetic metadata alone does not enable header trust.
+An invalid AI setting disables assistance on the Worker and emits one fixed error per coordinator instance. Manual routes remain available.
 Hosted secret setup and deployment remain separate operator work.
+
+Node permits assistance on direct loopback by default and ignores forwarding headers.
+Without proxy trust, a non-loopback listener or an HTTPS public origin disables assistance. Manual routes remain available.
+Behind an HTTPS proxy, set `JVC_PUBLIC_ORIGIN` to the app origin and `JVC_TRUSTED_PROXY_ADDRESSES` to its exact socket peer IP addresses.
+Separate several trusted addresses with commas. Do not put a network range in that list.
+Set `JVC_CLIENT_IP_HEADER` to one header that the proxy replaces with the real client IP. Its default is `X-Real-IP`.
+The proxy must replace the header with one IP address rather than append client input or a forwarding chain.
+Restrict the Node listener to that proxy. Requests from other peers or without a valid single IP cannot start private jobs.
+The address used for a quota is the IPv4 address or the IPv6 /64 prefix. IPv4-mapped IPv6 addresses use the IPv4 bucket.
 
 The billing reservation uses UTF-8 request bytes as a conservative input-token bound, plus 1,024 tokens for transport overhead.
 It reserves each turn's maximum output tokens at `JVC_AI_MAX_PRICE` before sending that turn.
+It never lowers the output limit to spend the last part of a budget.
+If an operator sets a smaller job ceiling, the service refuses a turn whose full reservation cannot fit.
 It also sends that price ceiling to the provider. Unknown usage stays unknown in the log.
 Every turn sends `usage: { include: true }`, including correction turns.
 [OpenRouter's usage guide](https://openrouter.ai/docs/cookbook/administration/usage-accounting) says that this field is deprecated and has no effect because usage is automatic.
@@ -341,23 +358,54 @@ The request retains the explicit field for the configured protocol. It does not 
 The log records only the token counts and cost that the provider supplies.
 These bounds require a provider that honors its advertised price ceiling. They do not establish billing behavior for an untested compatible provider.
 
-An individual provider response has a 256 KiB limit. Each job reserves at most 2 MiB for its full inference log.
+The default budget covers four tasks with three answers each at the largest admitted draft and context sizes.
+The HTTP body permits 262,144 bytes, and loaded definition context permits 131,072 bytes.
+A generated initial frame comes from a response of at most 262,144 bytes.
+The initial request allowance is 2,097,152 bytes, `B`.
+It covers compact case JSON, string escaping, a 256-key tool schema, grouped component labels, and the key legend.
+Existing frames permit 256 places. A compound permits 64 components, each with at most 256 supplied place indices.
+The mapping legend groups those indices by short occurrence label, so it does not repeat long component spellings.
+Feedback permits 32 problems of 512 characters each. Its serialized allowance is `F = 32 × 512 × 6 + 4,096 = 102,400` bytes.
+The factor six covers JSON escaping. An oversized answer collection produces one structural problem before the checker visits its entries.
+For a 262,144-byte response, the correction allowance is `C = 2 × 262,144 + F = 626,688` bytes.
+Three input requests reserve `B + (B + C) + (B + 2C)`.
+At the defaults, the job reserves `ceil(4 × (3B + 3C + 3 × (1,024 + 16,384)) × 10 / 1,000,000) = 329` USD.
+This is a conservative reservation, not an expected charge. It counts UTF-8 bytes as input tokens rather than dividing bytes by four.
+Changing the output or price limit recalculates this default. An explicit `JVC_AI_MAX_COST_USD` remains the operator's per-job ceiling.
+
+An individual provider response has a 256 KiB limit. Each job reserves at most 64 MiB for its serialized inference log.
 Before a provider turn, the service reserves space for that request, the complete bounded response, and its displayed log fields.
 If the next turn cannot fit, the job fails with `log_limit` before it sends that turn.
-At most four private jobs retain logs at once. This reserves at most 8 MiB for logs, in addition to bounded proposals and runtime data.
+The request allowance is `4 × (3B + 3C)`, about 31.17 MiB for all twelve turns.
+Five response copies per turn add 15 MiB. Four exchange headers and their initial text add at most 8 MiB.
+The 64 MiB limit leaves room for feedback, checks, usage, and log metadata above these 54.17 MiB allowances.
+These are serialized bounds. They are not a JavaScript heap bound.
+Request snapshots share immutable messages and tool schemas. Exchange text shares the initial request strings.
+Raw response fields and correction metadata stay as compact JSON and expand one field at a time when read.
+Job reads stream JSON rather than build one complete response string. Admission counts each completed attempt without serializing the whole log again.
+Node retains at most four private logs. The Worker retains at most two and runs at most two jobs at once.
+Thus retained logs represent at most 256 MiB on Node or 128 MiB on the Worker when fully serialized.
+The compact shared representation uses less memory. Wasm, dictionary state, an active provider response, and serialization still need separate headroom.
+These local bounds do not prove that every admitted dictionary and job combination fits a hosted Worker memory limit.
 A full reservation returns HTTP 429. Saving or dismissing a result releases its reservation through acknowledgment.
 
 `GET /api/v1/session` returns a CSRF token and sets a Secure, HttpOnly, SameSite=Strict session cookie.
 The browser sends the token in `X-CSRF-Token` for `POST /api/v1/assist` and `DELETE /api/v1/jobs/ID`.
 Private requests use the configured `JVC_PUBLIC_ORIGIN` on Node or `PUBLIC_ORIGIN` on the Worker, or the request origin by default.
 Extra origins permitted for public dictionary reads cannot use private jobs.
-Each session can start 12 jobs per hour. Each client network address can start 48 jobs per hour.
-At most 128 sessions exist at once. Sessions expire after one hour. Quota failures include a retry interval.
+Each session can start 12 jobs per hour. Each client network bucket can start 48 jobs per hour.
+One bucket holds at most eight sessions and one retained job. A failed job with no provider turn releases its retained slot.
+At most 128 sessions exist at once. A new visitor can replace the oldest idle session at that limit.
+`GET /session` refreshes a session for one hour. Job admission also extends it through the job's expiry.
+Refreshing a session does not reset its hourly job quota.
+Quota failures include a retry interval based on the exhausted limit.
 
 Accepted work returns HTTP 202 with an opaque job ID, expiry, and polling interval.
 Job reads expose the current task and answer count. Cancel aborts the outbound request and stops further local turns.
 Cancellation cannot reverse an already transmitted request or a provider charge.
 Private jobs expire after at most ten minutes. A service restart or Worker eviction also loses them.
+The job deadline leaves a final reading window of 60 seconds, or one quarter of a shorter test lifetime.
+At the normal lifetime, a timeout occurs by nine minutes and leaves its failed state and log readable until expiry.
 They use transient memory rather than the dictionary object store, indexes, receipt journal, or ordinary logs.
 
 The browser saves a terminal result with its draft, then sends `DELETE` as an acknowledgment.
@@ -366,14 +414,18 @@ Acknowledgment preserves the terminal state and discards the result and log. It 
 The browser keeps the durable log copy. Publication and peer synchronization omit that log.
 Raw JSON exports preserve the exchanged payload fields, except server credentials and encrypted reasoning.
 The service removes those fields before a response or correction request leaves the inference runner.
-The browser limits each API response to 16 MiB and each response wait to 30 seconds. An action expires after 15 minutes in the browser.
+The browser limits ordinary API responses to 16 MiB and private job reads to 96 MiB.
+Each response wait lasts at most 30 seconds. An action expires after 15 minutes in the browser.
 
 The public [prompt guide](../prompts/README.md) describes the four studied tasks and their answer checks.
 Source suggestions run once per requested language row. Supported short language codes are `en`, `zh`, `hi`, `es`, `ru`, `ar`, `bn`, `pt`, `fr`, `ms`, `de`, and `ja`.
 The preset codes `eng`, `cmn`, `hin`, `spa`, `rus`, `ara`, `ben`, `por`, `fra`, `msa`, `deu`, and `jpn` select the same respective prompts.
 Proposals keep each source row's original language code.
 English gloss suggestions keep language `en` even when the definition uses another language. Existing glosses in other languages remain present.
-Source proposals preserve missing words as empty editable rows. Their notes retain the sense, whole-word IPA, stem, stem IPA, and uncertainty.
+Source proposals preserve missing words as empty editable rows.
+Their current sense and uncertainty appear as `Sense:` and `Note:` paragraphs. A null sense adds no paragraph.
+A new suggestion replaces these notes. The author can edit or remove accepted notes before publication.
+Whole-word IPA, stem, and stem IPA use the separate `word_ipa`, `stem`, and `ipa` fields.
 The additional prompts cover type, components, selma'o, definition text, and an initial place structure.
 To update the runtime prompt bundle after editing a prompt, run `node prompts/build-bundle.mjs`.
 The service tests require that the generated bundle matches every public prompt file exactly.
@@ -382,6 +434,21 @@ Run the mocked inference checks with `npx tsx --test packages/service/test/assis
 The adapter suite runs both hosts against a disposable mocked provider and key file.
 It tests the disabled state, corrected answer, private session, secret redaction, and log acknowledgment.
 Neither test suite reads a real provider key or sends paid inference requests.
+
+The optional Worker stress test uses the real local workerd host and disposable bindings.
+It runs two overlapping jobs at the draft and context limits, with twelve maximum-size mocked responses per job.
+It retains both logs, compares repeated streamed reads, tests capacity refusal, and acknowledges both jobs.
+Run it only after reserving its local ports:
+
+```sh
+JVC_TEST_WORKER_AI_MEMORY_R4=enabled node --import tsx scripts/test-worker-ai-memory-r4.ts
+```
+
+`JVC_TEST_ROOT` selects its task-specific artifact directory.
+`JVC_TEST_AI_PROVIDER_PORT` and `JVC_TEST_AI_WORKER_PORT` select its listeners. Their defaults are 8910 and 9910.
+The fixture uses explicit synthetic edge identity settings in an isolated test configuration.
+It does not enable header trust in the ordinary local launcher.
+This test establishes the fixture's behavior. It does not prove a total heap bound or hosted Worker compliance.
 
 Install the Chromium test binary into a task-specific directory, then run the browser tests:
 
