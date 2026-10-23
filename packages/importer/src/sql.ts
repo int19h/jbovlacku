@@ -406,6 +406,17 @@ function ownerId(table: string, row: Row): number {
 }
 function recoveredId(copy: CopyRow, key: string): number | null {
   const index = copy.columns.indexOf(key);
+  // A numeric value in a continuation fragment does not establish row identity.
+  for (let position = 0; position < index; position++) {
+    if (!numeric.has(copy.columns[position])) continue;
+    const prefix = copy.values[position];
+    if (
+      typeof prefix !== "string" ||
+      !/^(0|[1-9][0-9]*)$/.test(prefix) ||
+      !Number.isSafeInteger(Number(prefix))
+    )
+      return null;
+  }
   const value = index < 0 ? undefined : copy.values[index];
   if (typeof value !== "string" || !/^(0|[1-9][0-9]*)$/.test(value))
     return null;

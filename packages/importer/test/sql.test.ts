@@ -1006,3 +1006,92 @@ test("r2 invalid source spellings remain unresolved without aborting other defin
   assert.equal(result.report.added, 3);
   assert.ok(result.report.unresolved.some((issue) => issue.record === 4));
 });
+
+test("r2 F3 a split definition tail cannot impersonate a complete record ID", async () => {
+  const prefix = [
+    "318",
+    "731",
+    "62020",
+    "62020",
+    "source text prefix",
+    "\\N",
+    "1",
+    "1",
+    "\\N",
+    "\\N",
+    "f",
+    "\\N",
+    "2026-09-13 00:00:00+00",
+    "\\N",
+    "\\N",
+    "source display name",
+    "Easy French",
+    "gismu",
+    "source prefix",
+  ].join("\t");
+  const tail = [
+    "French text continuation",
+    "minra",
+    "mir minr",
+    "4",
+    "1",
+    "",
+    "\\N",
+    "\\N",
+    "\\N",
+  ].join("\t");
+  const broken = Buffer.from(
+    fixture
+      .toString()
+      .replace(
+        /(COPY public\.definitions [^]*?)(\\\.\r\n)/,
+        (_, block, end) => `${block}${prefix}\r\n${tail}\r\n${end}`,
+      ),
+  );
+  const input = await setup(broken);
+  const result = await importSqlSnapshot(input);
+  assert.equal(
+    result.report.added,
+    4,
+    JSON.stringify(result.report.unresolved),
+  );
+  const fragments = result.report.unresolved.filter((issue) =>
+    /definitions\/COPY-row/.test(issue.locator),
+  );
+  assert.deepEqual(
+    fragments.map((issue) => issue.record),
+    [62020, null],
+  );
+  assert.ok(!result.report.unresolved.some((issue) => issue.record === 4));
+  assert.ok(
+    (await carriers(input.output)).some(
+      (carrier) => carrier.body.legacy?.record.id === 4,
+    ),
+  );
+});
+
+for (const [table, prefixColumn] of [
+  ["keywordmapping", 0],
+  ["definition_versions", 0],
+  ["etymology", 0],
+  ["example", 1],
+  ["natlangwordbestplaces", 0],
+] as const) {
+  test(`r2 F3 an invalid numeric prefix in ${table} cannot establish its following owner`, async () => {
+    const clean = withSyntheticRelatedRows(fixture);
+    const broken = tableMutation(clean, table, (fields, position) => {
+      if (position === 0) fields[prefixColumn] = "continuation fragment";
+      return fields;
+    });
+    const input = await setup(broken);
+    const result = await importSqlSnapshot(input);
+    assert.equal(result.report.added, 0);
+    assert.ok(
+      result.report.unresolved.some(
+        (issue) =>
+          issue.record === null &&
+          issue.locator.startsWith(`${table}/COPY-row=`),
+      ),
+    );
+  });
+}
