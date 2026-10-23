@@ -111,7 +111,7 @@ After publication, the browser shows a pending notice until the accepted records
 On this VM, readiness with a checkpoint took 6.49 seconds, and the first `klama` request took 0.053 seconds.
 Five consecutive signed endorsements became visible in 3.47, 1.84, 1.94, 1.81, and 1.97 seconds.
 Warm word requests took 61 to 251 milliseconds across English, French, and Russian definition packages.
-Search took 19 to 76 milliseconds. Package manifests took 1.5 to 2.7 milliseconds.
+Search took 19 to 76 milliseconds. Package manifests took 1.5 to 2.6 milliseconds.
 
 The checkpoint used 63.80 MiB. Peak process memory reached 3.69 GiB, including 1.67 GiB of Wasm linear memory.
 

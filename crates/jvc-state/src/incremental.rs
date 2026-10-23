@@ -82,11 +82,7 @@ impl EvaluatedState {
             return;
         }
         let graph = Graph::new(self.prepared.nodes.clone(), &self.prepared.options.limits);
-        self.evaluation = evaluate_graph(
-            &self.prepared.options,
-            &graph,
-            self.prepared.event_limit_exceeded,
-        );
+        self.evaluation = evaluate_graph(&self.prepared.options, &graph);
         self.remaining_work = graph.budget.get();
         self.graph = Some(graph);
         self.unresolved = unresolved(&self.prepared);

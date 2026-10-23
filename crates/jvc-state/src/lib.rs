@@ -258,10 +258,10 @@ fn evaluate_prepared(prepared: PreparedEvaluationInput) -> Evaluation {
     let PreparedEvaluationInput {
         options: input,
         nodes,
-        event_limit_exceeded,
+        ..
     } = prepared;
     let graph = graph::Graph::new(nodes, &input.limits);
-    evaluate_graph(&input, &graph, event_limit_exceeded)
+    evaluate_graph(&input, &graph)
 }
 fn empty_evaluation(input: &EvaluationOptions) -> Evaluation {
     Evaluation {
@@ -295,15 +295,8 @@ fn event_limit_evaluation(input: &EvaluationOptions) -> Evaluation {
     result.reasons.insert("resource_unavailable".into());
     result
 }
-fn evaluate_graph(
-    input: &EvaluationOptions,
-    graph: &graph::Graph,
-    event_limit_exceeded: bool,
-) -> Evaluation {
+fn evaluate_graph(input: &EvaluationOptions, graph: &graph::Graph) -> Evaluation {
     let mut result = empty_evaluation(input);
-    if event_limit_exceeded {
-        return event_limit_evaluation(input);
-    }
     if graph.resource.get() {
         resource_unavailable(&mut result);
         return result;
