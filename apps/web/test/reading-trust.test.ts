@@ -10,7 +10,7 @@ import {
 
 async function transferFixture(page: Page, accepted = false) {
   const old = await createIdentity(page);
-  return page.evaluate(
+  const data = await page.evaluate(
     async ({ old, accepted, corePath, passphrase }) => {
       const core = await import(corePath);
       await core.initializeCore();
@@ -51,6 +51,25 @@ async function transferFixture(page: Page, accepted = false) {
     },
     { old, accepted, corePath, passphrase: PASSPHRASE },
   );
+  // Recovery tests require these peer records in the completed snapshot.
+  for (const event of [data.transfer, ...(data.accept ? [data.accept] : [])]) {
+    await expect
+      .poll(async () => {
+        const response = await page.request.get(
+          `/api/v1/receipts/${encodeURIComponent(event.id)}`,
+        );
+        if (!response.ok()) return false;
+        const receipt = await response.json();
+        return (
+          receipt.snapshot !== null &&
+          !receipt.reasons.some((reason: string) =>
+            ["index_lag", "evaluation_pending"].includes(reason),
+          )
+        );
+      })
+      .toBe(true);
+  }
+  return data;
 }
 
 test("private trust needs a key while private Ignore stays available", async ({
