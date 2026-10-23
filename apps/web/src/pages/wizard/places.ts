@@ -138,13 +138,9 @@ function hintEditor(
         : null,
     );
   };
-  const render = () => {
-    box.replaceChildren(
-      p(
-        "Kind of thing in full. Each alternative applies its fields together. Custom tags use an HTTPS URI.",
-        "meta",
-      ),
-    );
+  const retiredNotices = el("div");
+  const renderRetiredNotices = () => {
+    retiredNotices.replaceChildren();
     for (const tag of new Set(
       alternatives.flatMap((alternative) => alternative.tags),
     )) {
@@ -175,8 +171,18 @@ function hintEditor(
           ),
         );
       }
-      box.append(retired);
+      retiredNotices.append(retired);
     }
+  };
+  const render = () => {
+    box.replaceChildren(
+      p(
+        "Kind of thing in full. Each alternative applies its fields together. Custom tags use an HTTPS URI.",
+        "meta",
+      ),
+      retiredNotices,
+    );
+    renderRetiredNotices();
     alternatives.forEach((alt, index) => {
       const row = el("div", {
         style:
@@ -194,6 +200,7 @@ function hintEditor(
           .map((t) => t.trim())
           .filter(Boolean);
         emit();
+        renderRetiredNotices();
       });
       const abstractor = field(`Abstractor for alternative ${index + 1}`, {
         options: [

@@ -281,6 +281,34 @@ for (const [tag, replacement] of [
     await expect(page.locator("main")).not.toContainText(
       `keeps the retired tag "${tag}"`,
     );
+    const tags = page.getByRole("textbox", { name: "Tags for alternative 1" });
+    await tags.fill(tag);
+    await expect(tags).toBeFocused();
+    await expect(tags).toHaveValue(tag);
+    await expect(
+      page.getByRole("button", {
+        name: `Replace ${tag} with ${replacement}`,
+        exact: true,
+      }),
+    ).toBeVisible();
+    await page
+      .getByRole("button", {
+        name: `Replace ${tag} with ${replacement}`,
+        exact: true,
+      })
+      .click();
+    await expect
+      .poll(
+        async () => (await stored(page)).places[0].hint.alternatives[0].tags,
+      )
+      .toEqual([replacement]);
+    const edited = (await stored(page)).places[0].hint;
+    expect(edited.note).toEqual(before.note);
+    expect(edited.alternatives[0].abstractor).toBe("ka");
+    expect(edited.alternatives[0].relation_arity).toEqual({
+      mode: "fixed",
+      count: 2,
+    });
   });
 }
 
