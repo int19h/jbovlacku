@@ -268,6 +268,7 @@ export function mergePeer(
 export class DeliveryEngine {
   private timer: ReturnType<typeof setTimeout> | undefined;
   private listeners = new Set<DeliveryListener>();
+  private readErrors = new Map<DeliveryListener, (error: unknown) => void>();
   private inFlight = new Map<string, Promise<OutboxItem | undefined>>();
   constructor(private store: LocalStore) {
     window.addEventListener("online", () => {
@@ -282,15 +283,32 @@ export class DeliveryEngine {
       if (document.visibilityState === "visible") void this.tick();
     });
   }
-  subscribe(listener: DeliveryListener) {
+  subscribe(
+    listener: DeliveryListener,
+    onReadError?: (error: unknown) => void,
+  ) {
     this.listeners.add(listener);
-    void this.items()
-      .then(listener)
-      .catch(() => listener([]));
-    return () => this.listeners.delete(listener);
+    if (onReadError) this.readErrors.set(listener, onReadError);
+    void this.items().then(listener, (error) =>
+      onReadError ? onReadError(error) : listener([]),
+    );
+    return () => {
+      this.listeners.delete(listener);
+      this.readErrors.delete(listener);
+    };
   }
   private async notify() {
-    const items = await this.items().catch(() => [] as OutboxItem[]);
+    let items: OutboxItem[];
+    try {
+      items = await this.items();
+    } catch (error) {
+      for (const listener of this.listeners) {
+        const onReadError = this.readErrors.get(listener);
+        if (onReadError) onReadError(error);
+        else listener([]);
+      }
+      return;
+    }
     for (const listener of this.listeners) listener(items);
   }
   /** Reads every record from storage. Other tabs can write at any time, so nothing is cached. */

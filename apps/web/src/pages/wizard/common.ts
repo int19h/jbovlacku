@@ -88,7 +88,10 @@ export function convertLegacyDraft(stored: Record<string, unknown>): Draft {
   });
   return draft;
 }
-export async function loadDraft(app: App): Promise<Draft | null> {
+export async function loadDraft(
+  app: App,
+  options: { throwOnReadError?: boolean } = {},
+): Promise<Draft | null> {
   if (!app.session.storageAvailable) return null;
   legacyDraft = null;
   try {
@@ -114,7 +117,7 @@ export async function loadDraft(app: App): Promise<Draft | null> {
           await app.store.saveDraft(DRAFT_KEY, revised, "unversioned");
         } catch (error) {
           if (!(error instanceof DraftConflictError)) throw error;
-          return loadDraft(app);
+          return loadDraft(app, options);
         }
         return revised;
       }
@@ -123,7 +126,8 @@ export async function loadDraft(app: App): Promise<Draft | null> {
       return normalized;
     }
     return null;
-  } catch {
+  } catch (error) {
+    if (options.throwOnReadError) throw error;
     return null;
   }
 }

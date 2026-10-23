@@ -1041,6 +1041,9 @@ test("a failure right after the group commits still recovers the same group afte
   expect(await outboxRecords(page)).toHaveLength(0);
   expect((await draftState(page)).revision).toBe(revision);
   await expect(
+    page.getByRole("region", { name: "Saved publication" }),
+  ).toHaveCount(0);
+  await expect(
     page.locator("aside").getByRole("button", { name: "Publish", exact: true }),
   ).toBeEnabled();
   // After the commit: a failing delivery refresh and a failing draft cleanup cannot undo the commit.
@@ -1049,6 +1052,18 @@ test("a failure right after the group commits still recovers the same group afte
     const { DeliveryEngine } = await import(String("/src/data/delivery.ts"));
     DeliveryEngine.prototype.invalidate = async () => {
       throw new Error("Injected refresh failure");
+    };
+    const originalDeliver = DeliveryEngine.prototype.deliver;
+    DeliveryEngine.prototype.deliver = async function (
+      id: string,
+      explicit: boolean,
+    ) {
+      const result = await originalDeliver.call(this, id, explicit);
+      if (explicit) {
+        DeliveryEngine.prototype.deliver = originalDeliver;
+        throw new Error("Injected later step failure");
+      }
+      return result;
     };
     const originalDelete = IDBObjectStore.prototype.delete;
     IDBObjectStore.prototype.delete = function (
@@ -1068,6 +1083,34 @@ test("a failure right after the group commits still recovers the same group afte
     .click();
   const saved = page.getByRole("region", { name: "Saved publication" });
   await expect(saved).toContainText("Saved. Not delivered yet.");
+  await expect(
+    saved.getByRole("button", { name: "Try now", exact: true }),
+  ).toBeVisible();
+  const laterFailure = page.getByText(
+    "A step after saving failed: Injected later step failure. The saved records keep their delivery path above.",
+    { exact: true },
+  );
+  await expect(laterFailure).toBeVisible();
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore();
+    const items = await store.list("outbox");
+    await store.mergeOutbox(items[0].id, (item: any) => ({
+      ...item,
+      peers: {
+        ...item.peers,
+        self: {
+          ...item.peers.self,
+          state: "unknown",
+          failure: "server",
+          error: "A later delivery update.",
+        },
+      },
+    }));
+    window.dispatchEvent(new Event("offline"));
+  });
+  await expect(saved).toContainText("A later delivery update.");
+  await expect(laterFailure).toBeVisible();
   const first = await outboxRecords(page);
   expect(first).toHaveLength(4);
   const state = await draftState(page);
