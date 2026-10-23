@@ -12,6 +12,7 @@ import {
   AssistanceError,
   InferenceRunner,
   isObject,
+  jsonParts,
   foldHints,
   newLog,
   promptVersion,
@@ -77,6 +78,8 @@ export interface AssistanceOptions {
   sessionJobs?: number;
   networkJobs?: number;
   retainedJobs?: number;
+  networkRetainedJobs?: number;
+  networkSessions?: number;
 }
 const allOperations: Operation[] = [
   "type",
@@ -111,6 +114,36 @@ const json = (value: unknown, status = 200, headers: HeadersInit = {}) =>
       ...headers,
     },
   });
+function streamedJson(value: unknown) {
+  const parts = jsonParts(value);
+  const encoder = new TextEncoder();
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      pull(controller) {
+        let chunk = "";
+        while (chunk.length < 8192) {
+          const next = parts.next();
+          if (next.done) {
+            if (chunk) controller.enqueue(encoder.encode(chunk));
+            controller.close();
+            return;
+          }
+          chunk += next.value;
+        }
+        controller.enqueue(encoder.encode(chunk));
+      },
+      cancel() {
+        parts.return(undefined);
+      },
+    }),
+    {
+      headers: {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": "no-store",
+      },
+    },
+  );
+}
 const exact = (value: unknown, keys: string[]) =>
   isObject(value) &&
   Object.keys(value).length === keys.length &&
@@ -348,16 +381,12 @@ function caseText(
   request: AssistRequest,
   context: ContextDefinition[],
 ): string {
-  return JSON.stringify(
-    {
-      meaning: request.meaning,
-      language: request.language,
-      current: request.current,
-      definitions: context,
-    },
-    null,
-    2,
-  );
+  return JSON.stringify({
+    meaning: request.meaning,
+    language: request.language,
+    current: request.current,
+    definitions: context,
+  });
 }
 function validateProposedFrame(
   request: AssistRequest,
@@ -376,6 +405,27 @@ function validateProposedFrame(
     ];
   }
 }
+function checkComponentContext(
+  request: AssistRequest,
+  context: ContextDefinition[],
+) {
+  if (request.operation !== "lujvo") return;
+  const byEvent = new Map(context.map((entry) => [entry.event, entry]));
+  for (const component of request.current.compound?.components ?? []) {
+    if (component.definition === null) continue;
+    const supplied = byEvent.get(component.definition);
+    if (
+      !supplied ||
+      supplied.body.word?.language !== component.word?.language ||
+      supplied.body.word?.spelling !== component.word?.spelling
+    )
+      throw new AssistanceError(
+        400,
+        "component_context",
+        "Each selected component definition must be supplied for that exact word.",
+      );
+  }
+}
 /** The caller owns the log. This function does not persist draft data. */
 export async function runAssistance(
   request: AssistRequest,
@@ -385,6 +435,7 @@ export async function runAssistance(
   log: InferenceLog,
   progress: (task: Task, attempt: number) => void,
 ): Promise<AssistResult> {
+  checkComponentContext(request, context);
   const runner = new InferenceRunner(config, log, signal, progress);
   const input = caseText(request, context);
   const proposals: AssistResult["proposals"] = [];
@@ -429,8 +480,7 @@ export async function runAssistance(
               ? null
               : { format: "lojbanized", text: answer.sounds },
           notes: [
-            ...(row.notes ?? []),
-            [`Sense: ${answer.sense ?? ""}`],
+            ...(answer.sense === null ? [] : [[`Sense: ${answer.sense}`]]),
             [`Note: ${answer.note}`],
           ],
         },
@@ -452,17 +502,7 @@ export async function runAssistance(
     const labeledRequest = structuredClone(request);
     for (const component of labeledRequest.current.compound?.components ?? [])
       if (component.definition !== null) {
-        const supplied = byEvent.get(component.definition);
-        if (
-          !supplied ||
-          supplied.body.word?.language !== component.word?.language ||
-          supplied.body.word?.spelling !== component.word?.spelling
-        )
-          throw new AssistanceError(
-            400,
-            "component_context",
-            "Each selected component definition must be supplied for that exact word.",
-          );
+        const supplied = byEvent.get(component.definition)!;
         component.definition = supplied.label;
       }
     let constructed: ReturnType<typeof buildLujvo> | undefined;
@@ -617,28 +657,55 @@ export async function runAssistance(
     );
     const glosses = await runner.run({
       task: "glosses",
+      word: request.current.spelling || undefined,
       input: placeInput,
       keys: ["word", ...keys],
     });
     const hints = keys.length
-      ? await runner.run({ task: "hints", input: placeInput, keys })
+      ? await runner.run({
+          task: "hints",
+          word: request.current.spelling || undefined,
+          input: placeInput,
+          keys,
+        })
       : {};
     const suppliedComponents = request.current.compound?.components ?? [];
-    const componentPlaces = suppliedComponents.flatMap((component: Data) => {
-      const source = context.find(
-        (entry) =>
-          entry.event === component.definition &&
-          entry.body.word?.spelling === component.word?.spelling,
-      );
-      return (source?.body.frame?.places ?? []).map(
-        (place: Data) => `${component.word.spelling}[${place.index}]`,
-      );
-    });
+    const componentByPlace = new Map<
+      string,
+      { component: Data; place: number }
+    >();
+    const componentLabels = suppliedComponents.map(
+      (component: Data, index: number) => {
+        const source = context.find(
+          (entry) =>
+            entry.event === component.definition &&
+            entry.body.word?.language === component.word?.language &&
+            entry.body.word?.spelling === component.word?.spelling,
+        );
+        const label = `c${index + 1}`;
+        const places = (source?.body.frame?.places ?? []).map(
+          (place: Data) => place.index,
+        );
+        for (const place of places)
+          componentByPlace.set(`${label}[${place}]`, { component, place });
+        return {
+          label,
+          word: component.word,
+          definition: component.definition,
+          places,
+        };
+      },
+    );
+    const componentPlaces = [...componentByPlace.keys()];
     const mappings =
       keys.length && componentPlaces.length
         ? await runner.run({
             task: "mappings",
-            input: placeInput,
+            word: request.current.spelling || undefined,
+            input: JSON.stringify({
+              ...JSON.parse(placeInput),
+              component_places: componentLabels,
+            }),
             keys,
             components: componentPlaces,
           })
@@ -679,14 +746,11 @@ export async function runAssistance(
             (entry: Data) => !["none", "unclear"].includes(entry.component),
           )
           .map((entry: Data) => {
-            const match = /^(.*)\[(\d+)\]$/.exec(entry.component)!;
-            const component = suppliedComponents.find(
-              (component: Data) => component.word.spelling === match[1],
-            );
+            const { component, place } = componentByPlace.get(entry.component)!;
             return {
               word: component.word,
               definition: component.definition,
-              place: Number(match[2]),
+              place,
               explanation: [[entry.reason]],
             };
           });
@@ -729,6 +793,9 @@ export async function runAssistance(
   };
 }
 interface Session {
+  network: string;
+  quotaExpires: number;
+  touched: number;
   csrf: string;
   expires: number;
   count: number;
@@ -736,6 +803,8 @@ interface Session {
 interface Job {
   reserved: boolean;
   owner: string;
+  network: string;
+  deadline: number;
   expires: number;
   state:
     | "queued"
@@ -809,7 +878,7 @@ export class AssistanceService {
       request.headers.get("cookie") ?? "",
     )?.[1];
     const value = id ? this.sessions.get(id) : null;
-    if (!id || !value)
+    if (!id || !value || value.expires <= Date.now())
       throw new AssistanceError(
         401,
         "session",
@@ -823,11 +892,68 @@ export class AssistanceService {
       );
     return [id, value];
   }
-  private privateCapacity() {
-    return (
-      [...this.jobs.values()].filter((job) => job.reserved).length <
-      Math.min(this.options.retainedJobs ?? 4, 4)
+  private sessionTtl() {
+    return Math.min(this.options.sessionTtlMs ?? 3600000, 3600000);
+  }
+  private cookie(id: string, session: Session) {
+    const seconds = Math.max(
+      1,
+      Math.ceil((session.expires - Date.now()) / 1000),
     );
+    return `__Host-jvc-assist=${id}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=${seconds}`;
+  }
+  private retry(message: string, releases: number[]) {
+    const seconds = Math.max(
+      1,
+      Math.ceil((Math.min(...releases) - Date.now()) / 1000),
+    );
+    return json(errorShape("quota", message), 429, {
+      "retry-after": String(seconds),
+    });
+  }
+  private admissionLimit(
+    session: Session,
+    network: string,
+    config: ProviderConfig,
+  ) {
+    const now = Date.now();
+    if (session.quotaExpires <= now) {
+      session.count = 0;
+      session.quotaExpires = now + 3600000;
+    }
+    const quota = this.network.get(network);
+    const limits: number[] = [];
+    if (session.count >= (this.options.sessionJobs ?? 12))
+      limits.push(session.quotaExpires);
+    if (
+      quota &&
+      quota.expires > now &&
+      quota.count >= (this.options.networkJobs ?? 48)
+    )
+      limits.push(quota.expires);
+    const jobs = [...this.jobs.values()];
+    if (jobs.length >= 128)
+      limits.push(Math.min(...jobs.map((job) => job.expires)));
+    const retained = jobs.filter((job) => job.reserved);
+    const own = retained.filter((job) => job.network === network);
+    if (own.length >= (this.options.networkRetainedJobs ?? 1))
+      limits.push(Math.min(...own.map((job) => job.expires)));
+    if (retained.length >= Math.min(this.options.retainedJobs ?? 4, 4))
+      limits.push(Math.min(...retained.map((job) => job.expires)));
+    if (this.running >= config.concurrency) {
+      const running = jobs.filter((job) =>
+        ["queued", "running", "cancel_requested"].includes(job.state),
+      );
+      if (running.length)
+        limits.push(Math.min(...running.map((job) => job.deadline)));
+    }
+    // Every exhausted limit must clear before a retry can be admitted.
+    return limits.length
+      ? this.retry(
+          "The private inference quota is exhausted. Save or dismiss earlier results, then try again.",
+          [Math.max(...limits)],
+        )
+      : null;
   }
   async route(
     request: Request,
@@ -868,6 +994,12 @@ export class AssistanceService {
         "feature_disabled",
         "AI assistance is not available on this server.",
       );
+    if (!network)
+      throw new AssistanceError(
+        503,
+        "feature_disabled",
+        "AI assistance needs a trusted client network address on this server.",
+      );
     // Private jobs are same-origin even when public dictionary CORS is enabled.
     const origin = request.headers.get("origin");
     const appOrigin = publicOrigin ?? new URL(request.url).origin;
@@ -886,25 +1018,45 @@ export class AssistanceService {
         request.headers.get("cookie") ?? "",
       )?.[1];
       let session = id ? this.sessions.get(id) : null;
+      const now = Date.now();
       if (!session) {
-        if (this.sessions.size >= 128)
-          throw new AssistanceError(
-            429,
-            "quota",
-            "Private sessions are at capacity.",
+        const own = [...this.sessions.values()].filter(
+          (value) => value.network === network,
+        );
+        if (own.length >= (this.options.networkSessions ?? 8))
+          return this.retry(
+            "Private sessions for this network are at capacity.",
+            own.map((value) => value.expires),
           );
+        if (this.sessions.size >= 128) {
+          const idle = [...this.sessions.entries()]
+            .filter(
+              ([owner]) =>
+                ![...this.jobs.values()].some((job) => job.owner === owner),
+            )
+            .sort((a, b) => a[1].touched - b[1].touched)[0];
+          if (idle) this.sessions.delete(idle[0]);
+          else
+            return this.retry(
+              "Private sessions are at capacity.",
+              [...this.sessions.values()].map((value) => value.expires),
+            );
+        }
         id = crypto.randomUUID();
         session = {
+          network,
           csrf: crypto.randomUUID(),
-          expires:
-            Date.now() +
-            Math.min(this.options.sessionTtlMs ?? 3600000, 3600000),
+          expires: now + this.sessionTtl(),
+          quotaExpires: now + 3600000,
+          touched: now,
           count: 0,
         };
         this.sessions.set(id, session);
       }
+      session.expires = Math.max(session.expires, now + this.sessionTtl());
+      session.touched = now;
       return json({ csrf: session.csrf }, 200, {
-        "set-cookie": `__Host-jvc-assist=${id}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=3600`,
+        "set-cookie": this.cookie(id!, session),
       });
     }
     const [owner, session] = this.session(
@@ -917,34 +1069,6 @@ export class AssistanceService {
           400,
           "query",
           "Private draft fields belong in the request body.",
-        );
-      if (this.running >= config.concurrency || !this.privateCapacity())
-        return json(
-          errorShape(
-            "quota",
-            "All private inference slots are in use. Save or dismiss earlier results, then try again.",
-          ),
-          429,
-          { "retry-after": "1" },
-        );
-      const quota = this.network.get(network) ?? {
-        expires: Date.now() + 3600000,
-        count: 0,
-      };
-      this.network.set(network, quota);
-      if (
-        session.count >= (this.options.sessionJobs ?? 12) ||
-        quota.count >= (this.options.networkJobs ?? 48) ||
-        this.jobs.size >= 128
-      )
-        return json(
-          errorShape("quota", "The private inference quota is exhausted."),
-          429,
-          {
-            "retry-after": String(
-              Math.max(1, Math.ceil((quota.expires - Date.now()) / 1000)),
-            ),
-          },
         );
       let fields: unknown;
       try {
@@ -977,26 +1101,17 @@ export class AssistanceService {
           "size",
           "Selected definition context exceeds the byte limit.",
         );
-      // Recheck after asynchronous context reads so concurrent submissions cannot
-      // both reserve the final slot or quota allocation.
-      if (this.running >= config.concurrency || !this.privateCapacity())
-        return json(
-          errorShape(
-            "quota",
-            "All private inference slots are in use. Save or dismiss earlier results, then try again.",
-          ),
-          429,
-          { "retry-after": "1" },
-        );
-      if (
-        session.count >= (this.options.sessionJobs ?? 12) ||
-        quota.count >= (this.options.networkJobs ?? 48)
-      )
-        return json(
-          errorShape("quota", "The private inference quota is exhausted."),
-          429,
-          { "retry-after": "3600" },
-        );
+      checkComponentContext(input, context);
+      this.session(request, true);
+      // Admission is synchronous after context loading, so quotas and slots are reserved together.
+      const limited = this.admissionLimit(session, network, config);
+      if (limited) return limited;
+      const now = Date.now();
+      const previousQuota = this.network.get(network);
+      const quota =
+        previousQuota && previousQuota.expires > now
+          ? previousQuota
+          : { expires: now + 3600000, count: 0 };
       quota.count++;
       session.count++;
       this.network.set(network, quota);
@@ -1004,13 +1119,26 @@ export class AssistanceService {
       const job: Job = {
         reserved: true,
         owner,
-        expires: Math.floor((Date.now() + this.ttl()) / 1000) * 1000,
+        network,
+        deadline:
+          now +
+          Math.min(
+            config.timeoutMs,
+            this.ttl() - Math.min(60000, this.ttl() / 4),
+          ),
+        expires: now + this.ttl(),
         state: "queued",
         result: null,
         error: null,
         progress: { task: null, attempt: 0, max_attempts: 3 },
         controller: new AbortController(),
       };
+      session.expires = Math.max(
+        session.expires,
+        now + this.sessionTtl(),
+        job.expires,
+      );
+      session.touched = now;
       this.jobs.set(id, job);
       const expiry = setTimeout(
         () => {
@@ -1035,6 +1163,7 @@ export class AssistanceService {
           poll_after_ms: 100,
         },
         202,
+        { "set-cookie": this.cookie(owner, session) },
       );
     }
     if (
@@ -1065,7 +1194,7 @@ export class AssistanceService {
           if (job.error) delete job.error.log;
         }
       }
-      return json({
+      return streamedJson({
         state: job.state,
         result: job.result,
         error: job.error,
@@ -1089,7 +1218,9 @@ export class AssistanceService {
   ) {
     const started = Date.now();
     let log: InferenceLog | undefined;
-    const timeout = AbortSignal.timeout(Math.min(config.timeoutMs, this.ttl()));
+    const timeout = AbortSignal.timeout(
+      Math.max(1, Math.floor(job.deadline - Date.now())),
+    );
     const signal = AbortSignal.any([job.controller.signal, timeout]);
     try {
       log = newLog(request.operation, config, await this.version);
@@ -1129,6 +1260,7 @@ export class AssistanceService {
       }
     } finally {
       if (log) log.duration_ms = Date.now() - started;
+      if (!log?.answers) job.reserved = false;
       this.running--;
     }
   }

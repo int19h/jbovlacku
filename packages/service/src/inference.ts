@@ -22,6 +22,107 @@ export class AssistanceError extends Error {
     super(message);
   }
 }
+function clientAddress(
+  address: string,
+): { address: string; groups?: number[] } | undefined {
+  if (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(address)) {
+    const parts = address.split(".").map(Number);
+    if (
+      parts.every(
+        (part, index) =>
+          part <= 255 && String(part) === address.split(".")[index],
+      )
+    )
+      return { address: parts.join(".") };
+    return;
+  }
+  if (!address.includes(":") || !/^[A-Fa-f0-9:.]+$/.test(address)) return;
+  try {
+    const canonical = new URL(`http://[${address}]/`).hostname.slice(1, -1);
+    const [left, right] = canonical.split("::");
+    const first = left ? left.split(":") : [];
+    const last = right ? right.split(":") : [];
+    const groups = (
+      right !== undefined
+        ? [
+            ...first,
+            ...Array(8 - first.length - last.length).fill("0"),
+            ...last,
+          ]
+        : first
+    ).map((group) => parseInt(group, 16));
+    if (groups.length !== 8) return;
+    if (groups.slice(0, 5).every((group) => group === 0) && groups[5] === 65535)
+      return {
+        address: [
+          groups[6] >> 8,
+          groups[6] & 255,
+          groups[7] >> 8,
+          groups[7] & 255,
+        ].join("."),
+      };
+    return {
+      address: groups.map((group) => group.toString(16)).join(":"),
+      groups,
+    };
+  } catch {
+    return;
+  }
+}
+/** Network limits group IPv6 clients by /64. Invalid addresses grant no identity. */
+export function normalizeClientNetwork(address: string): string {
+  const parsed = clientAddress(address);
+  return parsed?.groups
+    ? `${parsed.groups
+        .slice(0, 4)
+        .map((group) => group.toString(16))
+        .join(":")}::/64`
+    : (parsed?.address ?? "");
+}
+/** A configured proxy must replace a single IP header and be an exact trusted peer. */
+export function nodeClientNetwork(
+  remote: string,
+  forwarded: string | null,
+  trusted: string[],
+): string {
+  const peer = clientAddress(remote);
+  if (!peer) return "";
+  if (!trusted.length) return normalizeClientNetwork(remote);
+  if (
+    !trusted.some((address) => clientAddress(address)?.address === peer.address)
+  )
+    return "";
+  return forwarded ? normalizeClientNetwork(forwarded) : "";
+}
+export function nodeAssistanceIdentityAvailable(
+  host: string,
+  origin: string | undefined,
+  trusted: string[],
+): boolean {
+  if (trusted.length) return true;
+  if (!["127.0.0.1", "::1", "localhost"].includes(host)) return false;
+  if (!origin) return true;
+  try {
+    const url = new URL(origin);
+    return (
+      url.protocol === "http:" &&
+      ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)
+    );
+  } catch {
+    return false;
+  }
+}
+export function workerClientNetwork(
+  address: string | null,
+  hasMetadata: boolean,
+  trustEdge: boolean,
+  local: boolean,
+): string {
+  if (local) return "local";
+  return trustEdge && hasMetadata && address
+    ? normalizeClientNetwork(address)
+    : "";
+}
 export interface ProviderConfig {
   baseUrl: string;
   model: string;
@@ -47,6 +148,26 @@ const operations = [
   "definition",
   "places-glosses",
 ];
+export const INFERENCE_RESPONSE_BYTES = 262144;
+export const INFERENCE_INITIAL_REQUEST_BYTES = 2097152;
+export const INFERENCE_FEEDBACK_BYTES = 32 * 512 * 6 + 4096;
+export const INFERENCE_CORRECTION_BYTES =
+  2 * INFERENCE_RESPONSE_BYTES + INFERENCE_FEEDBACK_BYTES;
+export const INFERENCE_LOG_BYTES = 64 * 1024 * 1024;
+/** Four tasks each receive three full output reservations and two corrections. */
+export function defaultInferenceBudget(
+  maxTokens = 16384,
+  maxPrice = 10,
+): number {
+  return Math.ceil(
+    (4 *
+      (3 * INFERENCE_INITIAL_REQUEST_BYTES +
+        3 * INFERENCE_CORRECTION_BYTES +
+        3 * (1024 + maxTokens)) *
+      maxPrice) /
+      1000000,
+  );
+}
 type ProviderEnv = Partial<
   Record<
     | "JVC_AI_ENABLED"
@@ -105,6 +226,8 @@ export function providerConfig(
   const effort = env.JVC_AI_REASONING_EFFORT ?? "medium";
   if (!["none", "minimal", "low", "medium", "high", "xhigh"].includes(effort))
     throw new Error("Unknown AI reasoning effort.");
+  const maxTokens = Math.floor(number("JVC_AI_MAX_TOKENS", 16384, 128, 32768));
+  const maxPrice = number("JVC_AI_MAX_PRICE", 10, 0.001, 100);
   return {
     baseUrl: baseUrl.replace(/\/$/, ""),
     model: env.JVC_AI_MODEL ?? "meta/muse-spark-1.3-contributor",
@@ -113,11 +236,16 @@ export function providerConfig(
     reasoningEffort: effort,
     key,
     decisionReports: env.JVC_AI_DECISION_REPORTS === "enabled",
-    maxTokens: Math.floor(number("JVC_AI_MAX_TOKENS", 16384, 128, 32768)),
-    timeoutMs: Math.floor(number("JVC_AI_TIMEOUT_MS", 120000, 10, 900000)),
+    maxTokens,
+    timeoutMs: Math.floor(number("JVC_AI_TIMEOUT_MS", 120000, 10, 540000)),
     concurrency: Math.floor(number("JVC_AI_CONCURRENCY", 2, 1, 4)),
-    maxCostUsd: number("JVC_AI_MAX_COST_USD", 2, 0.001, 10),
-    maxPrice: number("JVC_AI_MAX_PRICE", 10, 0.001, 100),
+    maxCostUsd: number(
+      "JVC_AI_MAX_COST_USD",
+      defaultInferenceBudget(maxTokens, maxPrice),
+      0.001,
+      10000,
+    ),
+    maxPrice,
     operations: configured,
   };
 }
@@ -136,6 +264,7 @@ export interface TaskCase {
   components?: string[];
   definitionLabels?: string[];
   language?: string;
+  word?: string;
   check?: (answer: JsonObject) => string[];
 }
 export const sourceLanguages: Record<string, string> = {
@@ -237,10 +366,18 @@ function shapeProblems(
   )
     problems.push(`${path} must be nonempty text.`);
   if (isObject(value)) {
+    if (
+      Object.keys(value).some(
+        (key) => !Object.hasOwn(schema.properties ?? {}, key),
+      )
+    )
+      return [`${path} contains fields that are not allowed.`];
     for (const key of schema.required ?? [])
       if (!Object.hasOwn(value, key))
         problems.push(`${path}.${key} is missing.`);
+    if (problems.length) return problems.slice(0, 32);
     for (const [key, child] of Object.entries(value)) {
+      if (problems.length >= 32) break;
       if (!Object.hasOwn(schema.properties ?? {}, key))
         problems.push(`${path}.${key} is not allowed.`);
       else
@@ -254,12 +391,13 @@ function shapeProblems(
       value.length < (schema.minItems ?? 0) ||
       value.length > (schema.maxItems ?? 256)
     )
-      problems.push(`${path} has an invalid number of entries.`);
-    value.forEach((item, index) =>
-      problems.push(...shapeProblems(schema.items, item, `${path}[${index}]`)),
-    );
+      return [`${path} has an invalid number of entries.`];
+    for (let index = 0; index < value.length && problems.length < 32; index++)
+      problems.push(
+        ...shapeProblems(schema.items, value[index], `${path}[${index}]`),
+      );
   }
-  return problems;
+  return problems.slice(0, 32);
 }
 export function checkAnswer(spec: TaskCase, value: unknown): string[] {
   const problems = shapeProblems(schemaFor(spec), value);
@@ -451,36 +589,136 @@ export function newLog(
   };
 }
 /** Encrypted reasoning never leaves the server or enters a correction request. */
-function publicResponse(value: unknown, key: string, depth = 0): unknown {
-  if (depth > 64) return "[depth limit]";
-  if (typeof value === "string")
-    return value
-      .split(key)
-      .join("[redacted]")
-      .replace(/sk-(?:or-v1-|proj-)?[A-Za-z0-9_-]{8,}/g, "[redacted]");
-  if (Array.isArray(value))
-    return value
-      .filter(
-        (entry) => !isObject(entry) || entry.type !== "reasoning.encrypted",
-      )
-      .map((entry) => publicResponse(entry, key, depth + 1));
-  if (isObject(value)) {
-    if (value.type === "reasoning.encrypted") return null;
-    return Object.fromEntries(
-      Object.entries(value)
-        .filter(
-          ([name]) =>
-            !["encrypted", "encrypted_content", "authorization"].includes(
-              name.toLowerCase(),
-            ),
-        )
-        .map(([name, entry]) => [
-          String(publicResponse(name, key, depth + 1)),
-          publicResponse(entry, key, depth + 1),
-        ]),
-    );
+function publicResponse(
+  value: unknown,
+  key: string,
+  copies = new WeakMap<object, unknown>(),
+): unknown {
+  const text = (value: string) => {
+    const exact = value.includes(key)
+      ? value
+          .split(key)
+          .join(key.length < 10 ? "*".repeat(key.length) : "[redacted]")
+      : value;
+    const pattern =
+      /(?<![A-Za-z0-9_-])sk-(?:or-v1-|proj-)?[A-Za-z0-9_-]{8,}(?![A-Za-z0-9_-])/g;
+    return pattern.test(exact) ? exact.replace(pattern, "[redacted]") : exact;
+  };
+  const pending: {
+    source: JsonObject | unknown[];
+    target: JsonObject | unknown[];
+  }[] = [];
+  const copy = (value: unknown): unknown => {
+    if (typeof value === "string") return text(value);
+    if (typeof value !== "object" || value === null) return value;
+    if (copies.has(value)) return copies.get(value);
+    if (isObject(value) && value.type === "reasoning.encrypted") return null;
+    const target = Array.isArray(value) ? [] : {};
+    copies.set(value, target);
+    pending.push({ source: value, target });
+    return target;
+  };
+  const result = copy(value);
+  while (pending.length) {
+    const { source, target } = pending.pop()!;
+    if (Array.isArray(source)) {
+      for (const entry of source)
+        if (!isObject(entry) || entry.type !== "reasoning.encrypted")
+          (target as unknown[]).push(copy(entry));
+    } else {
+      for (const name of Object.keys(source)) {
+        if (["encrypted", "encrypted_content"].includes(name.toLowerCase()))
+          continue;
+        Object.defineProperty(target, text(name), {
+          value: copy(source[name]),
+          enumerable: true,
+          writable: true,
+          configurable: true,
+        });
+      }
+    }
   }
-  return value;
+  return result;
+}
+/** Serialize JSON data without a call stack proportional to provider nesting. */
+export function* jsonParts(value: unknown): Generator<string> {
+  type Frame = {
+    value: JsonObject | unknown[];
+    keys: string[] | null;
+    index: number;
+    emitted: number;
+  };
+  type Part = { scalar: unknown } | Frame;
+  const stack: Part[] = [{ scalar: value }];
+  function* stringParts(text: string): Generator<string> {
+    yield '"';
+    for (let index = 0; index < text.length; ) {
+      let end = Math.min(text.length, index + 1024);
+      const last = text.charCodeAt(end - 1);
+      const next = text.charCodeAt(end);
+      if (
+        end < text.length &&
+        last >= 0xd800 &&
+        last <= 0xdbff &&
+        next >= 0xdc00 &&
+        next <= 0xdfff
+      )
+        end--;
+      const encoded = JSON.stringify(text.slice(index, end));
+      yield encoded.slice(1, -1);
+      index = end;
+    }
+    yield '"';
+  }
+  while (stack.length) {
+    const part = stack.pop()!;
+    if ("scalar" in part) {
+      const node = part.scalar;
+      if (typeof node === "string") {
+        yield* stringParts(node);
+      } else if (typeof node !== "object" || node === null) {
+        yield JSON.stringify(node) ?? "null";
+      } else {
+        const array = Array.isArray(node);
+        yield array ? "[" : "{";
+        stack.push({
+          value: node,
+          keys: array ? null : Object.keys(node),
+          index: 0,
+          emitted: 0,
+        });
+      }
+      continue;
+    }
+    const length = part.keys?.length ?? (part.value as unknown[]).length;
+    if (part.index >= length) {
+      yield part.keys ? "}" : "]";
+      continue;
+    }
+    const name = part.keys ? part.keys[part.index] : part.index;
+    const child = (part.value as JsonObject)[name];
+    part.index++;
+    stack.push(part);
+    if (part.keys && ["undefined", "function", "symbol"].includes(typeof child))
+      continue;
+    if (part.emitted++) yield ",";
+    if (part.keys) {
+      yield* stringParts(String(name));
+      yield ":";
+    }
+    stack.push({ scalar: child });
+  }
+}
+export const compactJson = (value: unknown): string =>
+  Array.from(jsonParts(value)).join("");
+/** Keep untrusted response graphs as JSON bytes. Reads preserve their public shape. */
+function compactField(target: object, field: string, value: unknown): void {
+  const encoded = compactJson(value);
+  Object.defineProperty(target, field, {
+    enumerable: true,
+    configurable: true,
+    get: () => JSON.parse(encoded),
+  });
 }
 function summary(message: JsonObject): string | null {
   const details = Array.isArray(message.reasoning_details)
@@ -546,7 +784,7 @@ async function boundedResponse(
       const { done, value } = await abortable(reader.read(), signal);
       if (done) break;
       bytes += value.byteLength;
-      if (bytes > 262144)
+      if (bytes > INFERENCE_RESPONSE_BYTES)
         throw new AssistanceError(
           502,
           "provider_size",
@@ -568,6 +806,10 @@ async function boundedResponse(
 }
 export class InferenceRunner {
   private reservedCost = 0;
+  private publicCopies = new WeakMap<object, unknown>();
+  private publicKey = "";
+  // Metadata and number growth fit inside this fixed allowance.
+  private logBytes = 65536;
   constructor(
     private config: ProviderConfig,
     public log: InferenceLog,
@@ -594,9 +836,19 @@ export class InferenceRunner {
         this.log.prompt_files.push(`/api/v1/assist/prompts/${file}`);
     const system = files.map((file) => promptFiles[file].trim()).join("\n\n");
     const legend = spec.keys?.length
-      ? `\n\nIn submit_answer, use these keys: ${spec.keys.map((key) => (key === "word" ? "word for the whole word" : `${key} for place ${key.slice(1)}`)).join(", ")}.`
+      ? `\n\nIn submit_answer, use these keys: ${spec.keys.map((key) => (key === "word" ? `word for ${spec.word ?? "the whole word"}` : spec.word ? `${key} for ${spec.word}[${key.slice(1)}]` : `${key} for place ${key.slice(1)}`)).join(", ")}.`
       : "";
-    const input = spec.input + legend;
+    const grouped = new Map<string, string[]>();
+    for (const component of spec.components ?? []) {
+      const match = /^(.*)\[(\d+)\]$/.exec(component);
+      if (match)
+        grouped.set(match[1], [...(grouped.get(match[1]) ?? []), match[2]]);
+    }
+    const componentLegend =
+      spec.task === "mappings"
+        ? `\n\nPermitted component places: ${Array.from(grouped, ([label, indices]) => `${label}[${indices.join(",")}]`).join("; ")}. Each listed index names a separate place, for example c2[1].`
+        : "";
+    const input = spec.input + legend + componentLegend;
     const exchange: ExchangeLog = {
       task: spec.task,
       system_prompt: system,
@@ -604,6 +856,9 @@ export class InferenceRunner {
       attempts: [],
     };
     this.log.exchanges.push(exchange);
+    const encodeSize = (value: unknown) =>
+      new TextEncoder().encode(compactJson(value)).byteLength;
+    this.logBytes += encodeSize(exchange) + 1;
     const messages: JsonObject[] = [
       { role: "system", content: system },
       { role: "user", content: input },
@@ -622,22 +877,18 @@ export class InferenceRunner {
       this.progress(spec.task, attempt);
       // UTF-8 bytes conservatively reserve input tokens, including tool metadata.
       const inputBound =
-        new TextEncoder().encode(JSON.stringify({ messages, tools: [tool] }))
+        new TextEncoder().encode(compactJson({ messages, tools: [tool] }))
           .byteLength + 1024;
-      const tokenBudget =
-        Math.floor(
-          ((this.config.maxCostUsd - this.reservedCost) * 1000000) /
-            this.config.maxPrice,
-        ) - inputBound;
-      const maxTokens = Math.min(this.config.maxTokens, tokenBudget);
-      if (maxTokens < 128)
+      const maxTokens = this.config.maxTokens;
+      const reservation =
+        ((inputBound + maxTokens) * this.config.maxPrice) / 1000000;
+      if (this.reservedCost + reservation > this.config.maxCostUsd)
         throw new AssistanceError(
           429,
           "billing_limit",
           "The inference budget is exhausted.",
         );
-      this.reservedCost +=
-        ((inputBound + maxTokens) * this.config.maxPrice) / 1000000;
+      this.reservedCost += reservation;
       const body: JsonObject = {
         model: this.config.model,
         stream: false,
@@ -655,15 +906,20 @@ export class InferenceRunner {
         tools: [tool],
         tool_choice: "auto",
         parallel_tool_calls: false,
-        messages: structuredClone(messages),
+        messages: messages.slice(),
       };
       // Reserve space for the complete bounded response and the visible fields
       // that also appear separately in the log. Never discard an admitted turn.
-      const logLimit = Math.min(this.config.maxLogBytes ?? 2097152, 2097152);
-      const encodeSize = (value: unknown) =>
-        new TextEncoder().encode(JSON.stringify(value)).byteLength;
+      const logLimit = Math.min(
+        this.config.maxLogBytes ?? INFERENCE_LOG_BYTES,
+        INFERENCE_LOG_BYTES,
+      );
       if (
-        encodeSize(this.log) + encodeSize(body) + 5 * 262144 + 8192 >
+        this.logBytes +
+          encodeSize(body) +
+          5 * INFERENCE_RESPONSE_BYTES +
+          INFERENCE_FEEDBACK_BYTES +
+          8192 >
         logLimit
       )
         throw new AssistanceError(
@@ -678,6 +934,10 @@ export class InferenceRunner {
           "provider_credentials",
           "The provider key is unavailable.",
         );
+      if (key !== this.publicKey) {
+        this.publicCopies = new WeakMap();
+        this.publicKey = key;
+      }
       const entry: AttemptLog = {
         attempt,
         reasoning_summary: null,
@@ -686,9 +946,12 @@ export class InferenceRunner {
         check: { accepted: false, problems: [] },
         usage: null,
         cost_usd: null,
-        request: body,
+        request: publicResponse(body, key, this.publicCopies) as JsonObject,
         response: null,
       };
+      // These fields share the same immutable strings as the request snapshots.
+      exchange.system_prompt = entry.request.messages[0].content;
+      exchange.request = entry.request.messages[1].content;
       exchange.attempts.push(entry);
       this.log.answers++;
       const unknown = (message: string) => {
@@ -711,7 +974,7 @@ export class InferenceRunner {
                 "content-type": "application/json",
                 authorization: `Bearer ${key}`,
               },
-              body: JSON.stringify(body),
+              body: compactJson(body),
               signal: this.signal,
             },
           ),
@@ -735,7 +998,7 @@ export class InferenceRunner {
       }
       let value: JsonObject;
       try {
-        value = publicResponse(JSON.parse(raw), key) as JsonObject;
+        value = JSON.parse(raw) as JsonObject;
       } catch {
         entry.response = publicResponse(raw, key);
         unknown("The provider returned invalid JSON.");
@@ -745,7 +1008,8 @@ export class InferenceRunner {
           "The provider returned invalid JSON.",
         );
       }
-      entry.response = value;
+      const visible = publicResponse(value, key) as JsonObject;
+      compactField(entry, "response", visible);
       if (!isObject(value)) {
         unknown("The provider response must contain a JSON object.");
         throw new AssistanceError(
@@ -755,7 +1019,7 @@ export class InferenceRunner {
         );
       }
       const usage = isObject(value.usage) ? value.usage : null;
-      entry.usage = usage;
+      compactField(entry, "usage", publicResponse(usage, key));
       const cost =
         typeof usage?.cost === "number" &&
         Number.isFinite(usage.cost) &&
@@ -808,12 +1072,22 @@ export class InferenceRunner {
         );
       }
       const message = isObject(choice?.message) ? choice.message : {};
-      entry.reasoning_summary = summary(message);
-      entry.text = typeof message.content === "string" ? message.content : "";
+      const visibleMessage = visible.choices?.[0]?.message ?? {};
+      entry.reasoning_summary = summary(visibleMessage);
+      entry.text =
+        typeof visibleMessage.content === "string"
+          ? visibleMessage.content
+          : "";
       const calls: JsonObject[] = Array.isArray(message.tool_calls)
         ? message.tool_calls
         : [];
-      entry.tool_calls = calls;
+      compactField(
+        entry,
+        "tool_calls",
+        Array.isArray(visibleMessage.tool_calls)
+          ? visibleMessage.tool_calls
+          : [],
+      );
       let answer: unknown;
       let problems: string[] = [];
       if (
@@ -831,13 +1105,21 @@ export class InferenceRunner {
             throw new Error("Tool arguments must be a JSON string.");
           answer = JSON.parse(calls[0].function.arguments);
           problems = checkAnswer(spec, answer);
+          if (compactJson(answer) !== compactJson(publicResponse(answer, key)))
+            problems.push(
+              "The answer contains private credential data. Remove it.",
+            );
         } catch {
           problems = ["The tool arguments must contain valid JSON."];
         }
       }
       if (choice?.finish_reason === "length")
         problems.push("The answer reached the output token limit.");
+      problems = (publicResponse(problems.slice(0, 32), key) as string[]).map(
+        (problem) => problem.slice(0, 512),
+      );
       entry.check = { accepted: problems.length === 0, problems };
+      this.logBytes += encodeSize(entry) + 1;
       if (!problems.length) return answer as JsonObject;
       if (attempt === 3)
         throw new AssistanceError(
@@ -847,16 +1129,22 @@ export class InferenceRunner {
         );
       this.log.corrections++;
       const echo: JsonObject = { role: "assistant", content: entry.text };
-      if (Array.isArray(message.reasoning_details))
-        echo.reasoning_details = message.reasoning_details;
-      const safeCalls: JsonObject[] = calls
+      if (Array.isArray(visibleMessage.reasoning_details))
+        compactField(
+          echo,
+          "reasoning_details",
+          visibleMessage.reasoning_details,
+        );
+      const safeCalls: JsonObject[] = (
+        calls.length === 1 ? (visibleMessage.tool_calls ?? []) : []
+      )
         .filter(
-          (call) =>
+          (call: JsonObject) =>
             typeof call?.id === "string" &&
             isObject(call.function) &&
             call.function.name === "submit_answer",
         )
-        .map((call) => {
+        .map((call: JsonObject) => {
           let args = call.function.arguments;
           try {
             if (typeof args !== "string")
@@ -871,7 +1159,8 @@ export class InferenceRunner {
         "The answer was not accepted. Fix every problem and call submit_answer with the complete corrected answer.\n" +
         problems.join("\n");
       if (safeCalls.length) {
-        echo.tool_calls = safeCalls;
+        compactField(echo, "tool_calls", safeCalls);
+        this.publicCopies.set(echo, echo);
         messages.push(
           echo,
           ...safeCalls.map((call) => ({
@@ -880,7 +1169,10 @@ export class InferenceRunner {
             content: feedback,
           })),
         );
-      } else messages.push(echo, { role: "user", content: feedback });
+      } else {
+        this.publicCopies.set(echo, echo);
+        messages.push(echo, { role: "user", content: feedback });
+      }
     }
     throw new Error("Unreachable inference state.");
   }

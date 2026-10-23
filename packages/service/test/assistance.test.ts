@@ -10,6 +10,7 @@ import {
   identityFromSeed,
   utf8,
   builderPresets,
+  createEvent,
 } from "../../core/src/index.ts";
 import { DictionaryService } from "../src/service.ts";
 import { emptyState } from "../src/storage.ts";
@@ -814,7 +815,7 @@ test("prompt order omits disabled reports and appends reports to other tasks", a
       .join("\n\n"),
   );
 });
-test("source proposals preserve signed evidence, language, weight and existing notes", async () => {
+test("source proposals replace notes and preserve language, weight and pronunciation evidence", async () => {
   for (const unknown of [false, true]) {
     const original = {
       language: "eng",
@@ -864,7 +865,10 @@ test("source proposals preserve signed evidence, language, weight and existing n
     const row = (result.proposals[0].value as any[])[0];
     assert.equal(row.language, "eng");
     assert.deepEqual(row.weight, original.weight);
-    assert.deepEqual(row.notes[0], original.notes[0]);
+    assert.equal(
+      row.notes.some((note: string[]) => note[0] === original.notes[0][0]),
+      false,
+    );
     for (const field of ["word_ipa", "stem", "ipa"] as const)
       assert.equal(row[field], answer[field]);
     assert.equal(row.word, answer.word ?? "");
@@ -872,14 +876,14 @@ test("source proposals preserve signed evidence, language, weight and existing n
       row.input,
       unknown ? null : { format: "lojbanized", text: "titc" },
     );
-    assert.deepEqual(row.notes.slice(1), [
-      [`Sense: ${answer.sense ?? ""}`],
+    assert.deepEqual(row.notes, [
+      ...(answer.sense === null ? [] : [[`Sense: ${answer.sense}`]]),
       [`Note: ${answer.note}`],
     ]);
     assert.deepEqual(request.current.formation!.sources[0], original);
   }
 });
-test("repeated source suggestions preserve notes and append the current sense and note separately", async () => {
+test("repeated source suggestions replace old notes and omit a null sense", async () => {
   const first = {
     word: "teacher",
     sense: "One who teaches.\nNote: part of the sense.",
@@ -920,13 +924,13 @@ test("repeated source suggestions preserve notes and append the current sense an
       () => {},
     );
     row = (result.proposals[0].value as any[])[0];
-    assert.deepEqual(row.notes.slice(0, -2), previous.notes);
-    assert.deepEqual(row.notes.slice(-2), [
-      [`Sense: ${answer.sense ?? ""}`],
+    assert.deepEqual(row.notes, [
+      ...(answer.sense === null ? [] : [[`Sense: ${answer.sense}`]]),
       [`Note: ${answer.note}`],
     ]);
+    assert.deepEqual(request.current.formation!.sources[0], previous);
   }
-  assert.equal(row.notes.at(-2)[0], "Sense: ");
+  assert.deepEqual(row.notes, [[`Note: ${second.note}`]]);
   assert.equal(row.word_ipa, null);
 });
 test("draft validation enforces operation fields, schema and exact context IDs", () => {
@@ -1116,9 +1120,7 @@ test("new places precede glosses and hints, and supplied components drive place 
     answers[1],
     answers[2],
     {
-      x1: [
-        { component: "klama[1]", reason: "direct: the traveler is the goer." },
-      ],
+      x1: [{ component: "c1[1]", reason: "direct: the traveler is the goer." }],
     },
   ];
   const mappingConfig = makeConfig({
@@ -1156,9 +1158,10 @@ function service(options: AssistanceOptions = {}, publicOrigin?: string) {
     },
   );
 }
-async function session(instance: DictionaryService) {
+async function session(instance: DictionaryService, network = "local") {
   const response = await instance.fetch(
     new Request("http://localhost/api/v1/session"),
+    network,
   );
   assert.equal(response.status, 200);
   assert.match(
@@ -1989,7 +1992,7 @@ test("cancellation aborts upstream and prevents additional turns, concurrent wor
     privateRequest("/assist", headers, draft()),
   );
   assert.equal(crowded.status, 429);
-  assert.equal(crowded.headers.get("retry-after"), "1");
+  assert.ok(Number(crowded.headers.get("retry-after")) >= 100);
   await instance.fetch(
     privateRequest(`/jobs/${started.job}`, headers, undefined, "DELETE"),
   );
@@ -2022,7 +2025,7 @@ test("timeouts, expiry, session quotas and disabled tasks are explicit", async (
   await new Promise((resolve) =>
     setTimeout(
       resolve,
-      Math.max(0, Date.parse(accepted.expires_at) - Date.now()) + 10,
+      Math.max(0, Date.parse(accepted.expires_at) - Date.now()) + 1010,
     ),
   );
   assert.equal(
@@ -2041,4 +2044,680 @@ test("timeouts, expiry, session quotas and disabled tasks are explicit", async (
     ).status,
     503,
   );
+});
+
+test("round4: missing selected context returns HTTP 400 without quota or retained-slot use", async () => {
+  let calls = 0;
+  const instance = service({
+    sessionJobs: 1,
+    networkJobs: 1,
+    retainedJobs: 1,
+    provider: makeConfig({
+      fetch: (async () => {
+        calls++;
+        return Response.json(
+          completion({ word_type: "lujvo", reason: "compound" }),
+        );
+      }) as typeof fetch,
+    }),
+  });
+  const headers = await session(instance);
+  const request = draft("lujvo", {
+    compound: {
+      components: [
+        {
+          word: { language: "jbo", spelling: "klama" },
+          definition: "jve1:" + "f".repeat(64),
+          rafsi: "klam",
+        },
+      ],
+      morphology: { id: "https://example.test/morphology", version: "1" },
+      scoring: { id: "https://example.test/scoring", version: "1" },
+    },
+  });
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const response = await instance.fetch(
+      privateRequest("/assist", headers, request),
+    );
+    assert.equal(response.status, 400);
+    assert.equal(((await response.json()) as any).code, "component_context");
+  }
+  assert.equal(calls, 0);
+  const accepted = await instance.fetch(
+    privateRequest("/assist", headers, draft()),
+  );
+  assert.equal(accepted.status, 202);
+  assert.equal(
+    (await poll(instance, ((await accepted.json()) as any).job, headers)).state,
+    "completed",
+  );
+  assert.equal(calls, 1);
+});
+
+test("round4: one network cannot occupy every retained slot through fresh sessions", async () => {
+  const instance = service({
+    provider: makeConfig({
+      fetch: (async () =>
+        Response.json(
+          completion({ word_type: "lujvo", reason: "compound" }),
+        )) as typeof fetch,
+    }),
+  });
+  const first = await session(instance, "192.0.2.1");
+  const started = await instance.fetch(
+    privateRequest("/assist", first, draft()),
+    "192.0.2.1",
+  );
+  assert.equal(started.status, 202);
+  await poll(instance, ((await started.json()) as any).job, first);
+  const same = await session(instance, "192.0.2.1");
+  const blocked = await instance.fetch(
+    privateRequest("/assist", same, draft()),
+    "192.0.2.1",
+  );
+  assert.equal(blocked.status, 429);
+  assert.ok(Number(blocked.headers.get("retry-after")) > 500);
+  const other = await session(instance, "192.0.2.2");
+  assert.equal(
+    (
+      await instance.fetch(
+        privateRequest("/assist", other, draft()),
+        "192.0.2.2",
+      )
+    ).status,
+    202,
+  );
+});
+
+test("round4: session creation is bounded per network and unrelated visitors still get sessions", async () => {
+  const instance = service({ provider: makeConfig() });
+  for (let index = 0; index < 8; index++) await session(instance, "192.0.2.1");
+  const blocked = await instance.fetch(
+    new Request("http://localhost/api/v1/session"),
+    "192.0.2.1",
+  );
+  assert.equal(blocked.status, 429);
+  assert.ok(Number(blocked.headers.get("retry-after")) > 3500);
+  await session(instance, "192.0.2.2");
+});
+
+test("round4: global session capacity evicts idle sessions for a new network", async () => {
+  const instance = service({ provider: makeConfig() });
+  for (let index = 0; index < 129; index++)
+    await session(instance, `network-${index}`);
+});
+
+test("round4: GET session refreshes its real lifetime and cookie", async () => {
+  const instance = service({ sessionTtlMs: 100, provider: makeConfig() });
+  const headers = await session(instance);
+  await new Promise((resolve) => setTimeout(resolve, 65));
+  const refresh = await instance.fetch(privateRequest("/session", headers));
+  assert.equal(refresh.status, 200);
+  assert.equal(((await refresh.json()) as any).csrf, headers["x-csrf-token"]);
+  assert.match(refresh.headers.get("set-cookie")!, /Max-Age=1(?:;|$)/);
+  await new Promise((resolve) => setTimeout(resolve, 65));
+  const again = await instance.fetch(privateRequest("/session", headers));
+  assert.equal(((await again.json()) as any).csrf, headers["x-csrf-token"]);
+});
+
+test("round4: admission extends session through the advertised job lifetime", async () => {
+  const instance = service({
+    sessionTtlMs: 30,
+    ttlMs: 2000,
+    provider: makeConfig({
+      fetch: queue([completion({ word_type: "lujvo", reason: "compound" })]),
+    }),
+  });
+  const headers = await session(instance);
+  const response = await instance.fetch(
+    privateRequest("/assist", headers, draft()),
+  );
+  assert.equal(response.status, 202);
+  const accepted = (await response.json()) as any;
+  assert.ok(
+    Number(
+      /Max-Age=(\d+)/.exec(response.headers.get("set-cookie") ?? "")?.[1],
+    ) >= 2,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  const result = await instance.fetch(
+    privateRequest(`/jobs/${accepted.job}`, headers),
+  );
+  assert.equal(result.status, 200);
+  assert.equal(((await result.json()) as any).state, "completed");
+});
+
+test("round4: a lifetime-bound timeout leaves a failed log before expiry", async () => {
+  const instance = service({
+    ttlMs: 2200,
+    provider: makeConfig({
+      timeoutMs: 10000,
+      fetch: (() => new Promise(() => {})) as typeof fetch,
+    }),
+  });
+  const headers = await session(instance);
+  const response = await instance.fetch(
+    privateRequest("/assist", headers, draft()),
+  );
+  const accepted = (await response.json()) as any;
+  await new Promise((resolve) => setTimeout(resolve, 1750));
+  const failure = await instance.fetch(
+    privateRequest(`/jobs/${accepted.job}`, headers),
+  );
+  assert.equal(failure.status, 200);
+  const value = (await failure.json()) as any;
+  assert.equal(value.state, "failed");
+  assert.equal(value.error.code, "provider_timeout");
+  assert.ok(value.error.log);
+  assert.ok(value.error.log.duration_ms < 2200);
+});
+
+test("round4: mappings name repeated component occurrences and preserve their exact definitions", async () => {
+  for (const firstDefined of [false, true]) {
+    const events = ["jve1:" + "a".repeat(64), "jve1:" + "b".repeat(64)];
+    const components = events.map((event, index) => ({
+      word: { language: "jbo", spelling: "klama" },
+      definition: index === 0 && !firstDefined ? null : event,
+      rafsi: "klam",
+    }));
+    const context = components
+      .filter((part) => part.definition)
+      .map((part) => ({
+        event: part.definition!,
+        body: { word: part.word, frame },
+      }));
+    const request = draft("places-glosses", {
+      spelling: "klamklama",
+      frame,
+      compound: {
+        components,
+        morphology: { id: "https://example.test/morphology", version: "1" },
+        scoring: { id: "https://example.test/scoring", version: "1" },
+      },
+    });
+    request.context = context.map((entry) => entry.event);
+    const config = makeConfig({
+      fetch: queue(
+        [
+          completion({
+            word: { gloss: "travel", sense: "act of travel" },
+            x1: { gloss: "traveler", sense: "" },
+          }),
+          completion({ x1: [{ type: "agent", reason: "The traveler acts." }] }),
+          completion({
+            x1: [
+              { component: "c2[1]", reason: "direct: the second traveler." },
+            ],
+          }),
+        ],
+        (body, turn) => {
+          if (turn === 0) {
+            assert.match(
+              body.messages[1].content,
+              /word for klamklama, x1 for klamklama\[1\]/,
+            );
+          }
+          if (turn === 2) {
+            assert.match(
+              body.messages[1].content,
+              /Permitted component places:.*c2\[1\]/,
+            );
+            assert.equal(
+              body.messages[1].content.includes("c1[1]"),
+              firstDefined,
+            );
+          }
+        },
+      ),
+    });
+    const result = await runAssistance(
+      request,
+      config,
+      context,
+      AbortSignal.timeout(2000),
+      newLog(request.operation, config, await promptVersion()),
+      () => {},
+    );
+    const derivation = (result.proposals[0].value as any).places[0].derivation;
+    assert.equal(derivation[0].definition, events[1]);
+    assert.equal(derivation[0].place, 1);
+    assert.deepEqual(derivation[0].word, components[1].word);
+    const mappingInput = JSON.parse(
+      result.log.exchanges[2].request.split("\n\nIn submit_answer")[0],
+    );
+    assert.deepEqual(
+      mappingInput.component_places.map((entry: any) => ({
+        label: entry.label,
+        definition: entry.definition,
+        places: entry.places,
+      })),
+      [
+        {
+          label: "c1",
+          definition: firstDefined ? events[0] : null,
+          places: firstDefined ? [1] : [],
+        },
+        { label: "c2", definition: events[1], places: [1] },
+      ],
+    );
+  }
+});
+
+test("round4: refreshing a session does not reset quota, and its hourly window still resets", async (t) => {
+  const initial = Date.now();
+  t.mock.timers.enable({ apis: ["Date"], now: initial });
+  const instance = service({
+    sessionJobs: 1,
+    provider: makeConfig({
+      fetch: queue([
+        completion({ word_type: "lujvo", reason: "compound" }),
+        completion({ word_type: "lujvo", reason: "compound" }),
+      ]),
+    }),
+  });
+  const headers = await session(instance);
+  const response = await instance.fetch(
+    privateRequest("/assist", headers, draft()),
+  );
+  const id = ((await response.json()) as any).job;
+  await poll(instance, id, headers);
+  await instance.fetch(
+    privateRequest(`/jobs/${id}`, headers, undefined, "DELETE"),
+  );
+  t.mock.timers.tick(3599900);
+  await instance.fetch(privateRequest("/session", headers));
+  const blocked = await instance.fetch(
+    privateRequest("/assist", headers, draft()),
+  );
+  assert.equal(blocked.status, 429);
+  assert.equal(blocked.headers.get("retry-after"), "1");
+  t.mock.timers.tick(200);
+  const accepted = await instance.fetch(
+    privateRequest("/assist", headers, draft()),
+  );
+  assert.equal(accepted.status, 202);
+  assert.equal(
+    (await poll(instance, ((await accepted.json()) as any).job, headers)).state,
+    "completed",
+  );
+});
+
+test("round4: network job quota survives cookie churn with a decreasing retry interval", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  const instance = service({
+    networkJobs: 1,
+    provider: makeConfig({
+      fetch: queue([completion({ word_type: "lujvo", reason: "compound" })]),
+    }),
+  });
+  const headers = await session(instance);
+  const started = await instance.fetch(
+    privateRequest("/assist", headers, draft()),
+  );
+  const id = ((await started.json()) as any).job;
+  await poll(instance, id, headers);
+  await instance.fetch(
+    privateRequest(`/jobs/${id}`, headers, undefined, "DELETE"),
+  );
+  t.mock.timers.tick(300000);
+  const fresh = await session(instance);
+  const blocked = await instance.fetch(
+    privateRequest("/assist", fresh, draft()),
+  );
+  assert.equal(blocked.status, 429);
+  assert.equal(blocked.headers.get("retry-after"), "3300");
+});
+
+test("round4: unavailable network identity disables private requests but leaves manual reads available", async () => {
+  const instance = service({ provider: makeConfig() });
+  const response = await instance.fetch(
+    new Request("http://localhost/api/v1/session"),
+    "",
+  );
+  assert.equal(response.status, 503);
+  assert.equal(((await response.json()) as any).code, "feature_disabled");
+  assert.equal(
+    (
+      await instance.fetch(
+        new Request("http://localhost/api/v1/capabilities"),
+        "",
+      )
+    ).status,
+    200,
+  );
+});
+
+test("round4: a failure before any provider turn releases its retained reservation", async () => {
+  let keyReads = 0;
+  const instance = service({
+    retainedJobs: 1,
+    provider: makeConfig({
+      key: async () => {
+        keyReads++;
+        return "";
+      },
+      fetch: queue([]),
+    }),
+  });
+  const headers = await session(instance);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const started = await instance.fetch(
+      privateRequest("/assist", headers, draft()),
+    );
+    assert.equal(started.status, 202);
+    const id = ((await started.json()) as any).job;
+    const failed = await poll(instance, id, headers);
+    assert.equal(failed.state, "failed");
+    assert.equal(failed.error.code, "provider_credentials");
+    assert.equal(failed.error.log.answers, 0);
+  }
+  assert.equal(keyReads, 2);
+});
+
+test("round4: wrong-word selected context returns HTTP 400 before any provider turn", async () => {
+  const body = {
+    word: { language: "jbo" as const, spelling: "sinxa" },
+    language: "en",
+    text: [["x1 is a sign."]],
+    frame: null,
+    glosses: [],
+    operands: [],
+    notes: [],
+    examples: [],
+    labels: [],
+    sources: [],
+    legacy: null,
+    etymology: { text: [], formation: null, compound: null },
+    classification: { kind: "gismu", selmaho: [] },
+    license: {
+      expression: "CC0-1.0",
+      url: "https://creativecommons.org/publicdomain/zero/1.0/",
+      attribution: "",
+    },
+  };
+  const publication = createEvent(
+    new Uint8Array(32).fill(93),
+    [],
+    "00".repeat(16),
+    {
+      kind: "definition.publish",
+      word: wordId(body.word),
+      language: "en",
+      parents: [],
+      origin: "native",
+    },
+    body,
+  );
+  const bytes = utf8(canonicalize(utf8(JSON.stringify(body))));
+  const envelopeBytes = utf8(JSON.stringify(publication.envelope));
+  const envelopeHash = contentHash(envelopeBytes);
+  const bodyHash = publication.envelope.header.content!.hash;
+  const objects = new Map([
+    [envelopeHash, envelopeBytes],
+    [bodyHash, bytes],
+  ]);
+  const state = emptyState();
+  state.events[publication.envelope.id] = {
+    envelope_hash: envelopeHash,
+    body_hash: bodyHash,
+    header: publication.envelope.header,
+    signature: [],
+    position: 1,
+  };
+  let keyReads = 0;
+  const instance = new DictionaryService(
+    { get: async (hash) => objects.get(hash) ?? null, put: async () => {} },
+    {
+      load: async () => state,
+      getSnapshot: async () => null,
+      compareAndSwap: async () => true,
+    },
+    {
+      serverId: "wrong-word",
+      policyUrl: "https://example.test/policy",
+      assistance: {
+        sessionJobs: 1,
+        retainedJobs: 1,
+        provider: makeConfig({
+          key: async () => {
+            keyReads++;
+            return disposableKey;
+          },
+          fetch: queue([
+            completion({ word_type: "lujvo", reason: "compound" }),
+          ]),
+        }),
+      },
+    },
+  );
+  const request = draft("lujvo", {
+    compound: {
+      components: [
+        {
+          word: { language: "jbo", spelling: "klama" },
+          definition: publication.envelope.id,
+          rafsi: "klam",
+        },
+      ],
+      morphology: { id: "https://example.test/morphology", version: "1" },
+      scoring: { id: "https://example.test/scoring", version: "1" },
+    },
+  });
+  request.context = [publication.envelope.id];
+  const headers = await session(instance);
+  const rejected = await instance.fetch(
+    privateRequest("/assist", headers, request),
+  );
+  assert.equal(rejected.status, 400);
+  assert.equal(((await rejected.json()) as any).code, "component_context");
+  assert.equal(keyReads, 0);
+  const accepted = await instance.fetch(
+    privateRequest("/assist", headers, draft()),
+  );
+  assert.equal(accepted.status, 202);
+  assert.equal(
+    (await poll(instance, ((await accepted.json()) as any).job, headers)).state,
+    "completed",
+  );
+  assert.equal(keyReads, 1);
+});
+
+test("round4: private job delivery streams bounded JSON chunks and preserves Unicode", async () => {
+  const text = "x".repeat(8191) + "🙂" + "漢".repeat(20000);
+  const instance = service({
+    provider: makeConfig({
+      fetch: queue([
+        completion(
+          { word_type: "lujvo", reason: "compound" },
+          { content: text },
+        ),
+      ]),
+    }),
+  });
+  const headers = await session(instance);
+  const started = await instance.fetch(
+    privateRequest("/assist", headers, draft()),
+  );
+  const id = ((await started.json()) as any).job;
+  assert.equal((await poll(instance, id, headers)).state, "completed");
+  const response = await instance.fetch(privateRequest(`/jobs/${id}`, headers));
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.match(response.headers.get("content-type")!, /application\/json/);
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  let raw = "";
+  let count = 0;
+  while (true) {
+    const part = await reader.read();
+    if (part.done) break;
+    count++;
+    assert.ok(
+      part.value.byteLength <= 65536,
+      `Oversized JSON chunk: ${part.value.byteLength}`,
+    );
+    raw += decoder.decode(part.value, { stream: true });
+  }
+  raw += decoder.decode();
+  assert.ok(count > 1);
+  const value = JSON.parse(raw);
+  assert.equal(value.state, "completed");
+  assert.equal(value.result.log.exchanges[0].attempts[0].text, text);
+});
+
+test("round4: largest admitted draft and context finish all four tasks with three answers each", async () => {
+  const event = "jve1:" + "a".repeat(64);
+  const sourceFrame = {
+    ...structuredClone(frame),
+    arity: { mode: "fixed", count: 256 },
+    places: Array.from({ length: 256 }, (_, index) => ({
+      ...structuredClone(frame.places[0]),
+      index: index + 1,
+    })),
+  };
+  const context: ContextDefinition[] = [
+    {
+      event,
+      body: {
+        word: { language: "jbo", spelling: "klama" },
+        frame: sourceFrame,
+        notes: [[""]],
+      },
+    },
+  ];
+  context[0].body.notes[0][0] = "C".repeat(
+    131072 - utf8(JSON.stringify(context)).byteLength,
+  );
+  assert.equal(utf8(JSON.stringify(context)).byteLength, 131072);
+  const request = draft("places-glosses", {
+    spelling: "klamklama",
+    text: [[""]],
+    compound: {
+      components: Array.from({ length: 64 }, () => ({
+        word: { language: "jbo", spelling: "klama" },
+        definition: event,
+        rafsi: "klam",
+      })),
+      morphology: { id: "https://example.test/morphology", version: "1" },
+      scoring: { id: "https://example.test/scoring", version: "1" },
+    },
+  });
+  request.context = [event];
+  request.meaning = "M".repeat(16384);
+  request.current.text[0] = [
+    "D".repeat(262144 - utf8(JSON.stringify(request)).byteLength),
+  ];
+  assert.equal(utf8(JSON.stringify(request)).byteLength, 262144);
+  assert.doesNotThrow(() => parseAssistRequest(request));
+  const keys = Array.from({ length: 16 }, (_, index) => `x${index + 1}`);
+  const valid = [
+    {
+      places: keys.map((key) => ({
+        description: `Role ${key}. ` + "p".repeat(128),
+      })),
+      reason: "Sixteen roles.",
+    },
+    Object.fromEntries([
+      ...["word", ...keys].map((key) => [
+        key,
+        { gloss: `role-${key}`, sense: "a role in this predicate" },
+      ]),
+    ]),
+    Object.fromEntries(
+      keys.map((key) => [
+        key,
+        [{ type: "agent", reason: "The participant acts." }],
+      ]),
+    ),
+    Object.fromEntries(
+      keys.map((key) => [
+        key,
+        [
+          {
+            component: "c64[256]",
+            reason: "direct: the exact last component role.",
+          },
+        ],
+      ]),
+    ),
+  ];
+  const responses = valid
+    .flatMap((answer) => [{}, {}, answer])
+    .map((answer) => {
+      const response = completion(answer, { content: "" });
+      response.choices[0].message.content = "R".repeat(
+        262144 - utf8(JSON.stringify(response)).byteLength,
+      );
+      assert.equal(utf8(JSON.stringify(response)).byteLength, 262144);
+      return response;
+    });
+  const config = makeConfig({ fetch: queue(responses) });
+  const result = await runAssistance(
+    request,
+    config,
+    context,
+    AbortSignal.timeout(20000),
+    newLog(request.operation, config, await promptVersion()),
+    () => {},
+  );
+  assert.equal(result.log.answers, 12);
+  assert.deepEqual(
+    result.log.exchanges.map((exchange) => exchange.task),
+    ["places", "glosses", "hints", "mappings"],
+  );
+  assert.deepEqual(
+    result.log.exchanges.map((exchange) => exchange.attempts.length),
+    [3, 3, 3, 3],
+  );
+  const proposed = result.proposals[0].value as any;
+  assert.equal(proposed.places.length, 16);
+  assert.equal(proposed.places[15].derivation[0].definition, event);
+  assert.equal(proposed.places[15].derivation[0].place, 256);
+});
+
+test("round4: private job delivery preserves deeply nested provider metadata without recursion", async () => {
+  const depth = 5000;
+  const response = JSON.stringify(
+    completion({ word_type: "lujvo", reason: "compound" }),
+  );
+  const leaf = JSON.stringify({
+    marker: "deep metadata stays exact",
+    word: "risk-assessment",
+    secret: disposableKey,
+  });
+  const raw =
+    response.slice(0, -1) +
+    ',"metadata":' +
+    '{"next":['.repeat(depth) +
+    leaf +
+    "]}".repeat(depth) +
+    "}";
+  assert.ok(utf8(raw).byteLength < 262144);
+  const instance = service({
+    provider: makeConfig({
+      fetch: (async () =>
+        new Response(raw, {
+          headers: { "content-type": "application/json" },
+        })) as typeof fetch,
+    }),
+  });
+  const headers = await session(instance);
+  const started = await instance.fetch(
+    privateRequest("/assist", headers, draft()),
+  );
+  const id = ((await started.json()) as any).job;
+  const value = await poll(instance, id, headers);
+  assert.equal(value.state, "completed");
+  let metadata = value.result.log.exchanges[0].attempts[0].response.metadata;
+  for (let level = 0; level < depth; level++) {
+    assert.ok(
+      metadata && typeof metadata === "object" && Array.isArray(metadata.next),
+      `Metadata changed at level ${level}`,
+    );
+    metadata = metadata.next[0];
+  }
+  assert.deepEqual(metadata, {
+    marker: "deep metadata stays exact",
+    word: "risk-assessment",
+    secret: "[redacted]",
+  });
 });

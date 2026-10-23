@@ -8,6 +8,11 @@ import { resolve, join, extname } from "node:path";
 import { initializeCore } from "../../../packages/core/src/index.ts";
 import { DictionaryService } from "../../../packages/service/src/service.ts";
 import {
+  nodeClientNetwork,
+  nodeAssistanceIdentityAvailable,
+  normalizeClientNetwork,
+} from "../../../packages/service/src/inference.ts";
+import {
   durableDirectory,
   FileObjectStore,
   SqliteCoordinator,
@@ -24,6 +29,23 @@ await initializeCore(
   ),
 );
 const index = new SqliteIndexStore(join(directory, "indexes.sqlite"));
+const trustedProxies = (process.env.JVC_TRUSTED_PROXY_ADDRESSES ?? "")
+  .split(",")
+  .filter(Boolean);
+if (trustedProxies.some((address) => !normalizeClientNetwork(address)))
+  throw new Error(
+    "JVC_TRUSTED_PROXY_ADDRESSES must contain exact IP addresses.",
+  );
+const clientIpHeader = (
+  process.env.JVC_CLIENT_IP_HEADER ?? "x-real-ip"
+).toLowerCase();
+if (!/^[a-z0-9-]+$/.test(clientIpHeader))
+  throw new Error("Invalid JVC_CLIENT_IP_HEADER.");
+const identityAvailable = nodeAssistanceIdentityAvailable(
+  process.env.HOST ?? "127.0.0.1",
+  process.env.JVC_PUBLIC_ORIGIN,
+  trustedProxies,
+);
 const coordinator = new SqliteCoordinator(
   join(directory, "coordinator.sqlite"),
   Number(process.env.JVC_SNAPSHOT_LIMIT ?? 16),
@@ -32,7 +54,7 @@ const service = new DictionaryService(
   new FileObjectStore(join(directory, "objects")),
   coordinator,
   {
-    assistance: nodeAssistance(process.env),
+    assistance: identityAvailable ? nodeAssistance(process.env) : {},
     index,
     reportError:
       process.env.JVC_LOG_ERRORS === "enabled"
@@ -133,7 +155,11 @@ const server = createServer(async (incoming, outgoing) => {
     }
     const response = await service.fetch(
       new Request(url, init),
-      incoming.socket.remoteAddress ?? "unknown",
+      nodeClientNetwork(
+        incoming.socket.remoteAddress ?? "",
+        headers.get(clientIpHeader),
+        trustedProxies,
+      ),
     );
     if (abandoned) response.headers.set("connection", "close");
     outgoing.writeHead(response.status, Object.fromEntries(response.headers));

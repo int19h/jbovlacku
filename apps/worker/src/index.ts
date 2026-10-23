@@ -4,7 +4,16 @@ import { DurableObject } from "cloudflare:workers";
 import wasmModule from "../../../packages/core/generated/jvc_runtime_bg.wasm";
 import { initializeCore } from "../../../packages/core/src/index.ts";
 import { DictionaryService } from "../../../packages/service/src/service.ts";
-import { providerConfig } from "../../../packages/service/src/inference.ts";
+import {
+  providerConfig,
+  workerClientNetwork,
+  type ProviderConfig,
+} from "../../../packages/service/src/inference.ts";
+// The local launcher sets its provenance binding. Edge trust requires operator opt-in.
+type IdentityEnv = Env & {
+  JVC_LOCAL_WORKER?: string;
+  JVC_TRUST_CF_CONNECTING_IP?: string;
+};
 import {
   emptyState,
   type State,
@@ -44,6 +53,8 @@ export class AdmissionCoordinator
   private service: DictionaryService;
   private objects: R2ObjectStore;
   private diagnostics: boolean;
+  private localIdentity: boolean;
+  private trustEdgeIdentity: boolean;
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.coordinator = new SqlRowsCoordinator(
@@ -59,9 +70,23 @@ export class AdmissionCoordinator
     );
     this.objects = new R2ObjectStore(env.OBJECTS);
     this.diagnostics = String(env.PROTOTYPE_BATCH) === "enabled";
+    this.localIdentity = (env as IdentityEnv).JVC_LOCAL_WORKER === "enabled";
+    this.trustEdgeIdentity =
+      (env as IdentityEnv).JVC_TRUST_CF_CONNECTING_IP === "enabled";
+    let provider: ProviderConfig | undefined;
+    try {
+      provider = providerConfig(env, async () => env.JVC_AI_KEY ?? "");
+      if (!this.localIdentity && !this.trustEdgeIdentity) provider = undefined;
+      if (provider) provider.concurrency = Math.min(provider.concurrency, 2);
+    } catch {
+      console.error(
+        "AI assistance is unavailable because its configuration is invalid.",
+      );
+    }
     this.service = new DictionaryService(this.objects, this, {
       assistance: {
-        provider: providerConfig(env, async () => env.JVC_AI_KEY ?? ""),
+        provider,
+        retainedJobs: 2,
         waitUntil: (promise) => this.ctx.waitUntil(promise),
       },
       serverId: env.SERVER_ID,
@@ -97,7 +122,12 @@ export class AdmissionCoordinator
     try {
       return await this.service.fetch(
         request,
-        request.headers.get("cf-connecting-ip") ?? "local",
+        workerClientNetwork(
+          request.headers.get("cf-connecting-ip"),
+          Boolean(request.cf),
+          this.trustEdgeIdentity,
+          this.localIdentity,
+        ),
       );
     } finally {
       if (this.diagnostics)

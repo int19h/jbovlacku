@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { unstable_dev } from "wrangler";
+import { nodeAssistanceIdentityAvailable } from "../../packages/service/src/inference.ts";
 
 // This local launcher reads the operator's key file into a Worker binding.
 // It never writes the key to a file or passes it through command arguments.
@@ -17,6 +18,7 @@ const names = [
   "JVC_AI_MAX_COST_USD",
   "JVC_AI_MAX_PRICE",
   "JVC_AI_OPERATIONS",
+  "JVC_TRUST_CF_CONNECTING_IP",
   "SERVER_ID",
   "SELECTED_VIEW",
   "PUBLIC_ORIGIN",
@@ -27,6 +29,15 @@ try {
   const vars: Record<string, string> = {};
   for (const name of names)
     if (process.env[name] !== undefined) vars[name] = process.env[name]!;
+  vars.JVC_LOCAL_WORKER = "enabled";
+  if (
+    !nodeAssistanceIdentityAvailable(
+      process.env.HOST ?? "127.0.0.1",
+      process.env.PUBLIC_ORIGIN,
+      [],
+    )
+  )
+    vars.JVC_AI_ENABLED = "disabled";
   if (vars.JVC_AI_ENABLED === "enabled") {
     if (!process.env.JVC_AI_KEY_FILE) throw new Error("Missing key file.");
     vars.JVC_AI_KEY = (
