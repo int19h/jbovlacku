@@ -215,7 +215,7 @@ export class DictionaryService {
           const { session, payload, envelopes } = recovered;
           try {
             await this.options.index?.restore?.(id, payload.packages.entries);
-            await this.options.index?.publish?.(id);
+            await this.options.index?.publish?.(id, [id]);
           } catch (error) {
             session.free();
             throw error;
@@ -449,6 +449,17 @@ export class DictionaryService {
   }
   private packageCache = new Map<string, Promise<MaterializedPackages>>();
   private inFlightPackages = new Set<string>();
+  private requiredIndexSnapshots(...snapshots: (string | null | undefined)[]) {
+    return [
+      ...new Set(
+        [
+          ...this.inFlightPackages,
+          this.completed?.snapshot.snapshot,
+          ...snapshots,
+        ].filter((snapshot): snapshot is string => snapshot != null),
+      ),
+    ];
+  }
   private packageRecords = new Map<string, PackageRecord[]>();
   private prunePackageRecords() {
     const retained = new Set([
@@ -531,7 +542,12 @@ export class DictionaryService {
                   snapshot.snapshot,
                   built.entries,
                 );
-              await this.options.index.publish?.(snapshot.snapshot);
+              await this.options.index.publish?.(
+                snapshot.snapshot,
+                this.requiredIndexSnapshots(
+                  startingMetadata.materialized_snapshot,
+                ),
+              );
             }
             for (let attempt = 0; attempt < 20; attempt++) {
               const metadata = await this.metadata();
@@ -589,7 +605,12 @@ export class DictionaryService {
               startingMetadata.materialized_snapshot;
             if (!completed && previousSnapshot && this.options.index) {
               if (this.options.index.publish)
-                await this.options.index.publish(previousSnapshot);
+                await this.options.index.publish(
+                  previousSnapshot,
+                  this.requiredIndexSnapshots(
+                    startingMetadata.materialized_snapshot,
+                  ),
+                );
               else {
                 const old = await this.packageCache.get(previousSnapshot);
                 if (old)

@@ -660,13 +660,18 @@ test("historical package completion cannot regress a newer materialized index", 
     "curse",
   );
   const later = await service.admitMany([utf8(JSON.stringify(second))]);
+  const rollback = coordinator.state.materialized_snapshot!;
   const published: string[] = [];
   let current = "";
   const index = {
     async replace(snapshot: string) {
       published.push(snapshot);
     },
-    async publish(snapshot: string) {
+    async publish(snapshot: string, required?: readonly string[]) {
+      assert.ok(required);
+      assert.ok(required.includes(earlier.snapshot));
+      assert.ok(required.includes(later.snapshot));
+      assert.ok(required.includes(rollback));
       current = snapshot;
     },
   };
