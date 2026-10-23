@@ -54,12 +54,16 @@ The gismu generator offers the CLL 1987, CLL 1995, and Ilmen presets with pinned
 The core and draft model keep the optional word pronunciation, stem, and stem pronunciation in signed formation sources.
 The gismu source editor has seven columns. It keeps pronunciation and stem evidence separate from scoring letters.
 The [morphology profiles](docs/morphology.md) name the rules and versions that the metadata records.
+
 Optional AI assistance offers suggestions for type, components, lujvo, cmavo class, source words, definition text, places, and glosses.
 The browser asks for consent before it sends draft fields. Suggestions need manual acceptance and support undo.
+Component suggestions keep selected exact source definitions.
+
 The private attempt log offers Markdown and JSON export. Signed publications omit AI logs.
 Both local adapters offer operator-controlled assistance, off by default, with server-held keys and bounded private jobs.
 Mocked providers cover the request and correction loop. These tests do not establish live model accuracy.
 The [development guide](docs/development.md#optional-ai-assistance) gives the configuration and retention limits.
+
 The status editor, transfer editor, semantic search, and Lensisku cross-posting remain target features.
 The site view is the server's selected signed view, and the Trust page can use another retained signed view by its event ID. A signed view names its calculation profile, `simple-routes-bounds-v1` or `simple-routes-shun-v1`; the pages name the profile of each result and its route rule, and an unknown profile leaves scores unavailable.
 The personal view downloads the snapshot records, verifies each envelope and body in a Web Worker, and ranks words locally with the private overlay.
