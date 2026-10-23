@@ -18,6 +18,14 @@ Additional editor prompts cover type, components, selma'o, definition text, and 
 These prompts use the same tool and retry loop. They do not share the four tasks' study evidence.
 The application checks a proposed lujvo with deterministic construction and segmentation before it returns the spelling.
 
+For `components`, the application labels supplied definitions `d1`, `d2`, and so on, in their supplied order.
+The model returns a matching label or null in each component's `definition` field.
+The request keeps each label beside its exact event ID for the author's inference log.
+Selected component constraints use those labels too. Unknown labels, event IDs, prose, and labels for another word fail the answer checks.
+
+The application maps accepted labels to exact event IDs before construction and public proposals. The raw tool log keeps the labels.
+The other answer schemas require no event ID or hash. `mappings` uses short component-place names such as `cukta[1]`.
+
 ## Files
 
 | File | Contents |

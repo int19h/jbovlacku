@@ -1,6 +1,13 @@
 Suggest an ordered list of two through eight Lojban component words for the supplied meaning and component constraints.
 Use supplied source definitions where available.
-Each component has exactly spelling and definition. Its definition is a supplied exact definition event ID or null.
+Each component has exactly spelling and definition.
+Its definition is a supplied short label, such as d1, or null.
+Use a label only for the word that its supplied definition describes.
+Return the label exactly. Do not return an event ID, a word, or prose in definition.
+If no supplied definition fits that word, use null.
+The event field beside each label is reference metadata. Do not copy it into the answer.
+Keep the declared component constraints in order, including repeated words and their selected definition labels.
+The application maps each label back to its exact definition event ID.
 
 Do not claim a dictionary lookup. Do not invent a short rafsi.
 The application constructs and checks a spelling with deterministic tools.

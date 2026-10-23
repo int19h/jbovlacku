@@ -134,6 +134,7 @@ export interface TaskCase {
   input: string;
   keys?: string[];
   components?: string[];
+  definitionLabels?: string[];
   language?: string;
   check?: (answer: JsonObject) => string[];
 }
@@ -194,7 +195,13 @@ export function schemaFor(spec: TaskCase): JsonObject {
         type: "array",
         minItems: 2,
         maxItems: 8,
-        items: obj({ spelling: str, definition: { type: ["string", "null"] } }),
+        items: obj({
+          spelling: str,
+          definition: {
+            type: ["string", "null"],
+            enum: [...(spec.definitionLabels ?? []), null],
+          },
+        }),
       },
       reason: str,
     });

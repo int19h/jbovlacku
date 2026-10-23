@@ -441,30 +441,60 @@ export async function runAssistance(
         "Review the source word, its pronunciation, stem and scoring letters.",
     );
   } else if (request.operation === "lujvo") {
+    // Labels belong to this request only. Keep event metadata in the request
+    // log so the author can trace each label to its exact supplied definition.
+    const definitions = context.map((entry, index) => ({
+      ...entry,
+      label: `d${index + 1}`,
+    }));
+    const byLabel = new Map(definitions.map((entry) => [entry.label, entry]));
+    const byEvent = new Map(definitions.map((entry) => [entry.event, entry]));
+    const labeledRequest = structuredClone(request);
+    for (const component of labeledRequest.current.compound?.components ?? [])
+      if (component.definition !== null) {
+        const supplied = byEvent.get(component.definition);
+        if (
+          !supplied ||
+          supplied.body.word?.language !== component.word?.language ||
+          supplied.body.word?.spelling !== component.word?.spelling
+        )
+          throw new AssistanceError(
+            400,
+            "component_context",
+            "Each selected component definition must be supplied for that exact word.",
+          );
+        component.definition = supplied.label;
+      }
     let constructed: ReturnType<typeof buildLujvo> | undefined;
+    let resolvedComponents: Data[] = [];
     const answer = await runner.run({
       task: "components",
-      input,
+      input: caseText(labeledRequest, definitions),
+      definitionLabels: definitions.map((entry) => entry.label),
       check(answer) {
         try {
           if (
             answer.components.some(
               (component: Data) =>
                 component.definition !== null &&
-                !context.some(
-                  (entry) =>
-                    entry.event === component.definition &&
-                    entry.body.word?.spelling === component.spelling,
-                ),
+                byLabel.get(component.definition)?.body.word?.spelling !==
+                  component.spelling,
             )
           )
             return [
-              "Every component definition must name a supplied definition for that word, or null.",
+              "Every component definition must name a supplied definition label for that word, or null.",
             ];
+          const components = answer.components.map((component: Data) => ({
+            ...component,
+            definition:
+              component.definition === null
+                ? null
+                : byLabel.get(component.definition)!.event,
+          }));
           const fixedByIndex = new Map<number, Data>();
           let nextIndex = 0;
           for (const fixed of request.current.compound?.components ?? []) {
-            const index = answer.components.findIndex(
+            const index = components.findIndex(
               (component: Data, index: number) =>
                 index >= nextIndex &&
                 component.spelling === fixed.word?.spelling &&
@@ -477,35 +507,33 @@ export async function runAssistance(
           }
           const result = buildLujvo({
             profile: "extended",
-            components: answer.components.map(
-              (component: Data, index: number) => {
-                const analysis = analyzeWord("extended", component.spelling);
-                const fixed = fixedByIndex.get(index);
-                return {
-                  id: String(index),
-                  spelling: component.spelling,
-                  kind: analysis.kind,
-                  definition: component.definition,
-                  locked: fixed?.rafsi || null,
-                  // This is the author's explicit draft choice. It does not
-                  // assert accepted assignment standing or an endorsement.
-                  claims: fixed?.rafsi
-                    ? [
-                        {
-                          rafsi: fixed.rafsi,
-                          pair: rafsiPairId(
-                            wordId({
-                              language: "jbo",
-                              spelling: component.spelling,
-                            }),
-                            fixed.rafsi,
-                          ),
-                        },
-                      ]
-                    : [],
-                };
-              },
-            ),
+            components: components.map((component: Data, index: number) => {
+              const analysis = analyzeWord("extended", component.spelling);
+              const fixed = fixedByIndex.get(index);
+              return {
+                id: String(index),
+                spelling: component.spelling,
+                kind: analysis.kind,
+                definition: component.definition,
+                locked: fixed?.rafsi || null,
+                // This is the author's explicit draft choice. It does not
+                // assert accepted assignment standing or an endorsement.
+                claims: fixed?.rafsi
+                  ? [
+                      {
+                        rafsi: fixed.rafsi,
+                        pair: rafsiPairId(
+                          wordId({
+                            language: "jbo",
+                            spelling: component.spelling,
+                          }),
+                          fixed.rafsi,
+                        ),
+                      },
+                    ]
+                  : [],
+              };
+            }),
             limits: { choice_product: 4096, results: 1 },
           });
           if (!result.candidates.length)
@@ -513,6 +541,7 @@ export async function runAssistance(
               "The deterministic builder could not construct and recover these components. Choose supported component forms.",
             ];
           constructed = result;
+          resolvedComponents = components;
           return [];
         } catch {
           return [
@@ -524,7 +553,7 @@ export async function runAssistance(
     const built = constructed!;
     const candidate = built.candidates[0];
     const compound = {
-      components: answer.components.map((component: Data, index: number) => ({
+      components: resolvedComponents.map((component: Data, index: number) => ({
         word: { language: "jbo", spelling: component.spelling },
         definition: component.definition,
         rafsi: candidate.parts[index].form,

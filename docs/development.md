@@ -310,6 +310,13 @@ Operations are `type`, `lujvo`, `gismu-sources`, `cmavo-class`, `definition`, an
 The `default` profile covers the enabled operations. The `components` profile proposes lujvo components.
 The `lujvo` profile also proposes a spelling. The deterministic builder constructs and recovers that spelling before the service returns it.
 Existing component choices constrain a proposal. An AI answer never assigns a rafsi or publishes a definition.
+
+The components request labels each supplied definition `d1`, `d2`, and so on, in supplied order.
+The model returns a label for the matching word, or null. The application maps labels back to exact event IDs before construction and proposals.
+The private request log includes label-to-event metadata. Raw tool calls retain their labels, including failed answers.
+
+The other answer schemas require no event ID or hash. Place mappings use names such as `cukta[1]`.
+
 Explicit rafsi locks enter construction as draft choices. They do not claim accepted assignment standing or an endorsement.
 A lujvo draft can contain zero or one component before the author completes it. The service preserves those draft constraints during inference.
 Draft metadata still uses the documented HTTPS morphology and scoring identifiers. Empty rafsi values mean unlocked component choices.

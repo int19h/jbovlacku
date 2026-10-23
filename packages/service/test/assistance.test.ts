@@ -18,6 +18,7 @@ import {
   runAssistance,
   type AssistRequest,
   type AssistanceOptions,
+  type ContextDefinition,
 } from "../src/assistance.ts";
 import {
   InferenceRunner,
@@ -29,6 +30,7 @@ import {
   type ProviderConfig,
   type TaskCase,
   sourceLanguages,
+  schemaFor,
 } from "../src/inference.ts";
 import { promptFiles } from "../src/prompt-bundle.ts";
 
@@ -1494,7 +1496,7 @@ test("one-part lujvo drafts preserve exact constraints through the real service"
       completion({
         ...answers[1],
         components: [
-          { spelling: "klama", definition: exactDefinition },
+          { spelling: "klama", definition: "d1" },
           { spelling: "karce", definition: null },
         ],
       }),
@@ -1597,6 +1599,307 @@ test("explicit short rafsi locks remain draft choices through deterministic cons
     );
     assert.equal(result.log.answers, 1);
   }
+});
+test("component labels preserve exact definitions, repeated words, order and rafsi locks without changing raw calls", async () => {
+  const context: ContextDefinition[] = [
+    {
+      event: "jve1:" + "c".repeat(64),
+      body: {
+        word: { language: "jbo", spelling: "cukta" },
+        text: [["a book"]],
+      },
+    },
+    {
+      event: "jve1:" + "a".repeat(64),
+      body: {
+        word: { language: "jbo", spelling: "cukta" },
+        text: [["a volume"]],
+      },
+    },
+    {
+      event: "jve1:" + "b".repeat(64),
+      body: {
+        word: { language: "jbo", spelling: "sinxa" },
+        text: [["a sign"]],
+      },
+    },
+  ];
+  const components = [
+    { spelling: "cukta", definition: "d1" },
+    { spelling: "cukta", definition: "d2" },
+  ];
+  const request = parseAssistRequest({
+    ...draft("lujvo", {
+      compound: {
+        components: components.map((part, index) => ({
+          word: { language: "jbo", spelling: part.spelling },
+          definition: context[index].event,
+          rafsi: index === 0 ? "cku" : "cukta",
+        })),
+        morphology: { id: "https://example.test/morphology", version: "1" },
+        scoring: { id: "https://example.test/scoring", version: "1" },
+      },
+    }),
+    context: context.map((entry) => entry.event),
+  });
+  const original = structuredClone({ request, context });
+  const invalids = [
+    {
+      parts: [{ ...components[0], definition: "d4" }, components[1]],
+      problem: /must be one of/,
+    },
+    {
+      parts: [{ ...components[0], definition: "d3" }, components[1]],
+      problem: /label for that word/,
+    },
+    {
+      parts: [
+        { ...components[0], definition: context[0].event },
+        components[1],
+      ],
+      problem: /must be one of/,
+    },
+    {
+      parts: [
+        { ...components[0], definition: "jve1:" + "f".repeat(64) },
+        components[1],
+      ],
+      problem: /must be one of/,
+    },
+    {
+      parts: [
+        { ...components[0], definition: "the first book definition" },
+        components[1],
+      ],
+      problem: /must be one of/,
+    },
+    {
+      parts: [{ ...components[0], definition: "d01" }, components[1]],
+      problem: /must be one of/,
+    },
+    {
+      parts: [components[1], components[0]],
+      problem: /declared component constraints/,
+    },
+    {
+      parts: [{ ...components[0], definition: null }, components[1]],
+      problem: /declared component constraints/,
+    },
+    {
+      parts: [components[0], { spelling: "sinxa", definition: "d3" }],
+      problem: /declared component constraints/,
+    },
+  ];
+  for (const invalid of invalids) {
+    const config = makeConfig({
+      fetch: queue(
+        [
+          completion({
+            components: invalid.parts,
+            reason: "Rejected test proposal.",
+          }),
+          completion({ components, reason: "Keep both exact source choices." }),
+        ],
+        (body, turn) => {
+          const evidence = JSON.parse(body.messages[1].content);
+          assert.deepEqual(
+            evidence.definitions,
+            context.map((entry, index) => ({
+              ...entry,
+              label: `d${index + 1}`,
+            })),
+          );
+          assert.deepEqual(
+            evidence.current.compound.components.map(
+              (part: any) => part.definition,
+            ),
+            ["d1", "d2"],
+          );
+          assert.deepEqual(
+            body.tools.map((tool: any) => tool.function.name),
+            ["submit_answer"],
+          );
+          assert.deepEqual(
+            body.tools[0].function.parameters.properties.components.items
+              .properties.definition.enum,
+            ["d1", "d2", "d3", null],
+          );
+          if (turn === 1) {
+            const correction = body.messages.find(
+              (message: any) => message.role === "tool",
+            );
+            assert.ok(correction);
+            assert.match(correction.content, invalid.problem);
+          }
+        },
+      ),
+    });
+    const result = await runAssistance(
+      request,
+      config,
+      context,
+      AbortSignal.timeout(2000),
+      newLog("lujvo", config, await promptVersion()),
+      () => {},
+    );
+    const compound = result.proposals.find(
+      (proposal) => proposal.path === "/compound",
+    )!.value as any;
+    assert.deepEqual(
+      compound.components.map((part: any) => part.definition),
+      context.slice(0, 2).map((entry) => entry.event),
+    );
+    assert.deepEqual(
+      compound.components.map((part: any) => part.rafsi),
+      ["cku", "cukta"],
+    );
+    const attempts = result.log.exchanges[0].attempts;
+    assert.equal(attempts.length, 2);
+    assert.match(attempts[0].check.problems.join("\n"), invalid.problem);
+    assert.deepEqual(
+      JSON.parse((attempts[0].tool_calls[0] as any).function.arguments)
+        .components,
+      invalid.parts,
+    );
+    assert.deepEqual(
+      JSON.parse((attempts[1].tool_calls[0] as any).function.arguments)
+        .components,
+      components,
+    );
+    assert.deepEqual(
+      JSON.parse(
+        (attempts[1].response as any).choices[0].message.tool_calls[0].function
+          .arguments,
+      ).components,
+      components,
+    );
+  }
+  assert.deepEqual({ request, context }, original);
+});
+for (const missing of [true, false])
+  test(`selected component context ${missing ? "must be supplied" : "must describe the exact word"} before inference`, async () => {
+    const event = "jve1:" + "f".repeat(64);
+    const context: ContextDefinition[] = missing
+      ? []
+      : [
+          {
+            event,
+            body: { word: { language: "jbo", spelling: "sinxa" } },
+          },
+        ];
+    const request = parseAssistRequest({
+      ...draft("lujvo", {
+        compound: {
+          components: [
+            {
+              word: { language: "jbo", spelling: "cukta" },
+              definition: event,
+              rafsi: "cku",
+            },
+          ],
+          morphology: { id: "https://example.test/morphology", version: "1" },
+          scoring: { id: "https://example.test/scoring", version: "1" },
+        },
+      }),
+      context: context.map((entry) => entry.event),
+    });
+    const original = structuredClone({ request, context });
+    let providerCalls = 0;
+    let keyReads = 0;
+    const config = makeConfig({
+      key: async () => {
+        keyReads++;
+        return disposableKey;
+      },
+      fetch: (async () => {
+        providerCalls++;
+        throw new Error("The provider must not run.");
+      }) as typeof fetch,
+    });
+    const log = newLog("lujvo", config, await promptVersion());
+    await assert.rejects(
+      runAssistance(
+        request,
+        config,
+        context,
+        AbortSignal.timeout(2000),
+        log,
+        () => {},
+      ),
+      (error: any) => {
+        assert.equal(error.status, 400);
+        assert.equal(error.code, "component_context");
+        assert.equal(
+          error.message,
+          "Each selected component definition must be supplied for that exact word.",
+        );
+        assert.equal(error.message.includes(event), false);
+        return true;
+      },
+    );
+    assert.equal(providerCalls, 0);
+    assert.equal(keyReads, 0);
+    assert.equal(log.answers, 0);
+    assert.deepEqual(log.exchanges, []);
+    assert.deepEqual({ request, context }, original);
+  });
+test("component labels and null work with optional context, and absent context permits only null", async () => {
+  const context: ContextDefinition[] = [
+    {
+      event: "jve1:" + "e".repeat(64),
+      body: { word: { language: "jbo", spelling: "klama" } },
+    },
+  ];
+  for (const supplied of [context, []]) {
+    const components = [
+      { spelling: "klama", definition: supplied.length ? "d1" : null },
+      { spelling: "karce", definition: null },
+    ];
+    const request = parseAssistRequest({
+      ...draft("lujvo"),
+      context: supplied.map((entry) => entry.event),
+      profile: "components",
+    });
+    const config = makeConfig({
+      fetch: queue([completion({ components, reason: "Travel by car." })]),
+    });
+    const result = await runAssistance(
+      request,
+      config,
+      supplied,
+      AbortSignal.timeout(2000),
+      newLog("lujvo", config, await promptVersion()),
+      () => {},
+    );
+    const compound = result.proposals[0].value as any;
+    assert.deepEqual(
+      compound.components.map((part: any) => part.definition),
+      [supplied[0]?.event ?? null, null],
+    );
+    assert.deepEqual(
+      result.proposals.map((proposal) => proposal.path),
+      ["/compound"],
+    );
+  }
+  const spec: TaskCase = { task: "components", input: "" };
+  const answer = (definition: unknown) => ({
+    components: [
+      { spelling: "klama", definition },
+      { spelling: "karce", definition: null },
+    ],
+    reason: "Travel.",
+  });
+  assert.deepEqual(
+    schemaFor(spec).properties.components.items.properties.definition.enum,
+    [null],
+  );
+  for (const definition of ["d1", context[0].event, "unknown definition"])
+    assert.ok(
+      checkAnswer(spec, answer(definition)).some((problem) =>
+        problem.includes("must be one of"),
+      ),
+    );
+  assert.deepEqual(checkAnswer(spec, answer(null)), []);
 });
 test("every actual core preset source tag selects its prompt and remains unchanged in proposals", async () => {
   const languages = [
