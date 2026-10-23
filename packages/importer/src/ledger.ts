@@ -28,7 +28,7 @@ function initializeRuns(db: DatabaseSync): void {
       "ALTER TABLE batches RENAME TO batches_v1; ALTER TABLE observations RENAME TO observations_v1;",
     );
   db.exec(
-    "CREATE TABLE IF NOT EXISTS batches(run INTEGER PRIMARY KEY AUTOINCREMENT,snapshot TEXT,manifest TEXT,report TEXT,view TEXT,selection TEXT); CREATE INDEX IF NOT EXISTS batch_snapshots ON batches(snapshot,run); CREATE TABLE IF NOT EXISTS observations(run INTEGER,record INTEGER,snapshot TEXT,digest TEXT,event TEXT,disposition TEXT,PRIMARY KEY(run,record)); CREATE TABLE IF NOT EXISTS observation_details(run INTEGER,record INTEGER,details TEXT,PRIMARY KEY(run,record));",
+    "CREATE TABLE IF NOT EXISTS batches(run INTEGER PRIMARY KEY AUTOINCREMENT,snapshot TEXT,manifest TEXT,report TEXT,view TEXT,selection TEXT); CREATE INDEX IF NOT EXISTS batch_snapshots ON batches(snapshot,run); CREATE TABLE IF NOT EXISTS observations(run INTEGER,record INTEGER,snapshot TEXT,digest TEXT,event TEXT,disposition TEXT,PRIMARY KEY(run,record)); CREATE TABLE IF NOT EXISTS observation_details(run INTEGER,record INTEGER,details TEXT,PRIMARY KEY(run,record)); CREATE INDEX IF NOT EXISTS observations_record ON observations(record,run);",
   );
   if (legacy) {
     for (const batch of db
