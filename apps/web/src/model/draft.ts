@@ -1576,7 +1576,8 @@ export function signedFormation(
       weight: row.weight,
       notes: row.notes,
     };
-    if (row.word_ipa?.trim()) source.word_ipa = row.word_ipa;
+    if (row.word_ipa === null || row.word_ipa?.trim())
+      source.word_ipa = row.word_ipa;
     const hasSignedEvidence =
       source.word.trim() ||
       source.word_ipa ||

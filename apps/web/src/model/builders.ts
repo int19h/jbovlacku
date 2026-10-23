@@ -482,7 +482,8 @@ export function formationSource(raw: GismuRowState): FormationSource {
     weight: row.weight ? rational(row.weight) : null,
     notes: sourceNotes(row),
   };
-  if (row.word_ipa?.trim()) source.word_ipa = row.word_ipa;
+  if (row.word_ipa === null || row.word_ipa?.trim())
+    source.word_ipa = row.word_ipa;
   return source;
 }
 /** Compare interpreted evidence without changing exact input or note text. */

@@ -530,7 +530,7 @@ test("builders sign word pronunciation and keep stem evidence in their input row
       const source = formation.sources[0];
       assert.equal(Object.hasOwn(source, "stem"), false, builder.name);
       assert.equal(Object.hasOwn(source, "ipa"), false, builder.name);
-      if (word_ipa?.trim())
+      if (word_ipa === null || word_ipa?.trim())
         assert.equal(source.word_ipa, word_ipa, builder.name);
       else assert.equal(Object.hasOwn(source, "word_ipa"), false, builder.name);
       assert.deepEqual(rows, before, builder.name);
@@ -843,7 +843,7 @@ test("source stems stay private through draft reload, export, publication, and R
     [{ ...older, word_ipa: null, stem: null, ipa: null }],
     "Unknown evidence.",
   )!;
-  assert.deepEqual(nulls.sources, unknown.sources);
+  assert.deepEqual(nulls.sources, [{ ...unknown.sources[0], word_ipa: null }]);
   const evidenceOnly = manualFormation(
     [{ ...row, word: "", input: "" }],
     "Partial historical evidence.",
@@ -901,7 +901,7 @@ test("cached draft formation keeps private evidence but publishes signed source 
           ...formation.sources[0],
           notes,
           input: source.input,
-          ...(word_ipa?.trim() ? { word_ipa } : {}),
+          ...(word_ipa === null || word_ipa?.trim() ? { word_ipa } : {}),
         });
         assert.deepEqual(restored.formation, before.formation);
         assert.deepEqual(restored.gismu, before.gismu);
@@ -965,7 +965,12 @@ test("signed evidence alone decides whether cached draft source rows publish", (
     const source = { ...emptySource, ...fields };
     const { word_ipa, ...required } = source;
     const expected = signed
-      ? [{ ...required, ...(word_ipa?.trim() ? { word_ipa } : {}) }]
+      ? [
+          {
+            ...required,
+            ...(word_ipa === null || word_ipa?.trim() ? { word_ipa } : {}),
+          },
+        ]
       : [];
     for (const stem of [undefined, null, "", "run"]) {
       for (const ipa of [undefined, null, "", "rʌn"]) {

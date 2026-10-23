@@ -62,12 +62,7 @@ test("formation sources open as distinct scoring rows without invented pronuncia
     ["", "Cu", ""],
   );
   assert.equal(new Set(rows.map((r) => r.id)).size, 3);
-  assert.deepEqual(
-    rows.map(builders.formationSource),
-    [sources[0], sources[1], { ...sources[2], word_ipa: undefined }].map((s) =>
-      JSON.parse(JSON.stringify(s)),
-    ),
-  );
+  assert.deepEqual(rows.map(builders.formationSource), sources);
 });
 
 test("legacy source keys and undo snapshots migrate to stable row IDs once", () => {
