@@ -91,6 +91,36 @@ test("a verified committed repeat budgets one new view and fits the normal full-
   assert.equal(estimate.within_budget, true);
 });
 
+test("a changed full snapshot budgets only definitions that need new publications", () => {
+  const retained = {
+    stage_bytes: 143_433_728,
+    definition_rows: 65_224,
+    existing_journal_bytes: 523_272_192,
+    retained_carrier_bytes: 325_410_269,
+    retained_carrier_count: 59_126,
+  };
+  const few = estimateImportArtifacts({
+    ...retained,
+    new_publication_count: 3,
+  });
+  const all = estimateImportArtifacts({
+    ...retained,
+    new_publication_count: 65_224,
+  });
+  assert.equal(few.new_publication_count, 3);
+  assert.equal(few.within_budget, true);
+  assert.equal(all.estimated_total_bytes, 4_564_927_383);
+  assert.equal(all.within_budget, false);
+  assert.equal(
+    few.components.journal_bytes,
+    retained.existing_journal_bytes + 4 * 6144 * 1.5 + 65_224 * 1536,
+  );
+  assert.equal(
+    few.components.loaded_copy_bytes,
+    retained.retained_carrier_bytes + 4 * 6144 + (59_126 + 4) * 10_752,
+  );
+});
+
 test("post-run measurements report a large miss in the proposal even when reserves cover it", () => {
   const estimate = estimateImportArtifacts({
     stage_bytes: 1000,
@@ -163,9 +193,23 @@ test("measurement scope never claims an unmeasured loaded copy", () => {
 
 test("invalid byte counts and arithmetic overflow fail before a budget claim", () => {
   for (const value of [-1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])
-    assert.throws(() =>
-      estimateImportArtifacts({ stage_bytes: value, definition_rows: 0 }),
-    );
+    for (const field of ["stage_bytes", "new_publication_count"])
+      assert.throws(() =>
+        estimateImportArtifacts({
+          stage_bytes: 0,
+          definition_rows: 0,
+          [field]: value,
+        }),
+      );
+  assert.throws(
+    () =>
+      estimateImportArtifacts({
+        stage_bytes: 0,
+        definition_rows: 1,
+        new_publication_count: 2,
+      }),
+    /exceeds the staged definition rows/,
+  );
   assert.throws(() =>
     estimateImportArtifacts({
       stage_bytes: Number.MAX_SAFE_INTEGER,

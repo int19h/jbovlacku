@@ -1270,19 +1270,25 @@ test("r3 N3 check-existing refuses new definitions and rolls back all ledger cha
   const input = await setup();
   await importSqlSnapshot(input);
   const previous = await readFile(join(input.output, "carriers.jsonl"));
+  const output = join(input.directory, "check");
+  await mkdir(output);
+  await copyFile(
+    join(input.output, "journal.sqlite"),
+    join(output, "journal.sqlite"),
+  );
   const changed = mutate(fixture, (fields) => {
     if (fields[3] === "4") fields[4] = "A changed definition.";
   });
   await updateSource(input, changed);
   await assert.rejects(
-    importSqlSnapshot({ ...input, checkExisting: true }),
+    importSqlSnapshot({ ...input, output, checkExisting: true }),
     /check cannot sign a new publication or view/i,
   );
   assert.deepEqual(
     await readFile(join(input.output, "carriers.jsonl")),
     previous,
   );
-  const db = new DatabaseSync(join(input.output, "journal.sqlite"));
+  const db = new DatabaseSync(join(output, "journal.sqlite"));
   try {
     assert.equal(
       db.prepare("SELECT COUNT(*) AS count FROM versions").get()?.count,
@@ -1300,6 +1306,12 @@ test("r3 N3 check-existing refuses new definitions and rolls back all ledger cha
 test("r3 N3 check-existing refuses a new roots view", async () => {
   const input = await setup();
   await importSqlSnapshot(input);
+  const output = join(input.directory, "check");
+  await mkdir(output);
+  await copyFile(
+    join(input.output, "journal.sqlite"),
+    join(output, "journal.sqlite"),
+  );
   const roots = [
     {
       identity: identityFromSeed(seed),
@@ -1307,7 +1319,7 @@ test("r3 N3 check-existing refuses a new roots view", async () => {
     },
   ];
   await assert.rejects(
-    importSqlSnapshot({ ...input, roots, checkExisting: true }),
+    importSqlSnapshot({ ...input, output, roots, checkExisting: true }),
     /check cannot sign a new publication or view/i,
   );
 });
