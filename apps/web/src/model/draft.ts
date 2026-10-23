@@ -21,6 +21,12 @@ import {
   textToRichText,
 } from "./richtext.ts";
 import { placeGlyph } from "../lib/format.ts";
+import { cloneAssistance } from "./assistance.ts";
+import {
+  syncFormationSources,
+  formationSourcesFromRows,
+  sameFormationSources,
+} from "./builders.ts";
 import {
   lexicalKinds,
   type Arity,
@@ -161,7 +167,12 @@ export interface DraftExample {
   translation: RichText;
   notes: RichText;
 }
-import type { GismuState, LujvoState } from "./builders.ts";
+import {
+  normalizeSourceRow,
+  sourceRowKey,
+  type GismuState,
+  type LujvoState,
+} from "./builders.ts";
 export interface DraftRafsiClaim {
   rafsi: string;
   rationale: string;
@@ -189,6 +200,8 @@ export interface DraftFormation extends Omit<Formation, "sources"> {
   sources: DraftFormationSource[];
 }
 export interface Draft {
+  /** Private suggestions, logs, and undo records. These fields never enter a signed body. */
+  ai?: import("./assistance.ts").AssistanceData;
   version: 2;
   id: string;
   /** Changes with every save. A publication commits one exact revision. */
@@ -226,6 +239,10 @@ export interface Draft {
   examples: DraftExample[];
   etymologyText: RichText;
   formation: DraftFormation | null;
+  /** Empty source rows copied from authenticated history remain authored evidence. */
+  retainedFormationSources?: number[];
+  /** Explicit null pronunciations copied from signed history without builder state. */
+  retainedWordIpaNullSources?: number[];
   compound: Compound | null;
   /** The spelling that the formation or compound evidence describes. */
   evidenceForm: string | null;
@@ -433,14 +450,75 @@ export function normalizeDraft(stored: Draft): Draft {
   });
   const { original, ...rest } = old;
   void original;
-  return newDraft({
+  const gismu = old.gismu
+    ? { ...old.gismu, rows: old.gismu.rows.map(normalizeSourceRow) }
+    : null;
+  // Give old undo snapshots the same row identities as the current draft.
+  const ai = old.ai ? cloneAssistance(old.ai) : undefined;
+  const sourceValue = (row: import("./builders.ts").GismuRowState) => {
+    const { id, ...value } = normalizeSourceRow(row);
+    void id;
+    return JSON.stringify(
+      Object.fromEntries(
+        Object.entries(value).sort(([a], [b]) => a.localeCompare(b)),
+      ),
+    );
+  };
+  const matchingSource = (row: import("./builders.ts").GismuRowState) => {
+    const languageRows =
+      gismu?.rows.filter((current) => current.language === row.language) ?? [];
+    const exact = languageRows.filter(
+      (current) => sourceValue(current) === sourceValue(row),
+    );
+    return exact.length === 1
+      ? exact[0]
+      : languageRows.length === 1
+        ? languageRows[0]
+        : undefined;
+  };
+  for (const record of ai?.records ?? []) {
+    const legacy = /^source-(\d+)-(.+)$/.exec(record.key);
+    let migratedRow: import("./builders.ts").GismuRowState | undefined;
+    if (legacy) {
+      const snapshot = record.after?.gismu?.rows[Number(legacy[1])];
+      migratedRow = matchingSource(
+        snapshot ?? {
+          language: legacy[2],
+          name: "",
+          word: "",
+          input: "",
+          weight: null,
+        },
+      );
+      if (migratedRow) record.key = sourceRowKey(migratedRow);
+    }
+    for (const snapshot of [record.before, record.after]) {
+      if (!snapshot?.gismu) continue;
+      snapshot.gismu.rows = snapshot.gismu.rows.map((row, index) => {
+        const current =
+          legacy && index === Number(legacy[1])
+            ? migratedRow
+            : matchingSource(row);
+        return normalizeSourceRow({
+          ...row,
+          id: row.id ?? current?.id,
+        });
+      });
+    }
+  }
+  const draft = newDraft({
     ...rest,
+    gismu,
+    ...(ai ? { ai } : {}),
     places,
     frameRole: old.frameRole ?? "predicate",
     evidenceForm:
       old.evidenceForm ??
       (old.formation || old.compound ? (old.spelling ?? "") : null),
   });
+  if (draft.formation) draft.formation = { ...draft.formation };
+  syncFormationSources(draft);
+  return draft;
 }
 /** Renumbers places 1 through N in their current order. */
 export function renumber(places: DraftPlace[]): DraftPlace[] {
@@ -467,6 +545,8 @@ export function numberPlaceholders(meaning: string): {
 export interface DraftProblem {
   field: string;
   message: string;
+  /** Repeated invalid nodes share one displayed problem but retain their count. */
+  occurrences?: number;
   /** The exact rich field that a place-reference conversion can change. */
   richFieldKey?: string;
   /** Problems that block signing. Warnings do not. */
@@ -615,15 +695,40 @@ export interface ReferenceField {
   get: () => RichText;
   set: (value: RichText) => void;
 }
-function richFieldKey(owner: object, property: string): string {
-  const metadata = owner as { richFieldIds?: Record<string, string> };
-  metadata.richFieldIds ??= {};
-  return (metadata.richFieldIds[property] ??= crypto.randomUUID());
+const transientRichIds = new WeakMap<object, Record<string, string>>();
+const transientConstraintIds = new WeakMap<object, string[]>();
+function transientIds<T>(
+  cache: WeakMap<object, T>,
+  owner: object,
+  create: () => T,
+): T {
+  let ids = cache.get(owner);
+  if (!ids) cache.set(owner, (ids = create()));
+  return ids;
 }
-function constraintKey(owner: object, index: number): string {
+function richFieldKey(owner: object, property: string, persist = true): string {
+  const metadata = owner as { richFieldIds?: Record<string, string> };
+  const transient = transientIds<Record<string, string>>(
+    transientRichIds,
+    owner,
+    () => ({}),
+  );
+  const key =
+    metadata.richFieldIds?.[property] ??
+    (transient[property] ??= crypto.randomUUID());
+  if (!persist) return key;
+  metadata.richFieldIds ??= {};
+  return (metadata.richFieldIds[property] = key);
+}
+function constraintKey(owner: object, index: number, persist = true): string {
   const metadata = owner as { constraintIds?: string[] };
+  const transient = transientIds(transientConstraintIds, owner, () => []);
+  const key =
+    metadata.constraintIds?.[index] ??
+    (transient[index] ??= crypto.randomUUID());
+  if (!persist) return key;
   metadata.constraintIds ??= [];
-  return (metadata.constraintIds[index] ??= crypto.randomUUID());
+  return (metadata.constraintIds[index] = key);
 }
 /**
  * Rich fields with stable draft-only identities. Nonlocal fields are included
@@ -908,7 +1013,9 @@ export function switchMode(draft: Draft, structured: boolean) {
 }
 /** A copy of the draft with every place reference as literal text. */
 function literalView(draft: Draft): Draft {
-  const copy = structuredClone(draft);
+  const { ai, ...fields } = draft;
+  void ai;
+  const copy = structuredClone(fields) as Draft;
   copy.structured = true;
   rewriteReferences(copy, () => "literal", true);
   copy.structured = false;
@@ -931,17 +1038,22 @@ function richProblems(
   operands: Set<string>,
   problems: DraftProblem[],
 ) {
-  const seen = new Set<string>();
+  const seen = new Map<string, DraftProblem>();
   const report = (message: string, convertPlaceReference = false) => {
     const key = `${entry.field}:${message}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-    problems.push({
+    const existing = seen.get(key);
+    if (existing) {
+      existing.occurrences = (existing.occurrences ?? 1) + 1;
+      return;
+    }
+    const problem: DraftProblem = {
       field: entry.field,
       message,
       blocking: true,
       ...(convertPlaceReference ? { richFieldKey: entry.key } : {}),
-    });
+    };
+    seen.set(key, problem);
+    problems.push(problem);
   };
   for (const paragraph of entry.value)
     for (const node of paragraph) {
@@ -1148,7 +1260,7 @@ function buildFrame(draft: Draft, problems: DraftProblem[], rich: RichField[]) {
     const description = place.description;
     rich.push({
       field,
-      key: richFieldKey(place, "description"),
+      key: richFieldKey(place, "description", false),
       label: `${label}'s description`,
       value: description,
       local: true,
@@ -1157,7 +1269,7 @@ function buildFrame(draft: Draft, problems: DraftProblem[], rich: RichField[]) {
     if (hint)
       rich.push({
         field,
-        key: richFieldKey(place, "hintNote"),
+        key: richFieldKey(place, "hintNote", false),
         label: `${label}'s type note`,
         value: hintNote,
         local: true,
@@ -1186,14 +1298,14 @@ function buildFrame(draft: Draft, problems: DraftProblem[], rich: RichField[]) {
         rich.push(
           {
             field,
-            key: richFieldKey(d, "condition"),
+            key: richFieldKey(d, "condition", false),
             label: `${label}'s default ${i + 1} condition`,
             value: condition,
             local: true,
           },
           {
             field,
-            key: richFieldKey(d, "explanation"),
+            key: richFieldKey(d, "explanation", false),
             label: `${label}'s default ${i + 1} explanation`,
             value: explanation,
             local: true,
@@ -1221,7 +1333,7 @@ function buildFrame(draft: Draft, problems: DraftProblem[], rich: RichField[]) {
       const value = c;
       rich.push({
         field,
-        key: constraintKey(place, i),
+        key: constraintKey(place, i, false),
         label: `${label}'s constraint ${i + 1}`,
         value,
         local: true,
@@ -1266,7 +1378,7 @@ function buildFrame(draft: Draft, problems: DraftProblem[], rich: RichField[]) {
         const explanation = d.explanation;
         rich.push({
           field,
-          key: richFieldKey(d, "explanation"),
+          key: richFieldKey(d, "explanation", false),
           label: `${which}'s explanation`,
           value: explanation,
           local: false,
@@ -1359,7 +1471,7 @@ function buildFrame(draft: Draft, problems: DraftProblem[], rich: RichField[]) {
   if (tailDescription)
     rich.push({
       field: "tail",
-      key: richFieldKey(draft.tail!, "description"),
+      key: richFieldKey(draft.tail!, "description", false),
       label: "The repeated places' description",
       value: tailDescription,
       local: true,
@@ -1367,7 +1479,7 @@ function buildFrame(draft: Draft, problems: DraftProblem[], rich: RichField[]) {
   if (tailHint && draft.frameMode === "variadic")
     rich.push({
       field: "tail",
-      key: richFieldKey(draft.tail!, "hintNote"),
+      key: richFieldKey(draft.tail!, "hintNote", false),
       label: "The repeated places' type note",
       value: tailHint.note,
       local: true,
@@ -1377,7 +1489,7 @@ function buildFrame(draft: Draft, problems: DraftProblem[], rich: RichField[]) {
     const value = c;
     rich.push({
       field: "frame",
-      key: constraintKey(draft, i),
+      key: constraintKey(draft, i, false),
       label: `Frame constraint ${i + 1}`,
       value,
       local: true,
@@ -1456,10 +1568,14 @@ export function coreProblems(
   }
 }
 /** Copy signed fields only, including when a stored draft contains private source evidence. */
-function signedFormation(formation: DraftFormation | null): Formation | null {
+export function signedFormation(
+  formation: DraftFormation | null,
+  keepEmptySources: boolean | number[] = false,
+  keepNullPronunciations: number[] = [],
+): Formation | null {
   if (!formation) return null;
   const sources: FormationSource[] = [];
-  for (const row of formation.sources) {
+  for (const [index, row] of formation.sources.entries()) {
     const source: FormationSource = {
       language: row.language,
       word: row.word,
@@ -1467,16 +1583,44 @@ function signedFormation(formation: DraftFormation | null): Formation | null {
       weight: row.weight,
       notes: row.notes,
     };
-    if (row.word_ipa?.trim()) source.word_ipa = row.word_ipa;
+    if (
+      (row.word_ipa === null && keepNullPronunciations.includes(index)) ||
+      row.word_ipa?.trim()
+    )
+      source.word_ipa = row.word_ipa;
     const hasSignedEvidence =
       source.word.trim() ||
       source.word_ipa ||
       source.input !== null ||
       source.weight !== null ||
       countNodes(source.notes);
-    if (hasSignedEvidence) sources.push(source);
+    if (
+      hasSignedEvidence ||
+      keepEmptySources === true ||
+      (Array.isArray(keepEmptySources) && keepEmptySources.includes(index))
+    )
+      sources.push(source);
   }
   return { ...formation, sources };
+}
+/** Match exact projected evidence so filtered or reordered rows keep their own presence. */
+export function retainedNullPronunciations(
+  draft: Pick<Draft, "formation" | "gismu" | "retainedWordIpaNullSources">,
+): number[] {
+  if (!draft.formation) return [];
+  if (!draft.gismu) return draft.retainedWordIpaNullSources ?? [];
+  const originals = formationSourcesFromRows(draft.gismu.rows).filter(
+    (source) => source.word_ipa === null,
+  );
+  return draft.formation.sources.flatMap((source, index) => {
+    if (source.word_ipa !== null) return [];
+    const originalIndex = originals.findIndex((original) =>
+      sameFormationSources([source], [original]),
+    );
+    if (originalIndex === -1) return [];
+    originals.splice(originalIndex, 1);
+    return [index];
+  });
 }
 /** Builds the signed body from the draft and lists every problem. */
 export function draftToBody(input: Draft): {
@@ -1486,9 +1630,38 @@ export function draftToBody(input: Draft): {
 } {
   // Literal mode publishes no place references, whatever set the mode. A
   // reference that reached a field becomes the circled character as text.
-  const draft = input.structured ? input : literalView(input);
-  const formation = signedFormation(draft.formation);
+  const view = input.structured ? input : literalView(input);
+  const draft = {
+    ...view,
+    formation: view.formation ? { ...view.formation } : null,
+  };
+  // Pure reads and later editors use the same keys before metadata is saved.
+  transientRichIds.set(
+    draft,
+    transientIds(transientRichIds, input, () => ({})),
+  );
+  transientConstraintIds.set(
+    draft,
+    transientIds(transientConstraintIds, input, () => []),
+  );
+
   const problems: DraftProblem[] = [];
+  if (syncFormationSources(draft))
+    problems.push({
+      field: "formation",
+      message:
+        "The source scoring inputs changed. Use the form again to refresh its scores, enter it without generation, or remove the evidence.",
+      blocking: true,
+    });
+  for (const row of draft.formation ? (draft.gismu?.rows ?? []) : []) {
+    if (row.sourceReview?.length)
+      problems.push({
+        field: "formation",
+        message:
+          "The source evidence needs review. Keep or clear each retained value for its new word.",
+        blocking: true,
+      });
+  }
   const rich: RichField[] = [];
   const spelling = draft.spelling.trim().normalize("NFC");
   if (!spelling)
@@ -1526,7 +1699,7 @@ export function draftToBody(input: Draft): {
   const text = draft.text;
   rich.push({
     field: "text",
-    key: richFieldKey(draft, "text"),
+    key: richFieldKey(draft, "text", false),
     label: "The definition",
     value: text,
     local: true,
@@ -1574,7 +1747,7 @@ export function draftToBody(input: Draft): {
       const description = o.description;
       rich.push({
         field: "operands",
-        key: richFieldKey(o, "description"),
+        key: richFieldKey(o, "description", false),
         label: `Operand "${id}"'s description`,
         value: description,
         local: true,
@@ -1590,7 +1763,7 @@ export function draftToBody(input: Draft): {
   const notes = draft.notes;
   rich.push({
     field: "notes",
-    key: richFieldKey(draft, "notes"),
+    key: richFieldKey(draft, "notes", false),
     label: "The notes",
     value: notes,
     local: true,
@@ -1598,7 +1771,7 @@ export function draftToBody(input: Draft): {
   const etymologyText = [...draft.etymologyText, ...plainRich(draft.formNotes)];
   rich.push({
     field: "etymology",
-    key: richFieldKey(draft, "etymologyText"),
+    key: richFieldKey(draft, "etymologyText", false),
     label: "The etymology",
     value: etymologyText,
     local: false,
@@ -1611,14 +1784,14 @@ export function draftToBody(input: Draft): {
       rich.push(
         {
           field: "examples",
-          key: richFieldKey(e, "translation"),
+          key: richFieldKey(e, "translation", false),
           label: `Example ${i + 1}'s translation`,
           value: translation,
           local: false,
         },
         {
           field: "examples",
-          key: richFieldKey(e, "notes"),
+          key: richFieldKey(e, "notes", false),
           label: `Example ${i + 1}'s notes`,
           value: exampleNotes,
           local: false,
@@ -1652,6 +1825,11 @@ export function draftToBody(input: Draft): {
       if (!declared.has(n))
         problems.push({
           field: entry.field,
+          occurrences: entry.value.reduce(
+            (count, paragraph) =>
+              count + paragraph.filter((node) => node === n).length,
+            0,
+          ),
           richFieldKey: entry.key,
           message: frame
             ? `Place ${n} is referenced in ${entry.label.toLowerCase()} but not declared. Add the place, change the number, or convert it to literal text.`
@@ -1661,6 +1839,11 @@ export function draftToBody(input: Draft): {
       if (n > 65535)
         problems.push({
           field: entry.field,
+          occurrences: entry.value.reduce(
+            (count, paragraph) =>
+              count + paragraph.filter((node) => node === n).length,
+            0,
+          ),
           richFieldKey: entry.key,
           message: `Place ${n} exceeds the limit of 65,535.`,
           blocking: true,
@@ -1748,6 +1931,11 @@ export function draftToBody(input: Draft): {
       message: `The ${draft.compound ? "compound" : "generation"} evidence describes "${draft.evidenceForm}", not "${spelling}". Build the form again, or remove the evidence.`,
       blocking: true,
     });
+  const formation = signedFormation(
+    draft.formation,
+    draft.gismu ? true : (draft.retainedFormationSources ?? false),
+    retainedNullPronunciations(draft),
+  );
   if (formation)
     formation.sources.forEach((row, i) => {
       if (!language(row.language))
@@ -1928,6 +2116,12 @@ export function draftFromBody(
     etymologyText: structuredClone(body.etymology.text),
     formNotes: "",
     formation: body.etymology.formation,
+    retainedFormationSources: body.etymology.formation?.sources.map(
+      (_, index) => index,
+    ),
+    retainedWordIpaNullSources: body.etymology.formation?.sources.flatMap(
+      (source, index) => (source.word_ipa === null ? [index] : []),
+    ),
     compound: body.etymology.compound,
     evidenceForm:
       body.etymology.formation || body.etymology.compound ? spelling : null,

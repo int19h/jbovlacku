@@ -1,32 +1,49 @@
 # AI prompts
 
 This folder holds the prompts for the optional AI actions that the [frontend specification](../docs/frontend.md) describes.
-No application code uses them yet. AI actions remain target features.
-They were tested in separate studies, not through the application.
+The shared service uses these files for both server adapters.
+The four tasks below retain the studied prompts. Local mock tests cover the application loop and answer checks.
+Provider availability still depends on operator configuration.
 
 ## Tasks
 
-| Task | Frontend action | The model suggests |
-|---|---|---|
-| `glosses` | "Suggest places and glosses" | A short English gloss and an optional sense for the whole word and for each place. |
-| `hints` | "Suggest places and glosses" | The kinds of thing that can fill each place, such as referent, agent, event or number. |
-| `mappings` | "Suggest places and glosses" | For each place of a compound, the component places that it corresponds to. |
-| `sources` | "Suggest source words" | One source word for one language, its stem, its pronunciation, and its scoring letters. |
+| Task       | Frontend action              | The model suggests                                                                      |
+| ---------- | ---------------------------- | --------------------------------------------------------------------------------------- |
+| `glosses`  | "Suggest places and glosses" | A short English gloss and an optional sense for the whole word and for each place.      |
+| `hints`    | "Suggest places and glosses" | The kinds of thing that can fill each place, such as referent, agent, event or number.  |
+| `mappings` | "Suggest places and glosses" | For each place of a compound, the component places that it corresponds to.              |
+| `sources`  | "Suggest source words"       | One source word for one language, its stem, its pronunciation, and its scoring letters. |
+
+Additional editor prompts cover type, components, selma'o, definition text, and an initial place structure.
+These prompts use the same tool and retry loop. They do not share the four tasks' study evidence.
+The application checks a proposed lujvo with deterministic construction and segmentation before it returns the spelling.
+
+For `components`, the application labels supplied definitions `d1`, `d2`, and so on, in their supplied order.
+The model returns a matching label or null in each component's `definition` field.
+The request keeps each label beside its exact event ID for the author's inference log.
+Selected component constraints use those labels too. Unknown labels, event IDs, prose, and labels for another word fail the answer checks.
+
+The application maps accepted labels to exact event IDs before construction and public proposals. The raw tool log keeps the labels.
+The other answer schemas require no event ID or hash. `mappings` keeps studied names such as `klama[2]`.
 
 ## Files
 
-| File | Contents |
-|---|---|
-| `common.system.txt` | The rules that every task shares. |
-| `glosses.task.txt`, `hints.task.txt`, `mappings.task.txt`, `sources.task.txt` | The rules of each task. |
-| `sound-guide.txt` | The conversion from IPA to the Lojban scoring letters. Only `sources` uses it. |
-| `languages/*.txt` | One block of language rules for each source language. Only `sources` uses them. |
-| `answer-shapes.json` | The JSON shape of an answer for each task. |
-| `explain.txt` | Optional. The server adds it before any language block when the operator turns on decision reports. |
+| File                                                                                                     | Contents                                                                                            |
+| -------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `common.system.txt`                                                                                      | The rules that every task shares.                                                                   |
+| `glosses.task.txt`, `hints.task.txt`, `mappings.task.txt`, `sources.task.txt`                            | The rules of each task.                                                                             |
+| `sound-guide.txt`                                                                                        | The conversion from IPA to the Lojban scoring letters. Only `sources` uses it.                      |
+| `languages/*.txt`                                                                                        | One block of language rules for each source language. Only `sources` uses them.                     |
+| `answer-shapes.json`                                                                                     | The JSON shape of an answer for each task.                                                          |
+| `explain.txt`                                                                                            | Optional. The server adds it before any language block when the operator turns on decision reports. |
+| `type.task.txt`, `components.task.txt`, `cmavo-class.task.txt`, `definition.task.txt`, `places.task.txt` | Rules for the other editor actions.                                                                 |
+| `build-bundle.mjs`                                                                                       | Rebuilds the runtime copy of the public prompt files. Run it after editing a prompt.                |
 
 ## Request
 
 Each request has one system prompt, one user message, and one tool, `submit_answer`.
+Every request uses `tool_choice: "auto"`, which the tested provider requires.
+The application still accepts only one valid `submit_answer` call. A missing call receives correction instructions within the same three-answer limit.
 
 The system prompt joins these files in this order, with a blank line between them:
 
@@ -44,11 +61,17 @@ Providers can then cache that prefix.
 
 The user message contains the case: the word, its definition, the component definitions where the task uses them, and the requested keys.
 A place key such as `klama[2]` becomes `x2` in the tool arguments, and the whole word becomes `word`.
-After the case, the user message lists the requested keys.
-For example: "In submit_answer, use these keys: word for klama, x1 for klama[1]."
+The user message includes that key list, such as "In submit_answer, use these keys: word for klama, x1 for klama[1]."
+If the draft has no spelling, the key list uses "the whole word" and "place 1" instead.
+For `mappings`, the prompt, tool schema, and answer use component spellings and place indices, such as `klama[2]`.
+The `component_places` metadata lists each component word, exact definition event or null, and available place indices.
+The request groups the permitted indices by spelling and uses the first unambiguous full name as its example.
+It lists ambiguous names separately before the model answers. If every name is ambiguous, the example uses `unclear`.
+After the answer check, the application resolves each name to its exact selected definition.
+Repeated spellings with the same exact definition share a name.
+If one name refers to distinct selected definitions, the check asks for `unclear` instead of choosing a definition.
 
-For `mappings`, the permitted component places follow the requested keys, such as "Permitted component places: klama[1,2]".
-That grouped form permits `klama[1]` and `klama[2]`. The answer names each component place by its supplied spelling and one-based index.
+For `mappings`, grouped indices such as `klama[1,2]` permit `klama[1]` and `klama[2]`.
 A `sources` request covers one target meaning and one language.
 
 The tool arguments are the answer. For `glosses`, `hints` and `mappings`, the tool schema lists each requested key as an explicit property.

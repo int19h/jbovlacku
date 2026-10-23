@@ -76,17 +76,44 @@ The lujvo builder offers short rafsi, gismu stems, whole gismu, whole-word parts
 If several parts share the same competing rafsi claim, the builder shows one acknowledgment for that claim.
 Choosing [optional hyphens](docs/morphology.md) in the lujvo builder remains a target change. The builder adds only the required hyphens.
 The gismu generator offers the CLL 1987, CLL 1995, and Ilmen presets with pinned sources, custom weights, exact scores, tied ranks, per-language contributions, root and rafsi conflicts, and manual forms without fabricated evidence.
-
 The core and builders keep the optional full pronunciation, `word_ipa`, in signed formation sources.
-Draft reload and export preserve private `stem` and `ipa` values. Neither enters a signed formation source.
-
-Publication selects cached source rows from their word, `word_ipa`, scoring input, weight, and notes.
+Draft reload preserves private `stem` and `ipa` values. Neither enters a signed formation source.
+Publication keeps each source row's word, `word_ipa`, scoring input, weight, and notes.
+New unknown pronunciations omit `word_ipa`. Revisions preserve an authenticated original null value without copying it into fresh source rows.
 Known weights, including zero, survive regardless of private `stem` or `ipa` values.
-Rows without this signed evidence stay out of the signed formation.
-The gismu source editor with seven columns remains a target feature.
-
+The gismu source editor has seven columns. It keeps pronunciation and stem evidence separate from scoring letters.
+It preserves original IPA inputs and shows that conversion to scoring letters is unavailable.
+Source notes stay editable when assistance is off. The publication review shows all signed source evidence.
+Source edits also update the publication copy after form selection. Descriptive edits keep the recorded scores.
+Changes to scoring inputs block publication until the author selects the form again or removes its evidence.
+Unrelated suggestions remain usable, and pending calculations cannot attach an older score to new inputs.
+Reopening a signed source with a null algorithm input preserves that evidence.
 The [morphology profiles](docs/morphology.md) name the rules and versions that the metadata records.
-The status editor, transfer editor, semantic search, AI, and Lensisku cross-posting remain target features.
+
+Optional AI assistance offers suggestions for type, components, lujvo, cmavo class, source words, definition text, places, and glosses.
+The browser asks for consent before it sends draft fields. Suggestions need manual acceptance and support undo.
+Source acceptance replaces earlier AI notes and preserves authored notes. A changed suggested word requires review of retained source evidence.
+Marked fields stay read-only until Keep or Clear. A type change that removes the formation also removes its review marks.
+Explicit evidence removal keeps the marks for reused source values. Undo restores required marks with returned values and preserves later review choices.
+Keep never overwrites a different Notes paragraph.
+Source previews read current rows after a weight preset change. Private note ownership choices do not mark suggestions stale.
+Component suggestions keep selected exact source definitions.
+Place mappings also preserve exact definitions for repeated component words.
+The model keeps studied names such as `klama[2]`. Ambiguous repeated definitions require an `unclear` mapping.
+Turning assistance off reaches other open tabs and cancels their active jobs.
+
+The private attempt log offers Markdown and JSON export. Signed publications omit AI logs.
+Both local adapters offer operator-controlled assistance, off by default, with server-held keys and bounded private jobs.
+They reserve costs before admission and enforce server and network spending limits that survive a restart.
+IPv6 limits also count /48 prefixes. The Worker stores large spending ledgers in atomic parts.
+A discarded result returns a clear status. Spending failures distinguish pending costs, timed limits, and requests that cannot fit.
+The default spending share admits every enabled operation at each reasoning effort, with decision reports enabled or disabled.
+Each task uses an output cap based on recorded prompt tests. An explicit operator limit replaces the automatic caps.
+Every output limit stays at or below 20,480 tokens, including explicit limits and decision reports.
+Mocked providers cover the request and correction loop. These tests do not establish live model accuracy.
+The [development guide](docs/development.md#optional-ai-assistance) gives the configuration and retention limits.
+
+The status editor, transfer editor, semantic search, and Lensisku cross-posting remain target features.
 The site view is the server's selected signed view, and the Trust page can use another retained signed view by its event ID. A signed view names its calculation profile, `simple-routes-bounds-v1` or `simple-routes-shun-v1`; the pages name the profile of each result and its route rule, and an unknown profile leaves scores unavailable.
 The personal view downloads the snapshot records, verifies each envelope and body in a Web Worker, and ranks words locally with the private overlay.
 It adds the current identity with allocation 1 only when its continuity group has no allocation or private root change.
@@ -98,6 +125,10 @@ The [web UI design](docs/ui-design.md) defines the layouts. The reading, identit
 The built Node app keeps Type and trust card labels separate from their descriptions.
 Draft placeholders have no extra underline, and helper text does not shift neighboring controls.
 Each custom place alternative keeps its hint below the Tags field and shows a separate boundary.
+
+Page completion preserves explicit control focus and the reader's focus choices during loading.
+The Edit public profile link focuses Name unless the reader first chooses another control.
+Activity completion preserves the editor or reader focus.
 
 One shared rule gives links and interactive controls a target of at least 44 by 44 CSS pixels.
 It covers buttons, fields, disclosure summaries, focusable regions, editable regions, and the app's ARIA actions.
@@ -194,7 +225,7 @@ The documentation defines the product, its records, and the development process:
 - [Format specification](docs/format.md): Target signed records, causal state, identities, imports, and ranking.
 - [Frontend specification](docs/frontend.md): Target browser behavior, server contracts, authoring, and optional inference.
 - [Web UI design](docs/ui-design.md): Target screens, visual rules, and publication flow.
-- [AI prompts](prompts/README.md): Draft prompts for the optional AI actions. No application code uses them yet.
+- [AI prompts](prompts/README.md): Public prompts, answer rules, and the correction loop for the optional AI actions.
 - [Prototype plan](docs/prototype-plan.md): Required implementation stages and demonstrations.
 - [Handover cases](docs/handover-cases.md): Required account-control outcomes.
 - [Development guide](docs/development.md): Local builds, tests, shared VM work, and review requirements.

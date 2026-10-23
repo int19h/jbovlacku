@@ -60,7 +60,7 @@ export const selfPeer: Peer = {
   label: location.host || "this server",
 };
 
-async function readBounded(
+export async function readBounded(
   response: Response,
   limit: number,
   signal: AbortSignal,

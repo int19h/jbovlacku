@@ -641,17 +641,27 @@ export function etymologyNodes(body: DefinitionBody): Node[] {
     );
     if (f.sources.length) {
       const list = el("ul", { class: "small" });
-      for (const s of f.sources)
-        list.append(
-          el(
-            "li",
-            {},
-            el("bdi", { text: `${s.language}: ${s.word}` }),
-            text(
-              `${s.input ? ` → ${s.input.text}` : ""}${s.weight ? ` · weight ${s.weight.numerator}/${s.weight.denominator}` : ""}`,
-            ),
+      for (const s of f.sources) {
+        const source = el(
+          "li",
+          {},
+          el("bdi", { text: `${s.language}: ${s.word}` }),
+          text(
+            `${s.input ? ` → ${s.input.text} (${s.input.format})` : ""}${s.weight ? ` · weight ${s.weight.numerator}/${s.weight.denominator}` : ""}`,
           ),
         );
+        for (const [label, value] of [["Said", s.word_ipa]])
+          if (value) source.append(p(`${label}: ${value}`, "meta"));
+        if (s.notes.length) {
+          const notes = renderRichText(s.notes, {
+            placeHref: null,
+            className: "source-notes",
+          });
+          notes.style.whiteSpace = "pre-wrap";
+          source.append(notes);
+        }
+        list.append(source);
+      }
       nodes.push(list);
     }
     if (f.algorithm)

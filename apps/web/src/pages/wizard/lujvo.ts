@@ -1,3 +1,5 @@
+import { currentDraft } from "../../model/assistance.ts";
+import { assistanceAction } from "../../components/assistance.ts";
 /**
  * Step 3A: the lujvo builder. Ordered component rows with rafsi choices and
  * locks, the scored candidates of the shared morphology core, recovered parts,
@@ -89,6 +91,36 @@ export async function lujvoPage(
   const cached = await cachedPackage(app.store);
   if (!context.live()) return;
   const inventory: PackageInventory = inventoryFromPackage(cached);
+  const builderCurrent = () => {
+    const morphology =
+      result?.morphology ??
+      analyzeWord(state.profile, state.components[0]?.spelling ?? "broda")
+        .morphology;
+    const scoring = result?.scoring ?? {
+      id: `https://github.com/int19h/jbovlacku/blob/main/docs/morphology.md#${state.profile === "cll" ? "cll" : "extended"}-lujvo-scoring`,
+      version: "1",
+    };
+    return {
+      ...currentDraft(draft),
+      spelling: chosenCandidate()?.spelling ?? draft.spelling,
+      compound:
+        result && chosenCandidate()
+          ? compoundMetadata(result, chosenCandidate()!, state.components, "")
+          : state.components.length
+            ? {
+                components: state.components.map((c) => ({
+                  word: { language: "jbo" as const, spelling: c.spelling },
+                  definition: c.definition,
+                  rafsi: c.locked ?? "",
+                })),
+                morphology,
+                scoring,
+                score: null,
+                notes: [],
+              }
+            : null,
+    };
+  };
   main.append(stepBar(draft, 3));
   const columns = el("div", { class: "two-col" });
   const section = el("section", { "aria-labelledby": "h1", class: "main-col" });
@@ -165,10 +197,19 @@ export async function lujvoPage(
   addRow.append(addField.wrapper);
   section.append(addRow, addResults);
   section.append(
-    p(
-      "Component suggestions and lujvo suggestions by AI are not configured on this server.",
-      "meta",
-    ),
+    assistanceAction(app, draft, saver, context, {
+      key: "components",
+      label: "Suggest components",
+      operation: "lujvo",
+      profile: "components",
+      current: builderCurrent,
+    }),
+    assistanceAction(app, draft, saver, context, {
+      key: "lujvo",
+      label: "Suggest a lujvo",
+      operation: "lujvo",
+      current: builderCurrent,
+    }),
   );
   // Result card and alternatives.
   const resultCard = el("div", {
@@ -218,10 +259,12 @@ export async function lujvoPage(
         { style: "margin-top:4px" },
         el("bdi", { text: draft.meaning || "(no meaning yet)" }),
       ),
-      p(
-        "A rewrite for the chosen form by AI is not configured on this server.",
-        "meta",
-      ),
+      assistanceAction(app, draft, saver, context, {
+        key: "definition",
+        label: "Draft definition for this form",
+        operation: "definition",
+        current: builderCurrent,
+      }),
     ),
   );
   columns.append(section, aside);

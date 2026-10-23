@@ -1,5 +1,11 @@
 import type { IndexStore } from "./index-store.ts";
 import {
+  AssistanceService,
+  AssistanceError,
+  type AssistanceOptions,
+  type ContextDefinition,
+} from "./assistance.ts";
+import {
   checkpointBindingKey,
   type CheckpointBinding,
   type CheckpointStore,
@@ -67,6 +73,7 @@ const compareBytes = (a: number[], b: number[]): number => {
   return a.length - b.length;
 };
 export interface ServiceOptions {
+  assistance?: AssistanceOptions;
   serverId: string;
   selectedView?: string;
   stateLimits?: EvaluationRequest["limits"];
@@ -99,11 +106,58 @@ const PROFILE_CLAIM_BYTES = 1048576;
 const RECORD_PAGE_LIMIT = 200;
 const RECORD_PAGE_BYTES = 4194304;
 export class DictionaryService {
+  private assistance: AssistanceService;
   constructor(
     public objects: ObjectStore,
     public coordinator: Coordinator,
     public options: ServiceOptions,
-  ) {}
+  ) {
+    this.assistance = new AssistanceService(
+      options.assistance ?? {},
+      options.serverId,
+      async (events) => {
+        const state = await coordinator.load();
+        const definitions: ContextDefinition[] = [];
+        for (const event of events) {
+          const retained = state.events[event];
+          if (!retained?.body_hash)
+            throw new AssistanceError(
+              404,
+              "context",
+              "A selected definition is unavailable.",
+            );
+          const [envelope, bytes] = await Promise.all([
+            objects.get(retained.envelope_hash),
+            objects.get(retained.body_hash),
+          ]);
+          if (!envelope || !bytes)
+            throw new AssistanceError(
+              404,
+              "context",
+              "A selected definition is unavailable.",
+            );
+          const header = JSON.parse(new TextDecoder().decode(envelope)).header;
+          if (header.action.kind !== "definition.publish")
+            throw new AssistanceError(
+              400,
+              "context",
+              "Context must name definition events.",
+            );
+          if (inspectBody(envelope, bytes).availability !== "valid")
+            throw new AssistanceError(
+              404,
+              "context",
+              "A selected definition does not have a valid available body.",
+            );
+          definitions.push({
+            event,
+            body: JSON.parse(new TextDecoder().decode(bytes)),
+          });
+        }
+        return definitions;
+      },
+    );
+  }
   private canonicalEnvelopes = new Map<string, string>();
   private importSelections = new Map<string, string[]>();
   private sessionSnapshots = new Map<string, Snapshot>();
@@ -1308,6 +1362,7 @@ export class DictionaryService {
     request: Request,
     max = 1024 * 1024,
     expectedContentType = "application/json",
+    signal?: AbortSignal,
   ): Promise<Uint8Array> {
     if (
       request.headers.has("content-encoding") &&
@@ -1326,27 +1381,39 @@ export class DictionaryService {
     const reader = request.body?.getReader();
     if (!reader)
       throw new ApiError(400, "transport", "Request body is missing.");
+    const abort = () => {
+      void reader.cancel(signal?.reason).catch(() => {});
+    };
+    signal?.addEventListener("abort", abort, { once: true });
     const chunks: Uint8Array[] = [];
     let length = 0;
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      length += value.length;
-      if (length > max) {
-        await reader.cancel();
-        throw new ApiError(413, "size", "Request exceeds the byte limit.");
+    try {
+      if (signal?.aborted) abort();
+      signal?.throwIfAborted();
+      for (;;) {
+        const { done, value } = await reader.read();
+        signal?.throwIfAborted();
+        if (done) break;
+        length += value.length;
+        if (length > max) {
+          void reader.cancel().catch(() => {});
+          throw new ApiError(413, "size", "Request exceeds the byte limit.");
+        }
+        chunks.push(value);
       }
-      chunks.push(value);
+      const result = new Uint8Array(length);
+      let offset = 0;
+      for (const chunk of chunks) {
+        result.set(chunk, offset);
+        offset += chunk.length;
+      }
+      return result;
+    } finally {
+      signal?.removeEventListener("abort", abort);
+      reader.releaseLock();
     }
-    const result = new Uint8Array(length);
-    let offset = 0;
-    for (const chunk of chunks) {
-      result.set(chunk, offset);
-      offset += chunk.length;
-    }
-    return result;
   }
-  async fetch(request: Request): Promise<Response> {
+  async fetch(request: Request, network = "local"): Promise<Response> {
     const origin = request.headers.get("origin");
     let response: Response;
     try {
@@ -1358,15 +1425,15 @@ export class DictionaryService {
       ) {
         throw new ApiError(403, "origin", "Origin is not permitted.");
       }
-      response = await this.route(request);
+      response = await this.route(request, network);
     } catch (error) {
-      if (error instanceof ApiError)
+      if (error instanceof ApiError || error instanceof AssistanceError)
         response = json(
           {
             code: error.code,
             message: error.message,
-            event: error.event,
-            field: error.field,
+            event: error instanceof ApiError ? error.event : null,
+            field: error instanceof ApiError ? error.field : null,
           },
           error.status,
         );
@@ -1405,7 +1472,7 @@ export class DictionaryService {
     }
     return response;
   }
-  private async route(request: Request): Promise<Response> {
+  private async route(request: Request, network: string): Promise<Response> {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/api/health/live")
       return json({ status: "live" });
@@ -1422,8 +1489,8 @@ export class DictionaryService {
       return new Response(null, {
         status: 204,
         headers: {
-          "access-control-allow-methods": "GET, POST, OPTIONS",
-          "access-control-allow-headers": "Content-Type",
+          "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
+          "access-control-allow-headers": "Content-Type, X-CSRF-Token",
         },
       });
     if (request.method === "POST" && path === "/prototype/batch") {
@@ -1446,6 +1513,15 @@ export class DictionaryService {
         throw new ApiError(400, "transport", "Batch contains a blank line.");
       return json(await this.admitMany(lines.map(utf8)), 201);
     }
+    const assistance = await this.assistance.route(
+      request,
+      path,
+      (signal) =>
+        this.requestBytes(request, 262144, "application/json", signal),
+      network,
+      this.options.publicOrigin,
+    );
+    if (assistance) return assistance;
     if (request.method === "POST" && path === "/events")
       return this.admit(await this.requestBytes(request));
     if (request.method === "POST" && path === "/import-selections") {
@@ -1563,13 +1639,13 @@ export class DictionaryService {
         ],
         features: {
           semantic_search: false,
-          assistance: false,
+          assistance: this.assistance.capabilities().length > 0,
           account_observation: false,
           lensisku_bridge: false,
           derived_exchange: false,
         },
         embedding_profiles: [],
-        assistance_profiles: [],
+        assistance_profiles: this.assistance.capabilities(),
         git_mirror: null,
         account_witness_service: null,
       });

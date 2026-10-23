@@ -1,3 +1,14 @@
+import {
+  assistanceAction,
+  inferenceLog,
+  assistanceVisibility,
+  runAssistance,
+} from "../../components/assistance.ts";
+import {
+  sourceCurrent,
+  applySource,
+  retainAssistance,
+} from "../../model/assistance.ts";
 /**
  * Step 3B: the gismu generator. Documented presets with pinned sources or
  * custom languages and weights, editable source rows, exact scores from the
@@ -25,6 +36,8 @@ import {
 import { navigate, type RenderContext, type Route } from "../../app/router.ts";
 import type { App } from "../../app/context.ts";
 import type { Draft } from "../../model/draft.ts";
+import type { RichText } from "../../model/types.ts";
+import { richTextToText, textToRichText } from "../../model/richtext.ts";
 import type { CachedPackage } from "../../data/search.ts";
 import {
   cachedPackage,
@@ -33,9 +46,16 @@ import {
   inventoryFromPackage,
   inventoryCoverage,
   rootConflictKey,
-  manualFormation,
   newGismuState,
+  sourceRowId,
+  sourceRowKey,
+  sourceRowsFromFormation,
+  sourceNotes,
+  syncFormationSources,
   alternativeSourceRow,
+  editSourceNotes,
+  sourceReviewMarks,
+  resolveSourceReview,
   type GismuRowState,
   type PackageInventory,
 } from "../../model/builders.ts";
@@ -54,9 +74,12 @@ function presetRows(
   return preset.languages.map((language) => {
     const old = previous.find((r) => r.language === language.language);
     return {
+      ...old,
+      id: old?.id ?? sourceRowId(),
       language: language.language,
       name: language.name,
       word: old?.word ?? "",
+      ...(!old ? { aiNoteGroup: [] } : {}),
       input: old?.input ?? "",
       weight: {
         numerator: String(language.numerator),
@@ -88,9 +111,16 @@ export async function gismuPage(
     }
     saver.touch();
   }
+  const existingBuilder = draft.gismu;
   const state = (draft.gismu ??= newGismuState());
   const presets = builderPresets();
-  if (state.preset === null && !state.rows.length) {
+  if (!existingBuilder && draft.formation?.sources.length) {
+    state.rows = sourceRowsFromFormation(
+      draft.formation.sources,
+      draft.retainedWordIpaNullSources ?? [],
+    );
+    saver.touch();
+  } else if (state.preset === null && !state.rows.length && !existingBuilder) {
     state.preset = presets[0].id;
     state.rows = presetRows(presets[0], []);
     saver.touch();
@@ -114,6 +144,16 @@ export async function gismuPage(
       el("bdi", { text: draft.meaning || "(no meaning yet)" }),
     ),
   );
+  const staleFormation = p(
+    "The source scoring inputs changed. Use the form again to refresh its scores, enter it without generation, or remove the evidence before publication.",
+    "small",
+  );
+  staleFormation.hidden = !syncFormationSources(draft);
+  section.append(staleFormation);
+  const saveSources = () => {
+    staleFormation.hidden = !syncFormationSources(draft);
+    saver.touch();
+  };
   // Preset select.
   const head = el("div", {
     style:
@@ -149,7 +189,7 @@ export async function gismuPage(
     state.preset = chosen?.id ?? null;
     if (chosen) state.rows = presetRows(chosen, state.rows);
     state.acknowledged = [];
-    saver.touch();
+    saveSources();
     renderRows();
     schedule();
   });
@@ -169,15 +209,115 @@ export async function gismuPage(
   const rowButtons = el("div", {
     style: "margin-top:10px;display:flex;flex-wrap:wrap;gap:8px",
   });
-  section.append(
-    presetNote,
-    rowsBox,
-    rowButtons,
-    p(
-      "Source word suggestions by AI are not configured on this server.",
-      "meta",
-    ),
+  const sourceActions = el("div", { class: "ai-source-actions" });
+  const sourceControls = new Map<string, HTMLElement>();
+  const sourceObservers = new Map<string, MutationObserver>();
+  let rowCleanups: (() => void)[] = [];
+  const cleanupRows = () => {
+    for (const unsubscribe of rowCleanups) unsubscribe();
+    rowCleanups = [];
+  };
+  context.signal.addEventListener(
+    "abort",
+    () => {
+      cleanupRows();
+      for (const observer of sourceObservers.values()) observer.disconnect();
+    },
+    { once: true },
   );
+  const notesEditing = new Set<string>();
+  const detailRows = new Map<
+    string,
+    { row: HTMLElement; notes: boolean; control: HTMLElement }
+  >();
+  const visibility = assistanceVisibility(app, context);
+  const syncSourceVisibility = () => {
+    sourceActions.hidden =
+      !visibility.enabled ||
+      !state.rows.length ||
+      ![...sourceControls.values()].some((control) => !control.hidden);
+    for (const details of detailRows.values())
+      details.row.hidden = !details.notes && details.control.hidden;
+  };
+  const sourceControl = (row: GismuRowState) => {
+    const key = sourceRowKey(row);
+    const label = `Suggest source for ${row.name || row.language}`;
+    let control = sourceControls.get(key);
+    if (control && control.dataset.sourceLabel !== label) {
+      control.dispatchEvent(new Event("assist-dispose"));
+      sourceObservers.get(key)?.disconnect();
+      sourceObservers.delete(key);
+      sourceControls.delete(key);
+      control.remove();
+      control = undefined;
+    }
+    if (!control) {
+      const id = row.id!;
+      control = assistanceAction(app, draft, saver, context, {
+        key,
+        label,
+        operation: "gismu-sources",
+        current: () => sourceCurrent(draft, id),
+        apply: (d, r) => applySource(d, id, r),
+        sourceRow: () => state.rows.find((current) => current.id === id),
+      });
+      control.dataset.sourceLabel = label;
+      sourceControls.set(key, control);
+      const observer = new MutationObserver(syncSourceVisibility);
+      observer.observe(control, {
+        attributes: true,
+        attributeFilter: ["hidden"],
+      });
+      sourceObservers.set(key, observer);
+    }
+    return control;
+  };
+  const renameManualLabels = (
+    container: HTMLElement,
+    before: string,
+    after: string,
+  ) => {
+    const suffix = ` for ${before}`;
+    for (const node of container.querySelectorAll<HTMLElement>(
+      "[aria-label]",
+    )) {
+      if (node.closest(".ai-action")) continue;
+      const label = node.getAttribute("aria-label")!;
+      if (label.endsWith(suffix))
+        node.setAttribute(
+          "aria-label",
+          `${label.slice(0, -suffix.length)} for ${after}`,
+        );
+    }
+    for (const label of container.querySelectorAll("label"))
+      if (label.textContent === `Source notes for ${before}`)
+        label.textContent = `Source notes for ${after}`;
+  };
+  let bulkRunning = false;
+  const fillSources = button(
+    el("span", {}, text("AI", "ai-tag"), text(" Suggest source words")),
+    async () => {
+      if (bulkRunning) return;
+      bulkRunning = true;
+      fillSources.setAttribute("aria-disabled", "true");
+      try {
+        for (const control of [...sourceControls.values()]) {
+          if (!context.live() || !visibility.enabled || !control.isConnected)
+            break;
+          if (!(await runAssistance(control))) break;
+        }
+      } finally {
+        bulkRunning = false;
+        fillSources.removeAttribute("aria-disabled");
+        if (document.activeElement === document.body && context.live())
+          fillSources.focus();
+      }
+    },
+    { class: "btn btn-quiet", "aria-label": "Suggest source words" },
+  );
+  sourceActions.append(fillSources);
+  sourceActions.hidden = true;
+  section.append(presetNote, rowsBox, rowButtons, sourceActions);
   const recipeField = field("Candidate letters", {
     value: state.candidates,
     options: [
@@ -236,12 +376,59 @@ export async function gismuPage(
   columns.append(section, aside);
   main.append(columns);
   let result: GismuResult | null = null;
+  let resultFingerprint: string | null = null;
   let failure: string | null = null;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  // Native words, notes, and pronunciation do not affect the scores.
+  const generationFingerprint = () =>
+    JSON.stringify({
+      preset: state.preset,
+      sources: state.rows.map((row) => ({
+        language: row.language.trim(),
+        input: row.input,
+        weight: row.weight,
+      })),
+      candidates: state.candidates,
+      window: Math.max(state.window, 32),
+      manual: state.manual.trim() || null,
+      inventory,
+      limits: { work: 60_000_000 },
+    });
+  context.signal.addEventListener("abort", () => clearTimeout(timer), {
+    once: true,
+  });
+  const pendingLetters = () =>
+    state.rows.some((row) =>
+      sourceReviewMarks(row).some((mark) => mark.field === "input"),
+    );
+  const lettersReviewMessage =
+    "Keep or clear the retained Letters before the generator runs.";
   const complete = () =>
     state.rows.length > 0 &&
     state.rows.every((r) => r.input.trim() && r.weight && r.language.trim());
   const renderRows = () => {
+    cleanupRows();
+    const activeKeys = new Set(state.rows.map(sourceRowKey));
+    for (const [key, control] of sourceControls)
+      if (!activeKeys.has(key)) {
+        control.dispatchEvent(new Event("assist-dispose"));
+        sourceObservers.get(key)?.disconnect();
+        sourceObservers.delete(key);
+        sourceControls.delete(key);
+        control.remove();
+      }
+    if (draft.ai) {
+      const kept = draft.ai.records.filter(
+        (record) =>
+          !record.key.startsWith("source-") || activeKeys.has(record.key),
+      );
+      if (kept.length !== draft.ai.records.length) {
+        draft.ai.records = kept;
+        retainAssistance(draft);
+        saver.touch();
+      }
+    }
+    detailRows.clear();
     const preset = presets.find((pr) => pr.id === state.preset) ?? null;
     presetNote.replaceChildren();
     if (preset) {
@@ -282,14 +469,20 @@ export async function gismuPage(
           {},
           el("th", { scope: "col", text: "Language" }),
           el("th", { scope: "col", class: "right", text: "Weight" }),
-          el("th", { scope: "col", text: "Native word" }),
-          el("th", { scope: "col", text: "Scoring letters" }),
+          el("th", { scope: "col", text: "Word" }),
+          el("th", { scope: "col", text: "Said" }),
+          el("th", { scope: "col", text: "Stem" }),
+          el("th", { scope: "col", text: "Stem said" }),
+          el("th", { scope: "col", text: "Letters" }),
           el("th", { scope: "col", text: "" }),
         ),
       ),
     );
     const tbody = el("tbody");
     state.rows.forEach((row, index) => {
+      const sourceKey = sourceRowKey(row);
+      const marked = (field: "input" | "word_ipa" | "stem" | "ipa") =>
+        sourceReviewMarks(row).some((mark) => mark.field === field);
       const tr = el("tr");
       const languageCell = el("td");
       if (preset)
@@ -305,9 +498,19 @@ export async function gismuPage(
           style: "width:6rem;",
         });
         code.addEventListener("change", () => {
+          const previousName = row.name || row.language;
           row.language = code.value.trim();
           row.name = row.language;
-          saver.touch();
+          code.value = row.language;
+          renameManualLabels(tr, previousName, row.name);
+          const details = detailRows.get(sourceKey);
+          if (details) {
+            renameManualLabels(details.row, previousName, row.name);
+            details.control = sourceControl(row);
+            details.row.firstElementChild?.append(details.control);
+          }
+          syncSourceVisibility();
+          saveSources();
           schedule();
         });
         languageCell.append(code);
@@ -348,7 +551,7 @@ export async function gismuPage(
             /^\d+$/.test(numerator) && /^[1-9]\d*$/.test(denominator)
               ? { numerator, denominator }
               : null;
-          saver.touch();
+          saveSources();
           schedule();
         };
         n.addEventListener("change", update);
@@ -356,6 +559,11 @@ export async function gismuPage(
         weightCell.append(n, text(" / "), d);
       }
       const nativeCell = el("td", { class: "native" });
+      const staleNotes = p(
+        "The source word changed. Review the source notes.",
+        "meta",
+      );
+      staleNotes.hidden = !row.notesStale;
       const native = el("input", {
         class: "field",
         "aria-label": `Native word for ${row.name || row.language}`,
@@ -363,8 +571,12 @@ export async function gismuPage(
         style: "min-width:8rem;",
       });
       native.addEventListener("input", () => {
+        if (row.word !== native.value && sourceNotes(row).length) {
+          row.notesStale = true;
+          staleNotes.hidden = false;
+        }
         row.word = native.value;
-        saver.touch();
+        saveSources();
       });
       nativeCell.append(native);
       const inputCell = el("td");
@@ -372,24 +584,64 @@ export async function gismuPage(
         class: "field",
         "aria-label": `Scoring letters for ${row.name || row.language}`,
         value: row.input,
+        readonly: marked("input"),
         spellcheck: "false",
         lang: "jbo",
         style: "width:9rem;",
       });
       input.addEventListener("input", () => {
+        if (marked("input")) return;
         row.input = input.value;
-        saver.touch();
+        delete row.inputOriginal;
+        saveSources();
         schedule();
       });
       inputCell.append(input);
+      if (row.inputOriginal?.format === "ipa") {
+        inputCell.append(
+          p(
+            "IPA conversion is unavailable. The original input stays unchanged.",
+            "meta",
+          ),
+          el("bdi", {
+            "aria-label": `Original IPA input for ${row.name || row.language}`,
+            text: row.inputOriginal.text,
+            style: "white-space:pre-wrap",
+          }),
+        );
+        input.disabled = true;
+        inputCell.append(
+          button(
+            "Replace IPA input with scoring letters",
+            () => {
+              if (marked("input")) return;
+              if (
+                !confirm(
+                  "Replace the original IPA input with scoring letters? The original input will be removed from this source row.",
+                )
+              )
+                return;
+              delete row.inputOriginal;
+              saveSources();
+              renderRows();
+            },
+            {
+              class: "btn btn-quiet small",
+              disabled: marked("input"),
+              "aria-label": `Replace IPA input for ${row.name || row.language}`,
+            },
+          ),
+        );
+      }
       const tools = el("td", { class: "right", style: "white-space:nowrap" });
       tools.append(
         button(
           "Alternative",
           () => {
             state.rows.splice(index + 1, 0, alternativeSourceRow(row));
-            saver.touch();
+            saveSources();
             renderRows();
+            schedule();
           },
           {
             class: "btn btn-quiet",
@@ -399,10 +651,22 @@ export async function gismuPage(
           },
         ),
         button(
+          "Notes",
+          () => {
+            notesEditing.add(sourceKey);
+            renderRows();
+            detailRows.get(sourceKey)?.row.querySelector("textarea")?.focus();
+          },
+          {
+            class: "btn btn-quiet",
+            "aria-label": `Edit source notes for ${row.name || row.language}`,
+          },
+        ),
+        button(
           icon("close", "", 16),
           () => {
             state.rows.splice(index, 1);
-            saver.touch();
+            saveSources();
             renderRows();
             schedule();
           },
@@ -412,8 +676,149 @@ export async function gismuPage(
           },
         ),
       );
-      tr.append(languageCell, weightCell, nativeCell, inputCell, tools);
+      const detailCell = (label: string, key: "word_ipa" | "stem" | "ipa") => {
+        const input = el("input", {
+          class: "field",
+          "aria-label": `${label} for ${row.name || row.language}`,
+          value: row[key] ?? "",
+          readonly: marked(key),
+          style: "width:8rem;min-height:36px",
+        });
+        input.addEventListener("input", () => {
+          if (marked(key)) return;
+          row[key] = input.value || null;
+          if (key === "word_ipa") delete row.wordIpaNullOriginal;
+          saveSources();
+        });
+        return el("td", {}, input);
+      };
+      tr.append(
+        languageCell,
+        weightCell,
+        nativeCell,
+        detailCell("Said", "word_ipa"),
+        detailCell("Stem", "stem"),
+        detailCell("Stem said", "ipa"),
+        inputCell,
+        tools,
+      );
       tbody.append(tr);
+      const control = sourceControl(row);
+      const details = el("td", { colspan: "8" });
+      const showNotes =
+        sourceNotes(row).length > 0 || notesEditing.has(sourceKey);
+      if (showNotes) {
+        const notes = field(`Source notes for ${row.name || row.language}`, {
+          multiline: true,
+          rows: 4,
+          value: richTextToText(sourceNotes(row)),
+          hint: "Review all source notes. Edit the text or drop the notes before publication.",
+        });
+        notes.input.addEventListener("input", () => {
+          editSourceNotes(row, textToRichText(notes.input.value, false));
+          row.sense = "";
+          row.note = "";
+          row.notesStale = false;
+          staleNotes.hidden = true;
+          saveSources();
+        });
+        details.append(
+          notes.wrapper,
+          staleNotes,
+          button(
+            "Drop source notes",
+            () => {
+              editSourceNotes(row, []);
+              row.sense = "";
+              row.note = "";
+              row.notesStale = false;
+              notesEditing.delete(sourceKey);
+              saveSources();
+              renderRows();
+            },
+            {
+              class: "btn btn-quiet",
+              "aria-label": `Drop source notes for ${row.name || row.language}`,
+            },
+          ),
+        );
+        const aiRecord = draft.ai?.records.findLast(
+          (r) => r.key === sourceKey && r.state === "accepted",
+        );
+        if (aiRecord) {
+          const logButton = button(
+            "How the assistant decided",
+            () => inferenceLog(aiRecord, draft),
+            {
+              class: "btn btn-quiet small",
+            },
+          );
+          const unsubscribe = visibility.bind(logButton);
+          rowCleanups.push(unsubscribe);
+          details.append(logButton);
+        }
+      }
+      const review = sourceReviewMarks(row);
+      if (review.length) {
+        const reviewBox = el("section", {
+          class: "notice source-review",
+          "aria-label": `Retained source evidence for ${row.name || row.language}`,
+        });
+        reviewBox.append(
+          p(
+            "The source word changed. Keep or clear each retained value before publication.",
+            "small",
+          ),
+        );
+        const labels = {
+          word_ipa: "Said",
+          stem: "Stem",
+          ipa: "Stem said",
+          input: "Letters",
+          notes: "Notes paragraph",
+        };
+        review.forEach((mark, markIndex) => {
+          const label = `${labels[mark.field]}${mark.field === "notes" ? ` ${(mark.index ?? 0) + 1}` : ""}`;
+          const value =
+            mark.field === "notes"
+              ? richTextToText([mark.value as RichText[number]])
+              : typeof mark.value === "string"
+                ? mark.value
+                : JSON.stringify(mark.value);
+          const line = el(
+            "div",
+            { class: "source-review-item" },
+            p(`${label}: earlier word "${mark.word}"`, "meta"),
+            el("pre", { text: value }),
+          );
+          for (const choice of ["keep", "clear"] as const)
+            line.append(
+              button(
+                choice === "keep" ? "Keep" : "Clear",
+                () => {
+                  resolveSourceReview(row, markIndex, choice);
+                  saveSources();
+                  renderRows();
+                  schedule();
+                },
+                {
+                  class: "btn btn-quiet",
+                  "aria-label": `${choice === "keep" ? "Keep" : "Clear"} ${label} for ${row.name || row.language}`,
+                },
+              ),
+            );
+          reviewBox.append(line);
+        });
+        details.append(reviewBox);
+      }
+      details.append(control);
+      const detailRow = el("tr", {}, details);
+      detailRows.set(sourceKey, {
+        row: detailRow,
+        notes: showNotes || review.length > 0,
+        control,
+      });
+      tbody.append(detailRow);
     });
     table.append(tbody);
     rowsBox.append(table);
@@ -424,14 +829,17 @@ export async function gismuPage(
           "Add a language",
           () => {
             state.rows.push({
+              id: sourceRowId(),
               language: "",
               name: "",
               word: "",
+              aiNoteGroup: [],
               input: "",
               weight: { numerator: "1", denominator: "1" },
             });
-            saver.touch();
+            saveSources();
             renderRows();
+            schedule();
           },
           { class: "btn btn-quiet" },
         ),
@@ -442,6 +850,7 @@ export async function gismuPage(
         "meta",
       ),
     );
+    syncSourceVisibility();
   };
   const chosen = (): GismuCandidate | null => {
     if (!result) return null;
@@ -461,6 +870,10 @@ export async function gismuPage(
     candidatesBox.replaceChildren();
     more.replaceChildren();
     candidatesHead.replaceChildren(text("Candidates"));
+    if (pendingLetters()) {
+      status.textContent = lettersReviewMessage;
+      return;
+    }
     if (failure) {
       status.textContent = failure;
       return;
@@ -767,14 +1180,25 @@ export async function gismuPage(
     refreshPrimary();
   };
   const run = () => {
+    if (!context.live()) return;
+    clearTimeout(timer);
+    timer = undefined;
     failure = null;
+    if (pendingLetters()) {
+      renderCandidates();
+      if (!result) renderSelected();
+      else refreshPrimary();
+      return;
+    }
     result = null;
+    resultFingerprint = null;
     if (!complete()) {
       renderCandidates();
       renderSelected();
       return;
     }
     try {
+      const fingerprint = generationFingerprint();
       result = generateGismu({
         sources: state.rows.map((r) => ({
           language: r.language.trim(),
@@ -792,6 +1216,7 @@ export async function gismuPage(
         manual: state.manual.trim() || null,
         limits: { work: 60_000_000 },
       });
+      resultFingerprint = fingerprint;
     } catch (error) {
       failure =
         error instanceof BuilderError
@@ -805,7 +1230,11 @@ export async function gismuPage(
   };
   const schedule = () => {
     clearTimeout(timer);
-    status.textContent = complete() ? "Calculating…" : status.textContent;
+    failure = null;
+    status.textContent = pendingLetters()
+      ? lettersReviewMessage
+      : "Calculating…";
+    refreshPrimary();
     timer = setTimeout(run, 250);
   };
   let bar: HTMLElement;
@@ -822,6 +1251,16 @@ export async function gismuPage(
     candidate: GismuCandidate | null;
     reason: string;
   } => {
+    if (pendingLetters())
+      return {
+        candidate: null,
+        reason: lettersReviewMessage,
+      };
+    if (result && resultFingerprint !== generationFingerprint())
+      return {
+        candidate: null,
+        reason: "Wait for the current scoring inputs to be checked.",
+      };
     const candidate = chosen();
     if (candidate) return { candidate, reason: "" };
     const manual = state.manual.trim();
@@ -858,6 +1297,10 @@ export async function gismuPage(
       label: "Use this form",
       disabled: true,
       action: async () => {
+        if (!result || resultFingerprint !== generationFingerprint()) {
+          schedule();
+          return;
+        }
         const { candidate } = usable();
         if (candidate && result) {
           if (unacknowledged(candidate).length) return;
@@ -901,6 +1344,8 @@ export async function gismuPage(
     },
   });
   main.append(bar);
+  const unsubscribeSources = visibility.subscribe(syncSourceVisibility);
+  context.signal.addEventListener("abort", unsubscribeSources, { once: true });
   renderRows();
   run();
 }

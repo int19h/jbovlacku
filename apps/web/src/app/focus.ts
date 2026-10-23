@@ -1,8 +1,8 @@
 /**
  * The reader's own focus choices while a page renders. The page renderer
  * moves the focus to the new heading when the page finishes, unless the
- * reader chose another element during the load. Only an element that the
- * reader chose keeps the focus:
+ * reader chose another element during the load or the page explicitly gave
+ * a control the focus. These actions count as the reader's choice:
  *
  * - an element that the reader edits: input, or a key or pointer action on
  *   an editable element, such as typing, caret movement, or selection in a
@@ -17,7 +17,8 @@
  * not a new choice. A key that only scrolls changes no focus, so the heading
  * still receives it. A focus inside an open dialog is not a reader choice
  * here; the renderer keeps it with its own dialog guard. A page's own focus
- * inside the content is not a reader choice either.
+ * inside the content is not a reader choice either. A page must use the
+ * explicit focus helper to keep its own control focused when it finishes.
  */
 const NON_TEXT_INPUTS = new Set([
   "button",
@@ -43,8 +44,10 @@ export function isEditable(target: EventTarget | null): target is HTMLElement {
 export interface ReaderFocus {
   /** Ends the observation. The abort signal also ends it. */
   stop(): void;
-  /** True when the active element is one that the reader chose during the render. */
+  /** True when the active element was chosen by the reader or the page. */
   keeps(): boolean;
+  /** Focuses a page control unless the reader chose another element or opened a dialog. */
+  focus(target: HTMLElement, options?: FocusOptions): boolean;
 }
 /**
  * Starts to observe the reader's focus choices for one render of `main`.
@@ -56,6 +59,16 @@ export function watchReaderFocus(
 ): ReaderFocus {
   const start = document.activeElement;
   const chosen = new Set<Element>();
+  const intended = new Set<Element>();
+  const activeChosen = (elements: Set<Element>) => {
+    const active = document.activeElement;
+    return (
+      active instanceof HTMLElement &&
+      active !== document.body &&
+      active.isConnected &&
+      elements.has(active)
+    );
+  };
   // True from a reader key, pointer, or mouse event until the end of its
   // task. A focus move by Tab, by a click, or by the mousedown of a touch tap
   // happens in that same task.
@@ -98,13 +111,21 @@ export function watchReaderFocus(
       clearTimeout(clearReaderEvent);
     },
     keeps() {
-      const active = document.activeElement;
-      return (
-        active instanceof HTMLElement &&
-        active !== document.body &&
-        active.isConnected &&
-        chosen.has(active)
-      );
+      return activeChosen(chosen) || activeChosen(intended);
+    },
+    focus(target, options) {
+      if (
+        signal.aborted ||
+        !target.isConnected ||
+        !main.contains(target) ||
+        activeChosen(chosen) ||
+        document.activeElement?.closest("dialog[open]")
+      )
+        return false;
+      target.focus(options);
+      if (document.activeElement !== target) return false;
+      intended.add(target);
+      return true;
     },
   };
 }

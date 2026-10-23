@@ -1,0 +1,6 @@
+Draft a definition for the chosen form. Preserve the original intended meaning.
+Use the current prose, chosen spelling, ordered components and supplied source definitions.
+Do not silently add or remove a participant or condition.
+
+Return text, one plain string, and reason. Do not use HTML or executable markup.
+Placeholders such as x1 stay literal text. The application presents this beside the existing prose for review.

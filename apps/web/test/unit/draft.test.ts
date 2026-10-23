@@ -18,6 +18,7 @@ import {
   formationMetadata,
   manualFormation,
   newGismuState,
+  formationSource,
   alternativeSourceRow,
   type GismuRowState,
 } from "../../src/model/builders.ts";
@@ -53,6 +54,12 @@ before(async () =>
     ),
   ),
 );
+import {
+  applySource,
+  sourceCurrent,
+  mappingKind,
+  type Suggestion,
+} from "../../src/model/assistance.ts";
 const seed = new Uint8Array(32).fill(77);
 /** Signs the body and checks it against the version 1 action and body rules. */
 function admissible(body: unknown, parents: string[] = []) {
@@ -561,6 +568,8 @@ test("an alternative source row clears word evidence and preserves its language 
   const original = structuredClone(row);
   const alternative = alternativeSourceRow(row);
   assert.deepEqual(alternative, {
+    id: alternative.id,
+    aiNoteGroup: [],
     language: "en",
     name: "English",
     word: "",
@@ -794,10 +803,14 @@ test("source stems stay private through draft reload, export, publication, and R
     evidenceForm: "broda",
     gismu: { ...newGismuState(), rows: [row] },
   });
-  const exported = JSON.stringify(draft);
-  const restored = normalizeDraft(JSON.parse(exported));
-  assert.deepEqual(restored.gismu!.rows[0], row);
+  const restored = normalizeDraft(JSON.parse(JSON.stringify(draft)));
+  assert.equal(typeof restored.gismu!.rows[0].id, "string");
+  assert.deepEqual(restored.gismu!.rows[0], {
+    ...row,
+    id: restored.gismu!.rows[0].id,
+  });
   const before = structuredClone(restored);
+
   const built = draftToBody(restored);
   assert.deepEqual(built.problems, []);
   assert.deepEqual(built.body!.etymology.formation, formation);
@@ -952,7 +965,12 @@ test("signed evidence alone decides whether cached draft source rows publish", (
     const source = { ...emptySource, ...fields };
     const { word_ipa, ...required } = source;
     const expected = signed
-      ? [{ ...required, ...(word_ipa?.trim() ? { word_ipa } : {}) }]
+      ? [
+          {
+            ...required,
+            ...(word_ipa === null || word_ipa?.trim() ? { word_ipa } : {}),
+          },
+        ]
       : [];
     for (const stem of [undefined, null, "", "run"]) {
       for (const ipa of [undefined, null, "", "rʌn"]) {
@@ -1014,6 +1032,27 @@ test("an empty signed source with a known weight survives publication and Revise
   const revised = draftToBody(draftFromBody(built.body!, parent, "native"));
   assert.deepEqual(revised.problems, []);
   assert.deepEqual(revised.body!.etymology.formation, formation);
+  assert.ok(admissible(revised.body, [parent]));
+});
+
+test("Revise preserves an authenticated all-empty source through draft reload without generator state", () => {
+  const body = draftToBody(
+    newDraft({ kind: "gismu", spelling: "broda", text: "A fixture meaning." }),
+  ).body!;
+  body.etymology.formation = {
+    ...manualFormation([], "Retained historical evidence.")!,
+    sources: [
+      { language: "fr", word: "", input: null, weight: null, notes: [] },
+    ],
+  };
+  assert.ok(admissible(body));
+  const parent = "jve1:" + "1".repeat(64);
+  const draft = normalizeDraft(
+    JSON.parse(JSON.stringify(draftFromBody(body, parent, "native"))),
+  );
+  assert.equal(draft.gismu, null);
+  const revised = draftToBody(draft);
+  assert.deepEqual(revised.body!.etymology.formation, body.etymology.formation);
   assert.ok(admissible(revised.body, [parent]));
 });
 
@@ -2488,3 +2527,187 @@ for (const change of ["move", "remove"]) {
     assert.equal(draft.numberingApproved, false);
   });
 }
+
+test("browser source aliases migrate once with null precedence and independent signed evidence", () => {
+  const old = {
+    language: "en",
+    name: "English",
+    word: "running",
+    input: "",
+    weight: null,
+    wordIpa: "old word",
+    stemIpa: "old stem",
+    stem: "run",
+  };
+  const draft = normalizeDraft(
+    newDraft({
+      gismu: {
+        ...newGismuState(),
+        rows: [
+          old,
+          { ...old, word_ipa: null, ipa: "new stem" },
+          {
+            language: "fr",
+            name: "French",
+            word: "",
+            input: "",
+            weight: null,
+            notes: [["Word IPA: never infer this"]],
+          },
+        ],
+      },
+    }),
+  );
+  assert.equal(typeof draft.gismu!.rows[0].id, "string");
+  assert.deepEqual(draft.gismu!.rows[0], {
+    id: draft.gismu!.rows[0].id,
+    language: "en",
+    name: "English",
+    word: "running",
+    input: "",
+    weight: null,
+    word_ipa: "old word",
+    ipa: "old stem",
+    stem: "run",
+  });
+  assert.equal(draft.gismu!.rows[1].word_ipa, null);
+  assert.equal(draft.gismu!.rows[1].ipa, "new stem");
+  assert.equal(Object.hasOwn(draft.gismu!.rows[2], "word_ipa"), false);
+  draft.gismu!.rows[0].word_ipa = "edited word";
+  Object.assign(draft.gismu!.rows[0], { ipa: null });
+  const source = sourceCurrent(draft, 0).formation!.sources[0];
+  assert.equal(source.word_ipa, "edited word");
+  assert.equal(Object.hasOwn(source, "ipa"), false);
+  assert.equal(Object.hasOwn(source, "stem"), false);
+  const pronunciationOnly = manualFormation(
+    [
+      {
+        language: "en",
+        name: "English",
+        word: "",
+        input: "",
+        weight: null,
+        word_ipa: "evidence",
+      },
+    ],
+    "",
+  )!;
+  assert.equal(pronunciationOnly.sources[0].word_ipa, "evidence");
+  for (const field of ["stem", "ipa"] as const) {
+    assert.equal(
+      manualFormation(
+        [
+          {
+            language: "en",
+            name: "English",
+            word: "",
+            input: "",
+            weight: null,
+            [field]: "private evidence",
+          },
+        ],
+        "",
+      ),
+      null,
+    );
+  }
+  const blank = formationSource({ ...old, word_ipa: "", ipa: "" });
+  assert.equal(Object.hasOwn(blank, "word_ipa"), false);
+  assert.equal(Object.hasOwn(blank, "ipa"), false);
+  const blankEvidence = manualFormation(
+    [
+      {
+        language: "en",
+        name: "English",
+        word: "",
+        input: "",
+        weight: null,
+        word_ipa: " ",
+      },
+    ],
+    "",
+  )!;
+  assert.equal(blankEvidence, null);
+});
+
+test("accepted sources keep supplementary note bytes and private stems through publication and revision", () => {
+  const draft = newDraft({
+    kind: "gismu",
+    spelling: "broda",
+    text: "A source.",
+    gismu: {
+      ...newGismuState(),
+      rows: [
+        {
+          language: "en",
+          name: "English",
+          word: "running",
+          input: "ran",
+          weight: null,
+          word_ipa: "ˈrʌnɪŋ",
+          stem: "run",
+          ipa: "rʌn",
+          notes: [["Manual evidence."]],
+          aiNoteGroup: [],
+        },
+      ],
+    },
+  });
+  const notes = [
+    ["Sense:  sense line 1\n\nNote: part of the sense  "],
+    ["Note:  note line 1\n\nSense: part of the note  "],
+  ];
+  applySource(draft, 0, {
+    proposals: [{ path: "/formation/sources", value: [{ notes }] }],
+  } as Suggestion);
+  const row = draft.gismu!.rows[0];
+  assert.equal(row.word_ipa, "ˈrʌnɪŋ");
+  assert.equal(row.stem, "run");
+  assert.equal(row.ipa, "rʌn");
+  assert.equal(row.sense, " sense line 1\n\nNote: part of the sense  ");
+  assert.equal(row.note, " note line 1\n\nSense: part of the note  ");
+  const expected = [["Manual evidence."], ...notes];
+  assert.deepEqual(row.notes, expected);
+  assert.deepEqual(
+    sourceCurrent(draft, 0).formation!.sources[0].notes,
+    expected,
+  );
+  draft.formation = manualFormation(draft.gismu!.rows, "Manual evidence.");
+  draft.evidenceForm = "broda";
+  const restored = normalizeDraft(JSON.parse(JSON.stringify(draft)));
+  const built = draftToBody(restored);
+  assert.deepEqual(built.problems, []);
+  assert.equal(
+    Object.hasOwn(built.body!.etymology.formation!.sources[0], "ipa"),
+    false,
+  );
+  assert.equal(
+    Object.hasOwn(built.body!.etymology.formation!.sources[0], "stem"),
+    false,
+  );
+  assert.deepEqual(built.body!.etymology.formation!.sources[0].notes, expected);
+  assert.ok(admissible(built.body));
+  const parent = "jve1:" + "1".repeat(64);
+  const revised = draftToBody(draftFromBody(built.body!, parent, "native"));
+  assert.deepEqual(
+    revised.body!.etymology.formation,
+    built.body!.etymology.formation,
+  );
+  assert.ok(admissible(revised.body, [parent]));
+  applySource(draft, 0, {
+    proposals: [{ path: "/formation/sources", value: [{ notes: [] }] }],
+  } as Suggestion);
+  assert.equal(row.sense, "");
+  assert.equal(row.note, "");
+  assert.deepEqual(row.notes, [["Manual evidence."]]);
+  for (const kind of ["direct", "merged", "distributed", "functional"])
+    assert.equal(mappingKind([[`${kind}: A reason.`]]), kind);
+  for (const reason of [
+    "Direct: A reason.",
+    " direct: A reason.",
+    "direct:No space",
+    "direct:",
+    "none: A reason.",
+  ])
+    assert.equal(mappingKind([[reason]]), null);
+});

@@ -78,20 +78,20 @@ Build the WebAssembly bindings before either command.
 
 The Node adapter accepts these environment variables:
 
-| Variable              | Purpose                                                                                       |
-| --------------------- | --------------------------------------------------------------------------------------------- |
-| `JVC_DATA_DIR`        | Persistent objects and SQLite databases. The default is `data/node` relative to the checkout. |
-| `HOST`                | Listen address. The source default is `127.0.0.1`.                                            |
-| `PORT`                | Listen port. The default is `8789`.                                                           |
-| `JVC_ASSETS_DIR`      | Browser assets. The source default is `apps/web/dist`.                                        |
-| `JVC_SERVER_ID`       | Service identifier. The source default is `local-node`.                                       |
-| `JVC_VIEW`            | Explicit selected view event ID. A fresh service has no dictionary view.                      |
+| Variable                    | Purpose                                                                                       |
+| --------------------------- | --------------------------------------------------------------------------------------------- |
+| `JVC_DATA_DIR`              | Persistent objects and SQLite databases. The default is `data/node` relative to the checkout. |
+| `HOST`                      | Listen address. The source default is `127.0.0.1`.                                            |
+| `PORT`                      | Listen port. The default is `8789`.                                                           |
+| `JVC_ASSETS_DIR`            | Browser assets. The source default is `apps/web/dist`.                                        |
+| `JVC_SERVER_ID`             | Service identifier. The source default is `local-node`.                                       |
+| `JVC_VIEW`                  | Explicit selected view event ID. A fresh service has no dictionary view.                      |
 | `JVC_STATE_TRAVERSAL_LIMIT` | Explicit state work budget from 1 through 1,000,000,000. It overrides the saved import limit. |
-| `JVC_PUBLIC_ORIGIN`   | Explicit public origin permitted to submit browser writes through a reverse proxy.            |
-| `JVC_SNAPSHOT_LIMIT`  | Retained snapshot count. The default is 16. Allowed values are 1 through 64.                  |
-| `JVC_CORS_ORIGINS`    | Comma-separated additional permitted origins.                                                 |
-| `JVC_POLICY_URL`      | Operator policy URL. The prototype placeholder is not a published policy.                     |
-| `JVC_PROTOTYPE_BATCH` | Set `enabled` only for authorized local batch fixtures. The default disables batch admission. |
+| `JVC_PUBLIC_ORIGIN`         | Explicit public origin permitted to submit browser writes through a reverse proxy.            |
+| `JVC_SNAPSHOT_LIMIT`        | Retained snapshot count. The default is 16. Allowed values are 1 through 64.                  |
+| `JVC_CORS_ORIGINS`          | Comma-separated additional permitted origins.                                                 |
+| `JVC_POLICY_URL`            | Operator policy URL. The prototype placeholder is not a published policy.                     |
+| `JVC_PROTOTYPE_BATCH`       | Set `enabled` only for authorized local batch fixtures. The default disables batch admission. |
 
 A browser write is allowed when its `Origin` equals the request URL's origin.
 Set `JVC_PUBLIC_ORIGIN` when an HTTPS reverse proxy gives the browser a different public origin.
@@ -294,11 +294,11 @@ Admission receipts reported durable acceptance, `index_lag`, `evaluation_pending
 Reads used the preceding completed snapshot while the new snapshot evaluated.
 Every update used the incremental path for one record.
 
-| Definition package | Warm word request | Search | Package manifest |
-| --- | ---: | ---: | ---: |
-| English | 62.7 ms | 75.8 ms | 2.0 ms |
-| French | 250.9 ms | 18.7 ms | 2.6 ms |
-| Russian | 61.0 ms | 20.8 ms | 1.5 ms |
+| Definition package | Warm word request |  Search | Package manifest |
+| ------------------ | ----------------: | ------: | ---------------: |
+| English            |           62.7 ms | 75.8 ms |           2.0 ms |
+| French             |          250.9 ms | 18.7 ms |           2.6 ms |
+| Russian            |           61.0 ms | 20.8 ms |           1.5 ms |
 
 The word route returns candidates across definition languages.
 Each warm request used a headword from the named language package and included that package's exact definition.
@@ -501,6 +501,349 @@ Inferred place conversion and automatic rafsi publication remain unfinished.
 Use disposable contributor keys and synthetic account evidence. Do not use real contributor keys or change a Lensisku account.
 Read imported SQL as data. Do not execute an import dump against a service database.
 Use mocked providers before real inference tests.
+
+## Optional AI assistance
+
+AI assistance is off by default. The shared service implements the same assistance jobs on Node and the local Worker.
+Each action needs an explicit browser request. The provider key stays on the server.
+The provider uses the configured base URL plus `/chat/completions`. Clients cannot supply a provider URL or model.
+The tested configuration uses `meta/muse-spark-1.3-contributor`, the `meta` route only, and `medium` reasoning.
+The service forbids provider redirects and fallback routes. It sends one `submit_answer` tool and checks every answer locally.
+Every request uses `tool_choice: "auto"`. The tested provider supports only that choice.
+The answer still requires one valid `submit_answer` call. A missing call counts as a failed answer and receives correction instructions.
+After three failed answers for one task, that task fails. A provider or transport failure stops the job without an automatic paid retry.
+
+Both local adapters accept these variables:
+
+| Variable                           | Purpose                                                                                                                                                              |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `JVC_AI_ENABLED`                   | Set `enabled` to offer assistance. The default is disabled.                                                                                                          |
+| `JVC_AI_BASE_URL`                  | Provider base URL. The default is `https://openrouter.ai/api/v1`. Use HTTPS, or HTTP on loopback for a local provider.                                               |
+| `JVC_AI_KEY_FILE`                  | Path to the server-held provider key. Node reads the file for each model turn. The local Worker launcher reads it at startup.                                        |
+| `JVC_AI_PROVIDER_NAME`             | Public provider name. The default is `OpenRouter`. Capability metadata uses this name and the route, without the private endpoint URL.                               |
+| `JVC_AI_MODEL`                     | Model name. The default is `meta/muse-spark-1.3-contributor`.                                                                                                        |
+| `JVC_AI_PROVIDER_ROUTE`            | Single permitted route. The default is `meta`.                                                                                                                       |
+| `JVC_AI_REASONING_EFFORT`          | Reasoning level. The default is `medium`.                                                                                                                            |
+| `JVC_AI_OPERATIONS`                | Comma-separated permitted operations. The default contains all six operations below. An empty value disables every operation.                                        |
+| `JVC_AI_DECISION_REPORTS`          | Set `enabled` to request a written decision report before the tool call. The default is disabled.                                                                    |
+| `JVC_AI_MAX_TOKENS`                | Optional output limit per provider turn. An explicit value replaces automatic task, effort, and report limits. The permitted range is 128 through 20,480.            |
+| `JVC_AI_TIMEOUT_MS`                | Time limit for the complete job. The default is 120,000 milliseconds. The permitted range is 10 through 540,000. Job expiry leaves a reading window after this time. |
+| `JVC_AI_CONCURRENCY`               | Maximum active jobs. The default is two. Node permits one through four. The Worker caps this value at two.                                                           |
+| `JVC_AI_INPUT_PRICE`               | Model input price in USD per million tokens. The default is 0.10.                                                                                                    |
+| `JVC_AI_OUTPUT_PRICE`              | Model output price in USD per million tokens. The default is 0.20.                                                                                                   |
+| `JVC_AI_HOURLY_BUDGET_USD`         | Server spending limit for the past hour. The default is 32 USD.                                                                                                      |
+| `JVC_AI_DAILY_BUDGET_USD`          | Server spending limit for the past day. The default is 160 USD.                                                                                                      |
+| `JVC_AI_NETWORK_HOURLY_BUDGET_USD` | Hourly allowance for each network. The default is one quarter of the configured server hourly limit.                                                                 |
+| `JVC_AI_NETWORK_DAILY_BUDGET_USD`  | Daily allowance for each network. The default is one quarter of the configured server daily limit.                                                                   |
+| `JVC_AI_MAX_PRICE`                 | Maximum input and output price in USD per million tokens. The default is 10. The permitted range is 0.001 through 100.                                               |
+
+Operations are `type`, `lujvo`, `gismu-sources`, `cmavo-class`, `definition`, and `places-glosses`.
+The `default` profile covers the enabled operations. The `components` profile proposes lujvo components.
+The `lujvo` profile also proposes a spelling. The deterministic builder constructs and recovers that spelling before the service returns it.
+Existing component choices constrain a proposal. An AI answer never assigns a rafsi or publishes a definition.
+
+The components request labels each supplied definition `d1`, `d2`, and so on, in supplied order.
+The model returns a label for the matching word, or null. The application maps labels back to exact event IDs before construction and proposals.
+The private request log includes label-to-event metadata. Raw tool calls retain their labels, including failed answers.
+
+The other answer schemas require no event ID or hash. Place mappings keep studied names such as `klama[2]`.
+The application resolves these names to exact selected definitions after it receives the answer.
+If repeated spellings have different definitions for the same place, the answer must use `unclear`. The application never chooses one silently.
+
+Explicit rafsi locks enter construction as draft choices. They do not claim accepted assignment standing or an endorsement.
+A lujvo draft can contain zero or one component before the author completes it. The service preserves those draft constraints during inference.
+Draft metadata still uses the documented HTTPS morphology and scoring identifiers. Empty rafsi values mean unlocked component choices.
+Initial place suggestions contain at most 16 places. Component suggestions contain two through eight components.
+Selma'o suggestions contain at most 16 classes. Larger existing structures remain available through manual editing.
+
+Start the Node source service with the variables above and `npm run start`.
+For the local Worker, use `npx tsx apps/worker/dev-ai.ts` instead of the ordinary Wrangler command.
+Set `JVC_WORKER_DATA_DIR` to its task-specific local storage directory. `HOST` and `PORT` select its listener.
+The launcher reads the named key file into an in-memory Worker binding. It never writes another credential file or passes the key in command arguments.
+It suppresses Wrangler binding output and reports only a fixed startup error on failure.
+The Worker runtime cannot read a host file path. Its provider key binding is `JVC_AI_KEY`.
+The local launcher permits assistance only on loopback with a loopback HTTP origin.
+It marks local requests with an internal binding and ignores every client IP header.
+The ordinary Wrangler command leaves assistance off unless the operator supplies the key, enables assistance, and configures trusted edge identity.
+For an edge host, set `JVC_TRUST_CF_CONNECTING_IP=enabled` only where Cloudflare controls `CF-Connecting-IP`.
+The Worker also requires platform request metadata and a valid IP address. Synthetic metadata alone does not enable header trust.
+An invalid AI setting disables assistance on the Worker and emits one fixed error per coordinator instance. Manual routes remain available.
+Hosted secret setup and deployment remain separate operator work.
+
+Node permits assistance on direct loopback by default and ignores forwarding headers.
+Without proxy trust, a non-loopback listener or an HTTPS public origin disables assistance. Manual routes remain available.
+Behind an HTTPS proxy, set `JVC_PUBLIC_ORIGIN` to the app origin and `JVC_TRUSTED_PROXY_ADDRESSES` to its exact socket peer IP addresses.
+Separate several trusted addresses with commas. Spaces around entries are allowed. Do not put a network range in that list.
+Set `JVC_CLIENT_IP_HEADER` to one header that the proxy replaces with the real client IP. Its default is `X-Real-IP`.
+The proxy must replace the header with one IP address rather than append client input or a forwarding chain.
+Restrict the Node listener to that proxy. Requests from other peers or without a valid single IP cannot start private jobs.
+The address used for a quota is the IPv4 address or the IPv6 /64 prefix. IPv4-mapped IPv6 addresses use the IPv4 bucket.
+Spending and retained-job limits also count each IPv6 /48. Prefix changes within one /48 do not create more spending shares or retained slots.
+
+The operator sets input and output prices separately in USD per million tokens.
+The defaults come from [OpenRouter's Muse Spark 1.3 Contributor page](https://openrouter.ai/meta/muse-spark-1.3-contributor), read on October 22, 2026.
+That page lists 0.10 USD for input and 0.20 USD for output on the Meta route.
+If the model or route changes, update both prices before enabling assistance.
+`JVC_AI_MAX_PRICE` remains the provider routing ceiling. It does not set the reservation prices.
+An optional `JVC_AI_MAX_COST_USD` sets an additional admission ceiling for one complete job. It has no default.
+
+A reservation is a cost estimate held before job admission.
+The service constructs each possible task's actual initial provider request, including its prompt and tool schema.
+Let `B` be that request's UTF-8 byte count. Each byte counts as one input token.
+Let `M` be the task output cap, `Pi` the input price, and `Po` the output price.
+The response cap is `R = 262,144` bytes. The feedback allowance is `F = 32 × 512 × 6 + 4,096 = 102,400` bytes.
+The correction bound is `C = 2R + F = 626,688` bytes. It includes echoed reasoning, tool arguments, and escaped feedback.
+For tasks after a generated frame, add `G = 2R + 4,096 = 528,384` bytes. Other tasks use `G = 0`.
+Each task reserves three possible answers with a safety margin of two:
+
+```text
+reservation(task) = 2 × sum(a = 0..2) [ (B + G + aC) × Pi + M × Po ] / 1,000,000
+reservation(job) = sum(reservation(task))
+```
+
+Without `JVC_AI_MAX_TOKENS`, the service selects the automatic limits below. Completion counts include the provider's reported reasoning tokens.
+The automatic limits come from the tested model, `meta/muse-spark-1.3-contributor`.
+A different `JVC_AI_MODEL` needs new evidence or an explicit `JVC_AI_MAX_TOKENS` within the permitted range.
+The medium limits retain the measured margin for medium effort with decision reports disabled.
+For each studied task, another effort uses `ceil(observed_effort × medium_limit / observed_medium / 256) × 256`.
+This preserves that task's margin before the global ceiling and rounds upward to 256 tokens.
+
+| Task       | Observed low | Observed medium | Observed high | Observed xhigh |
+| ---------- | -----------: | --------------: | ------------: | -------------: |
+| `glosses`  |        1,697 |           3,044 |         3,583 |          8,387 |
+| `hints`    |        2,189 |           6,603 |         8,223 |          8,365 |
+| `mappings` |        2,663 |           3,657 |         7,244 |          8,420 |
+| `sources`  |        3,488 |           5,687 |        11,973 |         17,053 |
+
+The low, medium, and high observations come from `spark-v19-panel/ledger.jsonl`, under conditions `c08`, `c10`, and `c09` respectively.
+Its SHA-256 is `9cec7aa76febcd5dcb0e0271c625613c2057e49de136c4ed90bd38377b4a1323`.
+Each condition includes 17 successful rows per core task and 132 successful source rows. Probe rows are excluded.
+The xhigh observations come from `new-cases-v7/ledger.jsonl`, condition `c11`, with earlier prompts.
+Its SHA-256 is `fe6ec750a544e9ac4d42ddae4595b497f577a112f17c8e7ccc60f67153ae52f8`.
+It includes nine successful transport responses per core task across eight cases, plus 72 source responses.
+
+The xhigh hints maximum of 8,365 ended at the output limit without a complete answer. It is a lower bound on required output.
+Completed xhigh hints reached 8,075 tokens. The automatic limit uses the larger observation with the medium margin.
+These archived evidence artifacts remain outside the application repository. The hashes identify the exact evidence used for these limits.
+
+The five editor tasks have one accepted medium observation each, with decision reports disabled.
+Their maxima are 1,552 for type, 1,376 for components, 1,174 for cmavo class, 3,996 for definition, and 1,017 for places.
+The source is `ai-smoke-r2-AstIZS/summary.json`, SHA-256 `5343faf31b442f0bfcb1023023cd7708e245dd76f0b168f93f2c6e18bb9a91ae`.
+Their medium limits exceed those observations by at least 24 percent. Other efforts lack direct editor measurements.
+Low editor effort keeps the medium limits. Higher editor effort scales them by the largest studied effort-to-medium ratio, rounded upward to 256 tokens.
+Those ratios are `11973 / 5687` for high and `17053 / 5687` for xhigh.
+
+| Task          | Low limit | Medium limit | High limit | Xhigh limit |
+| ------------- | --------: | -----------: | ---------: | ----------: |
+| `glosses`     |     2,304 |        4,096 |      4,864 |      11,520 |
+| `hints`       |     2,816 |        8,192 |     10,240 |      10,496 |
+| `mappings`    |     4,608 |        6,144 |     12,288 |      14,336 |
+| `sources`     |     5,120 |        8,192 |     17,408 |      20,480 |
+| `type`        |     2,048 |        2,048 |      4,352 |       6,144 |
+| `components`  |     2,048 |        2,048 |      4,352 |       6,144 |
+| `cmavo-class` |     2,048 |        2,048 |      4,352 |       6,144 |
+| `definition`  |     6,144 |        6,144 |     13,056 |      18,432 |
+| `places`      |     2,048 |        2,048 |      4,352 |       6,144 |
+
+Efforts `none` and `minimal` use the low limits without direct measurements. The provider still receives the requested effort unchanged.
+Decision reports double each automatic limit, with a ceiling of 20,480. The factor of two is an unmeasured allowance for written reports.
+An explicit `JVC_AI_MAX_TOKENS` replaces this entire calculation, including the report factor. It applies unchanged to every task and effort.
+Node and Worker defaults both omit this override. These observations and extrapolations do not guarantee completion for every future request.
+
+Every automatic and explicit output limit stays at or below 20,480 tokens, including limits with decision reports disabled.
+Startup refuses an explicit value above 20,480 and names the permitted range. Direct configuration also cannot send a larger limit.
+This ceiling protects the 262,144-byte response allowance. The allowance counts raw provider data, including encrypted reasoning, before private-log filtering.
+
+Archived responses show encrypted reasoning entries that grow in steps. These four common large steps appear in the studied response files:
+
+| Encrypted entry bytes | Responses | Reasoning tokens | Largest compact response bytes |
+| --------------------: | --------: | ---------------: | -----------------------------: |
+|                22,144 |       190 |   1,509 to 3,421 |                         25,100 |
+|                43,989 |       127 |   2,938 to 6,219 |                         47,641 |
+|                87,680 |        42 |  5,859 to 11,784 |                         91,508 |
+|               175,061 |         3 | 14,767 to 16,686 |                        178,378 |
+
+The source files are `spark-v19-panel/runs/c08`, `c09`, and `c10`, plus `new-cases-v7/runs/c11`.
+The largest stored response is `new-cases-v7/runs/c11/sources-v7-transparency--portuguese.json`.
+Its SHA-256 is `769b9b540207364a02bf40a07ded0cbce7900235b41f355e079fda3a76bdad85`.
+Its provider response occupies 178,378 bytes as compact UTF-8 JSON. It reports 17,053 completion tokens, including 16,686 reasoning tokens.
+
+Near the ceiling, the planning allowance uses 12 bytes per output token plus 4,096 bytes for other response fields.
+At 20,480 tokens, that allowance is 249,856 bytes, with 12,288 bytes below the response limit.
+This extrapolates the largest observed step. It does not establish a universal per-turn relationship between tokens and bytes.
+Some smaller archived turns exceed that ratio because the encrypted entries grow in steps. Across 645 stored responses, the largest compact response is 178,378 bytes.
+The independent raw response limit still stops unexpected larger responses. A different model also needs evidence for its response encoding.
+
+The operation determines which tasks remain. An absent initial frame includes the places task and up to sixteen generated places.
+An existing frame uses its actual place keys. The reservation includes mappings only when selected definitions supply component places.
+Before admission, every server and network allowance must cover existing charges plus the new reservation.
+The server defaults are 32 USD over the past hour and 160 USD over the past day.
+Each network receives one quarter of each configured server limit by default: 8 USD per hour and 40 USD per day.
+At least four separate network shares are needed to fill a server spending window.
+IPv6 requests count against both their /64 and /48 allowances. One IPv4 address has one allowance.
+The durable ledger stores keyed SHA-256 hashes of these units. It stores no client address or prefix.
+A private random key remains stable across restarts. Legacy records with no network identity count against every network until their windows end.
+
+The initial provider request is bounded at 2,097,152 bytes before any generated-frame allowance.
+Generated-frame follow-up tasks add at most `G` bytes to that bound.
+A conservative four-task ceiling uses the largest task cap for every task and adds `G` to all three follow-up tasks:
+
+```text
+ceiling = 4 × 6 × ((2,097,152 + 626,688) × 0.10 + 20,480 × 0.20) / 1,000,000
+        + 3 × 6 × 528,384 × 0.10 / 1,000,000
+        = 7.5866112 USD
+```
+
+The 8 USD hourly network share exceeds that ceiling by 0.4133888 USD. Its 40 USD daily share also covers every operation.
+
+Every enabled operation fits within the default network share at each effort, with reports enabled or disabled.
+This includes a generated frame with glosses, hints, and mappings, and an explicit maximum override of 20,480.
+The exact reservation depends on the actual prompts, input, and tool schemas. Model prices remain separate from spending allowances.
+Smaller operator allowances can exclude operations from the advertised capabilities.
+
+A request above any empty allowance or the optional per-job ceiling returns `billing_request_too_large` without `Retry-After`.
+Its message explains that waiting cannot help. Reduce the request or raise the named operator allowance.
+A temporary spending refusal returns HTTP 429. For settled charges, `billing_limit` includes the computed `Retry-After` seconds.
+The calculation projects each blocking record's expiry and chooses the earliest time that clears every exhausted allowance.
+An active job can still report a missing or larger cost. Such a refusal uses `billing_pending` without a promised retry time.
+The response explains that active work holds the allowance and that its final charge remains unknown.
+When no pending cost can alter the release, the service uses the actual reservation release or charge expiry.
+An active charge uses the job deadline as the latest possible answer time before its hourly or daily window starts.
+The service never reduces `max_tokens` to spend a remainder. Accepted jobs finish even if reported costs exceed their reservations.
+
+Each reported turn cost replaces that turn's estimate when the job settles.
+If a paid turn reports no cost, its charge remains twice the sum of its input estimate and full output allowance.
+The log leaves unknown provider usage unknown. A transport failure also retains that turn's estimated charge.
+While a job runs, admission counts the larger of its complete reservation and accumulated charges.
+When every answer reports a cost, completion releases the unused reservation. Otherwise the complete reservation remains within the spending window.
+The last paid answer sets the spending window for all charges in that job.
+Every turn sends `usage: { include: true }`, including correction turns.
+[OpenRouter's usage guide](https://openrouter.ai/docs/cookbook/administration/usage-accounting) says that this field is deprecated because usage is automatic.
+The field does not guarantee a usage report.
+
+Node stores the cost ledger in `assistance-spending.sqlite` within `JVC_DATA_DIR`.
+The Worker stores it in the existing admission Durable Object. It splits snapshots into 64 KiB binary parts with a checksummed manifest.
+One storage transaction replaces the parts and manifest together. A failed write preserves the preceding complete snapshot.
+Reservations reach durable storage before any provider request.
+A restart keeps interrupted jobs' outstanding reservations until their spending windows expire.
+Recovery starts those windows at the later of the restart time and the stored job deadline.
+A legacy record without a deadline uses the restart time. The lost job cannot report its final cost.
+The ledger contains cost records, network hashes, and its private hash key. It contains no draft text or provider credential.
+An unreadable or unwritable ledger blocks new assistance jobs.
+At most 16,384 cost records remain within a day. Reaching this bound also refuses new jobs with a retry interval.
+A local workerd test measured a valid maximum ledger with escaped 128-character IDs and two hashes per record.
+Its JSON occupied 17,858,669 bytes. The old single stored value occupied 6,324,340 bytes.
+The split form used 273 parts. Its largest stored part occupied 65,549 bytes, including serialization overhead. The manifest occupied 112 bytes.
+The test restored the complete ledger after a runtime restart. An injected write failure preserved the preceding ledger.
+Local workerd accepted the oversized old value. This does not remove the hosted 2 MB value limit or prove hosted quota compliance.
+These estimates require accurate operator prices. They do not guarantee charges from an untested compatible provider.
+
+The log bounds use separate size allowances. The initial request allowance is `B = 2,097,152` bytes before generated-frame additions.
+The HTTP body permits 262,144 bytes, and loaded definition context permits 131,072 bytes.
+A generated initial frame comes from a response of at most 262,144 bytes.
+Existing frames permit 256 places. A compound permits 64 components, each with at most 256 supplied place indices.
+The mapping legend groups indices by spelling. The tool schema does not repeat the permitted names for every answer key.
+The feedback allowance is `F = 102,400` bytes. The correction allowance is `C = 2 × 262,144 + F = 626,688` bytes.
+
+An individual provider response has a 256 KiB limit. Each job reserves at most 64 MiB for its serialized inference log.
+Before a provider turn, the service reserves space for that request, the complete bounded response, and its displayed log fields.
+If the next turn cannot fit, the job fails with `log_limit` before it sends that turn.
+The request allowance is `4 × (3B + 3C)`, about 31.17 MiB for all twelve turns.
+Five response copies per turn add 15 MiB. Four exchange headers and their initial text add at most 8 MiB.
+The 64 MiB limit leaves room for feedback, checks, usage, and log metadata above these 54.17 MiB allowances.
+Generated-frame follow-up tasks add at most `12G = 6,340,608` bytes across request copies and exchange headers.
+The combined allowance remains below 61 MiB and leaves room within the 64 MiB limit.
+These are serialized bounds. They are not a JavaScript heap bound.
+Request snapshots share immutable messages and tool schemas. Exchange text shares the initial request strings.
+Raw response fields and correction metadata stay as compact JSON and expand one field at a time when read.
+Job reads stream JSON rather than build one complete response string. Admission counts each completed attempt without serializing the whole log again.
+Node retains at most four private logs. The Worker retains at most two and runs at most two jobs at once.
+Thus retained logs represent at most 256 MiB on Node or 128 MiB on the Worker when fully serialized.
+The compact shared representation uses less memory. Wasm, dictionary state, an active provider response, and serialization still need separate headroom.
+These local bounds do not prove that every admitted dictionary and job combination fits a hosted Worker memory limit.
+A full reservation returns HTTP 429. Saving or dismissing a result releases its reservation through acknowledgment.
+
+`GET /api/v1/session` returns a CSRF token and sets a Secure, HttpOnly, SameSite=Strict session cookie.
+The browser sends the token in `X-CSRF-Token` for `POST /api/v1/assist` and `DELETE /api/v1/jobs/ID`.
+Private requests use the configured `JVC_PUBLIC_ORIGIN` on Node or `PUBLIC_ORIGIN` on the Worker, or the request origin by default.
+Extra origins permitted for public dictionary reads cannot use private jobs.
+Each session can start 12 jobs per hour. Each client network bucket can start 48 jobs per hour.
+One bucket holds at most eight sessions and one retained job. A failed job with no provider turn releases its retained slot.
+A new visitor can replace the oldest idle session within a full bucket.
+A parsed request protects its session during context loading and admission. Running jobs and readable retained results also protect their sessions.
+The service limits body reads to ten seconds. A body that exceeds that time returns HTTP 408 with `request_timeout`.
+Slow uploads never protect their sessions from idle eviction.
+Dismissed and discarded terminal records do not prevent idle eviction. Eviction removes their remaining job records.
+At most 128 sessions exist at once. A new visitor can replace the oldest idle session at that limit.
+`GET /session` refreshes a session for one hour. Job admission also extends it through the job's expiry.
+Refreshing a session does not reset its hourly job quota.
+Quota failures include a retry interval based on the exhausted limit.
+A retained slot can last through the job deadline plus its reading window, capped by job expiry.
+Capacity retry times include that window. Completion cannot extend the window beyond that bound.
+
+Accepted work returns HTTP 202 with an opaque job ID, expiry, and polling interval.
+Job reads expose the current task and answer count. Cancel aborts the outbound request and stops further local turns.
+Cancellation cannot reverse an already transmitted request or a provider charge.
+Private jobs expire after at most ten minutes. A service restart or Worker eviction also loses them.
+Unknown and foreign job IDs return HTTP 404 with `missing`. Owned expired IDs return HTTP 410 with `job_expired` while their markers remain.
+Expiry markers retain only the ID, owner session, and fixed expiry. Each session keeps at most 128 markers for at most one further hour.
+Each session also keeps at most 128 unexpired job records. This separate limit returns HTTP 429 with `session_job_limit` and the earliest expiry interval.
+Expiry markers never consume job slots. Reads and session renewal never extend either job or marker retention.
+The job deadline leaves a final reading window of 60 seconds, or one quarter of a shorter test lifetime.
+At the normal lifetime, a timeout occurs by nine minutes and leaves its failed state and log readable until expiry.
+They use transient memory rather than the dictionary object store, indexes, receipt journal, or ordinary logs.
+
+The browser saves a terminal result with its draft, then sends `DELETE` as an acknowledgment.
+Until acknowledgment, expiry, or two minutes after completion, the service holds the result so a lost response can be read again.
+After that reading window, the service discards the result and log and releases its retained slot.
+Later job reads return HTTP 410 with `result_discarded`. The browser explains that the result was discarded and that the author can ask again.
+Acknowledgment preserves the terminal state and discards the result and log. It does not cancel a completed action.
+The browser keeps the durable log copy. Publication and peer synchronization omit that log.
+The browser stores each retained log as JSON text before it copies or saves the draft.
+It decodes logs for display and exports their original public JSON shape with the shared iterative serializer.
+Raw JSON exports preserve the exchanged payload fields, except server credentials and encrypted reasoning.
+The service removes those fields before a response or correction request leaves the inference runner.
+The browser limits ordinary API responses to 16 MiB and private job reads to 96 MiB.
+Each response wait lasts at most 30 seconds. An action expires after 15 minutes in the browser.
+
+The public [prompt guide](../prompts/README.md) describes the four studied tasks and their answer checks.
+Source suggestions run once per requested language row. Supported short language codes are `en`, `zh`, `hi`, `es`, `ru`, `ar`, `bn`, `pt`, `fr`, `ms`, `de`, and `ja`.
+The preset codes `eng`, `cmn`, `hin`, `spa`, `rus`, `ara`, `ben`, `por`, `fra`, `msa`, `deu`, and `jpn` select the same respective prompts.
+Proposals keep each source row's original language code.
+English gloss suggestions keep language `en` even when the definition uses another language. Existing glosses in other languages remain present.
+A null word omits the proposal field, so acceptance keeps the row's existing word.
+Their current sense and uncertainty appear as `Sense:` and `Note:` paragraphs. A null sense adds no paragraph.
+Acceptance replaces the tracked AI note group and preserves authored notes. The author can edit or remove accepted notes before publication.
+Source edits update the publication copy even after form selection or navigation through the step bar.
+Descriptive edits preserve historical scores. Changed language, algorithm input, or weight blocks publication until the author selects or removes the evidence.
+Definition and place suggestions need a valid word type and spelling for core validation before acceptance.
+Whole-word IPA uses the signed `word_ipa` field. Stem and stem IPA use private draft fields, `stem` and `ipa`.
+Source proposals contain only proposed fields and new AI notes. Null answers preserve existing values.
+A changed suggested word requires Keep or Clear for each retained nonempty field and authored note.
+The draft preserves these review choices and AI paragraph ownership through reload and undo. Neither enters signed records.
+The additional prompts cover type, components, selma'o, definition text, and an initial place structure.
+To update the runtime prompt bundle after editing a prompt, run `node prompts/build-bundle.mjs`.
+The service tests require that the generated bundle matches every public prompt file exactly.
+
+Run the mocked inference checks with `npx tsx --test packages/service/test/assistance.test.ts`.
+The adapter suite runs both hosts against a disposable mocked provider and key file.
+It tests the disabled state, corrected answer, private session, secret redaction, and log acknowledgment.
+Neither test suite reads a real provider key or sends paid inference requests.
+
+The optional Worker stress test uses the real local workerd host and disposable bindings.
+It runs two overlapping jobs at the draft and context limits, with twelve maximum-size mocked responses per job.
+It retains both logs, compares repeated streamed reads, tests capacity refusal, and acknowledges both jobs.
+Run it only after reserving its local ports:
+
+```sh
+JVC_TEST_WORKER_AI_MEMORY=enabled node --import tsx scripts/test-worker-ai-memory.ts
+```
+
+`JVC_TEST_ROOT` selects its task-specific artifact directory.
+`JVC_TEST_AI_PROVIDER_PORT` and `JVC_TEST_AI_WORKER_PORT` select its listeners. Their defaults are 8910 and 9910.
+The fixture uses explicit synthetic edge identity settings in an isolated test configuration.
+It does not enable header trust in the ordinary local launcher.
+This test establishes the fixture's behavior. It does not prove a total heap bound or hosted Worker compliance.
 
 Install the Chromium test binary into a task-specific directory, then run the browser tests:
 

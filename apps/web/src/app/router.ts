@@ -18,6 +18,10 @@ export interface RenderContext {
   /** True while this render is still the current one. */
   live: () => boolean;
   signal: AbortSignal;
+  /** Focuses a connected page control and preserves it when this render finishes.
+   * Returns false for an old render, a reader's focus choice, or an open dialog.
+   */
+  focus: (target: HTMLElement, options?: FocusOptions) => boolean;
   /** Sets the document title. */
   title: (value: string) => void;
 }

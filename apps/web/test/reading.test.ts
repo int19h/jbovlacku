@@ -988,6 +988,89 @@ test("a fresh lifetime helper releases a node that joins and leaves before any l
   });
 });
 
+test("explicit page focus keeps a connected control, rejects stale or detached targets, and respects reader focus and dialogs", async ({
+  page,
+}) => {
+  await page.goto("/about");
+  await expect(
+    page.getByRole("heading", { name: "About jbovlacku" }),
+  ).toBeVisible();
+  const result = await page.evaluate(async () => {
+    const { watchReaderFocus } = await import(String("/src/app/focus.ts"));
+    const main = document.createElement("section");
+    const control = document.createElement("button");
+    const disabled = document.createElement("button");
+    disabled.disabled = true;
+    main.append(control, disabled);
+    document.body.append(main);
+    const controller = new AbortController();
+    const focus = watchReaderFocus(main, controller.signal);
+    try {
+      const acceptsConnected = focus.focus(control);
+      const keepsConnected = focus.keeps();
+      control.remove();
+      const keepsDetached = focus.keeps();
+      const acceptsDetached = focus.focus(control);
+      const acceptsOutside = focus.focus(document.getElementById("q")!);
+      const acceptsDisabled = focus.focus(disabled);
+      main.append(control);
+      controller.abort();
+      const acceptsAborted = focus.focus(control);
+      const after = new AbortController();
+      const nextFocus = watchReaderFocus(main, after.signal);
+      try {
+        const dialog = document.createElement("dialog");
+        const inside = document.createElement("button");
+        dialog.append(inside);
+        document.body.append(dialog);
+        dialog.showModal();
+        inside.focus();
+        const acceptsWithDialog = nextFocus.focus(control);
+        const keepsDialog = document.activeElement === inside;
+        dialog.close();
+        dialog.remove();
+        const search = document.getElementById("q")!;
+        search.focus();
+        const acceptsAfterReader = nextFocus.focus(control);
+        const keepsReader =
+          nextFocus.keeps() && document.activeElement === search;
+        return {
+          acceptsConnected,
+          keepsConnected,
+          keepsDetached,
+          acceptsDetached,
+          acceptsOutside,
+          acceptsDisabled,
+          acceptsAborted,
+          acceptsWithDialog,
+          keepsDialog,
+          acceptsAfterReader,
+          keepsReader,
+        };
+      } finally {
+        nextFocus.stop();
+        after.abort();
+      }
+    } finally {
+      focus.stop();
+      main.remove();
+    }
+  });
+  expect(result).toEqual({
+    acceptsConnected: true,
+    keepsConnected: true,
+    keepsDetached: false,
+    acceptsDetached: false,
+    acceptsOutside: false,
+    acceptsDisabled: false,
+    acceptsAborted: false,
+    acceptsWithDialog: false,
+    keepsDialog: true,
+    acceptsAfterReader: false,
+    keepsReader: true,
+  });
+});
+
 test("a focus choice made while a page loads is kept, Enter then submits the search, and further input in the focused field after a search starts is kept too", async ({
   page,
 }) => {

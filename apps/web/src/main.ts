@@ -162,6 +162,8 @@ async function start() {
       main,
       live: () => current === revision,
       signal,
+      focus: (target, options) =>
+        current === revision && readerFocus.focus(target, options),
       title: (value) => {
         if (current === revision) document.title = `${value} · jbovlacku`;
       },

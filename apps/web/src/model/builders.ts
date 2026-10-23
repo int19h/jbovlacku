@@ -15,7 +15,12 @@ import {
   type RafsiInventoryClaim,
 } from "../../../../packages/core/src/index.ts";
 import type { CachedPackage } from "../data/search.ts";
-import type { Compound, Formation, FormationSource } from "./types.ts";
+import type {
+  Compound,
+  Formation,
+  FormationSource,
+  RichText,
+} from "./types.ts";
 import { textToRichText } from "./richtext.ts";
 
 /** One component row of the lujvo builder. */
@@ -41,18 +46,223 @@ export interface LujvoState {
   acknowledged: string[];
 }
 export interface GismuRowState {
+  /** Stable browser identity. Older drafts receive it when they open. */
+  id?: string;
+  sense?: string;
+  note?: string;
+  /** Supplementary evidence, retained without parsing it into signed fields. */
+  notes?: RichText;
+  notesStale?: boolean;
+  /** Absent on older drafts until the author identifies earlier AI paragraphs. */
+  aiNoteGroup?: { index: number; paragraph: RichText[number] }[];
+  /** Retained evidence that the author must approve for a changed source word. */
+  sourceReview?: SourceReview[];
   language: string;
   name: string;
   word: string;
   word_ipa?: string | null;
+  /** Only an explicit null copied from signed history keeps its field presence. */
+  wordIpaNullOriginal?: true;
   stem?: string | null;
   ipa?: string | null;
   input: string;
+  /** Original signed input, separate from the supported scoring letters. */
+  inputOriginal?: FormationSource["input"];
   weight: { numerator: string; denominator: string } | null;
 }
-/** Start another word for the same language without copying its source evidence. */
+export interface SourceReview {
+  field: "word_ipa" | "stem" | "ipa" | "input" | "notes";
+  index?: number;
+  word: string;
+  value: unknown;
+  /** Preserve the private scoring preview and original-input presence on Keep. */
+  inputText?: string;
+  inputOriginal?: FormationSource["input"];
+}
+/** Migrate browser aliases only when the signed field is absent, including null. */
+export function normalizeSourceRow(row: GismuRowState): GismuRowState {
+  const { wordIpa, stemIpa, ...canonical } = row as GismuRowState & {
+    wordIpa?: string;
+    stemIpa?: string;
+  };
+  canonical.id ||= sourceRowId();
+  if (!Object.hasOwn(row, "word_ipa") && wordIpa) canonical.word_ipa = wordIpa;
+  if (!Object.hasOwn(row, "ipa") && stemIpa) canonical.ipa = stemIpa;
+  if (canonical.word_ipa !== null) delete canonical.wordIpaNullOriginal;
+  return canonical;
+}
+/** Browser identity never enters the signed formation source. */
+export function sourceRowId(): string {
+  return `s${crypto.randomUUID()}`;
+}
+export function sourceRowKey(row: GismuRowState): string {
+  return `source-${(row.id ||= sourceRowId())}`;
+}
+/** Open signed evidence without guessing scoring letters or pronunciation. */
+export function sourceRowsFromFormation(
+  sources: FormationSource[],
+  nullPronunciations = sources.flatMap((source, index) =>
+    source.word_ipa === null ? [index] : [],
+  ),
+): GismuRowState[] {
+  return sources.map((source, index) =>
+    normalizeSourceRow({
+      ...structuredClone(source),
+      name: source.language,
+      input: source.input?.format === "lojbanized" ? source.input.text : "",
+      inputOriginal: structuredClone(source.input ?? null),
+      ...(source.word_ipa === null && nullPronunciations.includes(index)
+        ? { wordIpaNullOriginal: true as const }
+        : {}),
+      aiNoteGroup: [],
+      weight: source.weight
+        ? {
+            numerator: String(source.weight.numerator),
+            denominator: String(source.weight.denominator),
+          }
+        : null,
+    }),
+  );
+}
+/** Start another word without copying its evidence or private review state. */
 export function alternativeSourceRow(row: GismuRowState): GismuRowState {
-  return { ...row, word: "", input: "", word_ipa: null, stem: null, ipa: null };
+  return {
+    id: sourceRowId(),
+    language: row.language,
+    name: row.name,
+    word: "",
+    input: "",
+    word_ipa: null,
+    stem: null,
+    ipa: null,
+    weight: row.weight ? { ...row.weight } : null,
+    aiNoteGroup: [],
+  };
+}
+/** The author identifies earlier AI notes without relying on paragraph prefixes. */
+export function setSourceAiNoteGroup(row: GismuRowState, indexes: number[]) {
+  const notes = sourceNotes(row);
+  if (indexes.some((index) => !Number.isInteger(index) || !notes[index]))
+    throw new Error("Choose existing paragraphs for the earlier AI notes.");
+  row.aiNoteGroup = [...new Set(indexes)]
+    .sort((a, b) => a - b)
+    .map((index) => ({
+      index,
+      paragraph: structuredClone(notes[index]),
+    }));
+}
+const sameValue = (left: unknown, right: unknown) =>
+  JSON.stringify(left) === JSON.stringify(right);
+/** Edited AI paragraphs become authored notes. Exact retained paragraphs keep their group. */
+export function editSourceNotes(row: GismuRowState, notes: RichText) {
+  const before = sourceNotes(row);
+  if (sameValue(before, notes)) {
+    row.aiNoteGroup = row.aiNoteGroup?.filter((entry) =>
+      sameValue(before[entry.index], entry.paragraph),
+    );
+    row.notes = structuredClone(notes);
+    return;
+  }
+  const available = new Set(notes.map((_, index) => index));
+  const mapped = new Map<number, number>();
+  // Match exact paragraphs in their original order, including duplicate text.
+  for (let oldIndex = 0; oldIndex < before.length; oldIndex++) {
+    const index = [...available].find((index) =>
+      sameValue(before[oldIndex], notes[index]),
+    );
+    if (index === undefined) continue;
+    mapped.set(oldIndex, index);
+    available.delete(index);
+  }
+  if (row.aiNoteGroup)
+    row.aiNoteGroup = row.aiNoteGroup.flatMap((entry) => {
+      const index = mapped.get(entry.index);
+      const copiesBefore = before.filter((paragraph) =>
+        sameValue(paragraph, entry.paragraph),
+      ).length;
+      const copiesAfter = notes.filter((paragraph) =>
+        sameValue(paragraph, entry.paragraph),
+      ).length;
+      return copiesBefore === copiesAfter &&
+        index !== undefined &&
+        sameValue(before[entry.index], entry.paragraph)
+        ? [{ index, paragraph: structuredClone(notes[index]) }]
+        : [];
+    });
+  row.sourceReview = (row.sourceReview ?? []).flatMap((mark) => {
+    if (mark.field !== "notes") return [mark];
+    const index = mapped.get(mark.index!);
+    return index === undefined ? [] : [{ ...mark, index }];
+  });
+  row.notes = structuredClone(notes);
+}
+export function sourceReviewMarks(row: GismuRowState): SourceReview[] {
+  return row.sourceReview ?? [];
+}
+/** A review applies only to the exact retained value that the author saw. */
+export function sourceReviewMatches(
+  row: GismuRowState,
+  mark: SourceReview,
+): boolean {
+  if (mark.field === "input") {
+    const input = formationSource(row).input;
+    const retained = mark.value as FormationSource["input"];
+    return input === null
+      ? retained === null
+      : input.format === retained?.format && input.text === retained?.text;
+  }
+  const value =
+    mark.field === "notes" ? sourceNotes(row)[mark.index!] : row[mark.field];
+  return sameValue(value, mark.value);
+}
+/** Keep approves one retained value. Clear removes only that value. */
+export function resolveSourceReview(
+  row: GismuRowState,
+  markIndex: number,
+  action: "keep" | "clear",
+) {
+  const mark = row.sourceReview?.[markIndex];
+  if (!mark) throw new Error("This source review no longer exists.");
+  const matches =
+    sourceReviewMatches(row, mark) &&
+    (mark.field !== "input" ||
+      mark.inputText === undefined ||
+      row.input === mark.inputText);
+  if (action === "keep" && matches) {
+    if (mark.field === "input") {
+      const value = structuredClone(mark.value) as FormationSource["input"];
+      row.input =
+        mark.inputText ?? (value?.format === "lojbanized" ? value.text : "");
+      if (Object.hasOwn(mark, "inputOriginal"))
+        row.inputOriginal = structuredClone(mark.inputOriginal ?? null);
+      else if (mark.inputText !== undefined) delete row.inputOriginal;
+      else row.inputOriginal = value;
+    }
+  } else if (action === "clear" && matches) {
+    if (mark.field === "notes") {
+      const index = mark.index!;
+      const notes = sourceNotes(row);
+      notes.splice(index, 1);
+      row.notes = notes;
+      row.aiNoteGroup = row.aiNoteGroup?.flatMap((entry) =>
+        entry.index === index
+          ? []
+          : [
+              {
+                ...entry,
+                index: entry.index > index ? entry.index - 1 : entry.index,
+              },
+            ],
+      );
+      for (const other of row.sourceReview!)
+        if (other.field === "notes" && other.index! > index) other.index!--;
+    } else if (mark.field === "input") {
+      row.input = "";
+      row.inputOriginal = null;
+    } else row[mark.field] = null;
+  }
+  if (mark.field === "word_ipa" && matches) delete row.wordIpaNullOriginal;
+  row.sourceReview!.splice(markIndex, 1);
 }
 export interface GismuState {
   preset: string | null;
@@ -279,7 +489,7 @@ export function compoundMetadata(
   };
 }
 /** A section 8 rational in lowest terms, as the body rules require. */
-function rational(value: { numerator: string; denominator: string }) {
+export function rational(value: { numerator: string; denominator: string }) {
   let a = BigInt(value.numerator);
   let b = BigInt(value.denominator);
   let x = a;
@@ -291,22 +501,107 @@ function rational(value: { numerator: string; denominator: string }) {
   }
   return { numerator: Number(a), denominator: Number(b) };
 }
+/** Keep supplementary notes separate from pronunciation and private stem fields. */
+export function sourceNotes(row: GismuRowState) {
+  if (row.notes) return structuredClone(row.notes);
+  return [
+    ["Sense", row.sense],
+    ["Note", row.note],
+  ]
+    .filter(([, value]) => value)
+    .map(([label, value]) => [`${label}: ${value}`]);
+}
 /** Keep source evidence separate from the letters used for scoring. */
-function formationSource(row: GismuRowState): FormationSource {
+export function formationSource(raw: GismuRowState): FormationSource {
+  const row = normalizeSourceRow(raw);
   const source: FormationSource = {
     language: row.language,
     word: row.word,
-    input: row.input.trim()
-      ? { format: "lojbanized", text: row.input.trim().toLowerCase() }
-      : null,
+    input: Object.hasOwn(row, "inputOriginal")
+      ? structuredClone(row.inputOriginal ?? null)
+      : row.input.trim()
+        ? { format: "lojbanized", text: row.input }
+        : null,
     weight: row.weight ? rational(row.weight) : null,
-    notes: [],
+    notes: sourceNotes(row),
   };
-  if (row.word_ipa?.trim()) source.word_ipa = row.word_ipa;
+  if (
+    (row.word_ipa === null && row.wordIpaNullOriginal) ||
+    row.word_ipa?.trim()
+  )
+    source.word_ipa = row.word_ipa;
   return source;
 }
-function hasSignedSourceEvidence(row: GismuRowState): boolean {
-  return [row.word, row.input, row.word_ipa].some((value) => !!value?.trim());
+/** Compare interpreted evidence without changing exact input or note text. */
+export function sameFormationSources(
+  left: FormationSource[],
+  right: FormationSource[],
+): boolean {
+  const key = (sources: FormationSource[]) =>
+    JSON.stringify(
+      sources.map((source) => ({
+        ...source,
+        input: source.input ?? null,
+        weight: source.weight ?? null,
+        notes: source.notes ?? [],
+        word_ipa: source.word_ipa?.trim() ? source.word_ipa : null,
+      })),
+      (_name, value) =>
+        value && typeof value === "object" && !Array.isArray(value)
+          ? Object.fromEntries(
+              Object.entries(value).sort(([a], [b]) => a.localeCompare(b)),
+            )
+          : value,
+    );
+  return key(left) === key(right);
+}
+/** Only language, exact algorithm input, and weight determine the source score. */
+export function sameScoringSources(
+  left: FormationSource[],
+  right: FormationSource[],
+): boolean {
+  const scoring = (sources: FormationSource[]) =>
+    sources.map((source) => ({
+      language: source.language,
+      word: "",
+      input: source.input,
+      weight: source.weight,
+      notes: [],
+    }));
+  return sameFormationSources(scoring(left), scoring(right));
+}
+/** Ignore empty editor rows when building source evidence. */
+export function formationSourcesFromRows(
+  rows: GismuRowState[],
+): FormationSource[] {
+  return rows
+    .map(normalizeSourceRow)
+    .filter(
+      (row) =>
+        [row.word, row.input, row.sense, row.note].some((value) =>
+          value?.trim(),
+        ) ||
+        !!row.word_ipa?.trim() ||
+        Object.hasOwn(row, "inputOriginal") ||
+        !!row.notes?.length,
+    )
+    .map(formationSource);
+}
+/** Update the publication copy after descriptive edits. Return true for stale scores. */
+export function syncFormationSources(draft: {
+  formation: Formation | null;
+  gismu: GismuState | null;
+}): boolean {
+  if (!draft.formation || !draft.gismu) return false;
+  const sources = formationSourcesFromRows(draft.gismu.rows);
+  if (
+    draft.formation.method === "algorithmic" &&
+    !sameScoringSources(draft.formation.sources, sources)
+  )
+    return true;
+  if (!sameFormationSources(draft.formation.sources, sources))
+    draft.formation.sources = sources;
+  return false;
 }
 /** Formation metadata for a generated or manual gismu under the recorded run. */
 export function formationMetadata(options: {
@@ -323,7 +618,7 @@ export function formationMetadata(options: {
   /** True when the form is the candidate the author chose from the run or entered under it. */
 }): Formation {
   const { result, candidate, rows, preset } = options;
-  const sources = rows.filter(hasSignedSourceEvidence).map(formationSource);
+  const sources = formationSourcesFromRows(rows);
   return {
     method: "algorithmic",
     algorithm: {
@@ -367,7 +662,7 @@ export function manualFormation(
   rows: GismuRowState[],
   reason: string,
 ): Formation | null {
-  const sources = rows.filter(hasSignedSourceEvidence).map(formationSource);
+  const sources = formationSourcesFromRows(rows);
   if (!sources.length && !reason.trim()) return null;
   return {
     method: "non-algorithmic",

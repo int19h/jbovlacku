@@ -19,6 +19,7 @@ import {
 } from "../../model/draft.ts";
 import { lexicalKinds, type LexicalKind } from "../../model/types.ts";
 import { DraftConflictError, type ExpectedDraft } from "../../data/store.ts";
+import { assistanceSaveKey, retainAssistance } from "../../model/assistance.ts";
 export { DraftConflictError };
 
 export const DRAFT_KEY = "current";
@@ -103,16 +104,23 @@ export async function loadDraft(app: App): Promise<Draft | null> {
       if (!stored.revision) {
         // An older draft gets a revision, so a publication can name it exactly.
         // Another tab can do the same first. Its revision wins.
-        const revised = { ...stored, revision: crypto.randomUUID() };
+        // Migrate private logs before IndexedDB clones an older draft.
+        const revised = normalizeDraft({
+          ...stored,
+          revision: crypto.randomUUID(),
+        });
+        retainAssistance(revised);
         try {
           await app.store.saveDraft(DRAFT_KEY, revised, "unversioned");
         } catch (error) {
           if (!(error instanceof DraftConflictError)) throw error;
           return loadDraft(app);
         }
-        return normalizeDraft(revised);
+        return revised;
       }
-      return normalizeDraft(stored);
+      const normalized = normalizeDraft(stored);
+      retainAssistance(normalized);
+      return normalized;
     }
     return null;
   } catch {
@@ -165,11 +173,11 @@ export function guardDraftNavigation(
   );
 }
 /** The fields that make two draft copies the same for saving. */
-function contentKey(draft: Draft): string {
-  const { revision, updatedAt, ...rest } = draft;
+export function contentKey(draft: Draft): string {
+  const { revision, updatedAt, ai, ...rest } = draft;
   void revision;
   void updatedAt;
-  return JSON.stringify(rest);
+  return JSON.stringify([rest, assistanceSaveKey(ai)]);
 }
 /**
  * Saves the draft and reports the outcome through the save indicator.
@@ -477,7 +485,10 @@ export function confirmKindChange(
     );
     if (!ok) return false;
     if (kind !== "lujvo") draft.compound = null;
-    if (kind !== "gismu") draft.formation = null;
+    if (kind !== "gismu") {
+      draft.formation = null;
+      for (const row of draft.gismu?.rows ?? []) delete row.sourceReview;
+    }
     if (!draft.compound && !draft.formation) draft.evidenceForm = null;
   }
   draft.kind = kind;

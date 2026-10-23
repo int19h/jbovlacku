@@ -1,4 +1,9 @@
 import { BROWSER_HEADERS } from "./security.ts";
+import {
+  nodeAssistance,
+  SqliteAssistanceBudgetStore,
+  trustedProxyAddresses,
+} from "./assistance.ts";
 import { Readable } from "node:stream";
 import { createHash } from "node:crypto";
 import { FileCheckpointStore } from "./checkpoint.ts";
@@ -18,17 +23,35 @@ import {
   stateTraversalLimit,
 } from "../../../packages/importer/src/load-config.ts";
 import {
+  nodeClientNetwork,
+  nodeAssistanceIdentityAvailable,
+} from "../../../packages/service/src/inference.ts";
+import {
   durableDirectory,
   FileObjectStore,
   SqliteCoordinator,
   SqliteIndexStore,
 } from "./storage.ts";
 const directory = resolve(process.env.JVC_DATA_DIR ?? "data/node");
+const trustedProxies = trustedProxyAddresses(
+  process.env.JVC_TRUSTED_PROXY_ADDRESSES ?? "",
+);
+const clientIpHeader = (
+  process.env.JVC_CLIENT_IP_HEADER ?? "x-real-ip"
+).toLowerCase();
+if (!/^[a-z0-9-]+$/.test(clientIpHeader))
+  throw new Error("Invalid JVC_CLIENT_IP_HEADER.");
+const identityAvailable = nodeAssistanceIdentityAvailable(
+  process.env.HOST ?? "127.0.0.1",
+  process.env.JVC_PUBLIC_ORIGIN,
+  trustedProxies,
+);
 async function initializeService() {
   await durableDirectory(directory);
   const release = await lockDataDirectory(directory, "node-server");
   let index: SqliteIndexStore | undefined;
   let coordinator: SqliteCoordinator | undefined;
+  let assistanceBudget: SqliteAssistanceBudgetStore | undefined;
   try {
     const coreBytes = await readFile(
       new URL(
@@ -50,7 +73,16 @@ async function initializeService() {
       process.env.JVC_STATE_TRAVERSAL_LIMIT ??
         loadedView?.state_traversal_limit,
     );
+    assistanceBudget =
+      identityAvailable && String(process.env.JVC_AI_ENABLED) === "enabled"
+        ? new SqliteAssistanceBudgetStore(
+            join(directory, "assistance-spending.sqlite"),
+          )
+        : undefined;
     const service = new DictionaryService(objects, coordinator, {
+      assistance: identityAvailable
+        ? nodeAssistance(process.env, assistanceBudget)
+        : {},
       index,
       checkpoints: new FileCheckpointStore(
         join(directory, "evaluation-cache"),
@@ -88,15 +120,17 @@ async function initializeService() {
         .filter(Boolean),
     });
     await service.initialize();
-    return { service, index, coordinator, release };
+    return { service, index, coordinator, assistanceBudget, release };
   } catch (error) {
     coordinator?.close();
     index?.close();
+    assistanceBudget?.close();
     await release();
     throw error;
   }
 }
-const { service, index, coordinator, release } = await initializeService();
+const { service, index, coordinator, assistanceBudget, release } =
+  await initializeService();
 const assets = resolve(process.env.JVC_ASSETS_DIR ?? "apps/web/dist");
 const mime: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -172,7 +206,14 @@ const server = createServer(async (incoming, outgoing) => {
       });
       init.duplex = "half";
     }
-    const response = await service.fetch(new Request(url, init));
+    const response = await service.fetch(
+      new Request(url, init),
+      nodeClientNetwork(
+        incoming.socket.remoteAddress ?? "",
+        headers.get(clientIpHeader),
+        trustedProxies,
+      ),
+    );
     if (abandoned) response.headers.set("connection", "close");
     outgoing.writeHead(response.status, Object.fromEntries(response.headers));
     if (response.body) await sendResponseBody(response.body, outgoing);
@@ -199,7 +240,11 @@ function closeService(): Promise<void> {
         try {
           index.close();
         } finally {
-          await release();
+          try {
+            assistanceBudget?.close();
+          } finally {
+            await release();
+          }
         }
       }
     }

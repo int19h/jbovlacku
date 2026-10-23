@@ -14,5 +14,5 @@
   "rfc8032_vector": "https://www.rfc-editor.org/rfc/rfc8032#section-7.1",
   "definition_fixture": "FORMAT-SPEC.md section7 illustrative CC0-1.0 body",
   "generated_cases": "cargo run -p jvc-core --example fixture_corpus",
-  "noncanonical_identity_r_vectors": "Opus foundation-r1 review F3; canonical point rejection vectors, including y=p+1 with either sign bit"
+  "noncanonical_identity_r_vectors": "Canonical point rejection vectors, including y=p+1 with either sign bit"
 }

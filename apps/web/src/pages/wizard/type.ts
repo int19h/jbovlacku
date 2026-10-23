@@ -1,3 +1,7 @@
+import {
+  assistanceAction,
+  assistanceVisibility,
+} from "../../components/assistance.ts";
 /** Step 2: the word type, with manual entry for authors who already have the spelling. */
 import { el, p, text, link, button } from "../../lib/dom.ts";
 import { navigate, type RenderContext, type Route } from "../../app/router.ts";
@@ -186,6 +190,26 @@ export async function typePage(
   }
   fieldset.append(grid);
   section.append(fieldset, otherChoice);
+  const visibility = assistanceVisibility(app, context);
+  const markAiPick = () => {
+    for (const label of labels) label.querySelector(".ai-pick")?.remove();
+    if (!visibility.enabled) return;
+    const record = draft.ai?.records.findLast(
+      (r) => r.key === "type" && (r.state === "done" || r.state === "accepted"),
+    );
+    const pick = record?.result?.proposals.find((p) => p.path === "/word_type")
+      ?.value as LexicalKind | undefined;
+    const target = labels.find(
+      (label) =>
+        label.dataset.kind === pick ||
+        (isOther(pick ?? null) && label.dataset.kind === "other"),
+    );
+    if (target) target.append(text("AI pick", "ai-tag ai-pick"));
+  };
+  main.addEventListener("assist-change", markAiPick);
+  const unsubscribeAi = visibility.subscribe(markAiPick);
+  context.signal.addEventListener("abort", unsubscribeAi, { once: true });
+  markAiPick();
   renderOther();
   section.append(
     el(
@@ -198,10 +222,11 @@ export async function typePage(
     ),
   );
   section.append(
-    p(
-      "Type suggestions by AI are not configured on this server. Choose the type yourself.",
-      "meta",
-    ),
+    assistanceAction(app, draft, saver, context, {
+      key: "type",
+      label: "Recommend a type",
+      operation: "type",
+    }),
   );
   const aside = el("aside", {
     class: "side-col",
