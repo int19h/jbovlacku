@@ -104,6 +104,7 @@ The Node loader can retain a larger explicit traversal budget for a local import
 
 The Node adapter serves the pinned SQL import with 59,125 definitions in 44 languages.
 It retains an evaluated checkpoint and keeps completed reads available during new evaluation.
+After publication, the browser shows a pending notice until the accepted records reach the evaluated word view.
 On this VM, startup with a checkpoint took 6.11 seconds and the first `klama` request took 0.32 seconds.
 Five consecutive signed endorsements became visible in 4.26, 2.50, 2.11, 2.16, and 2.15 seconds.
 The checkpoint used 64.35 MiB. Wasm memory reached 1.69 GiB, and peak process memory reached 3.51 GiB.

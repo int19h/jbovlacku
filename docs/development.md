@@ -131,6 +131,12 @@ During that gap, a new event receipt reports `index_lag` and `evaluation_pending
 A late-body receipt also uses a null snapshot until the completed snapshot contains the same body mapping.
 The service retains the preceding completed snapshot during a backlog. Failed jobs leave it available, and later reads retry the latest inventory.
 
+After local publication, a fresh browser word read waits for accepted records from this server to finish evaluation.
+The page shows that the server stored the records while its word view updates.
+This page session tracks only receipts whose envelope and required body match the saved delivery.
+The wait lasts at most 15 seconds and stops when the reader leaves the page.
+A failed wait keeps delivery accepted and offers a refresh. Ordinary reads and explicit snapshot reads still use their completed snapshot.
+
 A checkpoint is a saved evaluated state.
 The Node adapter keeps one pinned checkpoint under `evaluation-cache` in `JVC_DATA_DIR`.
 The file contains compressed Node binary data. An independent SQLite row pins its digest and calculation context.
