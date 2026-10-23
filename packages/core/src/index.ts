@@ -188,7 +188,30 @@ export interface EvaluationPackageRecord {
   body_hash: string | null;
   body: Record<string, unknown> | null;
 }
-function wrapEvaluationSession(session: wasm.EvaluationSession) {
+export interface EvaluationSessionHandle {
+  state: Evaluation;
+  rankWord(word: string, reviewers?: number): any;
+  fork(options: EvaluationSessionOptions): EvaluationBuilder;
+  checkpoint(binding: string): Uint8Array;
+  updateStatistics(): {
+    incremental_records: number;
+    rebuilt: boolean;
+    reason: string | null;
+  };
+  free(): void;
+}
+export interface EvaluationBuilder {
+  addRecord(
+    envelope: Uint8Array,
+    body?: Uint8Array,
+  ): EvaluationPackageRecord | null;
+  removeRecord(id: string): void;
+  finish(): EvaluationSessionHandle;
+  free(): void;
+}
+function wrapEvaluationSession(
+  session: wasm.EvaluationSession,
+): EvaluationSessionHandle {
   let state: Evaluation;
   try {
     state = JSON.parse(session.state()) as Evaluation;
@@ -209,6 +232,10 @@ function wrapEvaluationSession(session: wasm.EvaluationSession) {
           ? session.rank(word)
           : session.rank_with_reviewers(word, reviewers),
       ),
+    fork: (options) =>
+      wrapEvaluationBuilder(session.fork(encodeEvaluationRequest(options))),
+    checkpoint: (binding) => session.checkpoint(binding),
+    updateStatistics: () => JSON.parse(session.update_statistics()),
     free: () => session.free(),
   };
 }
@@ -219,9 +246,13 @@ export function evaluateSession(input: EvaluationRequest) {
 }
 /** Authenticate original record bytes before the core retains their state fields. */
 export function createEvaluationSession(options: EvaluationSessionOptions) {
-  const builder = new wasm.EvaluationSessionBuilder(
-    encodeEvaluationRequest(options),
+  return wrapEvaluationBuilder(
+    new wasm.EvaluationSessionBuilder(encodeEvaluationRequest(options)),
   );
+}
+function wrapEvaluationBuilder(
+  builder: wasm.EvaluationSessionBuilder,
+): EvaluationBuilder {
   let closed = false;
   function requireOpen() {
     if (closed) throw new Error("The evaluation builder is closed.");
@@ -232,6 +263,10 @@ export function createEvaluationSession(options: EvaluationSessionOptions) {
       return JSON.parse(
         builder.add_record(envelope, body),
       ) as EvaluationPackageRecord | null;
+    },
+    removeRecord(id: string) {
+      requireOpen();
+      builder.remove_record(id);
     },
     finish() {
       requireOpen();
@@ -246,6 +281,17 @@ export function createEvaluationSession(options: EvaluationSessionOptions) {
     },
   };
 }
+/** Only the host's independently checked checkpoint port calls this function. */
+export function restoreHostEvaluationSession(
+  bytes: Uint8Array,
+  binding: string,
+): EvaluationSessionHandle {
+  return wrapEvaluationSession(
+    wasm.EvaluationSession.restore_host_checkpoint(bytes, binding),
+  );
+}
+export const coreCheckpointVersion = (): string =>
+  wasm.evaluation_checkpoint_version();
 export const rankWord = (input: EvaluationRequest, word: string) =>
   JSON.parse(wasm.rank_word(encodeEvaluationRequest(input), word));
 

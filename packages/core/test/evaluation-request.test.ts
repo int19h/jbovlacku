@@ -7,6 +7,7 @@ import {
   evaluateSession,
   createEvaluationSession,
   createEvent,
+  restoreHostEvaluationSession,
   initializeCore,
   rankWord,
   utf8,
@@ -296,4 +297,81 @@ test("streaming rejects a changed signed envelope and releases unfinished builde
     builder.free();
   }
   assert.throws(() => builder.finish(), /builder is closed/);
+});
+
+test("session forks and host checkpoints preserve their parent and full evaluation", () => {
+  const seed = new Uint8Array(32).fill(57);
+  const profile = createEvent(
+    seed,
+    [],
+    "1".repeat(32),
+    { kind: "identity.profile" },
+    {
+      name: "Checkpoint fixture",
+      bio: [],
+      links: [],
+    },
+  );
+  const input = request({
+    events: [canonical(profile.envelope)],
+    bodies: { [profile.envelope.id]: canonical(profile.body) },
+  });
+  const parent = evaluateSession(input);
+  const original = structuredClone(parent.state);
+  const checkpoint = parent.checkpoint("exact-host-binding");
+  const restored = restoreHostEvaluationSession(
+    checkpoint,
+    "exact-host-binding",
+  );
+  assert.throws(() =>
+    restoreHostEvaluationSession(checkpoint, "another-binding"),
+  );
+  const merge = createEvent(
+    seed,
+    [profile.envelope.id],
+    "2".repeat(32),
+    { kind: "identity.merge" },
+    null,
+  );
+  const options = { selected_view: input.selected_view, import_selections: {} };
+  const branch = restored.fork(options);
+  branch.addRecord(utf8(canonical(merge.envelope)));
+  const child = branch.finish();
+  const expected = evaluateSession({
+    ...input,
+    events: [...input.events, canonical(merge.envelope)],
+  });
+  try {
+    assert.deepEqual(parent.state, original);
+    assert.deepEqual(restored.state, original);
+    assert.deepEqual(child.state, expected.state);
+    const missing = child.fork(options);
+    missing.addRecord(utf8(canonical(profile.envelope)));
+    const missingSession = missing.finish();
+    const expectedMissing = evaluateSession({
+      ...input,
+      bodies: {},
+      events: [...input.events, canonical(merge.envelope)],
+    });
+    try {
+      assert.deepEqual(missingSession.state, expectedMissing.state);
+    } finally {
+      missingSession.free();
+      expectedMissing.free();
+    }
+    const removed = child.fork(options);
+    removed.removeRecord(merge.envelope.id);
+    const back = removed.finish();
+    try {
+      assert.deepEqual(back.state, original);
+    } finally {
+      back.free();
+    }
+  } finally {
+    parent.free();
+    restored.free();
+    child.free();
+    expected.free();
+    branch.free();
+  }
 });
