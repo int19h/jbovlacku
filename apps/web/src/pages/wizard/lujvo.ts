@@ -15,6 +15,7 @@ import {
 } from "../../../../../packages/core/src/index.ts";
 import {
   el,
+  inlineProse,
   p,
   text,
   button,
@@ -783,9 +784,8 @@ export async function lujvoPage(
             "label",
             { class: "check", for: box2.id },
             box2,
-            el(
-              "span",
-              { class: "inline-prose" },
+            inlineProse(
+              "The claimant link is part of the rafsi acknowledgment sentence.",
               text(`${conflict.rafsi} is also claimed by `),
               link(
                 conflict.spelling,

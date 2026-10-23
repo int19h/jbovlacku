@@ -8,6 +8,7 @@
 import { rafsiPairId } from "../../../../../packages/core/src/index.ts";
 import {
   el,
+  inlineProse,
   p,
   text,
   link,
@@ -398,12 +399,15 @@ export async function publishPage(
     el(
       "p",
       { class: "small", style: "margin-top:10px" },
-      text("New definitions use "),
-      link("CC0 1.0", "https://creativecommons.org/publicdomain/zero/1.0/", {
-        rel: "noopener noreferrer",
-        target: "_blank",
-      }),
-      text(". By publishing, you release your contribution under CC0 1.0."),
+      inlineProse(
+        "The license link is part of the contribution rights sentence.",
+        text("New definitions use "),
+        link("CC0 1.0", "https://creativecommons.org/publicdomain/zero/1.0/", {
+          rel: "noopener noreferrer",
+          target: "_blank",
+        }),
+        text(". By publishing, you release your contribution under CC0 1.0."),
+      ),
     ),
   );
   if (draft.revisedImport)
@@ -800,7 +804,8 @@ export async function publishPage(
     },
     {
       class: "btn btn-primary",
-      style: "margin-top:14px;width:100%;min-height:48px;font-size:17px",
+      style:
+        "margin-top:14px;width:100%;--target-min-height:48px;font-size:17px",
     },
   );
   if (blocking.length)

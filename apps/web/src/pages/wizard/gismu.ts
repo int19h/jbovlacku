@@ -714,7 +714,7 @@ export async function gismuPage(
             input,
             el(
               "span",
-              { class: "inline-prose" },
+              { class: "acknowledgment-text" },
               text(
                 `${conflict.rule === "identical" ? "identical to" : conflict.rule === "final-vowel" ? "differs only in the last vowel from" : "too close to"} `,
               ),

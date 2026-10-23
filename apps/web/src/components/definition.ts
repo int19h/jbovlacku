@@ -2,7 +2,16 @@
  * The definition block used by the word page, the definition page, and the
  * publish preview. It renders the body exactly as signed.
  */
-import { el, link, p, text, disclosure, append, button } from "../lib/dom.ts";
+import {
+  inlineProse,
+  el,
+  link,
+  p,
+  text,
+  disclosure,
+  append,
+  button,
+} from "../lib/dom.ts";
 import { plural, fingerprintText } from "../lib/format.ts";
 import { renderRichText, plainText, visibleJson } from "../model/richtext.ts";
 import type {
@@ -142,9 +151,12 @@ export function sourceDisclosureBody(
       el(
         "p",
         { class: "small" },
-        text("Native publication signed by "),
-        identityLink(envelope.header.issuer),
-        text("."),
+        inlineProse(
+          "The signer link is part of the native publication attribution sentence.",
+          text("Native publication signed by "),
+          identityLink(envelope.header.issuer),
+          text("."),
+        ),
       ),
     );
   }

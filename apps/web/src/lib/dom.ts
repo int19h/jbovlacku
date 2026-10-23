@@ -44,6 +44,81 @@ export function link(
   append(node, label);
   return node;
 }
+/** Marks a complete sentence whose direct links stay within the prose line. */
+export function inlineProse(
+  reason: string,
+  ...children: Child[]
+): HTMLSpanElement {
+  if (!reason.trim()) throw new Error("Inline prose needs a reason.");
+  return el(
+    "span",
+    { class: "inline-prose", "data-inline-prose-reason": reason },
+    ...children,
+  );
+}
+/** Each link needs its own complete sentence with visible words outside all links. */
+export function sentenceLinks(
+  source: string,
+  links: { start: number; end: number }[],
+): boolean {
+  const surrounding = source.split("");
+  for (const { start, end } of links) surrounding.fill(" ", start, end);
+  const prose = surrounding.join("");
+  const sentences = [
+    ...new Intl.Segmenter("en", { granularity: "sentence" }).segment(source),
+  ];
+  return (
+    links.length > 0 &&
+    links.every(({ start, end }) => {
+      const sentence = sentences.find(
+        (item) =>
+          item.index <= start && item.index + item.segment.length >= end,
+      );
+      if (!sentence || !/[.!?]["')\]]?\s*$/.test(sentence.segment))
+        return false;
+      const outside = prose.slice(
+        sentence.index,
+        sentence.index + sentence.segment.length,
+      );
+      const afterLabel = outside.slice(outside.lastIndexOf(":") + 1);
+      return (
+        (afterLabel.match(/\p{L}{2,}/gu)?.length ?? 0) >= 2 &&
+        !/·/.test(outside)
+      );
+    })
+  );
+}
+/** Rich paragraphs use the exception only when every direct link belongs to prose. */
+export function markRichProse(row: HTMLElement, reason: string): void {
+  if (!reason.trim()) throw new Error("Inline prose needs a reason.");
+  if ([...row.children].some((node) => !node.matches("a,bdi,span,code,mark")))
+    return;
+  let source = "";
+  const links: { start: number; end: number }[] = [];
+  const visibleText = (node: Node): string => {
+    if (
+      node instanceof Element &&
+      node.matches('.sr,[hidden],[aria-hidden="true"]')
+    )
+      return "";
+    if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? "";
+    return [...node.childNodes].map(visibleText).join("");
+  };
+  for (const child of row.childNodes) {
+    if (child instanceof HTMLAnchorElement) {
+      if (child.matches(".pl")) {
+        source += " ";
+        continue;
+      }
+      const start = source.length;
+      source += "LINK";
+      links.push({ start, end: source.length });
+    } else source += visibleText(child);
+  }
+  if (!sentenceLinks(source, links)) return;
+  row.classList.add("inline-prose");
+  row.dataset.inlineProseReason = reason;
+}
 export function button(
   label: Child,
   action: (event: MouseEvent) => unknown,

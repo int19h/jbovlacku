@@ -329,17 +329,26 @@ export async function trustPage(
       );
     (invalid ? inactive : ignored).append(row);
   }
-  if (!trusted.childElementCount)
-    trusted.append(
-      p(
-        app.session.identity
-          ? registers
+  if (!trusted.childElementCount) {
+    if (app.session.identity)
+      trusted.append(
+        p(
+          registers
             ? "Nobody yet. Open an identity page and choose Trust their judgments."
-            : "Your public choices are unknown because your history could not be read."
-          : "Create a key to trust or ignore identities.",
-        "small",
-      ),
-    );
+            : "Your public choices are unknown because your history could not be read.",
+          "small",
+        ),
+      );
+    else
+      trusted.append(
+        el(
+          "p",
+          { class: "notice" },
+          text("Private trust needs a key. "),
+          link("Create or restore your key", routes.localIdentity),
+        ),
+      );
+  }
   main.append(trusted, el("h2", { class: "section", text: "People I ignore" }));
   if (!ignored.childElementCount) ignored.append(p("Nobody.", "small"));
   main.append(
