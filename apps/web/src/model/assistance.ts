@@ -1,5 +1,6 @@
 /** Private browser data for optional draft suggestions. */
 import type { Draft } from "./draft.ts";
+import { compactJson } from "../../../../packages/service/src/json.ts";
 import {
   choiceForHint,
   coreProblems,
@@ -58,6 +59,7 @@ export interface Suggestion {
   };
   usage: { input_tokens: number | null; output_tokens: number | null } | null;
   log?: Record<string, unknown>;
+  log_json?: string;
 }
 export interface AssistanceRecord {
   id: string;
@@ -67,7 +69,9 @@ export interface AssistanceRecord {
   fingerprint: string;
   requested: Current;
   result: Suggestion | null;
+  /** Legacy object logs migrate before the draft is cloned or saved. */
   log: Record<string, unknown> | null;
+  log_json?: string;
   log_id?: string;
   error: string | null;
   state: "done" | "failed" | "accepted" | "dismissed" | "undone";
@@ -209,7 +213,19 @@ export function validateSuggestion(
   }
   if (operation === "lujvo" && !s.proposals.some((p) => p.path === "/compound"))
     throw new Error("A lujvo suggestion needs checked components.");
-  return structuredClone(s);
+  // Provider metadata can exceed the browser's structured-clone nesting limit.
+  // Keep it as JSON text before cloning the ordinary proposal fields.
+  return {
+    ...structuredClone({
+      operation: s.operation,
+      draft_revision: s.draft_revision,
+      proposals: s.proposals,
+      explanation: s.explanation,
+      provenance: s.provenance,
+      usage: s.usage,
+    }),
+    log_json: compactJson(s.log),
+  };
 }
 export function applyFrame(draft: Draft, frame: Frame | null) {
   draft.frameMode = frame?.arity.mode ?? "none";
@@ -604,23 +620,54 @@ export function applyMapping(draft: Draft, index: number, derivation: Mapping) {
   checkAssistanceDraft(candidate);
   draft.places = candidate.places;
 }
-/** Retain one recent run and one accepted Undo for each action. */
-export function retainAssistance(draft: Draft) {
-  if (!draft.ai) return;
-  // Older mapping records copied the parent result and complete log.
-  for (const record of draft.ai.records) {
+/** Older mapping records copied the parent result and complete log. */
+function shareLegacyMappingLogs(records: AssistanceRecord[]) {
+  for (const record of records) {
     const parentKey = record.key.split(":mapping:")[0];
     if (parentKey === record.key || record.log_id || !record.result) continue;
     const revision = record.result.draft_revision;
-    const parent = draft.ai.records.find(
+    const parent = records.find(
       (other) =>
         other.key === parentKey && other.result?.draft_revision === revision,
     );
     if (!parent) continue;
     record.log_id = parent.id;
     record.log = null;
+    delete record.log_json;
     record.result = null;
   }
+}
+/** Store raw metadata once as text. Native clones then see a shallow graph. */
+function compactRecordLog(record: AssistanceRecord) {
+  const raw = record.result?.log ?? record.log;
+  const encoded =
+    record.result?.log_json ??
+    record.log_json ??
+    (raw ? compactJson(raw) : undefined);
+  if (encoded !== undefined) record.log_json = encoded;
+  record.log = null;
+  if (record.result) {
+    delete record.result.log;
+    delete record.result.log_json;
+  }
+}
+/** Migrate old logs before any native structured clone traverses them. */
+export function cloneAssistance(ai: AssistanceData): AssistanceData {
+  const copy = {
+    ...ai,
+    records: ai.records.map((record) => ({
+      ...record,
+      result: record.result ? { ...record.result } : null,
+    })),
+  };
+  shareLegacyMappingLogs(copy.records);
+  for (const record of copy.records) compactRecordLog(record);
+  return structuredClone(copy);
+}
+/** Retain one recent run and one accepted Undo for each action. */
+export function retainAssistance(draft: Draft) {
+  if (!draft.ai) return;
+  shareLegacyMappingLogs(draft.ai.records);
   const latest = new Map<string, AssistanceRecord>();
   const accepted = new Map<string, AssistanceRecord>();
   const sourceKeys = new Set(
@@ -645,19 +692,11 @@ export function retainAssistance(draft: Draft) {
     }
   }
   draft.ai.records = draft.ai.records.filter((r) => retained.has(r));
-  for (const record of draft.ai.records) {
-    if (record.result?.log) {
-      record.log ??= record.result.log;
-      delete record.result.log;
-    }
-  }
+  for (const record of draft.ai.records) compactRecordLog(record);
 }
 export function storeAssistanceRecord(draft: Draft, record: AssistanceRecord) {
   draft.ai ??= { records: [] };
-  if (record.result?.log) {
-    record.log = record.result.log;
-    delete record.result.log;
-  }
+  compactRecordLog(record);
   draft.ai.records.push(record);
   retainAssistance(draft);
 }
@@ -665,16 +704,29 @@ export function storeAssistanceRecord(draft: Draft, record: AssistanceRecord) {
 export function assistanceSaveKey(ai: AssistanceData | undefined): unknown {
   return ai ? [ai.changes ?? 0, ai.records.map((r) => [r.id, r.state])] : null;
 }
+/** Resolve parent references without putting a deep graph back in the draft. */
 export function assistanceLog(
   record: AssistanceRecord,
   draft?: Draft,
 ): Record<string, unknown> {
-  return (
-    record.log ??
-    record.result?.log ??
-    draft?.ai?.records.find((r) => r.id === record.log_id)?.log ??
-    {}
-  );
+  if (record.log_json !== undefined)
+    return JSON.parse(record.log_json) as Record<string, unknown>;
+  if (record.log) return record.log;
+  if (record.result?.log_json !== undefined)
+    return JSON.parse(record.result.log_json) as Record<string, unknown>;
+  if (record.result?.log) return record.result.log;
+  const parent = draft?.ai?.records.find((r) => r.id === record.log_id);
+  return parent ? assistanceLog(parent) : {};
+}
+/** Raw export keeps the public object shape and does not indent deep metadata. */
+export function assistanceLogJson(
+  record: AssistanceRecord,
+  draft?: Draft,
+): string {
+  if (record.log_json !== undefined) return record.log_json;
+  const parent = draft?.ai?.records.find((r) => r.id === record.log_id);
+  if (parent) return assistanceLogJson(parent);
+  return compactJson(assistanceLog(record));
 }
 export type LogRow = {
   kind: "heading" | "text" | "code" | "link";
@@ -682,7 +734,7 @@ export type LogRow = {
   level?: number;
   href?: string;
 };
-const logJson = (value: unknown) => JSON.stringify(value, null, 2) ?? "null";
+const logJson = compactJson;
 function logUsage(usage: Record<string, unknown>): string {
   return [
     usage.input_tokens == null

@@ -104,16 +104,19 @@ export async function loadDraft(app: App): Promise<Draft | null> {
       if (!stored.revision) {
         // An older draft gets a revision, so a publication can name it exactly.
         // Another tab can do the same first. Its revision wins.
-        const revised = { ...stored, revision: crypto.randomUUID() };
+        // Migrate private logs before IndexedDB clones an older draft.
+        const revised = normalizeDraft({
+          ...stored,
+          revision: crypto.randomUUID(),
+        });
+        retainAssistance(revised);
         try {
           await app.store.saveDraft(DRAFT_KEY, revised, "unversioned");
         } catch (error) {
           if (!(error instanceof DraftConflictError)) throw error;
           return loadDraft(app);
         }
-        const normalized = normalizeDraft(revised);
-        retainAssistance(normalized);
-        return normalized;
+        return revised;
       }
       const normalized = normalizeDraft(stored);
       retainAssistance(normalized);

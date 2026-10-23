@@ -412,6 +412,8 @@ The browser saves a terminal result with its draft, then sends `DELETE` as an ac
 Until acknowledgment or expiry, the service holds the result in transient memory so a lost response can be read again.
 Acknowledgment preserves the terminal state and discards the result and log. It does not cancel a completed action.
 The browser keeps the durable log copy. Publication and peer synchronization omit that log.
+The browser stores each retained log as JSON text before it copies or saves the draft.
+It decodes logs for display and exports their original public JSON shape with the shared iterative serializer.
 Raw JSON exports preserve the exchanged payload fields, except server credentials and encrypted reasoning.
 The service removes those fields before a response or correction request leaves the inference runner.
 The browser limits ordinary API responses to 16 MiB and private job reads to 96 MiB.

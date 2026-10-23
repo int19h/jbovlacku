@@ -2,7 +2,7 @@ import { test, before } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { initializeCore } from "../../../../packages/core/src/index.ts";
-import { newDraft, newPlace } from "../../src/model/draft.ts";
+import { newDraft, newPlace, normalizeDraft } from "../../src/model/draft.ts";
 import * as assistance from "../../src/model/assistance.ts";
 import type { AssistanceRecord } from "../../src/model/assistance.ts";
 
@@ -56,7 +56,8 @@ test("retention keeps the latest run and accepted Undo, and stores a result log 
   } as unknown as assistance.Suggestion;
   (assistance as any).storeAssistanceRecord(draft, done);
   assert.equal(done.result!.log, undefined);
-  assert.deepEqual(done.log, { secret: "private log" });
+  assert.equal(done.log, null);
+  assert.deepEqual(JSON.parse(done.log_json!), { secret: "private log" });
   assert.deepEqual(
     draft.ai.records.map((r) => r.id),
     ["accepted", "done"],
@@ -243,5 +244,22 @@ test("legacy partial records share the parent log after loading", () => {
   assert.equal(child.result, null);
   assert.equal(child.log, null);
   assert.equal(parent.result.log, undefined);
-  assert.deepEqual(assistance.assistanceLog(child, draft), parent.log);
+  assert.equal(child.log_json, undefined);
+  assert.deepEqual(
+    assistance.assistanceLog(child, draft),
+    JSON.parse(parent.log_json!),
+  );
+});
+
+test("legacy deep logs migrate before draft cloning and retain the public raw shape", () => {
+  const logText = `{"exchanges":[{"attempts":[{"response":{"unknown":${"[".repeat(10000)}"leaf"${"]".repeat(10000)}}}]}]}`;
+  const r = record("legacy-deep", "done");
+  r.log = JSON.parse(logText);
+  r.result = { log: r.log } as unknown as assistance.Suggestion;
+  const draft = normalizeDraft(newDraft({ ai: { records: [r] } }));
+  assert.equal(draft.ai!.records[0].log, null);
+  assert.equal(draft.ai!.records[0].result!.log, undefined);
+  assert.equal(draft.ai!.records[0].log_json, logText);
+  assert.doesNotThrow(() => structuredClone(draft));
+  assert.equal(assistance.assistanceLogJson(draft.ai!.records[0]), logText);
 });

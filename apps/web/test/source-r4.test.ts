@@ -647,3 +647,24 @@ test("manual selection preserves unchanged canonical source evidence and histori
   await expect(page).toHaveURL(/\/new\/places$/);
   expect((await stored(page)).formation).toEqual(formation);
 });
+
+test("changing a source language keeps the next weight input attached and preserves typed zero", async ({
+  page,
+}) => {
+  await mock(page, { disabled: true });
+  await seed(page, { gismu: state([source()]) }, false);
+  const language = page.getByLabel("Language tag of row 1", { exact: true });
+  const weight = page.getByLabel("Weight numerator of row 1", { exact: true });
+  const original = await weight.elementHandle();
+  await language.fill("deu");
+  await weight.fill("0");
+  await expect(weight).toBeFocused();
+  expect(await original!.evaluate((input) => input.isConnected)).toBe(true);
+  await weight.press("Tab");
+  await expect
+    .poll(async () => (await stored(page)).gismu.rows[0].weight.numerator)
+    .toBe("0");
+  await expect(
+    page.getByLabel("Scoring letters for deu", { exact: true }),
+  ).toBeVisible();
+});

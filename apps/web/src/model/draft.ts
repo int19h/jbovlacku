@@ -21,6 +21,7 @@ import {
   textToRichText,
 } from "./richtext.ts";
 import { placeGlyph } from "../lib/format.ts";
+import { cloneAssistance } from "./assistance.ts";
 import {
   lexicalKinds,
   type Arity,
@@ -430,7 +431,7 @@ export function normalizeDraft(stored: Draft): Draft {
     ? { ...old.gismu, rows: old.gismu.rows.map(normalizeSourceRow) }
     : null;
   // Give old undo snapshots the same row identities as the current draft.
-  const ai = old.ai ? structuredClone(old.ai) : undefined;
+  const ai = old.ai ? cloneAssistance(old.ai) : undefined;
   const sourceValue = (row: import("./builders.ts").GismuRowState) => {
     const { id, ...value } = normalizeSourceRow(row);
     void id;

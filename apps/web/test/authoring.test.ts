@@ -1080,8 +1080,13 @@ test("two tabs that publish the same reviewed revision keep one group, and a new
     .locator("aside")
     .getByRole("button", { name: "Publish", exact: true })
     .click();
-  // This tab's session has not seen the first-signature acknowledgment yet.
-  await acceptFirstSignature(other);
+  // Preference changes reach open tabs. A pending tab can also finish its own dialog.
+  const consent = other.getByRole("dialog", {
+    name: "Before your first public signature",
+  });
+  const savedGroup = other.getByRole("region", { name: "Saved publication" });
+  await expect(consent.or(savedGroup)).toBeVisible();
+  if (await consent.isVisible()) await acceptFirstSignature(other);
   await expect(other.getByRole("status").last()).toContainText(
     "already published",
   );

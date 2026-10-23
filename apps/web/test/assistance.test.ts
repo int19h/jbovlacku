@@ -191,6 +191,7 @@ function proposals(body: any): any[] {
   return [];
 }
 interface MockOptions {
+  deepLog?: boolean;
   delay?: boolean;
   failure?: string;
   invalid?: boolean;
@@ -321,15 +322,24 @@ async function mockAssistant(page: Page, options: MockOptions = {}) {
           progress: { attempt: 2, max_attempts: 3, task: "type" },
         },
       });
-    return route.fulfill({
-      json: {
-        state: options.failure ? "failed" : "completed",
-        result: options.failure ? null : result,
-        error: options.failure
-          ? { message: options.failure, log: options.log ?? log }
-          : null,
-      },
-    });
+    const terminal = {
+      state: options.failure ? "failed" : "completed",
+      result: options.failure ? null : result,
+      error: options.failure
+        ? { message: options.failure, log: options.log ?? log }
+        : null,
+    };
+    if (options.deepLog) {
+      const nested = `${"[".repeat(10000)}"deep metadata leaf"${"]".repeat(10000)}`;
+      return route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify(terminal).replaceAll(
+          '"DEEP_METADATA_ARRAY"',
+          nested,
+        ),
+      });
+    }
+    return route.fulfill({ json: terminal });
   });
   return {
     calls,
@@ -446,7 +456,7 @@ test("consent precedes sending, suggestions need acceptance, and private logs ex
   await page.reload();
   await page.getByRole("button", { name: "Undo Recommend a type" }).click();
   await expect(page.getByRole("radio", { name: /^gismu/ })).toBeChecked();
-  expect((await stored(page)).ai.records[0].log).toEqual(log);
+  expect(JSON.parse((await stored(page)).ai.records[0].log_json)).toEqual(log);
 });
 
 test("new providers and expanded disclosures require consent and disabling the server preserves the preference", async ({
@@ -882,7 +892,9 @@ test("browser requests reach the Node service and a mocked provider with a corre
   await panel.getByRole("button", { name: "Use this", exact: true }).click();
   await expect(page.getByRole("radio", { name: /^cmavo/ })).toBeChecked();
   const saved = await stored(page);
-  expect(saved.ai.records[0].log.exchanges[0].attempts).toHaveLength(2);
+  expect(
+    JSON.parse(saved.ai.records[0].log_json).exchanges[0].attempts,
+  ).toHaveLength(2);
   expect(JSON.stringify(saved)).not.toContain("browser-fixture-only");
 });
 
@@ -1130,7 +1142,9 @@ for (const [action, lock] of [
     expect(saved.lujvo.components[0].definition).toBe(definition);
     if (lock) expect(saved.lujvo.components[0].locked).toBe(lock);
     expect(saved.text).toEqual([["Human draft prose."]]);
-    expect(saved.ai.records[0].log.exchanges[0].request).toContain(definition);
+    expect(
+      JSON.parse(saved.ai.records[0].log_json).exchanges[0].request,
+    ).toContain(definition);
   });
 }
 
@@ -1185,7 +1199,7 @@ test("actual service resolves component labels to the chosen exact definitions t
   ).toBeEnabled();
   const pending = await stored(page);
   const record = pending.ai.records[0];
-  const exchange = record.log.exchanges[0];
+  const exchange = JSON.parse(record.log_json).exchanges[0];
   const modelRequest = JSON.parse(exchange.request);
   expect(
     modelRequest.definitions.map((definition: any) => ({
@@ -1228,7 +1242,7 @@ test("actual service resolves component labels to the chosen exact definitions t
   expect(
     reloaded.lujvo.components.map((component: any) => component.definition),
   ).toEqual(chosen);
-  expect(reloaded.ai.records[0].log).toEqual(record.log);
+  expect(reloaded.ai.records[0].log_json).toEqual(record.log_json);
   expect(reloaded.text).toEqual(accepted.text);
 });
 
@@ -1276,7 +1290,9 @@ test("actual service accepts an English source from the default language preset 
     "book",
   );
   expect(saved.ai.records[0].result.proposals[0].value[0].language).toBe("eng");
-  expect(saved.ai.records[0].log.exchanges[0].task).toBe("sources");
+  expect(JSON.parse(saved.ai.records[0].log_json).exchanges[0].task).toBe(
+    "sources",
+  );
   expect(saved.ai.records[0].result.proposals[0].value[0]).toMatchObject({
     word_ipa: "bʊk",
     stem: "book",
@@ -2082,6 +2098,7 @@ test("an accepted partial mapping keeps Undo and one log after the panel is dism
   const mapping = data.ai.records.find((r: any) => r.key.includes(":mapping:"));
   expect(mapping.result).toBeNull();
   expect(mapping.log).toBeNull();
+  expect(mapping.log_json).toBeUndefined();
   expect(mapping.log_id).toBe(
     data.ai.records.find((r: any) => r.key === "places-glosses").id,
   );
@@ -2094,4 +2111,129 @@ test("an accepted partial mapping keeps Undo and one log after the panel is dism
   await expect(
     page.getByLabel("Source word of derivation 1 for place 1", { exact: true }),
   ).toHaveCount(0);
+});
+
+test("completed deep logs survive acceptance, reload, and both log exports", async ({
+  page,
+}) => {
+  const deepLog = structuredClone(log) as any;
+  deepLog.exchanges[0].attempts[0].response.unknown = "DEEP_METADATA_ARRAY";
+  deepLog.exchanges[0].attempts[0].tool_calls[0].unknown =
+    "DEEP_METADATA_ARRAY";
+  await mockAssistant(page, { log: deepLog, deepLog: true });
+  await draft(page);
+  await page
+    .getByRole("button", { name: "Recommend a type", exact: true })
+    .click();
+  await allow(page);
+  const panel = page.getByRole("region", {
+    name: "Recommend a type suggestion",
+  });
+  await expect(panel).toBeVisible();
+  await panel.getByRole("button", { name: "Use this", exact: true }).click();
+  await expect(page.getByRole("radio", { name: /^cmavo/ })).toBeChecked();
+  await page.reload();
+  await expect(
+    page.getByRole("button", { name: "Undo Recommend a type", exact: true }),
+  ).toBeVisible();
+  const persisted = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const saved = (await new LocalStore().get("drafts", "current")) as any;
+    return saved.ai.records.map((record: any) => ({
+      log: record.log,
+      jsonType: typeof record.log_json,
+      nestedLog: record.result?.log,
+      nestedJson: record.result?.log_json,
+    }));
+  });
+  expect(persisted).toEqual([
+    {
+      log: null,
+      jsonType: "string",
+      nestedLog: undefined,
+      nestedJson: undefined,
+    },
+  ]);
+  await page
+    .getByRole("button", { name: "How the assistant decided", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog", {
+    name: "How the assistant decided",
+  });
+  await expect(dialog).toContainText("deep metadata leaf");
+  const markdownDownload = page.waitForEvent("download");
+  await dialog.getByRole("button", { name: "Export as Markdown" }).click();
+  const markdown = await readFile(
+    (await (await markdownDownload).path())!,
+    "utf8",
+  );
+  expect(markdown).toContain("deep metadata leaf");
+  expect(markdown.length).toBeLessThan(100000);
+  const rawDownload = page.waitForEvent("download");
+  await dialog.getByRole("button", { name: "Export raw JSON" }).click();
+  const raw = await readFile((await (await rawDownload).path())!, "utf8");
+  expect(raw.length).toBeLessThan(100000);
+  const exported = JSON.parse(raw);
+  expect(exported).not.toHaveProperty("log_json");
+  const depth = (value: unknown) => {
+    let count = 0;
+    while (Array.isArray(value)) {
+      count++;
+      value = value[0];
+    }
+    expect(value).toBe("deep metadata leaf");
+    return count;
+  };
+  expect(depth(exported.exchanges[0].attempts[0].response.unknown)).toBe(10000);
+  expect(depth(exported.exchanges[0].attempts[0].tool_calls[0].unknown)).toBe(
+    10000,
+  );
+});
+
+test("an unversioned draft converts legacy deep logs before its first storage clone", async ({
+  page,
+}) => {
+  await page.goto("/search");
+  const outcome = await page.evaluate(async () => {
+    const { newDraft } = await import(String("/src/model/draft.ts"));
+    const { loadDraft } = await import(String("/src/pages/wizard/common.ts"));
+    const legacy: any = newDraft();
+    delete legacy.revision;
+    legacy.ai = {
+      records: [
+        {
+          id: "old-log",
+          key: "definition",
+          label: "Definition",
+          operation: "definition",
+          fingerprint: "old",
+          requested: {},
+          result: null,
+          log: JSON.parse(
+            `{"unknown":${"[".repeat(10000)}"old leaf"${"]".repeat(10000)}}`,
+          ),
+          error: null,
+          state: "done",
+        },
+      ],
+    };
+    let storedType: string | null = null;
+    const app: any = {
+      session: { storageAvailable: true },
+      store: {
+        get: async () => legacy,
+        saveDraft: async (_key: string, value: any) => {
+          const saved = structuredClone(value);
+          storedType = typeof saved.ai.records[0].log_json;
+        },
+      },
+    };
+    const loaded = await loadDraft(app);
+    return {
+      loaded: loaded !== null,
+      storedType,
+      rawLog: loaded?.ai?.records[0].log,
+    };
+  });
+  expect(outcome).toEqual({ loaded: true, storedType: "string", rawLog: null });
 });

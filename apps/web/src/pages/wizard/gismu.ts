@@ -223,6 +223,58 @@ export async function gismuPage(
     for (const details of detailRows.values())
       details.row.hidden = !details.notes && details.control.hidden;
   };
+  const sourceControl = (row: GismuRowState) => {
+    const key = sourceRowKey(row);
+    const label = `Suggest source for ${row.name || row.language}`;
+    let control = sourceControls.get(key);
+    if (control && control.dataset.sourceLabel !== label) {
+      control.dispatchEvent(new Event("assist-dispose"));
+      sourceObservers.get(key)?.disconnect();
+      sourceObservers.delete(key);
+      sourceControls.delete(key);
+      control.remove();
+      control = undefined;
+    }
+    if (!control) {
+      control = assistanceAction(app, draft, saver, context, {
+        key,
+        label,
+        operation: "gismu-sources",
+        current: () => sourceCurrent(draft, row.id!),
+        apply: (d, r) => applySource(d, row.id!, r),
+      });
+      control.dataset.sourceLabel = label;
+      sourceControls.set(key, control);
+      const observer = new MutationObserver(syncSourceVisibility);
+      observer.observe(control, {
+        attributes: true,
+        attributeFilter: ["hidden"],
+      });
+      sourceObservers.set(key, observer);
+    }
+    return control;
+  };
+  const renameManualLabels = (
+    container: HTMLElement,
+    before: string,
+    after: string,
+  ) => {
+    const suffix = ` for ${before}`;
+    for (const node of container.querySelectorAll<HTMLElement>(
+      "[aria-label]",
+    )) {
+      if (node.closest(".ai-action")) continue;
+      const label = node.getAttribute("aria-label")!;
+      if (label.endsWith(suffix))
+        node.setAttribute(
+          "aria-label",
+          `${label.slice(0, -suffix.length)} for ${after}`,
+        );
+    }
+    for (const label of container.querySelectorAll("label"))
+      if (label.textContent === `Source notes for ${before}`)
+        label.textContent = `Source notes for ${after}`;
+  };
   let bulkRunning = false;
   const fillSources = button(
     el("span", {}, text("AI", "ai-tag"), text(" Suggest source words")),
@@ -395,13 +447,19 @@ export async function gismuPage(
           style: "width:6rem;min-height:36px",
         });
         code.addEventListener("change", () => {
-          sourceControls
-            .get(sourceKey)
-            ?.dispatchEvent(new Event("assist-cancel"));
+          const previousName = row.name || row.language;
           row.language = code.value.trim();
           row.name = row.language;
+          code.value = row.language;
+          renameManualLabels(tr, previousName, row.name);
+          const details = detailRows.get(sourceKey);
+          if (details) {
+            renameManualLabels(details.row, previousName, row.name);
+            details.control = sourceControl(row);
+            details.row.firstElementChild?.append(details.control);
+          }
+          syncSourceVisibility();
           saver.touch();
-          renderRows();
           schedule();
         });
         languageCell.append(code);
@@ -594,33 +652,7 @@ export async function gismuPage(
         tools,
       );
       tbody.append(tr);
-      let control = sourceControls.get(sourceKey);
-      const sourceLabel = `Suggest source for ${row.name || row.language}`;
-      if (control && control.dataset.sourceLabel !== sourceLabel) {
-        control.dispatchEvent(new Event("assist-dispose"));
-        sourceObservers.get(sourceKey)?.disconnect();
-        sourceObservers.delete(sourceKey);
-        control.remove();
-        sourceControls.delete(sourceKey);
-        control = undefined;
-      }
-      if (!control) {
-        control = assistanceAction(app, draft, saver, context, {
-          key: sourceKey,
-          label: sourceLabel,
-          operation: "gismu-sources",
-          current: () => sourceCurrent(draft, row.id!),
-          apply: (d, r) => applySource(d, row.id!, r),
-        });
-        control.dataset.sourceLabel = sourceLabel;
-        sourceControls.set(sourceKey, control);
-        const observer = new MutationObserver(syncSourceVisibility);
-        observer.observe(control, {
-          attributes: true,
-          attributeFilter: ["hidden"],
-        });
-        sourceObservers.set(sourceKey, observer);
-      }
+      const control = sourceControl(row);
       const details = el("td", { colspan: "8" });
       const showNotes =
         sourceNotes(row).length > 0 || notesEditing.has(sourceKey);

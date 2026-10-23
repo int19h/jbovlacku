@@ -14,6 +14,7 @@ import { navigate, type RenderContext } from "../app/router.ts";
 import { getCapabilities, selfPeer, readBounded } from "../data/api.ts";
 import {
   assistanceLog,
+  assistanceLogJson,
   assistanceLogRows,
   assistanceLogMarkdown,
   applyMapping,
@@ -327,7 +328,7 @@ export function inferenceLog(record: AssistanceRecord, draft?: Draft) {
         () =>
           download(
             `jbovlacku-ai-${record.id}.json`,
-            json(log),
+            assistanceLogJson(record, draft),
             "application/json",
           ),
         { class: "btn" },
@@ -499,6 +500,7 @@ export function assistanceAction(
           state: "accepted",
           result: null,
           log: null,
+          log_json: undefined,
           log_id: record.log_id ?? record.id,
           patches: undoPatches(before, after),
           before,
@@ -1115,7 +1117,8 @@ export function assistanceAction(
         fingerprint,
         requested,
         result: checked,
-        log: checked.log ?? null,
+        log: null,
+        log_json: checked.log_json,
         error: null,
         state: "done",
       });
