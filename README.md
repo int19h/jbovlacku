@@ -14,8 +14,21 @@ It does not restrict expressly authorized work on private GitHub issues and pull
 
 The Rust libraries implement canonical records, SSHSIG signatures, causal state, identity continuity, imported account controls, and exact ranking bounds.
 Native and WebAssembly builds share the format rules. The TypeScript application uses generated WebAssembly bindings.
-The current definition validator still requires explicit empty or null fields.
-Support for [omitted optional definition fields](docs/format.md#absent-fields-and-compatibility) remains a target change.
+
+The definition validator accepts an omitted or null `word_ipa` field on formation sources.
+It rejects `stem` and `ipa` source fields, including null and empty values.
+Formation sources still require explicit `input`, `weight`, and `notes`, including their empty or null values.
+Every other [optional definition field](docs/format.md#absent-fields-and-compatibility) still requires its explicit value in the current validator.
+
+The shared core accepts `entity`, `mass`, and `tuple` as retired tags in signed version 1 bodies.
+Sorting and uniqueness compare signed tag strings. A retired tag can appear beside its current equivalent without an automatic merge.
+`entity` means `referent`. `tuple` means `sequence`.
+`mass` is an opaque legacy annotation outside the current tag tree and has no current alias.
+
+The draft model preserves these hints for review.
+Before a new signature, the author must replace retired tags with current standard or custom HTTPS tags, or remove them.
+Explicit alias replacement preserves the note, abstractor, and relation arity. After that action, identical tags and alternatives appear once.
+
 The Node.js adapter uses local object files and SQLite. The local Worker adapter uses R2, D1, and a Durable Object.
 The Worker currently serves the API only.
 Both adapters share admission, receipts, snapshots, search packages, and dictionary API logic.
@@ -51,6 +64,15 @@ The lujvo builder offers short rafsi, gismu stems, whole gismu, whole-word parts
 If several parts share the same competing rafsi claim, the builder shows one acknowledgment for that claim.
 Choosing [optional hyphens](docs/morphology.md) in the lujvo builder remains a target change. The builder adds only the required hyphens.
 The gismu generator offers the CLL 1987, CLL 1995, and Ilmen presets with pinned sources, custom weights, exact scores, tied ranks, per-language contributions, root and rafsi conflicts, and manual forms without fabricated evidence.
+
+The core and builders keep the optional full pronunciation, `word_ipa`, in signed formation sources.
+Draft reload and export preserve private `stem` and `ipa` values. Neither enters a signed formation source.
+
+Publication selects cached source rows from their word, `word_ipa`, scoring input, weight, and notes.
+Known weights, including zero, survive regardless of private `stem` or `ipa` values.
+Rows without this signed evidence stay out of the signed formation.
+The gismu source editor with seven columns remains a target feature.
+
 The [morphology profiles](docs/morphology.md) name the rules and versions that the metadata records.
 The status editor, transfer editor, semantic search, AI, and Lensisku cross-posting remain target features.
 The site view is the server's selected signed view, and the Trust page can use another retained signed view by its event ID. A signed view names its calculation profile, `simple-routes-bounds-v1` or `simple-routes-shun-v1`; the pages name the profile of each result and its route rule, and an unknown profile leaves scores unavailable.

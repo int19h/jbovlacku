@@ -35,6 +35,7 @@ import {
   rootConflictKey,
   manualFormation,
   newGismuState,
+  alternativeSourceRow,
   type GismuRowState,
   type PackageInventory,
 } from "../../model/builders.ts";
@@ -386,7 +387,7 @@ export async function gismuPage(
         button(
           "Alternative",
           () => {
-            state.rows.splice(index + 1, 0, { ...row, word: "", input: "" });
+            state.rows.splice(index + 1, 0, alternativeSourceRow(row));
             saver.touch();
             renderRows();
           },

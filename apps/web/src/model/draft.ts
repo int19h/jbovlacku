@@ -29,6 +29,7 @@ import {
   type DefinitionBody,
   type Example,
   type Formation,
+  type FormationSource,
   type Gloss,
   type LexicalKind,
   type Operand,
@@ -37,6 +38,7 @@ import {
   type RichText,
   type SourceReference,
   type TypeHint,
+  type TypeAlternative,
 } from "./types.ts";
 
 export const CC0_LICENSE = {
@@ -62,7 +64,7 @@ export type KindChoice =
   | "custom";
 export const kindChoices: { value: KindChoice; label: string }[] = [
   { value: "unspecified", label: "unspecified" },
-  { value: "object", label: "object" },
+  { value: "object", label: "anything (referent)" },
   { value: "event", label: "event" },
   { value: "property", label: "property" },
   { value: "number", label: "number" },
@@ -73,7 +75,7 @@ export function hintForChoice(choice: KindChoice): TypeHint | null {
     case "object":
       return {
         alternatives: [
-          { tags: ["entity"], abstractor: null, relation_arity: null },
+          { tags: ["referent"], abstractor: null, relation_arity: null },
         ],
         note: [],
       };
@@ -146,6 +148,8 @@ export interface DraftPlace {
   kind: KindChoice;
   /** Full type hint when kind is custom. The format allows one hint per place. */
   hint: TypeHint | null;
+  /** The parent's exact hint, for a warning about retained annotations only. */
+  parentHint?: TypeHint | null;
   /** Every derivation of this place, in order. */
   derivations: DraftDerivation[];
   defaults: DraftDefault[];
@@ -175,6 +179,14 @@ interface LiteralModeSnapshot {
   structured: RichText;
   /** Earlier visible values that an undo can restore after renumbering. */
   previousLiterals?: RichText[];
+}
+/** Private source evidence survives draft reload and export, but never enters a signed body. */
+export interface DraftFormationSource extends FormationSource {
+  stem?: string | null;
+  ipa?: string | null;
+}
+export interface DraftFormation extends Omit<Formation, "sources"> {
+  sources: DraftFormationSource[];
 }
 export interface Draft {
   version: 2;
@@ -206,13 +218,14 @@ export interface Draft {
     description: RichText;
     kind: KindChoice;
     hint: TypeHint | null;
+    parentHint?: TypeHint | null;
   } | null;
   frameConstraints: RichText[];
   glosses: { language: string; text: string; sense: string }[];
   notes: RichText;
   examples: DraftExample[];
   etymologyText: RichText;
-  formation: Formation | null;
+  formation: DraftFormation | null;
   compound: Compound | null;
   /** The spelling that the formation or compound evidence describes. */
   evidenceForm: string | null;
@@ -260,6 +273,7 @@ export type DraftInput = Partial<
     description: RichInput;
     kind: KindChoice;
     hint: TypeHint | null;
+    parentHint?: TypeHint | null;
   } | null;
   places?: PlaceInput[];
   examples?: (Omit<DraftExample, "translation" | "notes"> & {
@@ -962,7 +976,7 @@ function richProblems(
     }
 }
 const KNOWN_TAGS = new Set([
-  "entity",
+  "referent",
   "agent",
   "event",
   "state",
@@ -972,10 +986,55 @@ const KNOWN_TAGS = new Set([
   "number",
   "text",
   "set",
-  "mass",
   "sequence",
-  "tuple",
 ]);
+const RETIRED_TAGS = new Set(["entity", "mass", "tuple"]);
+export function retiredTagMeaning(tag: string): string | null {
+  if (tag === "entity") return "entity means referent.";
+  if (tag === "tuple") return "tuple means sequence.";
+  if (tag === "mass")
+    return "mass is an opaque legacy annotation outside the current tag tree and has no current alias.";
+  return null;
+}
+function alternativeKey(alternative: TypeAlternative): string {
+  const arity = alternative.relation_arity;
+  return JSON.stringify([
+    alternative.tags,
+    alternative.abstractor,
+    arity?.mode ?? null,
+    arity && "count" in arity
+      ? arity.count
+      : arity && "minimum" in arity
+        ? arity.minimum
+        : null,
+  ]);
+}
+/** Replace an alias only after the author asks. Keep every other annotation. */
+export function replaceRetiredHintTag(hint: TypeHint, tag: string): TypeHint {
+  const replacement =
+    tag === "entity" ? "referent" : tag === "tuple" ? "sequence" : null;
+  if (!replacement) throw new Error("The retired tag has no current alias.");
+  const result = structuredClone(hint);
+  const seen = new Set<string>();
+  result.alternatives = result.alternatives
+    .map((alternative) => ({
+      ...alternative,
+      tags: [
+        ...new Set(
+          alternative.tags.map((value) =>
+            value === tag ? replacement : value,
+          ),
+        ),
+      ].sort(),
+    }))
+    .filter((alternative) => {
+      const key = alternativeKey(alternative);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  return result;
+}
 const ABSTRACTORS = new Set([
   "nu",
   "du'u",
@@ -996,6 +1055,7 @@ function hintProblems(
   field: string,
   label: string,
   problems: DraftProblem[],
+  parentHint?: TypeHint | null,
 ): TypeHint {
   const alternatives = hint.alternatives.map((a) => ({
     tags: [...new Set(a.tags.map((t) => t.trim()).filter(Boolean))].sort(),
@@ -1010,7 +1070,7 @@ function hintProblems(
     });
   const seen = new Set<string>();
   for (const a of alternatives) {
-    const key = JSON.stringify(a);
+    const key = alternativeKey(a);
     if (seen.has(key))
       problems.push({
         field,
@@ -1025,7 +1085,20 @@ function hintProblems(
         blocking: true,
       });
     for (const tag of a.tags)
-      if (!KNOWN_TAGS.has(tag) && !/^https:\/\/[^\s/]+/u.test(tag))
+      if (RETIRED_TAGS.has(tag)) {
+        const change =
+          tag === "mass"
+            ? "Choose a current tag or remove it before a new signature. A replacement changes its meaning."
+            : `Use Replace ${tag} with ${tag === "entity" ? "referent" : "sequence"}, or remove it, before a new signature.`;
+        const fromParent = parentHint?.alternatives.some(
+          (original) => alternativeKey(original) === key,
+        );
+        problems.push({
+          field,
+          message: `${label} keeps the retired tag "${tag}". ${retiredTagMeaning(tag)} ${change}${fromParent ? " The original signed body stays valid." : ""}`,
+          blocking: true,
+        });
+      } else if (!KNOWN_TAGS.has(tag) && !/^https:\/\/[^\s/]+/u.test(tag))
         problems.push({
           field,
           message: `${label} uses the tag "${tag}". A tag is one of the named kinds or an HTTPS URL.`,
@@ -1068,6 +1141,7 @@ function buildFrame(draft: Draft, problems: DraftProblem[], rich: RichField[]) {
               field,
               `${label}'s kind of thing`,
               problems,
+              draft.parents.length ? place.parentHint : null,
             )
           : null
         : hintForChoice(place.kind);
@@ -1273,6 +1347,7 @@ function buildFrame(draft: Draft, problems: DraftProblem[], rich: RichField[]) {
             "tail",
             "The repeated places' kind of thing",
             problems,
+            draft.parents.length ? draft.tail.parentHint : null,
           )
         : null
       : hintForChoice(draft.tail.kind)
@@ -1380,6 +1455,29 @@ export function coreProblems(
     ];
   }
 }
+/** Copy signed fields only, including when a stored draft contains private source evidence. */
+function signedFormation(formation: DraftFormation | null): Formation | null {
+  if (!formation) return null;
+  const sources: FormationSource[] = [];
+  for (const row of formation.sources) {
+    const source: FormationSource = {
+      language: row.language,
+      word: row.word,
+      input: row.input,
+      weight: row.weight,
+      notes: row.notes,
+    };
+    if (row.word_ipa?.trim()) source.word_ipa = row.word_ipa;
+    const hasSignedEvidence =
+      source.word.trim() ||
+      source.word_ipa ||
+      source.input !== null ||
+      source.weight !== null ||
+      countNodes(source.notes);
+    if (hasSignedEvidence) sources.push(source);
+  }
+  return { ...formation, sources };
+}
 /** Builds the signed body from the draft and lists every problem. */
 export function draftToBody(input: Draft): {
   body: DefinitionBody | null;
@@ -1389,6 +1487,7 @@ export function draftToBody(input: Draft): {
   // Literal mode publishes no place references, whatever set the mode. A
   // reference that reached a field becomes the circled character as text.
   const draft = input.structured ? input : literalView(input);
+  const formation = signedFormation(draft.formation);
   const problems: DraftProblem[] = [];
   const rich: RichField[] = [];
   const spelling = draft.spelling.trim().normalize("NFC");
@@ -1649,8 +1748,8 @@ export function draftToBody(input: Draft): {
       message: `The ${draft.compound ? "compound" : "generation"} evidence describes "${draft.evidenceForm}", not "${spelling}". Build the form again, or remove the evidence.`,
       blocking: true,
     });
-  if (draft.formation)
-    draft.formation.sources.forEach((row, i) => {
+  if (formation)
+    formation.sources.forEach((row, i) => {
       if (!language(row.language))
         problems.push({
           field: "formation",
@@ -1695,7 +1794,7 @@ export function draftToBody(input: Draft): {
     notes,
     etymology: {
       text: etymologyText,
-      formation: draft.formation,
+      formation,
       compound: draft.compound,
     },
     examples,
@@ -1750,6 +1849,7 @@ export function draftFromBody(
       })),
       kind: choice,
       hint: choice === "custom" ? hint : null,
+      parentHint: hint ? structuredClone(hint) : null,
       derivations: place.derivation.map((d) => ({
         word: d.word.spelling,
         definition: d.definition,
@@ -1809,6 +1909,7 @@ export function draftFromBody(
           description: structuredClone(frame.tail.description),
           kind: choiceForHint(tailHint),
           hint: choiceForHint(tailHint) === "custom" ? tailHint : null,
+          parentHint: tailHint ? structuredClone(tailHint) : null,
         }
       : null,
     frameConstraints: frame?.constraints.map((c) => structuredClone(c)) ?? [],

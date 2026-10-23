@@ -27,6 +27,8 @@ import {
   revisionChanges,
   hintForChoice,
   kindChoices,
+  retiredTagMeaning,
+  replaceRetiredHintTag,
   editorText,
   editorToRichText,
   fieldsReferencing,
@@ -73,7 +75,7 @@ import {
 import { describeArity } from "../../components/definition.ts";
 
 const standardTags = [
-  "entity",
+  "referent",
   "agent",
   "event",
   "state",
@@ -83,9 +85,7 @@ const standardTags = [
   "number",
   "text",
   "set",
-  "mass",
   "sequence",
-  "tuple",
 ];
 const standardAbstractors = [
   "nu",
@@ -138,13 +138,51 @@ function hintEditor(
         : null,
     );
   };
+  const retiredNotices = el("div");
+  const renderRetiredNotices = () => {
+    retiredNotices.replaceChildren();
+    for (const tag of new Set(
+      alternatives.flatMap((alternative) => alternative.tags),
+    )) {
+      const meaning = retiredTagMeaning(tag);
+      if (!meaning) continue;
+      const retired = el("div", { class: "notice" }, p(meaning));
+      if (tag === "entity" || tag === "tuple") {
+        const replacement = tag === "entity" ? "referent" : "sequence";
+        retired.append(
+          button(
+            `Replace ${tag} with ${replacement}`,
+            () => {
+              const updated = replaceRetiredHintTag(
+                { alternatives, note },
+                tag,
+              );
+              alternatives.splice(
+                0,
+                alternatives.length,
+                ...updated.alternatives,
+              );
+              note = updated.note;
+              emit();
+              render();
+              box.querySelector<HTMLInputElement>("input")?.focus();
+            },
+            { class: "btn btn-quiet" },
+          ),
+        );
+      }
+      retiredNotices.append(retired);
+    }
+  };
   const render = () => {
     box.replaceChildren(
       p(
         "Kind of thing in full. Each alternative applies its fields together. Custom tags use an HTTPS URI.",
         "meta",
       ),
+      retiredNotices,
     );
+    renderRetiredNotices();
     alternatives.forEach((alt, index) => {
       const row = el("div", {
         style:
@@ -165,6 +203,7 @@ function hintEditor(
           .map((t) => t.trim())
           .filter(Boolean);
         emit();
+        renderRetiredNotices();
       });
       const abstractor = field(`Abstractor for alternative ${index + 1}`, {
         options: [
@@ -917,6 +956,7 @@ export async function placesPage(
             (hint) => {
               place.hint = hint;
               saver.touch();
+              refreshPreview();
             },
           ),
         );
@@ -926,6 +966,7 @@ export async function placesPage(
       if (place.kind !== "custom") place.hint = null;
       saver.touch();
       renderCustom();
+      refreshPreview();
     });
     const from = {
       wrapper: el(
@@ -1147,6 +1188,7 @@ export async function placesPage(
         };
         saver.touch();
         renderTailCustom();
+        refreshPreview();
       });
       const custom = el("div");
       const renderTailCustom = () => {
@@ -1156,6 +1198,7 @@ export async function placesPage(
             hintEditor(draft.tail.hint, draft.structured, (hint) => {
               draft.tail!.hint = hint;
               saver.touch();
+              refreshPreview();
             }),
           );
       };
