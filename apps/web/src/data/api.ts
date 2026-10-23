@@ -142,6 +142,9 @@ export async function objectBytes(
   } catch (error) {
     if ((error as { name?: string } | null)?.name === "TimeoutError")
       throw new TransportError("The server did not answer in time.", "timeout");
+    if (options.signal?.aborted) throw error;
+    if (error instanceof TypeError)
+      throw new TransportError("No connection to the server.", "offline");
     throw error;
   }
   if (!response.ok) {
@@ -341,11 +344,24 @@ async function waitForMaterialization(options: RequestOptions) {
     while (hasPendingMaterialization()) {
       signal.throwIfAborted();
       for (const [id, accepted] of [...acceptedAwaitingView]) {
-        const receipt = await getReceipt(id, {
-          ...options,
-          signal,
-          cache: "no-store",
-        });
+        let receipt: Receipt;
+        try {
+          receipt = await getReceipt(id, {
+            ...options,
+            signal,
+            cache: "no-store",
+          });
+        } catch (error) {
+          signal.throwIfAborted();
+          if (
+            error instanceof TransportError ||
+            (error instanceof RequestError &&
+              error.status >= 500 &&
+              error.status < 600)
+          )
+            continue;
+          throw error;
+        }
         if (
           receipt.id === id &&
           receipt.admission !== "refused" &&

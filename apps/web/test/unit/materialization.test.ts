@@ -55,6 +55,7 @@ function serve(
 ) {
   globalThis.fetch = (async (input, options) => {
     const value = await handler(String(input), options!.signal!);
+    if (value instanceof Response) return value;
     return new Response(JSON.stringify(value));
   }) as typeof fetch;
 }
@@ -134,24 +135,108 @@ test("navigation cancels the polling delay without clearing accepted delivery ev
   await getWord(word, { fresh: true });
   assert.equal(hasPendingMaterialization(), false);
 });
-test("a failed wait reports pending evaluation and leaves accepted records available to retry", async () => {
+test("transient receipt failures retry before the word request within one deadline", async () => {
   rememberAcceptedReceipt(receipt(), selfPeer);
+  const paths: string[] = [];
+  const originalTimeout = AbortSignal.timeout;
+  let deadlines = 0;
+  AbortSignal.timeout = (ms) => {
+    if (ms === 15000) deadlines++;
+    return originalTimeout(ms);
+  };
+  try {
+    serve((path) => {
+      paths.push(path);
+      if (!path.includes("/receipts/")) return response();
+      if (paths.length === 1) throw new Error("Connection failed.");
+      if (paths.length <= 4)
+        return new Response(JSON.stringify({ code: "busy" }), {
+          status: [500, 503, 599][paths.length - 2],
+        });
+      return completed();
+    });
+    await getWord(word, { fresh: true });
+    assert.equal(paths.length, 6);
+    assert.ok(paths.slice(0, -1).every((path) => path.includes("/receipts/")));
+    assert.match(paths.at(-1)!, /\/words\//);
+    assert.equal(deadlines, 1);
+    assert.equal(hasPendingMaterialization(), false);
+  } finally {
+    AbortSignal.timeout = originalTimeout;
+    rememberAcceptedReceipt(completed(), selfPeer);
+  }
+});
+test("a permanent receipt failure preserves accepted records for a later refresh", async () => {
+  rememberAcceptedReceipt(receipt(), selfPeer);
+  let requests = 0;
   serve(() => {
-    throw new Error("Connection failed.");
+    requests++;
+    return new Response(JSON.stringify({ code: "withheld" }), { status: 403 });
   });
   await assert.rejects(
     getWord(word, { fresh: true }),
     MaterializationPendingError,
   );
+  assert.equal(requests, 1);
   assert.equal(hasPendingMaterialization(), true);
   serve((path) => (path.includes("/receipts/") ? completed() : response()));
   await getWord(word, { fresh: true });
   assert.equal(hasPendingMaterialization(), false);
 });
+test("a receipt response interrupted during transfer retries before the word request", async () => {
+  rememberAcceptedReceipt(receipt(), selfPeer);
+  let requests = 0;
+  serve((path) => {
+    requests++;
+    if (requests === 1)
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.error(
+              new TypeError("Connection reset during transfer."),
+            );
+          },
+        }),
+      );
+    return path.includes("/receipts/") ? completed() : response();
+  });
+  try {
+    await getWord(word, { fresh: true });
+    assert.equal(requests, 3);
+    assert.equal(hasPendingMaterialization(), false);
+  } finally {
+    rememberAcceptedReceipt(completed(), selfPeer);
+  }
+});
+test("navigation after a transient receipt failure cancels the retry", async () => {
+  rememberAcceptedReceipt(receipt(), selfPeer);
+  const controller = new AbortController();
+  let requests = 0;
+  serve(() => {
+    requests++;
+    setImmediate(() => controller.abort());
+    return new Response(JSON.stringify({ code: "busy" }), { status: 503 });
+  });
+  try {
+    await assert.rejects(
+      getWord(word, { fresh: true, signal: controller.signal }),
+      (error: unknown) => (error as Error).name === "AbortError",
+    );
+    await new Promise<void>((resolve) => setTimeout(resolve, 250));
+    assert.equal(requests, 1);
+    assert.equal(hasPendingMaterialization(), true);
+  } finally {
+    rememberAcceptedReceipt(completed(), selfPeer);
+  }
+});
 test("a mismatched receipt or missing required body cannot clear a pending accepted record", async () => {
   for (const changed of [
+    { admission: "refused" as const },
+    { id: "jve1:" + "0".repeat(64) },
+    { envelope_hash: "sha256:" + "0".repeat(64) },
     { body_hash: "sha256:" + "0".repeat(64) },
     { body_status: "missing" as const },
+    { cursor: "local.2" },
     {
       snapshot: null,
       interpretation: "unavailable" as const,
@@ -159,7 +244,8 @@ test("a mismatched receipt or missing required body cannot clear a pending accep
     },
   ]) {
     rememberAcceptedReceipt(receipt(), selfPeer);
-    rememberAcceptedReceipt({ ...completed(), ...changed }, selfPeer);
+    if (!("admission" in changed))
+      rememberAcceptedReceipt({ ...completed(), ...changed }, selfPeer);
     assert.equal(hasPendingMaterialization(), true);
     const controller = new AbortController();
     serve(() => {
@@ -190,6 +276,41 @@ test("a materialization timeout preserves the accepted record for a later refres
       getWord(word, { fresh: true }),
       MaterializationPendingError,
     );
+    assert.equal(hasPendingMaterialization(), true);
+  } finally {
+    AbortSignal.timeout = originalTimeout;
+    rememberAcceptedReceipt(completed(), selfPeer);
+  }
+});
+test("repeated transient receipt failures stop at the original materialization deadline", async () => {
+  rememberAcceptedReceipt(receipt(), selfPeer);
+  const originalTimeout = AbortSignal.timeout;
+  const deadline = new AbortController();
+  let deadlines = 0;
+  let requests = 0;
+  AbortSignal.timeout = (ms) => {
+    if (ms === 15000) {
+      deadlines++;
+      return deadline.signal;
+    }
+    return originalTimeout(ms);
+  };
+  try {
+    serve(() => {
+      requests++;
+      if (requests === 3)
+        setImmediate(() =>
+          deadline.abort(new DOMException("Timed out.", "TimeoutError")),
+        );
+      return new Response(JSON.stringify({ code: "busy" }), { status: 503 });
+    });
+    await assert.rejects(
+      getWord(word, { fresh: true }),
+      MaterializationPendingError,
+    );
+    assert.equal(requests, 3);
+    assert.equal(deadlines, 1);
+    assert.equal(deadline.signal.aborted, true);
     assert.equal(hasPendingMaterialization(), true);
   } finally {
     AbortSignal.timeout = originalTimeout;
