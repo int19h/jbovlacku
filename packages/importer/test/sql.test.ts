@@ -282,12 +282,16 @@ test("source changes create parented revisions and source reversions reuse origi
 test("score and timestamp changes remain separate observations without lexical revisions", async () => {
   const input = await setup();
   const first = await importSqlSnapshot(input);
-  const changed = mutate(fixture, (fields) => {
+  let changed = mutate(fixture, (fields) => {
     if (fields[3] === "4") {
       fields[7] = "1789000000";
       fields[12] = "2026-09-13 00:00:00+00";
     }
   });
+  changed = tableMutation(changed, "natlangwordbestplaces", (fields) =>
+    fields[1] === "4" ? [...fields.slice(0, 3), "777777"] : fields,
+  );
+  assert.match(changed.toString(), /4\t4\t0\t777777/);
   await updateSource(input, changed);
   const second = await importSqlSnapshot(input);
   assert.equal(second.report.reused, 4);
@@ -377,7 +381,7 @@ test("lost journal, corrupt envelopes, changed source, and signing failure canno
   );
   const recovered = await importSqlSnapshot(interrupted);
   assert.equal((await carriers(interrupted.output)).length, 5);
-  assert.equal(recovered.report.added, 4);
+  assert.equal(recovered.report.reused, 4);
 });
 
 test("TOML archive metadata retains pinned bytes, date uncertainty, and table counts", () => {
@@ -463,6 +467,22 @@ test("an exact older snapshot retains later absent records and records the rever
   assert.notEqual(returned.selection, first.selection);
   assert.equal(returned.selection, second.selection);
   assert.deepEqual(returned.report.omitted, [9999999]);
+  const db = new DatabaseSync(join(input.output, "journal.sqlite"));
+  try {
+    const runs = db.prepare("SELECT snapshot FROM batches ORDER BY run").all();
+    assert.equal(runs.length, 3);
+    assert.equal(runs[2].snapshot, runs[0].snapshot);
+    assert.equal(
+      (
+        db
+          .prepare("SELECT COUNT(*) AS count FROM observations WHERE record=4")
+          .get() as any
+      ).count,
+      3,
+    );
+  } finally {
+    db.close();
+  }
 });
 
 test("classification status labels, dialect tags, exact source numbers, and reserved source keys survive", async () => {
@@ -470,10 +490,15 @@ test("classification status labels, dialect tags, exact source numbers, and rese
     .toString()
     .replace("3\tcmevla", "3\tobsolete cmevla")
     .replace("2\ten\tEnglish", "2\ten-bpfk\tEnglish");
-  const source = mutate(Buffer.from(changed), (fields) => {
-    if (fields[3] === "4")
-      fields[14] = '{"$source_number":1.250,"large":9007199254740993001}';
-  });
+  const source = tableMutation(
+    Buffer.from(changed),
+    "definition_versions",
+    (fields, position) => {
+      if (position === 0)
+        fields[8] = '{"$source_number":1.250,"large":9007199254740993001}';
+      return fields;
+    },
+  );
   const input = await setup(source);
   const result = await importSqlSnapshot(input);
   assert.equal(result.report.added, 4, JSON.stringify(result.report));
@@ -481,8 +506,8 @@ test("classification status labels, dialect tags, exact source numbers, and rese
     (item) => item.body.legacy,
   );
   assert.ok(records.some((item) => item.body.language === "en-bpfk"));
-  const original = records.find((item) => item.body.legacy.record.id === 4)!
-    .body.legacy.original.definitions.metadata;
+  const original = records.find((item) => item.body.legacy.record.id === 74481)!
+    .body.legacy.original.definition_versions[0].gloss_keywords;
   assert.deepEqual(original, {
     $source_object: [
       ["$source_number", { $source_number: "1.250" }],
@@ -561,4 +586,423 @@ test("a corrupted journal view lookup cannot substitute different signed roots",
   db.exec("UPDATE views SET body='{}'");
   db.close();
   await assert.rejects(importSqlSnapshot(input), /invalid view record/);
+});
+
+function tableMutation(
+  bytes: Buffer,
+  table: string,
+  change: (fields: string[], position: number) => string[] | null,
+): Buffer {
+  let inside = false;
+  let position = 0;
+  return Buffer.from(
+    bytes
+      .toString()
+      .split("\r\n")
+      .flatMap((line) => {
+        if (line.startsWith("COPY ")) {
+          inside = line.startsWith(`COPY public.${table} `);
+          position = 0;
+          return [line];
+        }
+        if (line === "\\.") {
+          inside = false;
+          return [line];
+        }
+        if (!inside) return [line];
+        const changed = change(line.split("\t"), position++);
+        return changed === null ? [] : [changed.join("\t")];
+      })
+      .join("\r\n"),
+  );
+}
+function withSyntheticRelatedRows(bytes: Buffer): Buffer {
+  return Buffer.from(
+    bytes
+      .toString()
+      .replace(
+        'COPY public.etymology (etymologyid, valsiid, langid, content, "time", userid) FROM stdin;\r\n',
+        'COPY public.etymology (etymologyid, valsiid, langid, content, "time", userid) FROM stdin;\r\n1\t4\t2\tauthored origin\t1\t25\r\n',
+      )
+      .replace(
+        'COPY public.example (exampleid, valsiid, definitionid, examplenum, content, "time", userid) FROM stdin;\r\n',
+        'COPY public.example (exampleid, valsiid, definitionid, examplenum, content, "time", userid) FROM stdin;\r\n1\t4\t4\t1\tmi bajra\t1\t25\r\n',
+      ),
+  );
+}
+
+test("r2 F1 derived vectors, cache columns, metadata, and computed word values stay only in the archive", async () => {
+  const input = await setup();
+  await importSqlSnapshot(input);
+  for (const carrier of (await carriers(input.output)).filter(
+    (item) => item.body.legacy,
+  )) {
+    const original = carrier.body.legacy.original;
+    for (const row of [
+      original.definitions,
+      original.valsi,
+      ...original.definition_versions,
+    ]) {
+      assert.ok(
+        Object.keys(row).every(
+          (key) =>
+            key !== "embedding" &&
+            key !== "metadata" &&
+            key !== "canonical_word" &&
+            !key.startsWith("cached_"),
+        ),
+        Object.keys(row).join(","),
+      );
+    }
+    assert.match(carrier.body.legacy.extraction, /v2$/);
+    assert.ok(
+      carrier.body.legacy.limitations.some(
+        (item: string) => /embedding/.test(item) && /archive/.test(item),
+      ),
+    );
+    assert.equal(carrier.body.legacy.attribution.author, null);
+  }
+});
+
+for (const [table, affected] of [
+  ["keywordmapping", 4],
+  ["definition_versions", 74481],
+  ["natlangwords", 4],
+  ["etymology", 4],
+  ["example", 4],
+  ["natlangwordbestplaces", 36101],
+  ["languages", 4],
+  ["valsi", 74481],
+  ["valsitypes", 4],
+] as const) {
+  test(`r2 F2 known owner of malformed ${table} remains unresolved and keeps its selection`, async () => {
+    const clean = withSyntheticRelatedRows(fixture);
+    const input = await setup(clean);
+    const first = await importSqlSnapshot(input);
+    const bad = tableMutation(clean, table, (fields, position) =>
+      position === 0 ? [...fields, "extra"] : fields,
+    );
+    await updateSource(input, bad);
+    const result = await importSqlSnapshot(input);
+    assert.equal(result.report.revised, 0);
+    assert.equal(result.selection, first.selection);
+    assert.ok(
+      result.report.unresolved.some((issue) => issue.record === affected),
+      JSON.stringify(result.report),
+    );
+    const before = await setup(bad);
+    const fresh = await importSqlSnapshot(before);
+    assert.ok(
+      !(await carriers(before.output)).some(
+        (item) => item.body.legacy?.record.id === affected,
+      ),
+    );
+    assert.ok(fresh.report.added < 4);
+  });
+  test(`r2 F2 unknown owner of malformed ${table} blocks its dependent table`, async () => {
+    const clean = withSyntheticRelatedRows(fixture);
+    const input = await setup(clean);
+    const first = await importSqlSnapshot(input);
+    const bad = tableMutation(clean, table, (fields, position) =>
+      position === 0 ? ["broken"] : fields,
+    );
+    await updateSource(input, bad);
+    const result = await importSqlSnapshot(input);
+    assert.equal(result.selection, first.selection);
+    assert.equal(result.report.reused, 0, JSON.stringify(result.report));
+    assert.ok(
+      result.report.unresolved.some((issue) =>
+        /incomplete|malformed/.test(issue.reason),
+      ),
+    );
+  });
+}
+
+test("r2 F3 malformed definition identity is present and never classified as omitted", async () => {
+  const input = await setup();
+  await importSqlSnapshot(input);
+  const bad = mutate(fixture, (fields) => {
+    if (fields[3] === "4") fields.push("extra");
+  });
+  await updateSource(input, bad);
+  const result = await importSqlSnapshot(input);
+  assert.ok(
+    result.report.unresolved.some(
+      (issue) => issue.record === 4 && /COPY-row/.test(issue.locator),
+    ),
+  );
+  assert.ok(!result.report.omitted.includes(4));
+});
+
+test("r2 F5 malformed manifest shape fails before creating any output", async () => {
+  for (const [field, value] of [
+    ["notes", undefined],
+    ["notes", [123]],
+    ["url", 4],
+    ["expected_rows", []],
+    ["expected_rows", { definitions: -1 }],
+    ["unexpected", "field"],
+  ] as const) {
+    const input = await setup();
+    const manifest: any = JSON.parse(
+      await readFile(input.manifestPath, "utf8"),
+    );
+    if (value === undefined) delete manifest[field];
+    else manifest[field] = value;
+    await writeFile(input.manifestPath, JSON.stringify(manifest));
+    await assert.rejects(importSqlSnapshot(input), /manifest/i);
+    await assert.rejects(readFile(join(input.output, "journal.sqlite")), {
+      code: "ENOENT",
+    });
+  }
+});
+
+test("r2 F6 exact A B A reversion has its own observation and preserves every batch", async () => {
+  const input = await setup();
+  const first = await importSqlSnapshot(input);
+  await updateSource(
+    input,
+    mutate(fixture, (fields) => {
+      if (fields[3] === "4") fields[4] += " changed";
+    }),
+  );
+  await importSqlSnapshot(input);
+  await updateSource(input, fixture);
+  const result = await importSqlSnapshot(input);
+  assert.equal(result.report.reverted, 1);
+  const db = new DatabaseSync(join(input.output, "journal.sqlite"));
+  try {
+    const observations = db
+      .prepare("SELECT * FROM observations WHERE record=4 ORDER BY run")
+      .all();
+    assert.deepEqual(
+      observations.map((row) => row.disposition),
+      ["added", "revised", "reverted"],
+    );
+    const batches = db.prepare("SELECT * FROM batches ORDER BY run").all();
+    assert.equal(batches.length, 3);
+    assert.equal(JSON.parse(batches[0].report as string).added, 4);
+    assert.equal(JSON.parse(batches[2].report as string).reverted, 1);
+    assert.equal(batches[0].view, first.view);
+  } finally {
+    db.close();
+  }
+});
+
+test("r2 F8 latest publication in the returning context becomes the revision parent", async () => {
+  const input = await setup();
+  await importSqlSnapshot(input);
+  const first = (await carriers(input.output)).find(
+    (item) => item.body.legacy?.record.id === 4,
+  )!;
+  const moved = tableMutation(fixture, "valsi", (fields) =>
+    fields[0] === "4" ? [fields[0], "bajru", ...fields.slice(2)] : fields,
+  );
+  await updateSource(input, moved);
+  await importSqlSnapshot(input);
+  const returned = mutate(fixture, (fields) => {
+    if (fields[3] === "4") fields[4] += " new text in old context";
+  });
+  await updateSource(input, returned);
+  await importSqlSnapshot(input);
+  const records = (await carriers(input.output)).filter(
+    (item) => item.body.legacy?.record.id === 4,
+  );
+  const revision = records.find((item) =>
+    JSON.stringify(item.body.text).includes("new text in old context"),
+  )!;
+  assert.deepEqual(revision.envelope.header.action.parents, [
+    first.envelope.id,
+  ]);
+});
+
+test("r2 Grok language edits change the definition language and gloss-only language evidence", async () => {
+  const input = await setup();
+  await importSqlSnapshot(input);
+  const changed = tableMutation(fixture, "languages", (fields) =>
+    fields[0] === "2" ? [fields[0], "en-simple", ...fields.slice(2)] : fields,
+  );
+  await updateSource(input, changed);
+  const result = await importSqlSnapshot(input);
+  assert.equal(result.report.revised, 2);
+  const selected = JSON.parse(
+    await readFile(join(input.output, "import-selection.json"), "utf8"),
+  );
+  const current = (await carriers(input.output)).find(
+    (item) =>
+      selected.includes(item.envelope.id) && item.body.legacy?.record.id === 4,
+  )!;
+  assert.equal(current.body.language, "en-simple");
+  assert.equal(current.body.glosses[0].language, "en-simple");
+  // The Russian definition keeps its own context while its gloss language changes.
+  const mixed = tableMutation(fixture, "natlangwords", (fields) =>
+    fields[0] === "41609" ? [fields[0], "2", ...fields.slice(2)] : fields,
+  );
+  const glossInput = await setup(mixed);
+  await importSqlSnapshot(glossInput);
+  const old = (await carriers(glossInput.output)).find(
+    (item) => item.body.legacy?.record.id === 36101,
+  )!;
+  await updateSource(
+    glossInput,
+    tableMutation(mixed, "languages", (fields) =>
+      fields[0] === "2" ? [fields[0], "en-simple", ...fields.slice(2)] : fields,
+    ),
+  );
+  const glossResult = await importSqlSnapshot(glossInput);
+  const ids = JSON.parse(
+    await readFile(join(glossInput.output, "import-selection.json"), "utf8"),
+  );
+  const updated = (await carriers(glossInput.output)).find(
+    (item) =>
+      ids.includes(item.envelope.id) && item.body.legacy?.record.id === 36101,
+  )!;
+  assert.equal(updated.body.language, "ru");
+  assert.equal(updated.body.glosses[0].language, "en-simple");
+  assert.deepEqual(updated.envelope.header.action.parents, [old.envelope.id]);
+  assert.equal(glossResult.report.revised, 3);
+});
+
+test("r2 Grok SQL lock tells the operator to settle the prior import", async () => {
+  const input = await setup();
+  await mkdir(join(input.output, ".import-lock"), { recursive: true });
+  await assert.rejects(
+    importSqlSnapshot(input),
+    /locked.*Settle the prior import/,
+  );
+});
+
+test("r2 Grok numeric-only old language baselines migrate from signed tags without republishing", async () => {
+  const input = await setup();
+  const first = await importSqlSnapshot(input);
+  const db = new DatabaseSync(join(input.output, "journal.sqlite"));
+  try {
+    for (const version of db.prepare("SELECT * FROM versions").all()) {
+      const lexical = JSON.parse(version.lexical as string);
+      const body = JSON.parse(version.carrier as string).body;
+      lexical.language = { known: body.legacy.original.definitions.langid };
+      const encoded = canonical(lexical);
+      db.prepare("UPDATE versions SET lexical=?,digest=? WHERE event=?").run(
+        encoded,
+        contentHash(utf8(encoded)),
+        version.event as string,
+      );
+      db.prepare("UPDATE entries SET baseline=? WHERE selected=?").run(
+        encoded,
+        version.event as string,
+      );
+    }
+  } finally {
+    db.close();
+  }
+  await updateSource(
+    input,
+    Buffer.concat([fixture, Buffer.from("-- New observation\r\n")]),
+  );
+  const same = await importSqlSnapshot(input);
+  assert.equal(same.selection, first.selection);
+  assert.equal(same.report.revised, 0);
+  const after = new DatabaseSync(join(input.output, "journal.sqlite"));
+  try {
+    const stored = JSON.parse(
+      after.prepare("SELECT baseline FROM entries WHERE record=4").get()!
+        .baseline as string,
+    );
+    assert.deepEqual(stored.language.known, {
+      source_id: { $source_number: "2" },
+      tag: "en",
+    });
+  } finally {
+    after.close();
+  }
+  await updateSource(
+    input,
+    tableMutation(fixture, "languages", (fields) =>
+      fields[0] === "2" ? [fields[0], "en-simple", ...fields.slice(2)] : fields,
+    ),
+  );
+  assert.equal((await importSqlSnapshot(input)).report.revised, 2);
+});
+
+test("r2 Grok historical candidates with equal lexical digests retain the right gloss languages", async () => {
+  const source = tableMutation(fixture, "natlangwords", (fields) =>
+    fields[0] === "41609" ? [fields[0], "2", ...fields.slice(2)] : fields,
+  );
+  const input = await setup(source);
+  const first = await importSqlSnapshot(input);
+  const old = (await carriers(input.output)).find(
+    (item) => item.body.legacy?.record.id === 36101,
+  )!;
+  const changed = tableMutation(source, "languages", (fields) =>
+    fields[0] === "2" ? [fields[0], "en-simple", ...fields.slice(2)] : fields,
+  );
+  await updateSource(input, changed);
+  await importSqlSnapshot(input);
+  await updateSource(input, source);
+  const restored = await importSqlSnapshot(input);
+  assert.equal(restored.selection, first.selection);
+  const selected = JSON.parse(
+    await readFile(join(input.output, "import-selection.json"), "utf8"),
+  );
+  assert.ok(selected.includes(old.envelope.id));
+  assert.equal(restored.report.reverted, 3);
+});
+
+test("r2 F8 a source reversion determines the latest observed parent across contexts", async () => {
+  const input = await setup();
+  await importSqlSnapshot(input);
+  const first = (await carriers(input.output)).find(
+    (item) => item.body.legacy?.record.id === 4,
+  )!;
+  const changed = mutate(fixture, (fields) => {
+    if (fields[3] === "4") fields[4] += " newer known text";
+  });
+  await updateSource(input, changed);
+  await importSqlSnapshot(input);
+  await updateSource(input, fixture);
+  await importSqlSnapshot(input);
+  const moved = tableMutation(fixture, "valsi", (fields) =>
+    fields[0] === "4" ? [fields[0], "bajru", ...fields.slice(2)] : fields,
+  );
+  await updateSource(input, moved);
+  await importSqlSnapshot(input);
+  await updateSource(
+    input,
+    mutate(fixture, (fields) => {
+      if (fields[3] === "4") fields[4] += " final context text";
+    }),
+  );
+  await importSqlSnapshot(input);
+  const final = (await carriers(input.output)).find(
+    (item) =>
+      item.body.legacy?.record.id === 4 &&
+      JSON.stringify(item.body.text).includes("final context text"),
+  )!;
+  assert.deepEqual(final.envelope.header.action.parents, [first.envelope.id]);
+});
+
+test("r2 malformed definition fragments without readable IDs leave complete rows usable", async () => {
+  const bad = tableMutation(fixture, "definitions", (fields, position) =>
+    position === 0 ? ["unreadable", "fragment"] : fields,
+  );
+  const input = await setup(bad);
+  const result = await importSqlSnapshot(input);
+  assert.equal(result.report.added, 3);
+  assert.ok(
+    result.report.unresolved.some(
+      (issue) => issue.record === null && /COPY-row/.test(issue.locator),
+    ),
+  );
+});
+
+test("r2 invalid source spellings remain unresolved without aborting other definitions", async () => {
+  const bad = tableMutation(fixture, "valsi", (fields) =>
+    fields[0] === "4"
+      ? [fields[0], " bad spelling", ...fields.slice(2)]
+      : fields,
+  );
+  const input = await setup(bad);
+  const result = await importSqlSnapshot(input);
+  assert.equal(result.report.added, 3);
+  assert.ok(result.report.unresolved.some((issue) => issue.record === 4));
 });

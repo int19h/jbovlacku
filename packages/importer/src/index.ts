@@ -32,7 +32,7 @@ const FIELDS = [
   "official_rafsi",
   "experimental_rafsi",
 ] as const;
-type Lexical = Record<
+export type Lexical = Record<
   (typeof FIELDS)[number],
   { known: unknown } | { unknown: true }
 >;
@@ -85,6 +85,8 @@ export interface Journal {
   head: string | null;
   entries: Record<string, Entry>;
   views: Carrier[];
+  /** Last durable run read by this proposal. It prevents stale writes. */
+  ledger_run?: number;
 }
 export interface ImportOptions {
   sourceBytes: Uint8Array;
@@ -189,7 +191,10 @@ function extract(
   };
   return {
     word: field("valsiword"),
-    language: field("langid"),
+    language:
+      Object.hasOwn(row, "langid") && !unavailable.has("langid")
+        ? known({ source_id: encodeOriginal(row.langid), tag: "en" })
+        : unknown(),
     text: field("definition"),
     notes: field("notes"),
     etymology: field("etymology"),
@@ -476,6 +481,56 @@ export function importCapture(options: ImportOptions): ImportResult {
         );
     }
   }
+  const retainedPrevious = retained.flatMap(
+    (carrier) => carrier.envelope.header.previous,
+  );
+  if (retainedPrevious.some((id) => !retainedIds.has(id)))
+    throw new Error("The journal lacks a retained predecessor envelope.");
+  const predecessors = new Set(retainedPrevious);
+  const maxima = [...retainedIds].filter((id) => !predecessors.has(id));
+  if (
+    maxima.length !== (retainedIds.size ? 1 : 0) ||
+    (maxima.length && maxima[0] !== journal.head)
+  )
+    throw new Error(
+      "The journal head does not name its complete signed frontier.",
+    );
+  // Old lexical bookkeeping can change. Original signed carriers stay unchanged.
+  for (const entry of Object.values(journal.entries)) {
+    for (const version of entry.versions) {
+      const language = version.lexical.language;
+      if (
+        "known" in language &&
+        !(
+          language.known &&
+          typeof language.known === "object" &&
+          "source_id" in language.known
+        )
+      ) {
+        version.lexical.language = known({
+          source_id: language.known,
+          tag: version.carrier.body.language,
+        });
+        version.digest = digest(version.lexical);
+      }
+    }
+    const selected = entry.versions.find(
+      (version) => version.carrier.envelope.id === entry.selected,
+    )!;
+    const language = entry.baseline.language;
+    if (
+      "known" in language &&
+      !(
+        language.known &&
+        typeof language.known === "object" &&
+        "source_id" in language.known
+      )
+    )
+      entry.baseline.language = known({
+        source_id: language.known,
+        tag: selected.carrier.body.language,
+      });
+  }
   const parsed = sourceObject(
     parseSourceJson(
       new TextDecoder("utf-8", { fatal: true }).decode(sourceBytes),
@@ -641,15 +696,28 @@ export function importCapture(options: ImportOptions): ImportResult {
             );
         } else {
           const body = definition(row, id, manifest, current);
-          const sameContext =
-            same(body.word, current.carrier.body.word) &&
-            body.language === current.carrier.body.language;
+          const sameContext = (version: Version) =>
+            same(body.word, version.carrier.body.word) &&
+            body.language === version.carrier.body.language;
+          const observedParent = [...entry.observations]
+            .reverse()
+            .map((observation) =>
+              entry.versions.find(
+                (version) =>
+                  version.carrier.envelope.id === observation.publication,
+              ),
+            )
+            .find((version) => version !== undefined && sameContext(version));
+          const contextParent = sameContext(current)
+            ? current
+            : (observedParent ??
+              [...entry.versions].reverse().find(sameContext));
           const carrier = sign(
             {
               kind: "definition.publish",
               word: wordId(body.word),
               language: body.language,
-              parents: sameContext ? [current.carrier.envelope.id] : [],
+              parents: contextParent ? [contextParent.carrier.envelope.id] : [],
               origin: "import",
             },
             body,
@@ -683,6 +751,7 @@ export function importCapture(options: ImportOptions): ImportResult {
       const final = journal.entries[String(id)];
       const lastObservation = final.observations.at(-1);
       if (
+        journal.ledger_run !== undefined ||
         lastObservation?.snapshot !== manifest.sha256 ||
         lastObservation?.lexical_digest !== lexicalDigest
       )

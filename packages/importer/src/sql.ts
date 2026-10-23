@@ -25,9 +25,13 @@ import { canonical, type Carrier, type ImportOptions } from "./index.ts";
 import { parseProtocolJson, syncDirectory } from "./storage.ts";
 import { encodeOriginal, parseSourceJson } from "./source-json.ts";
 import { hashFile, readCopyRows, type CopyRow } from "./sql-copy.ts";
+import {
+  openLedger as openJournal,
+  validateLedger as validateJournal,
+} from "./ledger.ts";
 
-export const SQL_EXTRACTION = "lensisku-sql-literal-v1";
-export const SQL_SOURCE = "https://lensisku.lojban.org/source/sql-snapshot";
+export const SQL_EXTRACTION = "lensisku-sql-literal-v2";
+export const SQL_SOURCE = "https://lensisku.lojban.org";
 export const SQL_ACCOUNT_ORIGIN = "https://lensisku.lojban.org";
 export interface SqlManifest {
   source: string;
@@ -111,6 +115,17 @@ type Lexical = Record<
   { known: unknown } | { unknown: true }
 >;
 type Row = Record<string, any>;
+class SourceRowError extends Error {}
+const omittedColumn = (key: string) =>
+  key === "embedding" ||
+  key === "metadata" ||
+  key === "canonical_word" ||
+  key.startsWith("cached_");
+function retainedRow(row: Row): Row {
+  return Object.fromEntries(
+    Object.entries(row).filter(([key]) => !omittedColumn(key)),
+  );
+}
 const numeric = new Set([
   "langid",
   "valsiid",
@@ -143,16 +158,22 @@ const same = (a: unknown, b: unknown) => canonical(a) === canonical(b);
 const text = (value: unknown): string | null => {
   if (value === null) return null;
   if (typeof value !== "string")
-    throw new Error("A source text field must contain a string or null.");
+    throw new SourceRowError(
+      "A source text field must contain a string or null.",
+    );
   return value;
 };
 const integer = (value: any, positive = true): number => {
   const token = value?.$source_number;
   if (typeof token !== "string" || !/^-?(0|[1-9][0-9]*)$/.test(token))
-    throw new Error("A source integer field lacks an exact integer token.");
+    throw new SourceRowError(
+      "A source integer field lacks an exact integer token.",
+    );
   const result = Number(token);
   if (!Number.isSafeInteger(result) || (positive && result <= 0))
-    throw new Error("A source integer is outside the supported range.");
+    throw new SourceRowError(
+      "A source integer is outside the supported range.",
+    );
   return result;
 };
 const literal = (value: string | null) =>
@@ -166,6 +187,87 @@ const tokens = (value: unknown) =>
     ...new Set((text(value) ?? "").split(/[\t\n\r\f\v ]+/).filter(Boolean)),
   ].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
 
+function validateManifest(value: unknown): SqlManifest {
+  const keys = [
+    "source",
+    "url",
+    "account_origin",
+    "retrieved_at",
+    "sha256",
+    "bytes",
+    "extraction",
+    "recipe",
+    "expected_rows",
+    "notes",
+  ];
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    throw new Error("The SQL manifest must be an object.");
+  const manifest = value as Row;
+  if (
+    keys.some((key) => !Object.hasOwn(manifest, key)) ||
+    Object.keys(manifest).some((key) => !keys.includes(key))
+  )
+    throw new Error("The SQL manifest has missing or unknown fields.");
+  if (
+    [
+      "source",
+      "url",
+      "account_origin",
+      "retrieved_at",
+      "sha256",
+      "extraction",
+      "recipe",
+    ].some((key) => typeof manifest[key] !== "string")
+  )
+    throw new Error("The SQL manifest text fields must contain strings.");
+  try {
+    const url = new URL(manifest.url);
+    if (!["https:", "file:"].includes(url.protocol)) throw new Error();
+  } catch {
+    throw new Error(
+      "The SQL manifest URL must identify an HTTPS or local file source.",
+    );
+  }
+  if (
+    !Array.isArray(manifest.notes) ||
+    manifest.notes.some((note: unknown) => typeof note !== "string")
+  )
+    throw new Error("The SQL manifest notes must be an array of strings.");
+  if (
+    manifest.expected_rows === null ||
+    typeof manifest.expected_rows !== "object" ||
+    Array.isArray(manifest.expected_rows) ||
+    Object.entries(manifest.expected_rows).some(
+      ([key, count]) =>
+        !/^[a-z_]+$/.test(key) ||
+        !Number.isSafeInteger(count) ||
+        (count as number) < 0,
+    )
+  )
+    throw new Error(
+      "The SQL manifest expected_rows must contain table names and nonnegative safe integers.",
+    );
+  if (
+    !/^sha256:[0-9a-f]{64}$/.test(manifest.sha256) ||
+    !Number.isSafeInteger(manifest.bytes) ||
+    manifest.bytes <= 0 ||
+    !Number.isFinite(Date.parse(manifest.retrieved_at))
+  )
+    throw new Error(
+      "The SQL manifest digest, size, or retrieval date is invalid.",
+    );
+  if (
+    manifest.source !== SQL_SOURCE ||
+    manifest.account_origin !== SQL_ACCOUNT_ORIGIN ||
+    manifest.extraction !== SQL_EXTRACTION ||
+    manifest.recipe !== "lensisku-sql-copy-v1"
+  )
+    throw new Error(
+      "The SQL manifest extraction recipe or source identity is unsupported.",
+    );
+  return manifest as SqlManifest;
+}
+
 /** Read the pinned archive manifest without treating TOML as executable input. */
 export function parseSqlManifest(
   bytes: Uint8Array,
@@ -173,7 +275,7 @@ export function parseSqlManifest(
 ): SqlManifest {
   const input = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   if (input.trimStart().startsWith("{"))
-    return parseProtocolJson<SqlManifest>(bytes);
+    return validateManifest(parseProtocolJson<unknown>(bytes));
   const required = (pattern: RegExp) => {
     const match = pattern.exec(input);
     if (!match)
@@ -191,7 +293,7 @@ export function parseSqlManifest(
       );
     counts[match[1]] = Number(match[2]);
   }
-  return {
+  return validateManifest({
     source: SQL_SOURCE,
     url: `file://${resolve(sourcePath)}`,
     account_origin: SQL_ACCOUNT_ORIGIN,
@@ -202,7 +304,7 @@ export function parseSqlManifest(
     recipe: "lensisku-sql-copy-v1",
     expected_rows: counts,
     notes: [required(/^notes\s*=\s*"(.*)"\s*$/m)],
-  };
+  });
 }
 
 function originalRow(row: CopyRow): Row {
@@ -210,20 +312,27 @@ function originalRow(row: CopyRow): Row {
   for (let i = 0; i < row.columns.length; i++) {
     const key = row.columns[i];
     const value = row.values[i];
+    if (omittedColumn(key)) continue;
     if (value === null) result[key] = null;
     else if (numeric.has(key)) {
       if (!/^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$/.test(value))
-        throw new Error(
+        throw new SourceRowError(
           `The numeric SQL column ${key} contains an invalid number token.`,
         );
       result[key] = { $source_number: value };
     } else if (bools.has(key)) {
       if (value !== "t" && value !== "f")
-        throw new Error(`The SQL boolean ${key} is invalid.`);
+        throw new SourceRowError(`The SQL boolean ${key} is invalid.`);
       result[key] = value === "t";
-    } else if (jsonFields.has(key))
-      result[key] = encodeOriginal(parseSourceJson(value));
-    else result[key] = value;
+    } else if (jsonFields.has(key)) {
+      try {
+        result[key] = encodeOriginal(parseSourceJson(value));
+      } catch (error) {
+        throw new SourceRowError(
+          `Invalid SQL JSON column ${key}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    } else result[key] = value;
   }
   return result;
 }
@@ -262,7 +371,7 @@ function unresolved(
 
 function initializeStage(db: DatabaseSync) {
   db.exec(
-    "PRAGMA journal_mode=DELETE; PRAGMA synchronous=OFF; PRAGMA cache_size=-16384; PRAGMA temp_store=FILE; CREATE TABLE rows (table_name TEXT, source_id INTEGER, owner INTEGER, language INTEGER, position INTEGER, data TEXT); CREATE INDEX by_id ON rows(table_name,source_id); CREATE INDEX by_owner ON rows(table_name,owner,language);",
+    "PRAGMA journal_mode=DELETE; PRAGMA synchronous=OFF; PRAGMA cache_size=-16384; PRAGMA temp_store=FILE; CREATE TABLE rows (table_name TEXT, source_id INTEGER, owner INTEGER, language INTEGER, position INTEGER, data TEXT); CREATE INDEX by_id ON rows(table_name,source_id); CREATE INDEX by_owner ON rows(table_name,owner,language); CREATE TABLE issues(table_name TEXT,source_key INTEGER,locator TEXT,reason TEXT); CREATE INDEX issue_keys ON issues(table_name,source_key); CREATE TABLE seen_definitions(record INTEGER PRIMARY KEY);",
   );
 }
 const stageId = (table: string, row: Row) => {
@@ -285,6 +394,7 @@ const stageId = (table: string, row: Row) => {
 function ownerId(table: string, row: Row): number {
   const key = (
     {
+      definitions: "valsiid",
       definition_versions: "definition_id",
       keywordmapping: "definitionid",
       natlangwordbestplaces: "definitionid",
@@ -293,6 +403,40 @@ function ownerId(table: string, row: Row): number {
     } as Record<string, string>
   )[table];
   return key ? integer(row[key], false) : 0;
+}
+function recoveredId(copy: CopyRow, key: string): number | null {
+  const index = copy.columns.indexOf(key);
+  const value = index < 0 ? undefined : copy.values[index];
+  if (typeof value !== "string" || !/^(0|[1-9][0-9]*)$/.test(value))
+    return null;
+  const id = Number(value);
+  return Number.isSafeInteger(id) ? id : null;
+}
+const issueKey = (table: string) =>
+  (
+    ({
+      languages: "langid",
+      valsitypes: "typeid",
+      valsi: "valsiid",
+      definitions: "definitionid",
+      definition_versions: "definition_id",
+      natlangwords: "wordid",
+      keywordmapping: "definitionid",
+      natlangwordbestplaces: "definitionid",
+      etymology: "valsiid",
+      example: "definitionid",
+    }) as Record<string, string>
+  )[table];
+function assertComplete(stage: DatabaseSync, table: string, key: number) {
+  const issue = stage
+    .prepare(
+      `SELECT locator FROM issues WHERE table_name=? AND (source_key=?${table === "definitions" ? "" : " OR source_key IS NULL"}) LIMIT 1`,
+    )
+    .get(table, key);
+  if (issue)
+    throw new SourceRowError(
+      `The ${table} source evidence is incomplete because a related row is malformed at ${issue.locator}.`,
+    );
 }
 async function stageSource(path: string, db: DatabaseSync, output: SqlReport) {
   initializeStage(db);
@@ -305,11 +449,17 @@ async function stageSource(path: string, db: DatabaseSync, output: SqlReport) {
       output.table_rows[table] = rows;
     })) {
       const locator = `${copy.table}/COPY-row=${copy.row}/line=${copy.line}`;
-      let id: number | null = null;
+      const recovered = recoveredId(copy, issueKey(copy.table));
+      const definitionId =
+        copy.table === "definitions" ? recoveredId(copy, "definitionid") : null;
+      if (definitionId !== null && definitionId > 0)
+        db.prepare("INSERT OR IGNORE INTO seen_definitions VALUES(?)").run(
+          definitionId,
+        );
       try {
-        if (copy.error) throw new Error(copy.error);
+        if (copy.error) throw new SourceRowError(copy.error);
         const row = originalRow(copy);
-        id = stageId(copy.table, row);
+        const id = stageId(copy.table, row);
         if (copy.table === "definitions") {
           const word = getRows(
             db,
@@ -342,11 +492,25 @@ async function stageSource(path: string, db: DatabaseSync, output: SqlReport) {
           JSON.stringify(row),
         );
       } catch (error) {
+        if (!(error instanceof SourceRowError)) throw error;
+        db.prepare("INSERT INTO issues VALUES(?,?,?,?)").run(
+          copy.table,
+          recovered,
+          locator,
+          error.message,
+        );
+        const direct = [
+          "definitions",
+          "definition_versions",
+          "keywordmapping",
+          "natlangwordbestplaces",
+          "example",
+        ].includes(copy.table);
         unresolved(
           output,
-          copy.table === "definitions" ? id : null,
+          direct && recovered !== null && recovered > 0 ? recovered : null,
           locator,
-          error instanceof Error ? error.message : String(error),
+          error.message,
         );
       }
       if (++count % 1000 === 0) db.exec("COMMIT; BEGIN");
@@ -376,7 +540,7 @@ function getRows(
 function one(stage: DatabaseSync, table: string, id: number): Row {
   const rows = getRows(stage, table, "source_id", id);
   if (rows.length !== 1)
-    throw new Error(
+    throw new SourceRowError(
       `The ${table} reference ${id} has ${rows.length} source rows.`,
     );
   return rows[0];
@@ -384,7 +548,7 @@ function one(stage: DatabaseSync, table: string, id: number): Row {
 function language(row: Row): string {
   const tag = text(row.tag);
   if (tag === null || tag === "")
-    throw new Error("The source language lacks a language tag.");
+    throw new SourceRowError("The source language lacks a language tag.");
   return tag.toLowerCase();
 }
 
@@ -395,13 +559,29 @@ function extract(
   output: SqlReport,
 ): { body: Row; lexical: Lexical } {
   const id = integer(row.definitionid);
+  assertComplete(stage, "definitions", id);
+  for (const table of [
+    "definition_versions",
+    "keywordmapping",
+    "example",
+    "natlangwordbestplaces",
+  ])
+    assertComplete(stage, table, id);
+  assertComplete(stage, "etymology", integer(row.valsiid));
+  assertComplete(stage, "valsi", integer(row.valsiid));
+  assertComplete(stage, "languages", integer(row.langid, false));
   const word = one(stage, "valsi", integer(row.valsiid));
+  assertComplete(stage, "valsitypes", integer(word.typeid, false));
+  assertComplete(stage, "languages", integer(word.source_langid, false));
+  assertComplete(stage, "natlangwords", -1);
   const type = one(stage, "valsitypes", integer(word.typeid, false));
   const kind = text(type.descriptor);
   if (kind === null || kind === "")
-    throw new Error("The source grammatical class is unavailable.");
+    throw new SourceRowError("The source grammatical class is unavailable.");
   if (["wiki", "phrase", "nalvla"].includes(kind))
-    throw new Error(`The source type ${kind} is outside the lexical import.`);
+    throw new SourceRowError(
+      `The source type ${kind} is outside the lexical import.`,
+    );
   const lang = one(stage, "languages", integer(row.langid, false));
   const sourceLang = one(
     stage,
@@ -409,17 +589,24 @@ function extract(
     integer(word.source_langid, false),
   );
   if (language(sourceLang) !== "jbo")
-    throw new Error("The source word language is not Lojban.");
+    throw new SourceRowError("The source word language is not Lojban.");
   const spelling = text(word.word);
-  if (spelling === null) throw new Error("The source spelling is unavailable.");
+  if (spelling === null)
+    throw new SourceRowError("The source spelling is unavailable.");
   const definitionLanguage = language(lang);
   const mappings = getRows(stage, "keywordmapping", "owner", id).map(
     (mapping) => {
+      assertComplete(
+        stage,
+        "natlangwords",
+        integer(mapping.natlangwordid, false),
+      );
       const keyword = one(
         stage,
         "natlangwords",
         integer(mapping.natlangwordid, false),
       );
+      assertComplete(stage, "languages", integer(keyword.langid, false));
       const keywordLanguage = one(
         stage,
         "languages",
@@ -427,9 +614,10 @@ function extract(
       );
       const place = integer(mapping.place, false);
       if (place < 0)
-        throw new Error("A SQL place keyword has a negative index.");
+        throw new SourceRowError("A SQL place keyword has a negative index.");
       const value = text(keyword.word);
-      if (value === null) throw new Error("A SQL keyword lacks a word.");
+      if (value === null)
+        throw new SourceRowError("A SQL keyword lacks a word.");
       return {
         mapping,
         keyword,
@@ -460,7 +648,7 @@ function extract(
     );
   const lexical: Lexical = {
     word: known(word.word),
-    language: known(row.langid),
+    language: known({ source_id: row.langid, tag: definitionLanguage }),
     text: known(row.definition),
     notes: known(row.notes),
     etymology: known(row.etymology),
@@ -489,7 +677,7 @@ function extract(
     event: null,
     locator,
   };
-  const username = text(row.cached_username);
+  const username = null;
   const account = row.userid === null ? null : integer(row.userid, false);
   const rawKind = kind.replace(/^(experimental|obsolete) /, "");
   const mapped =
@@ -520,6 +708,7 @@ function extract(
     "Word-level rafsi and definition-level rafsi remain distinct source evidence. This extraction publishes no rafsi claims.",
     "The source contains no rights statement. Rights remain unknown.",
     "The exact source remains at the verified external archive path. Keep that file and the original manifest available.",
+    "Derived source columns are excluded from published rows: embedding, metadata (including processed_text), cached_*, canonical_word, and cached_decomposition. Their exact values remain in the source archive. Cached usernames do not establish source author names.",
     ...manifest.notes,
   ];
   if (mappedKind !== kind)
@@ -600,8 +789,8 @@ function extract(
       record: { kind: "definition", id },
       locator,
       original: {
-        definitions: row,
-        valsi: word,
+        definitions: retainedRow(row),
+        valsi: retainedRow(word),
         valsitypes: type,
         languages: lang,
         source_language: sourceLang,
@@ -609,7 +798,7 @@ function extract(
           ...mapping,
           natlangword: keyword,
         })),
-        definition_versions: history,
+        definition_versions: history.map(retainedRow),
         etymology: wordEtymology,
         examples,
         scores,
@@ -647,94 +836,114 @@ function extract(
   return { body, lexical };
 }
 
-function openJournal(
-  path: string,
-  source: string,
-  importer: string,
-): DatabaseSync {
-  const db = new DatabaseSync(path);
-  db.exec(
-    "PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA cache_size=-8192; CREATE TABLE IF NOT EXISTS state(key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS versions(record INTEGER,digest TEXT,lexical TEXT,carrier TEXT,event TEXT PRIMARY KEY); CREATE INDEX IF NOT EXISTS versions_record ON versions(record,digest); CREATE TABLE IF NOT EXISTS entries(record INTEGER PRIMARY KEY,selected TEXT,baseline TEXT); CREATE TABLE IF NOT EXISTS observations(record INTEGER,snapshot TEXT,digest TEXT,event TEXT,disposition TEXT,PRIMARY KEY(record,snapshot,digest)); CREATE TABLE IF NOT EXISTS views(event TEXT PRIMARY KEY,body TEXT,carrier TEXT); CREATE TABLE IF NOT EXISTS unresolved(snapshot TEXT,record INTEGER,locator TEXT,reason TEXT); CREATE TABLE IF NOT EXISTS batches(snapshot TEXT PRIMARY KEY,manifest TEXT,report TEXT,view TEXT,selection TEXT);",
-  );
-  const get = db.prepare("SELECT value FROM state WHERE key=?");
-  const set = db.prepare("INSERT OR IGNORE INTO state VALUES(?,?)");
-  for (const [key, value] of [
-    ["format", "jbovlacku-sql-import-journal-v1"],
-    ["source", source],
-    ["importer", importer],
-  ]) {
-    set.run(key, value);
-    if ((get.get(key) as any)?.value !== value) {
-      db.close();
-      throw new Error(
-        "The SQL journal belongs to another format, source, or importer.",
-      );
-    }
+function normalizeLanguage(lexical: Lexical, carrier: Carrier): Lexical {
+  const result = structuredClone(lexical);
+  if ("known" in result.language) {
+    const current = result.language.known as any;
+    if (!current || typeof current !== "object" || !("source_id" in current))
+      result.language = known({
+        source_id: current,
+        tag: carrier.body.language,
+      });
   }
-  return db;
+  return result;
 }
-function validateJournal(db: DatabaseSync, source: string, importer: string) {
-  const ids = new Set<string>();
-  const previous: string[] = [];
-  for (const item of db
-    .prepare(
-      "SELECT record,digest,lexical,carrier,event,NULL AS view_body FROM versions UNION ALL SELECT NULL,NULL,NULL,carrier,event,body FROM views",
-    )
-    .iterate()) {
-    const carrier = parseProtocolJson<Carrier>(utf8(item.carrier as string));
-    const admission = prepareAdmission(utf8(item.carrier as string));
-    if (
-      !admission.action_valid ||
-      admission.body_status !== "present" ||
-      carrier.envelope.header.issuer !== importer ||
-      carrier.envelope.id !== item.event ||
-      canonical(carrier) !== item.carrier
-    )
-      throw new Error("The SQL journal contains an invalid signed carrier.");
-    ids.add(carrier.envelope.id);
-    previous.push(...carrier.envelope.header.previous);
-    if (item.record !== null) {
-      if (
-        digest(JSON.parse(item.lexical as string)) !== item.digest ||
-        carrier.body.legacy?.source !== source ||
-        carrier.body.legacy?.record?.id !== item.record ||
-        carrier.envelope.header.action.kind !== "definition.publish"
-      )
-        throw new Error(
-          "The SQL journal source record or lexical digest is inconsistent.",
+function migrateLanguageEvidence(db: DatabaseSync) {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    for (const version of db
+      .prepare("SELECT event,lexical,carrier FROM versions")
+      .iterate()) {
+      const old = JSON.parse(version.lexical as string);
+      const lexical = normalizeLanguage(
+        old,
+        JSON.parse(version.carrier as string),
+      );
+      if (!same(old, lexical))
+        db.prepare("UPDATE versions SET lexical=?,digest=? WHERE event=?").run(
+          canonical(lexical),
+          digest(lexical),
+          version.event,
         );
-    } else if (
-      carrier.envelope.header.action.kind !== "view.publish" ||
-      item.view_body !== canonical(carrier.body)
-    )
-      throw new Error("The SQL journal contains an invalid view record.");
-  }
-  if (previous.some((id) => !ids.has(id)))
-    throw new Error("The SQL journal lacks a retained predecessor envelope.");
-  const head = (
-    db.prepare("SELECT value FROM state WHERE key='head'").get() as any
-  )?.value;
-  if (head && !ids.has(head))
-    throw new Error("The SQL journal lacks its original head envelope.");
-  const predecessors = new Set(previous);
-  const maxima = [...ids].filter((id) => !predecessors.has(id));
-  if (
-    maxima.length !== (ids.size ? 1 : 0) ||
-    (maxima.length && maxima[0] !== head)
-  )
-    throw new Error(
-      "The SQL journal head does not name its complete signed frontier.",
-    );
-  if (
-    db
+    }
+    for (const entry of db
       .prepare(
-        "SELECT entries.record FROM entries LEFT JOIN versions ON entries.selected=versions.event WHERE versions.event IS NULL OR entries.record<>versions.record LIMIT 1",
+        "SELECT entries.record,entries.baseline,versions.carrier FROM entries JOIN versions ON entries.selected=versions.event",
       )
-      .get()
+      .iterate()) {
+      const old = JSON.parse(entry.baseline as string);
+      const lexical = normalizeLanguage(
+        old,
+        JSON.parse(entry.carrier as string),
+      );
+      if (!same(old, lexical))
+        db.prepare("UPDATE entries SET baseline=? WHERE record=?").run(
+          canonical(lexical),
+          entry.record,
+        );
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+function sourceWordId(word: { language: "jbo"; spelling: string }): string {
+  try {
+    return wordId(word);
+  } catch (error) {
+    if (typeof error === "string")
+      throw new SourceRowError(`Invalid source spelling: ${error}`);
+    throw error;
+  }
+}
+function glossEvidenceMatches(
+  a: Lexical,
+  prior: Row,
+  b: Lexical,
+  current: Row,
+): boolean {
+  if (!("known" in a.glosses) || !("known" in b.glosses)) return true;
+  if (
+    !Array.isArray(prior.legacy?.original?.keywordmapping) ||
+    !Array.isArray(current.legacy?.original?.keywordmapping)
   )
-    throw new Error(
-      "The SQL journal selection lacks its original source envelope.",
+    return true;
+  const glosses = (body: Row) =>
+    sorted(
+      (body.glosses ?? []).map((gloss: Row) => ({
+        word: gloss.text,
+        meaning: gloss.sense ?? null,
+        language: gloss.language,
+      })),
     );
+  return same(glosses(prior), glosses(current));
+}
+function precedingContext(
+  db: DatabaseSync,
+  record: number,
+  current: Carrier | undefined,
+  body: Row,
+): string[] {
+  const sameContext = (candidate: Carrier) =>
+    same(candidate.body.word, body.word) &&
+    candidate.body.language === body.language;
+  if (current && sameContext(current)) return [current.envelope.id];
+  for (const version of db
+    .prepare(
+      "SELECT versions.carrier FROM observations JOIN versions ON observations.event=versions.event WHERE observations.record=? ORDER BY observations.run DESC",
+    )
+    .iterate(record)) {
+    const candidate = JSON.parse(version.carrier as string) as Carrier;
+    if (sameContext(candidate)) return [candidate.envelope.id];
+  }
+  for (const version of db
+    .prepare("SELECT carrier FROM versions WHERE record=? ORDER BY rowid DESC")
+    .iterate(record)) {
+    const candidate = JSON.parse(version.carrier as string) as Carrier;
+    if (sameContext(candidate)) return [candidate.envelope.id];
+  }
+  return [];
 }
 function sign(
   db: DatabaseSync,
@@ -745,16 +954,27 @@ function sign(
   const head = (
     db.prepare("SELECT value FROM state WHERE key='head'").get() as any
   )?.value;
-  const carrier = createEvent(
-    seed,
-    head ? [head] : [],
-    randomBytes(16).toString("hex"),
-    action,
-    body,
-  ) as Carrier;
+  let carrier: Carrier;
+  try {
+    carrier = createEvent(
+      seed,
+      head ? [head] : [],
+      randomBytes(16).toString("hex"),
+      action,
+      body,
+    ) as Carrier;
+  } catch (error) {
+    if (typeof error === "string")
+      throw new SourceRowError(
+        `The extracted publication failed core validation: ${error}`,
+      );
+    throw error;
+  }
   const prepared = prepareAdmission(utf8(canonical(carrier)));
   if (!prepared.action_valid || prepared.body_status !== "present")
-    throw new Error("The extracted publication failed the core schema.");
+    throw new SourceRowError(
+      "The extracted publication failed the core schema.",
+    );
   db.prepare("INSERT OR REPLACE INTO state VALUES('head',?)").run(
     carrier.envelope.id,
   );
@@ -818,13 +1038,11 @@ async function writeDerived(output: string, name: string, value: unknown) {
 async function exportProposal(
   db: DatabaseSync,
   output: string,
-  snapshot: string,
+  run: number,
   importer: string,
   checkpoint?: SqlImportOptions["checkpoint"],
 ) {
-  const batch = db
-    .prepare("SELECT * FROM batches WHERE snapshot=?")
-    .get(snapshot) as any;
+  const batch = db.prepare("SELECT * FROM batches WHERE run=?").get(run) as any;
   if (!batch) throw new Error("The committed SQL batch is missing.");
   const handle = await open(join(output, "carriers.jsonl.next"), "w");
   try {
@@ -903,7 +1121,15 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
     );
   const importer = identityFromSeed(options.seed);
   await mkdir(output, { recursive: true });
-  await mkdir(join(output, ".import-lock"));
+  try {
+    await mkdir(join(output, ".import-lock"));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST")
+      throw new Error(
+        "The output directory is locked. Settle the prior import before another run.",
+      );
+    throw error;
+  }
   let journal: DatabaseSync | undefined;
   let stage: DatabaseSync | undefined;
   const stagePath = join(output, `.sql-stage-${randomUUID()}.sqlite`);
@@ -923,6 +1149,7 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
         "proposal.json",
         "import-selection.json",
         "source-archive",
+        "journal.json.migrated",
       ]) {
         let leftover = false;
         try {
@@ -939,6 +1166,7 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
     }
     journal = openJournal(journalPath, manifest.source, importer);
     validateJournal(journal, manifest.source, importer);
+    migrateLanguageEvidence(journal);
     const archive = join(output, "source-archive");
     await mkdir(archive, { recursive: true });
     for (const name of await readdir(archive)) {
@@ -1004,52 +1232,82 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
     await syncDirectory(archive);
     await syncDirectory(output);
     await options.checkpoint?.("source-durable");
-    // A committed batch can rebuild interrupted derived output without signing again.
-    const committed = journal
-      .prepare("SELECT * FROM batches WHERE snapshot=?")
-      .get(manifest.sha256) as any;
-    const currentSnapshot = (
-      journal
-        .prepare("SELECT value FROM state WHERE key='snapshot'")
-        .get() as any
-    )?.value;
-    if (committed && currentSnapshot === manifest.sha256) {
-      const view = journal
-        .prepare("SELECT body FROM views WHERE event=?")
-        .get(committed.view) as any;
-      const roots = [...options.roots].sort((a, b) =>
-        a.identity.localeCompare(b.identity),
-      );
+    // A verified repeated capture records a new observation without new definitions.
+    const currentRun = journal
+      .prepare("SELECT value FROM state WHERE key='run'")
+      .get()?.value;
+    const committed = currentRun
+      ? (journal
+          .prepare("SELECT * FROM batches WHERE run=?")
+          .get(currentRun) as any)
+      : undefined;
+    if (committed && committed.snapshot === manifest.sha256) {
       if (committed.manifest !== canonical(manifest))
         throw new Error(
           "The committed SQL batch uses different manifest evidence. Reuse its original manifest.",
         );
-      if (!same(JSON.parse(view.body).roots, roots)) {
-        journal.exec("BEGIN IMMEDIATE");
-        try {
-          const selection = prepareSelection(utf8(committed.selection));
-          const nextView = publishView(
-            journal,
-            options,
-            manifest,
-            importer,
-            selection.hash,
-          );
+      journal.exec("BEGIN IMMEDIATE");
+      let run: number;
+      try {
+        const selection = prepareSelection(utf8(committed.selection));
+        const view = publishView(
+          journal,
+          options,
+          manifest,
+          importer,
+          selection.hash,
+        );
+        const repeated: SqlReport = JSON.parse(committed.report);
+        repeated.added = 0;
+        repeated.revised = 0;
+        repeated.reverted = 0;
+        repeated.enriched = 0;
+        repeated.reused = Number(
           journal
-            .prepare("UPDATE batches SET view=? WHERE snapshot=?")
-            .run(nextView, manifest.sha256);
-          journal.exec("COMMIT");
-        } catch (error) {
-          journal.exec("ROLLBACK");
-          throw error;
+            .prepare("SELECT COUNT(*) AS count FROM observations WHERE run=?")
+            .get(committed.run)?.count ?? 0,
+        );
+        run = Number(
+          journal
+            .prepare(
+              "INSERT INTO batches(snapshot,manifest,report,view,selection) VALUES(?,?,?,?,?)",
+            )
+            .run(
+              manifest.sha256,
+              canonical(manifest),
+              canonical(repeated),
+              view,
+              committed.selection,
+            ).lastInsertRowid,
+        );
+        journal
+          .prepare(
+            "INSERT INTO observations SELECT ?,record,snapshot,digest,event,'reused' FROM observations WHERE run=?",
+          )
+          .run(run, committed.run);
+        for (const old of journal
+          .prepare("SELECT record,details FROM observation_details WHERE run=?")
+          .all(committed.run)) {
+          const details = JSON.parse(old.details as string);
+          details.disposition = "reused";
+          journal
+            .prepare("INSERT INTO observation_details VALUES(?,?,?)")
+            .run(run, old.record, canonical(details));
         }
-        await syncDirectory(output);
-        await options.checkpoint?.("journal-durable");
+        journal
+          .prepare("INSERT OR REPLACE INTO state VALUES('run',?)")
+          .run(String(run));
+        journal.exec("COMMIT");
+      } catch (error) {
+        journal.exec("ROLLBACK");
+        throw error;
       }
+      await syncDirectory(output);
+      await options.checkpoint?.("journal-durable");
       return await exportProposal(
         journal,
         output,
-        manifest.sha256,
+        run!,
         importer,
         options.checkpoint,
       );
@@ -1075,9 +1333,9 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
       estimated_total_bytes: estimatedTotal,
       definition_rows: definitionRows,
     });
-    if (estimatedTotal > 4_000_000_000)
+    if (estimatedTotal > 3_000_000_000)
       throw new Error(
-        "The estimated local artifacts exceed the 4 GB limit. No publications were signed.",
+        "The estimated local artifacts exceed the 3 GB limit. No publications were signed.",
       );
     for (const [table, expected] of Object.entries(manifest.expected_rows)) {
       if (result.table_rows[table] !== expected) {
@@ -1098,11 +1356,25 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
     )
       throw new Error("The SQL source changed during extraction.");
     journal.exec("BEGIN IMMEDIATE");
+    let run: number;
     try {
+      run = Number(
+        journal
+          .prepare(
+            "INSERT INTO batches(snapshot,manifest,report,view,selection) VALUES(?,?,?,NULL,NULL)",
+          )
+          .run(manifest.sha256, canonical(manifest), canonical(result))
+          .lastInsertRowid,
+      );
       const definitions = stage.prepare(
         "SELECT source_id,COUNT(*) AS count FROM rows WHERE table_name='definitions' GROUP BY source_id ORDER BY source_id",
       );
-      const seen = new Set<number>();
+      const seen = new Set<number>(
+        stage
+          .prepare("SELECT record FROM seen_definitions")
+          .all()
+          .map((item) => item.record as number),
+      );
       for (const group of definitions.iterate()) {
         const id = group.source_id as number;
         seen.add(id);
@@ -1112,7 +1384,7 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
           if (rows.length > 1) {
             if (!rows.every((row) => same(row, rows[0]))) {
               result.conflicts.push(id);
-              throw new Error(
+              throw new SourceRowError(
                 "Conflicting duplicate source rows share this definition ID.",
               );
             }
@@ -1120,9 +1392,9 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
           }
           const { body, lexical } = extract(stage, rows[0], manifest, result);
           // Size and word rules fail before the journal changes.
-          wordId(body.word);
+          sourceWordId(body.word);
           if (Buffer.byteLength(canonical(body)) > 256 * 1024)
-            throw new Error(
+            throw new SourceRowError(
               "The retained definition and source history exceed the 256 KiB body limit.",
             );
           const lexicalDigest = digest(lexical);
@@ -1156,14 +1428,31 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
                 "known" in b[field] &&
                 !same(a[field], b[field]),
             );
-          if (entry && !conflict(baseline!, lexical)) {
+          if (
+            entry &&
+            !conflict(baseline!, lexical) &&
+            glossEvidenceMatches(
+              JSON.parse(current.lexical),
+              JSON.parse(current.carrier).body,
+              lexical,
+              body,
+            )
+          ) {
             selected = entry.selected;
             disposition = "reused";
             result.reused++;
           } else {
             const old = journal
               .prepare("SELECT * FROM versions WHERE record=? AND digest=?")
-              .all(id, lexicalDigest) as any[];
+              .all(id, lexicalDigest)
+              .filter((version) =>
+                glossEvidenceMatches(
+                  JSON.parse(version.lexical as string),
+                  JSON.parse(version.carrier as string).body,
+                  lexical,
+                  body,
+                ),
+              ) as any[];
             if (old.length > 1)
               throw new Error(
                 "The SQL journal contains ambiguous publication reuse associations.",
@@ -1192,9 +1481,14 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
                 options.seed,
                 {
                   kind: "definition.publish",
-                  word: wordId(body.word),
+                  word: sourceWordId(body.word),
                   language: body.language,
-                  parents: sameContext ? [entry.selected] : [],
+                  parents: precedingContext(
+                    journal,
+                    id,
+                    current ? JSON.parse(current.carrier) : undefined,
+                    body,
+                  ),
                   origin: "import",
                 },
                 body,
@@ -1216,22 +1510,54 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
           }
           journal
             .prepare("INSERT OR REPLACE INTO entries VALUES(?,?,?)")
-            .run(id, selected, canonical(lexical));
+            .run(
+              id,
+              selected,
+              canonical(
+                entry && disposition === "reused"
+                  ? Object.fromEntries(
+                      FIELDS.map((field) => [
+                        field,
+                        "known" in lexical[field]
+                          ? lexical[field]
+                          : baseline![field],
+                      ]),
+                    )
+                  : lexical,
+              ),
+            );
           journal
-            .prepare("INSERT OR IGNORE INTO observations VALUES(?,?,?,?,?)")
-            .run(id, manifest.sha256, lexicalDigest, selected, disposition);
+            .prepare("INSERT INTO observations VALUES(?,?,?,?,?,?)")
+            .run(
+              run,
+              id,
+              manifest.sha256,
+              lexicalDigest,
+              selected,
+              disposition,
+            );
+          journal.prepare("INSERT INTO observation_details VALUES(?,?,?)").run(
+            run,
+            id,
+            canonical({
+              snapshot: manifest.sha256,
+              lexical_digest: lexicalDigest,
+              coverage: FIELDS.filter((field) => "known" in lexical[field]),
+              publication: selected,
+              disposition,
+              extraction: manifest.extraction,
+              original: {
+                archive: manifest.sha256,
+                locator: `definitions/definitionid=${id}`,
+              },
+            }),
+          );
           result.languages[body.language] =
             (result.languages[body.language] ?? 0) + 1;
           journal.exec("RELEASE source_row");
         } catch (error) {
           journal.exec("ROLLBACK TO source_row; RELEASE source_row");
-          if (
-            typeof error === "object" &&
-            error !== null &&
-            "code" in error &&
-            String(error.code).startsWith("ERR_SQLITE")
-          )
-            throw error;
+          if (!(error instanceof SourceRowError)) throw error;
           unresolved(
             result,
             id,
@@ -1272,17 +1598,14 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
           issue.reason,
         );
       journal
-        .prepare("INSERT OR REPLACE INTO batches VALUES(?,?,?,?,?)")
-        .run(
-          manifest.sha256,
-          canonical(manifest),
-          canonical(result),
-          view,
-          selection.canonical,
-        );
+        .prepare("UPDATE batches SET report=?,view=?,selection=? WHERE run=?")
+        .run(canonical(result), view, selection.canonical, run);
       journal
         .prepare("INSERT OR REPLACE INTO state VALUES('snapshot',?)")
         .run(manifest.sha256);
+      journal
+        .prepare("INSERT OR REPLACE INTO state VALUES('run',?)")
+        .run(String(run));
       journal.exec("COMMIT");
     } catch (error) {
       journal.exec("ROLLBACK");
@@ -1293,7 +1616,7 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
     return await exportProposal(
       journal,
       output,
-      manifest.sha256,
+      run!,
       importer,
       options.checkpoint,
     );

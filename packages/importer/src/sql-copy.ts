@@ -89,6 +89,7 @@ export async function* readCopyRows(
               "A SQL source header contains invalid UTF-8 bytes.",
             );
           rowDecodeError = "The COPY row contains invalid UTF-8 bytes.";
+          text = new TextDecoder("utf-8", { ignoreBOM: true }).decode(clean);
         }
       }
       if (table === null) {
@@ -110,11 +111,16 @@ export async function* readCopyRows(
         if (wanted.has(table)) {
           let values: (string | null)[] = [];
           let decodeError = rowDecodeError;
-          try {
-            if (!overLimit) values = text.split("\t").map(decodeCopyField);
-          } catch {
-            decodeError = "A COPY field contains invalid escaped UTF-8 bytes.";
-          }
+          if (!overLimit)
+            for (const field of text.split("\t")) {
+              try {
+                values.push(decodeCopyField(field));
+              } catch {
+                values.push(null);
+                decodeError =
+                  "A COPY field contains invalid escaped UTF-8 bytes.";
+              }
+            }
           yield {
             table,
             columns,
