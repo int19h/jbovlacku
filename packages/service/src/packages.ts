@@ -94,6 +94,7 @@ export async function buildPackages(
   snapshot: Snapshot,
   objects: ObjectStore,
   prepared?: PackageRecord[],
+  reuse?: { previous: MaterializedPackages; changed: PackageRecord[] },
 ): Promise<MaterializedPackages> {
   const entries: SearchEntry[] = [];
   const entries2: SearchEntryV2[] = [];
@@ -102,6 +103,10 @@ export async function buildPackages(
   const incompleteRafsi = new Set<string>();
   async function* records(kind: EvaluationPackageRecord["kind"]) {
     if (prepared) {
+      if (reuse) {
+        for (const record of prepared) if (record.kind === kind) yield record;
+        return;
+      }
       for await (const { value: record, result: loaded } of orderedPrefetch(
         prepared.filter((record) => record.kind === kind),
         (record) => {
@@ -243,10 +248,39 @@ export async function buildPackages(
     version: 1 | 2,
   ): Promise<Record<string, MaterializedPackage>> => {
     const packages: Record<string, MaterializedPackage> = {};
+    const changedIds = new Set(reuse?.changed.map((record) => record.id));
+    const changedWords = new Set(
+      reuse?.changed
+        .filter((record) => record.kind === "rafsi.publish")
+        .map((record) => record.word),
+    );
+    const changedLanguages = new Set(
+      reuse?.previous.entries
+        .filter((entry) => changedIds.has(entry.event))
+        .map((entry) => entry.language),
+    );
+    for (const record of prepared ?? [])
+      if (
+        changedIds.has(record.id) ||
+        (record.kind === "definition.publish" && changedWords.has(record.word))
+      )
+        if (typeof record.body?.language === "string")
+          changedLanguages.add(record.body.language);
     for (const language of [
       ...new Set(all.map((entry) => entry.language)),
     ].sort()) {
       const selected = all.filter((entry) => entry.language === language);
+      const previous = (
+        version === 1 ? reuse?.previous.packages : reuse?.previous.packages2
+      )?.[language];
+      if (previous && !changedLanguages.has(language)) {
+        packages[language] = await rebasePackage(
+          previous,
+          snapshot.snapshot,
+          objects,
+        );
+        continue;
+      }
       const parts: SearchPackage["parts"] = [];
       let part: Uint8Array[] = [];
       let partBytes = 2;
@@ -297,5 +331,35 @@ export async function buildPackages(
     entries,
     packages: await build(entries, 1),
     packages2: await build(entries2, 2),
+  };
+}
+
+async function rebasePackage(
+  previous: MaterializedPackage,
+  snapshot: string,
+  objects: ObjectStore,
+): Promise<MaterializedPackage> {
+  const manifest = { ...previous.manifest, snapshot };
+  const bytes = canonical(manifest);
+  const hash = contentHash(bytes);
+  await objects.put(hash, bytes);
+  return { manifest, hash, bytes: bytes.length };
+}
+
+export async function rebasePackages(
+  previous: MaterializedPackages,
+  snapshot: string,
+  objects: ObjectStore,
+): Promise<MaterializedPackages> {
+  const rebase = async (packages: Record<string, MaterializedPackage>) => {
+    const result: Record<string, MaterializedPackage> = {};
+    for (const [language, value] of Object.entries(packages))
+      result[language] = await rebasePackage(value, snapshot, objects);
+    return result;
+  };
+  return {
+    entries: previous.entries,
+    packages: await rebase(previous.packages),
+    packages2: await rebase(previous.packages2),
   };
 }

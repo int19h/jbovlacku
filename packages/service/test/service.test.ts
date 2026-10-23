@@ -764,6 +764,10 @@ test("package builds share work, bound concurrent snapshots, and release failed 
   }
   const firstHash =
     snapshots[0].events[Object.keys(snapshots[0].events)[0]].envelope_hash;
+  const added = Object.keys(snapshots[2].events).find(
+    (id) => !snapshots[1].events[id],
+  )!;
+  const failureHash = snapshots[2].events[added].envelope_hash;
   let release!: () => void;
   const gate = new Promise<void>((resolve) => {
     release = resolve;
@@ -775,10 +779,10 @@ test("package builds share work, bound concurrent snapshots, and release failed 
       if (hash === firstHash) {
         reads++;
         await gate;
-        if (fail) {
-          fail = false;
-          throw new Error("injected package read failure");
-        }
+      }
+      if (fail && hash === failureHash) {
+        fail = false;
+        throw new Error("injected package read failure");
       }
       return objects.get(hash);
     },
