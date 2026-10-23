@@ -576,7 +576,7 @@ test("an alternative source row clears word evidence and preserves its language 
 test("retired signed hints survive reading while a new signature needs an explicit replacement", () => {
   for (const tag of ["entity", "mass", "tuple"]) {
     const parent = richParent();
-    const hint = {
+    const hint: TypeHint = {
       alternatives: [{ tags: [tag], abstractor: null, relation_arity: null }],
       note: [["An earlier annotation."]],
     };
