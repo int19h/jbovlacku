@@ -10,16 +10,16 @@ export const TARGET_SELECTOR =
 export const BOX_SELECTOR =
   ':where(a,button,summary,[role="button"],[role="switch"],[role="link"])';
 export const BLOCK_SELECTOR =
-  ':where([tabindex]:not([tabindex^="-"]),[contenteditable]:not([contenteditable="false"]))';
+  ':where([tabindex]:not([tabindex^="-"]),[contenteditable]:not([contenteditable="false"])):not(:where(a,button,summary,[role="button"],[role="switch"],[role="link"]))';
 export const PROSE_SELECTOR =
-  ".inline-prose[data-inline-prose-reason] > a:not(.btn,.touch-link)";
+  ".inline-prose[data-inline-prose-reason] > a:not(.btn,.touch-link,.pl)";
 export const PLACE_SELECTOR = "a.pl[data-inline-place-reason]";
 export const PROXY_SELECTOR =
   'label:is(.check,.opt,.chip):has(> input:only-of-type) > input:is([type="checkbox"],[type="radio"]),.seg label:has(> input:only-of-type) > input:is([type="checkbox"],[type="radio"])';
 const normalize = (value: string) => value.replace(/\s+/g, "");
 const same = (a: string, b: string) => normalize(a) === normalize(b);
 const SAFE_DISPLAY =
-  /^(?:none|block|inline-block|flex|inline-flex|grid|inline-grid|flow-root|list-item|table|table-row|table-cell)$/;
+  /^(?:none|block|inline-block|flex|inline-flex|grid|inline-grid|flow-root|list-item|table)$/;
 const DOM_PATH = fileURLToPath(
   new URL("../apps/web/src/lib/dom.ts", import.meta.url),
 );
@@ -264,45 +264,84 @@ export function inspectLayoutSource(
         const reason = literal(node.arguments[0]);
         if (!reason || reason.trim().length < 12)
           fail(node, "inline prose needs a literal reason");
-        // Source copy supplies sentence evidence. The audit never guesses it.
-        if (
-          node.arguments
-            .slice(1)
-            .some(
-              (arg) =>
-                !ts.isCallExpression(arg) ||
-                !/^(?:text|link|identityLink)$/.test(
-                  arg.expression.getText(file),
-                ) ||
-                (arg.expression.getText(file) === "text" &&
-                  arg.arguments.length > 1),
-            )
-        )
-          fail(node, "inline prose needs visible direct sentence children");
-        let copy = "";
-        const links: { start: number; end: number }[] = [];
-        for (const arg of node.arguments.slice(1)) {
-          if (!ts.isCallExpression(arg)) continue;
-          if (arg.expression.getText(file) === "text") {
-            const value = arg.arguments[0];
-            if (ts.isTemplateExpression(value))
-              copy +=
-                value.head.text +
+        // Null represents a link. Each variant keeps direct sibling order.
+        type Part = string | null;
+        const combine = (left: Part[][], right: Part[][]): Part[][] =>
+          left.length * right.length > 64
+            ? []
+            : left.flatMap((a) => right.map((b) => [...a, ...b]));
+        const textVariants = (value: ts.Expression): string[] => {
+          const fixed = literal(value);
+          if (fixed !== undefined) return [fixed];
+          if (ts.isConditionalExpression(value)) {
+            const yes = textVariants(value.whenTrue),
+              no = textVariants(value.whenFalse);
+            return yes.length && no.length ? [...yes, ...no] : [];
+          }
+          if (ts.isTemplateExpression(value))
+            return [
+              value.head.text +
                 value.templateSpans
                   .map((part) => " " + part.literal.text)
-                  .join("");
-            else copy += literal(value) ?? "";
-          } else {
-            const start = copy.length;
-            copy += "LINK";
-            links.push({ start, end: copy.length });
+                  .join(""),
+            ];
+          return [];
+        };
+        const childVariants = (args: readonly ts.Expression[]): Part[][] => {
+          let result: Part[][] = [[]];
+          for (const arg of args) {
+            let variants: Part[][] = [];
+            if (ts.isSpreadElement(arg)) {
+              const call = arg.expression;
+              const callback = ts.isCallExpression(call)
+                ? call.arguments[0]
+                : undefined;
+              // A flatMap can produce only inspectable direct child arrays.
+              if (
+                ts.isCallExpression(call) &&
+                ts.isPropertyAccessExpression(call.expression) &&
+                call.expression.name.text === "flatMap" &&
+                call.arguments.length === 1 &&
+                callback &&
+                ts.isArrowFunction(callback) &&
+                ts.isArrayLiteralExpression(callback.body)
+              ) {
+                const one = childVariants(callback.body.elements);
+                variants = [...one, ...combine(one, one)];
+              }
+            } else if (ts.isCallExpression(arg)) {
+              const helper = arg.expression.getText(file);
+              if (helper === "text" && arg.arguments.length === 1)
+                variants = textVariants(arg.arguments[0]).map((value) => [
+                  value,
+                ]);
+              else if (/^(?:link|identityLink)$/.test(helper))
+                variants = [[null]];
+            }
+            if (!variants.length) return [];
+            result = combine(result, variants);
           }
+          return result;
+        };
+        const variants = childVariants(node.arguments.slice(1));
+        if (!variants.length)
+          fail(node, "inline prose needs visible direct sentence children");
+        for (const parts of variants) {
+          let copy = "";
+          const links: { start: number; end: number }[] = [];
+          for (const part of parts) {
+            if (part === null) {
+              const start = copy.length;
+              copy += "link";
+              links.push({ start, end: copy.length });
+            } else copy += part;
+          }
+          if (!sentenceLinks(copy, links))
+            fail(
+              node,
+              "each inline link needs its own complete sentence with visible prose",
+            );
         }
-        if (!sentenceLinks(copy, links))
-          fail(
-            node,
-            "each inline link needs its own complete sentence with visible prose",
-          );
       }
       if (callee === "markRichProse") {
         if (
@@ -558,6 +597,13 @@ export function inspectLayoutSource(
       node.operatorToken.kind <= ts.SyntaxKind.LastAssignment
     ) {
       const left = node.left.getText(file);
+      if (
+        (ts.isPropertyAccessExpression(node.left) &&
+          node.left.name.text === "style") ||
+        (ts.isElementAccessExpression(node.left) &&
+          literal(node.left.argumentExpression) === "style")
+      )
+        fail(node, "direct style assignment cannot opt out of target rules");
       if (
         !inDom &&
         /dataset/.test(left) &&

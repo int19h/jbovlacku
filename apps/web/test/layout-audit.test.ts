@@ -1,4 +1,10 @@
-import { test, expect, type Page, type TestInfo } from "@playwright/test";
+import {
+  test,
+  expect,
+  type Locator,
+  type Page,
+  type TestInfo,
+} from "@playwright/test";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -278,7 +284,7 @@ async function inventory(page: Page) {
     };
     const entries = [];
     for (const node of document.querySelectorAll<HTMLElement>(
-      'button,input:not([type="hidden"]),select,textarea,a[href],summary,[role="button"],[role="switch"],[role="link"],[tabindex]:not([tabindex^="-"]),[contenteditable]:not([contenteditable="false"])',
+      'button,input:not([type="hidden"]),select,textarea,a[href],summary,[role="button"],[role="switch"],[role="link"],[tabindex]:not([tabindex^="-"]),[contenteditable]:not([contenteditable="false"]),.pl',
     )) {
       let target: HTMLElement = node;
       let exception: string | null = null;
@@ -304,9 +310,19 @@ async function inventory(page: Page) {
         style.display === "none"
       )
         continue;
-      if (node.matches("a.pl[data-inline-place-reason]")) {
+      const place = node.matches(".pl")
+        ? {
+            floor: 1.45 * parseFloat(style.fontSize),
+            display: style.display,
+            badge: node.matches(".badge"),
+            blockified: ["flex", "inline-flex", "grid", "inline-grid"].includes(
+              getComputedStyle(node.parentElement!).display,
+            ),
+          }
+        : null;
+      if (place) {
         exception = node.getAttribute("data-inline-place-reason");
-      } else if (node.matches("a[href]:not(.btn,.touch-link)")) {
+      } else if (node.matches("a[href]:not(.btn,.touch-link,.pl)")) {
         const prose = node.parentElement;
         if (prose?.matches(".inline-prose[data-inline-prose-reason]")) {
           exception = prose.getAttribute("data-inline-prose-reason");
@@ -337,6 +353,8 @@ async function inventory(page: Page) {
         targetBounds: rect(target),
         labelTarget,
         labelAssociation,
+        place,
+        interactive: !node.matches(".pl:not(a[href])"),
         exception,
         exceptionContainer,
         exceptionSentence,
@@ -351,6 +369,46 @@ async function inventory(page: Page) {
   }, PROXY_SELECTOR);
 }
 
+function sizeFailures(data: Awaited<ReturnType<typeof inventory>>) {
+  return data.entries.filter((entry) => {
+    const { width, height } = entry.targetBounds;
+    if (entry.place)
+      return (
+        (entry.interactive && !entry.exception) ||
+        !(
+          entry.place.display === "inline-flex" ||
+          (entry.place.display === "flex" && entry.place.blockified)
+        ) ||
+        width < entry.place.floor - 0.02 ||
+        height < entry.place.floor - 0.02 ||
+        width < height - 0.02 ||
+        Math.abs(height - entry.place.floor) > 0.02 ||
+        (!entry.place.badge && Math.abs(width - height) > 0.02)
+      );
+    return !entry.exception && (width < 43.99 || height < 43.99);
+  });
+}
+
+async function expectSentence(line: Locator, links: number) {
+  await expect(line).toBeVisible();
+  await expect
+    .soft(line.locator(":scope > .inline-prose[data-inline-prose-reason]"))
+    .toHaveCount(1, { timeout: 500 });
+  const anchors = line.locator("a:not(.pl)");
+  await expect.soft(anchors).toHaveCount(links);
+  for (const anchor of await anchors.all()) {
+    await expect.soft(anchor).toHaveCSS("display", "inline", { timeout: 500 });
+    expect.soft((await anchor.boundingBox())!.height).toBeLessThan(44);
+    expect
+      .soft(
+        await anchor.evaluate((node) =>
+          node.parentElement!.classList.contains("inline-prose"),
+        ),
+      )
+      .toBe(true);
+  }
+}
+
 async function checkTargets(
   page: Page,
   info: TestInfo,
@@ -361,11 +419,7 @@ async function checkTargets(
   await page.evaluate(() => document.fonts.ready);
   await expectPolicyClean(page);
   const data = await inventory(page);
-  const failures = data.entries.filter(
-    (entry) =>
-      !entry.exception &&
-      (entry.targetBounds.width < 43.99 || entry.targetBounds.height < 43.99),
-  );
+  const failures = sizeFailures(data);
   await artifact(info, `targets-${state}-${viewport.name}`, data, page);
   expect
     .soft(data.entries.length, `${state}: nonempty inventory`)
@@ -376,7 +430,7 @@ async function checkTargets(
         (entry) =>
           `${entry.element} ${entry.name}: ${entry.targetBounds.width.toFixed(2)} x ${entry.targetBounds.height.toFixed(2)}`,
       ),
-      `${state}: standalone targets must be at least 44 by 44`,
+      `${state}: targets meet the 44px rule or the measured place shape`,
     )
     .toEqual([]);
   expect
@@ -392,7 +446,8 @@ async function checkTargets(
     .toBeLessThanOrEqual(viewport.width);
   return {
     state,
-    count: data.entries.length,
+    count: data.entries.filter((entry) => entry.interactive).length,
+    placeMarkers: data.entries.filter((entry) => entry.place).length,
     exceptions: data.entries.filter((entry) => entry.exception).length,
     failures: failures.length,
   };
@@ -404,6 +459,187 @@ for (const viewport of [
 ]) {
   test.describe(viewport.name, () => {
     test.use({ viewport });
+
+    test("R7: first-signature and continuity sentences keep links in the text line", async ({
+      page,
+    }, info) => {
+      await createAuditIdentity(page);
+      await open(page, `/word/${fixture().words.cukta}`);
+      await page
+        .locator("article.definition")
+        .first()
+        .getByRole("button", { name: "Endorse", exact: true })
+        .click();
+      await page.getByLabel("Passphrase", { exact: true }).fill(PASSPHRASE);
+      await page.getByRole("button", { name: "Unlock", exact: true }).click();
+      const dialog = page.getByRole("dialog", {
+        name: "Before your first public signature",
+      });
+      await expectSentence(
+        dialog.locator("p").filter({
+          hasText: "Your key page offers a backup test and lock controls.",
+        }),
+        1,
+      );
+      await checkTargets(page, info, "first-signature-modal", viewport);
+      await dialog
+        .getByRole("button", { name: "Not now", exact: true })
+        .click();
+      // This synthetic response opens a continuity branch in the real route.
+      await page.route(
+        (url) => /^\/api\/v1\/identities\/[^/]+$/.test(url.pathname),
+        async (route) => {
+          const response = await route.fetch();
+          const body = await response.json();
+          body.actor = fixture().identities.delegate;
+          await route.fulfill({ response, json: body });
+        },
+      );
+      await open(
+        page,
+        `/identity/${encodeURIComponent(fixture().identities.author)}`,
+      );
+      await expectSentence(
+        page
+          .locator("main > p")
+          .filter({ hasText: /^This key belongs to the continuity group of / }),
+        1,
+      );
+      await checkTargets(page, info, "person-continuity-sentence", viewport);
+    });
+
+    test("R7: Publish root, component, and multiple-claimant sentences keep their inline shape", async ({
+      page,
+    }, info) => {
+      test.setTimeout(180000);
+      await open(page, "/preferences");
+      await page.getByRole("button", { name: "Download", exact: true }).click();
+      await expect(page.getByRole("status")).toContainText(
+        "saved in this browser",
+      );
+      await addCompetingClaimFixture(page);
+      await beginDraft(page, "gismu");
+      await populateGismu(page);
+      await page
+        .getByLabel("Type a form yourself", { exact: true })
+        .fill("cukta");
+      await page
+        .getByRole("button", { name: "Choose cukta", exact: true })
+        .click();
+      for (const box of await page
+        .getByRole("region", { name: "Selected form", exact: true })
+        .getByRole("checkbox")
+        .all())
+        await box.check();
+      await page
+        .getByRole("button", { name: "Use cukta", exact: true })
+        .click();
+      await expect(page).toHaveURL(/\/new\/places$/);
+      await page.getByRole("link", { name: "Publish", exact: true }).click();
+      await expect(
+        page.getByRole("region", { name: "Known conflicts", exact: true }),
+      ).toBeVisible();
+      const conflicts = page.getByRole("region", {
+        name: "Known conflicts",
+        exact: true,
+      });
+      await expectSentence(
+        conflicts
+          .locator("p.warn")
+          .filter({ hasText: /identical conflict with cukta\./ }),
+        1,
+      );
+      await checkTargets(
+        page,
+        info,
+        "publish-root-conflict-sentence",
+        viewport,
+      );
+      await beginDraft(page, "lujvo");
+      for (const word of ["cukta", "sinxa"]) {
+        await page.getByLabel("Add a part", { exact: true }).fill(word);
+        await page
+          .getByRole("button", {
+            name: word === "cukta" ? "Add cukta" : "Add sinxa as entered",
+            exact: true,
+          })
+          .click();
+      }
+      await expect(
+        page.getByRole("region", { name: "Result", exact: true }),
+      ).toContainText("ckusinxa");
+      for (const box of await page
+        .getByRole("group", { name: "Competing rafsi claims", exact: true })
+        .getByRole("checkbox")
+        .all())
+        await box.check();
+      await page
+        .getByRole("button", { name: "Use ckusinxa", exact: true })
+        .click();
+      await expect(page).toHaveURL(/\/new\/places$/);
+      await page.getByRole("link", { name: "Publish", exact: true }).click();
+      await expect(
+        page.getByRole("region", { name: "Known conflicts", exact: true }),
+      ).toBeVisible();
+      // Add a requested claim to the disposable draft. Its components come from the real builder.
+      await page.evaluate(
+        () =>
+          new Promise<void>((resolve, reject) => {
+            const request = indexedDB.open("jbovlacku-browser-v1", 3);
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => {
+              const db = request.result;
+              const tx = db.transaction("drafts", "readwrite");
+              const store = tx.objectStore("drafts");
+              const get = store.get("current");
+              get.onsuccess = () =>
+                store.put(
+                  {
+                    ...get.result,
+                    rafsiClaims: [
+                      { rafsi: "cku", rationale: "A synthetic layout claim." },
+                    ],
+                  },
+                  "current",
+                );
+              tx.oncomplete = () => {
+                db.close();
+                resolve();
+              };
+              tx.onerror = () => {
+                db.close();
+                reject(tx.error);
+              };
+            };
+          }),
+      );
+      await open(page, "/new/publish");
+      const claim = conflicts
+        .locator("p.warn")
+        .filter({ hasText: "Readers judge each pair separately." });
+      await expect
+        .soft(claim)
+        .toHaveText(
+          "cku is also claimed by cukta, vlacku. Readers judge each pair separately.",
+        );
+      await expectSentence(claim, 2);
+      await expectSentence(
+        conflicts
+          .locator("p.warn")
+          .filter({ hasText: /^cku is also claimed by vlacku\.$/ }),
+        1,
+      );
+      const edit = page.getByRole("link", { name: "Edit", exact: true });
+      const editBox = (await edit.boundingBox())!;
+      expect.soft(editBox.width).toBeGreaterThanOrEqual(44);
+      expect.soft(editBox.height).toBeGreaterThanOrEqual(44);
+      await checkTargets(
+        page,
+        info,
+        "publish-claimant-and-component-sentences",
+        viewport,
+      );
+    });
 
     test("R6: new links and controls get large targets without audit coverage", async ({
       page,
@@ -423,6 +659,7 @@ for (const viewport of [
         ]) {
           const node = document.createElement(tag);
           if (node instanceof HTMLAnchorElement) node.href = "#new";
+          if (tag === "a" || tag === "button") node.tabIndex = 0;
           if (tag === "div") {
             node.setAttribute("role", "button");
             node.tabIndex = 0;
@@ -465,6 +702,10 @@ for (const viewport of [
         document.querySelector("main")!.append(container);
       });
       const data = await inventory(page);
+      for (const tag of ["a", "button"])
+        await expect
+          .soft(page.locator(`[data-new-control="${tag}"]`))
+          .toHaveCSS("display", "inline-flex", { timeout: 500 });
       await artifact(info, `default-targets-${viewport.name}`, data, page);
       const native = data.entries.find((entry) =>
         entry.path.includes("#r6-native-checkbox"),
@@ -518,6 +759,45 @@ for (const viewport of [
               " for a library.",
             ],
           ],
+          mixed: [
+            [
+              1,
+              " is a book about ",
+              2,
+              ", and ",
+              { word: { language: "jbo", spelling: "cukta" } },
+              " is the root.",
+            ],
+          ],
+          badge: [
+            [
+              21,
+              " is a place for ",
+              { word: { language: "jbo", spelling: "cukta" } },
+              ".",
+            ],
+          ],
+          cf: [
+            [
+              "Compare cf. ",
+              { word: { language: "jbo", spelling: "papri" } },
+              ".",
+            ],
+          ],
+          eg: [
+            [
+              "See e.g. ",
+              { word: { language: "jbo", spelling: "papri" } },
+              " for details.",
+            ],
+          ],
+          shortEg: [
+            [
+              "See e.g. ",
+              { word: { language: "jbo", spelling: "papri" } },
+              ".",
+            ],
+          ],
           bare: [
             [{ url: "https://example.invalid/source", label: "Source code" }],
           ],
@@ -547,6 +827,15 @@ for (const viewport of [
           node.id = `rich-${id}`;
           document.querySelector("main")!.append(node);
         }
+        const unlinked = renderRichText(samples.mixed, { placeHref: null });
+        unlinked.id = "rich-unlinked";
+        document.querySelector("main")!.append(unlinked);
+        const definition = document.createElement("article");
+        definition.className = "definition";
+        const wordProse = renderRichText(samples.mixed, { className: "prose" });
+        wordProse.id = "rich-word";
+        definition.append(wordProse);
+        document.querySelector("main")!.append(definition);
         for (const kind of ["hidden", "block"]) {
           const row = document.createElement("p");
           row.id = `rich-${kind}`;
@@ -574,6 +863,46 @@ for (const viewport of [
         "display",
         "inline",
       );
+      for (const id of [
+        "mixed",
+        "badge",
+        "unlinked",
+        "cf",
+        "eg",
+        "shortEg",
+        "word",
+      ]) {
+        const row = page.locator(`#rich-${id} > p`);
+        await expect
+          .soft(row, id)
+          .toHaveAttribute("data-inline-prose-reason", { timeout: 500 });
+        await expect
+          .soft(row.locator("a:not(.pl)"), id)
+          .toHaveCSS("display", "inline", { timeout: 500 });
+      }
+      await expect(page.locator("#rich-word")).toHaveCSS("font-size", "21px");
+      for (const id of ["mixed", "badge", "unlinked", "word"])
+        for (const marker of await page.locator(`#rich-${id} .pl`).all())
+          await expect.soft(marker).toHaveCSS("display", "inline-flex");
+      const measured = await inventory(page);
+      await artifact(info, `rich-shapes-${viewport.name}`, measured, page);
+      expect
+        .soft(
+          sizeFailures(measured).filter((entry) =>
+            entry.path.includes("#rich-"),
+          ),
+        )
+        .toEqual([]);
+      expect(
+        measured.entries.filter(
+          (entry) => entry.place && entry.path.includes("#rich-"),
+        ),
+      ).toHaveLength(7);
+      // A place reason never excuses a collapsed circle in the audit.
+      const collapsed = structuredClone(measured);
+      const marker = collapsed.entries.find((entry) => entry.place)!;
+      marker.targetBounds.width = 8;
+      expect(sizeFailures(collapsed)).toContain(marker);
       for (const id of [
         "bare",
         "metadata",

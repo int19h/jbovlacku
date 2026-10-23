@@ -1015,12 +1015,14 @@ dialog.sheet h2 {
 :where(
   [tabindex]:not([tabindex^="-"]),
   [contenteditable]:not([contenteditable="false"])
+):not(
+  :where(a, button, summary, [role="button"], [role="switch"], [role="link"])
 ) {
   display: block;
 }
 /* Only source-marked sentence links use the inline exception in ui-design.md.
    Explicit action classes keep the default target inside the same sentence. */
-.inline-prose[data-inline-prose-reason] > a:not(.btn, .touch-link) {
+.inline-prose[data-inline-prose-reason] > a:not(.btn, .touch-link, .pl) {
   display: inline;
   min-width: 0 !important;
   min-height: 0 !important;

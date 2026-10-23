@@ -64,9 +64,23 @@ export function sentenceLinks(
   const surrounding = source.split("");
   for (const { start, end } of links) surrounding.fill(" ", start, end);
   const prose = surrounding.join("");
-  const sentences = [
-    ...new Intl.Segmenter("en", { granularity: "sentence" }).segment(source),
-  ];
+  const abbreviation = (end: number) =>
+    /\b(?:e\.g|cf)\.\s*$/iu.test(source.slice(0, end));
+  const boundaries = new Set([0, source.length]);
+  for (const sentence of new Intl.Segmenter("en", {
+    granularity: "sentence",
+  }).segment(source))
+    if (!abbreviation(sentence.index)) boundaries.add(sentence.index);
+  // A lowercase link cannot borrow words from the sentence before it.
+  for (const match of source.matchAll(/[.!?]["')\]]?\s+/gu)) {
+    const end = match.index + match[0].length;
+    if (!abbreviation(end)) boundaries.add(end);
+  }
+  const starts = [...boundaries].sort((a, b) => a - b);
+  const sentences = starts.slice(0, -1).map((index, i) => ({
+    index,
+    segment: source.slice(index, starts[i + 1]),
+  }));
   return (
     links.length > 0 &&
     links.every(({ start, end }) => {
@@ -80,7 +94,9 @@ export function sentenceLinks(
         sentence.index,
         sentence.index + sentence.segment.length,
       );
-      const afterLabel = outside.slice(outside.lastIndexOf(":") + 1);
+      const afterLabel = outside
+        .slice(outside.lastIndexOf(":") + 1)
+        .replace(/\be\.g\./giu, "example");
       return (
         (afterLabel.match(/\p{L}{2,}/gu)?.length ?? 0) >= 2 &&
         !/·/.test(outside)
@@ -111,7 +127,7 @@ export function markRichProse(row: HTMLElement, reason: string): void {
         continue;
       }
       const start = source.length;
-      source += "LINK";
+      source += "link";
       links.push({ start, end: source.length });
     } else source += visibleText(child);
   }

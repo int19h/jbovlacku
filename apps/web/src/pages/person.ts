@@ -9,6 +9,7 @@ import {
   describe,
   field,
   checkbox,
+  inlineProse,
 } from "../lib/dom.ts";
 import { fingerprintText, plural, shortIdentity } from "../lib/format.ts";
 import { getActivity } from "../data/api.ts";
@@ -173,9 +174,12 @@ export async function personPage(
         el(
           "p",
           { class: "small" },
-          text("This key belongs to the continuity group of "),
-          identityLink(response.actor),
-          text("."),
+          inlineProse(
+            "The actor link belongs to this identity continuity sentence.",
+            text("This key belongs to the continuity group of "),
+            identityLink(response.actor),
+            text("."),
+          ),
         ),
       );
     if (response.successor)

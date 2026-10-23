@@ -247,16 +247,19 @@ export async function publishPage(
     );
     for (const claim of collisions) {
       const line = el("p", { class: "warn" });
-      line.append(text(`${claim.rafsi} is also claimed by `));
-      claim.competitors.forEach((competitor, index) => {
-        if (index) line.append(text(", "));
-        line.append(
-          link(competitor.spelling, routes.word(competitor.spelling), {
-            lang: "jbo",
-          }),
-        );
-      });
-      line.append(text(". Readers judge each pair separately."));
+      line.append(
+        inlineProse(
+          "The competing word links belong to this rafsi claim sentence.",
+          text(`${claim.rafsi} is also claimed by `),
+          ...claim.competitors.flatMap((competitor, index) => [
+            text(index ? ", " : ""),
+            link(competitor.spelling, routes.word(competitor.spelling), {
+              lang: "jbo",
+            }),
+          ]),
+          text(". Readers judge each pair separately."),
+        ),
+      );
       conflicts.append(line);
     }
   }
@@ -298,11 +301,14 @@ export async function publishPage(
         for (const c of foundRoots) {
           const line = el("p", { class: "warn" });
           line.append(
-            text(
-              `${newRoots.includes(c) ? "New since the recorded run: " : "Acknowledged in the recorded evidence: "}${c.rule} conflict with `,
+            inlineProse(
+              "The word link belongs to this root conflict sentence.",
+              text(
+                `${newRoots.includes(c) ? "New since the recorded run: " : "Acknowledged in the recorded evidence: "}${c.rule} conflict with `,
+              ),
+              link(c.spelling, routes.word(c.spelling), { lang: "jbo" }),
+              text("."),
             ),
-            link(c.spelling, routes.word(c.spelling), { lang: "jbo" }),
-            text("."),
           );
           conflicts.append(line);
         }
@@ -325,9 +331,12 @@ export async function publishPage(
         el(
           "p",
           { class: "warn" },
-          text(`${c.rafsi} is also claimed by `),
-          link(c.spelling, routes.word(c.spelling), { lang: "jbo" }),
-          text("."),
+          inlineProse(
+            "The word link belongs to this component rafsi conflict sentence.",
+            text(`${c.rafsi} is also claimed by `),
+            link(c.spelling, routes.word(c.spelling), { lang: "jbo" }),
+            text("."),
+          ),
         ),
       );
     }

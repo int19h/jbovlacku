@@ -5,6 +5,7 @@ import {
   inspectLayoutCss,
   inspectLayoutSource,
   TARGET_SELECTOR,
+  PROSE_SELECTOR,
 } from "../../../scripts/layout-policy.ts";
 
 async function files(root: string): Promise<string[]> {
@@ -51,6 +52,8 @@ test("R6: source guard rejects unsafe future code without an anchor whitelist", 
     computedStyle: 'a.style["minHeight"] = "0";',
     dynamicStyle: 'a.style.setProperty(name, "0");',
     compoundStyle: 'a.style.cssText += "min-height:0!important";',
+    directStyle: 'element.style = "min-height:0!important";',
+    directComputedStyle: 'element["style"] = "min-height:0!important";',
     transformStyle: 'a.style.setProperty("transform", "scale(.01)");',
     hiddenTarget: 'link("go", "/go", {class:"sr"});',
     opaqueStyle: "Object.assign(a.style, styles);",
@@ -78,6 +81,8 @@ test("R6: source guard rejects unsafe future code without an anchor whitelist", 
     opaqueClasses: 'link("go", "/go", {class:classes});',
     inlineOptOut: 'link("go", "/new", {style:"min-height:1px !important"});',
     inlineDisplay: 'el("a", {href:"/new", style:"display:inline"}, "go");',
+    inlineTableCell: 'link("go", "/new", {style:"display:table-cell"});',
+    inlineTableRow: 'link("go", "/new", {style:"display:table-row"});',
     styleAssignment: 'anchor.style.minHeight = "0";',
     styleProperty: 'anchor.style.setProperty("min-height", "0", "important");',
     rawAnchor: 'document.createElement("a");',
@@ -156,10 +161,78 @@ test("R6: CSS guard rejects removal and unauthorized target opt-outs", async () 
     "a.new-state { display: var(--bad,inline); }",
     "a.new-state { clip-path: inset(45%); }",
     "a.new-state { display: inline; }",
+    "a.new-state { display: table-cell; }",
+    "a.new-state { display: table-row; }",
     "a.new-state { transform: scale(.5); }",
     "a.new-state { all: unset; }",
     "a.new-state { --target-min-height: 1px; }",
-    ".inline-prose[data-inline-prose-reason] > a:not(.btn,.touch-link) { width: 1px; }",
+    `${PROSE_SELECTOR} { width: 1px; }`,
   ])
     expect(inspectLayoutCss(`${source}\n${rule}`), rule).not.toEqual([]);
+});
+
+test("R7: source prose follows abbreviations and inspects direct competitor lists", () => {
+  for (const copy of ["Compare cf. ", "See e.g. "])
+    expect(
+      inspectLayoutSource(
+        `inlineProse("The word belongs to this comparison sentence.", text(${JSON.stringify(copy)}), link("papri", "/word/papri"), text("."));`,
+      ),
+      copy,
+    ).toEqual([]);
+  const list =
+    '...claim.competitors.flatMap((competitor, index) => [text(index ? ", " : ""), link(competitor.spelling, routes.word(competitor.spelling))])';
+  expect(
+    inspectLayoutSource(
+      `inlineProse("The competitors belong to this claim sentence.", text("cku is also claimed by "), ${list}, text(". Readers judge each pair separately."));`,
+    ),
+  ).toEqual([]);
+  for (const prefix of ["", "Read the guide. ", "Source: "])
+    expect(
+      inspectLayoutSource(
+        `inlineProse("The competitors belong to this claim sentence.", text(${JSON.stringify(prefix)}), ${list}, text("."));`,
+      ),
+      prefix,
+    ).not.toEqual([]);
+  expect(
+    inspectLayoutSource(
+      'inlineProse("The competitors belong to this claim sentence.", text("cku is also claimed by "), ...getCompetitorLinks(), text("."));',
+    ),
+  ).not.toEqual([]);
+});
+
+for (const display of [
+  "table-row",
+  "table-cell",
+  "table-row-group",
+  "table-column",
+  "table-column-group",
+  "table-header-group",
+  "table-footer-group",
+  "contents",
+  "inline",
+]) {
+  test(`R7: ${display} cannot bypass minimum sizes in CSS or inline source`, async () => {
+    const source = await readFile(
+      resolve(root, "styles/components.css"),
+      "utf8",
+    );
+    expect
+      .soft(inspectLayoutCss(`${source}\na.new { display:${display}; }`))
+      .not.toEqual([]);
+    expect
+      .soft(
+        inspectLayoutSource(
+          `link("go", "/new", {style:"display:${display}"});`,
+        ),
+      )
+      .not.toEqual([]);
+  });
+}
+
+test("R7: direct style assignment cannot bypass target rules", () => {
+  for (const source of [
+    'element.style = "min-height:0!important";',
+    'element["style"] = "min-height:0!important";',
+  ])
+    expect.soft(inspectLayoutSource(source), source).not.toEqual([]);
 });
