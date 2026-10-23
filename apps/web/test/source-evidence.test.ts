@@ -10,6 +10,7 @@ const source = (language = "en", name = "English") => ({
   name,
   word: "",
   input: "",
+  aiNoteGroup: [],
   weight: { numerator: "1", denominator: "1" },
 });
 async function seed(
@@ -104,7 +105,6 @@ async function mock(
     const body = route.request().postDataJSON();
     calls.push(body);
     const id = String(calls.length);
-    const current = body.current.formation.sources[0];
     jobs.set(id, {
       operation: body.operation,
       draft_revision: body.draft_revision,
@@ -113,7 +113,6 @@ async function mock(
           path: "/formation/sources",
           value: [
             {
-              ...current,
               word: `book${id}`,
               word_ipa: "ˈbʊk",
               stem: "book",
@@ -180,7 +179,7 @@ async function allow(page: Page) {
     .click();
 }
 
-test("accepted source notes stay editable with AI off and every field reaches review", async ({
+test("accepted source notes stay editable with AI off and every signed field reaches review", async ({
   page,
 }) => {
   test.setTimeout(45000);
@@ -206,6 +205,21 @@ test("accepted source notes stay editable with AI off and every field reaches re
   await expect(notes).toHaveValue(
     "Sense: work 2\n\nNote: first line 2\nsecond line\n\nlast line",
   );
+  const review = page.getByRole("region", {
+    name: "Retained source evidence for English",
+  });
+  await expect(review.getByRole("button", { name: /^Keep / })).toHaveCount(4);
+  while (await review.getByRole("button", { name: /^Keep / }).count())
+    await review
+      .getByRole("button", { name: /^Keep / })
+      .first()
+      .click();
+  await expect(review).toHaveCount(0);
+  await expect
+    .poll(
+      async () => (await stored(page)).gismu.rows[0].sourceReview?.length ?? 0,
+    )
+    .toBe(0);
   await page.goto("/preferences");
   await page.getByRole("checkbox", { name: "Use AI assistance" }).uncheck();
   await expect
@@ -237,13 +251,16 @@ test("accepted source notes stay editable with AI off and every field reaches re
   await page.getByText("Etymology", { exact: true }).click();
   await expect(page.locator("main")).toContainText("Reviewed author note");
   await expect(page.locator("main")).toContainText("ˈbʊk");
-  await expect(page.locator("main")).toContainText("Stem: book");
-  await expect(page.locator("main")).toContainText("Stem said: bʊk");
+  await expect(page.locator("main")).not.toContainText("Stem: book");
+  await expect(page.locator("main")).not.toContainText("Stem said: bʊk");
   const saved = await stored(page);
   expect(saved.formation.sources[0].notes).toEqual([
     ["Reviewed author note\nsecond line"],
   ]);
   expect(saved.formation.sources[0].word).toBe("author word");
+  expect(saved.gismu.rows[0]).toMatchObject({ stem: "book", ipa: "bʊk" });
+  expect(saved.formation.sources[0]).not.toHaveProperty("stem");
+  expect(saved.formation.sources[0]).not.toHaveProperty("ipa");
   const published: any[] = [];
   await page.route("**/api/v1/events", async (route) => {
     const payload = route.request().postDataJSON();
@@ -270,6 +287,12 @@ test("accepted source notes stay editable with AI off and every field reaches re
   expect(JSON.stringify(published[0].body)).not.toContain("Sense: work");
   expect(JSON.stringify(published[0].body)).not.toContain("first line");
   expect(published[0].body.ai).toBeUndefined();
+  expect(published[0].body.etymology.formation.sources[0]).not.toHaveProperty(
+    "stem",
+  );
+  expect(published[0].body.etymology.formation.sources[0]).not.toHaveProperty(
+    "ipa",
+  );
   // Reopen a disposable copy to test dropping notes after an earlier formation.
   await seed(page, saved, false);
   await page
@@ -295,7 +318,6 @@ test("existing IPA, null, and exact lojbanized inputs open without conversion or
       input: { format: "ipa", text: " ˈbʊk " },
       weight: null,
       notes: [],
-      ipa: "stem-only",
     },
     { language: "fr", word: "livre", input: null, weight: null, notes: [] },
     {
@@ -338,6 +360,16 @@ test("existing IPA, null, and exact lojbanized inputs open without conversion or
   ).toBeVisible();
   await expect(
     page.getByLabel("Stem said for en", { exact: true }),
+  ).toHaveValue("");
+  await expect(page.getByLabel("Stem for en", { exact: true })).toHaveValue("");
+  await expect(page.getByLabel("Said for en", { exact: true })).toHaveValue("");
+  await page.getByLabel("Stem said for en", { exact: true }).fill("stem-only");
+  await expect
+    .poll(async () => (await stored(page))?.gismu?.rows[0]?.ipa)
+    .toBe("stem-only");
+  await page.reload();
+  await expect(
+    page.getByLabel("Stem said for en", { exact: true }),
   ).toHaveValue("stem-only");
   await expect(
     page.getByLabel("Scoring letters for fr", { exact: true }),
@@ -358,7 +390,10 @@ test("existing IPA, null, and exact lojbanized inputs open without conversion or
   expect(roundtrip.sources.map((s: any) => s.input)).toEqual(
     sources.map((s) => s.input),
   );
-  expect(roundtrip.sources[0].ipa).toBe("stem-only");
+  expect(roundtrip.sources[0]).not.toHaveProperty("ipa");
+  expect(roundtrip.sources[0]).not.toHaveProperty("stem");
+  expect(roundtrip.sources[0]).not.toHaveProperty("word_ipa");
+  expect((await stored(page)).gismu.rows[0].ipa).toBe("stem-only");
   page.once("dialog", (dialog) => dialog.accept());
   await page
     .getByRole("button", { name: "Replace IPA input for en", exact: true })
@@ -373,6 +408,11 @@ test("existing IPA, null, and exact lojbanized inputs open without conversion or
   await expect(
     page.getByLabel("Stem said for en", { exact: true }),
   ).toHaveValue("stem-only");
+  await page.reload();
+  await expect(
+    page.getByLabel("Stem said for en", { exact: true }),
+  ).toHaveValue("stem-only");
+  await expect(letters).toHaveValue("buk");
 });
 
 test("bulk source suggestions stop after declined consent and hide empty detail rows", async ({
@@ -628,10 +668,8 @@ test("manual selection preserves unchanged canonical source evidence and histori
     sources: [
       {
         input: { text: "Buk", format: "lojbanized" },
-        ipa: null,
         language: "en",
         notes: [["Historical note"]],
-        stem: null,
         weight: { denominator: 1, numerator: 1 },
         word: "book",
         word_ipa: null,
@@ -761,6 +799,10 @@ test("dropping notes after Use this form then publishing through the step bar si
     .getByRole("link", { name: /^Publish/ })
     .click();
   await expect(page).toHaveURL(/\/new\/publish$/);
+  expect((await stored(page)).gismu.rows[0]).toMatchObject({
+    stem: "new stem",
+    ipa: "bʊks",
+  });
   await createIdentity(page);
   await page.evaluate(async () => {
     const { navigate } = await import(String("/src/app/router.ts"));
@@ -784,9 +826,13 @@ test("dropping notes after Use this form then publishing through the step bar si
     word: "",
     notes: [],
     word_ipa: "ˈbʊks",
-    stem: "new stem",
-    ipa: "bʊks",
   });
+  expect(published[0].body.etymology.formation.sources[0]).not.toHaveProperty(
+    "stem",
+  );
+  expect(published[0].body.etymology.formation.sources[0]).not.toHaveProperty(
+    "ipa",
+  );
   expect(published[0].body.etymology.formation.method).toBe("algorithmic");
   expect(published[0].envelope.signature).toEqual(expect.any(String));
 });

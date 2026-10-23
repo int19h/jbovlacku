@@ -359,18 +359,23 @@ test("draft export keeps private source evidence while publication and Revise ke
     const store = new LocalStore();
     const draft: any = await store.get("drafts", "current");
     const privateEvidence = { word_ipa: "bʊk", stem: "book", ipa: "bʊk" };
-    Object.assign(draft.gismu.rows[0], privateEvidence);
-    Object.assign(draft.formation.sources[0], privateEvidence, {
+    Object.assign(draft.gismu.rows[0], privateEvidence, {
       notes: [["An authored source note."]],
     });
-    draft.formation.sources.push({
+    Object.assign(draft.formation.sources[0], {
+      word_ipa: privateEvidence.word_ipa,
+      notes: [["An authored source note."]],
+    });
+    draft.gismu.rows.push({
       language: "es",
+      name: "Spanish",
       word: "",
-      input: null,
+      input: "",
       weight: null,
       notes: [],
       stem: "cant",
       ipa: "kant",
+      aiNoteGroup: [],
     });
     draft.formation.sources.push({
       language: "fr",
@@ -379,8 +384,19 @@ test("draft export keeps private source evidence while publication and Revise ke
       input: null,
       weight: { numerator: 1, denominator: 2 },
       notes: [],
+    });
+    draft.gismu.rows.push({
+      language: "fr",
+      name: "French",
+      word: "",
+      word_ipa: null,
+      input: "",
+      inputOriginal: null,
+      weight: { numerator: "1", denominator: "2" },
+      notes: [],
       stem: null,
       ipa: "",
+      aiNoteGroup: [],
     });
     await store.put("drafts", "current", draft);
   });
@@ -402,18 +418,26 @@ test("draft export keeps private source evidence while publication and Revise ke
   });
   expect(exported.formation.sources[0]).toMatchObject({
     word_ipa: "bʊk",
-    stem: "book",
-    ipa: "bʊk",
   });
-  expect(exported.formation.sources[1]).toMatchObject({
+  expect(exported.gismu.rows[1]).toMatchObject({
     stem: "cant",
     ipa: "kant",
   });
-  expect(exported.formation.sources[2]).toMatchObject({
-    weight: { numerator: 1, denominator: 2 },
+  expect(exported.gismu.rows[2]).toMatchObject({
+    weight: { numerator: "1", denominator: "2" },
     stem: null,
     ipa: "",
   });
+  expect(exported.formation.sources).toHaveLength(2);
+  expect(exported.formation.sources[1].weight).toEqual({
+    numerator: 1,
+    denominator: 2,
+  });
+  expect(exported.formation.sources[1].word_ipa).toBeNull();
+  for (const row of exported.formation.sources) {
+    expect(row).not.toHaveProperty("stem");
+    expect(row).not.toHaveProperty("ipa");
+  }
   await page
     .locator("aside")
     .getByRole("button", { name: "Publish", exact: true })
@@ -440,6 +464,7 @@ test("draft export keeps private source evidence while publication and Revise ke
     {
       language: "fr",
       word: "",
+      word_ipa: null,
       input: null,
       weight: { numerator: 1, denominator: 2 },
       notes: [],

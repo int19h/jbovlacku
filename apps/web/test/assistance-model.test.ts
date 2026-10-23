@@ -1,5 +1,9 @@
 import { test, expect, type Page } from "@playwright/test";
 
+test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: "ignoreErrors" });
+});
+
 async function seed(
   page: Page,
   method = "algorithmic",
