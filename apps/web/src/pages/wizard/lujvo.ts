@@ -755,6 +755,7 @@ export async function lujvoPage(
           "small",
         ),
       );
+      const displayedClaims = new Set<string>();
       for (const conflict of candidate.conflicts) {
         const key = lujvoConflictKey(
           candidate.spelling,
@@ -762,6 +763,9 @@ export async function lujvoPage(
           candidate.conflicts,
           inventory.snapshot,
         );
+        // Several parts can share one retained claim and acknowledgment.
+        if (displayedClaims.has(key)) continue;
+        displayedClaims.add(key);
         const box2 = el("input", {
           type: "checkbox",
           id: `ack-${key.replace(/[^a-z0-9]/gi, "")}`,

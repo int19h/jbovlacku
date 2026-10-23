@@ -50,17 +50,18 @@ async function beginDraft(page: Page, kind?: "lujvo" | "gismu") {
 async function addCompetingClaimFixture(page: Page) {
   // This synthetic browser fixture is not authenticated package evidence.
   // A third-party claim must conflict with both selected cku components.
-  await page.evaluate(
+  return page.evaluate(
     () =>
-      new Promise<void>((resolve, reject) => {
+      new Promise<string[]>((resolve, reject) => {
         const request = indexedDB.open("jbovlacku-browser-v1", 3);
         request.onerror = () => reject(request.error);
         request.onsuccess = () => {
           const db = request.result;
           const tx = db.transaction("packages", "readwrite");
+          let claimants: string[] = [];
           tx.oncomplete = () => {
             db.close();
-            resolve();
+            resolve(claimants);
           };
           tx.onerror = () => {
             db.close();
@@ -91,6 +92,18 @@ async function addCompetingClaimFixture(page: Page) {
               };
               row.rafsi = [...new Set([...row.rafsi, "cku"])].sort();
             }
+            claimants = [
+              ...new Set(
+                pkg.entries
+                  .filter(
+                    (entry) =>
+                      "rafsi" in entry &&
+                      Array.isArray(entry.rafsi) &&
+                      entry.rafsi.includes("cku"),
+                  )
+                  .map((entry) => entry.word.spelling),
+              ),
+            ].sort();
             store.put(pkg, "en");
           };
         };
@@ -562,7 +575,10 @@ for (const viewport of [
       await expect(page.getByRole("status")).toContainText(
         "saved in this browser",
       );
-      await addCompetingClaimFixture(page);
+      const expectedClaimants = await addCompetingClaimFixture(page);
+      expect(expectedClaimants).toEqual(
+        expect.arrayContaining(["cukta", "vlacku"]),
+      );
       await open(page, "/identity");
       await expandDetails(page);
       await check("identity-new");
@@ -700,7 +716,7 @@ for (const viewport of [
           associations.map((row) => row.spelling).sort(),
           "One row per retained claim",
         )
-        .toEqual(["cukta", "vlacku"]);
+        .toEqual(expectedClaimants);
       expect
         .soft(
           new Set(associations.map((row) => row.id)).size,
