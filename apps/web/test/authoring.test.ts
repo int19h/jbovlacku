@@ -2951,3 +2951,42 @@ test("N5 closed defaults and constraints reopen with current references before t
     JSON.parse(await page.locator("pre.json").innerText()).frame.constraints,
   ).toEqual([[[1, " is inside ", 2, " fully"]]]);
 });
+
+test("F09: a held first publication shows neutral progress until the send fails", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await openPublishWithClaim(page, "brodi", "bro");
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/api/v1/events", async (route) => {
+    await held;
+    await route.abort("failed");
+  });
+  await page
+    .locator("aside")
+    .getByRole("button", { name: "Publish", exact: true })
+    .click();
+  await page.getByLabel("Passphrase", { exact: true }).fill(PASSPHRASE);
+  await page.getByRole("button", { name: "Unlock", exact: true }).click();
+  await acceptFirstSignature(page);
+  const saved = page.getByRole("region", { name: "Saved publication" });
+  try {
+    await expect(saved).toContainText("Saved. Sending.");
+    await expect(saved).toHaveClass("saved-publication-progress");
+    await expect(saved).not.toContainText("Not delivered");
+    await expect(saved.getByRole("button", { name: "Try now" })).toHaveCount(0);
+    await expect(
+      page.getByRole("link", { name: /not delivered/ }),
+    ).toBeHidden();
+  } finally {
+    release();
+  }
+  await expect(saved).toContainText("Saved. Not delivered yet.");
+  await expect(saved.getByRole("button", { name: "Try now" })).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "4 not delivered" }),
+  ).toBeVisible();
+});

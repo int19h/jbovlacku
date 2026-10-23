@@ -289,16 +289,17 @@ test("a permanent refusal pauses retries, Retry-After schedules the next try, an
   ).toBeGreaterThanOrEqual(120000);
   await page.getByRole("button", { name: "Stop retrying" }).click();
   await expect(page.getByRole("status")).toContainText("Stopped.");
-  await expect(page.getByText("No unfinished records.")).toBeVisible();
-  await expect(page.getByRole("link", { name: /not delivered/ })).toBeHidden();
+  await expect(page.getByText("Stopped", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "1 not delivered" }),
+  ).toBeVisible();
   const stopped = await outboxItems(page);
   expect(stopped[0].stopped).toBe(true);
   expect(stopped[0].transport).toBe(items[0].transport);
   await page.unroute("**/api/v1/events");
   await page.reload();
-  await expect(page.getByText("No unfinished records.")).toBeVisible();
-  await page.getByText(/Retained records/).click();
-  await page.getByRole("button", { name: "Resume delivery" }).click();
+  await expect(page.getByText("Stopped", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Resume", exact: true }).click();
   await expect(page.getByRole("status")).toContainText("Delivery resumed");
   await expect
     .poll(async () => (await outboxItems(page))[0].peers.self.state)

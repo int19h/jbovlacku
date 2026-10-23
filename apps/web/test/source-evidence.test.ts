@@ -449,7 +449,7 @@ test("bulk source suggestions stop after declined consent and hide empty detail 
   await expect(
     page.getByLabel("Native word for English", { exact: true }),
   ).toBeVisible();
-  await expect(page.locator('td[colspan="8"]:visible')).toHaveCount(0);
+  await expect(page.locator(".source-row-details:visible")).toHaveCount(0);
 });
 
 test("bulk suggestions disable repeated starts and stop on cancellation", async ({
@@ -655,7 +655,7 @@ test("empty source detail rows collapse with assistance off", async ({
   await expect(
     page.getByLabel("Native word for English", { exact: true }),
   ).toBeVisible();
-  await expect(page.locator('td[colspan="8"]:visible')).toHaveCount(0);
+  await expect(page.locator(".source-row-details:visible")).toHaveCount(0);
 });
 
 test("manual selection preserves unchanged canonical source evidence and historical scores", async ({

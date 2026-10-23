@@ -459,7 +459,7 @@ export async function gismuPage(
         ),
       );
     rowsBox.replaceChildren();
-    const table = el("table", { class: "small", style: "min-width:680px" });
+    const table = el("table", { class: "small source-table" });
     table.append(
       el(
         "thead",
@@ -474,7 +474,6 @@ export async function gismuPage(
           el("th", { scope: "col", text: "Stem" }),
           el("th", { scope: "col", text: "Stem said" }),
           el("th", { scope: "col", text: "Letters" }),
-          el("th", { scope: "col", text: "" }),
         ),
       ),
     );
@@ -633,7 +632,7 @@ export async function gismuPage(
           ),
         );
       }
-      const tools = el("td", { class: "right", style: "white-space:nowrap" });
+      const tools = el("div", { class: "actions" });
       tools.append(
         button(
           "Alternative",
@@ -700,11 +699,11 @@ export async function gismuPage(
         detailCell("Stem", "stem"),
         detailCell("Stem said", "ipa"),
         inputCell,
-        tools,
       );
       tbody.append(tr);
       const control = sourceControl(row);
-      const details = el("td", { colspan: "8" });
+      const details = el("td", { colspan: "7" });
+      tbody.append(el("tr", {}, el("td", { colspan: "7" }, tools)));
       const showNotes =
         sourceNotes(row).length > 0 || notesEditing.has(sourceKey);
       if (showNotes) {
@@ -812,7 +811,7 @@ export async function gismuPage(
         details.append(reviewBox);
       }
       details.append(control);
-      const detailRow = el("tr", {}, details);
+      const detailRow = el("tr", { class: "source-row-details" }, details);
       detailRows.set(sourceKey, {
         row: detailRow,
         notes: showNotes || review.length > 0,

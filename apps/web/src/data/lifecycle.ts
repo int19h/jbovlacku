@@ -24,6 +24,10 @@ import {
 import { loadOwnHistory, type OwnHistory } from "./history.ts";
 import { freshPeer } from "./delivery.ts";
 import {
+  discardedPredecessorReads,
+  DISCARDED_PREDECESSOR,
+} from "./outbox-graph.ts";
+import {
   describeTransport,
   type KeyBackup,
   type LocalStore,
@@ -459,6 +463,10 @@ export async function queueHandover(
       tx.abort();
     };
     // Compare the current state before writing. Another tab can have retired this key meanwhile.
+    const discarded = discardedPredecessorReads(keys, [
+      ...transferEnvelope.header.previous,
+      ...acceptEnvelope.header.previous,
+    ]);
     const reads = [
       keys.get("selected"),
       keys.get(`handover:${old.identity}`),
@@ -467,6 +475,7 @@ export async function queueHandover(
       heads.get(successor.identity),
       keys.get(`handover-of:${successor.identity}`),
       keys.get(`transfer-known:${old.identity}`),
+      ...discarded,
     ] as IDBRequest[];
     let remaining = reads.length;
     const results: unknown[] = [];
@@ -474,6 +483,8 @@ export async function queueHandover(
       request.onsuccess = () => {
         results[index] = request.result;
         if (--remaining) return;
+        if (discarded.some((request) => request.result))
+          return stop(DISCARDED_PREDECESSOR);
         const [
           selected,
           handover,
@@ -654,9 +665,14 @@ export async function queueCompromise(
     let failure: Error | undefined;
     const headsRequest = heads.get(item.identity);
     const markRequest = keys.get(`compromised:${item.identity}`);
-    let remaining = 2;
+    const discarded = discardedPredecessorReads(keys, envelope.header.previous);
+    let remaining = 2 + discarded.length;
     const proceed = () => {
       if (--remaining) return;
+      if (discarded.some((request) => request.result)) {
+        failure = new LifecycleConflictError(DISCARDED_PREDECESSOR);
+        return tx.abort();
+      }
       const current = (headsRequest.result as string[] | undefined) ?? [];
       if (markRequest.result) {
         failure = new LifecycleConflictError(
@@ -674,6 +690,7 @@ export async function queueCompromise(
       heads.put([item.id], item.identity);
       keys.put(item.id, `compromised:${item.identity}`);
     };
+    for (const request of discarded) request.onsuccess = proceed;
     headsRequest.onsuccess = proceed;
     markRequest.onsuccess = proceed;
     tx.oncomplete = () => resolve();

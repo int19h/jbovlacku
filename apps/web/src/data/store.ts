@@ -2,7 +2,14 @@
  * Local IndexedDB storage. Version 2 adds preferences, the private overlay,
  * delivery groups, and own-history caches, and migrates version 1 outbox rows.
  */
-import type { Transport } from "../model/types.ts";
+import {
+  ownGraph,
+  hasOwnDependent,
+  remainingHeads,
+  discardedPredecessorReads,
+  DISCARDED_PREDECESSOR,
+} from "./outbox-graph.ts";
+import type { Envelope, Transport } from "../model/types.ts";
 
 export interface KeyBackup {
   format: "jbovlacku-key-backup";
@@ -313,6 +320,72 @@ export class LocalStore {
       tx.onerror = () => {};
     });
   }
+  /** Checks the graph and deletes a stopped leaf in the same transaction as its frontier update. */
+  async discardOutbox(id: string): Promise<void> {
+    const db = await this.database;
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(
+        ["outbox", "ownhistory", "heads", "keys"],
+        "readwrite",
+      );
+      const outbox = tx.objectStore("outbox");
+      const own = tx.objectStore("ownhistory");
+      const heads = tx.objectStore("heads");
+      const items = outbox.getAll();
+      const history = own.getAll();
+      let failure: Error | undefined;
+      let remaining = 2;
+      const proceed = () => {
+        if (--remaining) return;
+        try {
+          const records = items.result as OutboxItem[];
+          const item = records.find((record) => record.id === id);
+          if (!item) return;
+          if (!item.stopped)
+            throw new Error("Stop retrying before you discard this record.");
+          const graph = ownGraph(
+            records,
+            history.result as Envelope[],
+            item.identity,
+          );
+          if (hasOwnDependent(graph, id))
+            throw new Error(
+              "Later records depend on this record. Resume it or save it as a file.",
+            );
+          graph.delete(id);
+          const current = heads.get(item.identity);
+          current.onsuccess = () => {
+            heads.put(
+              remainingHeads(graph, current.result ?? [], id),
+              item.identity,
+            );
+            outbox.delete(id);
+            own.delete(id);
+            // Keep only the ID so an already signed group cannot restore a discarded dependency.
+            tx.objectStore("keys").put(true, `discarded:${id}`);
+          };
+        } catch (error) {
+          failure =
+            error instanceof Error
+              ? error
+              : new Error(
+                  "The local history could not be read. Nothing was discarded.",
+                );
+          tx.abort();
+        }
+      };
+      items.onsuccess = proceed;
+      history.onsuccess = proceed;
+      tx.oncomplete = () => resolve();
+      tx.onabort = () =>
+        reject(
+          failure ??
+            tx.error ??
+            new Error("Local storage did not discard this record."),
+        );
+      tx.onerror = () => {};
+    });
+  }
   /**
    * Writes a draft only when storage still holds the state the writer last
    * saw: the exact revision, no draft, or an old draft without a revision.
@@ -603,9 +676,15 @@ export class LocalStore {
         ? drafts.get(`published:${publication.revision}`)
         : null;
       const knownTransfer = keys.get(`transfer-known:${identity}`);
-      let remaining = 4 + (publication ? 2 : 0);
+      const discarded = discardedPredecessorReads(keys, predecessors);
+      let remaining = 4 + (publication ? 2 : 0) + discarded.length;
       const proceed = () => {
         if (--remaining) return;
+        if (discarded.some((request) => request.result)) {
+          failure = new Error(DISCARDED_PREDECESSOR);
+          tx.abort();
+          return;
+        }
         if (retired.result || knownTransfer.result || compromised.result) {
           failure = new Error(
             retired.result || knownTransfer.result
@@ -663,6 +742,7 @@ export class LocalStore {
           identity,
         );
       };
+      for (const request of discarded) request.onsuccess = proceed;
       knownTransfer.onsuccess = proceed;
       retired.onsuccess = proceed;
       compromised.onsuccess = proceed;

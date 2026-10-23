@@ -9,6 +9,8 @@ import {
   isFinished,
   recipientLabel,
 } from "../data/delivery.ts";
+import { ownGraph, dependentIds } from "../data/outbox-graph.ts";
+import type { Envelope } from "../model/types.ts";
 import type { OutboxItem } from "../data/store.ts";
 
 export async function outboxPage(
@@ -81,8 +83,11 @@ export async function outboxPage(
     el("div", { class: "actions", style: "margin-top:8px" }, exportAll),
   );
   main.append(retained);
-  const render = (items: OutboxItem[]) => {
-    if (!context.live()) return;
+  let generation = 0;
+  const render = async (items: OutboxItem[]) => {
+    const current = ++generation;
+    const own = await app.store.list<Envelope>("ownhistory").catch(() => null);
+    if (!context.live() || current !== generation) return;
     currentItems = items;
     const focused = document.activeElement as HTMLElement | null;
     const focusedRow = focused?.closest<HTMLElement>("[data-outbox-record]");
@@ -90,7 +95,6 @@ export async function outboxPage(
     const focusAction = focused?.dataset.outboxAction;
     const active = items.filter((item) => isNotDelivered(item));
     currentActive = active;
-    const stopped = items.filter((item) => item.stopped && !isFinished(item));
     const kinds = new Set(
       active.flatMap((item) =>
         Object.values(item.peers).map((peer) =>
@@ -121,27 +125,42 @@ export async function outboxPage(
           ? "Some records wait for another attempt."
           : "Some records wait for a connection.",
       );
+    intro.hidden = active.length === 0;
     intro.textContent = active.length
       ? `${reasons.join(" ")} These records stay in this browser. Eligible retries continue while the app is open. A closed browser does not deliver in the background.`
-      : "Nothing is waiting. Signed records that reached their servers are kept here with their receipts.";
+      : "";
     list.replaceChildren();
-    for (const item of active) list.append(row(app, item));
+    const dependencies = new Map<string, Set<string> | null>();
+    for (const identity of new Set(active.map((item) => item.identity))) {
+      try {
+        dependencies.set(
+          identity,
+          own === null ? null : dependentIds(ownGraph(items, own, identity)),
+        );
+      } catch {
+        dependencies.set(identity, null);
+      }
+    }
+    for (const item of active) {
+      const dependents = dependencies.get(item.identity);
+      list.append(
+        row(
+          app,
+          item,
+          dependents
+            ? dependents.has(item.id)
+              ? "dependent"
+              : "leaf"
+            : "unavailable",
+        ),
+      );
+    }
     empty.textContent = active.length ? "" : "No unfinished records.";
     exportLine.hidden = active.length === 0;
     const delivered = items.filter(isFinished);
-    retainedSummary.textContent = `Retained records (${stopped.length} stopped, ${delivered.length} delivered)`;
+    retainedSummary.textContent = `Retained records (${delivered.length} delivered)`;
+    retained.hidden = delivered.length === 0;
     const nodes: Node[] = [];
-    if (stopped.length) {
-      nodes.push(
-        p(
-          "Stopped records keep their signed bytes and receipts. Resume uses the same bytes and recipients after a receipt lookup.",
-          "small",
-        ),
-      );
-      const ol = el("ol");
-      for (const item of stopped) ol.append(row(app, item, true));
-      nodes.push(ol);
-    }
     if (delivered.length) {
       const ol = el("ol", { class: "small" });
       for (const item of delivered.slice(-50).reverse()) {
@@ -199,7 +218,11 @@ export async function outboxPage(
   const unsubscribe = app.delivery.subscribe(render);
   context.signal.addEventListener("abort", () => unsubscribe());
 }
-function row(app: App, item: OutboxItem, stoppedView = false): HTMLElement {
+function row(
+  app: App,
+  item: OutboxItem,
+  discardState: "leaf" | "dependent" | "unavailable" = "unavailable",
+): HTMLElement {
   const li = el("li", { class: "row", "data-outbox-record": item.id });
   const info = el("span", { class: "t" });
   const signed = item.signedAt ? new Date(item.signedAt) : null;
@@ -251,11 +274,12 @@ function row(app: App, item: OutboxItem, stoppedView = false): HTMLElement {
       );
     info.append(el("small", { text: parts.join(" ") }));
   }
+  if (item.stopped) info.append(el("small", { text: "Stopped" }));
   li.append(info);
-  if (stoppedView) {
+  if (item.stopped) {
     li.append(
       button(
-        "Resume delivery",
+        "Resume",
         async () => {
           try {
             await app.delivery.resume(item.id);
@@ -272,7 +296,7 @@ function row(app: App, item: OutboxItem, stoppedView = false): HTMLElement {
         },
       ),
       button(
-        "Export",
+        "Save as file",
         () =>
           download(
             `jbovlacku-record-${item.id.slice(5, 17)}.jsonl`,
@@ -285,6 +309,39 @@ function row(app: App, item: OutboxItem, stoppedView = false): HTMLElement {
         },
       ),
     );
+    if (discardState === "leaf")
+      li.append(
+        button(
+          "Discard",
+          async () => {
+            if (
+              !confirm(
+                "Discard this local signed record and its receipts? This cannot be undone. This does not retract a copy that a server already holds.",
+              )
+            )
+              return;
+            try {
+              await app.delivery.discard(item.id);
+              app.own.invalidate();
+              app.announce(
+                "Discarded the local signed record and its receipts. Server copies stay public.",
+              );
+            } catch (error) {
+              app.announce(describe(error));
+            }
+          },
+          { class: "btn btn-quiet", "data-outbox-action": "discard" },
+        ),
+      );
+    else
+      info.append(
+        el("small", {
+          text:
+            discardState === "dependent"
+              ? "Later records depend on this record. Resume it or save it as a file."
+              : "Local history is unavailable. Resume this record or save it as a file.",
+        }),
+      );
     return li;
   }
   const tryNow = button(

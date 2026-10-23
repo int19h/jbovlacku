@@ -42,7 +42,10 @@ Settings can show Zbalermorna beside Latin headwords on word and search pages. A
 Public identity pages show the signed profile, counts, and activity. Trust actions offer a private rule or a public signed record.
 The local key edits its public profile, with a signed preview of the name, biography, and HTTPS links under the format limits. A rafsi pair link opens the pair's word and rafsi from the local search packages.
 The browser keeps the key's own records that it fetched from a server, so later signatures read them locally. It handles at most 4,096 own events per key and 64 concurrent branches. Above those limits it refuses to sign in this browser and says so.
-The Not delivered page lists unfinished delivery only. It supports receipt lookup before retry, identical retries, Retry-After, Stop retrying, export, and Resume delivery.
+The Not delivered page lists waiting and stopped records. The header marker counts both, and stopped rows offer Resume and Save as file.
+Discard asks first and removes a stopped record only when no later local own record depends on it. The storage transaction restores retained predecessors to the frontier.
+Delivery supports receipt lookup before retry, identical retries, Retry-After, and Stop retrying. A first online publication shows neutral progress until delivery returns an outcome.
+Delivered records leave the list but keep their receipts in retained history. With no waiting or stopped records, the page shows a short empty state.
 Downloaded search packages permit local search without a request for each query. Version 2 packages carry authors, notes, and rafsi for result rows.
 Signing needs localhost or HTTPS. A plain HTTP Tailscale address supports reading only.
 
@@ -81,7 +84,8 @@ Draft reload preserves private `stem` and `ipa` values. Neither enters a signed 
 Publication keeps each source row's word, `word_ipa`, scoring input, weight, and notes.
 New unknown pronunciations omit `word_ipa`. Revisions preserve an authenticated original null value without copying it into fresh source rows.
 Known weights, including zero, survive regardless of private `stem` or `ipa` values.
-The gismu source editor has seven columns. It keeps pronunciation and stem evidence separate from scoring letters.
+The gismu source editor has seven readable columns inside its own scrolling region at 360 and 1280 CSS pixels.
+It keeps pronunciation and stem evidence separate from scoring letters.
 It preserves original IPA inputs and shows that conversion to scoring letters is unavailable.
 Source notes stay editable when assistance is off. The publication review shows all signed source evidence.
 Source edits also update the publication copy after form selection. Descriptive edits keep the recorded scores.

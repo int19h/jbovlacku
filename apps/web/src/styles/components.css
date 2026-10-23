@@ -812,6 +812,17 @@ dialog.sheet h2 {
   border-radius: 12px;
   background: var(--surface);
 }
+.source-table {
+  min-width: 1080px;
+  overflow-wrap: normal;
+}
+.source-table th,
+.source-table td:not([colspan]):nth-child(-n + 2) {
+  white-space: nowrap;
+}
+.source-table td:first-child {
+  min-width: 9rem;
+}
 .table-scroll:focus-visible {
   outline: 3px solid var(--focus);
 }

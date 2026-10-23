@@ -57,15 +57,16 @@ export function isNotDelivered(
   online = navigator.onLine,
 ): boolean {
   return (
-    isActive(item) &&
-    (!online ||
-      Object.values(item.peers).some(
-        (peer) =>
-          peer.state !== "accepted" &&
-          (peer.state !== "queued" ||
-            peer.attempts > 0 ||
-            peer.failure !== null),
-      ))
+    (item.stopped && !isFinished(item)) ||
+    (isActive(item) &&
+      (!online ||
+        Object.values(item.peers).some(
+          (peer) =>
+            peer.state !== "accepted" &&
+            (peer.state !== "queued" ||
+              peer.attempts > 0 ||
+              peer.failure !== null),
+        )))
   );
 }
 /** True only when every record reached every selected recipient. */
@@ -519,6 +520,15 @@ export class DeliveryEngine {
   async stop(id: string) {
     await this.store.mergeOutbox(id, (item) => ({ ...item, stopped: true }));
     await this.notify();
+  }
+  /** Deletes a stopped leaf after storage checks its current dependencies. */
+  async discard(id: string) {
+    try {
+      await this.store.discardOutbox(id);
+    } finally {
+      await this.notify();
+      this.schedule();
+    }
   }
   /** Resumes delivery with the same bytes and recipients, after a receipt lookup. */
   async resume(id: string) {

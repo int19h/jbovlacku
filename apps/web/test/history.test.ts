@@ -640,7 +640,7 @@ test("a native IndexedDB open failure keeps a warning and allows anonymous onlin
     page.getByRole("button", { name: /Make public|Remove/ }).first(),
   ).toBeVisible();
   await page.goto("/outbox");
-  await page.getByText(/Retained records \(0 stopped, 1 delivered\)/).click();
+  await page.getByText(/Retained records \(1 delivered\)/).click();
   await expect(
     page.getByRole("button", { name: "Export every retained record" }),
   ).toBeVisible();

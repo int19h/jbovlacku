@@ -38,7 +38,7 @@ import {
 import { definitionBlock } from "../../components/definition.ts";
 import { identityProfile, profileName } from "../../components/attribution.ts";
 import { getWord, selfPeer } from "../../data/api.ts";
-import { describePeer } from "../../data/delivery.ts";
+import { describePeer, isNotDelivered } from "../../data/delivery.ts";
 import {
   PublicationConflictError,
   type OutboxItem,
@@ -866,8 +866,10 @@ function renderSavedGroup(app: App, outcome: HTMLElement, items: OutboxItem[]) {
   const unfinished = items.filter((item) =>
     Object.values(item.peers).some((peer) => peer.state !== "accepted"),
   );
+  const failed = unfinished.some((item) => isNotDelivered(item));
+  const sending = unfinished.length > 0 && !failed;
   const box = el("div", {
-    class: "notice",
+    class: sending ? "saved-publication-progress" : "notice",
     style: "margin-top:12px",
     role: "region",
     "aria-label": "Saved publication",
@@ -877,14 +879,22 @@ function renderSavedGroup(app: App, outcome: HTMLElement, items: OutboxItem[]) {
       "p",
       {},
       el("strong", {
-        text: unfinished.length ? "Saved. Not delivered yet. " : "Published. ",
+        text: sending
+          ? "Saved. Sending. "
+          : unfinished.length
+            ? "Saved. Not delivered yet. "
+            : "Published. ",
       }),
       text(
-        unfinished.length
-          ? `${unfinished.length} of ${items.length} signed records did not finish delivery. They are kept in this browser with their exact bytes and sent again automatically. Publishing again would create a second definition, so this page offers delivery of the saved records instead. `
-          : `All ${items.length} signed records were accepted. `,
+        sending
+          ? `All ${items.length} signed records are saved in this browser. Their first delivery is in progress. `
+          : unfinished.length
+            ? `${unfinished.length} of ${items.length} signed records did not finish delivery. They are kept in this browser with their exact bytes and sent again automatically. Publishing again would create a second definition, so this page offers delivery of the saved records instead. `
+            : `All ${items.length} signed records were accepted. `,
       ),
-      link("See Not delivered", routes.outbox, { class: "touch-link" }),
+      ...(failed
+        ? [link("See Not delivered", routes.outbox, { class: "touch-link" })]
+        : []),
     ),
   );
   const list = el("ul", { class: "small", style: "margin:8px 0 0" });
@@ -903,7 +913,7 @@ function renderSavedGroup(app: App, outcome: HTMLElement, items: OutboxItem[]) {
   }
   box.append(list);
   const actions = el("div", { class: "actions", style: "margin-top:8px" });
-  if (unfinished.length) {
+  if (failed) {
     const retry = button(
       "Try now",
       async () => {
