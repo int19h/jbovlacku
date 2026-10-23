@@ -18,6 +18,7 @@ import {
   formationMetadata,
   manualFormation,
   newGismuState,
+  alternativeSourceRow,
   type GismuRowState,
 } from "../../src/model/builders.ts";
 import {
@@ -541,6 +542,32 @@ test("builders omit blank source evidence and preserve meaningful values before 
     assert.deepEqual(built.problems, [], builder.name);
     assert.ok(admissible(built.body), builder.name);
   }
+});
+
+test("an alternative source row clears word evidence and preserves its language and weight", () => {
+  const row: GismuRowState = {
+    language: "en",
+    name: "English",
+    word: "running",
+    word_ipa: "ˈrʌnɪŋ",
+    stem: "run",
+    ipa: "rʌn",
+    input: "ran",
+    weight: { numerator: "1", denominator: "2" },
+  };
+  const original = structuredClone(row);
+  const alternative = alternativeSourceRow(row);
+  assert.deepEqual(alternative, {
+    language: "en",
+    name: "English",
+    word: "",
+    word_ipa: null,
+    stem: null,
+    ipa: null,
+    input: "",
+    weight: row.weight,
+  });
+  assert.deepEqual(row, original);
 });
 
 test("retired signed hints survive reading while a new signature needs an explicit replacement", () => {

@@ -50,6 +50,10 @@ export interface GismuRowState {
   input: string;
   weight: { numerator: string; denominator: string } | null;
 }
+/** Start another word for the same language without copying its source evidence. */
+export function alternativeSourceRow(row: GismuRowState): GismuRowState {
+  return { ...row, word: "", input: "", word_ipa: null, stem: null, ipa: null };
+}
 export interface GismuState {
   preset: string | null;
   rows: GismuRowState[];

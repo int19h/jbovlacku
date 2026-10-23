@@ -206,6 +206,43 @@ test("the referent shortcut names its broad meaning and retired hints need delib
   expect(hints[0].alternatives[0].tags).toEqual(["referent"]);
 });
 
+test("another source word starts without the first word's pronunciation or stem", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await seed(page, { formation: true });
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore();
+    const draft: any = await store.get("drafts", "current");
+    Object.assign(draft.gismu.rows[0], {
+      word_ipa: "bʊk",
+      stem: "book",
+      ipa: "bʊk",
+    });
+    await store.put("drafts", "current", draft);
+  });
+  await open(page, "/new/gismu");
+  await page
+    .getByRole("button", { name: "Add an alternative word for English" })
+    .click();
+  await expect.poll(async () => (await stored(page)).gismu.rows.length).toBe(2);
+  const rows = (await stored(page)).gismu.rows;
+  expect(rows[0].word_ipa).toBe("bʊk");
+  expect(rows[0].stem).toBe("book");
+  expect(rows[0].ipa).toBe("bʊk");
+  expect(rows[1]).toMatchObject({
+    language: "en",
+    name: "English",
+    word: "",
+    input: "",
+    word_ipa: null,
+    stem: null,
+    ipa: null,
+    weight: rows[0].weight,
+  });
+});
+
 test("F4 manual entry and Etymology can remove evidence after confirmation", async ({
   page,
 }) => {
