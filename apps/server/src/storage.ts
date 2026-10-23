@@ -164,12 +164,19 @@ export class SqliteCoordinator extends SqlRowsCoordinator {
 
 export class SqliteIndexStore {
   private database: DatabaseSync;
-  publish?: (snapshot: string) => Promise<void>;
+  publish?: (snapshot: string, required?: readonly string[]) => Promise<void>;
   constructor(path: string, staged = false) {
     this.database = new DatabaseSync(path);
     if (staged)
-      this.publish = async (snapshot) => {
-        this.publishCurrent(snapshot);
+      this.publish = async (snapshot, required) => {
+        this.database.exec("BEGIN IMMEDIATE");
+        try {
+          this.publishCurrent(snapshot, required);
+          this.database.exec("COMMIT");
+        } catch (error) {
+          this.database.exec("ROLLBACK");
+          throw error;
+        }
       };
     this.database.exec(
       "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS search_entries(snapshot TEXT NOT NULL,event TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(snapshot,event)); CREATE TABLE IF NOT EXISTS search_current(id INTEGER PRIMARY KEY CHECK(id=1),snapshot TEXT NOT NULL); CREATE TABLE IF NOT EXISTS search_aliases(snapshot TEXT PRIMARY KEY, source TEXT NOT NULL); CREATE TABLE IF NOT EXISTS search_snapshots(snapshot TEXT PRIMARY KEY, entries INTEGER NOT NULL)",
@@ -250,7 +257,13 @@ export class SqliteIndexStore {
     // Repair only this generation. An alias source can still serve other snapshots.
     await this.replace(snapshot, entries);
   }
-  private publishCurrent(snapshot: string): void {
+  private publishCurrent(
+    snapshot: string,
+    required: readonly string[] = [],
+  ): void {
+    const previous = this.database
+      .prepare("SELECT snapshot FROM search_current WHERE id=1")
+      .get();
     if (!this.generation(snapshot))
       throw new Error("The search index generation is unavailable.");
     this.database
@@ -258,6 +271,25 @@ export class SqliteIndexStore {
         "INSERT INTO search_current VALUES(1,?) ON CONFLICT(id) DO UPDATE SET snapshot=excluded.snapshot",
       )
       .run(snapshot);
+    // Keep one rollback reserve and every active staged generation. Historic API reads use packages.
+    const keep = new Set([snapshot, ...required]);
+    if (previous) keep.add(String(previous.snapshot));
+    for (const id of keep) {
+      const alias = this.database
+        .prepare("SELECT source FROM search_aliases WHERE snapshot=?")
+        .get(id);
+      if (alias) keep.add(String(alias.source));
+    }
+    const ids = [...keep];
+    const placeholders = ids.map(() => "?").join(",");
+    for (const table of [
+      "search_aliases",
+      "search_entries",
+      "search_snapshots",
+    ])
+      this.database
+        .prepare(`DELETE FROM ${table} WHERE snapshot NOT IN (${placeholders})`)
+        .run(...ids);
   }
   async reuse(previous: string, snapshot: string): Promise<boolean> {
     this.database.exec("BEGIN IMMEDIATE");

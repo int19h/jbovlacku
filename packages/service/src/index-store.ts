@@ -3,7 +3,7 @@ export interface IndexStore {
   replace(snapshot: string, entries: SearchEntry[]): Promise<void>;
   /** False means the source generation is absent and entries must be replaced. */
   reuse?(previous: string, snapshot: string): Promise<boolean | void>;
-  publish?(snapshot: string): Promise<void>;
+  publish?(snapshot: string, required?: readonly string[]): Promise<void>;
   restore?(snapshot: string, entries: SearchEntry[]): Promise<void>;
 }
 
