@@ -374,7 +374,7 @@ test("a custom profile needs a positive weight and an unfinished row never gets 
   ).toBeVisible();
   for (let row = 1; row <= 6; row++) {
     await page
-      .getByRole("button", { name: /^Remove the .+ row$/ })
+      .getByRole("button", { name: /^Remove (the .+ )?source row \d+$/ })
       .first()
       .click();
   }
@@ -525,7 +525,7 @@ test("source row actions name their language and follow a custom language edit",
   await startDraft(page, "gismu");
   await expect(
     page.getByRole("button", {
-      name: "Remove the Mandarin Chinese row",
+      name: "Remove the Mandarin Chinese source row 1",
       exact: true,
     }),
   ).toBeVisible();
@@ -545,9 +545,83 @@ test("source row actions name their language and follow a custom language edit",
     }),
   ).toBeVisible();
   await page
-    .getByRole("button", { name: "Remove the deu row", exact: true })
+    .getByRole("button", { name: "Remove the deu source row 1", exact: true })
     .click();
   await expect(
     page.getByLabel("Native word for deu", { exact: true }),
   ).toHaveCount(0);
+});
+
+test("source Remove names stay unique for alternatives and empty language rows", async ({
+  page,
+}) => {
+  await startDraft(page, "gismu");
+  await page
+    .getByRole("button", {
+      name: "Add an alternative word for Mandarin Chinese",
+      exact: true,
+    })
+    .click();
+  await expect(
+    page.getByRole("button", {
+      name: "Remove the Mandarin Chinese source row 1",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", {
+      name: "Remove the Mandarin Chinese source row 2",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await page.getByLabel("Weights", { exact: true }).selectOption("custom");
+  await page
+    .getByRole("button", { name: "Add a language", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Add a language", exact: true })
+    .click();
+  const languages = page.getByRole("textbox", {
+    name: /^Language tag of row /,
+  });
+  const count = await languages.count();
+  await expect(
+    page.getByRole("button", {
+      name: `Remove source row ${count - 1}`,
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", {
+      name: `Remove source row ${count}`,
+      exact: true,
+    }),
+  ).toBeVisible();
+  await languages.last().fill("deu");
+  await languages.last().press("Tab");
+  await expect(
+    page.getByRole("button", {
+      name: `Remove the deu source row ${count}`,
+      exact: true,
+    }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", {
+      name: `Remove source row ${count - 1}`,
+      exact: true,
+    })
+    .click();
+  await expect(
+    page.getByRole("button", {
+      name: `Remove the deu source row ${count - 1}`,
+      exact: true,
+    }),
+  ).toBeVisible();
+  const names = await page
+    .locator("[data-source-remove]")
+    .evaluateAll((buttons) =>
+      buttons.map((button) => button.getAttribute("aria-label")),
+    );
+  expect(names.every((name) => name && name.trim())).toBe(true);
+  expect(new Set(names).size).toBe(names.length);
 });

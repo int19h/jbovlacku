@@ -480,7 +480,10 @@ test("bulk source action appears after adding a row to an empty custom profile",
     page.getByLabel("Native word for English", { exact: true }),
   ).toBeVisible();
   await page
-    .getByRole("button", { name: "Remove the English row", exact: true })
+    .getByRole("button", {
+      name: "Remove the English source row 1",
+      exact: true,
+    })
     .click();
   assistant.releaseCapabilities();
   await expect.poll(assistant.capabilityReads).toBeGreaterThan(0);
@@ -506,7 +509,10 @@ test("source undo follows its row after an earlier row is removed", async ({
   await allow(page);
   await page.getByRole("button", { name: "Use this", exact: true }).click();
   await page
-    .getByRole("button", { name: "Remove the English row", exact: true })
+    .getByRole("button", {
+      name: "Remove the English source row 1",
+      exact: true,
+    })
     .click();
   await expect.poll(async () => (await stored(page)).gismu.rows.length).toBe(1);
   await page.reload();

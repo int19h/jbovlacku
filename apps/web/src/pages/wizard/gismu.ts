@@ -480,6 +480,10 @@ export async function gismuPage(
     const tbody = el("tbody");
     state.rows.forEach((row, index) => {
       const sourceKey = sourceRowKey(row);
+      const removeLabel = () =>
+        row.name || row.language
+          ? `Remove the ${row.name || row.language} source row ${index + 1}`
+          : `Remove source row ${index + 1}`;
       const marked = (field: "input" | "word_ipa" | "stem" | "ipa") =>
         sourceReviewMarks(row).some((mark) => mark.field === field);
       const tr = el("tr");
@@ -504,11 +508,8 @@ export async function gismuPage(
           renameManualLabels(tr, previousName, row.name);
           renameManualLabels(tools, previousName, row.name);
           tools
-            .querySelector('[aria-label^="Remove the "]')
-            ?.setAttribute(
-              "aria-label",
-              `Remove the ${row.name || row.language} row`,
-            );
+            .querySelector("[data-source-remove]")
+            ?.setAttribute("aria-label", removeLabel());
           const details = detailRows.get(sourceKey);
           if (details) {
             renameManualLabels(details.row, previousName, row.name);
@@ -678,7 +679,8 @@ export async function gismuPage(
           },
           {
             class: "btn btn-quiet btn-icon",
-            "aria-label": `Remove the ${row.name || row.language} row`,
+            "aria-label": removeLabel(),
+            "data-source-remove": "",
           },
         ),
       );
