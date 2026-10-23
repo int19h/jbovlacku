@@ -66,6 +66,10 @@ The gismu generator offers the CLL 1987, CLL 1995, and Ilmen presets with pinned
 
 The core and builders keep the optional full pronunciation, `word_ipa`, in signed formation sources.
 Draft reload and export preserve private `stem` and `ipa` values. Neither enters a signed formation source.
+
+Publication selects cached source rows from their word, `word_ipa`, scoring input, weight, and notes.
+Known weights, including zero, survive regardless of private `stem` or `ipa` values.
+Rows without this signed evidence stay out of the signed formation.
 The gismu source editor with seven columns remains a target feature.
 
 The [morphology profiles](docs/morphology.md) name the rules and versions that the metadata records.
