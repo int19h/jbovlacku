@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { initializeCore } from "../../core/src/index.ts";
 import { backfillVerifiedRecords } from "../../service/src/verified-records.ts";
@@ -23,6 +23,10 @@ async function main() {
     ),
   );
   const directory = resolve(args[1]);
+  if (!(await stat(directory)).isDirectory())
+    throw new Error("The backfill data directory must already exist.");
+  if (!(await stat(join(directory, "coordinator.sqlite"))).isFile())
+    throw new Error("The backfill coordinator database must already exist.");
   const release = await lockDataDirectory(
     directory,
     "verified-record-backfill",
