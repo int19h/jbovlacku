@@ -20,12 +20,18 @@ import {
   estimateInferenceCost,
   normalizeClientNetwork,
   INFERENCE_GENERATED_FRAME_BYTES,
+  abortable,
   type ProviderConfig,
   type InferenceLog,
   type Task,
   type TaskCase,
 } from "./inference.ts";
 import { promptFiles } from "./prompt-bundle.ts";
+import {
+  prepareEmbedding,
+  requestEmbedding,
+  type EmbeddingResult,
+} from "./embedding.ts";
 export { AssistanceError } from "./inference.ts";
 
 type Data = Record<string, any>;
@@ -1044,6 +1050,24 @@ interface Job {
   progress: { task: Task | null; attempt: number; max_attempts: 3 };
   controller: AbortController;
 }
+/** These callers are host services. No public request can select an operator. */
+export type EmbeddingCaller =
+  | { kind: "query"; network: string }
+  | { kind: "index" | "probe" };
+export interface EmbeddingOperation {
+  id: string;
+  kind: EmbeddingCaller["kind"];
+  deadline: number;
+  state:
+    | "preparing"
+    | "sent"
+    | "completed"
+    | "failed"
+    | "timed_out"
+    | "interrupted";
+  transportPending: boolean;
+  error: string | null;
+}
 export class AssistanceService {
   private sessions = new Map<string, Session>();
   private admitting = new Map<string, number>();
@@ -1051,6 +1075,7 @@ export class AssistanceService {
   private expiredJobs = new Map<string, { owner: string; expires: number }>();
   private network = new Map<string, { expires: number; count: number }>();
   private running = 0;
+  private embeddingWork = new Map<string, EmbeddingOperation>();
   private budgetEntries = new Map<string, AssistanceBudgetEntry>();
   private networkHashKey = "";
   private budgetLoaded = false;
@@ -1062,6 +1087,246 @@ export class AssistanceService {
     private server: string,
     private context: (events: string[]) => Promise<ContextDefinition[]>,
   ) {}
+  /** Detaching a caller never cancels or repeats an admitted provider request. */
+  async embed(
+    inputs: readonly Uint8Array[],
+    caller: EmbeddingCaller,
+    callerSignal?: AbortSignal,
+  ): Promise<EmbeddingResult & { operation: string }> {
+    callerSignal?.throwIfAborted();
+    const config = this.options.provider;
+    if (!config)
+      throw new AssistanceError(
+        503,
+        "feature_disabled",
+        "Embedding inference is disabled on this server.",
+      );
+    if (
+      !["query", "index", "probe"].includes(caller.kind) ||
+      (caller.kind === "query" &&
+        (typeof caller.network !== "string" || !caller.network))
+    )
+      throw new AssistanceError(
+        400,
+        "embedding_network",
+        "An embedding query requires a client network.",
+      );
+    const deadline = Date.now() + config.timeoutMs;
+    const prepared = prepareEmbedding(inputs, config);
+    const controller = new AbortController();
+    const timer = setTimeout(
+      () =>
+        controller.abort(
+          new AssistanceError(
+            504,
+            "embedding_timeout",
+            "The embedding request reached its time limit. Read its operation status before another attempt.",
+          ),
+        ),
+      Math.max(1, deadline - Date.now()),
+    );
+    const signal = controller.signal;
+    const admission = this.budgetLock(async () => {
+      callerSignal?.throwIfAborted();
+      signal.throwIfAborted();
+      if (this.budgetUnavailable) await this.saveBudget();
+      if (this.running >= config.concurrency)
+        throw new AssistanceError(
+          429,
+          "embedding_busy",
+          "The shared inference execution slots are full. Wait for active work to finish.",
+        );
+      const hashes = await this.networkHashes(
+        caller.kind === "query"
+          ? this.networkUnits(caller.network)
+          : ["operator"],
+      );
+      const limit = this.spendingLimit(
+        prepared.estimatedUsd,
+        config,
+        caller.kind === "query" ? hashes : [],
+      );
+      if (limit) {
+        const failure = (await limit.json()) as {
+          code: string;
+          message: string;
+        };
+        throw new AssistanceError(limit.status, failure.code, failure.message);
+      }
+      signal.throwIfAborted();
+      const id = `embedding:${caller.kind}:${crypto.randomUUID()}`;
+      this.budgetEntries.set(id, {
+        id,
+        at: Date.now(),
+        reservedUsd: prepared.estimatedUsd,
+        settledUsd: 0,
+        active: true,
+        networkHashes: hashes,
+        deadline,
+        costKnown: true,
+      });
+      try {
+        await this.saveBudget();
+        if (signal.aborted) {
+          this.budgetEntries.delete(id);
+          await this.saveBudget();
+          signal.throwIfAborted();
+        }
+      } catch (failure) {
+        this.budgetEntries.delete(id);
+        throw failure;
+      }
+      const operation: EmbeddingOperation = {
+        id,
+        kind: caller.kind,
+        deadline,
+        state: "preparing",
+        transportPending: false,
+        error: null,
+      };
+      this.embeddingWork.set(id, operation);
+      this.running++;
+      return operation;
+    });
+    const work = admission
+      .then((operation) =>
+        this.executeEmbedding(operation, prepared, config, signal),
+      )
+      .finally(() => clearTimeout(timer));
+    // Both hosts retain their existing background-work policy.
+    this.options.waitUntil?.(work.catch(() => {}));
+    return abortable(
+      work,
+      callerSignal ? AbortSignal.any([signal, callerSignal]) : signal,
+    );
+  }
+
+  /** Bounded diagnostics contain no inputs, vectors, network addresses, or keys. */
+  async embeddingOperations() {
+    return this.budgetLock(async () => {
+      const entries = [...this.budgetEntries.values()].filter((entry) =>
+        /^embedding:(query|index|probe):/.test(entry.id),
+      );
+      const ids = new Set([
+        ...entries.map((entry) => entry.id),
+        ...this.embeddingWork.keys(),
+      ]);
+      return [...ids]
+        .map((id) => {
+          const entry = this.budgetEntries.get(id);
+          const work = this.embeddingWork.get(id);
+          return {
+            ...(work ?? {
+              id,
+              kind: id.split(":")[1] as EmbeddingCaller["kind"],
+              deadline: entry!.deadline,
+              state: "interrupted" as const,
+              transportPending: false,
+              error: null,
+            }),
+            active: entry?.active ?? false,
+            reservedUsd: entry?.reservedUsd ?? 0,
+            chargedUsd: entry?.settledUsd ?? 0,
+            costKnown: entry?.costKnown ?? true,
+          };
+        })
+        .sort(
+          (a, b) =>
+            Number(b.active || b.transportPending) -
+              Number(a.active || a.transportPending) ||
+            b.deadline - a.deadline ||
+            a.id.localeCompare(b.id),
+        )
+        .slice(0, 64);
+    });
+  }
+
+  private async executeEmbedding(
+    operation: EmbeddingOperation,
+    prepared: ReturnType<typeof prepareEmbedding>,
+    config: ProviderConfig,
+    signal: AbortSignal,
+  ): Promise<EmbeddingResult & { operation: string }> {
+    let sent = false;
+    let recorded = false;
+    let finished = false;
+    let released = false;
+    const release = () => {
+      if (!finished || operation.transportPending || released) return;
+      released = true;
+      this.running--;
+      const terminal = [...this.embeddingWork.values()].filter(
+        (item) =>
+          !item.transportPending && !["preparing", "sent"].includes(item.state),
+      );
+      for (const old of terminal.slice(0, Math.max(0, terminal.length - 64)))
+        this.embeddingWork.delete(old.id);
+    };
+    try {
+      const result = await requestEmbedding(prepared, config, signal, {
+        sent: () => {
+          sent = true;
+          operation.state = "sent";
+          operation.transportPending = true;
+        },
+        transportEnded: () => {
+          operation.transportPending = false;
+          release();
+        },
+        cost: async (usage) => {
+          if (recorded) return;
+          recorded = true;
+          await this.settleCost(
+            operation.id,
+            usage.costUsd,
+            prepared.estimatedUsd,
+          );
+        },
+      });
+      operation.state = "completed";
+      return { ...result, operation: operation.id };
+    } catch (failure) {
+      operation.state = signal.aborted ? "timed_out" : "failed";
+      operation.error = signal.aborted
+        ? "embedding_timeout"
+        : failure instanceof AssistanceError
+          ? failure.code
+          : "embedding_provider";
+      if (sent && !recorded) {
+        recorded = true;
+        await this.settleCost(operation.id, null, prepared.estimatedUsd);
+      }
+      throw new AssistanceError(
+        signal.aborted
+          ? 504
+          : failure instanceof AssistanceError
+            ? failure.status
+            : 502,
+        operation.error,
+        signal.aborted
+          ? "The embedding request reached its time limit. Its sent charge remains reserved."
+          : failure instanceof AssistanceError
+            ? failure.message
+            : "The embedding provider request failed.",
+      );
+    } finally {
+      try {
+        await this.budgetLock(async () => {
+          const entry = this.budgetEntries.get(operation.id);
+          if (!entry) return;
+          entry.active = false;
+          if (!sent || (recorded && entry.costKnown)) entry.reservedUsd = 0;
+          if (!entry.reservedUsd && !entry.settledUsd)
+            this.budgetEntries.delete(operation.id);
+          await this.saveBudget();
+        });
+      } catch {
+        this.budgetUnavailable = true;
+      }
+      finished = true;
+      release();
+    }
+  }
   private async budgetLock<T>(operation: () => Promise<T>): Promise<T> {
     const previous = this.budgetTail;
     let release!: () => void;
@@ -1235,7 +1500,16 @@ export class AssistanceService {
         day: config.networkDailyBudgetUsd,
       })),
     ];
-    if (!fitsEmptyAllowance(config, estimate))
+    if (
+      estimate >
+      Math.min(
+        config.hourlyBudgetUsd,
+        config.dailyBudgetUsd,
+        networkHashes.length ? config.networkHourlyBudgetUsd : Infinity,
+        networkHashes.length ? config.networkDailyBudgetUsd : Infinity,
+        config.maxCostUsd ?? Infinity,
+      )
+    )
       return json(
         errorShape(
           "billing_request_too_large",
@@ -1546,8 +1820,19 @@ export class AssistanceService {
       const running = jobs.filter((job) =>
         ["queued", "running", "cancel_requested"].includes(job.state),
       );
-      if (running.length)
-        limits.push(Math.min(...running.map((job) => job.deadline)));
+      limits.push(
+        Math.max(
+          now + 1000,
+          Math.min(
+            ...running.map((job) => job.deadline),
+            ...[...this.embeddingWork.values()]
+              .filter(
+                (item) => item.transportPending || item.state === "preparing",
+              )
+              .map((item) => item.deadline),
+          ),
+        ),
+      );
     }
     // Every exhausted limit must clear before a retry can be admitted.
     return limits.length

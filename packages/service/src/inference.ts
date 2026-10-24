@@ -2,6 +2,14 @@ import { compactJson } from "./json.ts";
 export { compactJson, jsonParts } from "./json.ts";
 import { promptFiles } from "./prompt-bundle.ts";
 
+export const EMBEDDING_MODEL = "qwen/qwen3-embedding-8b";
+export const EMBEDDING_ROUTE = "nebius";
+export interface EmbeddingConfig {
+  model: typeof EMBEDDING_MODEL;
+  route: typeof EMBEDDING_ROUTE;
+  inputPrice: number;
+}
+
 export type Task =
   | "glosses"
   | "hints"
@@ -140,6 +148,7 @@ export interface ProviderConfig {
   maxPrice: number;
   inputPrice: number;
   outputPrice: number;
+  embedding?: EmbeddingConfig;
   hourlyBudgetUsd: number;
   dailyBudgetUsd: number;
   networkHourlyBudgetUsd: number;
@@ -250,6 +259,9 @@ type ProviderEnv = Partial<
     | "JVC_AI_MAX_PRICE"
     | "JVC_AI_INPUT_PRICE"
     | "JVC_AI_OUTPUT_PRICE"
+    | "JVC_AI_EMBEDDING_MODEL"
+    | "JVC_AI_EMBEDDING_PROVIDER_ROUTE"
+    | "JVC_AI_EMBEDDING_INPUT_PRICE"
     | "JVC_AI_HOURLY_BUDGET_USD"
     | "JVC_AI_DAILY_BUDGET_USD"
     | "JVC_AI_NETWORK_HOURLY_BUDGET_USD"
@@ -310,6 +322,13 @@ export function providerConfig(
     );
   }
   const maxPrice = number("JVC_AI_MAX_PRICE", 10, 0.001, 100);
+  if (
+    (env.JVC_AI_EMBEDDING_MODEL ?? EMBEDDING_MODEL) !== EMBEDDING_MODEL ||
+    (env.JVC_AI_EMBEDDING_PROVIDER_ROUTE ?? EMBEDDING_ROUTE) !== EMBEDDING_ROUTE
+  )
+    throw new Error(
+      "The embedding adapter requires qwen/qwen3-embedding-8b through nebius.",
+    );
   const hourlyBudgetUsd = number(
     "JVC_AI_HOURLY_BUDGET_USD",
     32,
@@ -340,6 +359,11 @@ export function providerConfig(
     maxPrice,
     inputPrice: number("JVC_AI_INPUT_PRICE", 0.1, 0, 1000),
     outputPrice: number("JVC_AI_OUTPUT_PRICE", 0.2, 0, 1000),
+    embedding: {
+      model: EMBEDDING_MODEL,
+      route: EMBEDDING_ROUTE,
+      inputPrice: number("JVC_AI_EMBEDDING_INPUT_PRICE", 0.01, 0, 1000),
+    },
     hourlyBudgetUsd,
     dailyBudgetUsd,
     networkHourlyBudgetUsd: number(
