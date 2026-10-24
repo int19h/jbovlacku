@@ -443,6 +443,8 @@ export interface LujvoRequest {
   components: LujvoComponentRequest[];
   /** Version 3 explicit boundary joins. Null means automatic, empty means no join. */
   joins?: (string | null)[];
+  /** Exact presentation, required to normalize to the parsed candidate. */
+  spelling?: string;
   inventory?: { snapshot?: string | null; claims?: RafsiInventoryClaim[] };
   limits?: { choice_product?: number; results?: number };
 }

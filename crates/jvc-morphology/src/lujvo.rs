@@ -718,6 +718,9 @@ pub struct LujvoRequest {
     /// An empty list preserves version 2 construction.
     #[serde(default)]
     pub joins: Vec<Option<String>>,
+    /// Preserve entered presentation only when it normalizes to the complete candidate.
+    #[serde(default)]
+    pub spelling: Option<String>,
     #[serde(default)]
     pub inventory: Inventory,
     #[serde(default)]
@@ -816,6 +819,15 @@ fn build_lujvo_with_detail_budget(
     request: &LujvoRequest,
     mut detail_budget: DetailBudget,
 ) -> Result<LujvoResult, BuilderError> {
+    if let Some(spelling) = &request.spelling {
+        require_limit("typed spelling bytes", spelling.len() as u64, 128)?;
+        if request.profile != Profile::Extended || spelling.trim() != spelling {
+            return Err(BuilderError::Invalid {
+                message: "A typed spelling needs the extended profile and no outer whitespace."
+                    .into(),
+            });
+        }
+    }
     let count = request.components.len() as u64;
     if !(2..=64).contains(&count) {
         return Err(BuilderError::Invalid {
@@ -1070,6 +1082,31 @@ fn build_lujvo_with_detail_budget(
         ) {
             Ok(recovered) => {
                 candidate.recovered = recovered;
+                if let Some(spelling) = &request.spelling {
+                    if crate::phonotactics::normalize_word(spelling).as_deref()
+                        != Some(&candidate.spelling)
+                    {
+                        continue;
+                    }
+                    // Keep the original presentation token spans. Commas follow the preceding token.
+                    let mut originals = vec![String::new(); candidate.tokens.len()];
+                    let mut index = 0;
+                    let mut consumed = 0;
+                    for character in spelling.chars() {
+                        if character != ',' {
+                            while index + 1 < candidate.tokens.len()
+                                && consumed == candidate.tokens[index].len()
+                            {
+                                index += 1;
+                                consumed = 0;
+                            }
+                            consumed += 1;
+                        }
+                        originals[index].push(character);
+                    }
+                    candidate.spelling = spelling.clone();
+                    candidate.tokens = originals;
+                }
                 validated.push(candidate);
             }
             Err(error @ BuilderError::ResourceLimit { .. }) => return Err(error),
@@ -1308,6 +1345,31 @@ mod tests {
         }
     }
     #[test]
+    fn typed_presentation_keeps_bytes_without_bypassing_the_exact_parse() {
+        let mut request: LujvoRequest = serde_json::from_value(serde_json::json!({
+            "profile": "extended", "joins": ["r"], "spelling": "SAI,rZBA",
+            "components": [
+                {"id": "a", "spelling": "sai", "kind": "other", "locked": "sai"},
+                {"id": "b", "spelling": "zba", "kind": "other", "locked": "zba"}
+            ]
+        }))
+        .unwrap();
+        let result = build_lujvo(&request).unwrap();
+        assert_eq!(result.candidates[0].spelling, "SAI,rZBA");
+        assert_eq!(result.candidates[0].tokens.concat(), "SAI,rZBA");
+        assert_eq!(
+            result.candidates[0].score,
+            score(&s(&["sai", "r", "zba"])).unwrap()
+        );
+        request.spelling = Some("ckusni".into());
+        assert!(build_lujvo(&request).unwrap().candidates.is_empty());
+        request.spelling = Some("b".repeat(129));
+        assert!(matches!(
+            build_lujvo(&request),
+            Err(BuilderError::ResourceLimit { .. })
+        ));
+    }
+    #[test]
     fn retained_gencmu_oracle_and_cll_profile_stay_separate() {
         let evidence: serde_json::Value =
             serde_json::from_str(include_str!("../evidence/typed-lujvo.json")).unwrap();
@@ -1477,6 +1539,7 @@ mod tests {
     fn builds_ckusni_from_components_with_long_forms_beside_short_ones() {
         let request = LujvoRequest {
             joins: vec![],
+            spelling: None,
             profile: Profile::Cll,
             components: vec![
                 Component {
@@ -1553,6 +1616,7 @@ mod tests {
     fn locks_limit_choices_and_an_invalid_lock_is_explained() {
         let mut request = LujvoRequest {
             joins: vec![],
+            spelling: None,
             profile: Profile::Cll,
             components: vec![
                 Component {
@@ -1611,6 +1675,7 @@ mod tests {
     fn repeated_components_stay_separate_and_cmavo_need_claims() {
         let request = LujvoRequest {
             joins: vec![],
+            spelling: None,
             profile: Profile::Cll,
             components: vec![
                 Component {
@@ -1683,6 +1748,7 @@ mod tests {
         };
         let request = LujvoRequest {
             joins: vec![],
+            spelling: None,
             profile: Profile::Cll,
             components: (0..8).map(|i| component(&i.to_string())).collect(),
             inventory: Inventory {
@@ -1785,6 +1851,7 @@ mod tests {
         for profile in [Profile::Cll, Profile::Extended] {
             let mut request = LujvoRequest {
                 joins: vec![],
+                spelling: None,
                 profile,
                 components: components.clone(),
                 inventory: Inventory::default(),
@@ -1986,6 +2053,7 @@ mod tests {
         };
         let request = LujvoRequest {
             joins: vec![],
+            spelling: None,
             profile: Profile::Extended,
             components: vec![
                 component("a", "bangu", "gismu", &["bau", "ban"]),
@@ -2113,6 +2181,7 @@ mod tests {
             );
             let result = build_lujvo(&LujvoRequest {
                 joins: vec![],
+                spelling: None,
                 profile,
                 components: vec![
                     component,
@@ -2163,6 +2232,7 @@ mod tests {
             let spelling = "tca".repeat(40);
             let mut request = LujvoRequest {
                 joins: vec![],
+                spelling: None,
                 profile,
                 components: vec![
                     Component {
@@ -2330,6 +2400,7 @@ mod tests {
         for profile in [Profile::Cll, Profile::Extended] {
             let request = LujvoRequest {
                 joins: vec![],
+                spelling: None,
                 profile,
                 components: (0..40)
                     .map(|index| Component {
@@ -2366,6 +2437,7 @@ mod tests {
         };
         LujvoRequest {
             joins: vec![],
+            spelling: None,
             profile: Profile::Cll,
             components: vec![
                 component("a", "cukta", "cku"),

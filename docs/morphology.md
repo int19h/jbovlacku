@@ -49,6 +49,11 @@ The profile supports these rules:
 - Every candidate must parse as one lujvo under the pinned recognizer. Its parsed components and joins must equal the intended sequence. Token reconstruction supplies no parse evidence.
 - A join can produce an invalid spelling. The builder refuses a result when the complete parse differs from its intended parts or joins.
 
+A request can also supply the exact entered `spelling`. Its normalization must equal the complete parsed candidate.
+Normalization uses lowercase letters, omits commas, and reads `h` and curly apostrophes as apostrophes.
+The construction score uses those normalized tokens. The candidate spelling and its presentation tokens keep the original bytes.
+A mismatched spelling produces no candidate. The override never bypasses segmentation or recognition limits.
+
 Version `2` keeps its earlier recognizer and required-only construction rules. Version `3` never rewrites existing compound metadata.
 The CLL profile keeps its recognition and construction rules at version `2`.
 
