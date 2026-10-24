@@ -275,7 +275,9 @@ It preserves the type the author chose. An unconfirmed automatic type follows th
 Cancellation keeps the previous type and evidence, and marks the type for review.
 Selecting or confirming a type clears the type-review notice.
 Forward step links, the full-editor link, and direct Form or builder entry confirm the selected type too.
+
 A changed or cleared spelling exits the previous typed-lujvo mode.
+A replacement lujvo starts a fresh analysis, even when the author restores an earlier spelling before reopening the builder.
 
 Changing type preserves the prose and annotations. The app identifies formation fields that no longer apply and asks before removing them.
 
@@ -294,6 +296,7 @@ An explicit private marker identifies rows that typed analysis created. Rafsi lo
 
 Saved rows without this origin marker stay editable, including after removal of compound evidence.
 They retain the signed morphology version, source boundaries, and matching joins.
+Without compound metadata, saved joins remain only when the current spelling, locked parts, and complete analyzed boundaries match.
 Restored joins stay associated with their original rows and rafsi when the metadata is removed.
 Changing those rows or rafsi returns their restored joins to automatic construction.
 

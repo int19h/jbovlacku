@@ -93,6 +93,7 @@ It preserves the entered spelling through publication, including case, commas, a
 Unknown source fields stay blank. Authors can link every source to save compound evidence, or continue with no compound metadata.
 
 A changed or cleared typed spelling restores ordinary builder rows. A generated replacement reopens with editable rows.
+A replacement typed lujvo starts fresh analysis, including a return to an earlier spelling before the builder reopens.
 A private origin marker distinguishes typed analysis from ordinary rafsi locks. Meaning visits and evidence removal preserve ordinary row editing.
 Saved rows with unknown origin stay editable and keep their signed version, boundaries, and matching joins.
 
