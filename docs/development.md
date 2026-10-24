@@ -614,6 +614,9 @@ Both local adapters accept these variables:
 | `JVC_AI_CONCURRENCY`               | Maximum active jobs. The default is two. Node permits one through four. The Worker caps this value at two.                                                           |
 | `JVC_AI_INPUT_PRICE`               | Model input price in USD per million tokens. The default is 0.10.                                                                                                    |
 | `JVC_AI_OUTPUT_PRICE`              | Model output price in USD per million tokens. The default is 0.20.                                                                                                   |
+| `JVC_AI_EMBEDDING_MODEL`           | Embedding model. The adapter permits only `qwen/qwen3-embedding-8b`, which is the default. |
+| `JVC_AI_EMBEDDING_PROVIDER_ROUTE`  | Embedding route. The adapter permits only `nebius`, which is the default. |
+| `JVC_AI_EMBEDDING_INPUT_PRICE`     | Embedding input price in USD per million tokens. The default is 0.01. |
 | `JVC_AI_HOURLY_BUDGET_USD`         | Server spending limit for the past hour. The default is 32 USD.                                                                                                      |
 | `JVC_AI_DAILY_BUDGET_USD`          | Server spending limit for the past day. The default is 160 USD.                                                                                                      |
 | `JVC_AI_NETWORK_HOURLY_BUDGET_USD` | Hourly allowance for each network. The default is one quarter of the configured server hourly limit.                                                                 |
@@ -813,6 +816,38 @@ Recovery starts those windows at the later of the restart time and the stored jo
 A legacy record without a deadline uses the restart time. The lost job cannot report its final cost.
 The ledger contains cost records, network hashes, and its private hash key. It contains no draft text or provider credential.
 An unreadable or unwritable ledger blocks new assistance jobs.
+The same ledger also controls host embedding calls through `AssistanceService.embed`.
+An embedding query uses the caller's network limits. Operator index and probe batches use the server limits.
+All these operations share the server's hourly and daily limits and execution slots with generation.
+The existing Node key file and Worker key binding also serve embedding requests.
+
+Each embedding batch permits one through eight inputs, with at most 4,096 UTF-8 bytes per input and 32 KiB in total.
+Inputs already include the exact profile prefix. The adapter rejects malformed UTF-8 and preserves the remaining bytes.
+Encoded requests permit 64 KiB. Provider responses permit 2 MiB.
+The adapter pins the model and Nebius route, disables fallback and redirects, and makes no automatic retry.
+It accepts the exact returned model names `qwen/qwen3-embedding-8b` and `Qwen/Qwen3-Embedding-8B`.
+It checks input indices, 4,096 dimensions, and finite nonzero vectors, then produces unit-normalized float32 vectors.
+
+An embedding reservation quotes 32,000 input tokens per input at the configured embedding price.
+At the default price, one input reserves 0.000320 USD. Eight inputs reserve 0.002560 USD.
+This conservative quote covers provider normalization without assuming that original byte counts bound token counts.
+A reported cost replaces that estimate. An unknown sent charge keeps the estimate through the normal spending windows.
+Invalid vectors or a model mismatch never remove a reported charge.
+Financial failures and model mismatch use separate error codes. Later profile services must handle compatibility state.
+
+The embedding deadline covers admission, key loading, transport, response reading, and settlement preparation.
+A caller's abort signal detaches its response. The server continues the admitted request and its settlement.
+At the deadline, the caller stops waiting. A transport that ignores abort keeps its execution slot until it ends.
+This prevents replacement requests from creating unbounded concurrent transport work.
+`AssistanceService.embeddingOperations` returns at most 64 diagnostic records, with active operations first.
+The records expose operation IDs, purpose, deadline, transport state, and spending estimates without input text or credentials.
+After restart, interrupted reservations remain charged and appear as interrupted operations.
+An operator can inspect these records and request a new bounded attempt through the same service after a limit clears.
+The earlier charge remains. A stuck transport requires its completion or a service restart before its slot returns.
+Job pause, resume, and explicit retry links belong to later indexing work.
+
+These host methods expose no browser route. Semantic search remains disabled until storage and query services pass their tests.
+Compatible query caching and current-view filtering also belong to those later services.
 At most 16,384 cost records remain within a day. Reaching this bound also refuses new jobs with a retry interval.
 A local workerd test measured a valid maximum ledger with escaped 128-character IDs and two hashes per record.
 Its JSON occupied 17,858,669 bytes. The old single stored value occupied 6,324,340 bytes.

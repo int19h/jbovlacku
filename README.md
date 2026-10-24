@@ -120,6 +120,10 @@ The private attempt log offers Markdown and JSON export. Signed publications omi
 Both local adapters offer operator-controlled assistance, off by default, with server-held keys and bounded private jobs.
 They reserve costs before admission and enforce server and network spending limits that survive a restart.
 IPv6 limits also count /48 prefixes. The Worker stores large spending ledgers in atomic parts.
+The host service also admits bounded embedding batches through the same spending ledger and execution slots.
+Its provider adapter pins `qwen/qwen3-embedding-8b` to the Nebius route through OpenRouter, with fallback and redirects disabled.
+Mocked tests cover provider validation, caller departure, unknown charges, deadlines, and interrupted reservations after restart.
+Semantic storage, search routes, indexing, and query caching remain unfinished. The semantic capability stays disabled.
 A discarded result returns a clear status. Spending failures distinguish pending costs, timed limits, and requests that cannot fit.
 The default spending share admits every enabled operation at each reasoning effort, with decision reports enabled or disabled.
 Each task uses an output cap based on recorded prompt tests. An explicit operator limit replaces the automatic caps.
