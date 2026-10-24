@@ -46,9 +46,25 @@ import {
   type State,
   type Snapshot,
   type StateMetadata,
+  type StoredEvent,
 } from "./storage.ts";
 const zeroView = `jve1:${"0".repeat(64)}`;
 const idPattern = /^(sha256:|jve1:|jvw1:|ed25519:)[a-f0-9]{64}$/;
+/** Admission requires canonical base64 of the full SSHSIG blob. Private fields reproduce its exact envelope. */
+export function canonicalStoredEnvelope(
+  id: string,
+  event: Pick<StoredEvent, "header" | "signature">,
+): string {
+  return canonicalize(
+    utf8(
+      JSON.stringify({
+        id,
+        header: event.header,
+        signature: btoa(String.fromCharCode(...event.signature)),
+      }),
+    ),
+  );
+}
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -335,6 +351,10 @@ export class DictionaryService {
               snapshot.events,
               Object.keys(snapshot.events).sort(),
             )) {
+              this.canonicalEnvelopes.set(
+                snapshot.events[id].envelope_hash,
+                canonicalStoredEnvelope(id, snapshot.events[id]),
+              );
               records.push(record.compact);
               const content = compactRecord(record).package;
               if (content)
@@ -592,18 +612,10 @@ export class DictionaryService {
     let lines = "";
     for (const id of ids) {
       const hash = state.events[id].envelope_hash;
-      let envelope = this.canonicalEnvelopes.get(hash);
-      if (envelope === undefined) {
-        const raw = await this.objects.get(hash);
-        if (!raw)
-          throw new ApiError(
-            503,
-            "storage_unavailable",
-            "Envelope bytes are unavailable.",
-          );
-        envelope = new TextDecoder().decode(raw);
-        this.canonicalEnvelopes.set(hash, envelope);
-      }
+      const envelope =
+        this.canonicalEnvelopes.get(hash) ??
+        canonicalStoredEnvelope(id, state.events[id]);
+      this.canonicalEnvelopes.set(hash, envelope);
       lines += envelope + "\n";
     }
     const bodies = sorted([
@@ -1236,6 +1248,10 @@ export class DictionaryService {
         changedIds,
       )) {
         const event = snapshot.events[id];
+        this.canonicalEnvelopes.set(
+          event.envelope_hash,
+          canonicalStoredEnvelope(id, event),
+        );
         const record = await builder.addHostVerifiedRecord(retained.compact);
         if (
           record ||

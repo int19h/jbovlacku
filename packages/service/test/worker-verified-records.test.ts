@@ -160,6 +160,21 @@ test("Worker admission persists compact rows across object restart and never rec
         throw new Error("Worker repeated an original record read.");
       return get(hash);
     };
+    const newRecord = createEvent(
+      new Uint8Array(32).fill(93),
+      [record.envelope.id],
+      "3".repeat(32),
+      { kind: "identity.merge" },
+      null,
+    );
+    const admission = await restarted.fetch(
+      new Request("http://localhost/api/v1/events", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(newRecord),
+      }),
+    );
+    assert.equal(admission.status, 201, await admission.clone().text());
     const receipt = await restarted.fetch(
       new Request("http://localhost/api/v1/receipts/" + record.envelope.id),
     );
@@ -172,7 +187,7 @@ test("Worker admission persists compact rows across object restart and never rec
     ]);
     assert.equal(
       database!.prepare("SELECT COUNT(*) AS n FROM verified_records").get()!.n,
-      1,
+      2,
     );
   } finally {
     database?.close();
