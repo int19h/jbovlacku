@@ -42,7 +42,7 @@ The extended profile adds the audited jbotci behavior for whole-word parts. It i
 - Every candidate must parse as one lujvo under the pinned recognizer. Its parsed components and joins must equal the intended sequence. Token reconstruction supplies no parse evidence.
 - A join can produce an invalid spelling. For example, bonding `leksiko` and `ismu` produces `leksiko'yismu`. The builder refuses that result after parsing it.
 
-Version `2` and the CLL profile refuse the pair `mz` in every word kind and whole-word component. The extended profile does not include jbotci's experimental `mz` relaxation.
+Version `2` and the CLL profile refuse the pair `mz` in every word kind and whole-word component. Version `2` does not include jbotci's experimental `mz` relaxation.
 
 For example, the parts `ckusni` and `broda` build `ckusni'ybroda` with the first part retained as one whole-word core.
 Explicit boundary joins and spelling overrides are unavailable in this version.
@@ -62,7 +62,7 @@ The profile supports these rules:
 - A compound core can split into shorter rafsi under version `3`. Its parts must match that recovered sequence, rather than version `2` whole-word bonding.
 - Borrowing rafsi permit an apostrophe onset in ordinary and stressed positions, as in `spageti'ybroda` and `spageti'ykla`.
 - Extended rafsi use classical `hy-rafsi` or borrowing rafsi. Classical forms include `kerlybai'ybroda` and `kerlybla'ykla`.
-- The `slihykru` restriction rejects a leading CCV plus `'y` before an onset. It rejects `bla'ykla` and its CgV variants.
+- The `slihykru` restriction rejects CCV plus `'y` before an onset at the start of every brivla. This includes nested brivla tests after a possible cmavo. It rejects `bla'ykla` and its CgV variants. Thus `baibla'ykla` stays one lujvo because its tail is not a separate brivla.
 - Explicit joins contain one nullable string per boundary. Null uses the automatic join. An empty string selects no join.
 - Explicit choices permit `y`, `y'`, `'y`, `'y'`, `r`, and `n` only when a complete parse recovers every intended part and join.
 - An explicit rafsi lock describes morphology independently of dictionary assignment standing. Unknown and conflicting source assignments remain visible.
