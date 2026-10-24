@@ -7,7 +7,7 @@ import {
   canonicalize,
   contentHash,
   utf8,
-} from "../../../../packages/core/src/index.ts";
+} from "../../../../packages/core/src/browser.ts";
 import type { LocalStore, Overlay } from "./store.ts";
 import {
   forgetInventory,

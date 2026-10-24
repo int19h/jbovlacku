@@ -1,12 +1,11 @@
+import {
+  compactRecord,
+  readVerifiedRecord,
+} from "../../service/src/verified-records.ts";
 import { open, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import {
-  inspectBody,
-  prepareAdmission,
-  prepareSelection,
-  utf8,
-} from "../../core/src/index.ts";
+import { prepareSelection } from "../../core/src/index.ts";
 import type { Coordinator, ObjectStore } from "../../service/src/storage.ts";
 import { parseProtocolJson, syncDirectory } from "./storage.ts";
 
@@ -54,24 +53,18 @@ export async function checkLoadedView(
     throw new Error(
       "The loaded view or its selection is not retained. Rerun the loader.",
     );
-  const envelope = await objects.get(event.envelope_hash);
-  const body = await objects.get(event.body_hash);
-  if (!envelope || !body)
-    throw new Error("The loaded view bytes are unavailable. Rerun the loader.");
-  const prepared = prepareAdmission(
-    utf8(
-      JSON.stringify({
-        envelope: parseProtocolJson(envelope),
-        body: parseProtocolJson(body),
-      }),
-    ),
+  const retained = compactRecord(
+    await readVerifiedRecord(coordinator, objects, value.view, event),
   );
-  const viewBody = JSON.parse(prepared.body!);
+  const body = await objects.get(event.body_hash);
+  if (!body)
+    throw new Error("The loaded view bytes are unavailable. Rerun the loader.");
+  const viewBody = JSON.parse(new TextDecoder().decode(body));
   if (
-    prepared.id !== value.view ||
-    prepared.header.action.kind !== "view.publish" ||
-    !prepared.action_valid ||
-    inspectBody(envelope, body).availability !== "valid" ||
+    retained.id !== value.view ||
+    event.header.action.kind !== "view.publish" ||
+    !retained.action_valid ||
+    retained.body_status !== "present" ||
     !viewBody.import_sets.some(
       (set: { selection: string }) => set.selection === value.selection,
     ) ||

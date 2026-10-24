@@ -1,5 +1,5 @@
 /** Scope validation uses the same core schema as a public trust record. */
-import { createEvent, wordId } from "../../../../packages/core/src/index.ts";
+import { createEvent, wordId } from "../../../../packages/core/src/browser.ts";
 import type { TrustScope } from "../model/types.ts";
 const probeSeed = new Uint8Array(32);
 /** This disposable record stays in memory. It never uses the reader's key or leaves the browser. */

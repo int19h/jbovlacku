@@ -22,7 +22,7 @@ import {
   type BuilderPreset,
   type GismuCandidate,
   type GismuResult,
-} from "../../../../../packages/core/src/index.ts";
+} from "../../../../../packages/core/src/browser.ts";
 import {
   el,
   p,

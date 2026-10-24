@@ -13,7 +13,7 @@ import {
   type LujvoResult,
   type MorphologyProfile,
   type RafsiInventoryClaim,
-} from "../../../../packages/core/src/index.ts";
+} from "../../../../packages/core/src/browser.ts";
 import type { CachedPackage } from "../data/search.ts";
 import type {
   Compound,

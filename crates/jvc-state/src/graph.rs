@@ -30,9 +30,20 @@ impl Node {
         bytes: Option<&[u8]>,
         inspect: impl FnOnce(&BodyAvailability) -> T,
     ) -> (Self, T) {
-        let header = event.header();
+        Self::from_parts(
+            event.id(),
+            event.header(),
+            inspect_body(event, bytes),
+            inspect,
+        )
+    }
+    pub(super) fn from_parts<T>(
+        id: &str,
+        header: &jvc_core::Header,
+        availability: BodyAvailability,
+        inspect: impl FnOnce(&BodyAvailability) -> T,
+    ) -> (Self, T) {
         let kind = header.action["kind"].as_str().unwrap_or_default();
-        let availability = inspect_body(event, bytes);
         let content = inspect(&availability);
         let (body, body_label) = match availability {
             BodyAvailability::Absent => (None, "absent".into()),
@@ -81,7 +92,7 @@ impl Node {
         };
         (
             Self {
-                id: event.id().into(),
+                id: id.into(),
                 issuer: header.issuer.clone(),
                 previous: header.previous.clone(),
                 action: header.action.clone(),

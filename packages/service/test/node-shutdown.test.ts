@@ -502,9 +502,9 @@ test(
             coldCreates++;
             return replacement!.create(value);
           },
-          restore(bytes, binding) {
+          restore(bytes, binding, records) {
             restores++;
-            return replacement!.restore(bytes, binding);
+            return replacement!.restore(bytes, binding, records);
           },
         },
       });

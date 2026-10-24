@@ -205,12 +205,14 @@ export class NodeEvaluationRuntime implements EvaluationRuntime {
   async restore(
     bytes: Uint8Array,
     binding: string,
+    records?: string[],
   ): Promise<EvaluationSession> {
     const connection = await this.connect();
     try {
       const state = await connection.request<SerializedState>("restore", {
         bytes,
         binding,
+        records,
       });
       return await this.readSession(connection, state);
     } catch (error) {
@@ -228,6 +230,13 @@ export class NodeEvaluationRuntime implements EvaluationRuntime {
       if (closed) throw new Error("The evaluation builder is closed.");
     };
     return {
+      addHostVerifiedRecord(record) {
+        requireOpen();
+        return connection.request<EvaluationPackageRecord | null>(
+          "addHostVerified",
+          record,
+        );
+      },
       addRecord(envelope, body) {
         requireOpen();
         // Object stores can retain or pool these buffers. Transfer only owned copies.
@@ -298,8 +307,11 @@ export class NodeEvaluationRuntime implements EvaluationRuntime {
       isAvailable: () => connection.isAvailable(),
       rankWord: (word, reviewers) =>
         connection.request("rank", { word, reviewers }),
-      checkpoint: (binding) =>
-        connection.request<Uint8Array>("checkpoint", binding),
+      checkpoint: (binding, resultsOnly = false) =>
+        connection.request<Uint8Array>(
+          resultsOnly ? "resultCheckpoint" : "checkpoint",
+          binding,
+        ),
       fork: async (options) => {
         const binding = "node-evaluation-transfer-v1:" + randomUUID();
         const bytes = await connection.request<Uint8Array>(

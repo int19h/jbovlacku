@@ -213,7 +213,17 @@ The Node loader can retain a larger explicit traversal budget for a local import
 The Node adapter serves the revised SQL import with 59,125 definitions in 44 languages.
 The extraction omits derived vectors and cache fields from signed bodies.
 
-The adapter retains an evaluated checkpoint and uses separate Node worker threads for completed reads and new evaluation.
+The server stores private compact records in the same transaction as admission, including offline loads and late bodies.
+Cold evaluation, view changes, core upgrades, and checkpoint fallback reuse those records without another signature check or body hash.
+A versioned backfill parses existing private data once. The browser still verifies original records independently.
+The first write after restart reconstructs retained envelopes from private event fields without reading their original objects.
+A versioned golden fixture guards extraction changes. Undecodable derived rows emit diagnostics and trigger parse-only repair.
+The SQL loader stages changed projections in bounded batches and commits them with accepted events.
+
+The [development guide](docs/development.md#initial-lensisku-data) explains the trust assumption and the offline backfill command.
+
+The evaluated checkpoint contains results and search packages. Its record inputs come from the separate compact store on restore.
+The adapter uses separate Node worker threads for completed reads and new evaluation.
 A worker thread runs code independently within the same process. At most two evaluation runtimes remain live.
 After publication, the host releases the older runtime when its active calls finish.
 

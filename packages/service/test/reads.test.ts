@@ -821,48 +821,56 @@ test("search cursors bind the retired filter in both directions", async () => {
   }
 });
 
-test("version 2 rafsi inventories mark unreadable claims incomplete and recover after rebuilding", async () => {
+test("version 2 rafsi inventories reuse verified claims while original bodies are unavailable", async () => {
   const { service, objects, claim, definition } = await fixture();
   const get = objects.get.bind(objects);
-  let blocked = true;
-  objects.get = async (hash) =>
-    blocked && hash === claim.envelope.header.content!.hash ? null : get(hash);
-  const entries = async () => {
+  const claimHash = claim.envelope.header.content!.hash;
+  let outage: "missing" | "error" | null = "missing";
+  let originalReads = 0;
+  objects.get = async (hash) => {
+    if (hash === claimHash) {
+      originalReads++;
+      if (outage === "missing") return null;
+      if (outage === "error") throw new Error("Synthetic body storage outage.");
+    }
+    return get(hash);
+  };
+  const entry = async () => {
     const pkg = await read(
       await service.fetch(request("/packages/en?version=2")),
     );
-    return read(
+    const entries = await read(
       await service.fetch(request(`/package-parts/${pkg.parts[0].hash}`)),
     );
+    return entries.find((entry: any) => entry.event === definition.envelope.id);
   };
-  const partial = (await entries()).find(
-    (entry: any) => entry.event === definition.envelope.id,
-  );
-  assert.deepEqual(partial.rafsi, []);
-  assert.equal(partial.rafsi_complete, false);
-  blocked = false;
-  // A cached partial inventory must never claim completeness after a retry.
-  assert.equal(
-    (await entries()).find(
-      (entry: any) => entry.event === definition.envelope.id,
-    ).rafsi_complete,
-    false,
-  );
-  (service as any).packageCache.clear();
-  const complete = (await entries()).find(
-    (entry: any) => entry.event === definition.envelope.id,
-  );
+  const complete = await entry();
   assert.deepEqual(complete.rafsi, ["kla"]);
   assert.equal(complete.rafsi_complete, true);
-  (service as any).packageCache.clear();
-  objects.get = async (hash) =>
-    hash === claim.envelope.header.content!.hash ? utf8("{}") : get(hash);
   assert.equal(
-    (await entries()).find(
-      (entry: any) => entry.event === definition.envelope.id,
-    ).rafsi_complete,
-    false,
+    originalReads,
+    0,
+    "Package construction must use private compact records.",
   );
+  assert.equal(
+    (await service.fetch(request(`/bodies/${claimHash}`))).status,
+    404,
+  );
+  outage = "error";
+  (service as any).packageCache.clear();
+  originalReads = 0;
+  assert.deepEqual(await entry(), complete);
+  assert.equal(originalReads, 0);
+  assert.equal(
+    (await service.fetch(request(`/bodies/${claimHash}`))).status,
+    503,
+  );
+  outage = null;
+  (service as any).packageCache.clear();
+  assert.deepEqual(await entry(), complete);
+  const restored = await service.fetch(request(`/bodies/${claimHash}`));
+  assert.equal(restored.status, 200);
+  assert.deepEqual(await restored.json(), claim.body);
 });
 
 test("POST search uses the same fields, results, validation, and cursors as GET", async () => {

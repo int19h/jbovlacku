@@ -5,7 +5,7 @@
  * page binds to that group and offers delivery controls instead of a second
  * publication.
  */
-import { rafsiPairId } from "../../../../../packages/core/src/index.ts";
+import { rafsiPairId } from "../../../../../packages/core/src/browser.ts";
 import {
   el,
   inlineProse,
