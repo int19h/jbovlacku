@@ -6,6 +6,11 @@ import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+  detectWord,
+  typedLujvoState,
+  typedLujvoRequest,
+} from "../apps/web/src/model/typed-headword.ts";
+import {
   analyzeWord,
   buildLujvo,
   initializeCore,
@@ -38,6 +43,19 @@ const positives = [
   "spageiybroda",
   "aktyiismu",
   "kerlyfa'u'yiismu",
+  "sakli'ybroda",
+  "gismu'ybroda",
+  "ixla'ybroda",
+  "uspi'ybe'a",
+  "baibla'ykla",
+  "bai'ybla'ykla",
+  "saibla'ykla",
+  "islenskygu'e",
+  "islenskybroda",
+  "ibalskybroda",
+  "kerlyxambrga",
+  "cuktybangrtai",
+  "bangu'ybangrtai",
 ];
 const negatives = [
   "bla'ykla",
@@ -46,50 +64,80 @@ const negatives = [
   "bla'ytcuiska",
   "spagetiybroda",
   "spagekuykla",
+  "balskybroda",
+  "lenskybroda",
+  "tenskybroda",
+  "bangrybroda",
+  "barklysakli",
+  "balskykla",
 ];
-const decisions = ["kamzi", "bamzda", ".djeimz."];
+const otherWords = [
+  "kamzi",
+  "bamzda",
+  ".djeimz.",
+  "bangrtai",
+  "xambrga",
+  "cmagnitude",
+  "depsnce",
+  "regnaftngi",
+  "sparnribia",
+];
 const cases = [];
-for (const word of [...positives, ...negatives, ...decisions]) {
+for (const word of [...positives, ...negatives, ...otherWords]) {
   const result = dialect.parse(word, { until: "forms" });
-  const tokens =
-    result.stages.find((stage: any) => stage.name === "forms")?.output ?? [];
+  const forms = result.stages.find((stage: any) => stage.name === "forms");
+  const tokens = forms?.output ?? [];
   const tags = tokens.map((token: any) => [...token.tags].sort());
-  const brivla =
-    tokens.length === 1 &&
-    tags[0].includes("BRIVLA") &&
-    !tags[0].includes("FOREIGN");
-  const analysis = analyzeWord("extended", word);
+  const lexical = tokens.filter((token: any) => !token.tags.has("PAUSE"));
+  const single = lexical.length === 1 && !lexical[0].tags.has("FOREIGN");
+  let rule: string | null = null;
+  function visit(node: any) {
+    if (
+      node?.rule === "brivla-word" &&
+      node.source[0] === lexical[0]?.source[0] &&
+      node.source[1] === lexical[0]?.source[1]
+    )
+      rule =
+        node.children.find((child: any) =>
+          ["gismu", "lujvo", "fuhivla"].includes(child.rule),
+        )?.rule ?? null;
+    for (const child of node?.children ?? []) visit(child);
+  }
+  if (single) visit(forms.tree);
+  const kind = !single
+    ? "unknown"
+    : rule === "fuhivla"
+      ? "fuivla"
+      : (rule ??
+        (lexical[0].tags.has("CMEVLA")
+          ? "cmevla"
+          : lexical[0].tags.has("Cmavo")
+            ? "cmavo"
+            : "unknown"));
+  const analysis = detectWord(word);
   let rebuilt: string | null = null;
   if (positives.includes(word)) {
-    assert.equal(brivla, true, `Oracle does not read ${word} as one BRIVLA`);
+    assert.equal(kind, "lujvo", `Oracle does not read ${word} as one lujvo`);
     assert.equal(analysis.kind, "lujvo", word);
     const reading = analysis.readings[0];
-    const built = buildLujvo({
-      profile: "extended",
-      joins: reading.slice(1).map((part) => part.join_before ?? ""),
-      components: reading.map((part, index) => ({
-        id: String(index),
-        spelling: part.text,
-        kind: "other",
-        locked: part.text,
-      })),
-    });
+    const built = buildLujvo(
+      typedLujvoRequest(typedLujvoState(word, reading, null)),
+    );
     assert.equal(built.candidates.length, 1, word);
     rebuilt = built.candidates[0].spelling;
     assert.equal(rebuilt, word);
     assert.equal(built.candidates[0].tokens.join(""), word);
   } else if (negatives.includes(word)) {
-    assert.equal(brivla, false, word);
+    assert.equal(kind, "unknown", word);
     assert.equal(analysis.kind, "unknown", word);
   }
+  assert.equal(analysis.kind, kind, word);
   cases.push({
     word,
     oracle_tags: tags,
-    kind: analysis.kind,
+    kind,
+    tree_rule: rule,
     rebuilt,
-    decision: decisions.includes(word)
-      ? "The mz pair remains forbidden here."
-      : null,
   });
 }
 const sources = {} as Record<string, string>;
@@ -110,11 +158,12 @@ const report = {
   }).trim(),
   dialect: "experimental",
   stage: "forms",
-  criterion: "Exactly one BRIVLA token with no FOREIGN tag",
+  criterion:
+    "One lexical token, optional PAUSE tokens, exact brivla-word tree child",
   sources,
   cases,
 };
 await writeFile(output, JSON.stringify(report, null, 2) + "\n", { flag: "wx" });
 console.log(
-  `${positives.length} lujvo reproduced, ${negatives.length} negatives refused, ${decisions.length} mz decisions recorded.`,
+  `${positives.length} lujvo reproduced, ${negatives.length} negatives refused, ${otherWords.length} other words classified.`,
 );

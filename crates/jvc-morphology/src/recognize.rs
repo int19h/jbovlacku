@@ -378,7 +378,7 @@ fn starts_with_cluster(chars: &[char], start: usize) -> bool {
         .is_some_and(|(first, second)| is_consonant(*first) && is_consonant(*second))
 }
 
-fn blocks_word_shape(chars: &[char]) -> bool {
+fn blocks_word_shape(chars: &[char], allow_mz: bool) -> bool {
     has_invalid_apostrophe(chars)
         || has_digit_followed_by_nucleus(chars)
         || has_geminated_consonant(chars)
@@ -386,7 +386,7 @@ fn blocks_word_shape(chars: &[char]) -> bool {
         || has_vowel_hiatus(chars)
         || has_voicing_mismatch(chars)
         || has_forbidden_consonant_triple(chars)
-        || has_forbidden_consonant_pair(chars)
+        || has_forbidden_consonant_pair(chars, allow_mz)
 }
 
 fn has_voicing_mismatch(chars: &[char]) -> bool {
@@ -450,17 +450,19 @@ fn forbidden_consonant_triple_range(chars: &[char]) -> Option<Range<usize>> {
     None
 }
 
-fn has_forbidden_consonant_pair(chars: &[char]) -> bool {
-    forbidden_consonant_pair_range(chars).is_some()
+fn has_forbidden_consonant_pair(chars: &[char], allow_mz: bool) -> bool {
+    forbidden_consonant_pair_range(chars, allow_mz).is_some()
 }
 
-fn forbidden_consonant_pair_range(chars: &[char]) -> Option<Range<usize>> {
+fn forbidden_consonant_pair_range(chars: &[char], allow_mz: bool) -> Option<Range<usize>> {
     chars.iter().enumerate().find_map(|(index, value)| {
         if !is_consonant(*value) {
             return None;
         }
         let next = next_non_comma_index(chars, index + 1)?;
-        (is_consonant(chars[next]) && !is_permissible_pair(*value, chars[next]))
+        (is_consonant(chars[next])
+            && !is_permissible_pair(*value, chars[next])
+            && !(allow_mz && *value == 'm' && chars[next] == 'z'))
             .then_some(index..next + 1)
     })
 }
@@ -614,7 +616,7 @@ fn glide_end_for_span(chars: &[char], start: usize) -> usize {
         .unwrap_or(start + 1)
 }
 
-fn is_gismu_chars(chars: &[char]) -> bool {
+fn is_gismu_chars(chars: &[char], allow_mz: bool) -> bool {
     match chars {
         [a, b, c, d, e] => {
             (is_consonant(*a)
@@ -622,7 +624,7 @@ fn is_gismu_chars(chars: &[char]) -> bool {
                 && is_consonant(*c)
                 && is_consonant(*d)
                 && is_vowel(*e)
-                && is_permissible_pair(*c, *d))
+                && (is_permissible_pair(*c, *d) || (allow_mz && *c == 'm' && *d == 'z')))
                 || (is_initial_pair(*a, *b) && is_vowel(*c) && is_consonant(*d) && is_vowel(*e))
         }
         _ => false,
@@ -764,7 +766,7 @@ fn lujvo_core_part_ranges_until(
     if !cache.charge() {
         return None;
     }
-    if is_gismu_slice(chars, index, end)
+    if is_gismu_slice(chars, index, end, cache.experimental)
         || is_short_final_rafsi_slice(chars, index, end)
         || is_cvv_final_rafsi_slice(chars, index, end)
         || is_fuhivla_shape_slice_with_cache(chars, index, end, cache)
@@ -963,7 +965,7 @@ fn stressed_brivla_rafsi_slice_with_cache(
         .into_iter()
         .filter(|head_end| *head_end < stress_end)
         .any(|head_end| {
-            stressed_syllable_ends_for_fuhivla(chars, head_end, stress_end)
+            stressed_syllable_ends_for_profile(chars, head_end, stress_end, cache.experimental)
                 .into_iter()
                 .any(|syllable_end| syllable_end == stress_end)
         })
@@ -986,7 +988,7 @@ fn stressed_fuhivla_rafsi_slice_with_cache(
         .into_iter()
         .filter(|head_end| *head_end < base_end)
         .any(|head_end| {
-            stressed_syllable_ends_for_fuhivla(chars, head_end, base_end)
+            stressed_syllable_ends_for_profile(chars, head_end, base_end, cache.experimental)
                 .into_iter()
                 .any(|stressed_end| {
                     consonantal_chain_then_onset(chars, stressed_end, base_end, cache.experimental)
@@ -1296,7 +1298,7 @@ fn rafsi_string_ending_with_cache(
     if !cache.charge() {
         return false;
     }
-    (is_gismu_slice_for_rafsi_string(chars, start, end, lookahead_end)
+    (is_gismu_slice_for_rafsi_string(chars, start, end, lookahead_end, cache.experimental)
         && post_word_slice_with_cache(chars, end, lookahead_end, cache))
         || (is_cvv_final_rafsi_slice_for_rafsi_string(chars, start, end, lookahead_end)
             && post_word_slice_with_cache(chars, end, lookahead_end, cache))
@@ -1308,6 +1310,18 @@ fn rafsi_string_ending_with_cache(
         })
         || y_rafsi_slice(chars, start, end)
         || hy_rafsi_slice(chars, start, end)
+        || (cache.experimental && initial_pair_y_ending(chars, start, end))
+}
+fn initial_pair_y_ending(chars: &[char], start: usize, end: usize) -> bool {
+    let pair_y = |index| {
+        index + 3 == end
+            && is_initial_pair(chars[index], chars[index + 1])
+            && chars[index + 2] == 'y'
+    };
+    (start + 3 <= end && pair_y(start))
+        || y_less_rafsi_ends(chars, start)
+            .into_iter()
+            .any(|next| next + 3 <= end && pair_y(next))
 }
 
 // Preserve the pinned parser branch order.
@@ -1317,6 +1331,7 @@ fn is_gismu_slice_for_rafsi_string(
     start: usize,
     end: usize,
     lookahead_end: usize,
+    allow_mz: bool,
 ) -> bool {
     if end != start + 5 {
         return false;
@@ -1332,7 +1347,8 @@ fn is_gismu_slice_for_rafsi_string(
         && is_consonant(chars[start + 2])
         && is_consonant(chars[start + 3])
         && is_vowel(chars[start + 4])
-        && is_permissible_pair(chars[start + 2], chars[start + 3])
+        && (is_permissible_pair(chars[start + 2], chars[start + 3])
+            || (allow_mz && chars[start + 2] == 'm' && chars[start + 3] == 'z'))
     {
         start + 3
     } else {
@@ -1589,8 +1605,8 @@ fn vowel_pair_ends(chars: &[char], index: usize) -> Vec<usize> {
     ends
 }
 
-fn is_gismu_slice(chars: &[char], start: usize, end: usize) -> bool {
-    end > start && is_gismu_chars(&chars[start..end])
+fn is_gismu_slice(chars: &[char], start: usize, end: usize, allow_mz: bool) -> bool {
+    end > start && is_gismu_chars(&chars[start..end], allow_mz)
 }
 
 fn is_short_final_rafsi_slice(chars: &[char], start: usize, end: usize) -> bool {
@@ -1660,7 +1676,14 @@ fn is_fuhivla_shape_slice_with_y_policy_with_cache(
     if rafsi_string_slice_for_lookahead_with_cache(chars, start, end, end, cache)
         || slinkuhi_slice_with_cache(chars, start, end, cache)
         || has_blocking_cmavo_prefix_slice_with_cache(chars, start, end, cache)
-        || invalid_initial_rafsi_continuation(chars, start, end)
+        || (if cache.experimental {
+            let prefix = cvc_rafsi_end(chars, start).or_else(|| ccv_rafsi_end(chars, start));
+            prefix.is_some_and(|after| {
+                after < end && chars[after] != 'r' && starts_cgv_sequence(chars, after, end)
+            })
+        } else {
+            invalid_initial_rafsi_continuation(chars, start, end)
+        })
         || invalid_vowel_initial_fuhivla_shape_with_cache(chars, start, end, cache)
     {
         return false;
@@ -1774,7 +1797,7 @@ fn lojban_word_slice_with_cache(
     if start >= end {
         return false;
     }
-    is_cmevla_slice(chars, start, end)
+    is_cmevla_slice(chars, start, end, cache.experimental)
         || cmavo_word_slice_with_cache(chars, start, end, cache)
         || brivla_word_slice_with_cache(chars, start, end, cache)
 }
@@ -1789,7 +1812,7 @@ fn cmavo_word_slice_with_cache(
         return false;
     }
     if start >= end
-        || is_cmevla_slice(chars, start, end)
+        || is_cmevla_slice(chars, start, end, cache.experimental)
         || starts_with_cvcy_lujvo_chars_with_cache(chars, start, end, cache)
     {
         return false;
@@ -1797,6 +1820,15 @@ fn cmavo_word_slice_with_cache(
     ((start + 1)..=end).any(|word_end| {
         is_cmavo_slice(chars, start, word_end)
             && cmavo_post_word_slice_with_cache(chars, start, word_end, end, cache)
+    })
+}
+
+fn is_slihykru(chars: &[char], start: usize, end: usize) -> bool {
+    ccv_rafsi_end(chars, start).is_some_and(|after| {
+        after + 2 < end
+            && chars.get(after) == Some(&'\'')
+            && chars.get(after + 1) == Some(&'y')
+            && starts_with_onset(&chars[..end], after + 2)
     })
 }
 
@@ -1809,8 +1841,9 @@ fn brivla_word_slice_with_cache(
     if !cache.charge() {
         return false;
     }
-    !cmavo_word_slice_with_cache(chars, start, end, cache)
-        && (is_gismu_slice(chars, start, end)
+    !(cache.experimental && is_slihykru(chars, start, end))
+        && !cmavo_word_slice_with_cache(chars, start, end, cache)
+        && (is_gismu_slice(chars, start, end, cache.experimental)
             || is_lujvo_slice_with_cache(chars, start, end, cache)
             || is_fuhivla_shape_slice_with_cache(chars, start, end, cache))
 }
@@ -1824,17 +1857,18 @@ fn is_lujvo_slice_with_cache(
     if !cache.charge() {
         return false;
     }
-    chars[start..end].iter().all(|value| is_lujvo_char(*value))
+    !(cache.experimental && is_slihykru(chars, start, end))
+        && chars[start..end].iter().all(|value| is_lujvo_char(*value))
         && !cmavo_word_slice_with_cache(chars, start, end, cache)
         && !is_fuhivla_shape_slice_with_cache(chars, start, end, cache)
         && lujvo_from_until_with_cache(chars, start, end, false, cache)
 }
 
-fn is_cmevla_slice(chars: &[char], start: usize, end: usize) -> bool {
+fn is_cmevla_slice(chars: &[char], start: usize, end: usize, allow_mz: bool) -> bool {
     start < end
         && chars[end - 1].is_ascii_lowercase()
         && is_consonant(chars[end - 1])
-        && !blocks_word_shape(&chars[start..end])
+        && !blocks_word_shape(&chars[start..end], allow_mz)
 }
 
 fn starts_with_pause_required_nucleus(chars: &[char], start: usize) -> bool {
@@ -2006,7 +2040,7 @@ fn parse_fuhivla_shape_with_head_policy_with_cache(
     fuhivla_head_ends_for_fuhivla_with_cache(chars, start, end, head_policy, cache)
         .into_iter()
         .any(|head_end| {
-            stressed_syllable_ends_for_fuhivla(chars, head_end, end)
+            stressed_syllable_ends_for_profile(chars, head_end, end, cache.experimental)
                 .into_iter()
                 .any(|stressed_end| consonantal_chain_then_final(chars, stressed_end, end))
         })
@@ -2042,6 +2076,24 @@ fn unstressed_syllable_ends_for_fuhivla(chars: &[char], index: usize, end: usize
     ends.sort_unstable();
     ends.dedup();
     ends
+}
+
+fn stressed_syllable_ends_for_profile(
+    chars: &[char],
+    index: usize,
+    end: usize,
+    experimental: bool,
+) -> Vec<usize> {
+    if !experimental {
+        return stressed_syllable_ends_for_fuhivla(chars, index, end);
+    }
+    syllable_ends(chars, index, end)
+        .into_iter()
+        .filter(|after| {
+            syllable_has_explicit_stress(chars, index, *after)
+                || consonantal_chain_then_final(chars, *after, end)
+        })
+        .collect()
 }
 
 fn stressed_syllable_ends_for_fuhivla(chars: &[char], index: usize, end: usize) -> Vec<usize> {
@@ -2477,18 +2529,12 @@ fn parse_with_profile(
     let mut cache = LujvoRecognitionCache::new(end);
     cache.remaining = limit;
     cache.experimental = experimental;
-    let slihykru = experimental
-        && ccv_rafsi_end(&chars, 0).is_some_and(|end| {
-            chars.get(end) == Some(&'\'')
-                && chars.get(end + 1) == Some(&'y')
-                && starts_with_onset(&chars, end + 2)
-        });
     let mut tokens = Vec::new();
-    let kind = if blocks_word_shape(&chars) || slihykru {
+    let kind = if blocks_word_shape(&chars, experimental) {
         Kind::Unknown
-    } else if is_gismu_slice(&chars, 0, end) {
+    } else if is_gismu_slice(&chars, 0, end, experimental) {
         Kind::Gismu
-    } else if is_cmevla_slice(&chars, 0, end) {
+    } else if is_cmevla_slice(&chars, 0, end, experimental) {
         Kind::Cmevla
     } else if is_cmavo_slice(&chars, 0, end) {
         Kind::Cmavo

@@ -18,6 +18,8 @@ pub enum Profile {
     /// The audited jbotci extension: brivla cores joined with `'y`, `y`, or
     /// `y'`, and rank zero for a shape outside the CLL table.
     Extended,
+    /// The retained required-only extended profile from version 2.
+    ExtendedV2,
 }
 pub const CLL_MORPHOLOGY_ID: &str =
     "https://github.com/int19h/jbovlacku/blob/main/docs/morphology.md#cll-lujvo";
@@ -33,13 +35,13 @@ impl Profile {
     pub fn morphology_id(self) -> &'static str {
         match self {
             Self::Cll => CLL_MORPHOLOGY_ID,
-            Self::Extended => EXTENDED_MORPHOLOGY_ID,
+            Self::Extended | Self::ExtendedV2 => EXTENDED_MORPHOLOGY_ID,
         }
     }
     pub fn scoring_id(self) -> &'static str {
         match self {
             Self::Cll => CLL_SCORING_ID,
-            Self::Extended => EXTENDED_SCORING_ID,
+            Self::Extended | Self::ExtendedV2 => EXTENDED_SCORING_ID,
         }
     }
 }
@@ -77,11 +79,11 @@ fn is_cmevla(text: &str) -> bool {
         .last()
         .is_some_and(|c| !matches!(c, 'a' | 'e' | 'i' | 'o' | 'u' | 'y' | '\''))
 }
-fn needs_y_hyphen(previous: &str, next: &str) -> bool {
+fn needs_y_hyphen(previous: &str, next: &str, allow_mz: bool) -> bool {
     let previous_tail = previous.chars().last();
     let next_head = next.chars().next();
     matches!(rafsi_shape(previous), RafsiShape::Cvcc | RafsiShape::Ccvc)
-        || matches!((previous_tail, next_head), (Some(l), Some(r)) if is_consonant(l) && is_consonant(r) && pair_class(l, r) == Some(PairClass::Forbidden))
+        || matches!((previous_tail, next_head), (Some(l), Some(r)) if is_consonant(l) && is_consonant(r) && pair_class(l, r) == Some(PairClass::Forbidden) && !(allow_mz && l == 'm' && r == 'z'))
         || (previous_tail == Some('n')
             && (next.starts_with("ts")
                 || next.starts_with("tc")
@@ -98,9 +100,9 @@ fn starts_with_vowel_nucleus_after_y(text: &str) -> bool {
     }
     !matches!(first, 'i' | 'u') || !chars.next().is_some_and(is_vowel)
 }
-fn y_hyphen_for_pair(previous: &str, next: &str) -> Option<&'static str> {
+fn y_hyphen_for_pair(previous: &str, next: &str, allow_mz: bool) -> Option<&'static str> {
     let previous_tail = previous.chars().last();
-    let needs = needs_y_hyphen(previous, next)
+    let needs = needs_y_hyphen(previous, next, allow_mz)
         || (previous_tail.is_some_and(is_consonant) && next.chars().next().is_some_and(is_vowel));
     needs.then(|| {
         if starts_with_vowel_nucleus_after_y(next) {
@@ -110,11 +112,11 @@ fn y_hyphen_for_pair(previous: &str, next: &str) -> Option<&'static str> {
         }
     })
 }
-fn hyphen_for_pair(previous: &Part, next: &Part) -> Option<&'static str> {
+fn hyphen_for_pair(previous: &Part, next: &Part, allow_mz: bool) -> Option<&'static str> {
     if previous.kind == PartKind::Core && previous.text.chars().last().is_some_and(is_vowel) {
         Some("'y")
     } else {
-        y_hyphen_for_pair(&previous.text, &next.text)
+        y_hyphen_for_pair(&previous.text, &next.text, allow_mz)
     }
 }
 fn should_insert_cvv_hyphen(first: &str, second: &str, count: usize) -> bool {
@@ -153,6 +155,9 @@ pub fn tosmabru(tokens: &[String]) -> bool {
 /// Joins parts with the required hyphens. The result lists parts and hyphens
 /// as separate tokens. Returns None for fewer than two parts or an empty part.
 pub fn bond(parts: &[Part]) -> Option<Vec<String>> {
+    bond_profile(Profile::ExtendedV2, parts)
+}
+fn bond_profile(profile: Profile, parts: &[Part]) -> Option<Vec<String>> {
     if !(2..=64).contains(&parts.len())
         || parts
             .iter()
@@ -174,7 +179,7 @@ pub fn bond(parts: &[Part]) -> Option<Vec<String>> {
         });
     }
     for pair in parts.windows(2) {
-        if let Some(h) = hyphen_for_pair(&pair[0], &pair[1]) {
+        if let Some(h) = hyphen_for_pair(&pair[0], &pair[1], profile == Profile::Extended) {
             tokens.push(h.to_owned());
         }
         tokens.push(pair[1].text.clone());
@@ -277,8 +282,11 @@ fn classic_tokens(tokens: &[String]) -> bool {
 }
 /// Uses pinned word recognition before offering a whole-word component.
 pub fn is_brivla_core(text: &str) -> bool {
+    is_brivla_core_for(Profile::ExtendedV2, text)
+}
+fn is_brivla_core_for(profile: Profile, text: &str) -> bool {
     !text.contains('y')
-        && crate::recognize::parse(text).is_ok_and(|r| {
+        && crate::recognize::parse_profile(text, profile).is_ok_and(|r| {
             matches!(
                 r.kind,
                 crate::recognize::Kind::Gismu
@@ -340,11 +348,11 @@ impl RecognitionBudget {
         self.spent += spent;
         require_limit("build recognition work", self.spent as u64, 2_000_000)
     }
-    fn core_is_brivla(&mut self, text: &str) -> Result<bool, BuilderError> {
+    fn core_is_brivla(&mut self, text: &str, profile: Profile) -> Result<bool, BuilderError> {
         if let Some(valid) = self.cores.get(text) {
             return Ok(*valid);
         }
-        let core = crate::recognize::parse(text)?;
+        let core = crate::recognize::parse_profile(text, profile)?;
         self.charge(core.spent)?;
         let valid = !text.contains('y')
             && matches!(
@@ -375,7 +383,7 @@ fn validate_checked(
     let invalid = |message: &str| BuilderError::Invalid {
         message: message.into(),
     };
-    if required_only && bond(parts).as_deref() != Some(tokens) {
+    if required_only && bond_profile(profile, parts).as_deref() != Some(tokens) {
         return Err(invalid(
             "The tokens do not use the required construction joins.",
         ));
@@ -386,7 +394,7 @@ fn validate_checked(
         ));
     }
     for part in parts.iter().filter(|p| p.kind == PartKind::Core) {
-        if !budget.core_is_brivla(&part.text)? {
+        if !budget.core_is_brivla(&part.text, profile)? {
             return Err(invalid("A whole-word component must parse as one brivla."));
         }
     }
@@ -488,6 +496,12 @@ pub struct RowAnalysis {
     pub recognition_incomplete: bool,
     pub diagnostics: Vec<String>,
 }
+fn is_gismu_for(profile: Profile, word: &str) -> bool {
+    gismu_shape(word).is_some()
+        || (profile == Profile::Extended
+            && rafsi_shape(word) == RafsiShape::Cvccv
+            && word.as_bytes().get(2..4) == Some(b"mz"))
+}
 /// The choices of one component under the profile.
 pub fn row_choices(profile: Profile, component: &Component) -> RowAnalysis {
     row_choices_with_parser(profile, component, |word| {
@@ -524,13 +538,16 @@ fn row_choices_with_parser(
             diagnostics: vec!["The spelling uses characters outside Lojban letters.".into()],
         };
     };
-    let gismu = gismu_shape(&normalized).is_some();
+    let gismu = is_gismu_for(profile, &normalized);
     if component.kind == "gismu" && !gismu {
         diagnostics
             .push("The spelling is not a gismu shape, so it has no automatic long forms.".into());
     }
     if gismu {
-        if let Some((stem, full)) = universal_gismu_forms(&normalized) {
+        if let Some((stem, full)) = universal_gismu_forms(&normalized).or_else(|| {
+            is_gismu_for(profile, &normalized)
+                .then(|| (Some(normalized[..4].to_owned()), normalized.clone()))
+        }) {
             if let Some(stem) = stem {
                 choices.push(Choice {
                     shape: rafsi_shape(&stem),
@@ -596,11 +613,11 @@ fn row_choices_with_parser(
                     diagnostics.push(format!("Whole-word recognition is incomplete: {error}"));
                     let whole_word_lock = component.locked.as_ref() == Some(&normalized);
                     let lock_valid = component.locked.as_ref().is_none_or(|locked| {
-                        (profile == Profile::Extended && whole_word_lock)
+                        (profile != Profile::Cll && whole_word_lock)
                             || choices.iter().any(|c| &c.form == locked)
                     });
                     if whole_word_lock {
-                        let policy = if profile == Profile::Extended {
+                        let policy = if profile != Profile::Cll {
                             "The whole-word lock waits for complete recognition."
                         } else {
                             "The whole-word lock is invalid under the CLL profile."
@@ -632,7 +649,7 @@ fn row_choices_with_parser(
                         | crate::recognize::Kind::Fuivla
                 )
             {
-                if profile == Profile::Extended {
+                if profile != Profile::Cll {
                     choices.push(Choice {
                         form: normalized.clone(),
                         origin: Origin::Core,
@@ -855,7 +872,7 @@ fn build_lujvo_with_detail_budget(
             require_limit("rafsi bytes", claim.rafsi.len() as u64, 128)?;
         }
     }
-    if request.profile == Profile::Cll && !request.joins.is_empty() {
+    if request.profile != Profile::Extended && !request.joins.is_empty() {
         return Err(BuilderError::Invalid {
             message: "Explicit joins need the extended profile.".into(),
         });
@@ -882,13 +899,11 @@ fn build_lujvo_with_detail_budget(
                 if let Some(locked) = &c.locked {
                     if !row.choices.iter().any(|choice| &choice.form == locked)
                         || (request.profile == Profile::Extended
-                            && locked == &row.normalized
-                            && gismu_shape(locked).is_some()
+                            && is_gismu_for(request.profile, locked)
                             && index + 1 < request.components.len())
                     {
                         let core = request.profile == Profile::Extended
-                            && locked == &row.normalized
-                            && is_brivla_core(locked);
+                            && is_brivla_core_for(request.profile, locked);
                         row.choices.push(Choice {
                             form: locked.clone(),
                             origin: if core { Origin::Core } else { Origin::Claim },
@@ -990,7 +1005,7 @@ fn build_lujvo_with_detail_budget(
                     }
                 })
                 .collect();
-            let Some(default_tokens) = bond(&parts) else {
+            let Some(default_tokens) = bond_profile(request.profile, &parts) else {
                 return;
             };
             let tokens = if request.joins.is_empty() {
@@ -1096,7 +1111,7 @@ fn build_lujvo_with_detail_budget(
             Ok(recovered) => {
                 candidate.recovered = recovered;
                 if let Some(spelling) = &request.spelling {
-                    if crate::phonotactics::normalize_word(spelling).as_deref()
+                    if normalize_typed_presentation(spelling).as_deref()
                         != Some(&candidate.spelling)
                     {
                         continue;
@@ -1106,7 +1121,7 @@ fn build_lujvo_with_detail_budget(
                     let mut index = 0;
                     let mut consumed = 0;
                     for character in spelling.chars() {
-                        if character != ',' {
+                        if !matches!(character, ',' | '.') {
                             while index + 1 < candidate.tokens.len()
                                 && consumed == candidate.tokens[index].len()
                             {
@@ -1238,6 +1253,12 @@ pub struct Analysis {
     pub diagnostics: Vec<String>,
     pub morphology: Versioned,
 }
+/// Framing periods belong to the entered presentation, not to component rafsi.
+fn normalize_typed_presentation(spelling: &str) -> Option<String> {
+    let word = spelling.strip_prefix('.').unwrap_or(spelling);
+    let word = word.strip_suffix('.').unwrap_or(word);
+    crate::phonotactics::normalize_word(word)
+}
 /// Classifies one complete word under the selected profile.
 pub fn analyze_word(profile: Profile, spelling: &str) -> Analysis {
     let mut analysis = Analysis {
@@ -1277,7 +1298,7 @@ pub fn analyze_word(profile: Profile, spelling: &str) -> Analysis {
                 Kind::Cmavo => WordKind::Cmavo,
                 Kind::Cmevla => WordKind::Cmevla,
                 Kind::Fuivla => WordKind::Fuivla,
-                Kind::Lujvo if profile == Profile::Extended || classic_tokens(&reading.tokens) => {
+                Kind::Lujvo if profile != Profile::Cll || classic_tokens(&reading.tokens) => {
                     WordKind::Lujvo
                 }
                 _ => WordKind::Unknown,
@@ -1322,6 +1343,110 @@ mod tests {
     }
     fn rafsi(items: &[&str]) -> Vec<Part> {
         items.iter().map(|i| Part::rafsi(i)).collect()
+    }
+    #[test]
+    fn version_two_extended_preserves_the_base_whole_word_core() {
+        let request: LujvoRequest = serde_json::from_value(serde_json::json!({
+            "profile": "extended-v2", "components": [
+                {"id": "a", "spelling": "ckusni", "kind": "lujvo"},
+                {"id": "b", "spelling": "broda", "kind": "gismu"}
+            ]
+        }))
+        .unwrap();
+        let built = build_lujvo(&request).unwrap();
+        assert_eq!(built.morphology.version, "2");
+        assert_eq!(built.candidates[0].spelling, "ckusni'ybroda");
+        assert_eq!(built.candidates[0].tokens, s(&["ckusni", "'y", "broda"]));
+        let analysis = analyze_word(Profile::ExtendedV2, "ckusni'ybroda");
+        assert_eq!(analysis.readings[0][0].text, "ckusni");
+        assert_eq!(analysis.morphology.version, "2");
+    }
+    #[test]
+    fn version_three_matches_reviewed_experimental_boundaries_and_consonantal_cores() {
+        for word in [
+            "sakli'ybroda",
+            "gismu'ybroda",
+            "ixla'ybroda",
+            "uspi'ybe'a",
+            "baibla'ykla",
+            "bai'ybla'ykla",
+            "saibla'ykla",
+            "islenskygu'e",
+            "islenskybroda",
+            "ibalskybroda",
+            "kerlyxambrga",
+            "cuktybangrtai",
+            "bangu'ybangrtai",
+            "bamzda",
+            "kamzi'ybroda",
+        ] {
+            let analysis = analyze_word(Profile::Extended, word);
+            assert_eq!(
+                analysis.kind,
+                WordKind::Lujvo,
+                "{word}: {:?}",
+                analysis.diagnostics
+            );
+            let reading = &analysis.readings[0];
+            let request: LujvoRequest = serde_json::from_value(serde_json::json!({
+                "profile": "extended", "joins": reading.iter().skip(1).map(|part| part.join_before.clone().unwrap_or_default()).collect::<Vec<_>>(),
+                "components": reading.iter().enumerate().map(|(index, part)| serde_json::json!({"id": index.to_string(), "spelling": part.text, "kind": "other", "locked": part.text})).collect::<Vec<_>>()
+            })).unwrap();
+            let built = build_lujvo(&request).unwrap();
+            assert!(
+                !built.candidates.is_empty(),
+                "{word}: {:?}, {:?}",
+                built.diagnostics,
+                built.rejected
+            );
+            assert_eq!(built.candidates[0].spelling, word);
+        }
+        for word in [
+            "balskybroda",
+            "lenskybroda",
+            "tenskybroda",
+            "bangrybroda",
+            "barklysakli",
+            "balskykla",
+            "bla'ykla",
+        ] {
+            assert_eq!(
+                analyze_word(Profile::Extended, word).kind,
+                WordKind::Unknown,
+                "{word}"
+            );
+        }
+        for word in [
+            "bangrtai",
+            "xambrga",
+            "cmagnitude",
+            "depsnce",
+            "regnaftngi",
+            "sparnribia",
+        ] {
+            assert_eq!(
+                analyze_word(Profile::Extended, word).kind,
+                WordKind::Fuivla,
+                "{word}"
+            );
+        }
+        assert_eq!(
+            analyze_word(Profile::Extended, "kamzi").kind,
+            WordKind::Gismu
+        );
+        assert_eq!(
+            analyze_word(Profile::Extended, "djeimz").kind,
+            WordKind::Cmevla
+        );
+        for profile in [Profile::Cll, Profile::ExtendedV2] {
+            for word in ["kamzi", "bamzda", "djeimz"] {
+                assert_eq!(
+                    analyze_word(profile, word).kind,
+                    WordKind::Unknown,
+                    "{profile:?} {word}"
+                );
+            }
+        }
     }
     #[test]
     fn exact_readings_rebuild_with_optional_and_extended_joins() {
@@ -1374,6 +1499,12 @@ mod tests {
             result.candidates[0].score,
             score(&s(&["sai", "r", "zba"])).unwrap()
         );
+        request.spelling = Some(".SAI,rZBA.".into());
+        let framed = build_lujvo(&request).unwrap();
+        assert_eq!(framed.candidates[0].tokens.concat(), ".SAI,rZBA.");
+        assert_eq!(framed.candidates[0].recovered[0].text, "sai");
+        request.spelling = Some("..SAI,rZBA.".into());
+        assert!(build_lujvo(&request).unwrap().candidates.is_empty());
         request.spelling = Some("ckusni".into());
         assert!(build_lujvo(&request).unwrap().candidates.is_empty());
         request.spelling = Some("b".repeat(129));
@@ -1383,34 +1514,46 @@ mod tests {
         ));
     }
     #[test]
-    fn retained_gencmu_oracle_and_cll_profile_stay_separate() {
+    fn cll_examples_and_legacy_extensions_keep_independent_expectations() {
+        // CLL chapter 4, sections 11 and 12 supply the positive construction examples.
+        // Version 2 keeps whole compound cores from the pinned base revision.
+        for (word, cll_kind, v2_kind) in [
+            ("jbogri", WordKind::Lujvo, WordKind::Lujvo),
+            ("tolsakli", WordKind::Lujvo, WordKind::Lujvo),
+            ("tosymabru", WordKind::Lujvo, WordKind::Lujvo),
+            ("ckusni", WordKind::Lujvo, WordKind::Lujvo),
+            ("ckusni'ybroda", WordKind::Unknown, WordKind::Lujvo),
+            ("spageti'ybroda", WordKind::Unknown, WordKind::Lujvo),
+            ("kamzi", WordKind::Unknown, WordKind::Unknown),
+            ("bangu", WordKind::Gismu, WordKind::Gismu),
+        ] {
+            assert_eq!(
+                analyze_word(Profile::Cll, word).kind,
+                cll_kind,
+                "CLL {word}"
+            );
+            assert_eq!(
+                analyze_word(Profile::ExtendedV2, word).kind,
+                v2_kind,
+                "v2 {word}"
+            );
+        }
         let evidence: serde_json::Value =
             serde_json::from_str(include_str!("../evidence/typed-lujvo.json")).unwrap();
         for case in evidence["cases"].as_array().unwrap() {
             let word = case["word"].as_str().unwrap();
-            let analysis = analyze_word(Profile::Extended, word);
+            // Typed detection removes framing periods. Its signed bytes stay separate.
+            let input = if case["kind"] == "cmevla" {
+                word.trim_matches('.')
+            } else {
+                word
+            };
             assert_eq!(
-                serde_json::to_value(analysis.kind).unwrap(),
+                serde_json::to_value(analyze_word(Profile::Extended, input).kind).unwrap(),
                 case["kind"],
-                "{word}"
-            );
-            let old = crate::recognize::parse(word).unwrap();
-            let cll = analyze_word(Profile::Cll, word);
-            assert_eq!(cll.morphology.version, "2");
-            assert_eq!(
-                cll.kind == WordKind::Lujvo,
-                old.kind == crate::recognize::Kind::Lujvo && classic_tokens(&old.tokens),
-                "{word}"
+                "oracle {word}"
             );
         }
-        let request: LujvoRequest = serde_json::from_value(serde_json::json!({
-            "profile": "cll", "joins": ["r"], "components": [
-                {"id": "a", "spelling": "sanmi", "kind": "gismu", "locked": "sai"},
-                {"id": "b", "spelling": "zbasu", "kind": "gismu", "locked": "zba"}
-            ]
-        }))
-        .unwrap();
-        assert!(build_lujvo(&request).is_err());
     }
     #[test]
     fn component_locks_reject_empty_forms_and_standalone_joins_without_panicking() {
@@ -1828,8 +1971,8 @@ mod tests {
         assert_eq!(a.readings[0][1].join_before.as_deref(), Some("y"));
     }
     #[test]
-    fn mz_is_forbidden_under_both_profiles() {
-        for profile in [Profile::Cll, Profile::Extended] {
+    fn version_two_and_cll_keep_the_mz_refusal() {
+        for profile in [Profile::Cll, Profile::ExtendedV2] {
             for word in ["cimza'a", "lemzasli", "kamzu", "mamza", "ka,m,zu"] {
                 let analysis = analyze_word(profile, word);
                 assert_eq!(analysis.kind, WordKind::Unknown, "{profile:?} {word}");
@@ -2137,19 +2280,21 @@ mod tests {
     #[test]
     fn extended_core_cache_preserves_work_and_resource_errors() {
         let mut budget = RecognitionBudget::default();
-        assert!(budget.core_is_brivla("ismu").unwrap());
+        assert!(budget.core_is_brivla("ismu", Profile::ExtendedV2).unwrap());
         assert!(budget.spent > 0);
         budget.spent = 2_000_000;
-        assert!(budget.core_is_brivla("ismu").unwrap());
+        assert!(budget.core_is_brivla("ismu", Profile::ExtendedV2).unwrap());
         assert_eq!(budget.spent, 2_000_000);
-        let error = budget.core_is_brivla("iismu").unwrap_err();
+        let error = budget
+            .core_is_brivla("iismu", Profile::ExtendedV2)
+            .unwrap_err();
         assert!(
             matches!(error, BuilderError::ResourceLimit { ref measure, .. } if measure == "build recognition work")
         );
         assert!(error.to_string().contains("Lock a component form"));
         assert!(!budget.cores.contains_key("iismu"));
         assert!(
-            matches!(budget.core_is_brivla(&"a".repeat(129)), Err(BuilderError::ResourceLimit { measure, .. }) if measure == "word bytes")
+            matches!(budget.core_is_brivla(&"a".repeat(129), Profile::ExtendedV2), Err(BuilderError::ResourceLimit { measure, .. }) if measure == "word bytes")
         );
         assert!(!budget.cores.contains_key(&"a".repeat(129)));
     }
@@ -2312,7 +2457,7 @@ mod tests {
                     .iter()
                     .any(|d| d.contains(fallback))
             );
-            let policy = if profile == Profile::Extended {
+            let policy = if profile != Profile::Cll {
                 "The whole-word lock waits for complete recognition."
             } else {
                 "The whole-word lock is invalid under the CLL profile."

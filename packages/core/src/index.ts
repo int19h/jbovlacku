@@ -360,7 +360,24 @@ export const canonicalizeStorageWrapper = (bytes: Uint8Array): string =>
   wasm.canonicalize_storage_wrapper(bytes);
 
 /** Word-form tools from the shared morphology crate. See docs/morphology.md. */
-export type MorphologyProfile = "cll" | "extended";
+export type MorphologyProfile = "cll" | "extended" | "extended-v2";
+/** Resolve exact signed morphology metadata. Unknown versions stay unsupported. */
+export function morphologyProfile(morphology: {
+  id: string;
+  version: string;
+}): MorphologyProfile {
+  const base =
+    "https://github.com/int19h/jbovlacku/blob/main/docs/morphology.md#";
+  if (morphology.id === base + "cll-lujvo" && morphology.version === "2")
+    return "cll";
+  if (morphology.id === base + "extended-lujvo") {
+    if (morphology.version === "2") return "extended-v2";
+    if (morphology.version === "3") return "extended";
+  }
+  throw new Error(
+    `Unsupported morphology: ${morphology.id} ${morphology.version}.`,
+  );
+}
 export interface BuilderPreset {
   id: string;
   label: string;

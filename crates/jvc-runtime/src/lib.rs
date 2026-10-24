@@ -965,9 +965,10 @@ pub fn analyze_word(profile: &str, spelling: &str) -> std::result::Result<String
     let profile = match profile {
         "cll" => jvc_morphology::Profile::Cll,
         "extended" => jvc_morphology::Profile::Extended,
+        "extended-v2" => jvc_morphology::Profile::ExtendedV2,
         _ => {
             return Err(builder_fail(jvc_morphology::BuilderError::Invalid {
-                message: "The profile is cll or extended.".into(),
+                message: "The profile is cll, extended, or extended-v2.".into(),
             }));
         }
     };
