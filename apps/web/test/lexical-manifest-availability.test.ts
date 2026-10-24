@@ -41,9 +41,9 @@ test("an unconfigured view declaration is never loaded or saved as a signed poli
   });
   const unconfigured = await page.evaluate(async () => {
     const { loadSiteView } = await import(String("/src/data/view.ts"));
-    const { syncRecords, RecordsError } = await import(
+    const { syncRecords, RecordsError } = (await import(
       String("/src/data/records.ts")
-    );
+    )) as typeof import("../src/data/records.ts");
     const { LocalStore } = await import(String("/src/data/store.ts"));
     const store = new LocalStore("unconfigured-view-regression");
     const policy = await loadSiteView();
@@ -83,7 +83,9 @@ test("an unconfigured view declaration is never loaded or saved as a signed poli
       const { setPreferredView } = await import(String("/src/data/api.ts"));
       const { loadSiteView } = await import(String("/src/data/view.ts"));
       const { syncRecords } = await import(String("/src/data/records.ts"));
-      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const { LocalStore } = (await import(
+        String("/src/data/store.ts")
+      )) as typeof import("../src/data/store.ts");
       const store = new LocalStore("unconfigured-view-regression");
       setPreferredView(selected);
       const policy = await loadSiteView();
