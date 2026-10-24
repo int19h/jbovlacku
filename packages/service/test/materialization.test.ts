@@ -115,6 +115,7 @@ class MemoryCheckpoints implements CheckpointStore {
 async function fixture(
   checkpoints?: MemoryCheckpoints,
   checkpointIntervalMs: number | null = 0,
+  includeSelectedView = true,
 ) {
   const bytes = new Map<string, Uint8Array>();
   const reads: string[] = [];
@@ -201,7 +202,10 @@ async function fixture(
     { kind: "identity.profile" },
     { name: "Test author", bio: [], links: [] },
   );
-  const configured = { ...options, selectedView: view.envelope.id };
+  const configured = {
+    ...options,
+    selectedView: includeSelectedView ? view.envelope.id : undefined,
+  };
   const service = new DictionaryService(objects, coordinator, configured);
   await service.initialize();
   const records = [definition, view, profile];
@@ -388,50 +392,59 @@ test("publication releases the superseded configured runtime and keeps cached re
   assert.equal((service as any).retiredSessions.has(oldKey), true);
 });
 
-test("publication retry rebuilds a retired result before it becomes current", async () => {
-  const checkpoints = new MemoryCheckpoints();
-  const { service, coordinator, definition, profile } =
-    await fixture(checkpoints);
-  service.options.evaluationRuntime = {
-    create: createEvaluationSession,
-    restore: restoreHostEvaluationSession,
-  };
-  const internals = service as any;
-  const previous = coordinator.state.snapshot!;
-  const mark = coordinator.markMaterialized.bind(coordinator);
-  coordinator.markMaterialized = async () => {
-    throw new Error("Synthetic publication failure.");
-  };
-  await service.admitMany([
-    utf8(
-      JSON.stringify(
-        judgment(definition.envelope.id, "4", [profile.envelope.id], "bless"),
+for (const selected of [true, false])
+  test(`publication retry rebuilds a retired result with selected view ${selected}`, async () => {
+    const checkpoints = new MemoryCheckpoints();
+    const { service, coordinator, definition, profile } = await fixture(
+      checkpoints,
+      0,
+      selected,
+    );
+    service.options.evaluationRuntime = {
+      create: createEvaluationSession,
+      restore: restoreHostEvaluationSession,
+    };
+    const internals = service as any;
+    const previous = coordinator.state.snapshot!;
+    const mark = coordinator.markMaterialized.bind(coordinator);
+    coordinator.markMaterialized = async () => {
+      throw new Error("Synthetic publication failure.");
+    };
+    await service.admitMany([
+      utf8(
+        JSON.stringify(
+          judgment(definition.envelope.id, "4", [profile.envelope.id], "bless"),
+        ),
       ),
-    ),
-  ]);
-  await assert.rejects(
-    service.flushMaterialization(),
-    /Synthetic publication failure/,
-  );
-  const current = coordinator.state.snapshot!;
-  const key = current + "|" + service.options.selectedView;
-  assert.equal(coordinator.state.materialized_snapshot, previous);
-  assert.equal(internals.sessions.has(key), true);
-  internals.retireSupersededSessions();
-  assert.equal(internals.retiredSessions.has(key), true);
-  assert.equal(internals.sessions.has(key), false);
-  assert.equal(internals.evaluationCache.has(key), true);
-  coordinator.markMaterialized = mark;
-  await internals.packages(await coordinator.getSnapshot(current));
-  await service.flushCheckpoints();
-  assert.equal(coordinator.state.materialized_snapshot, current);
-  assert.equal(internals.sessions.has(key), true);
-  assert.equal(internals.retiredSessions.has(key), false);
-  assert.equal(checkpoints.saved?.binding.snapshot, current);
-  const detail = await read(service, "/words/" + wordId(word));
-  assert.ok(detail.scores.length);
-  assert.equal(internals.sessionRepairs.size, 0);
-});
+    ]);
+    await assert.rejects(
+      service.flushMaterialization(),
+      /Synthetic publication failure/,
+    );
+    const current = coordinator.state.snapshot!;
+    const key =
+      current +
+      "|" +
+      (service.options.selectedView ?? "jve1:" + "0".repeat(64));
+    assert.equal(coordinator.state.materialized_snapshot, previous);
+    assert.equal(internals.sessions.has(key), true);
+    internals.retireSupersededSessions();
+    assert.equal(internals.retiredSessions.has(key), true);
+    assert.equal(internals.sessions.has(key), false);
+    assert.equal(internals.evaluationCache.has(key), true);
+    coordinator.markMaterialized = mark;
+    await internals.packages(await coordinator.getSnapshot(current));
+    await (service as any).flushCheckpoints();
+    assert.equal(coordinator.state.materialized_snapshot, current);
+    assert.equal(internals.sessions.has(key), true);
+    assert.equal(internals.retiredSessions.has(key), false);
+    assert.equal(checkpoints.saved?.binding.snapshot, current);
+    if (selected) {
+      const detail = await read(service, "/words/" + wordId(word));
+      assert.ok(detail.scores.length);
+    }
+    assert.equal(internals.sessionRepairs.size, 0);
+  });
 
 test("pinned previous-snapshot reads reuse cached results while another write completes", async () => {
   const { service, coordinator, definition, profile } = await fixture();
@@ -459,7 +472,8 @@ test("pinned previous-snapshot reads reuse cached results while another write co
       state: session.state,
       isAvailable: () => session.isAvailable?.() !== false,
       rankWord: (...args) => session.rankWord(...args),
-      checkpoint: (binding) => session.checkpoint(binding),
+      checkpoint: (binding, resultsOnly) =>
+        session.checkpoint(binding, resultsOnly),
       async fork(options) {
         forks++;
         return trackBuilder(await session.fork(options));
@@ -475,6 +489,7 @@ test("pinned previous-snapshot reads reuse cached results while another write co
     let finished = false;
     return {
       addRecord: (...args) => builder.addRecord(...args),
+      addHostVerifiedRecord: (record) => builder.addHostVerifiedRecord(record),
       removeRecord: (id) => builder.removeRecord(id),
       async finish() {
         const session = await builder.finish();
@@ -652,10 +667,10 @@ test("completed reads survive worker death while a pinned replacement restores",
   let restores = 0;
   let cold = 0;
   service.options.evaluationRuntime = {
-    async restore(bytes, binding) {
+    async restore(bytes, binding, records) {
       restores++;
       await gate.promise;
-      return restoreHostEvaluationSession(bytes, binding);
+      return restoreHostEvaluationSession(bytes, binding, records);
     },
     create() {
       cold++;
@@ -705,9 +720,9 @@ test("an old worker repair cannot retire a newer snapshot during publication", a
   const publishing = deferred();
   service.options.evaluationRuntime = {
     create: createEvaluationSession,
-    async restore(bytes, binding) {
+    async restore(bytes, binding, records) {
       await repairGate.promise;
-      return restoreHostEvaluationSession(bytes, binding);
+      return restoreHostEvaluationSession(bytes, binding, records);
     },
   };
   service.options.index = {
@@ -798,10 +813,10 @@ test("a forced checkpoint flush retries one failed export from a live session", 
   const session = (service as any).sessions.get(key);
   const checkpoint = session.checkpoint.bind(session);
   let attempts = 0;
-  session.checkpoint = (binding: string) => {
+  session.checkpoint = (binding: string, resultsOnly?: boolean) => {
     if (++attempts === 1)
       throw new Error("Transient checkpoint export failure.");
-    return checkpoint(binding);
+    return checkpoint(binding, resultsOnly);
   };
   const packages = await (service as any).packageCache.get(snapshot!.snapshot);
   (service as any).saveCheckpoint(
@@ -1406,12 +1421,11 @@ test("a failed background job keeps the old snapshot and a read retries it", asy
     [profile.envelope.id],
     "bless",
   );
-  const get = objects.get.bind(objects);
+  const evaluate = (service as any).computeEvaluation.bind(service);
   let fail = true;
-  objects.get = async (hash) => {
-    if (fail && hash !== definition.envelope.header.content?.hash)
-      throw new Error("Injected background failure.");
-    return get(hash);
+  (service as any).computeEvaluation = async (...args: any[]) => {
+    if (fail) throw new Error("Injected background failure.");
+    return evaluate(...args);
   };
   await service.admitMany([utf8(JSON.stringify(entry))]);
   await assert.rejects(
@@ -1747,7 +1761,7 @@ test("package publication completes before checkpoint capture and flush cancels 
       snapshot.snapshot + "|" + service.options.selectedView,
     );
     const exportCheckpoint = session.checkpoint.bind(session);
-    session.checkpoint = (binding: string) => {
+    session.checkpoint = (binding: string, resultsOnly?: boolean) => {
       exports++;
       return exportCheckpoint(binding);
     };
@@ -1795,9 +1809,9 @@ for (const interval of [null, 1000]) {
         snapshot.snapshot + "|" + service.options.selectedView,
       );
       const checkpoint = session.checkpoint.bind(session);
-      session.checkpoint = (binding: string) => {
+      session.checkpoint = (binding: string, resultsOnly?: boolean) => {
         captured.push(snapshot.snapshot);
-        return checkpoint(binding);
+        return checkpoint(binding, resultsOnly);
       };
       return capture(snapshot, position, packages);
     };
@@ -1861,9 +1875,9 @@ test("automatic checkpoint failures consume the interval and a forced flush atte
       snapshot.snapshot + "|" + service.options.selectedView,
     );
     const checkpoint = session.checkpoint.bind(session);
-    session.checkpoint = (binding: string) => {
+    session.checkpoint = (binding: string, resultsOnly?: boolean) => {
       exports.push(snapshot.snapshot);
-      return checkpoint(binding);
+      return checkpoint(binding, resultsOnly);
     };
     return capture(snapshot, position, packages);
   };
@@ -1939,7 +1953,7 @@ test("checkpoint writes capture only the latest pending session and share unchan
       snapshot.snapshot + "|" + service.options.selectedView,
     );
     const exportCheckpoint = session.checkpoint.bind(session);
-    session.checkpoint = (binding: string) => {
+    session.checkpoint = (binding: string, resultsOnly?: boolean) => {
       captured.push(snapshot.snapshot);
       return exportCheckpoint(binding);
     };
@@ -2042,7 +2056,7 @@ test(
   },
 );
 
-test("damaged or mismatched checkpoint data falls back to original records", async () => {
+test("damaged or mismatched checkpoint data falls back to private compact records", async () => {
   const checkpoints = new MemoryCheckpoints();
   const { objects, coordinator, options, definition, reads } =
     await fixture(checkpoints);
@@ -2054,7 +2068,8 @@ test("damaged or mismatched checkpoint data falls back to original records", asy
     const restarted = new DictionaryService(objects, coordinator, options);
     await restarted.initialize();
     await restarted.flushMaterialization();
-    assert.ok(reads.includes(definition.envelope.header.content!.hash), field);
+    assert.ok(!reads.includes(definition.envelope.header.content!.hash), field);
+    assert.ok((await read(restarted, "/words/" + wordId(word))).scores.length);
   }
   checkpoints.saved = structuredClone(saved);
   checkpoints.saved.payload.core = utf8("damaged");
@@ -2062,5 +2077,5 @@ test("damaged or mismatched checkpoint data falls back to original records", asy
   const restarted = new DictionaryService(objects, coordinator, options);
   await restarted.initialize();
   await restarted.flushMaterialization();
-  assert.ok(reads.includes(definition.envelope.header.content!.hash));
+  assert.ok(!reads.includes(definition.envelope.header.content!.hash));
 });

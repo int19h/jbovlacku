@@ -1,3 +1,10 @@
+import {
+  prepareVerifiedRecords,
+  projectVerifiedRecord,
+  verifiedRecordKey,
+  retainVerifiedRecords,
+  type StoredVerifiedRecord,
+} from "../../service/src/verified-records.ts";
 import { createReadStream } from "node:fs";
 import { open } from "node:fs/promises";
 import { join } from "node:path";
@@ -118,19 +125,21 @@ export async function admitImportProposal(
     { source: string; record: { kind: string; id: number } }
   >();
   const available = new Set<string>();
-  const waiting = new Map<string, StoredEvent[]>();
+  const waiting = new Map<string, [string, StoredEvent][]>();
   const key = (hash: string, bytes: number) => `${hash}/${bytes}`;
-  for (const event of Object.values(next.events)) {
+  for (const [id, event] of Object.entries(next.events)) {
     const descriptor = event.header.content;
     if (!descriptor) continue;
     const token = key(descriptor.hash, descriptor.bytes);
     if (event.body_hash) available.add(token);
     else {
       const list = waiting.get(token) ?? [];
-      list.push(event);
+      list.push([id, event]);
       waiting.set(token, list);
     }
   }
+  const changedIds = new Set<string>();
+  const projections = new Map<string, StoredVerifiedRecord>();
   let changed = false;
   let accepted = 0;
   let duplicate = 0;
@@ -139,6 +148,16 @@ export async function admitImportProposal(
     records++;
     if (records > MAX_EVENTS * 2)
       throw new Error("The import proposal exceeds 400000 carrier records.");
+    const projected = projectVerifiedRecord(
+      p.id,
+      {
+        envelope_hash: p.envelope_hash,
+        body_hash: p.body === null ? null : p.header.content!.hash,
+      },
+      utf8(p.envelope),
+      p.body === null ? undefined : utf8(p.body),
+    );
+    projections.set(verifiedRecordKey(projected), projected);
     const old = next.events[p.id];
     if (
       old &&
@@ -154,8 +173,9 @@ export async function admitImportProposal(
     if (p.body !== null) {
       await objects.put(descriptor!.hash, utf8(p.body));
       available.add(token!);
-      for (const event of waiting.get(token!) ?? []) {
+      for (const [id, event] of waiting.get(token!) ?? []) {
         event.body_hash = descriptor!.hash;
+        changedIds.add(id);
         changed = true;
       }
       waiting.delete(token!);
@@ -181,6 +201,7 @@ export async function admitImportProposal(
     }
     if (!old || preferred || old.body_hash !== body) {
       changed = true;
+      changedIds.add(p.id);
       const event = (next.events[p.id] = {
         envelope_hash: preferred ? p.envelope_hash : old.envelope_hash,
         body_hash: body,
@@ -190,7 +211,7 @@ export async function admitImportProposal(
       });
       if (token && !body) {
         const list = waiting.get(token) ?? [];
-        list.push(event);
+        list.push([p.id, event]);
         waiting.set(token, list);
       }
     }
@@ -303,10 +324,26 @@ export async function admitImportProposal(
     next.revision++;
     // The first service read publishes one wrapper for the complete inventory.
     next.snapshot = null;
-    if (!(await coordinator.compareAndSwap(state.revision, next)))
+    const verified = await prepareVerifiedRecords(
+      objects,
+      next.events,
+      changedIds,
+      projections,
+    );
+    if (
+      !(await coordinator.compareAndSwap(
+        state.revision,
+        next,
+        undefined,
+        [...changedIds],
+        verified,
+      ))
+    )
       throw new Error(
         "The data directory changed during the load. Stop other writers and rerun the loader.",
       );
+    if (!coordinator.saveVerifiedRecords)
+      await retainVerifiedRecords(coordinator, verified);
   }
   return {
     view: view.id,

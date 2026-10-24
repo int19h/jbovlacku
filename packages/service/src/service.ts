@@ -1,3 +1,13 @@
+import {
+  readVerifiedRecord,
+  streamVerifiedRecords,
+  prepareVerifiedRecords,
+  retainVerifiedRecords,
+  projectVerifiedRecord,
+  verifiedRecordKey,
+  compactRecord,
+  type StoredVerifiedRecord,
+} from "./verified-records.ts";
 import type { IndexStore } from "./index-store.ts";
 import type { EvaluationRuntime, EvaluationSession } from "./evaluation.ts";
 import {
@@ -12,7 +22,6 @@ import {
   type CheckpointStore,
   type ServiceCheckpoint,
 } from "./checkpoint.ts";
-import { orderedPrefetch, readRecordBytes } from "./record-reads.ts";
 import {
   buildPackages,
   rebasePackages,
@@ -27,8 +36,7 @@ import {
   createEvaluationSession,
   restoreHostEvaluationSession,
   utf8,
-  verifyEnvelope,
-  inspectBody,
+  inspectHostStoredBody,
   type Evaluation,
   type EvaluationRequest,
 } from "../../core/src/index.ts";
@@ -144,7 +152,7 @@ export class DictionaryService {
               "context",
               "Context must name definition events.",
             );
-          if (inspectBody(envelope, bytes).availability !== "valid")
+          if (inspectHostStoredBody(header, bytes).availability !== "valid")
             throw new AssistanceError(
               404,
               "context",
@@ -293,7 +301,6 @@ export class DictionaryService {
           | {
               session: EvaluationSession;
               payload: ServiceCheckpoint;
-              envelopes: Map<string, string>;
             }
           | undefined;
         try {
@@ -301,9 +308,7 @@ export class DictionaryService {
           if (payload) {
             if (
               !(payload.core instanceof Uint8Array) ||
-              !Array.isArray(payload.package_records) ||
-              !Array.isArray(payload.packages?.entries) ||
-              !Array.isArray(payload.envelopes)
+              !Array.isArray(payload.packages?.entries)
             )
               throw new Error("The checkpoint payload is invalid.");
             for (const packages of [
@@ -319,28 +324,45 @@ export class DictionaryService {
                 throw new Error(
                   "The checkpoint packages name another snapshot.",
                 );
-            const envelopes = new Map(payload.envelopes);
-            for (const event of Object.values(snapshot.events))
-              if (typeof envelopes.get(event.envelope_hash) !== "string")
-                throw new Error(
-                  "The checkpoint envelope inventory is incomplete.",
-                );
+            const records: string[] = [];
+            const packageRecords: PackageRecord[] = [];
+            for await (const {
+              value: id,
+              result: record,
+            } of streamVerifiedRecords(
+              this.coordinator,
+              this.objects,
+              snapshot.events,
+              Object.keys(snapshot.events).sort(),
+            )) {
+              records.push(record.compact);
+              const content = compactRecord(record).package;
+              if (content)
+                packageRecords.push({
+                  ...content,
+                  envelope_hash: snapshot.events[id].envelope_hash,
+                  missing: false,
+                });
+            }
             const session = await (this.options.evaluationRuntime
               ? this.options.evaluationRuntime.restore(
                   payload.core,
                   JSON.stringify(binding),
+                  records,
                 )
               : restoreHostEvaluationSession(
                   payload.core,
                   JSON.stringify(binding),
+                  records,
                 ));
-            recovered = { session, payload, envelopes };
+            this.packageRecords.set(recoveredId, packageRecords);
+            recovered = { session, payload };
           }
         } catch (error) {
           this.options.reportError?.(error);
         }
         if (recovered) {
-          const { session, payload, envelopes } = recovered;
+          const { session, payload } = recovered;
           const restoresMaterialized =
             publiclyRetained &&
             recoveredId === metadata.materialized_snapshot &&
@@ -361,9 +383,7 @@ export class DictionaryService {
           this.sessions.set(key, session);
           this.sessionSnapshots.set(key, snapshot);
           this.evaluationCache.set(key, Promise.resolve(session.state));
-          this.packageRecords.set(recoveredId, payload.package_records);
           this.packageCache.set(recoveredId, Promise.resolve(payload.packages));
-          this.canonicalEnvelopes = envelopes;
           if (restoresMaterialized)
             this.completed = { snapshot, position: binding.position };
           this.snapshotPositions.set(recoveredId, binding.position);
@@ -495,18 +515,6 @@ export class DictionaryService {
         // A failed export or save consumes the interval too.
         this.checkpointLastCapture = performance.now();
         try {
-          const envelopes: [string, string][] = [];
-          const seen = new Set<string>();
-          for (const event of Object.values(checkpoint.snapshot.events))
-            if (!seen.has(event.envelope_hash)) {
-              seen.add(event.envelope_hash);
-              envelopes.push([
-                event.envelope_hash,
-                this.canonicalEnvelopes.get(event.envelope_hash)!,
-              ]);
-            }
-          const packageRecords =
-            this.packageRecords.get(checkpoint.snapshot.snapshot) ?? [];
           const core = await this.useSession(
             checkpoint.snapshot.snapshot +
               "|" +
@@ -514,7 +522,7 @@ export class DictionaryService {
             async () => {
               let core: Uint8Array;
               try {
-                core = await session.checkpoint(JSON.stringify(binding));
+                core = await session.checkpoint(JSON.stringify(binding), true);
               } catch (error) {
                 // Retry a failed live export once, including during shutdown.
                 if (
@@ -533,9 +541,7 @@ export class DictionaryService {
           );
           await this.options.checkpoints!.save(binding, {
             core,
-            package_records: packageRecords,
             packages: checkpoint.packages,
-            envelopes,
           });
         } catch (error) {
           this.options.reportError?.(error);
@@ -692,7 +698,8 @@ export class DictionaryService {
       this.prunePackageRecords();
     }
     this.inFlightPackages.add(snapshot.snapshot);
-    const key = snapshot.snapshot + "|" + this.options.selectedView;
+    const key =
+      snapshot.snapshot + "|" + (this.options.selectedView ?? zeroView);
     if (this.retiredSessions.has(key) && !this.sessions.has(key)) {
       this.retiredSessions.delete(key);
       this.evaluationCache.delete(key);
@@ -711,6 +718,7 @@ export class DictionaryService {
           this.objects,
           this.packageRecords.get(snapshot.snapshot),
           previous && base ? { previous, changed: base.changed } : undefined,
+          true,
         );
       })
       .then(async (built) => {
@@ -881,7 +889,7 @@ export class DictionaryService {
           state.revision,
           next,
           snapshot,
-          [],
+          state.snapshot === null ? undefined : [],
         )
       )
         return { state: next, snapshot };
@@ -922,30 +930,18 @@ export class DictionaryService {
         "Requested view body is unavailable.",
         view,
       );
-    const envelope = await this.objects.get(event.envelope_hash);
-    const body = await this.objects.get(event.body_hash);
-    if (!envelope || !body)
-      throw new ApiError(
-        503,
-        "storage_unavailable",
-        "Retained view bytes are unavailable.",
-        view,
-      );
-    try {
-      if (
-        !verifyEnvelope(envelope).action_valid ||
-        inspectBody(envelope, body).availability !== "valid"
-      )
-        throw new Error("invalid view action or body");
-    } catch {
+    const record = compactRecord(
+      await readVerifiedRecord(this.coordinator, this.objects, view, event),
+    );
+    if (!record.action_valid || record.body_status !== "present")
       throw new ApiError(
         422,
         "view_unavailable",
         "Requested view does not satisfy version 1 rules.",
         view,
       );
-    }
   }
+
   private evaluationCache = new Map<string, Promise<Evaluation>>();
   private inFlightEvaluations = new Set<string>();
   private sessionUses = new Map<string, number>();
@@ -1017,14 +1013,24 @@ export class DictionaryService {
           try {
             const payload = await this.options.checkpoints.load(binding);
             if (payload) {
+              const records: string[] = [];
+              for await (const { result: record } of streamVerifiedRecords(
+                this.coordinator,
+                this.objects,
+                snapshot.events,
+                Object.keys(snapshot.events).sort(),
+              ))
+                records.push(record.compact);
               const session = await (this.options.evaluationRuntime
                 ? this.options.evaluationRuntime.restore(
                     payload.core,
                     JSON.stringify(binding),
+                    records,
                   )
                 : restoreHostEvaluationSession(
                     payload.core,
                     JSON.stringify(binding),
+                    records,
                   ));
               if (owns()) {
                 this.sessions.set(key, session);
@@ -1223,32 +1229,14 @@ export class DictionaryService {
               previous.body_hash !== next.body_hash
             );
           });
-      for await (const { value: id, result: loaded } of orderedPrefetch(
+      for await (const { value: id, result: retained } of streamVerifiedRecords(
+        this.coordinator,
+        this.objects,
+        snapshot.events,
         changedIds,
-        (id) => {
-          const event = snapshot.events[id];
-          return readRecordBytes(
-            this.objects,
-            event.envelope_hash,
-            event.body_hash,
-          );
-        },
       )) {
         const event = snapshot.events[id];
-        const { envelope } = loaded;
-        if (!envelope)
-          throw new ApiError(
-            503,
-            "storage_unavailable",
-            "Envelope bytes are unavailable.",
-          );
-        if (loaded.body.status === "rejected") throw loaded.body.reason;
-        const body = loaded.body.value;
-        const record = await builder.addRecord(envelope, body ?? undefined);
-        this.canonicalEnvelopes.set(
-          contentHash(envelope),
-          new TextDecoder().decode(envelope),
-        );
+        const record = await builder.addHostVerifiedRecord(retained.compact);
         if (
           record ||
           ["definition.publish", "rafsi.publish"].includes(
@@ -1262,8 +1250,8 @@ export class DictionaryService {
           if (record) {
             const prepared: PackageRecord = {
               ...record,
-              envelope_hash: contentHash(envelope),
-              missing: event.body_hash !== null && body === null,
+              envelope_hash: event.envelope_hash,
+              missing: false,
             };
             records.set(id, prepared);
             changedPackages.push(prepared);
@@ -1341,11 +1329,15 @@ export class DictionaryService {
       }
       if (!derived) {
         if (event.body_hash) {
-          const envelope = await this.objects.get(event.envelope_hash);
-          const body = await this.objects.get(event.body_hash);
-          if (envelope && body)
-            bodyInvalid =
-              inspectBody(envelope, body).availability === "invalid";
+          bodyInvalid =
+            compactRecord(
+              await readVerifiedRecord(
+                this.coordinator,
+                this.objects,
+                id,
+                event,
+              ),
+            ).body_status === "invalid";
         }
       }
     } else
@@ -1360,11 +1352,15 @@ export class DictionaryService {
         // Acceptance is durable even when interpretation must wait for a cache slot.
         reasons = ["evaluation_resource_unavailable"];
         if (event.body_hash) {
-          const envelope = await this.objects.get(event.envelope_hash);
-          const body = await this.objects.get(event.body_hash);
-          if (envelope && body)
-            bodyInvalid =
-              inspectBody(envelope, body).availability === "invalid";
+          bodyInvalid =
+            compactRecord(
+              await readVerifiedRecord(
+                this.coordinator,
+                this.objects,
+                id,
+                event,
+              ),
+            ).body_status === "invalid";
         }
       }
     return {
@@ -1405,7 +1401,18 @@ export class DictionaryService {
         "Batch must contain 1 through 3000 events.",
       );
     const prepared = requests.map(prepareAdmission);
+    const projections = new Map<string, StoredVerifiedRecord>();
     for (const p of prepared) {
+      const record = projectVerifiedRecord(
+        p.id,
+        {
+          envelope_hash: p.envelope_hash,
+          body_hash: p.body === null ? null : p.header.content!.hash,
+        },
+        utf8(p.envelope),
+        p.body === null ? undefined : utf8(p.body),
+      );
+      projections.set(verifiedRecordKey(record), record);
       await this.objects.put(p.envelope_hash, utf8(p.envelope));
       this.canonicalEnvelopes.set(p.envelope_hash, p.envelope);
       if (p.body !== null)
@@ -1500,16 +1507,28 @@ export class DictionaryService {
           ),
         };
       }
+      const verified = await prepareVerifiedRecords(
+        this.objects,
+        next.events,
+        changedIds,
+        projections,
+      );
       const snapshot = await this.buildSnapshot(next);
       this.snapshotPositions.set(snapshot.snapshot, next.position);
       next.snapshot = snapshot.snapshot;
       next.snapshots = sorted([...next.snapshots, snapshot.snapshot]);
       if (this.options.beforeCommit) await this.options.beforeCommit(next);
       if (
-        await this.coordinator.compareAndSwap(state.revision, next, snapshot, [
-          ...changedIds,
-        ])
+        await this.coordinator.compareAndSwap(
+          state.revision,
+          next,
+          snapshot,
+          [...changedIds],
+          verified,
+        )
       ) {
+        if (!this.coordinator.saveVerifiedRecords)
+          await retainVerifiedRecords(this.coordinator, verified);
         this.rememberDelta(snapshot.snapshot, state.snapshot, [...changedIds]);
         if (this.options.asyncMaterialization)
           this.queueMaterialization(snapshot);
@@ -2434,7 +2453,7 @@ export class DictionaryService {
           const envelope = await this.objects.get(event!.envelope_hash);
           if (
             envelope &&
-            inspectBody(envelope, bytes).availability === "valid"
+            inspectHostStoredBody(event!.header, bytes).availability === "valid"
           ) {
             if (claimBytes + bytes.length > PROFILE_CLAIM_BYTES)
               bodyStatus = "omitted";

@@ -7,6 +7,7 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import {
   initializeCore,
+  hostRecordVersion,
   identityFromSeed,
   createEvent,
   prepareSelection,
@@ -127,6 +128,19 @@ test("offline load accepts any carrier order and preserves receipts on rerun", a
   assert.equal(loaded.selected, f.imported.selection.ids.length);
   const first = stores(f.directory);
   const before = await first.coordinator.load();
+  for (const [id, event] of Object.entries(before.events)) {
+    const compact = await first.coordinator.getVerifiedRecord({
+      id,
+      envelope_hash: event.envelope_hash,
+      body_hash: event.body_hash,
+      version: hostRecordVersion(),
+    });
+    assert.ok(
+      compact,
+      "The offline transaction must include every compact record.",
+    );
+    assert.equal(JSON.parse(compact.compact).id, id);
+  }
   const service = new DictionaryService(first.objects, first.coordinator, {
     serverId: "loader-test",
     selectedView: loaded.view,
@@ -778,5 +792,90 @@ test("carrier line bounds apply before an unterminated line can grow", async () 
     assert.equal((await state.coordinator.load()).position, 0);
   } finally {
     state.coordinator.close();
+  }
+});
+
+test("an offline reload updates normalized snapshot mappings before restart", async () => {
+  const f = await fixture();
+  const profile = createEvent(
+    seed,
+    [],
+    "d".repeat(32),
+    { kind: "identity.profile" },
+    { name: "Late body", bio: [], links: [] },
+  );
+  const extra = createEvent(
+    seed,
+    [],
+    "e".repeat(32),
+    { kind: "identity.merge" },
+    null,
+  );
+  const save = async (late: boolean) =>
+    writeFile(
+      join(f.proposal, "carriers.jsonl"),
+      [
+        ...f.imported.carriers,
+        { ...profile, body: late ? profile.body : null },
+        ...(late ? [extra] : []),
+      ]
+        .map(canonical)
+        .join("\n"),
+    );
+  await save(false);
+  const loaded = await loadImportProposal(f);
+  const first = stores(f.directory);
+  const initial = new DictionaryService(first.objects, first.coordinator, {
+    serverId: "reload",
+    selectedView: loaded.view,
+    policyUrl: "https://example.invalid/policy",
+  });
+  assert.equal(
+    (await initial.fetch(new Request("http://localhost/api/v1/manifest")))
+      .status,
+    200,
+  );
+  const before = await first.coordinator.load();
+  assert.ok(before.snapshot);
+  first.coordinator.close();
+  await save(true);
+  await loadImportProposal(f);
+  const second = stores(f.directory);
+  const service = new DictionaryService(second.objects, second.coordinator, {
+    serverId: "reload",
+    selectedView: loaded.view,
+    policyUrl: "https://example.invalid/policy",
+  });
+  assert.equal(
+    (await service.fetch(new Request("http://localhost/api/v1/manifest")))
+      .status,
+    200,
+  );
+  const after = await second.coordinator.load();
+  assert.notEqual(after.snapshot, before.snapshot);
+  second.coordinator.close();
+  const restarted = stores(f.directory);
+  try {
+    const snapshot = await restarted.coordinator.getSnapshot(after.snapshot!);
+    assert.equal(
+      Object.keys(snapshot!.events).length,
+      Object.keys(after.events).length,
+    );
+    assert.equal(
+      snapshot!.events[profile.envelope.id].body_hash,
+      profile.envelope.header.content!.hash,
+    );
+    assert.ok(snapshot!.events[extra.envelope.id]);
+    for (const id of [profile.envelope.id, extra.envelope.id])
+      assert.ok(
+        await restarted.coordinator.getVerifiedRecord({
+          id,
+          envelope_hash: snapshot!.events[id].envelope_hash,
+          body_hash: snapshot!.events[id].body_hash,
+          version: hostRecordVersion(),
+        }),
+      );
+  } finally {
+    restarted.coordinator.close();
   }
 });

@@ -1,5 +1,5 @@
 import type { EvaluationRequest } from "../../core/src/index.ts";
-import type { MaterializedPackages, PackageRecord } from "./packages.ts";
+import type { MaterializedPackages } from "./packages.ts";
 
 export interface CheckpointBinding {
   schema: 1;
@@ -14,9 +14,7 @@ export interface CheckpointBinding {
 /** The host checks its independent pin before returning any checkpoint payload. */
 export interface ServiceCheckpoint {
   core: Uint8Array;
-  package_records: PackageRecord[];
   packages: MaterializedPackages;
-  envelopes: [string, string][];
 }
 
 export function checkpointBindingKey(binding: CheckpointBinding): string {

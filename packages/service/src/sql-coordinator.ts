@@ -1,3 +1,4 @@
+import { type StoredVerifiedRecord } from "./verified-records.ts";
 import {
   freezeSnapshotCache,
   serializeSnapshotCache,
@@ -44,6 +45,9 @@ export class SqlRowsCoordinator {
       "CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, value TEXT NOT NULL)",
     );
     sql.exec(
+      "CREATE TABLE IF NOT EXISTS verified_records (id TEXT NOT NULL, envelope_hash TEXT NOT NULL, body_hash TEXT NOT NULL, version INTEGER NOT NULL, compact TEXT NOT NULL, PRIMARY KEY(id,envelope_hash,body_hash,version))",
+    );
+    sql.exec(
       "CREATE TABLE IF NOT EXISTS receipts (position INTEGER PRIMARY KEY, id TEXT UNIQUE NOT NULL)",
     );
     sql.exec("CREATE TABLE IF NOT EXISTS selections (hash TEXT PRIMARY KEY)");
@@ -82,6 +86,32 @@ export class SqlRowsCoordinator {
         sql.transaction(() => this.save(state));
       sql.exec("DROP TABLE coordinator");
     }
+  }
+  async getVerifiedRecord(
+    binding: Omit<StoredVerifiedRecord, "compact">,
+  ): Promise<StoredVerifiedRecord | null> {
+    const row = this.sql.exec(
+      "SELECT compact FROM verified_records WHERE id=? AND envelope_hash=? AND body_hash=? AND version=?",
+      binding.id,
+      binding.envelope_hash,
+      binding.body_hash ?? "",
+      binding.version,
+    )[0];
+    return row ? { ...binding, compact: String(row.compact) } : null;
+  }
+  private writeVerifiedRecords(records: StoredVerifiedRecord[]) {
+    for (const record of records)
+      this.sql.exec(
+        "INSERT INTO verified_records VALUES(?,?,?,?,?) ON CONFLICT(id,envelope_hash,body_hash,version) DO NOTHING",
+        record.id,
+        record.envelope_hash,
+        record.body_hash ?? "",
+        record.version,
+        record.compact,
+      );
+  }
+  async saveVerifiedRecords(records: StoredVerifiedRecord[]): Promise<void> {
+    this.sql.transaction(() => this.writeVerifiedRecords(records));
   }
   private metadata(state: State) {
     const { events, journal, selections, snapshots, ...metadata } = state;
@@ -425,6 +455,7 @@ export class SqlRowsCoordinator {
     state: State,
     snapshot?: Snapshot,
     changedIds?: string[],
+    verifiedRecords: StoredVerifiedRecord[] = [],
   ): Promise<boolean> {
     const expiredIds: string[] = [];
     const committed = this.sql.transaction(() => {
@@ -436,6 +467,7 @@ export class SqlRowsCoordinator {
       }
       expiredIds.push(...this.expireSnapshots(state.materialized_snapshot));
       this.save(state, changedIds);
+      this.writeVerifiedRecords(verifiedRecords);
       return true;
     });
     if (committed) {
