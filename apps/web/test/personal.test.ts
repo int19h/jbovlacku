@@ -41,8 +41,14 @@ test("the personal view calculates scores locally from verified records and a pr
   page,
 }) => {
   const f = fixture();
+  const original = page.locator("article.definition").filter({
+    has: page.locator(
+      `a[href="/definition/${encodeURIComponent(f.definitions.cukta1)}"]`,
+    ),
+  });
+  const originalScore = original.locator(".score");
   await page.goto("/word/cukta");
-  await expect(firstScore(page)).toHaveAttribute("aria-label", /^Score 6/);
+  await expect(originalScore).toHaveAttribute("aria-label", /^Score 6/);
   const site = await scores(page);
   expect(site[0]).toMatch(/^Score 6/);
   await choosePersonal(page);
@@ -51,7 +57,7 @@ test("the personal view calculates scores locally from verified records and a pr
   await expect(panel).toContainText(
     /Personal view calculated in this browser from \d+ verified records/,
   );
-  await expect(firstScore(page)).toHaveAttribute(
+  await expect(originalScore).toHaveAttribute(
     "aria-label",
     /^Score 6.*in your personal view$/,
   );
@@ -59,18 +65,21 @@ test("the personal view calculates scores locally from verified records and a pr
   expect(
     (await scores(page)).map((s) => s?.replace(/, in your personal view$/, "")),
   ).toEqual(site);
+  const reviewers = (await originalScore.getAttribute("aria-label"))!.match(
+    /(\d+) reviewers?/,
+  )![1];
   await ignorePrivately(page, f.identities.curator);
   await openWord(page, "cukta");
-  await expect(firstScore(page)).toHaveAttribute(
+  await expect(originalScore).toHaveAttribute(
     "aria-label",
-    /^Score 0: 0 for, 0 against, 1 reviewer, in your personal view$/,
+    new RegExp(
+      `^Score 0: 0 for, 0 against, ${reviewers} reviewers?, in your personal view$`,
+    ),
   );
-  // The breakdown lists the ignored reviewer without a route and comes from the local calculation.
-  const details = page
-    .locator("article.definition details.judgment-details")
-    .first();
+  // The same publication lists its reviewer with the private block from the local calculation.
+  const details = original.locator("details.judgment-details");
   await details.locator("summary").click();
-  await expect(details).toContainText("no route in this view");
+  await expect(details).toContainText("blocked by your private choice");
   await expect(details).toContainText("calculated in this browser");
   // The search row uses the same local calculation.
   await page.getByLabel("Search words and meanings").fill("book");
@@ -89,8 +98,8 @@ test("the personal view calculates scores locally from verified records and a pr
     page.getByText(/also blocks trust that passes through them/),
   ).toBeVisible();
   await openWord(page, "cukta");
-  await expect(firstScore(page)).toHaveAttribute("aria-label", /^Score 6/);
-  await expect(firstScore(page)).not.toHaveAttribute("aria-label", /personal/);
+  await expect(originalScore).toHaveAttribute("aria-label", /^Score 6/);
+  await expect(originalScore).not.toHaveAttribute("aria-label", /personal/);
 });
 
 test("cancelling the download keeps personal scores unavailable and offers the site view", async ({

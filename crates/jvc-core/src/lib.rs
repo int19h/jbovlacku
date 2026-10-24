@@ -1,10 +1,12 @@
 //! Signed Jbovlacku records with separate content and action results.
+mod definition;
 mod json;
 mod record;
 mod schema;
 mod signature;
 mod wasm;
 
+pub use definition::{interpret_definition, omit_definition_defaults};
 pub use json::{
     MAX_DEPTH, MAX_SAFE_INTEGER, canonical_value, canonicalize_json, parse_json, parse_stored_json,
     parse_transport_json,

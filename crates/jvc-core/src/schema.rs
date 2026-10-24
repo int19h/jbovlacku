@@ -1106,7 +1106,7 @@ fn validate_body_fields(h: &Header, b: &Value) -> Result<()> {
                 https(link)?;
             }
         }
-        "definition.publish" => definition(h, b, &mut r)?,
+        "definition.publish" => definition(h, &crate::interpret_definition(b), &mut r)?,
         "rafsi.publish" => {
             fields(b, &["word", "rafsi", "rationale", "sources", "legacy"])?;
             let word = word_id(&b["word"])?;

@@ -88,6 +88,14 @@ export const signHeader = (seed: Uint8Array, header: Header) =>
 export const identityFromSeed = (seed: Uint8Array): string =>
   wasm.identity(seed);
 
+/** Derive definition defaults in a separate reader value after authentication. */
+export const interpretDefinition = <T = Record<string, unknown>>(
+  body: unknown,
+): T => JSON.parse(wasm.definition_interpret(utf8(JSON.stringify(body))));
+/** Omit definition defaults in a new body. Imported source evidence stays exact. */
+export const omitDefinitionDefaults = (body: unknown): unknown =>
+  JSON.parse(wasm.definition_omit_defaults(utf8(JSON.stringify(body))));
+
 export function createEvent(
   seed: Uint8Array,
   previous: string[],
@@ -95,6 +103,8 @@ export function createEvent(
   action: Record<string, unknown>,
   body: unknown | null,
 ) {
+  if (action.kind === "definition.publish" && body !== null)
+    body = omitDefinitionDefaults(body);
   const encoded =
     body === null ? null : utf8(canonicalize(utf8(JSON.stringify(body))));
   const header: Header = {
@@ -141,6 +151,8 @@ export function prepareSigning(
   action: Record<string, unknown>,
   body: unknown | null,
 ) {
+  if (action.kind === "definition.publish" && body !== null)
+    body = omitDefinitionDefaults(body);
   const encoded =
     body === null ? null : utf8(canonicalize(utf8(JSON.stringify(body))));
   const header: Header = {

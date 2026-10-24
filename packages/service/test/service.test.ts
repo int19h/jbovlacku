@@ -1581,7 +1581,15 @@ test("a signed view selects its calculation profile, and the bounds view keeps i
   ).json();
   assert.equal(cukta.calculation.algorithm, "simple-routes-bounds-v1");
   assert.deepEqual(
-    cukta.scores.map((s: any) => fraction(s.net[0])),
-    ["3/1", "-3/1", "6/1", "0/1", "6/1"],
+    Object.fromEntries(
+      cukta.scores.map((s: any) => [s.target, fraction(s.net[0])]),
+    ),
+    {
+      [fixture.pair]: "6/1",
+      [fixture.definitions.cukta1]: "6/1",
+      [fixture.definitions.cukta2]: "3/1",
+      [fixture.definitions.cukta3]: "-3/1",
+      [fixture.definitions.cuktaRev]: "0/1",
+    },
   );
 });

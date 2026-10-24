@@ -19,6 +19,7 @@ import {
   utf8,
   evaluate,
   prepareAdmission,
+  interpretDefinition,
 } from "../../core/src/index.ts";
 import { canonical, type Carrier } from "../src/index.ts";
 import { decodeCopyField, readCopyRows } from "../src/sql-copy.ts";
@@ -193,6 +194,14 @@ test("SQL fixture produces signed definitions in three languages and retains his
     $source_number: "4",
   });
   assert.equal(first.body.license.expression, "unknown");
+  assert.equal(Object.hasOwn(first.body, "frame"), false);
+  assert.equal(Object.hasOwn(first.body, "operands"), false);
+  assert.equal(Object.hasOwn(first.body, "examples"), false);
+  const interpreted = interpretDefinition<any>(first.body);
+  assert.equal(interpreted.frame, null);
+  assert.deepEqual(interpreted.operands, []);
+  assert.deepEqual(interpreted.examples, []);
+  assert.deepEqual(interpreted.legacy, first.body.legacy);
   assert.ok(
     definitions.some(
       (item) => item.body.legacy.original.definition_versions.length > 0,
@@ -1322,4 +1331,185 @@ test("r3 N3 check-existing refuses a new roots view", async () => {
     importSqlSnapshot({ ...input, output, roots, checkExisting: true }),
     /check cannot sign a new publication or view/i,
   );
+});
+
+function paddedHistory(length: number, revised = false): Buffer {
+  let history = false;
+  const bytes = revised
+    ? mutate(fixture, (fields) => {
+        if (fields[3] === "74481") fields[4] += " revised";
+      })
+    : fixture;
+  return Buffer.from(
+    bytes
+      .toString("utf8")
+      .split("\r\n")
+      .map((line) => {
+        if (line.startsWith("COPY "))
+          history = line.startsWith("COPY public.definition_versions ");
+        if (line === "\\.") history = false;
+        if (!history || line.startsWith("COPY ")) return line;
+        const fields = line.split("\t");
+        if (fields[0] === "2" && fields[1] === "74481")
+          fields[12] = "P".repeat(length);
+        return fields.join("\t");
+      })
+      .join("\r\n"),
+  );
+}
+async function selectedDefinition(
+  output: string,
+  id: number,
+): Promise<Carrier> {
+  const db = new DatabaseSync(join(output, "journal.sqlite"), {
+    readOnly: true,
+  });
+  try {
+    return JSON.parse(
+      (
+        db
+          .prepare(
+            "SELECT carrier FROM versions JOIN entries ON entries.selected=versions.event WHERE entries.record=?",
+          )
+          .get(id) as any
+      ).carrier,
+    );
+  } finally {
+    db.close();
+  }
+}
+function expandedSqlBody(body: any) {
+  return {
+    ...body,
+    frame: null,
+    operands: [],
+    examples: [],
+    classification: { selmaho: [], ...body.classification },
+    license: { url: null, ...body.license },
+    sources: body.sources.map((source: any) => ({
+      url: null,
+      event: null,
+      locator: null,
+      ...source,
+    })),
+  };
+}
+
+test("SQL body limits accept the signed omission window without truncating source history", async () => {
+  const baseline = await setup(paddedHistory(0));
+  await importSqlSnapshot(baseline);
+  const original = await selectedDefinition(baseline.output, 74481);
+  const target = 256 * 1024 - 16;
+  const padding = target - Buffer.byteLength(canonical(original.body));
+  assert.ok(padding > 0);
+  const input = await setup(paddedHistory(padding));
+  let planned = -1;
+  const result = await importSqlSnapshot({
+    ...input,
+    estimate: (estimate) => {
+      planned = estimate.new_publication_count;
+    },
+  });
+  assert.equal(result.report.added, 4);
+  assert.equal(result.report.unresolved.length, 0);
+  assert.equal(planned, 4);
+  const carrier = await selectedDefinition(input.output, 74481);
+  assert.equal(Buffer.byteLength(canonical(carrier.body)), target);
+  assert.ok(
+    Buffer.byteLength(canonical(expandedSqlBody(carrier.body))) > 256 * 1024,
+  );
+  assert.equal(
+    carrier.body.legacy.original.definition_versions[0].message,
+    "P".repeat(padding),
+  );
+  assert.equal(
+    prepareAdmission(utf8(canonical(carrier))).body_status,
+    "present",
+  );
+});
+
+test("SQL revision limits include the prior source before dry planning and signing", async () => {
+  const baseline = await setup(paddedHistory(0));
+  await importSqlSnapshot(baseline);
+  await updateSource(baseline, paddedHistory(0, true));
+  assert.equal((await importSqlSnapshot(baseline)).report.revised, 1);
+  const calibration = await selectedDefinition(baseline.output, 74481);
+  const prior = calibration.body.sources.filter(
+    (source: any) => source.label === "Prior imported source version",
+  );
+  assert.equal(prior.length, 1);
+  const length = Buffer.byteLength(canonical(calibration.body));
+  for (const extra of [0, 1]) {
+    const input = await setup(paddedHistory(0));
+    await importSqlSnapshot(input);
+    const original = await selectedDefinition(input.output, 74481);
+    const padding = 256 * 1024 + extra - length;
+    const hypothetical = structuredClone(calibration.body);
+    hypothetical.legacy.original.definition_versions[0].message = "P".repeat(
+      padding,
+    );
+    assert.equal(
+      Buffer.byteLength(canonical(hypothetical)),
+      256 * 1024 + extra,
+    );
+    const withoutPrior = {
+      ...hypothetical,
+      sources: hypothetical.sources.filter(
+        (source: any) => source.label !== "Prior imported source version",
+      ),
+    };
+    assert.ok(Buffer.byteLength(canonical(withoutPrior)) < 256 * 1024);
+    await updateSource(input, paddedHistory(padding, true));
+    let planned = -1;
+    const result = await importSqlSnapshot({
+      ...input,
+      estimate: (estimate) => {
+        planned = estimate.new_publication_count;
+      },
+    });
+    assert.equal(planned, extra === 0 ? 1 : 0);
+    assert.equal(result.report.revised, extra === 0 ? 1 : 0);
+    const selected = await selectedDefinition(input.output, 74481);
+    if (extra === 0) {
+      assert.equal(Buffer.byteLength(canonical(selected.body)), 256 * 1024);
+      assert.notEqual(selected.envelope.id, original.envelope.id);
+      const sources = selected.body.sources.filter(
+        (source: any) => source.label === "Prior imported source version",
+      );
+      assert.equal(sources.length, 1);
+      assert.equal(sources[0].event, original.envelope.id);
+      assert.equal(
+        prepareAdmission(utf8(canonical(selected))).body_status,
+        "present",
+      );
+      const repeat = await importSqlSnapshot(input);
+      assert.equal(repeat.report.revised, 0);
+      assert.equal(
+        (await selectedDefinition(input.output, 74481)).envelope.id,
+        selected.envelope.id,
+      );
+    } else {
+      assert.equal(selected.envelope.id, original.envelope.id);
+      assert.ok(
+        result.report.unresolved.some(
+          (item) => item.record === 74481 && /256 KiB/.test(item.reason),
+        ),
+      );
+      const db = new DatabaseSync(join(input.output, "journal.sqlite"), {
+        readOnly: true,
+      });
+      try {
+        assert.equal(
+          db
+            .prepare(
+              "SELECT COUNT(*) AS count FROM versions WHERE record=74481",
+            )
+            .get()!.count,
+          1,
+        );
+      } finally {
+        db.close();
+      }
+    }
+  }
 });
