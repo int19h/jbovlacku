@@ -828,7 +828,8 @@ Encoded requests permit 64 KiB. Provider responses permit 2 MiB.
 The adapter pins the model and Nebius route, disables fallback and redirects, and makes no automatic retry.
 The embedding input price must be positive. The route price cap uses the lower of that price and `JVC_AI_MAX_PRICE`.
 It accepts the exact returned model names `qwen/qwen3-embedding-8b` and `Qwen/Qwen3-Embedding-8B`.
-It checks input indices, 4,096 dimensions, and finite nonzero vectors, then produces unit-normalized float32 vectors.
+The adapter rejects invalid input indices, dimensions other than 4,096, and nonfinite or zero vectors.
+It produces unit-normalized float32 vectors.
 
 An embedding reservation quotes 32,000 input tokens per input at the configured embedding price.
 At the default price, one input reserves 0.000320 USD. Eight inputs reserve 0.002560 USD.
