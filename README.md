@@ -85,6 +85,9 @@ Remote lexical search, word pages, and downloaded language packages exclude defi
 Word pages and language packages retain effective deprecated definitions.
 Remote search includes them through its retired-results filter and shows each publication's status.
 Reads pinned to an earlier retained snapshot use that snapshot's state. Word pages and remote searches also use their requested view.
+Core definition rankings exclude definitions without effective receipts.
+Rafsi eligibility uses effective publication evidence and preserves missing-data uncertainty.
+When evaluation reaches a resource limit, the manifest keeps raw synchronization and signed view inspection available and marks package downloads unavailable.
 The lujvo builder says whether a candidate spelling is taken in the local package and on the server.
 The rafsi page lists known assignments across words from version 2 packages, and the claim page signs a claim with its pair blessing.
 The lujvo builder offers short rafsi, gismu stems, whole gismu, whole-word parts under the extended profile, locks, CLL scores, recovered parts, and every competing rafsi claim from the local package.

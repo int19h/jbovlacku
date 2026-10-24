@@ -1931,10 +1931,12 @@ export class DictionaryService {
     if (path === "/manifest") {
       const snapshot = await this.interpretedSnapshot(null);
       const packages = await this.packages(snapshot);
-      this.requirePackageReceipts(packages);
+      const packagesAvailable = packages.effectiveDefinitions !== null;
       const state = await this.metadata();
       return json({
         snapshot: snapshot.snapshot,
+        view: this.options.selectedView ?? zeroView,
+        packages_available: packagesAvailable,
         logical_inventory: snapshot.logical_inventory,
         manifest: snapshot.manifest,
         accepted_cursor: this.cursor(state.position),
@@ -1944,19 +1946,21 @@ export class DictionaryService {
                 state.materialized_position)
             : state.materialized_position,
         ),
-        packages: Object.entries(packages.packages).map(([language, p]) => ({
+        packages: Object.entries(
+          packagesAvailable ? packages.packages : {},
+        ).map(([language, p]) => ({
           language,
           hash: p.hash,
           bytes: p.bytes,
         })),
-        package_versions: Object.entries(packages.packages2).map(
-          ([language, p]) => ({
-            language,
-            version: 2,
-            hash: p.hash,
-            bytes: p.bytes,
-          }),
-        ),
+        package_versions: Object.entries(
+          packagesAvailable ? packages.packages2 : {},
+        ).map(([language, p]) => ({
+          language,
+          version: 2,
+          hash: p.hash,
+          bytes: p.bytes,
+        })),
       });
     }
     if (path === "/inventory") {

@@ -415,6 +415,9 @@ export async function getManifest(
   if (
     !isObject(value) ||
     !hashId(value.snapshot) ||
+    (value.view !== undefined && !eventId(value.view)) ||
+    (value.packages_available !== undefined &&
+      typeof value.packages_available !== "boolean") ||
     !Array.isArray(value.packages) ||
     value.packages.length > 4096 ||
     value.packages.some(

@@ -243,10 +243,15 @@ test("word reads hide inert definition targets across response fields and retain
       [[ancestor.envelope.id, "deprecated"]],
     );
     assert.deepEqual(result.rafsi, [claim.envelope.id]);
-    assert.deepEqual(
-      result.assignments.map((item: { id: string }) => item.id),
-      [assignment],
+    assert.deepEqual(result.assignments, [
+      { id: assignment, claims: [claim.envelope.id], status: "inactive" },
+    ]);
+    assert.ok(
+      result.scores.every(
+        (score: { target: string }) => score.target !== assignment,
+      ),
     );
+    assert.ok(!result.unavailable_scores.includes(assignment));
     const visible = new Set([ancestor.envelope.id, assignment]);
     assert.ok(
       result.scores.every((score: { target: string }) =>
@@ -260,6 +265,32 @@ test("word reads hide inert definition targets across response fields and retain
       expectedPrior,
     );
   }
+});
+
+test("a rafsi assignment stays unknown when every definition is inert", async () => {
+  const { view, admit, snapshot, wordRead } = await fixture();
+  const definition = signedDefinition();
+  const assignment = rafsiPairId(wordId(word), "kla");
+  const claim = createEvent(
+    new Uint8Array(32).fill(36),
+    [],
+    "6".repeat(32),
+    { kind: "rafsi.publish", word: wordId(word), assignment, origin: "native" },
+    { word, rafsi: "kla", rationale: [], sources: [], legacy: null },
+  );
+  await admit(view, claim, definition, signedTransfer());
+  const result = await wordRead(await snapshot());
+  assert.deepEqual(result.definitions, []);
+  assert.deepEqual(result.statuses, []);
+  assert.deepEqual(result.assignments, [
+    { id: assignment, claims: [claim.envelope.id], status: "unknown" },
+  ]);
+  assert.ok(
+    result.scores.every(
+      (score: { target: string }) => score.target !== assignment,
+    ),
+  );
+  assert.ok(result.unavailable_scores.includes(assignment));
 });
 
 test("both package versions update receipt membership after a transfer-only delta and retain historical and deprecated entries", async () => {
@@ -512,7 +543,7 @@ test("package receipt filtering preserves imported entries and alternate-view se
   }
 });
 
-test("unavailable receipts complete materialization and checkpoint recovery while public packages and manifest report 503", async () => {
+test("unavailable receipts keep completed manifest and raw history readable while package downloads report 503", async () => {
   let saved: ServiceCheckpoint | undefined;
   const errors: unknown[] = [];
   const checkpoints = {
@@ -568,7 +599,40 @@ test("unavailable receipts complete materialization and checkpoint recovery whil
   const restored = await restart();
   assert.deepEqual(errors, []);
   assert.deepEqual(await read("/receipts/" + merge.envelope.id), receipt);
-  for (const path of ["/manifest", "/packages/en", "/packages/en?version=2"]) {
+  const manifest = await read("/manifest");
+  assert.equal(manifest.snapshot, admitted.snapshot);
+  assert.equal(manifest.view, view.envelope.id);
+  assert.equal(manifest.packages_available, false);
+  assert.deepEqual(manifest.packages, []);
+  assert.deepEqual(manifest.package_versions, []);
+  assert.equal(manifest.accepted_cursor, manifest.materialized_cursor);
+  const identity = identityFromSeed(publisher);
+  for (const path of [
+    "/inventory?kind=events",
+    "/records",
+    `/identity-heads/${identity}`,
+    `/identities/${identity}/activity`,
+  ]) {
+    const result = await read(
+      path + `${path.includes("?") ? "&" : "?"}snapshot=${admitted.snapshot}`,
+    );
+    assert.equal(result.snapshot, admitted.snapshot);
+  }
+  assert.deepEqual(
+    await read(`/events/${view.envelope.id}?snapshot=${admitted.snapshot}`),
+    view.envelope,
+  );
+  assert.deepEqual(
+    await read(
+      `/bodies/${view.envelope.header.content.hash}?snapshot=${admitted.snapshot}`,
+    ),
+    view.body,
+  );
+  const probe = await restored.fetch(
+    new Request(`http://local.invalid/api/v1/words/jvw1:${"0".repeat(64)}`),
+  );
+  assert.equal(probe.status, 503);
+  for (const path of ["/packages/en", "/packages/en?version=2"]) {
     const response = await restored.fetch(
       new Request("http://local.invalid/api/v1" + path),
     );
@@ -611,7 +675,9 @@ test("unavailable receipts complete materialization and checkpoint recovery whil
   );
   const recovered = await restored.admitMany([utf8(JSON.stringify(recovery))]);
   await restored.flushMaterialization();
-  assert.equal((await read("/manifest")).snapshot, recovered.snapshot);
+  const recoveredManifest = await read("/manifest");
+  assert.equal(recoveredManifest.snapshot, recovered.snapshot);
+  assert.equal(recoveredManifest.packages_available, true);
   for (const version of [1, 2] as const)
     assert.deepEqual(
       (await entries(recovered.snapshot, version)).map((entry) => entry.event),
