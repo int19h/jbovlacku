@@ -614,9 +614,9 @@ Both local adapters accept these variables:
 | `JVC_AI_CONCURRENCY`               | Maximum active jobs. The default is two. Node permits one through four. The Worker caps this value at two.                                                           |
 | `JVC_AI_INPUT_PRICE`               | Model input price in USD per million tokens. The default is 0.10.                                                                                                    |
 | `JVC_AI_OUTPUT_PRICE`              | Model output price in USD per million tokens. The default is 0.20.                                                                                                   |
-| `JVC_AI_EMBEDDING_MODEL`           | Embedding model. The adapter permits only `qwen/qwen3-embedding-8b`, which is the default. |
-| `JVC_AI_EMBEDDING_PROVIDER_ROUTE`  | Embedding route. The adapter permits only `nebius`, which is the default. |
-| `JVC_AI_EMBEDDING_INPUT_PRICE`     | Embedding input price in USD per million tokens. The default is 0.01. |
+| `JVC_AI_EMBEDDING_MODEL`           | Embedding model. The adapter permits only `qwen/qwen3-embedding-8b`, which is the default.                                                                           |
+| `JVC_AI_EMBEDDING_PROVIDER_ROUTE`  | Embedding route. The adapter permits only `nebius`, which is the default.                                                                                            |
+| `JVC_AI_EMBEDDING_INPUT_PRICE`     | Embedding input price in USD per million tokens. The default is 0.01.                                                                                               |
 | `JVC_AI_HOURLY_BUDGET_USD`         | Server spending limit for the past hour. The default is 32 USD.                                                                                                      |
 | `JVC_AI_DAILY_BUDGET_USD`          | Server spending limit for the past day. The default is 160 USD.                                                                                                      |
 | `JVC_AI_NETWORK_HOURLY_BUDGET_USD` | Hourly allowance for each network. The default is one quarter of the configured server hourly limit.                                                                 |
@@ -818,6 +818,7 @@ The ledger contains cost records, network hashes, and its private hash key. It c
 An unreadable or unwritable ledger blocks new assistance jobs.
 The same ledger also controls host embedding calls through `AssistanceService.embed`.
 An embedding query uses the caller's network limits. Operator index and probe batches use the server limits.
+Query callers must supply a valid IP address, a normalized IPv6 /64, or the trusted local host marker `local`.
 All these operations share the server's hourly and daily limits and execution slots with generation.
 The existing Node key file and Worker key binding also serve embedding requests.
 
@@ -825,6 +826,7 @@ Each embedding batch permits one through eight inputs, with at most 4,096 UTF-8 
 Inputs already include the exact profile prefix. The adapter rejects malformed UTF-8 and preserves the remaining bytes.
 Encoded requests permit 64 KiB. Provider responses permit 2 MiB.
 The adapter pins the model and Nebius route, disables fallback and redirects, and makes no automatic retry.
+The embedding input price must be positive. The route price cap uses the lower of that price and `JVC_AI_MAX_PRICE`.
 It accepts the exact returned model names `qwen/qwen3-embedding-8b` and `Qwen/Qwen3-Embedding-8B`.
 It checks input indices, 4,096 dimensions, and finite nonzero vectors, then produces unit-normalized float32 vectors.
 
@@ -841,7 +843,8 @@ At the deadline, the caller stops waiting. A transport that ignores abort keeps 
 This prevents replacement requests from creating unbounded concurrent transport work.
 `AssistanceService.embeddingOperations` returns at most 64 diagnostic records, with active operations first.
 The records expose operation IDs, purpose, deadline, transport state, and spending estimates without input text or credentials.
-After restart, interrupted reservations remain charged and appear as interrupted operations.
+After restart, reservations remain charged and appear as retained operations.
+Retained records do not establish whether an earlier request completed or lost its transport.
 An operator can inspect these records and request a new bounded attempt through the same service after a limit clears.
 The earlier charge remains. A stuck transport requires its completion or a service restart before its slot returns.
 Job pause, resume, and explicit retry links belong to later indexing work.
