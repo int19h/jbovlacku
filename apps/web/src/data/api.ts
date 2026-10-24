@@ -329,7 +329,7 @@ export function hasPendingMaterialization() {
 export class MaterializationPendingError extends Error {
   constructor() {
     super(
-      "This server stored your records. Its word view is still updating. Refresh this page to check again.",
+      "This server stored your records. Its view is still updating. Refresh this page to check again.",
     );
   }
 }
@@ -408,8 +408,9 @@ export async function getCapabilities(
   return value as unknown as Capabilities;
 }
 export async function getManifest(
-  options: RequestOptions = {},
+  options: RequestOptions & { fresh?: boolean } = {},
 ): Promise<Manifest> {
+  if (options.fresh) await waitForMaterialization(options);
   const value = await api<unknown>("/manifest", options);
   if (
     !isObject(value) ||
@@ -675,7 +676,7 @@ export interface IdentityHeadsPage {
 }
 export async function identityHeads(
   identity: string,
-  snapshot: string,
+  snapshot: string | null,
   after: string | null,
   options: RequestOptions = {},
 ): Promise<IdentityHeadsPage> {
@@ -683,7 +684,7 @@ export async function identityHeads(
   const response = JSON.parse(
     new TextDecoder().decode(
       await objectBytes(
-        `/identity-heads/${encodeURIComponent(identity)}?snapshot=${encodeURIComponent(snapshot)}&limit=256${after ? `&after=${encodeURIComponent(after)}` : ""}`,
+        `/identity-heads/${encodeURIComponent(identity)}?limit=256${snapshot ? `&snapshot=${encodeURIComponent(snapshot)}` : ""}${after ? `&after=${encodeURIComponent(after)}` : ""}`,
         65536,
         options,
       ),
@@ -691,7 +692,8 @@ export async function identityHeads(
   ) as unknown;
   if (
     !isObject(response) ||
-    response.snapshot !== snapshot ||
+    !hashId(response.snapshot) ||
+    (snapshot !== null && response.snapshot !== snapshot) ||
     response.identity !== identity ||
     !Array.isArray(response.heads) ||
     response.heads.length > 256 ||
@@ -703,9 +705,10 @@ export async function identityHeads(
 }
 export async function getIdentity(
   identity: string,
-  options: RequestOptions & { snapshot?: string } = {},
+  options: RequestOptions & { snapshot?: string; fresh?: boolean } = {},
 ): Promise<IdentityResponse> {
   if (!identityId(identity)) throw new Error("The identity is invalid.");
+  if (options.fresh && !options.snapshot) await waitForMaterialization(options);
   const params = new URLSearchParams();
   if (options.snapshot) params.set("snapshot", options.snapshot);
   if (preferredView) params.set("view", preferredView);
@@ -729,14 +732,33 @@ export async function getIdentity(
     throw new Error("The server returned an invalid identity response.");
   return value as unknown as IdentityResponse;
 }
+export function getActivity(
+  identity: string,
+  after: string | null,
+  options: RequestOptions & {
+    snapshot?: string;
+    limit?: number;
+    accepted: true;
+  },
+): Promise<Omit<ActivityResponse, "view">>;
+export function getActivity(
+  identity: string,
+  after: string | null,
+  options?: RequestOptions & { snapshot?: string; limit?: number },
+): Promise<ActivityResponse>;
 export async function getActivity(
   identity: string,
   after: string | null,
-  options: RequestOptions & { snapshot?: string; limit?: number } = {},
-): Promise<ActivityResponse> {
+  options: RequestOptions & {
+    snapshot?: string;
+    limit?: number;
+    accepted?: boolean;
+  } = {},
+): Promise<Omit<ActivityResponse, "view">> {
   if (!identityId(identity)) throw new Error("The identity is invalid.");
   const query = new URLSearchParams({ limit: String(options.limit ?? 50) });
   if (options.snapshot) query.set("snapshot", options.snapshot);
+  if (options.accepted) query.set("accepted", "1");
   if (after) query.set("after", after);
   const value = await api<unknown>(
     `/identities/${encodeURIComponent(identity)}/activity?${query}`,
@@ -758,7 +780,11 @@ export async function getActivity(
     !(value.next === null || eventId(value.next))
   )
     throw new Error("The server returned an invalid activity page.");
-  return value as unknown as ActivityResponse;
+  if (options.snapshot !== undefined && value.snapshot !== options.snapshot)
+    throw new Error("the activity scan answered for another snapshot");
+  if (options.accepted && value.history !== "accepted")
+    throw new Error("The server did not confirm accepted history.");
+  return value as unknown as Omit<ActivityResponse, "view">;
 }
 /** Posts one stored transport exactly as signed and returns the validated receipt. */
 export async function postEvent(

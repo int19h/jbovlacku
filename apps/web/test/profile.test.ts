@@ -173,13 +173,43 @@ test("the public profile editor checks every limit, previews the signed claim, a
   await expect(preview).toContainText(
     "This is a public signed claim with retained history.",
   );
-  await preview
-    .getByRole("button", { name: "Sign and publish the profile" })
-    .click();
-  await acceptFirstSignature(page);
-  await expect(page.getByRole("status").last()).toContainText(
-    "The profile is signed and published.",
-  );
+  let releaseReceipts!: () => void;
+  const receiptsReady = new Promise<void>((resolve) => {
+    releaseReceipts = resolve;
+  });
+  await page.route("**/api/v1/events", async (route) => {
+    const response = await route.fetch();
+    const receipt = await response.json();
+    await route.fulfill({
+      response,
+      json: {
+        ...receipt,
+        snapshot: null,
+        interpretation: "unavailable",
+        reasons: ["index_lag", "evaluation_pending"],
+      },
+    });
+  });
+  await page.route("**/api/v1/receipts/*", async (route) => {
+    await receiptsReady;
+    await route.continue();
+  });
+  try {
+    await preview
+      .getByRole("button", { name: "Sign and publish the profile" })
+      .click();
+    await acceptFirstSignature(page);
+    await expect(page.getByRole("status").last()).toContainText(
+      "The profile is signed and published.",
+    );
+    await expect(
+      page.getByText("This server stored your profile. Its view is updating."),
+    ).toBeVisible();
+    await expect(page.getByRole("heading", { level: 1 })).toHaveCount(0);
+  } finally {
+    releaseReceipts();
+  }
+
   // The page shows the server's effective profile, and the key page shows the name.
   await expect(page.getByRole("heading", { level: 1 })).toContainText(
     "Disposable Tester",

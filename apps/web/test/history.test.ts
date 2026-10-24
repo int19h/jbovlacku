@@ -282,6 +282,7 @@ test("own-history pagination rejects loops and malformed pages while preserving 
       {
         name: "wrong snapshot",
         pages: [
+          headPage([heads[0].id], heads[0].id),
           { ...headPage([], null), snapshot: "sha256:" + "b".repeat(64) },
         ],
       },
@@ -378,7 +379,16 @@ test("own-history pagination rejects loops and malformed pages while preserving 
     pages: 64,
     error: expect.stringContaining("browser work limit"),
   });
-  for (const result of results.results.slice(2, -1))
+  expect(
+    results.results.find((result) => result.name === "wrong snapshot"),
+  ).toMatchObject({
+    pages: 2,
+    eventReads: 1,
+    error: expect.stringContaining("invalid own-history page"),
+  });
+  for (const result of results.results
+    .slice(2, -1)
+    .filter((result) => result.name !== "wrong snapshot"))
     expect(result.eventReads, result.name).toBe(0);
 });
 

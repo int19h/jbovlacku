@@ -713,6 +713,323 @@ test("history refresh keeps its exact stored-head guard and rejects an unseen co
   expect(result.reviewedFrontier).toEqual([result.remote]);
 });
 
+for (const branch of [false, true]) {
+  for (const persistent of [false, true]) {
+    test(`${branch ? "branch refresh" : "accepted own history"} ${persistent ? "keeps discard guards after repeated expiry" : "restores only the successful snapshot and its stored heads"}`, async ({
+      page,
+    }) => {
+      await page.goto("/outbox");
+      const result = await page.evaluate(
+        async ({ corePath, branch, persistent }) => {
+          const core = await import(corePath);
+          await core.initializeCore();
+          const { LocalStore } = await import(String("/src/data/store.ts"));
+          const { loadOwnHistory } = await import(
+            String("/src/data/history.ts")
+          );
+          const {
+            askPeers,
+            fetchBranches,
+            outboxItem,
+            queueCompromise,
+            queueHandover,
+          } = await import(String("/src/data/lifecycle.ts"));
+          const seed = new Uint8Array(32).fill(96);
+          const make = (
+            previous: string[],
+            nonce: string,
+            action = { kind: "identity.merge" } as Record<string, unknown>,
+          ) => core.createEvent(seed, previous, nonce.repeat(32), action, null);
+          const local = make([], "1").envelope;
+          const parent = make([], "2").envelope;
+          const stale = make([parent.id], "3").envelope;
+          const fresh = make([], "4").envelope;
+          const identity = local.header.issuer;
+          const store = new LocalStore(`retry-restore-${branch}-${persistent}`);
+          await store.restoreServerOwn(identity, [local]);
+          for (const envelope of [stale, fresh])
+            await store.put("keys", `discarded:${envelope.id}`, true);
+          const old = { identity };
+          await store.put("keys", "selected", old);
+          const restored: string[][] = [];
+          let notices = 0;
+          store.onOwnRediscovery = () => notices++;
+          const restore = store.restoreServerOwn.bind(store);
+          store.restoreServerOwn = async (who: string, envelopes: any[]) => {
+            restored.push(envelopes.map((envelope) => envelope.id));
+            return restore(who, envelopes);
+          };
+          const firstSnapshot = "sha256:" + "a".repeat(64);
+          const finalSnapshot = "sha256:" + "b".repeat(64);
+          const peer = {
+            id: "test",
+            base: "/retry-restore-test",
+            label: "test",
+          };
+          let captures = 0;
+          let staleReads = 0;
+          const originalFetch = window.fetch;
+          let history = {
+            identity,
+            snapshot: null,
+            frontier: [local.id],
+            storedHeads: [local.id],
+            events: new Map([[local.id, local]]),
+            complete: true,
+          };
+          let knowledge: any[] = [];
+          let error = "";
+          try {
+            window.fetch = async (input, options) => {
+              const url = new URL(String(input), location.origin);
+              if (!url.pathname.startsWith(peer.base))
+                return originalFetch(input, options);
+              const current = () =>
+                captures === 1 ? firstSnapshot : finalSnapshot;
+              if (url.pathname.includes("/identity-heads/")) {
+                if (!url.searchParams.has("snapshot")) captures++;
+                return Response.json({
+                  snapshot: current(),
+                  identity,
+                  heads: [persistent || captures === 1 ? stale.id : fresh.id],
+                  next: null,
+                });
+              }
+              if (url.pathname.includes("/identities/")) {
+                if (url.searchParams.get("accepted") !== "1")
+                  throw new Error(
+                    "The peer scan did not request accepted history.",
+                  );
+                return Response.json({
+                  snapshot: current(),
+                  identity,
+                  history: "accepted",
+                  items: [],
+                  next: null,
+                });
+              }
+              if (url.pathname.includes("/events/")) {
+                const id = decodeURIComponent(url.pathname.split("/").at(-1)!);
+                if (id === parent.id)
+                  return Response.json(
+                    { code: "snapshot_expired", message: "Snapshot expired." },
+                    { status: 410 },
+                  );
+                if (id === stale.id) staleReads++;
+                return Response.json(id === stale.id ? stale : fresh);
+              }
+              throw new Error(
+                "The final lifecycle scan requested a completed manifest.",
+              );
+            };
+            try {
+              if (branch) {
+                knowledge = await askPeers([peer], identity, null);
+                await fetchBranches(store, history, knowledge);
+              } else {
+                history = await loadOwnHistory(store, identity, {
+                  accepted: true,
+                  peer,
+                });
+              }
+            } catch (failure) {
+              error = (failure as Error).message;
+            }
+          } finally {
+            window.fetch = originalFetch;
+          }
+          // A failed snapshot cannot make its discarded record a lifecycle predecessor.
+          const compromise = outboxItem(
+            make([stale.id], "5", { kind: "identity.compromise", safe: [] }),
+            "notice",
+            0,
+            {},
+          );
+          const successorSeed = new Uint8Array(32).fill(97);
+          const successor = { identity: core.identityFromSeed(successorSeed) };
+          const transfer = make([stale.id], "6", {
+            kind: "identity.transfer",
+            successor: successor.identity,
+          });
+          const acceptance = core.createEvent(
+            successorSeed,
+            [],
+            "7".repeat(32),
+            { kind: "identity.accept", transfer: transfer.envelope.id },
+            null,
+          );
+          const compromiseError = await queueCompromise(
+            store,
+            compromise,
+            history.storedHeads,
+          ).then(
+            () => "",
+            (failure: Error) => failure.message,
+          );
+          const handoverError = await queueHandover(store, {
+            transfer: outboxItem(transfer, "handover", 0, {}),
+            accept: outboxItem(acceptance, "handover", 1, {}),
+            old,
+            successor,
+            successorTested: false,
+            expectedHeads: history.storedHeads,
+          }).then(
+            () => "",
+            (failure: Error) => failure.message,
+          );
+          const result = {
+            captures,
+            staleReads,
+            error,
+            restored,
+            notices,
+            stale: stale.id,
+            fresh: fresh.id,
+            local: local.id,
+            failedMarker: await store.get("keys", `discarded:${stale.id}`),
+            freshMarker: await store.get("keys", `discarded:${fresh.id}`),
+            failedEvidence: await store.get("ownhistory", stale.id),
+            storedHeads: history.storedHeads,
+            frontier: history.frontier,
+            committedHeads: await store.get("heads", identity),
+            events: [...history.events.keys()].sort(),
+            rediscovered: await store.takeOwnRediscoveries(identity),
+            compromiseError,
+            handoverError,
+            outbox: await store.list("outbox"),
+            selected: await store.get("keys", "selected"),
+            expectedSelected: old,
+            peerSnapshot: knowledge[0]?.snapshot,
+            concurrentGuard: null as null | {
+              compromiseError: string;
+              handoverError: string;
+              outbox: string[];
+              expectedOutbox: string[];
+              selected: unknown;
+              heads: string[];
+              expectedHeads: string[];
+            },
+          };
+          if (!persistent) {
+            // A second database connection saves a new branch after the preview.
+            const concurrent = outboxItem(make([], "8"), "concurrent", 0, {});
+            await new LocalStore(
+              `retry-restore-${branch}-${persistent}`,
+            ).queueGroup([concurrent]);
+            const notice = outboxItem(
+              make(history.frontier, "9", {
+                kind: "identity.compromise",
+                safe: [],
+              }),
+              "changed-notice",
+              0,
+              {},
+            );
+            const changedTransfer = make(history.frontier, "a", {
+              kind: "identity.transfer",
+              successor: successor.identity,
+            });
+            const changedAcceptance = core.createEvent(
+              successorSeed,
+              [],
+              "b".repeat(32),
+              {
+                kind: "identity.accept",
+                transfer: changedTransfer.envelope.id,
+              },
+              null,
+            );
+            result.concurrentGuard = {
+              compromiseError: await queueCompromise(
+                store,
+                notice,
+                history.storedHeads,
+              ).then(
+                () => "",
+                (failure: Error) => failure.message,
+              ),
+              handoverError: await queueHandover(store, {
+                transfer: outboxItem(
+                  changedTransfer,
+                  "changed-handover",
+                  0,
+                  {},
+                ),
+                accept: outboxItem(
+                  changedAcceptance,
+                  "changed-handover",
+                  1,
+                  {},
+                ),
+                old,
+                successor,
+                successorTested: false,
+                expectedHeads: history.storedHeads,
+              }).then(
+                () => "",
+                (failure: Error) => failure.message,
+              ),
+              outbox: (await store.list("outbox")).map((item: any) => item.id),
+              expectedOutbox: [concurrent.id],
+              selected: await store.get("keys", "selected"),
+              heads: await store.get("heads", identity),
+              expectedHeads: [...history.storedHeads, concurrent.id].sort(),
+            };
+          }
+          return result;
+        },
+        { corePath, branch, persistent },
+      );
+      expect(result.captures).toBe(persistent ? 3 : 2);
+      expect(result.staleReads).toBe(persistent ? 3 : 1);
+      expect(result.failedMarker).toBe(true);
+      expect(result.failedEvidence).toBeUndefined();
+      expect(result.compromiseError).toContain("discarded local record");
+      expect(result.handoverError).toContain("discarded local record");
+      expect(result.outbox).toEqual([]);
+      expect(result.selected).toEqual(result.expectedSelected);
+      const expected = persistent
+        ? [result.local]
+        : [result.local, result.fresh].sort();
+      expect(result.frontier).toEqual(expected);
+      expect(result.storedHeads).toEqual(expected);
+      expect(result.committedHeads).toEqual(expected);
+      expect(result.events).toEqual(expected);
+      if (persistent) {
+        expect(result.error).toContain("snapshots kept expiring");
+        expect(result.restored).toEqual([]);
+        expect(result.notices).toBe(0);
+        expect(result.freshMarker).toBe(true);
+        expect(result.rediscovered).toEqual([]);
+        if (branch) expect(result.peerSnapshot).toBeNull();
+      } else {
+        expect(result.error).toBe("");
+        expect(result.concurrentGuard!.compromiseError).toContain(
+          "known history changed during signing",
+        );
+        expect(result.concurrentGuard!.handoverError).toContain(
+          "known history changed during signing",
+        );
+        expect(result.concurrentGuard!.outbox).toEqual(
+          result.concurrentGuard!.expectedOutbox,
+        );
+        expect(result.concurrentGuard!.selected).toEqual(
+          result.expectedSelected,
+        );
+        expect(result.concurrentGuard!.heads).toEqual(
+          result.concurrentGuard!.expectedHeads,
+        );
+        expect(result.restored).toEqual([[result.fresh]]);
+        expect(result.notices).toBe(1);
+        expect(result.freshMarker).toBeUndefined();
+        expect(result.rediscovered).toEqual([result.fresh]);
+        if (branch)
+          expect(result.peerSnapshot).toBe("sha256:" + "b".repeat(64));
+      }
+    });
+  }
+}
+
 test("rediscovery shows the author a notice for an owned key that is not selected", async ({
   page,
 }) => {

@@ -17,7 +17,7 @@
     "dev:web": "vite --config apps/web/vite.config.ts",
     "test:web-unit": "tsx --test apps/web/test/unit/*.test.ts",
     "test:web": "playwright test --config apps/web/playwright.config.ts",
-    "build:server": "esbuild apps/server/src/main.ts --bundle --platform=node --format=esm --target=node24 --outfile=apps/server/dist/main.js && node scripts/copy-notices.mjs server",
+    "build:server": "esbuild apps/server/src/main.ts apps/server/src/evaluation-worker.ts --bundle --platform=node --format=esm --target=node24 --outdir=apps/server/dist && node scripts/copy-notices.mjs server",
     "build": "npm run build:core && npm run build:server && npm run build:web",
     "start:built": "node apps/server/dist/main.js",
     "test:adapters": "tsx scripts/test-adapters.ts"

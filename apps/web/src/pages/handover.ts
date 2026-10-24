@@ -34,10 +34,9 @@ import {
   type PeerKnowledge,
 } from "../data/lifecycle.ts";
 import { savedPeer } from "../data/delivery.ts";
-import { utf8, verifyEnvelope } from "../../../../packages/core/src/index.ts";
 import type { Envelope } from "../model/types.ts";
 import type { KeyBackup, OutboxItem, SavedRecipient } from "../data/store.ts";
-import { getEnvelope, type Peer } from "../data/api.ts";
+import type { Peer } from "../data/api.ts";
 
 /** The configured peers as saved addresses and request peers. */
 export function configuredPeers(app: App): {
@@ -354,9 +353,10 @@ export async function handoverPage(
     keyBox.append(card);
   };
   /** Loads the old key's history, asks every peer, fetches reported branches, and computes the frontier. */
-  const gather = async (): Promise<Gathered> => {
+  const gather = async (accepted = false): Promise<Gathered> => {
     const history = await loadOwnHistory(app.store, old.identity, {
       offline: app.offlineSigning.value,
+      accepted,
       signal: context.signal,
     });
     let existingTransfer: Gathered["existingTransfer"] = null;
@@ -455,18 +455,6 @@ export async function handoverPage(
         recoveryBlocked ??=
           "The old key's history or compromise state blocks recovery.";
       transfer = history.events.get(existingTransfer.id) ?? null;
-      if (!transfer) {
-        const source = knowledge.find((k) =>
-          k.transfers.some((t) => t.id === existingTransfer!.id),
-        );
-        if (source?.snapshot) {
-          transfer = await getEnvelope(existingTransfer.id, source.snapshot, {
-            peer: source.peer,
-            signal: context.signal,
-          });
-          verifyEnvelope(utf8(JSON.stringify(transfer)));
-        }
-      }
       if (
         !transfer ||
         transfer.id !== existingTransfer.id ||
@@ -479,7 +467,7 @@ export async function handoverPage(
       const successorHistory = await loadOwnHistory(
         app.store,
         existingTransfer.successor,
-        { signal: context.signal },
+        { signal: context.signal, accepted },
       );
       for (const event of successorHistory.events.values())
         if (
@@ -700,7 +688,7 @@ export async function handoverPage(
           );
         const key = await unlockKey(backup, pass.input.value);
         pass.input.value = "";
-        const fresh = await gather();
+        const fresh = await gather(true);
         if (!context.live()) return;
         if (
           fresh.digest !== g.digest ||
@@ -845,7 +833,7 @@ export async function handoverPage(
         // Refresh the frontier. A changed preview needs renewed approval.
         let fresh: Gathered;
         try {
-          fresh = await gather();
+          fresh = await gather(true);
         } catch (error) {
           gatherFailure = describe(error);
           gathered = null;

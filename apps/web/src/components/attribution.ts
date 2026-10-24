@@ -15,7 +15,16 @@ const profileCache = new Map<string, Promise<IdentityResponse | null>>();
 /** The effective profile of an identity from this server, cached for the page session. */
 export function identityProfile(
   identity: string,
+  options: { fresh?: boolean; signal?: AbortSignal } = {},
 ): Promise<IdentityResponse | null> {
+  if (options.fresh) {
+    profileCache.delete(identity);
+    return getIdentity(identity, options).then((response) => {
+      profileCache.set(identity, Promise.resolve(response));
+      setTimeout(() => profileCache.delete(identity), 60000);
+      return response;
+    });
+  }
   let pending = profileCache.get(identity);
   if (!pending) {
     pending = getIdentity(identity).catch(() => null);

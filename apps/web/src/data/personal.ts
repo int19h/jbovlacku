@@ -305,6 +305,7 @@ export class PersonalCalculator {
     }
     return syncRecords(this.store, {
       signal: run.abort.signal,
+      fresh: refresh,
       onProgress: (progress) => {
         if (this.current === run) this.set({ state: "downloading", progress });
       },

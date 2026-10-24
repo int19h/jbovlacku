@@ -7,9 +7,11 @@ import { utf8, verifyEnvelope } from "../../../../packages/core/src/index.ts";
 import {
   getEnvelope,
   getManifest,
+  RequestError,
   identityHeads,
   selfPeer,
   type Peer,
+  type IdentityHeadsPage,
 } from "./api.ts";
 import type { LocalStore, OutboxItem } from "./store.ts";
 import {
@@ -44,10 +46,24 @@ export interface OwnHistory {
   /** True when every reachable predecessor was loaded. */
   complete: boolean;
 }
+export const SNAPSHOT_SCAN_ATTEMPTS = 3;
+/** Only this response means that a pinned inventory needs a new capture. */
+export function snapshotExpired(error: unknown): boolean {
+  return (
+    error instanceof RequestError &&
+    error.status === 410 &&
+    error.code === "snapshot_expired"
+  );
+}
 export async function loadOwnHistory(
   store: LocalStore,
   identity: string,
-  options: { offline?: boolean; signal?: AbortSignal; peer?: Peer } = {},
+  options: {
+    offline?: boolean;
+    accepted?: boolean;
+    signal?: AbortSignal;
+    peer?: Peer;
+  } = {},
 ): Promise<OwnHistory> {
   const peer = options.peer ?? selfPeer;
   const historyTimeout = AbortSignal.timeout(120000);
@@ -70,7 +86,7 @@ export async function loadOwnHistory(
   if (!Array.isArray(remembered) || remembered.some((id) => !eventId(id)))
     throw new Error("Saved own-history head IDs are invalid.");
   if (remembered.length > WORK_LIMIT) throw workLimit();
-  const known = new Set(remembered);
+  const localHeads = new Set(remembered);
   const local = new Map<string, Envelope>();
   for (const item of await timed(store.list<OutboxItem>("outbox")))
     if (item.identity === identity)
@@ -80,128 +96,158 @@ export async function loadOwnHistory(
   for (const envelope of await timed(store.list<Envelope>("ownhistory")))
     if (envelope?.header?.issuer === identity && !local.has(envelope.id)) {
       local.set(envelope.id, envelope);
-      known.add(envelope.id);
+      localHeads.add(envelope.id);
     }
-  const manifest = options.offline ? null : await getManifest({ signal, peer });
-  const verified = new Map<string, Envelope>();
-  /** Envelopes fetched from the server in this load. They are kept locally afterwards. */
-  const fetched: Envelope[] = [];
-  let complete = true;
-  const read = async (id: string): Promise<Envelope | null> => {
-    check();
-    const cached = verified.get(id);
-    if (cached) return cached;
-    if (verified.size >= WORK_LIMIT) throw workLimit();
-    let envelope = local.get(id) ?? null;
-    const fromServer = !envelope && Boolean(manifest);
-    if (!envelope && manifest)
-      envelope = await getEnvelope(id, manifest.snapshot, { signal, peer });
-    if (!envelope) {
-      complete = false;
-      return null;
-    }
-    verifyEnvelope(utf8(JSON.stringify(envelope)));
-    if (envelope.id !== id || envelope.header.issuer !== identity)
-      throw new Error("Own history did not match the signing identity.");
-    verified.set(id, envelope);
-    if (fromServer) fetched.push(envelope);
-    return envelope;
-  };
-  if (manifest) {
-    let after: string | null = null;
-    const cursors = new Set<string>();
-    let pages = 0;
-    let returned = 0;
-    do {
-      check();
-      if (++pages > 64) throw workLimit();
-      const page = await identityHeads(identity, manifest.snapshot, after, {
-        signal,
-        peer,
-      });
-      if (page.next !== null && cursors.has(page.next))
-        throw new Error(
-          "Own-history pagination repeated a cursor. Export the outbox or retry with another server.",
-        );
-      let previous: string = after ?? "";
-      for (const id of page.heads) {
-        if (id <= previous)
-          throw new Error(
-            "Own-history pagination did not advance in event-ID order.",
-          );
-        previous = id;
-      }
-      if (page.next !== null && (!page.heads.length || page.next !== previous))
-        throw new Error(
-          "Own-history pagination did not advance to its last returned head.",
-        );
-      returned += page.heads.length;
-      if (returned > WORK_LIMIT) throw workLimit();
-      for (const id of page.heads) {
-        if (!(await read(id)))
-          throw new Error(
-            "The server listed an own head that it cannot supply.",
-          );
-        known.add(id);
-        if (known.size > WORK_LIMIT) throw workLimit();
-      }
-      after = page.next;
-      if (after !== null) cursors.add(after);
-    } while (after !== null);
-  }
-  const ancestors = new Set<string>();
-  const pending = [...known];
-  const visited = new Set<string>();
-  while (pending.length) {
-    check();
-    const id = pending.pop()!;
-    if (visited.has(id)) continue;
-    visited.add(id);
-    const envelope = await read(id);
-    if (!envelope) {
-      if (!manifest) continue;
-      throw new Error(
-        "This browser has no signed record for a remembered history reference. Connect to retrieve it.",
-      );
-    }
-    for (const previous of envelope.header.previous) {
-      ancestors.add(previous);
-      if (!manifest && !local.has(previous)) {
-        complete = false;
-        continue;
-      }
-      pending.push(previous);
-    }
-  }
-  const frontier = [...known].filter((id) => !ancestors.has(id)).sort();
-  if (frontier.length > 64)
-    throw new Error(
-      "Own history has more than 64 branches, which is the format limit for one record. Signing with this key is unavailable here. Export the outbox from Not delivered to keep your signed records.",
-    );
-  // Every ancestor was walked, so the fetched records are authenticated
-  // history. Restore server evidence and any matching discard markers together.
-  // A failed restore leaves those markers in place, so saving a descendant still fails safely.
-  let storedHeads = [...remembered].sort();
-  let committedHeads: string[] | undefined;
-  if (fetched.length)
+  // Attempts share the deadline and work budget. Failed captures never enter local storage.
+  let work = 0;
+  let totalPages = 0;
+  let returned = 0;
+  for (let attempt = 0; ; attempt++) {
+    const known = new Set(localHeads);
     try {
-      committedHeads = await timed(store.restoreServerOwn(identity, fetched));
-    } catch {}
-  if (committedHeads) {
-    if (committedHeads.join(" ") !== frontier.join(" "))
-      throw new Error(
-        "The local own history changed during refresh. Refresh the history before signing.",
-      );
-    storedHeads = committedHeads;
+      const completed =
+        options.offline || options.accepted
+          ? null
+          : (await getManifest({ signal, peer })).snapshot;
+      const firstPage = options.offline
+        ? null
+        : await identityHeads(identity, completed, null, { signal, peer });
+      const snapshot = firstPage?.snapshot ?? null;
+      const verified = new Map<string, Envelope>();
+      /** Envelopes fetched from the server in this load. They are kept locally afterwards. */
+      const fetched: Envelope[] = [];
+      let complete = true;
+      const read = async (id: string): Promise<Envelope | null> => {
+        check();
+        const cached = verified.get(id);
+        if (cached) return cached;
+        if (++work > WORK_LIMIT) throw workLimit();
+        let envelope = local.get(id) ?? null;
+        const fromServer = !envelope && Boolean(snapshot);
+        if (!envelope && snapshot)
+          envelope = await getEnvelope(id, snapshot, { signal, peer });
+        if (!envelope) {
+          complete = false;
+          return null;
+        }
+        verifyEnvelope(utf8(JSON.stringify(envelope)));
+        if (envelope.id !== id || envelope.header.issuer !== identity)
+          throw new Error("Own history did not match the signing identity.");
+        verified.set(id, envelope);
+        if (fromServer) fetched.push(envelope);
+        return envelope;
+      };
+      if (snapshot) {
+        let after: string | null = null;
+        const cursors = new Set<string>();
+        let pages = 0;
+        do {
+          check();
+          pages++;
+          if (++totalPages > 64) throw workLimit();
+          const page: IdentityHeadsPage =
+            pages === 1
+              ? firstPage!
+              : await identityHeads(identity, snapshot, after, {
+                  signal,
+                  peer,
+                });
+          if (page.next !== null && cursors.has(page.next))
+            throw new Error(
+              "Own-history pagination repeated a cursor. Export the outbox or retry with another server.",
+            );
+          let previous: string = after ?? "";
+          for (const id of page.heads) {
+            if (id <= previous)
+              throw new Error(
+                "Own-history pagination did not advance in event-ID order.",
+              );
+            previous = id;
+          }
+          if (
+            page.next !== null &&
+            (!page.heads.length || page.next !== previous)
+          )
+            throw new Error(
+              "Own-history pagination did not advance to its last returned head.",
+            );
+          returned += page.heads.length;
+          if (returned > WORK_LIMIT) throw workLimit();
+          for (const id of page.heads) {
+            if (!(await read(id)))
+              throw new Error(
+                "The server listed an own head that it cannot supply.",
+              );
+            known.add(id);
+            if (known.size > WORK_LIMIT) throw workLimit();
+          }
+          after = page.next;
+          if (after !== null) cursors.add(after);
+        } while (after !== null);
+      }
+      const ancestors = new Set<string>();
+      const pending = [...known];
+      const visited = new Set<string>();
+      while (pending.length) {
+        check();
+        const id = pending.pop()!;
+        if (visited.has(id)) continue;
+        visited.add(id);
+        const envelope = await read(id);
+        if (!envelope) {
+          if (!snapshot) continue;
+          throw new Error(
+            "This browser has no signed record for a remembered history reference. Connect to retrieve it.",
+          );
+        }
+        for (const previous of envelope.header.previous) {
+          ancestors.add(previous);
+          if (!snapshot && !local.has(previous)) {
+            complete = false;
+            continue;
+          }
+          pending.push(previous);
+        }
+      }
+      const frontier = [...known].filter((id) => !ancestors.has(id)).sort();
+      if (frontier.length > 64)
+        throw new Error(
+          "Own history has more than 64 branches, which is the format limit for one record. Signing with this key is unavailable here. Export the outbox from Not delivered to keep your signed records.",
+        );
+      // Every ancestor was walked, so the fetched records are authenticated
+      // history. Restore server evidence and any matching discard markers together.
+      // A failed restore leaves those markers in place, so saving a descendant still fails safely.
+      let storedHeads = [...remembered].sort();
+      let committedHeads: string[] | undefined;
+      if (fetched.length)
+        try {
+          committedHeads = await timed(
+            store.restoreServerOwn(identity, fetched),
+          );
+        } catch {}
+      if (committedHeads) {
+        if (committedHeads.join(" ") !== frontier.join(" "))
+          throw new Error(
+            "The local own history changed during refresh. Refresh the history before signing.",
+          );
+        storedHeads = committedHeads;
+      }
+      return {
+        identity,
+        snapshot,
+        frontier,
+        storedHeads,
+        events: verified,
+        complete,
+      };
+    } catch (error) {
+      if (!options.accepted || !snapshotExpired(error)) throw error;
+      if (attempt + 1 >= SNAPSHOT_SCAN_ATTEMPTS)
+        throw new Error(
+          "Own history is incomplete because the server snapshots kept expiring. Retry before signing.",
+        );
+    }
   }
-  return {
-    identity,
-    snapshot: manifest?.snapshot ?? null,
-    frontier,
-    storedHeads,
-    events: verified,
-    complete,
-  };
 }
 /** Only the frontier, for signing. */
 export async function ownHeads(
