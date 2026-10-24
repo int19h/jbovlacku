@@ -653,7 +653,7 @@ It marks local requests with an internal binding and ignores every client IP hea
 The ordinary Wrangler command leaves assistance off unless the operator supplies the key, enables assistance, and configures trusted edge identity.
 For an edge host, set `JVC_TRUST_CF_CONNECTING_IP=enabled` only where Cloudflare controls `CF-Connecting-IP`.
 The Worker also requires platform request metadata and a valid IP address. Synthetic metadata alone does not enable header trust.
-An invalid AI setting disables assistance on the Worker and emits one fixed error per coordinator instance. Manual routes remain available.
+An invalid generation setting disables assistance on the Worker and emits one fixed error per coordinator instance. Manual routes remain available.
 Hosted secret setup and deployment remain separate operator work.
 
 Node permits assistance on direct loopback by default and ignores forwarding headers.
@@ -821,6 +821,8 @@ An embedding query uses the caller's network limits. Operator index and probe ba
 Query callers must supply a valid IP address, a normalized IPv6 /64, or the trusted local host marker `local`.
 All these operations share the server's hourly and daily limits and execution slots with generation.
 The existing Node key file and Worker key binding also serve embedding requests.
+An invalid or empty `JVC_AI_EMBEDDING_*` value disables embedding alone on both hosts.
+The host emits a fixed warning that names the invalid field. Generation profiles and remembered browser consent stay unchanged.
 
 Each embedding batch permits one through eight inputs, with at most 4,096 UTF-8 bytes per input and 32 KiB in total.
 Inputs already include the exact profile prefix. The adapter rejects malformed UTF-8 and preserves the remaining bytes.
@@ -845,7 +847,9 @@ This prevents replacement requests from creating unbounded concurrent transport 
 `AssistanceService.embeddingOperations` returns at most 64 diagnostic records, with active operations first.
 The records expose operation IDs, purpose, deadline, transport state, and spending estimates without input text or credentials.
 After restart, reservations remain charged and appear as retained operations.
+An operation that was active at restart has unknown cost and retains the larger of its reservation and accumulated charges.
 Retained records do not establish whether an earlier request completed or lost its transport.
+Every error after an embedding reservation names its operation through the error's `operation` field.
 An operator can inspect these records and request a new bounded attempt through the same service after a limit clears.
 The earlier charge remains. A stuck transport requires its completion or a service restart before its slot returns.
 Job pause, resume, and explicit retry links belong to later indexing work.
@@ -853,6 +857,14 @@ Job pause, resume, and explicit retry links belong to later indexing work.
 These host methods expose no browser route. Semantic search remains disabled until storage and query services pass their tests.
 Compatible query caching and current-view filtering also belong to those later services.
 At most 16,384 cost records remain within a day. Reaching this bound also refuses new jobs with a retry interval.
+On a later admission, the service combines completed operator batches with known costs into hourly summary rows.
+Queries, generation jobs, errors, and unknown charges keep their individual rows.
+A summary ages from its latest charge, so earlier charges can stay counted for up to one extra hour.
+Summaries retain the operator's spending identity and count against server limits. They consume no client network share.
+Recent batch diagnostics keep the individual charge and link to their summary through `summary`.
+An aggregate diagnostic has `aggregated: true`. Restart retains the financial summary without claiming individual batch outcomes.
+Mocked tests run two complete indexes of 59,129 inputs each, retain 8,192 assistance history rows, and admit another generation job.
+The ledger keeps its existing row limit, 32 MiB Worker storage bound, and atomic 64 KiB parts.
 A local workerd test measured a valid maximum ledger with escaped 128-character IDs and two hashes per record.
 Its JSON occupied 17,858,669 bytes. The old single stored value occupied 6,324,340 bytes.
 The split form used 273 parts. Its largest stored part occupied 65,549 bytes, including serialization overhead. The manifest occupied 112 bytes.

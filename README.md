@@ -122,6 +122,10 @@ They reserve costs before admission and enforce server and network spending limi
 IPv6 limits also count /48 prefixes. The Worker stores large spending ledgers in atomic parts.
 The host service also admits bounded embedding batches through the same spending ledger and execution slots.
 Its provider adapter pins `qwen/qwen3-embedding-8b` to the Nebius route through OpenRouter, with fallback and redirects disabled.
+Invalid embedding settings disable embedding alone and preserve generation on both hosts.
+Interrupted operations retain unknown-cost charges after restart. Errors after reservation carry their operation IDs.
+Completed operator batches with known costs share hourly ledger rows, while recent diagnostics retain their individual charges.
+Mocked capacity tests cover two 59,129-input index runs, 8,192 assistance history rows, and a subsequent generation job.
 Mocked tests cover provider validation, caller departure, unknown charges, deadlines, and interrupted reservations after restart.
 Semantic storage, search routes, indexing, and query caching remain unfinished. The semantic capability stays disabled.
 A discarded result returns a clear status. Spending failures distinguish pending costs, timed limits, and requests that cannot fit.
