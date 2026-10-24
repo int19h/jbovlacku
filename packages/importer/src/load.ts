@@ -1,7 +1,6 @@
+import { randomUUID } from "node:crypto";
 import {
   prepareVerifiedRecords,
-  projectVerifiedRecord,
-  verifiedRecordKey,
   retainVerifiedRecords,
   type StoredVerifiedRecord,
 } from "../../service/src/verified-records.ts";
@@ -139,7 +138,6 @@ export async function admitImportProposal(
     }
   }
   const changedIds = new Set<string>();
-  const projections = new Map<string, StoredVerifiedRecord>();
   let changed = false;
   let accepted = 0;
   let duplicate = 0;
@@ -148,16 +146,6 @@ export async function admitImportProposal(
     records++;
     if (records > MAX_EVENTS * 2)
       throw new Error("The import proposal exceeds 400000 carrier records.");
-    const projected = projectVerifiedRecord(
-      p.id,
-      {
-        envelope_hash: p.envelope_hash,
-        body_hash: p.body === null ? null : p.header.content!.hash,
-      },
-      utf8(p.envelope),
-      p.body === null ? undefined : utf8(p.body),
-    );
-    projections.set(verifiedRecordKey(projected), projected);
     const old = next.events[p.id];
     if (
       old &&
@@ -324,26 +312,55 @@ export async function admitImportProposal(
     next.revision++;
     // The first service read publishes one wrapper for the complete inventory.
     next.snapshot = null;
-    const verified = await prepareVerifiedRecords(
-      objects,
-      next.events,
-      changedIds,
-      projections,
-    );
-    if (
-      !(await coordinator.compareAndSwap(
-        state.revision,
-        next,
-        undefined,
-        [...changedIds],
-        verified,
-      ))
-    )
-      throw new Error(
-        "The data directory changed during the load. Stop other writers and rerun the loader.",
-      );
-    if (!coordinator.saveVerifiedRecords)
-      await retainVerifiedRecords(coordinator, verified);
+    // Projections stay bounded even when a full proposal changes every event.
+    // Staged rows stay private until the final admission transaction promotes them.
+    const canStage =
+      coordinator.stageVerifiedRecords &&
+      coordinator.discardVerifiedRecordStage;
+    const stage = canStage ? randomUUID() : undefined;
+    let verified: StoredVerifiedRecord[] = [];
+    try {
+      if (stage) {
+        let batch: string[] = [];
+        for (const id of changedIds) {
+          batch.push(id);
+          if (batch.length === 256) {
+            await coordinator.stageVerifiedRecords!(
+              stage,
+              await prepareVerifiedRecords(objects, next.events, batch),
+            );
+            batch = [];
+          }
+        }
+        if (batch.length)
+          await coordinator.stageVerifiedRecords!(
+            stage,
+            await prepareVerifiedRecords(objects, next.events, batch),
+          );
+      } else
+        verified = await prepareVerifiedRecords(
+          objects,
+          next.events,
+          changedIds,
+        );
+      if (
+        !(await coordinator.compareAndSwap(
+          state.revision,
+          next,
+          undefined,
+          [...changedIds],
+          verified,
+          stage,
+        ))
+      )
+        throw new Error(
+          "The data directory changed during the load. Stop other writers and rerun the loader.",
+        );
+      if (!coordinator.saveVerifiedRecords)
+        await retainVerifiedRecords(coordinator, verified);
+    } finally {
+      if (stage) await coordinator.discardVerifiedRecordStage!(stage);
+    }
   }
   return {
     view: view.id,
@@ -368,6 +385,7 @@ export async function loadImportProposal(options: {
     coordinator = new SqliteCoordinator(
       join(options.directory, "coordinator.sqlite"),
     );
+    await coordinator.discardAbandonedVerifiedRecordStages();
     const objects = new FileObjectStore(join(options.directory, "objects"));
     const result = await admitImportProposal(
       options.proposal,

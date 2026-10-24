@@ -1,3 +1,4 @@
+import { DatabaseSync } from "node:sqlite";
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -877,5 +878,111 @@ test("an offline reload updates normalized snapshot mappings before restart", as
       );
   } finally {
     restarted.coordinator.close();
+  }
+});
+
+test("large offline admission stages bounded projections and rolls promotion back atomically", async () => {
+  const f = await fixture();
+  await loadImportProposal(f);
+  const extra = Array.from({ length: 600 }, (_, n) =>
+    createEvent(
+      seed,
+      [],
+      (1000 + n).toString(16).padStart(32, "0"),
+      { kind: "identity.merge" },
+      null,
+    ),
+  );
+  await writeFile(
+    join(f.proposal, "carriers.jsonl"),
+    [...f.imported.carriers, ...extra].map(canonical).join("\n"),
+  );
+  const current = stores(f.directory);
+  const database = new DatabaseSync(join(f.directory, "coordinator.sqlite"));
+  try {
+    const before = await current.coordinator.load();
+    const count = () =>
+      database.prepare("SELECT COUNT(*) AS n FROM verified_records").get()!.n;
+    const originalCount = count();
+    const stage = current.coordinator.stageVerifiedRecords.bind(
+      current.coordinator,
+    );
+    const sizes: number[] = [];
+    current.coordinator.stageVerifiedRecords = async (id, rows) => {
+      assert.ok(rows.length > 0 && rows.length <= 256);
+      sizes.push(rows.length);
+      await stage(id, rows);
+      assert.equal(
+        count(),
+        originalCount,
+        "Staged records must stay invisible before the event transaction.",
+      );
+      assert.equal(
+        (await current.coordinator.load()).position,
+        before.position,
+      );
+    };
+    database.exec(
+      "CREATE TRIGGER fail_compact_promotion BEFORE INSERT ON verified_records BEGIN SELECT RAISE(ABORT,'Synthetic compact promotion failure'); END",
+    );
+    await assert.rejects(
+      admitImportProposal(f.proposal, current.coordinator, current.objects),
+      /Synthetic compact promotion failure/,
+    );
+    assert.equal((await current.coordinator.load()).position, before.position);
+    assert.equal(count(), originalCount);
+    assert.equal(
+      database
+        .prepare("SELECT COUNT(*) AS n FROM verified_record_staging")
+        .get()!.n,
+      0,
+    );
+    database.exec("DROP TRIGGER fail_compact_promotion");
+    sizes.length = 0;
+    await admitImportProposal(f.proposal, current.coordinator, current.objects);
+    assert.deepEqual(sizes, [256, 256, 88]);
+    assert.equal(Number(count()), Number(originalCount) + extra.length);
+    assert.equal(
+      database
+        .prepare("SELECT COUNT(*) AS n FROM verified_record_staging")
+        .get()!.n,
+      0,
+    );
+    // A duplicate proposal creates no projection stage.
+    sizes.length = 0;
+    await admitImportProposal(f.proposal, current.coordinator, current.objects);
+    assert.deepEqual(sizes, []);
+    const after = await current.coordinator.load();
+    const id = extra[0].envelope.id;
+    const event = after.events[id];
+    const compact = await current.coordinator.getVerifiedRecord({
+      id,
+      envelope_hash: event.envelope_hash,
+      body_hash: event.body_hash,
+      version: hostRecordVersion(),
+    });
+    await stage("abandoned-before-crash", [compact!]);
+    assert.equal(
+      database
+        .prepare("SELECT COUNT(*) AS n FROM verified_record_staging")
+        .get()!.n,
+      1,
+    );
+  } finally {
+    current.coordinator.close();
+    database.close();
+  }
+  // Only the top-level loader holds the exclusive lock while it removes abandoned stages.
+  await loadImportProposal(f);
+  const reopened = new DatabaseSync(join(f.directory, "coordinator.sqlite"));
+  try {
+    assert.equal(
+      reopened
+        .prepare("SELECT COUNT(*) AS n FROM verified_record_staging")
+        .get()!.n,
+      0,
+    );
+  } finally {
+    reopened.close();
   }
 });
