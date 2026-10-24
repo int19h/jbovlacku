@@ -2,7 +2,7 @@
  * The word page: headword, composition, rafsi line, language tabs, and one
  * block per definition in layer order under the selected view.
  */
-import { wordId } from "../../../../packages/core/src/index.ts";
+import { wordId } from "../../../../packages/core/src/browser.ts";
 import {
   el,
   link,

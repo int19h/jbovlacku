@@ -70,6 +70,7 @@ async function initializeService() {
       join(directory, "coordinator.sqlite"),
       Number(process.env.JVC_SNAPSHOT_LIMIT ?? 16),
     );
+    await coordinator.discardAbandonedVerifiedRecordStages();
     const objects = new FileObjectStore(join(directory, "objects"));
     const loadedView = await readLoadedView(directory);
     if (loadedView) await checkLoadedView(loadedView, coordinator, objects);

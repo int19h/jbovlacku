@@ -192,7 +192,7 @@ export interface EvaluationSessionHandle {
   readonly state: Evaluation;
   rankWord(word: string, reviewers?: number): any;
   fork(options: EvaluationSessionOptions): EvaluationBuilder;
-  checkpoint(binding: string): Uint8Array;
+  checkpoint(binding: string, resultsOnly?: boolean): Uint8Array;
   updateStatistics(): {
     incremental_records: number;
     rebuilt: boolean;
@@ -244,7 +244,38 @@ function applyStateDelta(parent: Evaluation, delta: StateDelta): Evaluation {
     },
   };
 }
+/** Host-only projections never establish browser trust. */
+export interface HostVerifiedRecord {
+  version: number;
+  id: string;
+  state: unknown;
+  package: EvaluationPackageRecord | null;
+  body_status: "none" | "missing" | "present" | "invalid";
+  action_valid: boolean;
+}
+export const hostRecordVersion = (): number => wasm.host_record_version();
+/** Decode private projection fields without record verification. */
+export const checkHostVerifiedRecord = (record: string): string =>
+  wasm.check_host_verified_record(utf8(record));
+/** Parse only bytes from the host's private, already admitted record store. */
+export const extractHostVerifiedRecord = (
+  envelope: Uint8Array,
+  body?: Uint8Array,
+): string =>
+  new TextDecoder().decode(wasm.extract_host_verified_record(envelope, body));
+export const inspectHostStoredBody = (
+  header: Header,
+  body: Uint8Array | null,
+): { availability: string; body?: unknown; reason?: string } =>
+  JSON.parse(
+    wasm.inspect_host_stored_body(
+      utf8(JSON.stringify(header)),
+      body ?? undefined,
+    ),
+  );
+
 export interface EvaluationBuilder {
+  addHostVerifiedRecord(record: string): EvaluationPackageRecord | null;
   addRecord(
     envelope: Uint8Array,
     body?: Uint8Array,
@@ -293,7 +324,10 @@ function wrapEvaluationSession(
         state,
         identity,
       }),
-    checkpoint: (binding) => session.checkpoint(binding),
+    checkpoint: (binding, resultsOnly = false) =>
+      resultsOnly
+        ? session.result_checkpoint(binding)
+        : session.checkpoint(binding),
     updateStatistics: () => JSON.parse(session.update_statistics()),
     free: () => session.free(),
   };
@@ -318,6 +352,12 @@ function wrapEvaluationBuilder(
     if (closed) throw new Error("The evaluation builder is closed.");
   }
   return {
+    addHostVerifiedRecord(record: string) {
+      requireOpen();
+      return JSON.parse(
+        builder.add_host_verified_record(utf8(record)),
+      ) as EvaluationPackageRecord | null;
+    },
     addRecord(envelope: Uint8Array, body?: Uint8Array) {
       requireOpen();
       return JSON.parse(
@@ -345,9 +385,16 @@ function wrapEvaluationBuilder(
 export function restoreHostEvaluationSession(
   bytes: Uint8Array,
   binding: string,
+  records?: string[],
 ): EvaluationSessionHandle {
   return wrapEvaluationSession(
-    wasm.EvaluationSession.restore_host_checkpoint(bytes, binding),
+    records
+      ? wasm.EvaluationSession.restore_host_result_checkpoint(
+          bytes,
+          binding,
+          utf8("[" + records.join(",") + "]"),
+        )
+      : wasm.EvaluationSession.restore_host_checkpoint(bytes, binding),
   );
 }
 export const coreCheckpointVersion = (): string =>

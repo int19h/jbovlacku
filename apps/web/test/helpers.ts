@@ -2,7 +2,7 @@ import { expect, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-export const corePath = `/@fs${resolve("packages/core/src/index.ts")}`;
+export const corePath = `/@fs${resolve("packages/core/src/browser.ts")}`;
 export interface Fixture {
   origin: string;
   /** The server's selected view: the two-root view under the bounds profile. */

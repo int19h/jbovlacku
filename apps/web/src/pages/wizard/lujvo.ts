@@ -23,7 +23,7 @@ import {
   type LujvoCandidate,
   type LujvoResult,
   type MorphologyProfile,
-} from "../../../../../packages/core/src/index.ts";
+} from "../../../../../packages/core/src/browser.ts";
 import {
   el,
   inlineProse,

@@ -6,7 +6,7 @@
 import {
   rafsiPairId,
   wordId as deriveWordId,
-} from "../../../../packages/core/src/index.ts";
+} from "../../../../packages/core/src/browser.ts";
 import { el, p, text, link, button, field, describe } from "../lib/dom.ts";
 import {
   navigate,

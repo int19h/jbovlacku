@@ -4,7 +4,7 @@ import {
   rafsiPairId,
   wordId,
   type RecoveredPart,
-} from "../../../../packages/core/src/index.ts";
+} from "../../../../packages/core/src/browser.ts";
 import type { CachedPackage } from "../data/search.ts";
 import type { PackageEntryV2 } from "./types.ts";
 import type { Draft } from "./draft.ts";

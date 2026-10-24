@@ -12,7 +12,7 @@ import {
   prepareSelection,
   utf8,
   verifyEnvelope,
-} from "../../../../packages/core/src/index.ts";
+} from "../../../../packages/core/src/browser.ts";
 import {
   api,
   getManifest,

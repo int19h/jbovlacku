@@ -1,4 +1,4 @@
-import { wordId } from "../../../../../packages/core/src/index.ts";
+import { wordId } from "../../../../../packages/core/src/browser.ts";
 import {
   changeTypedWord,
   detectWord,

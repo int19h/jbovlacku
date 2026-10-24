@@ -1,7 +1,7 @@
 import "./styles/tokens.css";
 import "./styles/base.css";
 import "./styles/components.css";
-import { initializeCore } from "../../../packages/core/src/index.ts";
+import { initializeCore } from "../../../packages/core/src/browser.ts";
 import { LocalStore } from "./data/store.ts";
 import { DeliveryEngine } from "./data/delivery.ts";
 import { Session } from "./app/session.ts";

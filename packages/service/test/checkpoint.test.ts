@@ -56,9 +56,7 @@ const wrapper = (id = binding.snapshot) => ({
 });
 const payload: ServiceCheckpoint = {
   core: Uint8Array.of(1, 2, 3, 255),
-  package_records: [],
   packages: { entries: [], packages: {}, packages2: {} },
-  envelopes: [[hash(4), "canonical envelope"]],
 };
 async function fixture() {
   const root = process.env.JVC_TEST_ROOT ?? tmpdir();

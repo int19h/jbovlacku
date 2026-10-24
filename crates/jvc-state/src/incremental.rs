@@ -365,21 +365,33 @@ impl EvaluatedState {
     }
 
     pub fn checkpoint(&self, binding: &str) -> jvc_core::Result<Vec<u8>> {
+        self.save_checkpoint(binding, false)
+    }
+    /// Persistent checkpoints contain results. Private records remain in their own store.
+    pub fn result_checkpoint(&self, binding: &str) -> jvc_core::Result<Vec<u8>> {
+        self.save_checkpoint(binding, true)
+    }
+    fn save_checkpoint(&self, binding: &str, results_only: bool) -> jvc_core::Result<Vec<u8>> {
         #[derive(Serialize)]
         struct Saved<'a> {
             version: &'static str,
             binding: &'a str,
             options: &'a EvaluationOptions,
-            nodes: &'a BTreeMap<String, Node>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            nodes: Option<&'a BTreeMap<String, Node>>,
             evaluation: &'a Evaluation,
             event_limit_exceeded: bool,
             remaining_work: usize,
         }
         serde_json::to_vec(&Saved {
-            version: CHECKPOINT_VERSION,
+            version: if results_only {
+                "jvc-evaluation-results-v1"
+            } else {
+                CHECKPOINT_VERSION
+            },
             binding,
             options: &self.prepared.options,
-            nodes: &self.prepared.nodes,
+            nodes: (!results_only).then_some(&self.prepared.nodes),
             evaluation: &self.evaluation,
             event_limit_exceeded: self.prepared.event_limit_exceeded,
             remaining_work: self.remaining_work,
@@ -390,25 +402,58 @@ impl EvaluatedState {
     /// Restore only bytes checked against an independent trusted host pin.
     /// This API does not authenticate caller-supplied projected content.
     pub fn restore_host_checkpoint(bytes: &[u8], binding: &str) -> jvc_core::Result<Self> {
+        Self::restore_checkpoint(bytes, binding, None)
+    }
+    pub fn restore_host_result_checkpoint(
+        bytes: &[u8],
+        binding: &str,
+        records: Vec<HostVerifiedRecord>,
+    ) -> jvc_core::Result<Self> {
+        Self::restore_checkpoint(bytes, binding, Some(records))
+    }
+    fn restore_checkpoint(
+        bytes: &[u8],
+        binding: &str,
+        records: Option<Vec<HostVerifiedRecord>>,
+    ) -> jvc_core::Result<Self> {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Saved {
             version: String,
             binding: String,
             options: EvaluationOptions,
-            nodes: BTreeMap<String, Node>,
+            #[serde(default)]
+            nodes: Option<BTreeMap<String, Node>>,
             evaluation: Evaluation,
             event_limit_exceeded: bool,
             remaining_work: usize,
         }
         let saved: Saved = serde_json::from_slice(bytes)
             .map_err(|e| jvc_core::Error::new("checkpoint", e.to_string()))?;
-        if saved.version != CHECKPOINT_VERSION
+        let expected_version = if records.is_some() {
+            "jvc-evaluation-results-v1"
+        } else {
+            CHECKPOINT_VERSION
+        };
+        let nodes = match (records, saved.nodes) {
+            (Some(records), None) => records
+                .into_iter()
+                .map(|r| (r.node.id.clone(), r.node))
+                .collect(),
+            (None, Some(nodes)) => nodes,
+            _ => {
+                return Err(jvc_core::Error::new(
+                    "checkpoint",
+                    "checkpoint records do not match its format",
+                ));
+            }
+        };
+        if saved.version != expected_version
             || saved.binding != binding
             || saved.evaluation.selected_view != saved.options.selected_view
             || saved.evaluation.overlay != saved.options.overlay
             || saved.remaining_work > saved.options.limits.traversal
-            || saved.nodes.iter().any(|(id, node)| id != &node.id)
+            || nodes.iter().any(|(id, node)| id != &node.id)
         {
             return Err(jvc_core::Error::new(
                 "checkpoint",
@@ -417,7 +462,7 @@ impl EvaluatedState {
         }
         let prepared = PreparedEvaluationInput {
             options: saved.options,
-            nodes: saved.nodes,
+            nodes,
             event_limit_exceeded: saved.event_limit_exceeded,
         };
         Ok(Self {

@@ -95,6 +95,7 @@ export async function buildPackages(
   objects: ObjectStore,
   prepared?: PackageRecord[],
   reuse?: { previous: MaterializedPackages; changed: PackageRecord[] },
+  trustedHostRecords = false,
 ): Promise<MaterializedPackages> {
   const entries: SearchEntry[] = [];
   const entries2: SearchEntryV2[] = [];
@@ -103,7 +104,7 @@ export async function buildPackages(
   const incompleteRafsi = new Set<string>();
   async function* records(kind: EvaluationPackageRecord["kind"]) {
     if (prepared) {
-      if (reuse) {
+      if (reuse || trustedHostRecords) {
         for (const record of prepared) if (record.kind === kind) yield record;
         return;
       }

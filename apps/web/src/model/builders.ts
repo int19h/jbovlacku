@@ -13,7 +13,7 @@ import {
   type LujvoResult,
   type MorphologyProfile,
   type RafsiInventoryClaim,
-} from "../../../../packages/core/src/index.ts";
+} from "../../../../packages/core/src/browser.ts";
 import type { CachedPackage } from "../data/search.ts";
 import type {
   Compound,
@@ -43,7 +43,7 @@ export interface LujvoState {
   /** Exact spelling and boundary locks for a typed lujvo. */
   typed?: string;
   /** Legacy draft fields, cleared when the typed spelling changes. */
-  typedReading?: import("../../../../packages/core/src/index.ts").RecoveredPart[];
+  typedReading?: import("../../../../packages/core/src/browser.ts").RecoveredPart[];
   readingIndex?: number;
   joins?: (string | null)[];
   components: LujvoComponentState[];

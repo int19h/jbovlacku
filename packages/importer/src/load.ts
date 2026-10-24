@@ -1,3 +1,9 @@
+import { randomUUID } from "node:crypto";
+import {
+  prepareVerifiedRecords,
+  retainVerifiedRecords,
+  type StoredVerifiedRecord,
+} from "../../service/src/verified-records.ts";
 import { createReadStream } from "node:fs";
 import { open } from "node:fs/promises";
 import { join } from "node:path";
@@ -118,19 +124,20 @@ export async function admitImportProposal(
     { source: string; record: { kind: string; id: number } }
   >();
   const available = new Set<string>();
-  const waiting = new Map<string, StoredEvent[]>();
+  const waiting = new Map<string, [string, StoredEvent][]>();
   const key = (hash: string, bytes: number) => `${hash}/${bytes}`;
-  for (const event of Object.values(next.events)) {
+  for (const [id, event] of Object.entries(next.events)) {
     const descriptor = event.header.content;
     if (!descriptor) continue;
     const token = key(descriptor.hash, descriptor.bytes);
     if (event.body_hash) available.add(token);
     else {
       const list = waiting.get(token) ?? [];
-      list.push(event);
+      list.push([id, event]);
       waiting.set(token, list);
     }
   }
+  const changedIds = new Set<string>();
   let changed = false;
   let accepted = 0;
   let duplicate = 0;
@@ -154,8 +161,9 @@ export async function admitImportProposal(
     if (p.body !== null) {
       await objects.put(descriptor!.hash, utf8(p.body));
       available.add(token!);
-      for (const event of waiting.get(token!) ?? []) {
+      for (const [id, event] of waiting.get(token!) ?? []) {
         event.body_hash = descriptor!.hash;
+        changedIds.add(id);
         changed = true;
       }
       waiting.delete(token!);
@@ -181,6 +189,7 @@ export async function admitImportProposal(
     }
     if (!old || preferred || old.body_hash !== body) {
       changed = true;
+      changedIds.add(p.id);
       const event = (next.events[p.id] = {
         envelope_hash: preferred ? p.envelope_hash : old.envelope_hash,
         body_hash: body,
@@ -190,7 +199,7 @@ export async function admitImportProposal(
       });
       if (token && !body) {
         const list = waiting.get(token) ?? [];
-        list.push(event);
+        list.push([p.id, event]);
         waiting.set(token, list);
       }
     }
@@ -303,10 +312,55 @@ export async function admitImportProposal(
     next.revision++;
     // The first service read publishes one wrapper for the complete inventory.
     next.snapshot = null;
-    if (!(await coordinator.compareAndSwap(state.revision, next)))
-      throw new Error(
-        "The data directory changed during the load. Stop other writers and rerun the loader.",
-      );
+    // Projections stay bounded even when a full proposal changes every event.
+    // Staged rows stay private until the final admission transaction promotes them.
+    const canStage =
+      coordinator.stageVerifiedRecords &&
+      coordinator.discardVerifiedRecordStage;
+    const stage = canStage ? randomUUID() : undefined;
+    let verified: StoredVerifiedRecord[] = [];
+    try {
+      if (stage) {
+        let batch: string[] = [];
+        for (const id of changedIds) {
+          batch.push(id);
+          if (batch.length === 256) {
+            await coordinator.stageVerifiedRecords!(
+              stage,
+              await prepareVerifiedRecords(objects, next.events, batch),
+            );
+            batch = [];
+          }
+        }
+        if (batch.length)
+          await coordinator.stageVerifiedRecords!(
+            stage,
+            await prepareVerifiedRecords(objects, next.events, batch),
+          );
+      } else
+        verified = await prepareVerifiedRecords(
+          objects,
+          next.events,
+          changedIds,
+        );
+      if (
+        !(await coordinator.compareAndSwap(
+          state.revision,
+          next,
+          undefined,
+          [...changedIds],
+          verified,
+          stage,
+        ))
+      )
+        throw new Error(
+          "The data directory changed during the load. Stop other writers and rerun the loader.",
+        );
+      if (!coordinator.saveVerifiedRecords)
+        await retainVerifiedRecords(coordinator, verified);
+    } finally {
+      if (stage) await coordinator.discardVerifiedRecordStage!(stage);
+    }
   }
   return {
     view: view.id,
@@ -331,6 +385,7 @@ export async function loadImportProposal(options: {
     coordinator = new SqliteCoordinator(
       join(options.directory, "coordinator.sqlite"),
     );
+    await coordinator.discardAbandonedVerifiedRecordStages();
     const objects = new FileObjectStore(join(options.directory, "objects"));
     const result = await admitImportProposal(
       options.proposal,

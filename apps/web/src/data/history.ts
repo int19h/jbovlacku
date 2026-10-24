@@ -3,7 +3,7 @@
  * server's known heads, authenticates every envelope, and derives its own
  * effective registers from the causal graph.
  */
-import { utf8, verifyEnvelope } from "../../../../packages/core/src/index.ts";
+import { utf8, verifyEnvelope } from "../../../../packages/core/src/browser.ts";
 import {
   getEnvelope,
   getManifest,

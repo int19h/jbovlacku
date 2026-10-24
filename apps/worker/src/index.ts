@@ -1,3 +1,7 @@
+import type {
+  StoredVerifiedRecord,
+  VerifiedRecordBinding,
+} from "../../../packages/service/src/verified-records.ts";
 import { D1IndexStore } from "./index-store.ts";
 import { workerAssistanceBudgetStore } from "./assistance.ts";
 import { SqlRowsCoordinator } from "../../../packages/service/src/sql-coordinator.ts";
@@ -105,8 +109,28 @@ export class AdmissionCoordinator
   getSnapshot(id: string) {
     return this.coordinator.getSnapshot(id);
   }
-  compareAndSwap(revision: number, state: State, snapshot?: Snapshot) {
-    return this.coordinator.compareAndSwap(revision, state, snapshot);
+  getVerifiedRecord(binding: VerifiedRecordBinding) {
+    return this.coordinator.getVerifiedRecord(binding);
+  }
+  saveVerifiedRecords(records: StoredVerifiedRecord[]) {
+    return this.coordinator.saveVerifiedRecords(records);
+  }
+  compareAndSwap(
+    revision: number,
+    state: State,
+    snapshot?: Snapshot,
+    changedIds?: string[],
+    verifiedRecords?: StoredVerifiedRecord[],
+    verifiedStage?: string,
+  ) {
+    return this.coordinator.compareAndSwap(
+      revision,
+      state,
+      snapshot,
+      changedIds,
+      verifiedRecords,
+      verifiedStage,
+    );
   }
   async fetch(request: Request): Promise<Response> {
     const runtime = (await initializeCore(wasmModule)) as {

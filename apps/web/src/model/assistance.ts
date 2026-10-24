@@ -24,7 +24,7 @@ import {
   analyzeWord,
   rafsiPairId,
   wordId,
-} from "../../../../packages/core/src/index.ts";
+} from "../../../../packages/core/src/browser.ts";
 import {
   componentId,
   formationSource,

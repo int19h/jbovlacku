@@ -205,18 +205,41 @@ impl Fixture {
     fn streamed_session(&self) -> jvc_runtime::EvaluationSession {
         let options = canonical_value(&json!({"selected_view":self.selected_view,"import_selections":{},"overlay":self.overlay})).unwrap();
         let mut builder = jvc_runtime::EvaluationSessionBuilder::new(&options).unwrap();
+        let mut trusted = jvc_runtime::EvaluationSessionBuilder::new(&options).unwrap();
+        let mut records = Vec::new();
         for envelope in &self.events {
             let event = jvc_core::verify_envelope(envelope.as_bytes()).unwrap();
+            let body = self
+                .bodies
+                .get(event.id())
+                .map(|body| body.as_bytes().to_vec());
             builder
-                .add_record(
-                    envelope.as_bytes(),
-                    self.bodies
-                        .get(event.id())
-                        .map(|body| body.as_bytes().to_vec()),
-                )
+                .add_record(envelope.as_bytes(), body.clone())
                 .unwrap();
+            let compact =
+                jvc_runtime::extract_host_record_bytes(envelope.as_bytes(), body.as_deref())
+                    .unwrap();
+            trusted.add_host_verified_record(&compact).unwrap();
+            records.push(serde_json::from_slice::<Value>(&compact).unwrap());
         }
-        builder.finish()
+        let expected = builder.finish();
+        let session = trusted.finish();
+        assert_eq!(session.state().unwrap(), expected.state().unwrap());
+        assert_eq!(
+            session.rank(&self.word).unwrap(),
+            expected.rank(&self.word).unwrap()
+        );
+        let checkpoint = session.result_checkpoint("private-results").unwrap();
+        let value: Value = serde_json::from_slice(&checkpoint).unwrap();
+        assert!(value.get("nodes").is_none());
+        let restored = jvc_runtime::EvaluationSession::restore_host_result_checkpoint(
+            &checkpoint,
+            "private-results",
+            &serde_json::to_vec(&records).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(restored.state().unwrap(), expected.state().unwrap());
+        session
     }
 }
 fn score<'a>(result: &'a Value, target: &str) -> &'a Value {
@@ -1115,4 +1138,78 @@ fn publication_global_and_reconfigured_updates_use_full_state_export() {
     let mut replaced = parent.fork(&options).unwrap();
     replaced.add_record(f.events[0].as_bytes(), None).unwrap();
     assert_eq!(replaced.finish().state_delta(), "null");
+}
+
+#[test]
+fn host_record_projection_matches_its_versioned_golden_digest() {
+    #[derive(serde::Deserialize)]
+    struct Input {
+        name: String,
+        envelope: String,
+        body: Option<String>,
+    }
+    let inputs: Vec<Input> =
+        serde_json::from_slice(include_bytes!("fixtures/host-record-inputs.json")).unwrap();
+    let mut bytes = Vec::new();
+    let mut statuses = std::collections::BTreeSet::new();
+    let mut publications = std::collections::BTreeSet::new();
+    let mut actions = std::collections::BTreeSet::new();
+    let mut legacy_state = false;
+    let mut legacy_package = false;
+    for input in inputs {
+        let compact = jvc_runtime::extract_host_record_bytes(
+            input.envelope.as_bytes(),
+            input.body.as_deref().map(str::as_bytes),
+        )
+        .unwrap();
+        let value: Value = serde_json::from_slice(&compact).unwrap();
+        statuses.insert(value["body_status"].as_str().unwrap().to_owned());
+        actions.insert(value["state"]["node"]["kind"].as_str().unwrap().to_owned());
+        if !value["package"].is_null() {
+            publications.insert(value["package"]["kind"].as_str().unwrap().to_owned());
+        }
+        legacy_state |= value["state"]["node"]["body"]["legacy"]["attribution"]["author_account"]["evidence"]
+            ["kind"]
+            == "source-id";
+        legacy_package |= value["package"]["body"]["legacy"]["attribution"]["dates"].is_object();
+        bytes.extend_from_slice(input.name.as_bytes());
+        bytes.push(b'\n');
+        bytes.extend_from_slice(&compact);
+        bytes.push(b'\n');
+    }
+    assert_eq!(
+        statuses,
+        ["none", "missing", "present", "invalid"]
+            .map(String::from)
+            .into()
+    );
+    assert_eq!(
+        publications,
+        ["definition.publish", "rafsi.publish"]
+            .map(String::from)
+            .into()
+    );
+    assert_eq!(
+        actions.len(),
+        17,
+        "Cover every action and one unknown action."
+    );
+    assert!(
+        legacy_state && legacy_package,
+        "Cover both legacy projection filters."
+    );
+    let digest = jvc_core::hash_id("sha256:", b"", &bytes);
+    // Existing version files are immutable. A changed projection needs a new version and golden file.
+    let expected_path = format!(
+        "{}/tests/fixtures/host-record-v{}.sha256",
+        env!("CARGO_MANIFEST_DIR"),
+        jvc_runtime::HOST_RECORD_VERSION
+    );
+    let expected = std::fs::read_to_string(expected_path)
+        .expect("Add a golden file for the new extraction version.");
+    assert_eq!(
+        digest,
+        expected.trim(),
+        "A projection change requires HOST_RECORD_VERSION to change."
+    );
 }
