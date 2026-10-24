@@ -205,18 +205,41 @@ impl Fixture {
     fn streamed_session(&self) -> jvc_runtime::EvaluationSession {
         let options = canonical_value(&json!({"selected_view":self.selected_view,"import_selections":{},"overlay":self.overlay})).unwrap();
         let mut builder = jvc_runtime::EvaluationSessionBuilder::new(&options).unwrap();
+        let mut trusted = jvc_runtime::EvaluationSessionBuilder::new(&options).unwrap();
+        let mut records = Vec::new();
         for envelope in &self.events {
             let event = jvc_core::verify_envelope(envelope.as_bytes()).unwrap();
+            let body = self
+                .bodies
+                .get(event.id())
+                .map(|body| body.as_bytes().to_vec());
             builder
-                .add_record(
-                    envelope.as_bytes(),
-                    self.bodies
-                        .get(event.id())
-                        .map(|body| body.as_bytes().to_vec()),
-                )
+                .add_record(envelope.as_bytes(), body.clone())
                 .unwrap();
+            let compact =
+                jvc_runtime::extract_host_record_bytes(envelope.as_bytes(), body.as_deref())
+                    .unwrap();
+            trusted.add_host_verified_record(&compact).unwrap();
+            records.push(serde_json::from_slice::<Value>(&compact).unwrap());
         }
-        builder.finish()
+        let expected = builder.finish();
+        let session = trusted.finish();
+        assert_eq!(session.state().unwrap(), expected.state().unwrap());
+        assert_eq!(
+            session.rank(&self.word).unwrap(),
+            expected.rank(&self.word).unwrap()
+        );
+        let checkpoint = session.result_checkpoint("private-results").unwrap();
+        let value: Value = serde_json::from_slice(&checkpoint).unwrap();
+        assert!(value.get("nodes").is_none());
+        let restored = jvc_runtime::EvaluationSession::restore_host_result_checkpoint(
+            &checkpoint,
+            "private-results",
+            &serde_json::to_vec(&records).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(restored.state().unwrap(), expected.state().unwrap());
+        session
     }
 }
 fn score<'a>(result: &'a Value, target: &str) -> &'a Value {

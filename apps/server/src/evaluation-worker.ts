@@ -37,10 +37,16 @@ export async function serveEvaluationWorker(beforeFinish?: () => void) {
           );
           break;
         case "restore":
-          session = EvaluationSession.restore_host_checkpoint(
-            value.bytes,
-            value.binding,
-          );
+          session = value.records
+            ? EvaluationSession.restore_host_result_checkpoint(
+                value.bytes,
+                value.binding,
+                encoder.encode("[" + value.records.join(",") + "]"),
+              )
+            : EvaluationSession.restore_host_checkpoint(
+                value.bytes,
+                value.binding,
+              );
           sendState(id);
           return;
         case "fork":
@@ -58,6 +64,11 @@ export async function serveEvaluationWorker(beforeFinish?: () => void) {
             }
             base.free();
           }
+          break;
+        case "addHostVerified":
+          result = JSON.parse(
+            builder!.add_host_verified_record(encoder.encode(value)),
+          );
           break;
         case "add":
           result = JSON.parse(builder!.add_record(value.envelope, value.body));
@@ -81,8 +92,12 @@ export async function serveEvaluationWorker(beforeFinish?: () => void) {
               : session!.rank_with_reviewers(value.word, value.reviewers),
           );
           break;
+        case "resultCheckpoint":
         case "checkpoint": {
-          const bytes = session!.checkpoint(value);
+          const bytes =
+            operation === "resultCheckpoint"
+              ? session!.result_checkpoint(value)
+              : session!.checkpoint(value);
           port.postMessage({ id, value: bytes }, [bytes.buffer as ArrayBuffer]);
           return;
         }

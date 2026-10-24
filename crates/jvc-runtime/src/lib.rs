@@ -1,4 +1,4 @@
-//! Portable service entry points. Every envelope crosses signature validation.
+//! Portable service entry points with separate wire and trusted host ports.
 use jvc_core::{Error, Result, canonical_value, inspect_body, parse_json, verify_envelope};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -699,10 +699,10 @@ pub fn evaluation_checkpoint_version() -> String {
     jvc_state::CHECKPOINT_VERSION.into()
 }
 fn search_projection(
-    event: &jvc_core::VerifiedEnvelope,
+    id: &str,
+    header: &jvc_core::Header,
     availability: &jvc_core::BodyAvailability,
 ) -> Value {
-    let header = event.header();
     let kind = header.action["kind"].as_str().unwrap_or_default();
     if !matches!(kind, "definition.publish" | "rafsi.publish") {
         return Value::Null;
@@ -764,8 +764,79 @@ fn search_projection(
     } else {
         Value::Null
     };
-    json!({"id":event.id(),"issuer":header.issuer,"kind":kind,"word":header.action["word"],"body_hash":header.content.as_ref().map(|c| &c.hash),"body":body})
+    json!({"id":id,"issuer":header.issuer,"kind":kind,"word":header.action["word"],"body_hash":header.content.as_ref().map(|c| &c.hash),"body":body})
 }
+pub const HOST_RECORD_VERSION: u32 = 1;
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HostRecord {
+    version: u32,
+    id: String,
+    state: jvc_state::HostVerifiedRecord,
+    package: Value,
+    body_status: String,
+    action_valid: bool,
+}
+/// Only private host storage can supply the admitted original bytes.
+pub fn extract_host_record_bytes(envelope: &[u8], body: Option<&[u8]>) -> Result<Vec<u8>> {
+    let event: jvc_core::Envelope =
+        serde_json::from_slice(envelope).map_err(|e| Error::new("host_record", e.to_string()))?;
+    let availability = jvc_core::inspect_host_stored_body(&event.header, body);
+    let body_status = match &availability {
+        jvc_core::BodyAvailability::Absent => "none",
+        jvc_core::BodyAvailability::Missing => "missing",
+        jvc_core::BodyAvailability::Valid { .. } => "present",
+        jvc_core::BodyAvailability::Invalid { .. } => "invalid",
+    }
+    .into();
+    let (state, package) = jvc_state::HostVerifiedRecord::extract_with(
+        &event.id,
+        &event.header,
+        availability,
+        |availability| search_projection(&event.id, &event.header, availability),
+    );
+    serde_json::to_vec(&HostRecord {
+        version: HOST_RECORD_VERSION,
+        id: event.id,
+        state,
+        package,
+        body_status,
+        action_valid: jvc_core::validate_action(&event.header).is_ok(),
+    })
+    .map_err(|e| Error::new("host_record", e.to_string()))
+}
+#[wasm_bindgen]
+pub fn host_record_version() -> u32 {
+    HOST_RECORD_VERSION
+}
+#[wasm_bindgen]
+pub fn extract_host_verified_record(
+    envelope: &[u8],
+    body: Option<Vec<u8>>,
+) -> std::result::Result<Vec<u8>, JsValue> {
+    extract_host_record_bytes(envelope, body.as_deref()).map_err(fail)
+}
+#[wasm_bindgen]
+pub fn inspect_host_stored_body(
+    header: &[u8],
+    body: Option<Vec<u8>>,
+) -> std::result::Result<String, JsValue> {
+    let header = serde_json::from_slice(header)
+        .map_err(|e| fail(Error::new("host_record", e.to_string())))?;
+    output(jvc_core::inspect_host_stored_body(&header, body.as_deref()))
+}
+fn decode_host_record(bytes: &[u8]) -> Result<HostRecord> {
+    let record: HostRecord =
+        serde_json::from_slice(bytes).map_err(|e| Error::new("host_record", e.to_string()))?;
+    if record.version != HOST_RECORD_VERSION || record.id != record.state.id() {
+        return Err(Error::new(
+            "host_record",
+            "extraction version or event ID does not match",
+        ));
+    }
+    Ok(record)
+}
+
 #[wasm_bindgen]
 impl EvaluationSessionBuilder {
     #[wasm_bindgen(constructor)]
@@ -789,9 +860,18 @@ impl EvaluationSessionBuilder {
         let content = self
             .prepared
             .add_record_with(&event, body.as_deref(), |availability| {
-                search_projection(&event, availability)
+                search_projection(event.id(), event.header(), availability)
             });
         output(content)
+    }
+    /// The host must obtain this record from its private admission store.
+    pub fn add_host_verified_record(
+        &mut self,
+        bytes: &[u8],
+    ) -> std::result::Result<String, JsValue> {
+        let record = decode_host_record(bytes).map_err(fail)?;
+        self.prepared.add_host_verified_record(record.state);
+        output(record.package)
     }
     pub fn finish(self) -> EvaluationSession {
         EvaluationSession {
@@ -826,6 +906,37 @@ impl EvaluationSession {
     }
     pub fn checkpoint(&self, binding: &str) -> std::result::Result<Vec<u8>, JsValue> {
         self.state.checkpoint(binding).map_err(fail)
+    }
+    pub fn result_checkpoint(&self, binding: &str) -> std::result::Result<Vec<u8>, JsValue> {
+        self.state.result_checkpoint(binding).map_err(fail)
+    }
+    /// Records come from private storage, independently of the result checkpoint.
+    pub fn restore_host_result_checkpoint(
+        bytes: &[u8],
+        binding: &str,
+        records: &[u8],
+    ) -> std::result::Result<EvaluationSession, JsValue> {
+        let records: Vec<HostRecord> = serde_json::from_slice(records)
+            .map_err(|e| fail(Error::new("host_record", e.to_string())))?;
+        if records
+            .iter()
+            .any(|r| r.version != HOST_RECORD_VERSION || r.id != r.state.id())
+        {
+            return Err(fail(Error::new(
+                "host_record",
+                "extraction version or event ID does not match",
+            )));
+        }
+        Ok(Self {
+            identity: session_identity(),
+            base_identity: None,
+            state: jvc_state::EvaluatedState::restore_host_result_checkpoint(
+                bytes,
+                binding,
+                records.into_iter().map(|r| r.state).collect(),
+            )
+            .map_err(fail)?,
+        })
     }
     /// The host must check an independent trusted digest and exact binding first.
     pub fn restore_host_checkpoint(
