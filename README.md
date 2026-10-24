@@ -81,9 +81,10 @@ Manual authoring works without AI. Publish signs the definition, a separate auth
 Revise copies a publication into a new draft with its exact parent and keeps every field: links, code, operands, literal circled characters, every gloss with its language and sense, every derivation, and the frame role. The page names the only changes a native revision makes. A revision of imported text cites the imported publication and copies the source-rights reference once.
 Each rich text field of a draft holds its exact value, and only an edit of that field parses text, so an untouched field never changes. In structured editing every rich text node has a text form, and a backslash keeps a circled numeral or a token character literal. Pasted circled numbers stay literal unless the author chooses references. Removing a place keeps the referent of every other reference. The shared core checks the finished body before Publish is enabled, and every blocking problem names its field.
 A draft saved by the earlier prototype opens a choice to export it, convert it into a wizard draft, or discard it. The old license and attribution fields stay in the export only, because new definitions publish under CC0 1.0.
-Remote lexical search requires an effective receipt in the selected snapshot and view.
-Its retired-results filter includes effective deprecated definitions and shows each publication's status.
-Searches pinned to an earlier retained snapshot use that snapshot's state.
+Remote lexical search, word pages, and downloaded language packages exclude definitions whose receipts are not effective.
+Word pages and language packages retain effective deprecated definitions.
+Remote search includes them through its retired-results filter and shows each publication's status.
+Reads pinned to an earlier retained snapshot use that snapshot's state. Word pages and remote searches also use their requested view.
 The lujvo builder says whether a candidate spelling is taken in the local package and on the server.
 The rafsi page lists known assignments across words from version 2 packages, and the claim page signs a claim with its pair blessing.
 The lujvo builder offers short rafsi, gismu stems, whole gismu, whole-word parts under the extended profile, locks, CLL scores, recovered parts, and every competing rafsi claim from the local package.

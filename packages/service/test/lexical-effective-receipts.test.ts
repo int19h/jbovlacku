@@ -5,12 +5,18 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   createEvent,
+  canonicalize,
+  contentHash,
   identityFromSeed,
   initializeCore,
+  prepareSelection,
+  rafsiPairId,
   utf8,
   wordId,
 } from "../../core/src/index.ts";
-import { DictionaryService } from "../src/service.ts";
+import { DictionaryService, type ServiceOptions } from "../src/service.ts";
+import { buildPackages } from "../src/packages.ts";
+import type { ServiceCheckpoint } from "../src/checkpoint.ts";
 import {
   FileObjectStore,
   SqliteCoordinator,
@@ -29,9 +35,13 @@ afterEach(async () => {
 });
 const publisher = new Uint8Array(32).fill(34);
 const word = { language: "jbo" as const, spelling: "klama" };
-function signedDefinition(previous: string[] = [], nonce = "b".repeat(32)) {
+function signedDefinition(
+  previous: string[] = [],
+  nonce = "b".repeat(32),
+  seed = publisher,
+) {
   return createEvent(
-    publisher,
+    seed,
     previous,
     nonce,
     {
@@ -63,7 +73,7 @@ function signedDefinition(previous: string[] = [], nonce = "b".repeat(32)) {
     },
   );
 }
-async function fixture() {
+async function fixture(extra: Partial<ServiceOptions> = {}) {
   const root = process.env.JVC_TEST_ROOT ?? tmpdir();
   await mkdir(root, { recursive: true });
   const directory = await mkdtemp(join(root, "lexical-effective-"));
@@ -94,18 +104,24 @@ async function fixture() {
       account_authority: false,
     },
   );
-  const service = new DictionaryService(
-    new FileObjectStore(join(directory, "objects")),
-    coordinator,
-    {
-      serverId: "lexical-effective-test",
-      selectedView: view.envelope.id,
-      policyUrl: "https://example.invalid/local",
-      asyncMaterialization: true,
-    },
-  );
+  const objects = new FileObjectStore(join(directory, "objects"));
+  const options = {
+    serverId: "lexical-effective-test",
+    selectedView: view.envelope.id,
+    policyUrl: "https://example.invalid/local",
+    asyncMaterialization: true,
+    ...extra,
+  };
+  let service = new DictionaryService(objects, coordinator, options);
   await service.initialize();
   cleanups.push(() => service.flushMaterialization());
+  const restart = async () => {
+    await service.prepareEvaluationShutdown();
+    service = new DictionaryService(objects, coordinator, options);
+    await service.initialize();
+    await service.flushMaterialization();
+    return service;
+  };
   const read = async (path: string): Promise<any> => {
     const response = await service.fetch(
       new Request("http://local.invalid/api/v1" + path),
@@ -139,8 +155,380 @@ async function fixture() {
     assert.equal(await snapshot(), admitted.snapshot);
     return admitted;
   };
-  return { service, view, read, snapshot, search, admit };
+  const entries = async (snapshot: string, version: 1 | 2) => {
+    const manifest = await read(
+      `/packages/en?snapshot=${snapshot}&version=${version}`,
+    );
+    assert.equal(manifest.snapshot, snapshot);
+    assert.equal(manifest.version, version);
+    const parts = await Promise.all(
+      manifest.parts.map((part: { hash: string }) =>
+        read("/package-parts/" + part.hash),
+      ),
+    );
+    return parts.flat() as { event: string }[];
+  };
+  const wordRead = async (snapshot: string, suffix = "") => {
+    const result = await read(
+      `/words/${wordId(word)}?snapshot=${snapshot}&view=${view.envelope.id}${suffix}`,
+    );
+    assert.equal(result.snapshot, snapshot);
+    assert.equal(result.view, view.envelope.id);
+    return result;
+  };
+  return {
+    service,
+    view,
+    read,
+    snapshot,
+    search,
+    admit,
+    entries,
+    wordRead,
+    restart,
+    objects,
+    coordinator,
+  };
 }
+
+function signedTransfer(previous: string[] = []) {
+  return createEvent(
+    publisher,
+    previous,
+    "c".repeat(32),
+    {
+      kind: "identity.transfer",
+      successor: identityFromSeed(new Uint8Array(32).fill(35)),
+    },
+    null,
+  );
+}
+
+test("word reads hide inert definition targets across response fields and retain effective deprecated definitions", async () => {
+  const { view, admit, snapshot, wordRead } = await fixture();
+  const ancestor = signedDefinition([], "e".repeat(32));
+  const concurrent = signedDefinition([ancestor.envelope.id]);
+  const deprecated = createEvent(
+    publisher,
+    [ancestor.envelope.id],
+    "f".repeat(32),
+    { kind: "status.set", target: ancestor.envelope.id, value: "deprecated" },
+    null,
+  );
+  const assignment = rafsiPairId(wordId(word), "kla");
+  const claim = createEvent(
+    new Uint8Array(32).fill(36),
+    [],
+    "6".repeat(32),
+    { kind: "rafsi.publish", word: wordId(word), assignment, origin: "native" },
+    { word, rafsi: "kla", rationale: [], sources: [], legacy: null },
+  );
+  await admit(view, ancestor, concurrent, deprecated, claim);
+  const prior = await snapshot();
+  const expectedPrior = [ancestor.envelope.id, concurrent.envelope.id].sort();
+  assert.deepEqual((await wordRead(prior)).definitions, expectedPrior);
+  const transfer = signedTransfer([deprecated.envelope.id]);
+  await admit(transfer);
+  const after = signedDefinition([transfer.envelope.id], "d".repeat(32));
+  await admit(after);
+  const current = await snapshot();
+  for (const suffix of ["", "&retired=1", "&reviewers=1"]) {
+    const result = await wordRead(current, suffix);
+    assert.deepEqual(result.definitions, [ancestor.envelope.id]);
+    assert.deepEqual(
+      result.statuses.map((status: { event: string; state: string }) => [
+        status.event,
+        status.state,
+      ]),
+      [[ancestor.envelope.id, "deprecated"]],
+    );
+    assert.deepEqual(result.rafsi, [claim.envelope.id]);
+    assert.deepEqual(
+      result.assignments.map((item: { id: string }) => item.id),
+      [assignment],
+    );
+    const visible = new Set([ancestor.envelope.id, assignment]);
+    assert.ok(
+      result.scores.every((score: { target: string }) =>
+        visible.has(score.target),
+      ),
+    );
+    assert.ok(result.layers.flat().every((id: string) => visible.has(id)));
+    assert.ok(result.unavailable_scores.every((id: string) => visible.has(id)));
+    assert.deepEqual(
+      (await wordRead(prior, suffix)).definitions,
+      expectedPrior,
+    );
+  }
+});
+
+test("both package versions update receipt membership after a transfer-only delta and retain historical and deprecated entries", async () => {
+  const { view, admit, snapshot, entries } = await fixture();
+  const controlSeed = new Uint8Array(32).fill(36);
+  const control = signedDefinition([], "e".repeat(32), controlSeed);
+  const concurrent = signedDefinition();
+  await admit(view, control, concurrent);
+  const prior = await snapshot();
+  for (const version of [1, 2] as const)
+    assert.deepEqual(
+      (await entries(prior, version)).map((entry) => entry.event),
+      [control.envelope.id, concurrent.envelope.id].sort(),
+    );
+  const transfer = signedTransfer();
+  await admit(transfer);
+  const transferred = await snapshot();
+  for (const version of [1, 2] as const)
+    assert.deepEqual(
+      (await entries(transferred, version)).map((entry) => entry.event),
+      [control.envelope.id],
+    );
+  const after = signedDefinition([transfer.envelope.id], "d".repeat(32));
+  await admit(after);
+  const deprecated = createEvent(
+    controlSeed,
+    [control.envelope.id],
+    "f".repeat(32),
+    { kind: "status.set", target: control.envelope.id, value: "deprecated" },
+    null,
+  );
+  await admit(deprecated);
+  const current = await snapshot();
+  for (const version of [1, 2] as const) {
+    assert.deepEqual(
+      (await entries(current, version)).map((entry) => entry.event),
+      [control.envelope.id],
+    );
+    assert.deepEqual(
+      (await entries(prior, version)).map((entry) => entry.event),
+      [control.envelope.id, concurrent.envelope.id].sort(),
+    );
+  }
+});
+
+test("packages rebuild legacy checkpoint bytes and keep receipt filtering after restart and later lifecycle changes", async () => {
+  let saved: ServiceCheckpoint | undefined;
+  let loads = 0;
+  const errors: unknown[] = [];
+  const checkpoints = {
+    async load() {
+      loads++;
+      return saved ? structuredClone(saved) : null;
+    },
+    async save(_binding: unknown, payload: ServiceCheckpoint) {
+      saved = structuredClone(payload);
+    },
+  };
+  const { view, admit, snapshot, entries, restart, coordinator, objects } =
+    await fixture({
+      checkpoints,
+      coreVersion: "lexical-package-test",
+      checkpointIntervalMs: 0,
+      reportError: (error) => errors.push(error),
+    });
+  const concurrent = signedDefinition();
+  await admit(view, concurrent);
+  const prior = await snapshot();
+  assert.ok(saved);
+  await restart();
+  await admit(signedTransfer());
+  const current = await snapshot();
+  assert.notEqual(current, prior);
+  assert.ok(saved);
+  // Recreate the unfiltered derived packages stored by the earlier service.
+  saved.packages = await buildPackages(
+    (await coordinator.getSnapshot(current))!,
+    objects,
+  );
+  await restart();
+  assert.equal(loads, 2);
+  assert.deepEqual(errors, []);
+  for (const version of [1, 2] as const) {
+    assert.deepEqual(await entries(current, version), []);
+    assert.deepEqual(
+      (await entries(prior, version)).map((entry) => entry.event),
+      [concurrent.envelope.id],
+    );
+  }
+});
+
+test("package discovery without a configured view still filters inert definitions", async () => {
+  const { view, admit, snapshot, entries, read } = await fixture({
+    selectedView: undefined,
+  });
+  const definition = signedDefinition();
+  await admit(view, definition);
+  const prior = await snapshot();
+  assert.deepEqual(
+    (await entries(prior, 1)).map((entry) => entry.event),
+    [definition.envelope.id],
+  );
+  await admit(signedTransfer());
+  const current = await snapshot();
+  const manifest = await read("/manifest");
+  for (const version of [1, 2] as const) {
+    const empty = await read(
+      `/packages/en?snapshot=${current}&version=${version}`,
+    );
+    assert.equal(empty.snapshot, current);
+    assert.equal(empty.version, version);
+    assert.deepEqual(empty.parts, []);
+    const bytes = utf8(canonicalize(utf8(JSON.stringify(empty))));
+    const advertised = (
+      version === 1 ? manifest.packages : manifest.package_versions
+    ).find((pkg: { language: string }) => pkg.language === "en");
+    assert.equal(advertised.hash, contentHash(bytes));
+    assert.equal(advertised.bytes, bytes.length);
+    assert.deepEqual(await entries(current, version), []);
+  }
+});
+
+test("packages add a pending definition when a later dependency-only delta makes its receipt effective", async () => {
+  const { view, admit, snapshot, entries } = await fixture();
+  const predecessor = createEvent(
+    publisher,
+    [],
+    "9".repeat(32),
+    { kind: "identity.merge" },
+    null,
+  );
+  const definition = signedDefinition([predecessor.envelope.id]);
+  await admit(view, definition);
+  const prior = await snapshot();
+  for (const version of [1, 2] as const)
+    assert.deepEqual(await entries(prior, version), []);
+  await admit(predecessor);
+  const current = await snapshot();
+  for (const version of [1, 2] as const) {
+    assert.deepEqual(
+      (await entries(current, version)).map((entry) => entry.event),
+      [definition.envelope.id],
+    );
+    assert.deepEqual(await entries(prior, version), []);
+  }
+});
+
+test("package receipt filtering preserves imported entries and alternate-view server reads", async () => {
+  const { service, view, admit, snapshot, entries, read } = await fixture();
+  const importer = new Uint8Array(32).fill(37);
+  const source = "https://source.invalid";
+  const imported = createEvent(
+    importer,
+    [],
+    "8".repeat(32),
+    {
+      kind: "definition.publish",
+      word: wordId(word),
+      language: "en",
+      parents: [],
+      origin: "import",
+    },
+    {
+      ...(signedDefinition().body as Record<string, unknown>),
+      license: {
+        expression: "unknown",
+        url: null,
+        attribution: "Synthetic source author",
+      },
+      legacy: {
+        source,
+        snapshot: "sha256:" + "1".repeat(64),
+        extraction: "lexical-test-1",
+        record: { kind: "definition", id: 1 },
+        locator: "definitions/1",
+        original: { definition: "A traveler goes somewhere by moving." },
+        attribution: {
+          author: "Synthetic source author",
+          editor: null,
+          author_account: null,
+          dates: {},
+        },
+        conversion: {
+          method: "literal",
+          tool: "lexical-test",
+          version: "1",
+          model: null,
+          review: "unreviewed",
+          mappings: [],
+          warnings: [],
+        },
+        limitations: ["Synthetic fixture."],
+      },
+    },
+  );
+  const selection = prepareSelection(
+    utf8(JSON.stringify([imported.envelope.id])),
+  );
+  const response = await service.fetch(
+    new Request("http://local.invalid/api/v1/import-selections", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: selection.canonical,
+    }),
+  );
+  assert.equal(response.status, 201);
+  const alternate = createEvent(
+    new Uint8Array(32).fill(38),
+    [],
+    "7".repeat(32),
+    { kind: "view.publish", parents: [] },
+    {
+      ...(view.body as Record<string, unknown>),
+      name: "Imported alternative",
+      import_sets: [
+        {
+          source,
+          importer: identityFromSeed(importer),
+          selection: selection.hash,
+        },
+      ],
+    },
+  );
+  await admit(view, alternate, imported);
+  const current = await snapshot();
+  for (const version of [1, 2] as const)
+    assert.deepEqual(
+      (await entries(current, version)).map((entry) => entry.event),
+      [imported.envelope.id],
+    );
+  for (const selected of [view, alternate]) {
+    const params = new URLSearchParams({
+      snapshot: current,
+      view: selected.envelope.id,
+      language: "en",
+      q: "traveler",
+    });
+    const results = await read("/search?" + params);
+    assert.equal(results.snapshot, current);
+    assert.equal(results.view, selected.envelope.id);
+    assert.deepEqual(
+      results.hits.flatMap((hit: { definitions: string[] }) => hit.definitions),
+      selected === view ? [] : [imported.envelope.id],
+    );
+    const result = await read(`/words/${wordId(word)}?${params}`);
+    assert.deepEqual(
+      result.definitions,
+      selected === view ? [] : [imported.envelope.id],
+    );
+  }
+});
+
+test("package discovery reports unavailable receipt computation instead of an empty dictionary", async () => {
+  const { service, view } = await fixture({
+    asyncMaterialization: false,
+    stateLimits: { events: 1, traversal: 1000, claim_depth: 16 },
+  });
+  await service.admitMany(
+    [view, signedDefinition()].map((event) => utf8(JSON.stringify(event))),
+  );
+  const response = await service.fetch(
+    new Request("http://local.invalid/api/v1/packages/en"),
+  );
+  assert.equal(response.status, 503);
+  assert.equal(
+    ((await response.json()) as { code: string }).code,
+    "resource_unavailable",
+  );
+});
 
 for (const retired of [false, true]) {
   test(`lexical search excludes concurrent and post-transfer inert definitions (${retired ? "retired=1" : "ordinary"})`, async () => {

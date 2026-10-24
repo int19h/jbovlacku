@@ -25,6 +25,7 @@ import {
 import {
   buildPackages,
   rebasePackages,
+  sameEffectiveDefinitions,
   type MaterializedPackages,
   type PackageRecord,
 } from "./packages.ts";
@@ -375,6 +376,28 @@ export class DictionaryService {
                   JSON.stringify(binding),
                   records,
                 ));
+            try {
+              const effectiveDefinitions = this.packageDefinitionIds(
+                session.state,
+              );
+              if (
+                !sameEffectiveDefinitions(
+                  payload.packages.effectiveDefinitions,
+                  effectiveDefinitions,
+                )
+              )
+                payload.packages = await buildPackages(
+                  snapshot,
+                  this.objects,
+                  packageRecords,
+                  undefined,
+                  true,
+                  effectiveDefinitions,
+                );
+            } catch (error) {
+              session.free();
+              throw error;
+            }
             this.packageRecords.set(recoveredId, packageRecords);
             recovered = { session, payload };
           }
@@ -718,12 +741,21 @@ export class DictionaryService {
     }
     let previous: MaterializedPackages | undefined;
     const pending = this.evaluation(snapshot)
-      .then(async () => {
+      .then(async (evaluation) => {
+        const effectiveDefinitions = this.packageDefinitionIds(evaluation);
         const base = this.packageBases.get(snapshot.snapshot);
         previous = base
           ? await this.packageCache.get(base.snapshot)
           : undefined;
-        if (previous && base && !base.changed.length)
+        if (
+          previous &&
+          base &&
+          !base.changed.length &&
+          sameEffectiveDefinitions(
+            previous.effectiveDefinitions,
+            effectiveDefinitions,
+          )
+        )
           return rebasePackages(previous, snapshot.snapshot, this.objects);
         return buildPackages(
           snapshot,
@@ -731,6 +763,7 @@ export class DictionaryService {
           this.packageRecords.get(snapshot.snapshot),
           previous && base ? { previous, changed: base.changed } : undefined,
           true,
+          effectiveDefinitions,
         );
       })
       .then(async (built) => {
@@ -857,6 +890,22 @@ export class DictionaryService {
       },
     );
     return pending;
+  }
+  private packageDefinitionIds(evaluation: Evaluation): string[] {
+    if (evaluation.reasons.includes("resource_unavailable"))
+      throw new ApiError(
+        503,
+        "resource_unavailable",
+        "The service cannot evaluate publication receipts.",
+      );
+    // A missing selected view does not invalidate graph and body receipts.
+    return sorted(
+      Object.keys(evaluation.publications).filter(
+        (id) =>
+          evaluation.publications[id].kind === "definition.publish" &&
+          evaluation.receipts[id]?.interpretation === "effective",
+      ),
+    );
   }
   private language(value: string | null): string {
     if (
@@ -2209,7 +2258,11 @@ export class DictionaryService {
           "Selected view cannot be evaluated.",
         );
       const publications = Object.values(evaluation.publications).filter(
-        (p) => p.word === id && p.eligible !== "not_selected",
+        (p) =>
+          p.word === id &&
+          p.eligible !== "not_selected" &&
+          (p.kind !== "definition.publish" ||
+            evaluation.receipts[p.id]?.interpretation === "effective"),
       );
       const definitions = publications
         .filter((p) => p.kind === "definition.publish")
@@ -2278,6 +2331,10 @@ export class DictionaryService {
         }
       } catch {}
       const scores = ranking.scores as Record<string, unknown>[];
+      const visibleTargets = new Set([
+        ...definitions,
+        ...assignments.map((assignment) => assignment.id),
+      ]);
       return json({
         snapshot: snapshot.snapshot,
         view,
@@ -2293,12 +2350,18 @@ export class DictionaryService {
         definitions,
         rafsi,
         assignments,
-        scores,
+        scores: scores.filter((score) =>
+          visibleTargets.has(String(score.target)),
+        ),
         statuses: definitions.map(
           (event) => evaluation.publication_statuses[event],
         ),
-        layers: ranking.layers,
-        unavailable_scores: ranking.unavailable_scores,
+        layers: (ranking.layers as string[][])
+          .map((layer) => layer.filter((event) => definitions.includes(event)))
+          .filter((layer) => layer.length > 0),
+        unavailable_scores: (ranking.unavailable_scores as string[]).filter(
+          (target) => visibleTargets.has(target),
+        ),
       });
     }
     if (path === "/records") {
