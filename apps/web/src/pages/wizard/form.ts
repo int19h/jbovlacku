@@ -12,6 +12,7 @@ import type { Draft } from "../../model/draft.ts";
 import { manualFormation, syncFormationSources } from "../../model/builders.ts";
 import {
   actionBar,
+  confirmKindChange,
   DraftSaver,
   loadDraft,
   stepBar,
@@ -29,6 +30,8 @@ export async function formPage(route: Route, context: RenderContext, app: App) {
     return;
   }
   const saver = new DraftSaver(app, draft);
+  if (draft.kind) confirmKindChange(draft, draft.kind);
+  saver.touch();
   main.append(stepBar(draft, 3));
   const kind = draft.kind;
   const section = el("section", {

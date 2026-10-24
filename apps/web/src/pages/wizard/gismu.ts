@@ -105,13 +105,11 @@ export async function gismuPage(
   }
   const saver = new DraftSaver(app, draft);
   // Changes made while opening the generator are saved like any other edit.
-  if (draft.kind !== "gismu") {
-    if (!confirmKindChange(draft, "gismu")) {
-      navigate("/new/type", { replace: true });
-      return;
-    }
-    saver.touch();
+  if (!confirmKindChange(draft, "gismu")) {
+    navigate("/new/type", { replace: true });
+    return;
   }
+  saver.touch();
   const existingBuilder = draft.gismu;
   const state = (draft.gismu ??= newGismuState());
   const evidenceOnly =

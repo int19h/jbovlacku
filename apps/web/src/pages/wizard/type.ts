@@ -107,10 +107,11 @@ export async function typePage(
     : null;
   if (draft.detectionFor !== spelling) {
     if (draft.kind === null || draft.kind === draft.autoDetectedKind) {
-      draft.kind = detected;
-      if (detected) draft.autoDetectedKind = detected;
-      else delete draft.autoDetectedKind;
-      draft.review = draft.review.filter((field) => field !== "word type");
+      if (confirmKindChange(draft, detected)) {
+        if (detected) draft.autoDetectedKind = detected;
+      } else {
+        draft.review = [...new Set([...draft.review, "word type"])];
+      }
     } else if (detected && draft.kind !== detected) {
       draft.review = [...new Set([...draft.review, "word type"])];
     }
@@ -248,7 +249,10 @@ export async function typePage(
         }),
       );
     select.addEventListener("change", () => {
-      if (!confirmKindChange(draft, select.value as LexicalKind)) return;
+      if (!confirmKindChange(draft, select.value as LexicalKind)) {
+        select.value = draft.kind ?? "other";
+        return;
+      }
       saver.touch();
       refreshPrimary();
     });
