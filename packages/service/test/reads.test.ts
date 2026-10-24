@@ -7,6 +7,8 @@ import {
   initializeCore,
   identityFromSeed,
   createEvent,
+  interpretDefinition,
+  signHeader,
   wordId,
   canonicalize,
   utf8,
@@ -945,4 +947,142 @@ test("POST search uses the same fields, results, validation, and cursors as GET"
     ).status,
     400,
   );
+});
+
+test("search packages derive omitted defaults while body reads and retries retain original bytes", async () => {
+  const sparse = {
+    word,
+    language: "en",
+    text: [["Sparse package definition."]],
+    classification: { kind: "gismu" },
+    license: { expression: "CC0-1.0" },
+  };
+  const publication = createEvent(
+    new Uint8Array(32).fill(43),
+    [],
+    "8".repeat(32),
+    {
+      kind: "definition.publish",
+      word: wordId(word),
+      language: "en",
+      parents: [],
+      origin: "native",
+    },
+    sparse,
+  );
+  const { service } = await fixture({ extra: [publication] });
+  const expected = canonicalize(utf8(JSON.stringify(sparse)));
+  const response = await service.fetch(
+    request(
+      `/bodies/${encodeURIComponent(publication.envelope.header.content.hash)}`,
+    ),
+  );
+  assert.equal(await response.text(), expected);
+  const records = await read(await service.fetch(request("/records")));
+  assert.deepEqual(
+    records.items.find((item: any) => item.id === publication.envelope.id).body,
+    sparse,
+  );
+  const retry = await read(
+    await service.fetch(request("/events", publication)),
+  );
+  assert.equal(retry.admission, "duplicate");
+  assert.equal(retry.id, publication.envelope.id);
+  const manifest = await read(await service.fetch(request("/packages/en")));
+  const part = await read(
+    await service.fetch(
+      request(`/package-parts/${encodeURIComponent(manifest.parts[0].hash)}`),
+    ),
+  );
+  const entry = part.find(
+    (item: any) => item.event === publication.envelope.id,
+  );
+  assert.deepEqual(entry.glosses, []);
+  assert.deepEqual(entry.classification, { kind: "gismu", selmaho: [] });
+  assert.equal(entry.body, publication.envelope.header.content.hash);
+});
+
+test("equivalent defaults keep separate publications and judgments, and a sparse revision inherits no notes", async () => {
+  const { service, definition, bless } = await fixture();
+  const sparse = {
+    word,
+    language: "en",
+    text: [["Independent defaults fixture."]],
+    classification: { kind: "gismu" },
+    license: { expression: "CC0-1.0" },
+  };
+  const seed = new Uint8Array(32).fill(44);
+  const action = {
+    kind: "definition.publish",
+    word: wordId(word),
+    language: "en",
+    parents: [],
+    origin: "native",
+  };
+  const omitted = createEvent(seed, [], "9".repeat(32), action, sparse);
+  const full = interpretDefinition(sparse);
+  const bytes = utf8(canonicalize(utf8(JSON.stringify(full))));
+  const explicit = {
+    envelope: signHeader(seed, {
+      ...omitted.envelope.header,
+      content: { hash: contentHash(bytes), bytes: bytes.length },
+    }),
+    body: full,
+  };
+  for (const publication of [omitted, explicit]) {
+    const response = await service.fetch(request("/events", publication));
+    assert.ok(response.ok, await response.text());
+  }
+  assert.notEqual(omitted.envelope.id, explicit.envelope.id);
+  const judgment = createEvent(
+    reviewer,
+    [bless.envelope.id],
+    "a".repeat(32),
+    { kind: "judgment.set", target: omitted.envelope.id, value: "bless" },
+    null,
+  );
+  const response = await service.fetch(request("/events", judgment));
+  assert.ok(response.ok, await response.text());
+  const result = await read(
+    await service.fetch(request(`/words/${encodeURIComponent(wordId(word))}`)),
+  );
+  assert.ok(result.definitions.includes(omitted.envelope.id));
+  assert.ok(result.definitions.includes(explicit.envelope.id));
+  const byTarget = new Map(
+    result.scores.map((score: any) => [score.target, score]),
+  );
+  assert.notEqual(
+    (byTarget.get(omitted.envelope.id) as any).net[0].numerator,
+    "0",
+  );
+  assert.equal(
+    (byTarget.get(explicit.envelope.id) as any).net[0].numerator,
+    "0",
+  );
+  const revision = createEvent(
+    seed,
+    [omitted.envelope.id, explicit.envelope.id],
+    "b".repeat(32),
+    { ...action, parents: [definition.envelope.id] },
+    sparse,
+  );
+  const revisionResponse = await service.fetch(request("/events", revision));
+  assert.ok(revisionResponse.ok, await revisionResponse.text());
+  const raw = await read(
+    await service.fetch(
+      request(
+        `/bodies/${encodeURIComponent(revision.envelope.header.content.hash)}`,
+      ),
+    ),
+  );
+  assert.ok(!Object.hasOwn(raw, "notes"));
+  assert.deepEqual(interpretDefinition<any>(raw).notes, []);
+  const parent = await read(
+    await service.fetch(
+      request(
+        `/bodies/${encodeURIComponent(definition.envelope.header.content.hash)}`,
+      ),
+    ),
+  );
+  assert.deepEqual(parent.notes, [["A note."]]);
 });

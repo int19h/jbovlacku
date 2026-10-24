@@ -19,6 +19,7 @@ import {
   utf8,
   evaluate,
   prepareAdmission,
+  interpretDefinition,
 } from "../../core/src/index.ts";
 import { canonical, type Carrier } from "../src/index.ts";
 import { decodeCopyField, readCopyRows } from "../src/sql-copy.ts";
@@ -193,6 +194,14 @@ test("SQL fixture produces signed definitions in three languages and retains his
     $source_number: "4",
   });
   assert.equal(first.body.license.expression, "unknown");
+  assert.equal(Object.hasOwn(first.body, "frame"), false);
+  assert.equal(Object.hasOwn(first.body, "operands"), false);
+  assert.equal(Object.hasOwn(first.body, "examples"), false);
+  const interpreted = interpretDefinition<any>(first.body);
+  assert.equal(interpreted.frame, null);
+  assert.deepEqual(interpreted.operands, []);
+  assert.deepEqual(interpreted.examples, []);
+  assert.deepEqual(interpreted.legacy, first.body.legacy);
   assert.ok(
     definitions.some(
       (item) => item.body.legacy.original.definition_versions.length > 0,

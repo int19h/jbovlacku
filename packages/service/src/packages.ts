@@ -2,6 +2,7 @@ import {
   canonicalize,
   contentHash,
   inspectBody,
+  interpretDefinition,
   utf8,
   type EvaluationPackageRecord,
 } from "../../core/src/index.ts";
@@ -197,7 +198,7 @@ export async function buildPackages(
     if (record.missing)
       throw new Error("Retained publication bytes are unavailable.");
     if (!record.body) continue;
-    const body = record.body as Record<string, any>;
+    const body = interpretDefinition<Record<string, any>>(record.body);
     const entry: SearchEntry = {
       event: record.id,
       word: body.word,

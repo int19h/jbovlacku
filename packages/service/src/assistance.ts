@@ -3,6 +3,7 @@ import {
   buildLujvo,
   createEvent,
   inspectBody,
+  interpretDefinition,
   utf8,
   wordId,
   canonicalize,
@@ -404,7 +405,7 @@ export function parseAssistRequest(value: unknown): AssistRequest {
     );
     const checked = inspectBody(
       utf8(JSON.stringify(record.envelope)),
-      utf8(canonicalize(utf8(JSON.stringify(body)))),
+      utf8(canonicalize(utf8(JSON.stringify(record.body)))),
     );
     if (checked.availability !== "valid")
       throw new Error("Invalid current fields.");
@@ -415,7 +416,24 @@ export function parseAssistRequest(value: unknown): AssistRequest {
       "The draft fields do not satisfy the definition schema and place references.",
     );
   }
-  return request;
+  const interpreted = interpretDefinition<Data>({
+    classification: current.classification,
+    text: current.text,
+    frame: current.frame,
+    glosses: current.glosses,
+    etymology: { formation: current.formation, compound: current.compound },
+  });
+  return {
+    ...request,
+    current: {
+      ...current,
+      classification: interpreted.classification,
+      frame: interpreted.frame,
+      glosses: interpreted.glosses,
+      formation: interpreted.etymology.formation,
+      compound: interpreted.etymology.compound,
+    },
+  };
 }
 function placeKeys(frame: Data | null): string[] {
   return (frame?.places ?? []).map((place: Data) => `x${place.index}`);

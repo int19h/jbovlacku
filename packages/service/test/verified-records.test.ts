@@ -242,7 +242,7 @@ test("a changed extraction version backfills once by parsing private bytes", asy
     const state = await f.coordinator.load();
     const event = state.events[record.envelope.id];
     const db = new DatabaseSync(f.path);
-    db.exec("UPDATE verified_records SET version=0");
+    db.exec("UPDATE verified_records SET version=1");
     // The trusted migration does not inspect the old signature or canonical form.
     const admitted = JSON.parse(
       new TextDecoder().decode(f.bytes.get(event.envelope_hash)!),
@@ -683,6 +683,66 @@ test("malformed current-version rows report their event and repair once without 
     database.close();
   } finally {
     console.warn = warn;
+    f.coordinator.close();
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
+test("version 1 definition rows backfill interpreted defaults without changing stored signed bodies", async () => {
+  const f = await fixture();
+  try {
+    const body = {
+      word: { language: "jbo" as const, spelling: "broda" },
+      language: "en",
+      text: [["Sparse stored definition."]],
+      classification: { kind: "gismu" },
+      license: { expression: "CC0-1.0" },
+    };
+    const record = createEvent(
+      seed,
+      [],
+      "e".repeat(32),
+      {
+        kind: "definition.publish",
+        word: wordId(body.word),
+        language: "en",
+        parents: [],
+        origin: "native",
+      },
+      body,
+    );
+    await f.service.admitMany([utf8(JSON.stringify(record))]);
+    const event = (await f.coordinator.load()).events[record.envelope.id];
+    const originalEnvelope = f.bytes.get(event.envelope_hash)!.slice();
+    const originalBody = f.bytes.get(event.body_hash!)!.slice();
+    const db = new DatabaseSync(f.path);
+    db.exec("UPDATE verified_records SET version=1");
+    db.close();
+    assert.equal(await backfillVerifiedRecords(f.coordinator, f.objects), 1);
+    const compact = compactRecord(
+      await readVerifiedRecord(
+        f.coordinator,
+        f.objects,
+        record.envelope.id,
+        event,
+      ),
+    );
+    assert.equal(compact.version, 2);
+    assert.equal(compact.body_status, "present");
+    assert.deepEqual(compact.package!.body!.glosses, []);
+    assert.deepEqual(compact.package!.body!.classification, {
+      kind: "gismu",
+      selmaho: [],
+    });
+    assert.deepEqual(compact.package!.body!.notes, []);
+    assert.equal(compact.package!.body_hash, event.body_hash);
+    assert.deepEqual(f.bytes.get(event.envelope_hash), originalEnvelope);
+    assert.deepEqual(f.bytes.get(event.body_hash!), originalBody);
+    assert.deepEqual(JSON.parse(new TextDecoder().decode(originalBody)), body);
+    f.reads.length = 0;
+    assert.equal(await backfillVerifiedRecords(f.coordinator, f.objects), 0);
+    assert.deepEqual(f.reads, []);
+  } finally {
     f.coordinator.close();
     await rm(f.directory, { recursive: true, force: true });
   }

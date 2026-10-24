@@ -218,3 +218,60 @@ fn cli_refuses_fifo_without_waiting_for_a_writer() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("input must be a regular file"));
 }
+
+#[test]
+fn definition_defaults_keep_original_bytes_through_carrier_round_trip() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let raw = json!({"word":{"language":"jbo","spelling":"broda"},"language":"en","text":[["CLI defaults fixture"]],"classification":{"kind":"gismu"},"license":{"expression":"CC0-1.0"}});
+    let full = jvc_core::interpret_definition(&raw);
+    let mut snapshot = Snapshot::new();
+    let mut previous = vec![];
+    for body in [&raw, &full] {
+        let bytes = canonical_value(body).unwrap();
+        let descriptor = body_descriptor(&bytes).unwrap();
+        let event = sign_header(&[24; 32], Header {
+            version: 1, issuer: identity_from_seed(&[24;32]), previous,
+            nonce: "00".repeat(16),
+            action: json!({"kind":"definition.publish","word":jvc_core::word_id(&raw["word"]).unwrap(),"language":"en","parents":[],"origin":"native"}),
+            content: Some(descriptor.clone()),
+        }).unwrap();
+        snapshot
+            .insert_envelope(&event.canonical_envelope().unwrap())
+            .unwrap();
+        snapshot.insert_body(&descriptor.hash, &bytes).unwrap();
+        previous = vec![event.id().to_owned()];
+    }
+    let records = snapshot.to_jsonl().unwrap();
+    fs::write(root.join("records.jsonl"), &records).unwrap();
+    success(cli(
+        root,
+        &[
+            "import",
+            "records.jsonl",
+            "--format",
+            "jsonl",
+            "--output",
+            "first",
+        ],
+    ));
+    success(cli(root, &["validate", "first"]));
+    let exported = cli(root, &["export", "first", "--format", "jsonl"]);
+    assert!(exported.status.success());
+    assert_eq!(exported.stdout, records);
+    fs::write(root.join("export.jsonl"), exported.stdout).unwrap();
+    success(cli(
+        root,
+        &[
+            "import",
+            "export.jsonl",
+            "--format",
+            "jsonl",
+            "--output",
+            "second",
+        ],
+    ));
+    let reimported = read_directory(root.join("second")).unwrap();
+    assert_eq!(reimported.events().len(), 2);
+    assert_eq!(reimported.to_jsonl().unwrap(), records);
+}
