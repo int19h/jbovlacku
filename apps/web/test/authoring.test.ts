@@ -2005,6 +2005,41 @@ test("Revise of an independently signed rich parent with compound evidence publi
   page,
 }) => {
   await createIdentity(page);
+  // This test supplies its own conflict before it downloads the package.
+  const competing = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    const { postEvent } = await import(String("/src/data/api.ts"));
+    const word = { language: "jbo", spelling: "vlacku" };
+    const wordId = core.wordId(word);
+    const claim = core.createEvent(
+      crypto.getRandomValues(new Uint8Array(32)),
+      [],
+      "e".repeat(32),
+      {
+        kind: "rafsi.publish",
+        word: wordId,
+        assignment: core.rafsiPairId(wordId, "cku"),
+        origin: "native",
+      },
+      {
+        word,
+        rafsi: "cku",
+        rationale: [["A competing claim for this test."]],
+        sources: [],
+        legacy: null,
+      },
+    );
+    await postEvent(JSON.stringify(claim));
+    return { id: claim.envelope.id as string, word: wordId as string };
+  }, corePath);
+  await expect
+    .poll(async () => {
+      const response = await page.request.get(
+        `/api/v1/words/${encodeURIComponent(competing.word)}`,
+      );
+      return (await response.json()).rafsi;
+    })
+    .toContain(competing.id);
   await page.goto("/preferences");
   await page.getByRole("button", { name: "Download", exact: true }).click();
   await expect(page.getByRole("status")).toHaveText(
