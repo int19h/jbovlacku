@@ -56,8 +56,8 @@ export interface MaterializedPackage {
 }
 export interface MaterializedPackages {
   entries: SearchEntry[];
-  /** Private cache metadata. Downloaded packages include these definitions only. */
-  effectiveDefinitions?: string[];
+  /** Private cache metadata. Null means that publication receipts are unavailable. */
+  effectiveDefinitions?: string[] | null;
   packages: Record<string, MaterializedPackage>;
   /** Version 2 packages by language. */
   packages2: Record<string, MaterializedPackage>;
@@ -67,10 +67,12 @@ export interface PackageRecord extends EvaluationPackageRecord {
   missing: boolean;
 }
 export function sameEffectiveDefinitions(
-  previous: readonly string[] | undefined,
-  current: readonly string[],
+  previous: readonly string[] | null | undefined,
+  current: readonly string[] | null,
 ): boolean {
+  if (current === null) return previous === null;
   return (
+    previous !== null &&
     previous?.length === current.length &&
     previous.every((id, index) => id === current[index])
   );
@@ -107,13 +109,14 @@ export async function buildPackages(
   prepared?: PackageRecord[],
   reuse?: { previous: MaterializedPackages; changed: PackageRecord[] },
   trustedHostRecords = false,
-  effectiveDefinitions?: string[],
+  effectiveDefinitions?: string[] | null,
 ): Promise<MaterializedPackages> {
   const entries: SearchEntry[] = [];
   const entries2: SearchEntryV2[] = [];
-  const included = effectiveDefinitions
-    ? new Set(effectiveDefinitions)
-    : undefined;
+  const included =
+    effectiveDefinitions === undefined
+      ? undefined
+      : new Set(effectiveDefinitions ?? []);
   // Rafsi spellings from retained claim bodies, by word ID.
   const rafsiByWord = new Map<string, Set<string>>();
   const incompleteRafsi = new Set<string>();
@@ -276,9 +279,10 @@ export async function buildPackages(
         .map((entry) => entry.language),
     );
     if (reuse && included) {
-      const previousIncluded = reuse.previous.effectiveDefinitions
-        ? new Set(reuse.previous.effectiveDefinitions)
-        : undefined;
+      const previousIncluded =
+        reuse.previous.effectiveDefinitions === undefined
+          ? undefined
+          : new Set(reuse.previous.effectiveDefinitions ?? []);
       // Lifecycle and dependency changes can change the membership of unchanged publications.
       for (const records of [reuse.previous.entries, entries])
         for (const entry of records)
@@ -362,7 +366,7 @@ export async function buildPackages(
   };
   return {
     entries,
-    ...(effectiveDefinitions ? { effectiveDefinitions } : {}),
+    ...(effectiveDefinitions !== undefined ? { effectiveDefinitions } : {}),
     packages: await build(entries, 1),
     packages2: await build(entries2, 2),
   };

@@ -891,13 +891,8 @@ export class DictionaryService {
     );
     return pending;
   }
-  private packageDefinitionIds(evaluation: Evaluation): string[] {
-    if (evaluation.reasons.includes("resource_unavailable"))
-      throw new ApiError(
-        503,
-        "resource_unavailable",
-        "The service cannot evaluate publication receipts.",
-      );
+  private packageDefinitionIds(evaluation: Evaluation): string[] | null {
+    if (evaluation.reasons.includes("resource_unavailable")) return null;
     // A missing selected view does not invalidate graph and body receipts.
     return sorted(
       Object.keys(evaluation.publications).filter(
@@ -906,6 +901,14 @@ export class DictionaryService {
           evaluation.receipts[id]?.interpretation === "effective",
       ),
     );
+  }
+  private requirePackageReceipts(packages: MaterializedPackages): void {
+    if (packages.effectiveDefinitions === null)
+      throw new ApiError(
+        503,
+        "resource_unavailable",
+        "The service cannot evaluate publication receipts.",
+      );
   }
   private language(value: string | null): string {
     if (
@@ -1928,6 +1931,7 @@ export class DictionaryService {
     if (path === "/manifest") {
       const snapshot = await this.interpretedSnapshot(null);
       const packages = await this.packages(snapshot);
+      this.requirePackageReceipts(packages);
       const state = await this.metadata();
       return json({
         snapshot: snapshot.snapshot,
@@ -2051,6 +2055,7 @@ export class DictionaryService {
       if (version !== "1" && version !== "2")
         throw new ApiError(400, "version", "Package version must be 1 or 2.");
       const built = await this.packages(snapshot);
+      this.requirePackageReceipts(built);
       const pkg = (version === "2" ? built.packages2 : built.packages)[
         language
       ];

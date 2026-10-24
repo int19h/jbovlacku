@@ -512,22 +512,114 @@ test("package receipt filtering preserves imported entries and alternate-view se
   }
 });
 
-test("package discovery reports unavailable receipt computation instead of an empty dictionary", async () => {
-  const { service, view } = await fixture({
-    asyncMaterialization: false,
-    stateLimits: { events: 1, traversal: 1000, claim_depth: 16 },
+test("unavailable receipts complete materialization and checkpoint recovery while public packages and manifest report 503", async () => {
+  let saved: ServiceCheckpoint | undefined;
+  const errors: unknown[] = [];
+  const checkpoints = {
+    async load() {
+      return saved ? structuredClone(saved) : null;
+    },
+    async save(_binding: unknown, payload: ServiceCheckpoint) {
+      saved = structuredClone(payload);
+    },
+  };
+  const {
+    service,
+    view,
+    admit,
+    snapshot,
+    coordinator,
+    read,
+    entries,
+    restart,
+  } = await fixture({
+    checkpoints,
+    coreVersion: "unavailable-package-test",
+    checkpointIntervalMs: 0,
+    reportError: (error) => errors.push(error),
   });
-  await service.admitMany(
-    [view, signedDefinition()].map((event) => utf8(JSON.stringify(event))),
+  const definition = signedDefinition();
+  await admit(view, definition);
+  const prior = await snapshot();
+  service.options.stateLimits = { events: 2, traversal: 1000, claim_depth: 16 };
+  const merge = createEvent(
+    publisher,
+    [definition.envelope.id],
+    "4".repeat(32),
+    { kind: "identity.merge" },
+    null,
   );
-  const response = await service.fetch(
-    new Request("http://local.invalid/api/v1/packages/en"),
+  const admitted = await service.admitMany([utf8(JSON.stringify(merge))]);
+  await service.flushMaterialization();
+  const metadata = await coordinator.loadMetadata();
+  assert.equal(metadata.materialized_snapshot, admitted.snapshot);
+  assert.equal(metadata.materialized_position, metadata.position);
+  const receipt = await read("/receipts/" + merge.envelope.id);
+  assert.equal(receipt.snapshot, admitted.snapshot);
+  assert.equal(receipt.interpretation, "unavailable");
+  assert.ok(!receipt.reasons.includes("index_lag"));
+  assert.ok(!receipt.reasons.includes("evaluation_pending"));
+  assert.ok(saved);
+  assert.equal(saved.packages.effectiveDefinitions, null);
+  assert.deepEqual(
+    saved.packages.entries.map((entry) => entry.event),
+    [definition.envelope.id],
   );
-  assert.equal(response.status, 503);
+  const restored = await restart();
+  assert.deepEqual(errors, []);
+  assert.deepEqual(await read("/receipts/" + merge.envelope.id), receipt);
+  for (const path of ["/manifest", "/packages/en", "/packages/en?version=2"]) {
+    const response = await restored.fetch(
+      new Request("http://local.invalid/api/v1" + path),
+    );
+    assert.equal(response.status, 503);
+    assert.equal(
+      ((await response.json()) as { code: string }).code,
+      "resource_unavailable",
+    );
+  }
+  // Another unavailable snapshot can reuse its internal package generation.
+  const later = createEvent(
+    publisher,
+    [merge.envelope.id],
+    "5".repeat(32),
+    { kind: "identity.merge" },
+    null,
+  );
+  const next = await restored.admitMany([utf8(JSON.stringify(later))]);
+  await restored.flushMaterialization();
   assert.equal(
-    ((await response.json()) as { code: string }).code,
-    "resource_unavailable",
+    (await coordinator.loadMetadata()).materialized_snapshot,
+    next.snapshot,
   );
+  assert.equal(
+    (await read("/receipts/" + later.envelope.id)).snapshot,
+    next.snapshot,
+  );
+  assert.equal(saved.packages.effectiveDefinitions, null);
+  assert.deepEqual(
+    (await entries(prior, 1)).map((entry) => entry.event),
+    [definition.envelope.id],
+  );
+  restored.options.stateLimits = undefined;
+  const recovery = createEvent(
+    publisher,
+    [later.envelope.id],
+    "6".repeat(32),
+    { kind: "identity.merge" },
+    null,
+  );
+  const recovered = await restored.admitMany([utf8(JSON.stringify(recovery))]);
+  await restored.flushMaterialization();
+  assert.equal((await read("/manifest")).snapshot, recovered.snapshot);
+  for (const version of [1, 2] as const)
+    assert.deepEqual(
+      (await entries(recovered.snapshot, version)).map((entry) => entry.event),
+      [definition.envelope.id],
+    );
+  assert.deepEqual(saved.packages.effectiveDefinitions, [
+    definition.envelope.id,
+  ]);
 });
 
 for (const retired of [false, true]) {
