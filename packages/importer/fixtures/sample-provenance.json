@@ -1,0 +1,6 @@
+{
+  "description": "Two rows extracted from a pinned local capture for importer tests. This file is a derived fixture, not a separate HTTP capture.",
+  "source_capture": "sha256:b51b132d42bd81deda5ca4d089e8c83928402c3c6345d0447ff3c22e423d9df9",
+  "definition_ids": [4, 1353],
+  "rights": "unknown: capture contains no rights statement"
+}

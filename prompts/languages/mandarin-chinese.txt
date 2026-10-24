@@ -1,0 +1,40 @@
+Language rules: Mandarin Chinese
+
+Remove these parts.
+- Nominal suffixes 子, 儿, 头 with the neutral tone, when they only form the noun: 桌子 gives 桌, 鼻子 gives 鼻, 石头 gives 石, 木头 gives 木, 花儿 gives 花, 鸟儿 gives 鸟. Keep the character when it is not this suffix: 电子 and 子弹 stay whole, 码头 stays whole, and 女儿 and 儿童 stay whole, because 儿 there is the full syllable ér.
+- The property suffix 性 when the base already names the relation: 弹性 gives 弹, because 弹 in this compound means to spring back. 可燃性 gives 可燃. 酸性 gives 酸. Keep 性 when the base alone does not name the relation: 个性 stays 个性, because 个 alone is a measure word. 人性 stays 人性, because 人 alone is a person.
+- The suffix 化 when it only means becoming the state that the base names: 习惯化 gives 习惯. 老化 gives 老.
+- The degree suffix 度 when the target is the relation, not its degree. 浓度 gives 浓 when the target is being concentrated. 硬度 gives 硬 when the target is being hard. 强度 gives 强 when the target is being strong.
+- Aspect particles 了, 着, 过 and the plural 们 with the neutral tone. They are separate words and are never part of the stem: 吃了 gives 吃, 看着 gives 看, 学生们 gives 学生. Keep these characters when they are part of the word: 了解, 着急 and 过去 stay whole.
+- The structural particles 的 and 地 when the rest names the relation: 科学的 gives 科学, 认真地 gives 认真, 慢慢地 gives 慢慢. Keep them when they are part of the word: 目的 and 土地 stay whole.
+
+Keep these parts.
+- Both characters of a compound whose characters do not name the relation alone: 蒸发, 校准 and 灭菌 stay whole.
+- Every syllable of a loanword written for its sound: 沙发, 咖啡 and 巧克力 stay whole.
+- 化 when the target is making something have the state, because it adds causation: 简化 stays 简化, because 简 alone is "simple". 美化 stays 美化. 净化 stays 净化.
+- 度 when the target is the measure itself, or when 度 is not the degree suffix: 速度 stays 速度 for speed as a quantity. 制度 and 态度 stay whole.
+- A causative or resultative second element when the target requires it. The stem is then the whole compound. This replaces the shared rule that removes result material. 打开 stays 打开 when the target is opening something. 提高 stays 提高 when the target is raising something. 打破 stays 打破 when the target is breaking something.
+- Do not cut a two-character word to one character when that character alone has an unrelated meaning: 东西 stays 东西, because 东 alone is "east". 马上 stays 马上, because 马 alone is "horse". Judge the character by its sense inside the chosen word: 桌子 gives 桌, because 桌 alone is "table".
+
+Pronunciation.
+Use standard Mandarin. Choose the reading that the sense of the chosen word needs: 校 is jiào in 校准 and xiào in 学校. 长 is zhǎng in 生长. 行 is háng in 银行.
+Give the tone-marked pinyin of each character of the chosen word in note. This item is added to the note list of step 8. Example note: "校准 jiào zhǔn. Kept whole, because neither character alone names the relation."
+Write the ipa of a stem as one word, with no space between its syllables, and with no stress or tone mark: 东西 is [tʊŋɕi]. 校准 is [tɕjɑʊʈʂwən].
+Pinyin r is [ʐ] or [ɻ] in ipa, never [r]: 人 rén is [ʐən].
+Show aspiration in ipa, although sounds do not write it. Pinyin p, t, k, q, ch and c are aspirated: 七 qī is [tɕʰi], and 鸡 jī is [tɕi]. 茶 chá is [ʈʂʰa], and 杂 zá is [tsa].
+Erhua belongs to the syllable before it. Remove it with the 儿 and write that syllable as it sounds without 儿: 花儿 huār gives 花 [xwa], sounds xua. 玩儿 wánr gives 玩 [wan], sounds uan. 点儿 diǎnr gives 点 [tjɛn], sounds tien.
+
+Scoring.
+Tones are not written.
+Pinyin b d g are unaspirated [p t k] and are written p t k. Pinyin p t k are written p t k. Never write b, d or g for a Mandarin stop. 不 bù gives pu. 大 dà gives ta. 哥 gē gives ke. 皮 pí gives pi. 特 tè gives te.
+Write z as ts, c as ts, zh as tc, ch as tc, j as tc, q as tc, x as c, sh as c, s as s, r as r, h as x, f as f, m as m, l as l, ng as n, n as n. Pinyin c is never Lojban c, and pinyin x is never Lojban x. 在 zài gives tsai. 草 cǎo gives tsau. 中 zhōng gives tcun. 车 chē gives tce. 家 jiā gives tcia. 七 qī gives tci. 小 xiǎo gives ciau. 书 shū gives cu. 生 shēng gives cen. 好 hǎo gives xau.
+Pinyin r gives r, although ipa shows [ʐ]. This replaces the [ʐ] row for Mandarin. 人 rén gives ren. 热 rè gives re.
+Pinyin e alone, as in ge and zhe, is [ɤ] and gives e. This replaces the [ɤ] row for Mandarin. 哥 gē gives ke. 河 hé gives xe.
+Pinyin i after z c s zh ch sh r is [ɨ] in ipa and gives i: 字 zì gives tsi, 是 shì gives ci, 日 rì gives ri.
+Pinyin ü, and u after j q x y, give i: 女 nǚ gives ni, 绿 lǜ gives li, 去 qù gives tci, 鱼 yú gives i. After n and l a written u is u: 努 nǔ gives nu.
+After j q x y, un is ün and gives in, and uan is üan and gives ien: 军 jūn gives tcin, 云 yún gives in, 全 quán gives tcien, 元 yuán gives ien. After other consonants, un gives uen: 春 chūn gives tcuen, 准 zhǔn gives tcuen.
+Write o after b p m f as uo: 波 bō gives puo, 摸 mō gives muo, 佛 fó gives fuo. ou stays ou: 狗 gǒu gives kou.
+Write the other finals as they sound: ao as au, ai as ai, ei as ei, an as an, en as en, ang as an, eng as en, ing as in, ong as un, iong as iun, ian as ien, iang as ian, uang as uan, iu as iou, ui as uei, ie and üe as ie. 东 dōng gives tun. 熊 xióng gives ciun. 天 tiān gives tien. 想 xiǎng gives cian. 光 guāng gives kuan. 京 jīng gives tcin. 六 liù gives liou. 对 duì gives tuei. 雪 xuě gives cie.
+Pinyin y and w spell a glide or a vowel. Write no extra letter for them: 一 yī gives i, 鸭 yā gives ia, 有 yǒu gives iou, 五 wǔ gives u, 我 wǒ gives uo, 为 wèi gives uei.
+The syllable er gives er: 耳 ěr gives er, 二 èr gives er.
+A glide in a rising diphthong is i or u: jiao gives tciau, zhun gives tcuen, guan gives kuan.

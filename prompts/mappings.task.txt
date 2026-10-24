@@ -1,0 +1,37 @@
+For each whole-word place, list the component places that correspond to it.
+Use only the supplied whole-word definition, the supplied component words, and their listed places.
+Do not derive another component list from the spelling of the whole word. If the user message lists the components klama and karce, test only klama and karce.
+A cmavo component, such as se or nu, has no places of its own. Test the whole-word places against the places of the other components.
+Do not add or change a component definition from memory.
+
+A correspondence means that the whole-word place plays the role that the component place names.
+Every place takes a plural reference. It can refer to one thing, to several things, or to some stuff. The distributed kind below needs a place whose referents share out several roles.
+Four kinds of correspondence count. Each needs a one-sentence explanation.
+- direct: the same role. The destination of a car journey is the destination of going. The listener of a radio broadcast is the listener of hearing.
+- merged: one referent plays two component roles at the same time. The retriever is both the searcher and the rememberer. A self-taught learner is both the teacher and the student.
+- distributed: a plural referent whose members take different component roles. Numerical inputs that are added together fill both the augend role and the addend role. The speakers of a dialogue fill both the speaker role and the listener role.
+- functional: the whole-word place performs the function of the component role, although it is a different kind of thing. A process that keeps inputs hidden performs the method role of hiding. A road map performs the guide role of showing the way, although it is a document and not a person. A type marker on a component place, such as (event), does not rule out a functional correspondence.
+  Example: a component says "x1 (event) causes x2", and the whole word's x1 is a person who causes it. The person performs the causing role. Link it as functional.
+  Example: a component says "x1 (event) heats x2", and the whole word has a heater x3. The heater performs the heating role. Link it as functional.
+  Two places can perform the same component role: the person who acts and the tool that the person uses. Test each of them. Example: a component says "x1 (event) cleans x2", and the whole word has a cleaner x1 who cleans with brush x3. Both the cleaner and the brush perform the cleaning role. Link x1 and x3 to that place as functional.
+  An action or a method can perform the role too. Example: a component says "x1 (event) cools x2", and the whole word has a cook x1 who cools food by method x3. The method performs the cooling role. Link x3 to that place as functional, not none.
+
+Two things do not count.
+- Taking part in the situation. The audience of a lecture hears the speech, but it is not the speaker, unless the definition says it speaks. A passenger on a bus is carried, but it is not the driver, unless the definition says it drives.
+- A guess about a role the definition does not mention. If the definition does not say who the inputs are hidden from, do not link that role. If the definition of a purchase word does not mention a price, do not link the price place of a buying component.
+
+Procedure for each whole-word place.
+1. Read the role of the place in the whole-word definition.
+2. Test it against every place of every component. Record each kind of correspondence that holds. If two kinds hold for one component place, give one entry and name both kinds in its reason. Do not assume that x1 of the whole word matches x1 of a component. Decide from the definitions.
+   Example: a component says "x1 is a part of whole x2", and the whole word's x1 is a machine made of parts. The machine is the whole, so x1 matches the component's x2, not its x1.
+   Example: a component says "x1 is a child of parent x2", and the whole word's x1 is a parent. x1 matches the component's x2.
+   Example: nunpe'i, "x1 is a meeting between x2 and x3", has the component penmi, "x1 meets x2". Its x2 matches penmi[1] and its x3 matches penmi[2]. No penmi place is the meeting, so x1 has none.
+3. If at least one correspondence holds, return those links and no sentinel.
+4. If you tested every component place and none holds, return one entry with component none and a reason that names what the components lack. Example: neither component has a payment place, so the fare has no correspondence. Example: no component has a place for a time, so the date has no correspondence.
+5. If the whole-word definition does not say what the place is, so that you cannot test it, return one entry with component unclear and a reason. Example: the definition says only "with x4", so x4 is unclear. Example: the definition lists x5 at the end without a word that describes it, so x5 is unclear.
+6. Never return none or unclear beside a link. Never return none when a correspondence holds. Never return unclear when you can name the role.
+
+Return each whole-word place as a key. Use exactly the keys that the user message names.
+Its value is an array of entries. Each entry has component, which names one component place such as klama[2], and reason, which explains that correspondence in one sentence. Begin each reason with its kind: "direct: this place is the destination, as in klama[2]." A none or unclear reason begins with "none:" or "unclear:".
+Do not repeat a component place within one array. The same component place can appear in the arrays of two different whole-word places.
+Keep a supported link even when another component lacks a definition. Mention the missing definition in a reason when it matters. Example: a compound of klama and an undefined component has "x1 travels to destination x2". Link x2 to klama[2], and say in the reason that the other component has no definition.

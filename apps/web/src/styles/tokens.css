@@ -1,0 +1,81 @@
+@font-face {
+  font-family: "Noto Sans";
+  src: url("/fonts/noto-sans-variable.ttf") format("truetype");
+  font-weight: 100 900;
+  font-display: swap;
+}
+@font-face {
+  font-family: "STIX Two Math";
+  src: url("/fonts/stix-two-math-regular.ttf") format("truetype");
+  font-display: swap;
+}
+@font-face {
+  font-family: Crisa;
+  src: url("/fonts/crisa-regular.otf") format("opentype");
+  font-display: swap;
+}
+:root {
+  --bg: #f7f7f4;
+  --surface: #ffffff;
+  --sunk: #eeeeea;
+  --line: #e3e3dd;
+  --line2: #c9c9c1;
+  --ink: #1a1c1e;
+  --ink2: #474c52;
+  --ink3: #656b72;
+  --accent: #0e6a5b;
+  --accent-hover: #0a5549;
+  --on-accent: #ffffff;
+  --accent-soft: #e2efea;
+  --mark: #d6ece4;
+  --warn: #7a4a00;
+  --warn-soft: #fbf0d9;
+  --warn-line: #e9cf9b;
+  --focus: #2b63d9;
+  --font: "Noto Sans", "STIX Two Math", Crisa, Verdana, sans-serif;
+  --font-math: "STIX Two Math", "Noto Sans", Crisa, Verdana, sans-serif;
+  --font-zbalermorna: Crisa, "Noto Sans", "STIX Two Math", Verdana, sans-serif;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #121315;
+    --surface: #1a1c1f;
+    --sunk: #222429;
+    --line: #2c2f34;
+    --line2: #3d4147;
+    --ink: #ecebe6;
+    --ink2: #c0c2c5;
+    --ink3: #9da1a7;
+    --accent: #5ec4ab;
+    --accent-hover: #7fd3be;
+    --on-accent: #06201a;
+    --accent-soft: #16352e;
+    --mark: #1f4a40;
+    --warn: #f0c47e;
+    --warn-soft: #33270f;
+    --warn-line: #5b4520;
+    --focus: #8db0ff;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #121315;
+  --surface: #1a1c1f;
+  --sunk: #222429;
+  --line: #2c2f34;
+  --line2: #3d4147;
+  --ink: #ecebe6;
+  --ink2: #c0c2c5;
+  --ink3: #9da1a7;
+  --accent: #5ec4ab;
+  --accent-hover: #7fd3be;
+  --on-accent: #06201a;
+  --accent-soft: #16352e;
+  --mark: #1f4a40;
+  --warn: #f0c47e;
+  --warn-soft: #33270f;
+  --warn-line: #5b4520;
+  --focus: #8db0ff;
+  color-scheme: dark;
+}

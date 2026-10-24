@@ -1,0 +1,39 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Jbovlacku format parity</title>
+<pre id="result">pending</pre>
+<script type="module">
+import init, {canonicalize,verify_record,check_body,check_action,check_ed25519,word_identifier} from './wasm/jvc_core.js';
+const decode = s => Uint8Array.from(s.match(/../g) ?? [], x => parseInt(x,16));
+const encode = b => Array.from(b,x => x.toString(16).padStart(2,'0')).join('');
+const stable = value => JSON.stringify(value,(_,v) => v && !Array.isArray(v) && typeof v==='object' ? Object.fromEntries(Object.entries(v).sort(([a],[b]) => a.localeCompare(b))) : v);
+try {
+  await init();
+  const corpus = await (await fetch('./corpus.json')).json();
+  const results = [];
+  for (const c of corpus.cases) {
+    let result = null;
+    const input = decode(c.input ?? '');
+    try {
+      switch (c.op) {
+        case 'json': result = encode(canonicalize(input)); break;
+        case 'word': result = word_identifier(input); break;
+        case 'record': result = encode(verify_record(input)); break;
+        case 'action': result = check_action(input); break;
+        case 'body': {
+          const v = JSON.parse(new TextDecoder().decode(input));
+          result = JSON.parse(check_body(decode(v.envelope),v.body === null ? undefined : decode(v.body)));
+          break;
+        }
+        case 'ed25519': result = check_ed25519(decode(c.public),decode(c.message),decode(c.signature)); break;
+        default: throw new Error('unknown corpus operation');
+      }
+    } catch (error) { result = null; }
+    if (stable(result) !== stable(c.result)) throw new Error(`${c.name}: expected ${stable(c.result)}, received ${stable(result)}`);
+    results.push({name:c.name,result});
+  }
+  document.querySelector('#result').textContent = JSON.stringify({status:'passed',cases:results.length,results});
+} catch (error) {
+  document.querySelector('#result').textContent = JSON.stringify({status:'failed',error:String(error)});
+}
+</script>

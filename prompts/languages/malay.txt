@@ -1,0 +1,38 @@
+Language rules: Malay
+
+Remove these parts.
+- Voice and grammatical prefixes meN-, di- and ber- when the base alone names the relation: membaca gives baca, melihat gives lihat, dibaca gives baca, dipilih gives pilih, berjalan gives jalan, berlari gives lari.
+- Restore the initial consonant that meN- or peN- replaced, through the attested base. Write the restored base in stem and ipa. Name the base form in note. menulis gives tulis, menyapu gives sapu, memukul gives pukul, mengirim gives kirim, pengiraan gives kira, penyejatan gives sejat.
+- Restore nothing when no consonant was replaced: membaca gives baca, mengambil gives ambil, melompat gives lompat. Before a one-syllable base, meN- is menge-: mengecat gives cat.
+- peN- that names the doer goes too, as the shared agent rule says: penulis gives tulis, penyanyi gives nyanyi.
+- The circumfixes peN-...-an, ke-...-an and per-...-an, and the suffix -an, when they only make the noun of the relation: pembacaan gives baca, penyejatan gives sejat, keanjalan gives anjal, keindahan gives indah, keadilan gives adil, perjalanan gives jalan, perubahan gives ubah, latihan gives latih, senyuman gives senyum.
+- ter- when it marks only a result state or the superlative: terkunci gives kunci, terbuka gives buka, termurah gives murah.
+- A plural reduplication: bunga-bunga gives bunga, buku-buku gives buku. A reduplication that is the word itself stays: kupu-kupu stays kupu-kupu.
+Some roots begin or end with the same letters as an affix. They have no affix and stay whole: berat, bersih, terang, diam, makan, bulan, jalan. In bersihkan, ber- belongs to the root, so do not cut it to sihkan.
+
+Keep these parts.
+- peN-...-an, -isasi and -kan when the target is a process of making or becoming and the base alone names only the substance or state. pensterilan stays pensterilan, and sterilisasi stays sterilisasi, because steril alone is "sterile". modenisasi stays modenisasi, because moden alone is "modern".
+- -kan and -i when the target requires causation or an applied object: mensterilkan gives sterilkan, because the target is making an object sterile. membersihkan gives bersihkan, because bersih alone is "clean". menduduki gives duduki, because the target is occupying a place, not only sitting. menanami gives tanami, because the target is planting an area with something, not only planting.
+- When the base already names the target relation, remove -kan or -i: memberikan gives beri, mengirimkan gives kirim.
+- ber- when the base names a thing and ber- adds having or using it: berbaju stays berbaju, beranak stays beranak.
+- ke-...-an when it names a place, an institution or an adverse state: kerajaan and kedutaan stay whole. kehujanan stays whole when the target is being caught in rain.
+- ter- when the target requires an unintended act: tertidur keeps ter- when the target is falling asleep without intent. tertelan keeps ter- when the target is swallowing by accident.
+- The borrowed -asi when the remainder is not a Malay word of the same relation: kalibrasi stays kalibrasi, komunikasi stays komunikasi, organisasi stays organisasi, because organ is a body part. Say so in note.
+- Both halves of a compound. Do not cut a compound to one interior piece: matahari stays matahari, not hari. jawatankuasa stays jawatankuasa.
+
+Pronunciation.
+Use the formal standard pronunciation of Malaysian Malay.
+Final a is [a], although many speakers say [ə]: mata [ˈmata] gives mata, baca [ˈbatʃa] gives batca. Final -ai and -au are diphthongs: pantai [ˈpantai] gives pantai, pulau [ˈpulau] gives pulau.
+Write e pepet as [ə] and e taling as [e] in ipa. The spelling does not show the difference. emas [əˈmas], besar [bəˈsar] and empat [əmˈpat] have e pepet. ekor [ˈekor] and merah [ˈmerah] have e taling. Both give e in sounds.
+In word_ipa, stress the second-last syllable: baca [ˈbatʃa], jalan [ˈdʒalan], pemimpin [pəˈmimpin]. If the second-last syllable has e pepet, stress the last syllable: emas [əˈmas], besar [bəˈsar].
+k at the end of a syllable is a glottal stop [ʔ]: budak is [ˈbudaʔ], rakyat is [ˈraʔjat], makmur is [ˈmaʔmur].
+
+Scoring.
+Write e pepet [ə] as e and e taling [e] as e: emas gives emas, ekor gives ekor.
+Write [ʔ] from a written k as k, although the guide drops [ʔ]: budak gives budak, rakyat gives rakiat, makmur gives makmur. A glottal stop with no k in the spelling is dropped: maaf [ˈmaʔaf] gives maaf.
+Write ny as ni before a vowel: nyamuk gives niamuk, nyanyi [ˈɲaɲi] gives nianii.
+Write ng [ŋ] as n: bunga gives buna, langit gives lanit, sungai gives sunai. ngg is [ŋɡ] and gives ng: mangga gives manga, tunggu gives tungu.
+Write c as tc: cari gives tcari, kucing gives kutcin. Write j as dj: jalan gives djalan, hujan gives xudjan.
+Write sy as c: syarikat gives carikat, syarat gives carat. Write kh as x: khabar gives xabar, akhir gives axir.
+Write a pronounced h as x, also at the end of a word: hari gives xari, rumah gives rumax.
+Write y as i: yakin gives iakin, saya gives saia. Write w as u: wang gives uan, awan gives auan.

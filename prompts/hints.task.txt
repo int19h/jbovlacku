@@ -1,0 +1,119 @@
+For each requested place, name the kinds of thing that can fill that place.
+The whole-word definition is the main source of meaning.
+A type describes what fills the place, not the words that describe it.
+Example: "x1 is the title of x2" gives referent for x2. The filler is the thing that has the title, not a word.
+
+Every place takes a plural reference. It can refer to one thing, to several things, or to some stuff, such as water or bread. Whether stuff is counted as separate things, such as drops or slices, depends on the context.
+A type describes what the place refers to. It does not change with number or with how the referent is divided. A collective reading comes from the predicate, not from a type.
+Example: gunma, "x1 is a mass composed of components x2", gives referent for x1, not set. Example: pinxe, "x1 drinks beverage x2", gives referent for x2, whether one cup or some water fills it.
+
+The type names are these. Use them exactly. An indented type is narrower than the type above it.
+- referent: anything that a place can refer to. This includes people, animals, objects, places, languages, documents, methods, events, properties, propositions, numbers and texts. Every other type is narrower than referent.
+  - agent: a referent that carries out the action named in the definition.
+  - event: something that happens or holds.
+    - state: an event viewed as holding or not holding, with sharp boundaries, as za'i forms it.
+    - process: an event viewed as having a beginning, stages and an end, as pu'u forms it.
+  - relation: an open property or relation itself, not its bearer.
+  - proposition: content that can be true or false.
+  - number: a numerical value or a measured quantity, with or without a unit. li introduces it, and a measuring predicate such as "x1 is x2 liters" states the unit.
+  - text: a linguistic expression itself: words, a sentence, or the words that someone says or writes.
+  - set: a set as an object in its own right, as lo'i forms it.
+  - sequence: an ordered collection whose order matters to the meaning. This includes a collection of fixed length, such as an ordered pair or the coordinates of a point.
+unclear is not a type. If the definition does not describe a place at all, use unclear for it instead of a type, and never beside a type.
+
+Events and how they are viewed.
+State and process are ways of looking at an event, not kinds of event. Every event can be viewed as a state, as a process, as a repeated activity or as a single point event.
+Use state or process only when the definition requires that view: a marker such as (state), (za'i), (process) or (pu'u), the word "state" or "process", or words such as "stages", "steps" or "in progress". Otherwise use event, even for an event that takes time. Persistence alone does not require a state view: ranji, "x1 (event/state) continues/persists", gives event.
+Example: "running" gives event. A run can be viewed in all four ways, and nothing requires one of them.
+Example: "a conversation" gives event. It takes time, but nothing requires its stages.
+
+Nouns in a definition.
+Lojban says things with predicates. A noun in a definition usually stands for something built from an underlying predicate, in one of two ways.
+One way is a single argument of that predicate, made into a description with lo. fagri is the predicate "x1 is a fire in fuel x2", so lo fagri is the fire or fires, its x1. A conversion reaches another argument: lo se fagri is the fuel, its x2. The type of such a place is the type of that argument, usually referent.
+The other way is the whole predicate made into an argument with an abstractor. lo nu fagri is the event of a fire. nu gives the event, za'i the state, pu'u the process, du'u the proposition and ka the property. The type of such a place is event, state, process, proposition or relation. The events-and-views rule above decides whether a view is required.
+To type a place that a noun describes, find the predicate behind the noun and decide which way the place takes it. The noun alone does not decide. "fire" can be lo fagri, a referent, or lo nu fagri, an event.
+"death" can only be the second way, an abstraction of morsi, because no argument of morsi, "x1 is dead", is the death itself. Its type is event, as in lo nu morsi, unless the definition requires the state view.
+Some nouns are only the second way, because no argument of their predicate is the thing itself. A wedding is lo nu speni, an event, and a war is lo nu damba. Do not invent an object reading for such a noun. The time or the place at which an event happens is a referent, not an event: "x1 is the venue of meeting x2" gives referent for x1.
+"beverage" is the first way: a beverage is lo se pinxe, the x2 of "x1 drinks x2", so it is a referent.
+If the rest of the definition does not decide between the ways, give the type of each. "x1 records statement x2" gives text and proposition for x2: the statement can be the words or the claim. If one of the ways gives referent, give referent alone, because referent covers the other way: "x1 extinguishes fire x2" gives referent.
+
+Amounts and dimensions.
+A place that holds a measured amount is a number, even when the definition does not say "amount". It can be the number place of a measuring predicate, or an amount that ni makes from a whole bridi.
+Example: "x1 is x2 liters" gives number for x2. "x1 is the height of x2" gives number for x1.
+A place that names the dimension of a measurement, the property that is measured, is a relation. lo ka or an open lo ni, such as lo ni ce'u clani, fills it.
+A system of units or a measurement standard, such as the metric system, is a referent, by rule 4. It is not the dimension.
+In a comparison, words such as "property", "dimension" or "quantity" name what is compared, such as length or weight. They do not name an amount. A (ka/ni) marker on such a place gives relation only, because an open ni is a relation. The amount of a difference is a separate place, such as "by amount x4", and that place is a number.
+Example: "x1 and x2 are compared in quantity x3" gives relation for x3. "x1 is x2 units long by standard x3" gives referent for x3.
+Example: zenba, "x1 increases in property/quantity x2 by amount x3", gives relation for x2 and number for x3.
+
+Text and the things that hold it.
+A text place takes words themselves. A quotation or a sedu'u abstraction can fill it.
+An object that holds words, such as a book, a document, a page, a letter, a sign or a record, is not text. It is a referent.
+Example: in "x1 is a document that contains text x2", x1 is referent and x2 is text.
+A sound, or an utterance that is not made of words, is not text. krixa, "x1 cries out sound x2", gives referent for x2. sance, "x1 is a sound from source x2", gives referent for x1.
+A place that holds words is text. A place that holds a claim that can be true or false is a proposition: xusra, "x1 asserts x2 (du'u) is true", gives proposition for x2. "x1 writes description x2" gives text for x2.
+
+Sets and sequences.
+Use set only when the definition says "set" or talks about the collection itself as one object, such as its membership, its size or its subsets.
+Things that the definition names in the plural are a plural reference of their own type, not a set. "the guests x2" gives referent. "x1 is a subset of x2" gives set for both places. girzu, "x1 is a group showing property x2", gives referent for x1: a group is a plural reference, not a set.
+Use sequence only when the place itself refers to an ordered collection, so that the filler has to supply the order, for example with ce'o.
+An order that comes from the members themselves, such as their size, or that another place imposes, does not make a sequence. Such a place is a plural reference of its own type.
+Example: "x1 arranges things x2 by size into ordered list x3" gives referent for x2 and sequence for x3. A row of chairs is a physical object, and gives referent.
+Example: "x1 is a point at coordinates x2" gives sequence for x2, because the order of the numbers locates the point.
+Example: "x1 is the n-th member of series x2" gives sequence for x2, because the series itself carries the order.
+
+Compound words.
+If the word is a compound, the user message also gives the definitions of its components.
+The whole-word definition decides the type of each place. A compound can mean something narrower than its components, and its places can take a different kind of thing from the component places they come from.
+Use a component definition only to identify which role a place plays. A type marker on a component place is not evidence about the type of the whole-word place. It never removes a reading that the whole-word wording allows.
+Example: a component marks its place (event), and the whole word calls the matching place "the storm". The storm can be the storm itself or the event of a storm. Referent covers both readings, so give referent, not event alone.
+If a component definition disagrees with the whole-word definition, follow the whole-word definition.
+
+Decision rules. If the definition does not describe a place at all, rule 9 applies, and the other rules do not.
+Otherwise, first find the reasonable readings of the place. Apply the rules to each reading in this order. For each reading, the first rule that applies decides its type. Then give the types of all readings, as rule 7 says.
+Example: a place described as "fact x2" in one clause and as "event x2" in another has two readings. Rule 1 gives proposition for the first and event for the second. Do not stop after the first clause.
+1. If the definition marks or names the place with a type word, use that type.
+   A marker in parentheses or brackets is a type word. (agent) gives agent. (event) or (nu) gives event. (state) or (za'i) gives state. (process) or (pu'u) gives process. (zu'o) and (mu'e) give event. (state/process) gives event, because readings that differ only in the view of an event are one reading. (ka) gives relation. (du'u) gives proposition. (li) gives number. (ni) gives number for an amount and relation for a dimension, so (ka/ni) on a dimension gives relation only. (text), (quote), (quoted text) or (sedu'u) gives text. (set) gives set. (sequence) or (ordered set) gives sequence.
+   If a marker names several types, such as (nu/ka) or (nu/du'u), give each of them as an alternative. If one named type is narrower than another, such as (event/state), give only the broader one.
+   (object), (person) and (force) give referent. (action) and (activity) give event. (property) gives relation.
+   Example: cumki, "x1 (event/state/property) is possible", gives event and relation for x1. Example: djica, "x1 desires x2 (event/state)", gives event for x2.
+   An English type word counts too. "is a process that computes" gives process. "numerical inputs" gives number. "states facts x2" gives proposition for x2. "in event x2" gives event.
+   A word counts only when it means the type. gugde, "x1 is the country/nation/state of peoples x2", gives referent for x1, because "state" means a country here.
+2. If the definition describes the place with an action verb whose subject is that place, use agent. Teaches, writes, transfers, travels, pays, computes and sends are action verbs. The author of a message is an agent. The teacher is an agent. A traveler who pays a fare is an agent.
+   A verb of being, having or undergoing is not an action verb. citka, "x1 eats x2", gives agent for x1. farlu, "x1 falls to x2", gives referent for x1, because falling happens to x1. "x1 is in x2" and "x1 contains x2" give referent for x1.
+3. A place that only has, contains, owns, receives, undergoes, or is affected is not an agent. vasru, "x1 contains x2", gives referent for x1. But jgari, "x1 grasps x2", gives agent, because grasping is an action. An audience is a referent. The one who is happy is a referent. The one who narrowly avoided harm is a referent.
+4. A language, a method, a technique, a procedure, a style, or a system is a referent. It is not a process just because it is used in a process. If a marker calls the place a process, rule 1 gives process, even when the place is also called a method: tadji, "x1 [process] is a method for doing x2", gives process for x1.
+5. Do not infer the type of an output from the type of its inputs. A result computed from numbers is a referent unless the definition calls the result a number, a value, a sum, a total, a count, a product, a ratio or an average. A decision made from facts is a referent unless the definition calls it a proposition. A map drawn from measurements is a referent, not a number.
+6. A payment, fare, price, cost, destination, origin, location, basis, grounds, source, reason, or means is a referent unless a type word narrows it. A payment, fare, price or cost can be money or an amount. For these places, use number only when the definition says "amount", "value" or "sum". A measured quantity is different: see "Amounts and dimensions". "pays fee x3" gives referent. "pays amount x3" gives number. jdima, "x1 is the price of x2", gives referent for x1. rupnu, "x1 is x2 units of currency", gives number for x2. A means that is named as something done, such as "by doing x3" or "by an effort x3", is an event.
+7. If the definition describes the role but is vague, self-contradictory, or allows more than one reasonable reading, give the type that each reasonable reading requires. Readings that differ only in how an event is viewed are one reading, and its type is event.
+   Example: ctuca, "x1 teaches ideas/methods x3", allows propositions and methods in x3. A method is a referent, so x3 is referent.
+8. Use referent when no narrower type fits every reasonable filler, or when the fillers would need four or more types. Then give referent alone. Count the types after each narrower type merges into a broader one: event, state and number count as two types, event and number.
+9. Use unclear only when the definition does not describe the place at all, so that you cannot say what fills it. Example: the definition lists x4 at the end, with no word that describes it. Example: the user asks for x3, but the definition never mentions x3.
+
+Examples from the dictionary.
+Each example gives a place, the words of its definition that decide the type, and the type.
+- referent: mlatu x1, "x1 is a cat". tcidu x3, "reads x2 from surface/document/reading material x3": an object that holds words.
+- referent, because no narrower type fits every filler: ckaji x1, "x1 has property x2". srana x1, "x1 pertains to x2". tavla x4, "in language x4", by rule 4.
+- agent: tcidu x1, "x1 [agent] reads". kancu x1, "x1 (agent) counts".
+- event: fasnu x1, "x1 (event) is an event that happens". nunpe'i x1, "x1 is a meeting between x2 and x3": the noun stands for lo nu penmi, and nothing requires a state or process view.
+- state: xrani x4, "resulting in injury x4 (state)". karbi x5, "determining comparison x5 (state)".
+- process: pruce x1, "x1 is a process with inputs x2, outputs x3, passing through steps/stages x4". molki x2, "x1 is a mill performing process x2".
+- relation: ckaji x2, "has property x2 (ka)". zasni x2, "expected to change in property x2 (ka)".
+- relation, as a dimension of comparison: zmadu x3, "x1 exceeds x2 in property/quantity x3 (ka/ni) by amount/excess x4". x3 is what is compared, so it is relation only.
+- proposition: djuno x2, "x1 knows fact(s) x2 (du'u)". krici x2, "x1 believes x2 (du'u) is true".
+- number: mitre x2, "x1 is x2 meters in length". junta x1, "x1 is the weight of object x2": a measured quantity, although the definition does not say "amount".
+- text: jufra x1, "x1 (text) is a sentence". cmene x1, "x1 (quoted word(s)) is a name of x2".
+- set: steci x3, "a defining property of x2 among x3 (set)". porsi x3, "x1 is sequenced by rules x2 on unordered set x3".
+- sequence: lidne x3, "x1 precedes x2 in sequence x3". pormoi x3, "x1 is in the x2-th slot of sequence x3". pormoi is a compound of porsi and moi. Its x3 is a sequence, although moi calls its own place a set, because the whole-word definition decides.
+- two readings, by rule 7: bapli x2, "x1 forces/compels event x2 to occur; x1 determines property x2 to manifest". The two clauses give two readings, so x2 is event or relation.
+
+Answer format.
+For each place, give a list of alternatives. Each alternative has one type and a short reason.
+The alternatives mean "any of these". A filler of any listed type fits the place.
+Give one alternative in most cases. Add another only when a reasonable reading of the definition requires a different kind of filler. Do not add one for a metaphorical or unusual use.
+Give at most three alternatives.
+Example of an answer for x1 and x3: {"x1": [{"type": "agent", "reason": "x1 counts, an action verb, rule 2"}], "x3": [{"type": "event", "reason": "nu marker, rule 1"}, {"type": "relation", "reason": "ka marker, rule 1"}]}
+Choose the type of each reading as narrowly as the definition requires. If two alternatives are a type and a type above it, only the broader one is kept. That merges alternatives. It is not a reason to choose a broader type for a reading.
+Never list referent or unclear together with another type.
+Use exactly the place keys that the user message names.
+Each reason names the words of the definition that require that type, or the rule above that applied.
