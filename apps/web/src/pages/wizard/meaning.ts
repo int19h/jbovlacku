@@ -1,6 +1,7 @@
 import { wordId } from "../../../../../packages/core/src/browser.ts";
 import {
   changeTypedWord,
+  continueWithWord,
   detectWord,
   typedWord,
 } from "../../model/typed-headword.ts";
@@ -341,8 +342,7 @@ export async function meaningPage(
         button(
           "Add a definition",
           async () => {
-            draft.typedSpelling = spelling;
-            draft.step = Math.max(draft.step, 2) as Draft["step"];
+            continueWithWord(draft);
             if (await saver.flush()) navigate("/new/type");
           },
           { class: "btn" },
@@ -685,9 +685,7 @@ export async function meaningPage(
       primary: {
         label: "New word",
         action: async () => {
-          if (typedWord(draft.spelling))
-            draft.typedSpelling = typedWord(draft.spelling);
-          draft.step = Math.max(draft.step, 2) as Draft["step"];
+          continueWithWord(draft);
           if (!(await saver.flush())) return;
           navigate("/new/type");
         },

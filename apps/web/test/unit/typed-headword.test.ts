@@ -186,7 +186,8 @@ test("changing or clearing a typed spelling restores editable component rows", (
     changeTypedWord(draft, spelling);
     assert.equal(draft.lujvo?.typedOrigin, undefined);
     assert.equal(draft.lujvo?.typed, undefined);
-    assert.equal(draft.lujvo?.joins, undefined);
+    assert.deepEqual(draft.lujvo?.joins, [""]);
+    assert.equal(draft.lujvo?.restoredSpelling, "ckusni");
     assert.equal(draft.lujvo?.selected, null);
     assert.equal(draft.lujvo?.components.length, 2);
     assert.equal(draft.lujvo?.ordinarySpelling, "");

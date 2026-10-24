@@ -40,6 +40,8 @@ export interface LujvoComponentState {
 }
 export interface LujvoState {
   profile: MorphologyProfile;
+  /** An explicit ordinary profile choice takes precedence over retained evidence. */
+  profileChosen?: true;
   /** True only when typed analysis created these rows. Locks alone do not imply origin. */
   typedOrigin?: true;
   /** A saved spelling keeps ordinary rows. Empty means typed rows need fresh analysis. */
@@ -52,6 +54,10 @@ export interface LujvoState {
   joins?: (string | null)[];
   /** The rows and rafsi to which restored ordinary joins belong. */
   restoredJoinParts?: { id: string; rafsi: string | null }[];
+  /** Exact bytes that belong to these restored rows, including framing and case. */
+  restoredSpelling?: string;
+  /** The morphology version that restored these boundaries and spelling. */
+  restoredProfile?: MorphologyProfile;
   components: LujvoComponentState[];
   /** The chosen candidate spelling, when the author chose one. */
   selected: string | null;

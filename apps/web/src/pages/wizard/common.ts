@@ -1,3 +1,7 @@
+import {
+  clearWordEvidence,
+  selectWordKind,
+} from "../../model/typed-headword.ts";
 /** Shared wizard pieces: draft persistence, the step bar, and the action bar. */
 import {
   el,
@@ -507,16 +511,8 @@ export function confirmKindChange(
       `Changing the type to ${kind ?? "none"} no longer uses: ${dropping.join(", ")}. Remove those fields? The prose and annotations stay.`,
     );
     if (!ok) return false;
-    if (kind !== "lujvo") draft.compound = null;
-    if (kind !== "gismu") {
-      draft.formation = null;
-      for (const row of draft.gismu?.rows ?? []) delete row.sourceReview;
-    }
-    if (!draft.compound && !draft.formation) draft.evidenceForm = null;
   }
-  draft.kind = kind;
-  delete draft.autoDetectedKind;
-  draft.review = draft.review.filter((field) => field !== "word type");
+  selectWordKind(draft, kind);
   return true;
 }
 /** Removes structured evidence only after the author confirms the exact loss. */
@@ -528,9 +524,6 @@ export function removeFormationEvidence(draft: Draft): boolean {
     )
   )
     return false;
-  draft.compound = null;
-  draft.formation = null;
-  draft.evidenceForm = null;
-  draft.publishAcknowledged = [];
+  clearWordEvidence(draft);
   return true;
 }

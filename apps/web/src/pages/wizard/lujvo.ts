@@ -1,9 +1,12 @@
 import {
   detectWord,
   typedWord,
-  typedLujvoState,
+  prepareLujvoBuilder,
+  reconcileLujvoRows,
+  selectLujvoCandidate,
+  selectLujvoProfile,
   linkedSources,
-  typedLujvoRequest,
+  buildLujvoState,
   sourceOptions,
 } from "../../model/typed-headword.ts";
 import { currentDraft } from "../../model/assistance.ts";
@@ -15,8 +18,6 @@ import { assistanceAction } from "../../components/assistance.ts";
  */
 import {
   analyzeWord,
-  morphologyProfile,
-  buildLujvo,
   BuilderError,
   rafsiPairId,
   wordId,
@@ -48,7 +49,6 @@ import {
   inventoryFromPackage,
   inventoryCoverage,
   lujvoConflictKey,
-  newLujvoState,
   type LujvoComponentState,
   type PackageInventory,
 } from "../../model/builders.ts";
@@ -94,151 +94,15 @@ export async function lujvoPage(
     return;
   }
   saver.touch();
-  let state = (draft.lujvo ??= newLujvoState());
-  const typedIdentity =
-    !!draft.typedSpelling &&
-    typedWord(draft.typedSpelling) === typedWord(draft.spelling);
-  const legacyTypedRows = !!state.typed && !state.typedOrigin;
-  const legacyTypedIdentity =
-    legacyTypedRows &&
-    typedWord(state.typed ?? "") === typedWord(draft.spelling);
-  const legacyParts = legacyTypedIdentity
-    ? (state.profile === "extended"
-        ? detectWord(draft.spelling)
-        : analyzeWord(state.profile, draft.spelling)
-      ).readings.find(
-        (parts) =>
-          parts.length === state.components.length &&
-          parts.every(
-            (part, index) => part.text === state.components[index].locked,
-          ) &&
-          state.joins?.length === parts.length - 1 &&
-          state.joins.every(
-            (join, index) => join === (parts[index + 1].join_before ?? ""),
-          ),
-      )
-    : undefined;
-  if (
-    !state.typedOrigin &&
-    state.components.length &&
-    state.ordinarySpelling === undefined
-  )
-    state.ordinarySpelling = typedWord(state.typed ?? draft.spelling);
-  const leaveTypedMode = (keepJoins = false) => {
-    delete state.typedOrigin;
-    delete state.typed;
-    if (!keepJoins) delete state.joins;
-    delete state.restoredJoinParts;
-    delete state.typedReading;
-    delete state.readingIndex;
-    state.selected = null;
-    saver.touch();
-  };
-  if (
-    (state.typed || state.typedOrigin) &&
-    (!state.typedOrigin ||
-      !typedIdentity ||
-      (state.typed && state.typed !== typedWord(draft.spelling)))
-  )
-    leaveTypedMode(!!legacyParts);
-  const retainedCompound =
-    !!draft.compound && draft.evidenceForm === typedWord(draft.spelling);
-  let retainedLocks = true;
-  if (retainedCompound && draft.compound) {
-    if (!state.typedOrigin && state.ordinarySpelling !== "")
-      state.ordinarySpelling = typedWord(draft.spelling);
-    let hydrate = !state.components.length;
-    try {
-      const profile = morphologyProfile(draft.compound.morphology);
-      // Ordinary rows keep the author's choices when the saved profile differs.
-      // A typed version 2 record can need its original whole-word boundaries.
-      hydrate ||=
-        profile === "extended-v2" &&
-        typedIdentity &&
-        (state.typedOrigin || legacyTypedRows) &&
-        (state.components.length !== draft.compound.components.length ||
-          state.components.some((component, index) => {
-            const signed = draft.compound!.components[index];
-            return (
-              typedWord(component.spelling) !==
-                typedWord(signed.word.spelling) ||
-              (component.locked !== null && component.locked !== signed.rafsi)
-            );
-          }));
-      if (state.profile !== profile) saver.touch();
-      state.profile = profile;
-      if (state.profile !== "extended") delete state.joins;
-    } catch (error) {
-      main.append(p(String(error), "notice"));
-      return;
-    }
-    if (hydrate) {
-      state.components = draft.compound.components.map((component) => ({
-        id: componentId(),
-        spelling: component.word.spelling,
-        kind: detectWord(component.word.spelling).kind,
-        definition: component.definition,
-        claims: [
-          {
-            rafsi: component.rafsi,
-            pair: rafsiPairId(wordId(component.word), component.rafsi),
-          },
-        ],
-        locked: component.rafsi,
-        gloss: "",
-      }));
-      saver.touch();
-    }
-    retainedLocks =
-      state.components.length === draft.compound.components.length &&
-      state.components.every(
-        (component, index) =>
-          component.locked !== null &&
-          component.locked === draft.compound!.components[index].rafsi,
-      );
-    if (state.typedOrigin && typedIdentity && retainedLocks) {
-      state.typed = typedWord(draft.spelling);
-      saver.touch();
-    } else if (state.typedOrigin) leaveTypedMode();
-    if (
-      state.profile === "extended" &&
-      retainedLocks &&
-      (hydrate || state.typedOrigin || legacyTypedIdentity)
-    ) {
-      const parts = detectWord(draft.spelling).readings[0];
-      if (
-        parts?.length === state.components.length &&
-        parts.every(
-          (part, index) => part.text === state.components[index].locked,
-        )
-      ) {
-        state.joins = parts.slice(1).map((part) => part.join_before ?? "");
-        saver.touch();
-      }
-    }
-  }
   const cached = await cachedPackage(app.store);
   if (!context.live()) return;
-  const typedAnalysis = typedIdentity ? detectWord(draft.spelling) : null;
-  if (
-    (!retainedCompound || state.ordinarySpelling === "") &&
-    state.ordinarySpelling !== typedWord(draft.spelling) &&
-    typedAnalysis?.kind === "lujvo" &&
-    state.typed !== typedWord(draft.spelling)
-  ) {
-    state = draft.lujvo = typedLujvoState(
-      typedWord(draft.spelling),
-      typedAnalysis.readings[0],
-      cached,
-    );
+  let state;
+  try {
+    state = prepareLujvoBuilder(draft, cached);
     saver.touch();
-  }
-  if (!state.typedOrigin && state.joins && !state.restoredJoinParts) {
-    state.restoredJoinParts = state.components.map((component) => ({
-      id: component.id,
-      rafsi: component.locked,
-    }));
-    saver.touch();
+  } catch (error) {
+    main.append(p(String(error), "notice"));
+    return;
   }
   const inventory: PackageInventory = inventoryFromPackage(cached);
   const builderCurrent = () => {
@@ -311,6 +175,7 @@ export async function lujvoPage(
   ] as const) {
     const input = el("input", { type: "radio", name: "profile", value });
     input.checked = state.profile === value;
+    input.disabled = !!state.typedOrigin;
     const wrapper = el(
       "label",
       { class: input.checked ? "on" : "" },
@@ -318,7 +183,7 @@ export async function lujvoPage(
       text(label),
     );
     input.addEventListener("change", () => {
-      state.profile = value as MorphologyProfile;
+      selectLujvoProfile(state, value as MorphologyProfile);
       for (const l of profileGroup.querySelectorAll("label"))
         l.classList.toggle("on", l.querySelector("input")!.checked);
       saver.touch();
@@ -1114,31 +979,10 @@ export async function lujvoPage(
   const rebuild = () => {
     failure = null;
     result = null;
-    if (
-      !state.typedOrigin &&
-      state.restoredJoinParts &&
-      (state.components.length !== state.restoredJoinParts.length ||
-        state.components.some(
-          (component, index) =>
-            component.id !== state.restoredJoinParts![index].id ||
-            component.locked !== state.restoredJoinParts![index].rafsi,
-        ))
-    ) {
-      delete state.joins;
-      delete state.restoredJoinParts;
-    }
+    reconcileLujvoRows(state);
     if (state.components.length >= 2) {
       try {
-        result = buildLujvo({
-          ...typedLujvoRequest(state),
-          components: state.components.map((c) => ({
-            id: c.id,
-            spelling: c.spelling,
-            kind: c.kind,
-            definition: c.definition,
-            claims: c.claims,
-            locked: c.locked,
-          })),
+        result = buildLujvoState(state, {
           inventory: { snapshot: inventory.snapshot, claims: inventory.claims },
           limits: { choice_product: 20000, results: 64 },
         });
@@ -1193,22 +1037,7 @@ export async function lujvoPage(
       )
     )
       return;
-    draft.formation = null;
-    if (draft.spelling !== candidate.spelling) draft.publishAcknowledged = [];
-    draft.spelling = candidate.spelling;
-    draft.typedSpelling = state.typedOrigin
-      ? typedWord(candidate.spelling)
-      : null;
-    if (!state.typed) {
-      delete state.typedOrigin;
-      state.ordinarySpelling = typedWord(candidate.spelling);
-    }
-    draft.evidenceForm = withMetadata ? candidate.spelling : null;
-    draft.compound = withMetadata
-      ? compoundMetadata(result, candidate, state.components, "")
-      : null;
-    state.selected = candidate.spelling;
-    draft.step = Math.max(draft.step, 4) as Draft["step"];
+    selectLujvoCandidate(draft, result, candidate, withMetadata);
     if (!(await saver.flush())) return;
     navigate("/new/places");
   };
