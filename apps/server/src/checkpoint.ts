@@ -92,8 +92,6 @@ export class FileCheckpointStore implements CheckpointStore {
         return null;
       const payload = value.payload;
       if (
-        !Array.isArray(payload.package_records) ||
-        !Array.isArray(payload.envelopes) ||
         !Array.isArray(payload.packages?.entries) ||
         !payload.packages.packages ||
         !payload.packages.packages2

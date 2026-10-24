@@ -342,6 +342,29 @@ pub fn inspect_body(event: &VerifiedEnvelope, bytes: Option<&[u8]>) -> BodyAvail
     }
 }
 
+/// Parse admitted private bytes without checking signatures, hashes, or canonical form.
+/// Only the host's trusted record store can supply these bytes.
+pub fn inspect_host_stored_body(header: &Header, bytes: Option<&[u8]>) -> BodyAvailability {
+    if header.content.is_none() {
+        return BodyAvailability::Absent;
+    }
+    let Some(bytes) = bytes else {
+        return BodyAvailability::Missing;
+    };
+    let parsed = serde_json::from_slice(bytes)
+        .map_err(|e| Error::new("json", e.to_string()))
+        .and_then(|body| {
+            schema::validate_parsed_body(header, &body)?;
+            Ok(body)
+        });
+    match parsed {
+        Ok(body) => BodyAvailability::Valid { body },
+        Err(error) => BodyAvailability::Invalid {
+            reason: error.to_string(),
+        },
+    }
+}
+
 /// Export one canonical envelope per line in event-ID order.
 pub fn export_jsonl(events: &[VerifiedEnvelope]) -> Result<Vec<u8>> {
     let mut selected = std::collections::BTreeMap::<&str, &VerifiedEnvelope>::new();

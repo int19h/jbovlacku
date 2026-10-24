@@ -10,7 +10,7 @@ import {
   evaluate,
   initializeCore,
   type EvaluationRequest,
-} from "../../../../packages/core/src/index.ts";
+} from "../../../../packages/core/src/browser.ts";
 
 export type WorkerRequest =
   | { type: "actors"; id: number; input: EvaluationRequest }

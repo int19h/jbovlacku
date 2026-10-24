@@ -39,6 +39,28 @@ pub struct EvaluationOptions {
     #[serde(default)]
     pub limits: Limits,
 }
+/// An opaque projection held only in the trusted host's private storage.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct HostVerifiedRecord {
+    node: graph::Node,
+}
+impl HostVerifiedRecord {
+    /// The host guarantees that admission already checked these original bytes.
+    pub fn extract_with<T>(
+        id: &str,
+        header: &jvc_core::Header,
+        availability: BodyAvailability,
+        inspect: impl FnOnce(&BodyAvailability) -> T,
+    ) -> (Self, T) {
+        let (node, content) = graph::Node::from_parts(id, header, availability, inspect);
+        (Self { node }, content)
+    }
+    pub fn id(&self) -> &str {
+        &self.node.id
+    }
+}
+
 /// Authenticated records with only the content that state evaluation needs.
 /// Fields stay private so callers cannot supply an unvalidated projection.
 #[derive(Clone)]
@@ -76,6 +98,16 @@ impl PreparedEvaluationInput {
             self.nodes.insert(event.id().into(), node);
         }
         content
+    }
+    /// Only a trusted host can supply records from its private admission store.
+    pub fn add_host_verified_record(&mut self, record: HostVerifiedRecord) {
+        let id = record.node.id.clone();
+        if !self.nodes.contains_key(&id) {
+            if self.nodes.len() >= self.options.limits.events {
+                self.event_limit_exceeded = true;
+            }
+            self.nodes.insert(id, record.node);
+        }
     }
     pub fn evaluate(self) -> Evaluation {
         evaluate_prepared(self)

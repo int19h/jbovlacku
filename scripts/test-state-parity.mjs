@@ -66,7 +66,7 @@ const server = createServer(async (request, response) => {
     if (url.pathname === "/") {
       response.setHeader("content-type", "text/html; charset=utf-8");
       response.end(`<!doctype html><script type="module">
-import init, { evaluate_records, rank_word, EvaluationSession, EvaluationSessionBuilder } from '/jvc_runtime.js';
+import init, { evaluate_records, rank_word, EvaluationSession, EvaluationSessionBuilder, extract_host_verified_record } from '/jvc_runtime.js';
 await init();
 window.runCase = async (index) => {
   const { kind, input, word } = await (await fetch('/fixture/' + index)).json();
@@ -77,21 +77,28 @@ window.runCase = async (index) => {
   const { events, bodies, ...options } = request;
   const builder = new EvaluationSessionBuilder(encoder.encode(JSON.stringify(options)));
   let streamed;
+  const trusted = new EvaluationSessionBuilder(encoder.encode(JSON.stringify(options)));
+  let host;
   let consumed = false;
   try {
     for (const envelope of events) {
       const body = bodies[JSON.parse(envelope).id];
-      builder.add_record(encoder.encode(envelope), body === undefined ? undefined : encoder.encode(body));
+      const envelopeBytes = encoder.encode(envelope);
+      const bodyBytes = body === undefined ? undefined : encoder.encode(body);
+      builder.add_record(envelopeBytes, bodyBytes);
+      trusted.add_host_verified_record(extract_host_verified_record(envelopeBytes, bodyBytes));
     }
     consumed = true;
     streamed = builder.finish();
+    host = trusted.finish();
   } finally {
-    if (!consumed) builder.free();
+    if (!consumed) { builder.free(); trusted.free(); }
   }
   try {
     if (kind === 'state') {
       return {
         result: JSON.parse(evaluate_records(bytes)),
+        host_state: JSON.parse(host.state()),
         streamed_state: JSON.parse(streamed.state()),
         milliseconds: performance.now() - start,
       };
@@ -102,7 +109,9 @@ window.runCase = async (index) => {
         result: JSON.parse(rank_word(bytes, word)),
         session: JSON.parse(session.rank(word)),
         reviewers: JSON.parse(session.rank_with_reviewers(word, 16)),
+        host_state: JSON.parse(host.state()),
         streamed_state: JSON.parse(streamed.state()),
+        host_rank: JSON.parse(host.rank(word)),
         streamed_rank: JSON.parse(streamed.rank(word)),
         streamed_reviewers: JSON.parse(streamed.rank_with_reviewers(word, 16)),
         milliseconds: performance.now() - start,
@@ -112,6 +121,7 @@ window.runCase = async (index) => {
     }
   } finally {
     streamed.free();
+    host.free();
   }
 };
 </script>`);
@@ -192,7 +202,12 @@ try {
         actual.streamed_state,
         kind === "state" ? fixture.expected : fixture.expected_state,
       );
+      assert.deepStrictEqual(
+        actual.host_state,
+        kind === "state" ? fixture.expected : fixture.expected_state,
+      );
       if (kind === "ranking") {
+        assert.deepStrictEqual(actual.host_rank, fixture.expected);
         assert.deepStrictEqual(actual.session, fixture.expected);
         assert.deepStrictEqual(actual.reviewers, fixture.reviewers);
         assert.deepStrictEqual(actual.streamed_rank, fixture.expected);

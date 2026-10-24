@@ -1,3 +1,7 @@
+import type {
+  StoredVerifiedRecord,
+  VerifiedRecordBinding,
+} from "./verified-records.ts";
 import type { Header } from "../../core/src/index.ts";
 export interface ObjectStore {
   get(hash: string): Promise<Uint8Array | null>;
@@ -41,6 +45,15 @@ export const emptyState = (): State => ({
   materialized_snapshot: null,
 });
 export interface Coordinator {
+  getVerifiedRecord?(
+    binding: VerifiedRecordBinding,
+  ): Promise<StoredVerifiedRecord | null>;
+  saveVerifiedRecords?(records: StoredVerifiedRecord[]): Promise<void>;
+  stageVerifiedRecords?(
+    stage: string,
+    records: StoredVerifiedRecord[],
+  ): Promise<void>;
+  discardVerifiedRecordStage?(stage: string): Promise<void>;
   load(): Promise<State>;
   loadMetadata?(): Promise<StateMetadata>;
   markMaterialized?(snapshot: string, position: number): Promise<boolean>;
@@ -52,6 +65,8 @@ export interface Coordinator {
     state: State,
     snapshot?: Snapshot,
     changedIds?: string[],
+    verifiedRecords?: StoredVerifiedRecord[],
+    verifiedStage?: string,
   ): Promise<boolean>;
 }
 export interface Snapshot {

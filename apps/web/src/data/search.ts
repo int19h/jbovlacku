@@ -6,7 +6,7 @@ import {
   canonicalize,
   contentHash,
   wordId,
-} from "../../../../packages/core/src/index.ts";
+} from "../../../../packages/core/src/browser.ts";
 import {
   getManifest,
   objectBytes,

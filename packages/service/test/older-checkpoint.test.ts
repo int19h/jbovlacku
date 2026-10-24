@@ -9,6 +9,9 @@ import { FileCheckpointStore } from "../../../apps/server/src/checkpoint.ts";
 import { DictionaryService } from "../src/service.ts";
 import {
   initializeCore,
+  createEvaluationSession,
+  restoreHostEvaluationSession,
+  evaluate,
   createEvent,
   identityFromSeed,
   wordId,
@@ -53,6 +56,8 @@ async function fixture(
   let coordinator = new SqliteCoordinator(path, retention);
   const bytes = new Map<string, Uint8Array>();
   const reads: string[] = [];
+  const compactReads: { id: string; body_hash: string | null }[] = [];
+  const runtimeCalls = { creates: 0, restores: 0 };
   const objects = {
     async get(hash: string) {
       reads.push(hash);
@@ -174,9 +179,27 @@ async function fixture(
     coordinator.close();
     coordinator = new SqliteCoordinator(path, retention);
     reads.length = 0;
+    compactReads.length = 0;
+    runtimeCalls.creates = 0;
+    runtimeCalls.restores = 0;
+    const getCompact = coordinator.getVerifiedRecord.bind(coordinator);
+    coordinator.getVerifiedRecord = (binding) => {
+      compactReads.push({ id: binding.id, body_hash: binding.body_hash });
+      return getCompact(binding);
+    };
     service = new DictionaryService(objects, coordinator, {
       ...options,
       checkpoints: store(),
+      evaluationRuntime: {
+        create(configuration) {
+          runtimeCalls.creates++;
+          return createEvaluationSession(configuration);
+        },
+        restore(bytes, binding, records) {
+          runtimeCalls.restores++;
+          return restoreHostEvaluationSession(bytes, binding, records);
+        },
+      },
       ...overrides,
     });
     return service;
@@ -186,6 +209,9 @@ async function fixture(
     path,
     objects,
     reads,
+    compactReads,
+    runtimeCalls,
+    bytes,
     options,
     definition,
     view,
@@ -407,7 +433,7 @@ test("an exact materialized pin remains readable while a newer accepted snapshot
   }
 });
 
-test("crash restart restores an older pinned checkpoint and reads only later records", async () => {
+test("crash restart restores an older pinned checkpoint and reuses compact records", async () => {
   const f = await fixture();
   try {
     const record = await f.write(4);
@@ -418,17 +444,15 @@ test("crash restart restores an older pinned checkpoint and reads only later rec
     assert.equal(
       f.reads.includes(f.definition.envelope.header.content!.hash),
       false,
-      "a baseline definition body must come from the verified checkpoint",
+      "A baseline definition body must stay in its private record store.",
     );
     assert.equal(
       f.reads.includes(f.profile.envelope.header.content!.hash),
       false,
     );
-    assert.ok(
-      f.reads.includes(
-        (await f.coordinator.load()).events[record.envelope.id].envelope_hash,
-      ),
-    );
+    assert.equal(f.reads.length, 0);
+    assert.ok(f.compactReads.some((read) => read.id === record.envelope.id));
+    assert.deepEqual(f.runtimeCalls, { creates: 0, restores: 1 });
     assert.deepEqual(await read(service, "/words/" + wordId(word)), expected);
     const reference = new DictionaryService(f.objects, f.coordinator, {
       ...f.options,
@@ -538,9 +562,32 @@ test("older checkpoint recovery rejects incompatible context and damaged or abse
         const service = f.restart(overrides);
         await service.initialize();
         await settle(service);
-        assert.equal(
-          f.reads.includes(f.definition.envelope.header.content!.hash),
-          true,
+        assert.equal(f.reads.length, 0, failure);
+        assert.deepEqual(f.runtimeCalls, { creates: 1, restores: 0 }, failure);
+        const snapshot = await f.coordinator.getSnapshot(
+          (await f.coordinator.loadMetadata()).snapshot!,
+        );
+        const chosen = String(overrides.selectedView ?? f.options.selectedView);
+        const expected = evaluate({
+          events: Object.values(snapshot!.events).map((event) =>
+            new TextDecoder().decode(f.bytes.get(event.envelope_hash)!),
+          ),
+          bodies: Object.fromEntries(
+            Object.entries(snapshot!.events)
+              .filter(([, event]) => event.body_hash !== null)
+              .map(([id, event]) => [
+                id,
+                new TextDecoder().decode(f.bytes.get(event.body_hash!)!),
+              ]),
+          ),
+          selected_view: chosen,
+          import_selections: {},
+          limits: (overrides.stateLimits ??
+            f.options.stateLimits) as typeof f.options.stateLimits,
+        });
+        assert.deepEqual(
+          await (service as any).evaluation(snapshot, chosen),
+          expected,
           failure,
         );
       } finally {
@@ -565,9 +612,22 @@ test("late bodies after a private pin use changed-record recovery and preserve t
     const service = f.restart();
     await service.initialize();
     await settle(service);
+    assert.equal(f.reads.length, 0);
+    assert.deepEqual(f.runtimeCalls, { creates: 0, restores: 1 });
     assert.ok(
-      f.reads.includes(f.definition.envelope.header.content!.hash),
-      "the new body must pass ordinary record authentication",
+      f.compactReads.some(
+        (read) =>
+          read.id === f.definition.envelope.id && read.body_hash === null,
+      ),
+      "The private base must keep its missing-body projection.",
+    );
+    assert.ok(
+      f.compactReads.some(
+        (read) =>
+          read.id === f.definition.envelope.id &&
+          read.body_hash === f.definition.envelope.header.content!.hash,
+      ),
+      "Catch-up must load the later admitted body projection.",
     );
     assert.equal(
       f.reads.includes(f.profile.envelope.header.content!.hash),
@@ -649,9 +709,15 @@ test("existing pins migrate a still-public base and missing expired bases fall b
     service = f.restart();
     await service.initialize();
     await settle(service);
-    assert.equal(
-      f.reads.includes(f.definition.envelope.header.content!.hash),
-      true,
+    assert.equal(f.reads.length, 0);
+    assert.deepEqual(f.runtimeCalls, { creates: 1, restores: 0 });
+    const reference = new DictionaryService(f.objects, f.coordinator, {
+      ...f.options,
+      asyncMaterialization: false,
+    });
+    assert.deepEqual(
+      await read(service, "/words/" + wordId(word)),
+      await read(reference, "/words/" + wordId(word)),
     );
     assert.equal(
       (
