@@ -269,3 +269,29 @@ test("legacy deep logs migrate before draft cloning and retain the public raw sh
   assert.doesNotThrow(() => structuredClone(draft));
   assert.equal(assistance.assistanceLogJson(draft.ai!.records[0]), logText);
 });
+
+test("accepting an AI type matching detection makes it an explicit author choice", () => {
+  const draft = newDraft({
+    kind: "gismu",
+    autoDetectedKind: "gismu",
+    review: ["word type", "spelling"],
+  });
+  assistance.applyProposals(draft, {
+    operation: "type",
+    draft_revision: draft.revision,
+    proposals: [{ path: "/word_type", value: "gismu" }],
+    explanation: "Synthetic proposal.",
+    provenance: {
+      provider: "mock",
+      model: "mock",
+      revision: null,
+      recipe: "test",
+      seed: null,
+    },
+    usage: null,
+  });
+  const restored = normalizeDraft(draft);
+  assert.equal(restored.kind, "gismu");
+  assert.equal(restored.autoDetectedKind, undefined);
+  assert.deepEqual(restored.review, ["spelling"]);
+});

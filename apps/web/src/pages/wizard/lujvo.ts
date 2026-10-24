@@ -1,3 +1,11 @@
+import {
+  detectWord,
+  typedWord,
+  typedLujvoState,
+  linkedSources,
+  typedLujvoRequest,
+  sourceOptions,
+} from "../../model/typed-headword.ts";
 import { currentDraft } from "../../model/assistance.ts";
 import { assistanceAction } from "../../components/assistance.ts";
 /**
@@ -7,6 +15,7 @@ import { assistanceAction } from "../../components/assistance.ts";
  */
 import {
   analyzeWord,
+  morphologyProfile,
   buildLujvo,
   BuilderError,
   rafsiPairId,
@@ -80,16 +89,157 @@ export async function lujvoPage(
   }
   const saver = new DraftSaver(app, draft);
   // Changes made while opening the builder are saved like any other edit.
-  if (draft.kind !== "lujvo") {
-    if (!confirmKindChange(draft, "lujvo")) {
-      navigate("/new/type", { replace: true });
+  if (!confirmKindChange(draft, "lujvo")) {
+    navigate("/new/type", { replace: true });
+    return;
+  }
+  saver.touch();
+  let state = (draft.lujvo ??= newLujvoState());
+  const typedIdentity =
+    !!draft.typedSpelling &&
+    typedWord(draft.typedSpelling) === typedWord(draft.spelling);
+  const legacyTypedRows = !!state.typed && !state.typedOrigin;
+  const legacyTypedIdentity =
+    legacyTypedRows &&
+    typedWord(state.typed ?? "") === typedWord(draft.spelling);
+  const legacyParts = legacyTypedIdentity
+    ? (state.profile === "extended"
+        ? detectWord(draft.spelling)
+        : analyzeWord(state.profile, draft.spelling)
+      ).readings.find(
+        (parts) =>
+          parts.length === state.components.length &&
+          parts.every(
+            (part, index) => part.text === state.components[index].locked,
+          ) &&
+          state.joins?.length === parts.length - 1 &&
+          state.joins.every(
+            (join, index) => join === (parts[index + 1].join_before ?? ""),
+          ),
+      )
+    : undefined;
+  if (
+    !state.typedOrigin &&
+    state.components.length &&
+    state.ordinarySpelling === undefined
+  )
+    state.ordinarySpelling = typedWord(state.typed ?? draft.spelling);
+  const leaveTypedMode = (keepJoins = false) => {
+    delete state.typedOrigin;
+    delete state.typed;
+    if (!keepJoins) delete state.joins;
+    delete state.restoredJoinParts;
+    delete state.typedReading;
+    delete state.readingIndex;
+    state.selected = null;
+    saver.touch();
+  };
+  if (
+    (state.typed || state.typedOrigin) &&
+    (!state.typedOrigin ||
+      !typedIdentity ||
+      (state.typed && state.typed !== typedWord(draft.spelling)))
+  )
+    leaveTypedMode(!!legacyParts);
+  const retainedCompound =
+    !!draft.compound && draft.evidenceForm === typedWord(draft.spelling);
+  let retainedLocks = true;
+  if (retainedCompound && draft.compound) {
+    if (!state.typedOrigin && state.ordinarySpelling !== "")
+      state.ordinarySpelling = typedWord(draft.spelling);
+    let hydrate = !state.components.length;
+    try {
+      const profile = morphologyProfile(draft.compound.morphology);
+      // Ordinary rows keep the author's choices when the saved profile differs.
+      // A typed version 2 record can need its original whole-word boundaries.
+      hydrate ||=
+        profile === "extended-v2" &&
+        typedIdentity &&
+        (state.typedOrigin || legacyTypedRows) &&
+        (state.components.length !== draft.compound.components.length ||
+          state.components.some((component, index) => {
+            const signed = draft.compound!.components[index];
+            return (
+              typedWord(component.spelling) !==
+                typedWord(signed.word.spelling) ||
+              (component.locked !== null && component.locked !== signed.rafsi)
+            );
+          }));
+      if (state.profile !== profile) saver.touch();
+      state.profile = profile;
+      if (state.profile !== "extended") delete state.joins;
+    } catch (error) {
+      main.append(p(String(error), "notice"));
       return;
     }
-    saver.touch();
+    if (hydrate) {
+      state.components = draft.compound.components.map((component) => ({
+        id: componentId(),
+        spelling: component.word.spelling,
+        kind: detectWord(component.word.spelling).kind,
+        definition: component.definition,
+        claims: [
+          {
+            rafsi: component.rafsi,
+            pair: rafsiPairId(wordId(component.word), component.rafsi),
+          },
+        ],
+        locked: component.rafsi,
+        gloss: "",
+      }));
+      saver.touch();
+    }
+    retainedLocks =
+      state.components.length === draft.compound.components.length &&
+      state.components.every(
+        (component, index) =>
+          component.locked !== null &&
+          component.locked === draft.compound!.components[index].rafsi,
+      );
+    if (state.typedOrigin && typedIdentity && retainedLocks) {
+      state.typed = typedWord(draft.spelling);
+      saver.touch();
+    } else if (state.typedOrigin) leaveTypedMode();
+    if (
+      state.profile === "extended" &&
+      retainedLocks &&
+      (hydrate || state.typedOrigin || legacyTypedIdentity)
+    ) {
+      const parts = detectWord(draft.spelling).readings[0];
+      if (
+        parts?.length === state.components.length &&
+        parts.every(
+          (part, index) => part.text === state.components[index].locked,
+        )
+      ) {
+        state.joins = parts.slice(1).map((part) => part.join_before ?? "");
+        saver.touch();
+      }
+    }
   }
-  const state = (draft.lujvo ??= newLujvoState());
   const cached = await cachedPackage(app.store);
   if (!context.live()) return;
+  const typedAnalysis = typedIdentity ? detectWord(draft.spelling) : null;
+  if (
+    (!retainedCompound || state.ordinarySpelling === "") &&
+    state.ordinarySpelling !== typedWord(draft.spelling) &&
+    typedAnalysis?.kind === "lujvo" &&
+    state.typed !== typedWord(draft.spelling)
+  ) {
+    state = draft.lujvo = typedLujvoState(
+      typedWord(draft.spelling),
+      typedAnalysis.readings[0],
+      cached,
+    );
+    saver.touch();
+  }
+  if (!state.typedOrigin && state.joins && !state.restoredJoinParts) {
+    state.restoredJoinParts = state.components.map((component) => ({
+      id: component.id,
+      rafsi: component.locked,
+    }));
+    saver.touch();
+  }
   const inventory: PackageInventory = inventoryFromPackage(cached);
   const builderCurrent = () => {
     const morphology =
@@ -103,8 +253,9 @@ export async function lujvoPage(
     return {
       ...currentDraft(draft),
       spelling: chosenCandidate()?.spelling ?? draft.spelling,
-      compound:
-        result && chosenCandidate()
+      compound: !linkedSources(state)
+        ? null
+        : result && chosenCandidate()
           ? compoundMetadata(result, chosenCandidate()!, state.components, "")
           : state.components.length
             ? {
@@ -135,6 +286,16 @@ export async function lujvoPage(
       el("bdi", { text: draft.meaning || "(no meaning yet)" }),
     ),
   );
+  if (state.typed) {
+    section.append(
+      p(
+        `Link the source words of ${state.typed}. Its rafsi and joins stay fixed. Fill every source to save compound metadata, or continue without it.`,
+        "small",
+      ),
+    );
+  }
+  if (state.profile === "extended-v2")
+    section.append(p("Saved morphology: extended version 2.", "meta"));
   // Profile.
   const profileGroup = el("div", {
     class: "seg",
@@ -142,6 +303,9 @@ export async function lujvoPage(
     "aria-label": "Morphology profile",
   });
   for (const [value, label] of [
+    ...(state.profile === "extended-v2"
+      ? [["extended-v2", "Extended version 2 (saved record)"]]
+      : []),
     ["cll", "CLL rules"],
     ["extended", "Extended: whole-word parts"],
   ] as const) {
@@ -169,6 +333,7 @@ export async function lujvoPage(
       "meta",
     ),
   );
+  if (state.typed) profileGroup.closest("div")!.hidden = true;
   // Component rows.
   const list = el("ol", {
     class: "parts",
@@ -196,21 +361,23 @@ export async function lujvoPage(
   });
   addRow.append(addField.wrapper);
   section.append(addRow, addResults);
-  section.append(
-    assistanceAction(app, draft, saver, context, {
-      key: "components",
-      label: "Suggest components",
-      operation: "lujvo",
-      profile: "components",
-      current: builderCurrent,
-    }),
-    assistanceAction(app, draft, saver, context, {
-      key: "lujvo",
-      label: "Suggest a lujvo",
-      operation: "lujvo",
-      current: builderCurrent,
-    }),
-  );
+  if (state.typed) addRow.hidden = true;
+  if (!state.typed)
+    section.append(
+      assistanceAction(app, draft, saver, context, {
+        key: "components",
+        label: "Suggest components",
+        operation: "lujvo",
+        profile: "components",
+        current: builderCurrent,
+      }),
+      assistanceAction(app, draft, saver, context, {
+        key: "lujvo",
+        label: "Suggest a lujvo",
+        operation: "lujvo",
+        current: builderCurrent,
+      }),
+    );
   // Result card and alternatives.
   const resultCard = el("div", {
     class: "card",
@@ -396,6 +563,12 @@ export async function lujvoPage(
   let failure: string | null = null;
   const chosenCandidate = (): LujvoCandidate | null => {
     if (!result?.candidates.length) return null;
+    if (state.typed)
+      return (
+        result.candidates.find(
+          (candidate) => candidate.spelling === state.typed,
+        ) ?? null
+      );
     return state.selected
       ? (result.candidates.find((c) => c.spelling === state.selected) ?? null)
       : result.candidates[0];
@@ -418,6 +591,96 @@ export async function lujvoPage(
         style:
           "padding:14px 16px;display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center",
       });
+      if (state.typed) {
+        const part = {
+          text: component.locked ?? "",
+          kind: "rafsi" as const,
+          join_before: index ? (state.joins?.[index - 1] ?? "") : null,
+        };
+        const options = sourceOptions(part, cached);
+        item.append(
+          el("strong", { lang: "jbo", text: component.locked ?? "" }),
+          p(
+            `Exact join before this part: ${index ? JSON.stringify(state.joins?.[index - 1] ?? "") : "none"}.`,
+            "meta",
+          ),
+        );
+        if (options.length) {
+          const source = field(`Source word for part ${index + 1}`, {
+            options: [
+              { value: "", label: "Choose a source word" },
+              ...options.map((choice) => ({
+                value: choice.spelling,
+                label: `${choice.spelling} ${choice.gloss}`,
+              })),
+            ],
+            value: component.unresolvedSource ? "" : component.spelling,
+          });
+          source.input.addEventListener("change", () => {
+            const choice = options.find(
+              (choice) => choice.spelling === source.input.value,
+            );
+            if (!choice) return;
+            state.components[index] = { ...choice, id: component.id };
+            saver.touch();
+            rebuild();
+          });
+          item.append(source.wrapper);
+        }
+        const source = field(`Other source word for part ${index + 1}`, {
+          value: options.some(
+            (option) => option.spelling === component.spelling,
+          )
+            ? ""
+            : component.spelling,
+          lang: "jbo",
+          spellcheck: false,
+        });
+        source.input.addEventListener("change", () => {
+          const spelling = typedWord(source.input.value);
+          component.spelling = spelling;
+          component.kind = detectWord(spelling).kind;
+          component.definition = null;
+          component.definitions = [];
+          component.claims = [];
+          if (spelling) delete component.unresolvedSource;
+          else
+            component.unresolvedSource = "Link a source word if you know it.";
+          saver.touch();
+          rebuild();
+        });
+        item.append(source.wrapper);
+        if (!options.length && !component.spelling)
+          item.append(
+            p(
+              "No source word is linked. Enter one to record its attribution, or continue without compound metadata. The rafsi stays fixed.",
+              "meta",
+            ),
+          );
+        if (component.definitions?.length) {
+          const definition = field(
+            `Exact definition of ${component.spelling}`,
+            {
+              options: [
+                { value: "", label: "no specific definition" },
+                ...component.definitions.map((entry) => ({
+                  value: entry.event,
+                  label: entry.summary,
+                })),
+              ],
+              value: component.definition ?? "",
+            },
+          );
+          definition.input.addEventListener("change", () => {
+            component.definition = definition.input.value || null;
+            saver.touch();
+            rebuild();
+          });
+          item.append(definition.wrapper);
+        }
+        list.append(item);
+        return;
+      }
       const moves = el("div", {
         style: "display:flex;flex-direction:column;gap:2px",
       });
@@ -761,23 +1024,26 @@ export async function lujvoPage(
       : "Availability in the local package is unknown: no package is downloaded.";
     resultCard.append(availability);
     const checked = candidate.spelling;
-    void getWord(wordId({ language: "jbo", spelling: checked }), {
-      signal: context.signal,
-    })
-      .then((word) => {
-        if (!context.live() || chosenCandidate()?.spelling !== checked) return;
-        // A word response without definitions means the server knows no definition of this spelling.
-        availability.textContent += word.definitions.length
-          ? ` The server defines ${checked} in snapshot ${word.snapshot.slice(7, 19)}….`
-          : ` The server has no definition of ${checked} in snapshot ${word.snapshot.slice(7, 19)}….`;
+    if (!state.typed)
+      void getWord(wordId({ language: "jbo", spelling: checked }), {
+        signal: context.signal,
       })
-      .catch((error: unknown) => {
-        if (!context.live() || chosenCandidate()?.spelling !== checked) return;
-        availability.textContent +=
-          error instanceof RequestError && error.status === 404
-            ? ` The server has no definition of ${checked} now.`
-            : ` The server could not be asked: ${describe(error)}.`;
-      });
+        .then((word) => {
+          if (!context.live() || chosenCandidate()?.spelling !== checked)
+            return;
+          // A word response without definitions means the server knows no definition of this spelling.
+          availability.textContent += word.definitions.length
+            ? ` The server defines ${checked} in snapshot ${word.snapshot.slice(7, 19)}….`
+            : ` The server has no definition of ${checked} in snapshot ${word.snapshot.slice(7, 19)}….`;
+        })
+        .catch((error: unknown) => {
+          if (!context.live() || chosenCandidate()?.spelling !== checked)
+            return;
+          availability.textContent +=
+            error instanceof RequestError && error.status === 404
+              ? ` The server has no definition of ${checked} now.`
+              : ` The server could not be asked: ${describe(error)}.`;
+        });
     if (candidate.unlisted.length)
       resultCard.append(
         p(
@@ -848,10 +1114,23 @@ export async function lujvoPage(
   const rebuild = () => {
     failure = null;
     result = null;
+    if (
+      !state.typedOrigin &&
+      state.restoredJoinParts &&
+      (state.components.length !== state.restoredJoinParts.length ||
+        state.components.some(
+          (component, index) =>
+            component.id !== state.restoredJoinParts![index].id ||
+            component.locked !== state.restoredJoinParts![index].rafsi,
+        ))
+    ) {
+      delete state.joins;
+      delete state.restoredJoinParts;
+    }
     if (state.components.length >= 2) {
       try {
         result = buildLujvo({
-          profile: state.profile,
+          ...typedLujvoRequest(state),
           components: state.components.map((c) => ({
             id: c.id,
             spelling: c.spelling,
@@ -881,15 +1160,70 @@ export async function lujvoPage(
     if (!primary) return;
     const candidate = chosenCandidate();
     primary.textContent = `Use ${candidate?.spelling ?? "this form"}`;
-    primary.disabled = !candidate || unacknowledged(candidate).length > 0;
+    primary.disabled =
+      !candidate ||
+      unacknowledged(candidate).length > 0 ||
+      !linkedSources(state);
     primary.title =
       candidate && unacknowledged(candidate).length
         ? "Acknowledge every competing claim first, or choose another form."
         : "";
   };
+  const useCandidate = async (withMetadata: boolean) => {
+    const candidate = chosenCandidate();
+    if (
+      !candidate ||
+      !result ||
+      (withMetadata &&
+        (unacknowledged(candidate).length || !linkedSources(state)))
+    )
+      return;
+    if (
+      draft.formation &&
+      !confirm(
+        "Use this lujvo and remove the previous generation evidence? The prose and annotations stay.",
+      )
+    )
+      return;
+    if (
+      draft.typedSpelling &&
+      typedWord(draft.spelling) !== candidate.spelling &&
+      !confirm(
+        `Replace the typed spelling "${draft.spelling}" with "${candidate.spelling}"?`,
+      )
+    )
+      return;
+    draft.formation = null;
+    if (draft.spelling !== candidate.spelling) draft.publishAcknowledged = [];
+    draft.spelling = candidate.spelling;
+    draft.typedSpelling = state.typedOrigin
+      ? typedWord(candidate.spelling)
+      : null;
+    if (!state.typed) {
+      delete state.typedOrigin;
+      state.ordinarySpelling = typedWord(candidate.spelling);
+    }
+    draft.evidenceForm = withMetadata ? candidate.spelling : null;
+    draft.compound = withMetadata
+      ? compoundMetadata(result, candidate, state.components, "")
+      : null;
+    state.selected = candidate.spelling;
+    draft.step = Math.max(draft.step, 4) as Draft["step"];
+    if (!(await saver.flush())) return;
+    navigate("/new/places");
+  };
   bar = actionBar(saver, {
     back: { label: "Back", href: "/new/type" },
     extra: [
+      ...(state.typed
+        ? [
+            button(
+              "Continue without compound metadata",
+              () => useCandidate(false),
+              { class: "btn btn-quiet" },
+            ),
+          ]
+        : []),
       link("Type the spelling yourself", "/new/form?manual=1", {
         class: "btn btn-quiet",
       }),
@@ -897,32 +1231,7 @@ export async function lujvoPage(
     primary: {
       label: "Use this form",
       disabled: true,
-      action: async () => {
-        const candidate = chosenCandidate();
-        if (!candidate || !result || unacknowledged(candidate).length) return;
-        if (
-          draft.formation &&
-          !confirm(
-            "Use this lujvo and remove the previous generation evidence? The prose and annotations stay.",
-          )
-        )
-          return;
-        draft.formation = null;
-        if (draft.spelling !== candidate.spelling)
-          draft.publishAcknowledged = [];
-        draft.spelling = candidate.spelling;
-        draft.evidenceForm = candidate.spelling;
-        draft.compound = compoundMetadata(
-          result,
-          candidate,
-          state.components,
-          "",
-        );
-        state.selected = candidate.spelling;
-        draft.step = Math.max(draft.step, 4) as Draft["step"];
-        if (!(await saver.flush())) return;
-        navigate("/new/places");
-      },
+      action: () => useCandidate(true),
     },
   });
   main.append(bar);

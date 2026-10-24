@@ -197,6 +197,9 @@ Rafsi claims retain their separate pair judgments, status, conflicts, and ration
 
 The first wizard screen uses two columns with a 40px gap when space permits.
 The left column asks “What does the word mean?” and provides a meaning textarea, language select, and optional Lojban word.
+Below the optional word field, show local morphology detection and the exact-word lookup state.
+An existing word shows “Already exists”, a word link, its definitions, and “Add a definition”.
+An unavailable lookup says that the word could not be checked and offers the consent-based remote check.
 The right column is “Close in meaning,” with existing words and exact definitions.
 Both columns can start from a 360px basis and stack at narrow widths.
 
@@ -218,6 +221,13 @@ The card grid uses approximately 230px minimum columns where available, then one
 The main column uses a 480px basis and the suggestion panel a 260px basis, with a 40px gap.
 An explicit AI action can mark a proposal “AI pick” and show its reason. It does not select the type automatically.
 “Have the spelling already? Type it in and skip the builder” opens manual entry.
+A typed word preselects its detected type. Unknown analysis shows its diagnostics and leaves experimental types available.
+An unconfirmed preselection follows spelling corrections. Confirmed choices stay selected until the author changes them.
+Selecting or confirming a type clears its review notice.
+Forward step links and the full-editor link also confirm the current type.
+Cancellation of evidence removal keeps the previous selection visible.
+One confirmation action opens Places for gismu and fu'ivla, the component builder for lujvo, or Form for the other kinds.
+Beside confirmation, a typed gismu shows linked closeness warnings and an optional “Add source-language evidence” action.
 The primary button names the selected next action, such as “Build the lujvo.”
 Type changes preserve prose and annotations and require review before incompatible formation fields disappear.
 
@@ -230,6 +240,11 @@ Direct navigation to Places preserves manual spelling, classification, and notes
 
 The main builder uses a 480px basis. The definition column uses a 300px basis, with a 40px gap.
 The result card shows the 44px form with underlined component rafsi, construction score, and recovered components.
+A typed lujvo offers a source-word selector when a rafsi has competing assignments. Its exact rafsi and joins stay locked.
+An unknown source stays blank. “Continue without compound metadata” proceeds without source attribution.
+Saving compound metadata requires an explicit source word for every part.
+Its only candidate is the typed word. Builder actions ask before replacing a typed spelling.
+Only rows from typed analysis use this fixed layout. Ordinary rows and saved rows with unknown origin stay editable.
 A taken or available label names its snapshot and coverage limits. It never promises global uniqueness.
 A construction score describes the stated algorithm. It does not guarantee readability or editorial endorsement.
 

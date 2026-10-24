@@ -88,6 +88,7 @@ async function beginDraft(page: Page, kind?: "lujvo" | "gismu") {
   await page
     .getByLabel("Meaning", { exact: true })
     .fill("___ is a book for ___.");
+  await page.getByLabel("Lojban word", { exact: true }).fill("");
   await page.getByRole("button", { name: "New word", exact: true }).click();
   await page.getByRole("heading", { name: "What kind of word?" }).waitFor();
   if (kind) {

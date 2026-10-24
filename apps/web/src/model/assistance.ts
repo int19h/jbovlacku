@@ -312,6 +312,8 @@ export function applyProposals(draft: Draft, result: Suggestion) {
       case "/word_type":
         if (draft.kind !== value) draft.selmaho = [];
         draft.kind = value as Draft["kind"];
+        delete draft.autoDetectedKind;
+        draft.review = draft.review.filter((field) => field !== "word type");
         break;
       case "/classification/selmaho":
         draft.selmaho = value as string[];

@@ -36,9 +36,22 @@ export interface LujvoComponentState {
   /** Known rafsi claims of the word, from the package or entered by hand. */
   claims: { rafsi: string; pair: string }[];
   locked: string | null;
+  unresolvedSource?: string;
 }
 export interface LujvoState {
   profile: MorphologyProfile;
+  /** True only when typed analysis created these rows. Locks alone do not imply origin. */
+  typedOrigin?: true;
+  /** A saved spelling keeps ordinary rows. Empty means typed rows need fresh analysis. */
+  ordinarySpelling?: string;
+  /** Exact spelling and boundary locks for a typed lujvo. */
+  typed?: string;
+  /** Legacy draft fields, cleared when the typed spelling changes. */
+  typedReading?: import("../../../../packages/core/src/browser.ts").RecoveredPart[];
+  readingIndex?: number;
+  joins?: (string | null)[];
+  /** The rows and rafsi to which restored ordinary joins belong. */
+  restoredJoinParts?: { id: string; rafsi: string | null }[];
   components: LujvoComponentState[];
   /** The chosen candidate spelling, when the author chose one. */
   selected: string | null;
@@ -276,7 +289,7 @@ export interface GismuState {
   window: number;
 }
 export const newLujvoState = (): LujvoState => ({
-  profile: "cll",
+  profile: "extended",
   components: [],
   selected: null,
   acknowledged: [],
@@ -473,6 +486,14 @@ export function compoundMetadata(
   components: LujvoComponentState[],
   notes: string,
 ): Compound {
+  if (
+    components.some(
+      (component) => !component.spelling.trim() || component.unresolvedSource,
+    )
+  )
+    throw new Error(
+      "Link every source word before recording compound metadata.",
+    );
   return {
     components: candidate.parts.map((part) => {
       const component = components.find((c) => c.id === part.id);

@@ -153,6 +153,25 @@ export function guardDraftNavigation(
   const saver = pendingSaver;
   // Without a saver the verdict is synchronous, so ordinary navigation stays synchronous.
   if (!saver) return true;
+  const path = new URL(target, location.href).pathname;
+  const forward = [
+    "/new/lujvo",
+    "/new/gismu",
+    "/new/form",
+    "/new/places",
+    "/new/publish",
+    "/new/editor",
+  ].includes(path);
+  if (forward && saver.draft.autoDetectedKind !== undefined) {
+    const kind =
+      path === "/new/lujvo"
+        ? "lujvo"
+        : path === "/new/gismu"
+          ? "gismu"
+          : saver.draft.kind;
+    if (!confirmKindChange(saver.draft, kind)) return false;
+    saver.touch();
+  }
   if (saver.leaving === target) {
     saver.detach();
     return true;
@@ -496,6 +515,8 @@ export function confirmKindChange(
     if (!draft.compound && !draft.formation) draft.evidenceForm = null;
   }
   draft.kind = kind;
+  delete draft.autoDetectedKind;
+  draft.review = draft.review.filter((field) => field !== "word type");
   return true;
 }
 /** Removes structured evidence only after the author confirms the exact loss. */

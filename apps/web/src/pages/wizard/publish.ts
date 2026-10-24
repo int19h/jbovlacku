@@ -1,3 +1,4 @@
+import { detectWord } from "../../model/typed-headword.ts";
 /**
  * Step 5: preview, known conflicts, the publication panel, and the signed
  * group. The group comes from the reviewed draft alone. Conflict lookups only
@@ -307,7 +308,8 @@ export async function publishPage(
   const formationMatchesForm =
     draft.evidenceForm === body?.word.spelling &&
     (!draft.formation?.generated ||
-      draft.formation.generated === body?.word.spelling);
+      draft.formation.generated ===
+        detectWord(body?.word.spelling ?? "").normalized);
   const rootLine = el("p", { class: "meta" });
   conflicts.append(rootLine);
   if (draft.kind === "gismu" && body) {

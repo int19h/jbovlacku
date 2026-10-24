@@ -27,6 +27,7 @@ export {
   rankWord,
   canonicalizeStorageWrapper,
   type MorphologyProfile,
+  morphologyProfile,
   type BuilderPreset,
   type BuilderFailure,
   BuilderError,

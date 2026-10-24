@@ -85,7 +85,27 @@ Remote search offers a retired-results filter that shows each publication's stat
 The rafsi page lists known assignments across words from version 2 packages, and the claim page signs a claim with its pair blessing.
 The lujvo builder offers short rafsi, gismu stems, whole gismu, whole-word parts under the extended profile, locks, CLL scores, recovered parts, and every competing rafsi claim from the local package.
 If several parts share the same competing rafsi claim, the builder shows one acknowledgment for that claim.
-Choosing [optional hyphens](docs/morphology.md) in the lujvo builder remains a target change. The builder adds only the required hyphens.
+A word entered on Meaning gets local form detection and an exact identity lookup in the selected language package.
+A remote exact-word check requires consent for that word and language. Missing coverage stays visible.
+Type confirmation opens Places for a typed gismu or fu'ivla, source linking for a lujvo, and Form for the other kinds.
+The typed lujvo path locks the exact analyzed rafsi and joins, including [optional hyphens and experimental forms](docs/morphology.md).
+It preserves the entered spelling through publication, including case, commas, and framing periods. Source choices and exact definitions stay editable.
+Unknown source fields stay blank. Authors can link every source to save compound evidence, or continue with no compound metadata.
+
+A changed or cleared typed spelling restores ordinary builder rows. A generated replacement reopens with editable rows.
+A replacement typed lujvo starts fresh analysis, including a return to an earlier spelling before the builder reopens.
+A private origin marker distinguishes typed analysis from ordinary rafsi locks. Meaning visits and evidence removal preserve ordinary row editing.
+Saved rows with unknown origin stay editable and keep their signed version, boundaries, and matching joins.
+
+Unconfirmed type detection follows spelling corrections after confirmation of any evidence loss.
+Forward wizard links and direct Form or builder entry confirm the selected type. Cancellation keeps the previous type and evidence.
+A confirmed type stays selected, and completed type review clears its notice.
+
+New lujvo builders use the extended profile. Manual boundary controls for a generated spelling remain a target change.
+The CLL profile retains required-only construction and version 2. New extended construction and recognition use version 3.
+Saved extended version 2 records reopen with their original rules and component boundaries. Unknown versions stay unsupported.
+The extended profile permits `mz`, consonantal-syllable borrowings, and the experimental rafsi rules. The CLL and extended version 2 profiles retain their earlier rules.
+Source-language evidence scores a normalized gismu while its headword and evidence binding keep the typed bytes.
 The gismu generator offers the CLL 1987, CLL 1995, and Ilmen presets with pinned sources, custom weights, exact scores, tied ranks, per-language contributions, root and rafsi conflicts, and manual forms without fabricated evidence.
 The core and builders keep the optional full pronunciation, `word_ipa`, in signed formation sources.
 Draft reload preserves private `stem` and `ipa` values. Neither enters a signed formation source.
