@@ -37,7 +37,7 @@ The morphology identifier remains the extended identifier above, and the version
 The extended profile adds the audited jbotci behavior for whole-word parts. It is not CLL text:
 
 - A whole brivla can serve as a part. The pinned recognizer must read each core as one gismu, lujvo, or fu'ivla. A core uses no `y`.
-- A core that ends with a vowel is followed by `'y`. A rafsi that ends with a consonant is followed by `y` before a consonant that it cannot pair with, or by `y'` before a vowel nucleus, as in `fuly'ismu`. Before `i` or `u` plus a vowel, the join is `y`, as in `aktyiismu`.
+- A core that ends with a vowel is followed by `'y`. A rafsi that ends with a consonant can need a join. If the next consonant cannot pair with its final consonant, the join is `y`. Before a vowel nucleus, the join is `y'`, as in `fuly'ismu`. Before `i` or `u` plus a vowel, the join is `y`, as in `aktyiismu`.
 - A rafsi part can have a shape outside the CLL table. The extended scorer gives that shape rank zero.
 - Every candidate must parse as one lujvo under the pinned recognizer. Its parsed components and joins must equal the intended sequence. Token reconstruction supplies no parse evidence.
 - A join can produce an invalid spelling. For example, bonding `leksiko` and `ismu` produces `leksiko'yismu`. The builder refuses that result after parsing it.
