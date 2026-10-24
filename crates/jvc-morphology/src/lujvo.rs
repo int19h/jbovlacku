@@ -844,6 +844,12 @@ fn build_lujvo_with_detail_budget(
         require_limit("component claims", component.claims.len() as u64, 64)?;
         if let Some(locked) = &component.locked {
             require_limit("locked rafsi bytes", locked.len() as u64, 128)?;
+            if locked.is_empty() || is_hyphen(locked) {
+                return Err(BuilderError::Invalid {
+                    message: "A component lock must contain a rafsi, not an empty form or a join."
+                        .into(),
+                });
+            }
         }
         for claim in &component.claims {
             require_limit("rafsi bytes", claim.rafsi.len() as u64, 128)?;
@@ -991,11 +997,18 @@ fn build_lujvo_with_detail_budget(
                 default_tokens
             } else {
                 let defaults = recovered(&default_tokens, &parts);
+                if defaults.len() != parts.len() {
+                    failure = Some(BuilderError::Invalid {
+                        message: "The default joins do not recover every component.".into(),
+                    });
+                    return;
+                }
                 let mut tokens = vec![parts[0].text.clone()];
                 for (index, part) in parts.iter().enumerate().skip(1) {
                     let join = request.joins[index - 1]
                         .as_deref()
-                        .unwrap_or(defaults[index].join_before.as_deref().unwrap_or(""));
+                        .or_else(|| defaults.get(index)?.join_before.as_deref())
+                        .unwrap_or("");
                     if !join.is_empty() {
                         tokens.push(join.into());
                     }
@@ -1398,6 +1411,34 @@ mod tests {
         }))
         .unwrap();
         assert!(build_lujvo(&request).is_err());
+    }
+    #[test]
+    fn component_locks_reject_empty_forms_and_standalone_joins_without_panicking() {
+        for locked in ["", "y", "y'", "'y", "'y'", "r", "n"] {
+            for joins in [
+                serde_json::json!([]),
+                serde_json::json!([null]),
+                serde_json::json!([""]),
+                serde_json::json!(["y"]),
+            ] {
+                for position in 0..2 {
+                    let mut components = serde_json::json!([
+                        {"id": "a", "spelling": "bau", "kind": "other", "locked": "bau"},
+                        {"id": "b", "spelling": "kla", "kind": "other", "locked": "kla"}
+                    ]);
+                    components[position]["spelling"] = serde_json::json!(locked);
+                    components[position]["locked"] = serde_json::json!(locked);
+                    let request: LujvoRequest = serde_json::from_value(serde_json::json!({
+                        "profile": "extended", "joins": joins, "components": components,
+                    }))
+                    .unwrap();
+                    assert!(
+                        matches!(build_lujvo(&request), Err(BuilderError::Invalid { message }) if message.contains("component lock")),
+                        "lock {locked:?}, position {position}, joins {joins}"
+                    );
+                }
+            }
+        }
     }
     #[test]
     fn explicit_joins_reject_missing_required_and_invalid_joins() {
