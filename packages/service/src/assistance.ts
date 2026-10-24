@@ -1064,7 +1064,7 @@ export interface EmbeddingOperation {
     | "completed"
     | "failed"
     | "timed_out"
-    | "interrupted";
+    | "retained";
   transportPending: boolean;
   error: string | null;
 }
@@ -1076,6 +1076,7 @@ export class AssistanceService {
   private network = new Map<string, { expires: number; count: number }>();
   private running = 0;
   private embeddingWork = new Map<string, EmbeddingOperation>();
+  private embeddingSlots = new Map<string, number>();
   private budgetEntries = new Map<string, AssistanceBudgetEntry>();
   private networkHashKey = "";
   private budgetLoaded = false;
@@ -1104,7 +1105,14 @@ export class AssistanceService {
     if (
       !["query", "index", "probe"].includes(caller.kind) ||
       (caller.kind === "query" &&
-        (typeof caller.network !== "string" || !caller.network))
+        (typeof caller.network !== "string" ||
+          (caller.network !== "local" &&
+            !normalizeClientNetwork(caller.network) &&
+            !(
+              caller.network.endsWith("/64") &&
+              normalizeClientNetwork(caller.network.slice(0, -3)) ===
+                caller.network
+            ))))
     )
       throw new AssistanceError(
         400,
@@ -1185,6 +1193,7 @@ export class AssistanceService {
         error: null,
       };
       this.embeddingWork.set(id, operation);
+      this.embeddingSlots.set(id, deadline);
       this.running++;
       return operation;
     });
@@ -1220,7 +1229,7 @@ export class AssistanceService {
               id,
               kind: id.split(":")[1] as EmbeddingCaller["kind"],
               deadline: entry!.deadline,
-              state: "interrupted" as const,
+              state: "retained" as const,
               transportPending: false,
               error: null,
             }),
@@ -1254,6 +1263,7 @@ export class AssistanceService {
     const release = () => {
       if (!finished || operation.transportPending || released) return;
       released = true;
+      this.embeddingSlots.delete(operation.id);
       this.running--;
       const terminal = [...this.embeddingWork.values()].filter(
         (item) =>
@@ -1820,17 +1830,14 @@ export class AssistanceService {
       const running = jobs.filter((job) =>
         ["queued", "running", "cancel_requested"].includes(job.state),
       );
+      const deadlines = [
+        ...running.map((job) => job.deadline),
+        ...this.embeddingSlots.values(),
+      ].filter(Number.isFinite);
       limits.push(
         Math.max(
           now + 1000,
-          Math.min(
-            ...running.map((job) => job.deadline),
-            ...[...this.embeddingWork.values()]
-              .filter(
-                (item) => item.transportPending || item.state === "preparing",
-              )
-              .map((item) => item.deadline),
-          ),
+          deadlines.length ? Math.min(...deadlines) : now + 1000,
         ),
       );
     }

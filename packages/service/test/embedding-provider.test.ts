@@ -93,6 +93,7 @@ test("embedding configuration pins the model and route with a separate input pri
     { JVC_AI_EMBEDDING_PROVIDER_ROUTE: "another-route" },
     { JVC_AI_EMBEDDING_INPUT_PRICE: "NaN" },
     { JVC_AI_EMBEDDING_INPUT_PRICE: "-1" },
+    { JVC_AI_EMBEDDING_INPUT_PRICE: "0" },
   ])
     assert.throws(() =>
       providerConfig(
@@ -115,7 +116,7 @@ test("the provider preserves exact input bytes and forbids redirects and route f
   const provider = config(async (url, init) => {
     assert.equal(url, "https://openrouter.ai/api/v1/embeddings");
     assert.equal(init?.method, "POST");
-    assert.equal(init?.redirect, "error");
+    assert.equal(init?.redirect, "manual");
     assert.equal(
       new Headers(init?.headers).get("authorization"),
       "Bearer disposable-embedding-key",
@@ -129,7 +130,7 @@ test("the provider preserves exact input bytes and forbids redirects and route f
         order: ["nebius"],
         only: ["nebius"],
         allow_fallbacks: false,
-        max_price: { prompt: 10 },
+        max_price: { prompt: 0.01 },
       },
       usage: { include: true },
     });
@@ -153,6 +154,95 @@ test("the provider preserves exact input bytes and forbids redirects and route f
     totalTokens: 12,
     costUsd: 0.00000012,
   });
+});
+
+test("the route cap never exceeds the reservation price or the general price ceiling", () => {
+  for (const [price, ceiling, expected] of [
+    [0.01, 10, 0.01],
+    [0.02, 0.001, 0.001],
+  ]) {
+    const provider = config(fetch, {
+      maxPrice: ceiling,
+      embedding: { model: EMBEDDING_MODEL, route: "nebius", inputPrice: price },
+    });
+    const prepared = prepareEmbedding([bytes("public")], provider);
+    assert.equal(JSON.parse(prepared.body).provider.max_price.prompt, expected);
+    assert.equal(prepared.estimatedUsd, (32000 * price) / 1000000);
+  }
+  for (const price of [0, -1, Number.MIN_VALUE]) {
+    assert.throws(
+      () =>
+        prepareEmbedding(
+          [bytes("public")],
+          config(fetch, {
+            embedding: {
+              model: EMBEDDING_MODEL,
+              route: "nebius",
+              inputPrice: price,
+            },
+          }),
+        ),
+      (failure: any) => failure.code === "embedding_configuration",
+    );
+  }
+  // A lower generation ceiling still leaves generation-only configuration valid.
+  assert.equal(
+    providerConfig(
+      { JVC_AI_ENABLED: "enabled", JVC_AI_MAX_PRICE: "0.001" },
+      async () => "unused",
+    )!.embedding!.inputPrice,
+    0.01,
+  );
+});
+
+test("every redirect response is refused before its JSON or usage is read", async () => {
+  for (const status of [300, 301, 302, 303, 307, 308, 399]) {
+    let canceled = false;
+    let costCalls = 0;
+    const provider = config(
+      async () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(bytes(JSON.stringify(response())));
+            },
+            cancel() {
+              canceled = true;
+            },
+          }),
+          { status, headers: { location: "https://example.invalid/redirect" } },
+        ),
+    );
+    await assert.rejects(
+      requestEmbedding(
+        prepareEmbedding([bytes("public")], provider),
+        provider,
+        new AbortController().signal,
+        {
+          sent() {},
+          transportEnded() {},
+          async cost() {
+            costCalls++;
+          },
+        },
+      ),
+      (failure: any) => failure.code === "embedding_provider",
+    );
+    assert(canceled);
+    assert.equal(costCalls, 0);
+  }
+  const opaque = new Response("redirect");
+  Object.defineProperty(opaque, "type", { value: "opaqueredirect" });
+  const provider = config(async () => opaque);
+  await assert.rejects(
+    requestEmbedding(
+      prepareEmbedding([bytes("public")], provider),
+      provider,
+      new AbortController().signal,
+      { sent() {}, transportEnded() {}, async cost() {} },
+    ),
+    (failure: any) => failure.code === "embedding_provider",
+  );
 });
 
 test("input bounds reject malformed UTF-8 and oversized encoded requests before dispatch", () => {

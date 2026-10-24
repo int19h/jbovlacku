@@ -46,8 +46,11 @@ export function prepareEmbedding(
     embedding.model !== EMBEDDING_MODEL ||
     embedding.route !== EMBEDDING_ROUTE ||
     !Number.isFinite(embedding.inputPrice) ||
-    embedding.inputPrice < 0 ||
-    embedding.inputPrice > 1000
+    embedding.inputPrice <= 0 ||
+    embedding.inputPrice > 1000 ||
+    !Number.isFinite(config.maxPrice) ||
+    config.maxPrice <= 0 ||
+    (embedding.inputPrice * EMBEDDING_QUOTE_TOKENS) / 1000000 <= 0
   )
     throw new AssistanceError(
       503,
@@ -90,7 +93,7 @@ export function prepareEmbedding(
       order: [embedding.route],
       only: [embedding.route],
       allow_fallbacks: false,
-      max_price: { prompt: config.maxPrice },
+      max_price: { prompt: Math.min(embedding.inputPrice, config.maxPrice) },
     },
     usage: { include: true },
   });
@@ -206,7 +209,17 @@ export async function requestEmbedding(
     cost(usage: EmbeddingUsage): Promise<void>;
   },
 ): Promise<EmbeddingResult> {
-  const key = (await abortable(config.key(), signal)).trim();
+  let key: string;
+  try {
+    key = (await abortable(config.key(), signal)).trim();
+  } catch {
+    signal.throwIfAborted();
+    throw new AssistanceError(
+      503,
+      "provider_credentials",
+      "The provider key is unavailable.",
+    );
+  }
   if (!key || /\s/.test(key))
     throw new AssistanceError(
       503,
@@ -222,7 +235,7 @@ export async function requestEmbedding(
       `${config.baseUrl}/embeddings`,
       {
         method: "POST",
-        redirect: "error",
+        redirect: "manual",
         headers: {
           "content-type": "application/json",
           authorization: `Bearer ${key}`,
@@ -235,7 +248,11 @@ export async function requestEmbedding(
       void response.body?.cancel().catch(() => {});
       signal.throwIfAborted();
     }
-    if (response.redirected) {
+    if (
+      response.redirected ||
+      response.type === "opaqueredirect" ||
+      (response.status >= 300 && response.status < 400)
+    ) {
       void response.body?.cancel().catch(() => {});
       throw error(
         "embedding_provider",

@@ -197,7 +197,7 @@ test("embedding reserves durably before dispatch and settles the actual reported
     "192.0.2.1",
     "public test definition",
     "disposable-shared-key",
-    "embedding_test",
+    "embedding-test",
   ])
     assert(!serialized.includes(secret));
   const status = await service.embeddingOperations();
@@ -480,7 +480,7 @@ test("restart keeps interrupted embedding reservations and permits supported lat
   });
   const { service } = fixture(config({ hourlyBudgetUsd: quote * 1.5 }), budget);
   const [interrupted] = await service.embeddingOperations();
-  assert.equal(interrupted.state, "interrupted");
+  assert.equal(interrupted.state, "retained");
   assert.equal(interrupted.active, false);
   assert.equal(interrupted.reservedUsd, quote);
   await assert.rejects(
@@ -616,7 +616,7 @@ test("unsent failures release their reservation and no disabled capability is in
   );
   await assert.rejects(
     service.embed(input, query()),
-    rejectCode("embedding_provider"),
+    rejectCode("provider_credentials"),
   );
   assert.equal(entries(budgetStore).length, 0);
   assert.equal((await service.embeddingOperations())[0].state, "failed");
@@ -634,4 +634,144 @@ test("unsent failures release their reservation and no disabled capability is in
     ),
     null,
   );
+});
+
+test("a generation admission queued on final settlement receives a finite retry interval", async () => {
+  const durable = store();
+  const finalSave = deferred<void>();
+  let settling = false;
+  const budget: AssistanceBudgetStore = {
+    load: () => durable.load(),
+    async save(snapshot) {
+      if (
+        snapshot.entries.some((entry) => !entry.active && entry.settledUsd > 0)
+      ) {
+        settling = true;
+        await finalSave.promise;
+      }
+      await durable.save(snapshot);
+    },
+  };
+  const service = new AssistanceService(
+    { provider: config({ concurrency: 1 }), budgetStore: budget },
+    "test",
+    async () => [],
+  );
+  const embeddingWork = service.embed(input, { kind: "probe" });
+  await until(() => settling);
+  const generationWork = generation(service);
+  await new Promise(setImmediate);
+  finalSave.resolve();
+  const response = await generationWork;
+  await embeddingWork;
+  assert.equal(response.status, 429);
+  const retry = response.headers.get("retry-after");
+  assert(retry && /^\d+$/.test(retry));
+  assert(Number.isFinite(Number(retry)) && Number(retry) >= 1);
+});
+
+test("restored settled records use retained diagnostics without claiming an interruption", async () => {
+  const budget = store();
+  const original = fixture(config(), budget).service;
+  await original.embed(input, query());
+  const [retained] = await fixture(
+    config(),
+    budget,
+  ).service.embeddingOperations();
+  assert.equal(retained.state, "retained");
+  assert.equal(retained.reservedUsd, 0);
+  assert.equal(retained.chargedUsd, 0.000001);
+  assert.equal(retained.active, false);
+});
+
+test("invalid query networks cannot create separate spending buckets", async () => {
+  let calls = 0;
+  const { service, budgetStore } = fixture(
+    config({
+      fetch: async () => {
+        calls++;
+        return Response.json(embedding());
+      },
+    }),
+  );
+  for (const network of [
+    "",
+    "operator",
+    "192.0.2.1:443",
+    "192.0.2.1:444",
+    "192.0.2.1/64",
+    "local:1",
+    "2001:db8::/48",
+    "not-an-address",
+  ]) {
+    await assert.rejects(
+      service.embed(input, query(network)),
+      rejectCode("embedding_network"),
+    );
+  }
+  assert.equal(calls, 0);
+  assert.equal(budgetStore.snapshot(), null);
+  await service.embed(input, query("local"));
+  await service.embed(input, query("2001:db8:0:1::/64"));
+  assert.equal(calls, 2);
+});
+
+test("a lower route cap retains nonzero conservative charges when sent usage is missing", async () => {
+  const { service, budgetStore } = fixture(
+    config({
+      maxPrice: 0.001,
+      fetch: async (_url, init) => {
+        assert.equal(
+          JSON.parse(String(init?.body)).provider.max_price.prompt,
+          0.001,
+        );
+        return Response.json(embedding(null));
+      },
+    }),
+  );
+  await service.embed(input, { kind: "index" });
+  assert.equal(entries(budgetStore)[0].reservedUsd, quote);
+  assert.equal(entries(budgetStore)[0].settledUsd, quote);
+  assert.equal(entries(budgetStore)[0].costKnown, false);
+  const invalid = fixture(
+    config({
+      embedding: { model: EMBEDDING_MODEL, route: "nebius", inputPrice: 0 },
+    }),
+  );
+  await assert.rejects(
+    invalid.service.embed(input, { kind: "index" }),
+    rejectCode("embedding_configuration"),
+  );
+  assert.equal(invalid.budgetStore.snapshot(), null);
+});
+
+test("key-loader failures are unavailable credentials and route failures are not model drift", async () => {
+  const failed = fixture(
+    config({
+      key: async () => {
+        throw new Error("disposable-shared-key");
+      },
+    }),
+  );
+  await assert.rejects(failed.service.embed(input, query()), (failure: any) => {
+    assert.equal(failure.status, 503);
+    assert.equal(failure.code, "provider_credentials");
+    assert(!failure.message.includes("disposable-shared-key"));
+    return true;
+  });
+  for (const status of [402, 404, 429, 503]) {
+    const { service } = fixture(
+      config({
+        fetch: async () =>
+          Response.json(
+            { error: { message: "No endpoints found" } },
+            { status },
+          ),
+      }),
+    );
+    await assert.rejects(
+      service.embed(input, query()),
+      rejectCode("embedding_provider"),
+    );
+  }
 });

@@ -362,7 +362,12 @@ export function providerConfig(
     embedding: {
       model: EMBEDDING_MODEL,
       route: EMBEDDING_ROUTE,
-      inputPrice: number("JVC_AI_EMBEDDING_INPUT_PRICE", 0.01, 0, 1000),
+      inputPrice: number(
+        "JVC_AI_EMBEDDING_INPUT_PRICE",
+        0.01,
+        Number.MIN_VALUE,
+        1000,
+      ),
     },
     hourlyBudgetUsd,
     dailyBudgetUsd,
