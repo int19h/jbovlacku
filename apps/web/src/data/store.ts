@@ -2,7 +2,7 @@
  * Local IndexedDB storage. Version 2 adds preferences, the private overlay,
  * delivery groups, and own-history caches, and migrates version 1 outbox rows.
  */
-import { utf8, verifyEnvelope } from "../../../../packages/core/src/index.ts";
+import { utf8, verifyEnvelope } from "../../../../packages/core/src/browser.ts";
 import {
   ownGraph,
   requiresLifecycleDelivery,
