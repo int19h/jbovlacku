@@ -1,5 +1,6 @@
 import {
   extractHostVerifiedRecord,
+  checkHostVerifiedRecord,
   hostRecordVersion,
   type HostVerifiedRecord,
 } from "../../core/src/index.ts";
@@ -14,13 +15,36 @@ export interface StoredVerifiedRecord {
   version: number;
   compact: string;
 }
+export type VerifiedRecordBinding = Pick<
+  StoredVerifiedRecord,
+  "id" | "envelope_hash" | "body_hash" | "version"
+>;
+const statistics = new WeakMap<
+  Coordinator,
+  {
+    missing: number;
+    decode_failed: number;
+    backfilled: number;
+  }
+>();
+export function verifiedRecordStatistics(coordinator: Coordinator) {
+  let value = statistics.get(coordinator);
+  if (!value)
+    statistics.set(
+      coordinator,
+      (value = {
+        missing: 0,
+        decode_failed: 0,
+        backfilled: 0,
+      }),
+    );
+  return value;
+}
 const localStores = new WeakMap<
   Coordinator,
   Map<string, StoredVerifiedRecord>
 >();
-export function verifiedRecordKey(
-  record: Omit<StoredVerifiedRecord, "compact">,
-): string {
+export function verifiedRecordKey(record: VerifiedRecordBinding): string {
   return JSON.stringify([
     record.id,
     record.envelope_hash,
@@ -65,7 +89,25 @@ export async function readVerifiedRecord(
   const stored = coordinator.getVerifiedRecord
     ? await coordinator.getVerifiedRecord(binding)
     : localStore(coordinator).get(key);
-  if (stored) return stored;
+  const counts = verifiedRecordStatistics(coordinator);
+  if (stored) {
+    try {
+      if (checkHostVerifiedRecord(stored.compact) !== id)
+        throw new Error("Stored compact event ID differs from its binding.");
+      return stored;
+    } catch (error) {
+      counts.decode_failed++;
+      console.warn(
+        JSON.stringify({
+          event: "verified_record_decode_failed",
+          id,
+          envelope_hash: event.envelope_hash,
+          body_hash: event.body_hash,
+          version: binding.version,
+        }),
+      );
+    }
+  } else counts.missing++;
   const loaded = await readRecordBytes(
     objects,
     event.envelope_hash,
@@ -82,6 +124,7 @@ export async function readVerifiedRecord(
     loaded.envelope,
     loaded.body.value ?? undefined,
   );
+  counts.backfilled++;
   if (backfill) backfill.push(record);
   else await retainVerifiedRecords(coordinator, [record]);
   return record;
@@ -169,27 +212,15 @@ export async function backfillVerifiedRecords(
   objects: ObjectStore,
 ): Promise<number> {
   const state = await coordinator.load();
-  let count = 0;
-  const ids: string[] = [];
-  for (const [id, event] of Object.entries(state.events)) {
-    const binding = {
-      id,
-      envelope_hash: event.envelope_hash,
-      body_hash: event.body_hash,
-      version: hostRecordVersion(),
-    };
-    if (
-      !coordinator.getVerifiedRecord ||
-      !(await coordinator.getVerifiedRecord(binding))
-    )
-      ids.push(id);
-  }
+  const before = { ...verifiedRecordStatistics(coordinator) };
   for await (const _ of streamVerifiedRecords(
     coordinator,
     objects,
     state.events,
-    ids,
-  ))
-    count++;
-  return count;
+    Object.keys(state.events),
+  )) {
+    /* Drain bounded batches. */
+  }
+  const after = verifiedRecordStatistics(coordinator);
+  return after.backfilled - before.backfilled;
 }

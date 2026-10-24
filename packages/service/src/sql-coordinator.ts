@@ -1,4 +1,7 @@
-import { type StoredVerifiedRecord } from "./verified-records.ts";
+import {
+  type StoredVerifiedRecord,
+  type VerifiedRecordBinding,
+} from "./verified-records.ts";
 import {
   freezeSnapshotCache,
   serializeSnapshotCache,
@@ -45,6 +48,9 @@ export class SqlRowsCoordinator {
       "CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, value TEXT NOT NULL)",
     );
     sql.exec(
+      "CREATE TABLE IF NOT EXISTS verified_record_staging (stage TEXT NOT NULL, id TEXT NOT NULL, envelope_hash TEXT NOT NULL, body_hash TEXT NOT NULL, version INTEGER NOT NULL, compact TEXT NOT NULL, PRIMARY KEY(stage,id,envelope_hash,body_hash,version))",
+    );
+    sql.exec(
       "CREATE TABLE IF NOT EXISTS verified_records (id TEXT NOT NULL, envelope_hash TEXT NOT NULL, body_hash TEXT NOT NULL, version INTEGER NOT NULL, compact TEXT NOT NULL, PRIMARY KEY(id,envelope_hash,body_hash,version))",
     );
     sql.exec(
@@ -88,7 +94,7 @@ export class SqlRowsCoordinator {
     }
   }
   async getVerifiedRecord(
-    binding: Omit<StoredVerifiedRecord, "compact">,
+    binding: VerifiedRecordBinding,
   ): Promise<StoredVerifiedRecord | null> {
     const row = this.sql.exec(
       "SELECT compact FROM verified_records WHERE id=? AND envelope_hash=? AND body_hash=? AND version=?",
@@ -100,18 +106,50 @@ export class SqlRowsCoordinator {
     return row ? { ...binding, compact: String(row.compact) } : null;
   }
   private writeVerifiedRecords(records: StoredVerifiedRecord[]) {
-    for (const record of records)
+    for (const record of records) {
       this.sql.exec(
-        "INSERT INTO verified_records VALUES(?,?,?,?,?) ON CONFLICT(id,envelope_hash,body_hash,version) DO NOTHING",
+        "INSERT INTO verified_records VALUES(?,?,?,?,?) ON CONFLICT(id,envelope_hash,body_hash,version) DO UPDATE SET compact=excluded.compact",
         record.id,
         record.envelope_hash,
         record.body_hash ?? "",
         record.version,
         record.compact,
       );
+    }
   }
   async saveVerifiedRecords(records: StoredVerifiedRecord[]): Promise<void> {
     this.sql.transaction(() => this.writeVerifiedRecords(records));
+  }
+  /** Only a host that holds the exclusive data directory lock can clear abandoned loader stages. */
+  async discardAbandonedVerifiedRecordStages(): Promise<void> {
+    this.sql.exec("DELETE FROM verified_record_staging");
+  }
+  async stageVerifiedRecords(
+    stage: string,
+    records: StoredVerifiedRecord[],
+  ): Promise<void> {
+    this.sql.transaction(() => {
+      for (const record of records)
+        this.sql.exec(
+          "INSERT INTO verified_record_staging VALUES(?,?,?,?,?,?) ON CONFLICT(stage,id,envelope_hash,body_hash,version) DO UPDATE SET compact=excluded.compact",
+          stage,
+          record.id,
+          record.envelope_hash,
+          record.body_hash ?? "",
+          record.version,
+          record.compact,
+        );
+    });
+  }
+  async discardVerifiedRecordStage(stage: string): Promise<void> {
+    this.sql.exec("DELETE FROM verified_record_staging WHERE stage=?", stage);
+  }
+  private promoteVerifiedRecordStage(stage: string) {
+    this.sql.exec(
+      "INSERT INTO verified_records SELECT id,envelope_hash,body_hash,version,compact FROM verified_record_staging WHERE stage=? ON CONFLICT(id,envelope_hash,body_hash,version) DO UPDATE SET compact=excluded.compact",
+      stage,
+    );
+    this.sql.exec("DELETE FROM verified_record_staging WHERE stage=?", stage);
   }
   private metadata(state: State) {
     const { events, journal, selections, snapshots, ...metadata } = state;
@@ -456,6 +494,7 @@ export class SqlRowsCoordinator {
     snapshot?: Snapshot,
     changedIds?: string[],
     verifiedRecords: StoredVerifiedRecord[] = [],
+    verifiedStage?: string,
   ): Promise<boolean> {
     const expiredIds: string[] = [];
     const committed = this.sql.transaction(() => {
@@ -468,6 +507,7 @@ export class SqlRowsCoordinator {
       expiredIds.push(...this.expireSnapshots(state.materialized_snapshot));
       this.save(state, changedIds);
       this.writeVerifiedRecords(verifiedRecords);
+      if (verifiedStage) this.promoteVerifiedRecordStage(verifiedStage);
       return true;
     });
     if (committed) {

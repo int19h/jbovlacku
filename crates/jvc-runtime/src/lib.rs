@@ -766,6 +766,7 @@ fn search_projection(
     };
     json!({"id":id,"issuer":header.issuer,"kind":kind,"word":header.action["word"],"body_hash":header.content.as_ref().map(|c| &c.hash),"body":body})
 }
+// Versioned golden files in tests/fixtures are immutable. A projection change needs a new version.
 pub const HOST_RECORD_VERSION: u32 = 1;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -824,6 +825,13 @@ pub fn inspect_host_stored_body(
     let header = serde_json::from_slice(header)
         .map_err(|e| fail(Error::new("host_record", e.to_string())))?;
     output(jvc_core::inspect_host_stored_body(&header, body.as_deref()))
+}
+/// Check a stored projection's extraction schema without authenticating it again.
+#[wasm_bindgen]
+pub fn check_host_verified_record(bytes: &[u8]) -> std::result::Result<String, JsValue> {
+    decode_host_record(bytes)
+        .map(|record| record.id)
+        .map_err(fail)
 }
 fn decode_host_record(bytes: &[u8]) -> Result<HostRecord> {
     let record: HostRecord =

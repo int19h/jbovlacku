@@ -1,4 +1,7 @@
-import type { StoredVerifiedRecord } from "../../../packages/service/src/verified-records.ts";
+import type {
+  StoredVerifiedRecord,
+  VerifiedRecordBinding,
+} from "../../../packages/service/src/verified-records.ts";
 import { D1IndexStore } from "./index-store.ts";
 import { workerAssistanceBudgetStore } from "./assistance.ts";
 import { SqlRowsCoordinator } from "../../../packages/service/src/sql-coordinator.ts";
@@ -106,7 +109,7 @@ export class AdmissionCoordinator
   getSnapshot(id: string) {
     return this.coordinator.getSnapshot(id);
   }
-  getVerifiedRecord(binding: Omit<StoredVerifiedRecord, "compact">) {
+  getVerifiedRecord(binding: VerifiedRecordBinding) {
     return this.coordinator.getVerifiedRecord(binding);
   }
   saveVerifiedRecords(records: StoredVerifiedRecord[]) {
@@ -118,6 +121,7 @@ export class AdmissionCoordinator
     snapshot?: Snapshot,
     changedIds?: string[],
     verifiedRecords?: StoredVerifiedRecord[],
+    verifiedStage?: string,
   ) {
     return this.coordinator.compareAndSwap(
       revision,
@@ -125,6 +129,7 @@ export class AdmissionCoordinator
       snapshot,
       changedIds,
       verifiedRecords,
+      verifiedStage,
     );
   }
   async fetch(request: Request): Promise<Response> {

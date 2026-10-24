@@ -15,6 +15,7 @@ import {
   backfillVerifiedRecords,
   compactRecord,
   readVerifiedRecord,
+  verifiedRecordStatistics,
 } from "../src/verified-records.ts";
 import {
   canonicalize,
@@ -215,6 +216,11 @@ test("restart evaluates stored compact records without reading original records"
     assert.equal(trusted, 1);
     assert.equal(verifying, 0);
     assert.equal(await backfillVerifiedRecords(reopened, unavailable), 0);
+    assert.deepEqual(verifiedRecordStatistics(reopened), {
+      missing: 0,
+      decode_failed: 0,
+      backfilled: 0,
+    });
   } finally {
     reopened?.close();
     f.coordinator.close();
@@ -267,7 +273,7 @@ test("a changed extraction version backfills once by parsing private bytes", asy
   }
 });
 
-test("ordinary evaluation rejects a forged envelope even beside a host compact record", () => {
+test("ordinary evaluation rejects unknown host fields separately from invalid signatures", () => {
   const record = createEvent(
     seed,
     [],
@@ -280,14 +286,16 @@ test("ordinary evaluation rejects a forged envelope even beside a host compact r
     utf8(JSON.stringify(record.envelope)),
   );
   const forged = { ...record.envelope, signature: "invalid" };
-  assert.throws(() =>
-    evaluate({
-      events: [JSON.stringify(forged)],
-      bodies: {},
-      selected_view: zeroView,
-      import_selections: {},
-      host_records: [JSON.parse(compact)],
-    } as any),
+  assert.throws(
+    () =>
+      evaluate({
+        events: [JSON.stringify(record.envelope)],
+        bodies: {},
+        selected_view: zeroView,
+        import_selections: {},
+        host_records: [JSON.parse(compact)],
+      } as any),
+    /unknown field `host_records`/,
   );
   const builder = createEvaluationSession({
     selected_view: zeroView,
@@ -399,6 +407,10 @@ test("view and core changes and checkpoint failures reuse private records and pr
     );
     assert.equal("package_records" in saved!.payload, false);
     assert.equal("envelopes" in saved!.payload, false);
+    const database = new DatabaseSync(f.path);
+    const beforeRows = database
+      .prepare("SELECT COUNT(*) AS n FROM verified_records")
+      .get()!.n;
     const baseline = structuredClone(saved!);
     const snapshot = await f.coordinator.getSnapshot(
       (await f.coordinator.load()).snapshot!,
@@ -497,12 +509,180 @@ test("view and core changes and checkpoint failures reuse private records and pr
         original.free();
       }
       assert.equal(verifying, 0, scenario);
+      assert.equal(
+        database.prepare("SELECT COUNT(*) AS n FROM verified_records").get()!.n,
+        beforeRows,
+        scenario,
+      );
+      assert.deepEqual(verifiedRecordStatistics(f.coordinator), {
+        missing: 0,
+        decode_failed: 0,
+        backfilled: 0,
+      });
       if (scenario === "valid") {
         assert.equal(restores, 1);
         assert.equal(trusted, 0);
       } else assert.equal(trusted, records.length, scenario);
     }
   } finally {
+    f.coordinator.close();
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
+test("admission persists final preferred-envelope and nonpreferred late-body bindings before evaluation", async () => {
+  const variants = JSON.parse(
+    await readFile(
+      new URL("./fixtures/signature-variants.json", import.meta.url),
+      "utf8",
+    ),
+  );
+  const prepared = variants.map((record: unknown) =>
+    prepareAdmission(utf8(JSON.stringify(record))),
+  );
+  const compare = (a: number[], b: number[]) => {
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] - b[i];
+    return 0;
+  };
+  const ordered = variants
+    .map((carrier: any, n: number) => ({ carrier, prepared: prepared[n] }))
+    .sort((a: any, b: any) =>
+      compare(a.prepared.signature_bytes, b.prepared.signature_bytes),
+    );
+  const [preferred, other] = ordered;
+  assert.equal(preferred.prepared.id, other.prepared.id);
+  assert.notEqual(
+    preferred.prepared.envelope_hash,
+    other.prepared.envelope_hash,
+  );
+  for (const scenario of ["preferred", "nonpreferred-body"]) {
+    const f = await fixture();
+    try {
+      const service = new DictionaryService(f.objects, f.coordinator, {
+        ...options,
+        asyncMaterialization: true,
+      });
+      (service as any).queueMaterialization = () => {};
+      // Both orders use genuine valid SSHSIG representations of the same header.
+      const initial = scenario === "preferred" ? other : preferred;
+      await service.admitMany([
+        utf8(JSON.stringify({ ...initial.carrier, body: null })),
+      ]);
+      const late = scenario === "preferred" ? preferred : other;
+      await service.admitMany([utf8(JSON.stringify(late.carrier))]);
+      const state = await f.coordinator.load();
+      const event = state.events[preferred.prepared.id];
+      assert.equal(event.envelope_hash, preferred.prepared.envelope_hash);
+      assert.equal(
+        event.body_hash,
+        preferred.carrier.envelope.header.content.hash,
+      );
+      const row = await f.coordinator.getVerifiedRecord({
+        id: preferred.prepared.id,
+        envelope_hash: event.envelope_hash,
+        body_hash: event.body_hash,
+        version: hostRecordVersion(),
+      });
+      assert.ok(
+        row,
+        scenario +
+          " must commit the final compact binding without lazy backfill",
+      );
+      assert.equal(compactRecord(row).body_status, "present");
+      assert.deepEqual(verifiedRecordStatistics(f.coordinator), {
+        missing: 0,
+        decode_failed: 0,
+        backfilled: 0,
+      });
+      const { canonicalStoredEnvelope } = await import("../src/service.ts");
+      assert.equal(
+        canonicalStoredEnvelope(preferred.prepared.id, event),
+        preferred.prepared.envelope,
+      );
+    } finally {
+      f.coordinator.close();
+      await rm(f.directory, { recursive: true, force: true });
+    }
+  }
+});
+
+test("malformed current-version rows report their event and repair once without cryptographic verification", async () => {
+  const f = await fixture();
+  const warnings: string[] = [];
+  const warn = console.warn;
+  console.warn = (message: string) => warnings.push(message);
+  try {
+    const record = createEvent(
+      seed,
+      [],
+      "c".repeat(32),
+      { kind: "identity.profile" },
+      { name: "Repair fixture", bio: [], links: [] },
+    );
+    await f.service.admitMany([utf8(JSON.stringify(record))]);
+    const event = (await f.coordinator.load()).events[record.envelope.id];
+    const binding = {
+      id: record.envelope.id,
+      envelope_hash: event.envelope_hash,
+      body_hash: event.body_hash,
+      version: hostRecordVersion(),
+    };
+    const expected = await f.coordinator.getVerifiedRecord(binding);
+    const database = new DatabaseSync(f.path);
+    for (const invalid of [
+      "broken JSON",
+      JSON.stringify({ ...JSON.parse(expected!.compact), state: {} }),
+      JSON.stringify({ ...JSON.parse(expected!.compact), id: "wrong-event" }),
+    ]) {
+      database.prepare("UPDATE verified_records SET compact=?").run(invalid);
+      // Trusted original bytes need no valid signature or canonical formatting during repair.
+      const envelope = JSON.parse(
+        new TextDecoder().decode(f.bytes.get(event.envelope_hash)!),
+      );
+      envelope.signature = "already admitted";
+      f.bytes.set(event.envelope_hash, utf8(JSON.stringify(envelope, null, 2)));
+      const restored = await readVerifiedRecord(
+        f.coordinator,
+        f.objects,
+        record.envelope.id,
+        event,
+      );
+      assert.equal(restored.compact, expected!.compact);
+      assert.equal(
+        (await f.coordinator.getVerifiedRecord(binding))!.compact,
+        expected!.compact,
+      );
+    }
+    const snapshot = await f.coordinator.getSnapshot(
+      (await f.coordinator.load()).snapshot!,
+    );
+    const expectedState = await (f.service as any).evaluation(snapshot);
+    database
+      .prepare("UPDATE verified_records SET compact=?")
+      .run("damaged before cold evaluation");
+    const cold = new DictionaryService(f.objects, f.coordinator, options);
+    assert.deepEqual(await (cold as any).evaluation(snapshot), expectedState);
+    assert.equal(
+      (await f.coordinator.getVerifiedRecord(binding))!.compact,
+      expected!.compact,
+    );
+    assert.equal(verifiedRecordStatistics(f.coordinator).decode_failed, 4);
+    assert.equal(verifiedRecordStatistics(f.coordinator).backfilled, 4);
+    assert.equal(verifiedRecordStatistics(f.coordinator).missing, 0);
+    assert.equal(warnings.length, 4);
+    for (const warning of warnings)
+      assert.equal(JSON.parse(warning).id, record.envelope.id);
+    f.reads.length = 0;
+    await readVerifiedRecord(
+      f.coordinator,
+      f.objects,
+      record.envelope.id,
+      event,
+    );
+    assert.deepEqual(f.reads, []);
+    database.close();
+  } finally {
+    console.warn = warn;
     f.coordinator.close();
     await rm(f.directory, { recursive: true, force: true });
   }

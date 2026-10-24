@@ -254,6 +254,9 @@ export interface HostVerifiedRecord {
   action_valid: boolean;
 }
 export const hostRecordVersion = (): number => wasm.host_record_version();
+/** Decode private projection fields without record verification. */
+export const checkHostVerifiedRecord = (record: string): string =>
+  wasm.check_host_verified_record(utf8(record));
 /** Parse only bytes from the host's private, already admitted record store. */
 export const extractHostVerifiedRecord = (
   envelope: Uint8Array,
