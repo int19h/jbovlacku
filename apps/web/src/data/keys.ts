@@ -3,7 +3,7 @@ import {
   canonicalize,
   identityFromSeed,
   utf8,
-} from "../../../../packages/core/src/index.ts";
+} from "../../../../packages/core/src/browser.ts";
 import type { KeyBackup } from "./store.ts";
 const alg = "PBES2-HS256+A128KW";
 const unlockMessage = "This file did not unlock with that passphrase.";

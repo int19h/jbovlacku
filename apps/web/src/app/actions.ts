@@ -7,7 +7,7 @@ import {
   finishSigning,
   prepareSigning,
   utf8,
-} from "../../../../packages/core/src/index.ts";
+} from "../../../../packages/core/src/browser.ts";
 import { forgetWord } from "../data/api.ts";
 import { ownHeads } from "../data/history.ts";
 import { freshPeer, type DeliveryEngine } from "../data/delivery.ts";

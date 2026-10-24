@@ -12,7 +12,7 @@ import {
   utf8,
   validateAction,
   wordId,
-} from "../../../../packages/core/src/index.ts";
+} from "../../../../packages/core/src/browser.ts";
 import {
   CIRCLED,
   countNodes,
