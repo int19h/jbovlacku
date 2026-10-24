@@ -354,9 +354,6 @@ export async function handoverPage(
   };
   /** Loads the old key's history, asks every peer, fetches reported branches, and computes the frontier. */
   const gather = async (accepted = false): Promise<Gathered> => {
-    const storedHeads = [
-      ...((await app.store.get<string[]>("heads", old.identity)) ?? []),
-    ].sort();
     const history = await loadOwnHistory(app.store, old.identity, {
       offline: app.offlineSigning.value,
       accepted,
@@ -507,7 +504,7 @@ export async function handoverPage(
       knowledge,
       heads,
       fetched,
-      storedHeads,
+      storedHeads: history.storedHeads,
       existingTransfer,
       compromised,
       blocked,

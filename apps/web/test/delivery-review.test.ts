@@ -58,7 +58,9 @@ test("outbox updates keep keyboard focus and the retained disclosure open", asyn
       group: id,
       order: 0,
       identity: "test",
-      transport: "{}",
+      transport: JSON.stringify({
+        envelope: { id, header: { issuer: "test", previous: [] } },
+      }),
       signedAt: Date.now(),
       stopped,
       label: { subject: id, action: "judgment", href: "/" },
@@ -71,10 +73,13 @@ test("outbox updates keep keyboard focus and the retained disclosure open", asyn
         },
       },
     });
-    const items = [make("active", false), make("stopped", true)];
+    const accepted = make("accepted", false);
+    accepted.peers.self.state = "accepted";
+    const items = [make("active", false), make("stopped", true), accepted];
     const update = () => listener(items);
     const app = {
       session: { storageAvailable: true },
+      store: { list: async () => [] },
       announce() {},
       delivery: {
         subscribe(fn: typeof listener) {
@@ -111,7 +116,7 @@ test("outbox updates keep keyboard focus and the retained disclosure open", asyn
   await page.keyboard.press("Enter");
   await expect(retry).toBeFocused();
   await expect(details).toHaveAttribute("open", "");
-  const resume = page.getByRole("button", { name: "Resume delivery" });
+  const resume = page.getByRole("button", { name: "Resume" });
   await resume.focus();
   await page.evaluate(() => (window as any).updateOutbox());
   await expect(resume).toBeFocused();
@@ -352,4 +357,60 @@ test("judgment announcements use every selected peer for arrows and Clear", asyn
   await expect(page.getByRole("status")).toContainText(
     "Delivery is not finished",
   );
+});
+
+test("stopping during a held first send keeps the stop while a late acceptance clears the row", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await openWord(page, "cukta");
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let admitted!: () => void;
+  const accepted = new Promise<void>((resolve) => {
+    admitted = resolve;
+  });
+  await page.route("**/api/v1/events", async (route) => {
+    const response = await route.fetch();
+    admitted();
+    await held;
+    await route.fulfill({ response });
+  });
+  await page
+    .locator("article.definition")
+    .first()
+    .getByRole("button", { name: "Endorse", exact: true })
+    .click();
+  await acceptFirstSignature(page);
+  await accepted;
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore();
+    const items = await store.list("outbox");
+    await store.mergeOutbox(items[0].id, (item: any) => ({
+      ...item,
+      stopped: true,
+    }));
+    window.dispatchEvent(new Event("online"));
+    const { navigate } = await import(String("/src/app/router.ts"));
+    navigate("/outbox");
+  });
+  try {
+    await expect(page.getByText("Stopped", { exact: true })).toBeVisible();
+    await expect(
+      page.getByRole("link", { name: "1 not delivered" }),
+    ).toBeVisible();
+  } finally {
+    release();
+  }
+  await expect(page.getByText("No unfinished records.")).toBeVisible();
+  await expect(page.getByRole("link", { name: /not delivered/ })).toBeHidden();
+  const stored = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const items = await new LocalStore().list("outbox");
+    return { stopped: items[0].stopped, state: items[0].peers.self.state };
+  });
+  expect(stored).toEqual({ stopped: true, state: "accepted" });
 });

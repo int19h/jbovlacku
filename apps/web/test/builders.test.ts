@@ -373,7 +373,10 @@ test("a custom profile needs a positive weight and an unfinished row never gets 
     page.getByText("Fill in every scoring input before the generator runs."),
   ).toBeVisible();
   for (let row = 1; row <= 6; row++) {
-    await page.getByRole("button", { name: `Remove row 1` }).click();
+    await page
+      .getByRole("button", { name: /^Remove (the .+ )?source row \d+$/ })
+      .first()
+      .click();
   }
   // Without a completed run, a typed form has unknown conflicts and cannot be used from here.
   await page.getByLabel("Type a form yourself").fill("pilta");
@@ -514,4 +517,111 @@ test("single-word recognition gives no component-lock or result-count advice", a
   );
   await expect(matches).not.toContainText("Lock a component form");
   await expect(matches).not.toContainText("fewer results");
+});
+
+test("source row actions name their language and follow a custom language edit", async ({
+  page,
+}) => {
+  await startDraft(page, "gismu");
+  await expect(
+    page.getByRole("button", {
+      name: "Remove the Mandarin Chinese source row 1",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await page.getByLabel("Weights", { exact: true }).selectOption("custom");
+  await page.getByLabel("Language tag of row 1", { exact: true }).fill("deu");
+  await page.getByLabel("Language tag of row 1", { exact: true }).press("Tab");
+  await expect(
+    page.getByRole("button", {
+      name: "Add an alternative word for deu",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", {
+      name: "Edit source notes for deu",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Remove the deu source row 1", exact: true })
+    .click();
+  await expect(
+    page.getByLabel("Native word for deu", { exact: true }),
+  ).toHaveCount(0);
+});
+
+test("source Remove names stay unique for alternatives and empty language rows", async ({
+  page,
+}) => {
+  await startDraft(page, "gismu");
+  await page
+    .getByRole("button", {
+      name: "Add an alternative word for Mandarin Chinese",
+      exact: true,
+    })
+    .click();
+  await expect(
+    page.getByRole("button", {
+      name: "Remove the Mandarin Chinese source row 1",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", {
+      name: "Remove the Mandarin Chinese source row 2",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await page.getByLabel("Weights", { exact: true }).selectOption("custom");
+  await page
+    .getByRole("button", { name: "Add a language", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Add a language", exact: true })
+    .click();
+  const languages = page.getByRole("textbox", {
+    name: /^Language tag of row /,
+  });
+  const count = await languages.count();
+  await expect(
+    page.getByRole("button", {
+      name: `Remove source row ${count - 1}`,
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", {
+      name: `Remove source row ${count}`,
+      exact: true,
+    }),
+  ).toBeVisible();
+  await languages.last().fill("deu");
+  await languages.last().press("Tab");
+  await expect(
+    page.getByRole("button", {
+      name: `Remove the deu source row ${count}`,
+      exact: true,
+    }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", {
+      name: `Remove source row ${count - 1}`,
+      exact: true,
+    })
+    .click();
+  await expect(
+    page.getByRole("button", {
+      name: `Remove the deu source row ${count - 1}`,
+      exact: true,
+    }),
+  ).toBeVisible();
+  const names = await page
+    .locator("[data-source-remove]")
+    .evaluateAll((buttons) =>
+      buttons.map((button) => button.getAttribute("aria-label")),
+    );
+  expect(names.every((name) => name && name.trim())).toBe(true);
+  expect(new Set(names).size).toBe(names.length);
 });

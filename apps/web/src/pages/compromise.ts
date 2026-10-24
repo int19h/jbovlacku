@@ -341,9 +341,7 @@ export async function compromisePage(
           );
       await fetchBranches(app.store, current, knowledge, context.signal);
     }
-    const heads = [
-      ...((await app.store.get<string[]>("heads", identity)) ?? []),
-    ].sort();
+    const heads = current.storedHeads;
     return {
       history: current,
       heads,

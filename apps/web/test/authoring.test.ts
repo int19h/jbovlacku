@@ -928,6 +928,23 @@ test("a fully disconnected author signs a complete definition into storage and l
   await acceptFirstSignature(page);
   const saved = page.getByRole("region", { name: "Saved publication" });
   await expect(saved).toContainText("Saved. Not delivered yet.");
+  // Keep the whole first attempt disconnected before restoring manual delivery.
+  await expect
+    .poll(() =>
+      page.evaluate(async () => {
+        const { LocalStore } = await import(String("/src/data/store.ts"));
+        const items = await new LocalStore().list("outbox");
+        return (
+          items.length === 4 &&
+          items.every((item: any) =>
+            Object.values(item.peers).every(
+              (peer: any) => peer.attempts > 0 && peer.state === "unknown",
+            ),
+          )
+        );
+      }),
+    )
+    .toBe(true);
   const before = await outboxRecords(page);
   expect(before).toHaveLength(4);
   expect(before.map((r: any) => r.state)).not.toContain("accepted");
@@ -1024,6 +1041,9 @@ test("a failure right after the group commits still recovers the same group afte
   expect(await outboxRecords(page)).toHaveLength(0);
   expect((await draftState(page)).revision).toBe(revision);
   await expect(
+    page.getByRole("region", { name: "Saved publication" }),
+  ).toHaveCount(0);
+  await expect(
     page.locator("aside").getByRole("button", { name: "Publish", exact: true }),
   ).toBeEnabled();
   // After the commit: a failing delivery refresh and a failing draft cleanup cannot undo the commit.
@@ -1032,6 +1052,18 @@ test("a failure right after the group commits still recovers the same group afte
     const { DeliveryEngine } = await import(String("/src/data/delivery.ts"));
     DeliveryEngine.prototype.invalidate = async () => {
       throw new Error("Injected refresh failure");
+    };
+    const originalDeliver = DeliveryEngine.prototype.deliver;
+    DeliveryEngine.prototype.deliver = async function (
+      id: string,
+      explicit: boolean,
+    ) {
+      const result = await originalDeliver.call(this, id, explicit);
+      if (explicit) {
+        DeliveryEngine.prototype.deliver = originalDeliver;
+        throw new Error("Injected later step failure");
+      }
+      return result;
     };
     const originalDelete = IDBObjectStore.prototype.delete;
     IDBObjectStore.prototype.delete = function (
@@ -1051,6 +1083,34 @@ test("a failure right after the group commits still recovers the same group afte
     .click();
   const saved = page.getByRole("region", { name: "Saved publication" });
   await expect(saved).toContainText("Saved. Not delivered yet.");
+  await expect(
+    saved.getByRole("button", { name: "Try now", exact: true }),
+  ).toBeVisible();
+  const laterFailure = page.getByText(
+    "A step after saving failed: Injected later step failure. The saved records keep their delivery path above.",
+    { exact: true },
+  );
+  await expect(laterFailure).toBeVisible();
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore();
+    const items = await store.list("outbox");
+    await store.mergeOutbox(items[0].id, (item: any) => ({
+      ...item,
+      peers: {
+        ...item.peers,
+        self: {
+          ...item.peers.self,
+          state: "unknown",
+          failure: "server",
+          error: "A later delivery update.",
+        },
+      },
+    }));
+    window.dispatchEvent(new Event("offline"));
+  });
+  await expect(saved).toContainText("A later delivery update.");
+  await expect(laterFailure).toBeVisible();
   const first = await outboxRecords(page);
   expect(first).toHaveLength(4);
   const state = await draftState(page);
@@ -2951,3 +3011,160 @@ test("N5 closed defaults and constraints reopen with current references before t
     JSON.parse(await page.locator("pre.json").innerText()).frame.constraints,
   ).toEqual([[[1, " is inside ", 2, " fully"]]]);
 });
+
+test("F09: a held first publication shows neutral progress until the send fails", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await openPublishWithClaim(page, "brodi", "bro");
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/api/v1/events", async (route) => {
+    await held;
+    await route.abort("failed");
+  });
+  await page
+    .locator("aside")
+    .getByRole("button", { name: "Publish", exact: true })
+    .click();
+  await page.getByLabel("Passphrase", { exact: true }).fill(PASSPHRASE);
+  await page.getByRole("button", { name: "Unlock", exact: true }).click();
+  await acceptFirstSignature(page);
+  const saved = page.getByRole("region", { name: "Saved publication" });
+  try {
+    await expect(saved).toContainText("Saved. Sending.");
+    await expect(saved).toHaveClass("saved-publication-progress");
+    await expect(saved).not.toContainText("Not delivered");
+    await expect(saved.getByRole("button", { name: "Try now" })).toHaveCount(0);
+    await expect(
+      page.getByRole("link", { name: /not delivered/ }),
+    ).toBeHidden();
+  } finally {
+    release();
+  }
+  await expect(saved).toContainText("Saved. Not delivered yet.");
+  await expect(saved.getByRole("button", { name: "Try now" })).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "4 not delivered" }),
+  ).toBeVisible();
+});
+
+for (const outcome of ["failure", "acceptance"] as const) {
+  test(`a reloaded first publication updates neutral progress after ${outcome} and releases its watcher`, async ({
+    page,
+  }) => {
+    await createIdentity(page);
+    await openPublishWithClaim(page, "brodi", "bro");
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let requests = 0;
+    await page.route("**/api/v1/events", async (route) => {
+      requests++;
+      await held;
+      // Reload cancels the first request while this handler waits.
+      if (outcome === "acceptance") await route.continue().catch(() => {});
+      else
+        await route
+          .fulfill({
+            status: 503,
+            json: {
+              code: "test_failure",
+              message: "Delivery failed in this test.",
+              event: null,
+              field: null,
+            },
+          })
+          .catch(() => {});
+    });
+    await page
+      .locator("aside")
+      .getByRole("button", { name: "Publish", exact: true })
+      .click();
+    await page.getByLabel("Passphrase", { exact: true }).fill(PASSPHRASE);
+    await page.getByRole("button", { name: "Unlock", exact: true }).click();
+    await acceptFirstSignature(page);
+    const saved = page.getByRole("region", {
+      name: "Saved publication",
+      exact: true,
+    });
+    try {
+      await expect(saved).toContainText("Saved. Sending.");
+      await page.reload();
+      await expect(
+        page.getByRole("heading", { name: "Saved publication", exact: true }),
+      ).toBeVisible();
+      await expect(saved).toContainText("Saved. Sending.");
+      await expect(
+        saved.getByRole("button", { name: "Try now", exact: true }),
+      ).toHaveCount(0);
+      await expect.poll(() => requests).toBeGreaterThan(1);
+    } finally {
+      release();
+    }
+    if (outcome === "failure") {
+      await expect(saved).toContainText("Saved. Not delivered yet.");
+      await expect(
+        saved.getByRole("button", { name: "Try now", exact: true }),
+      ).toBeVisible();
+      await expect(
+        saved.getByRole("link", { name: "See Not delivered", exact: true }),
+      ).toBeVisible();
+    } else {
+      await expect(saved).toContainText("All 4 signed records were accepted.");
+      await expect(saved).not.toContainText("Sending");
+    }
+    await page.getByRole("link", { name: "Settings", exact: true }).click();
+    await expect(page.locator("main h1")).toBeVisible();
+    await page.evaluate(async () => {
+      const { DeliveryEngine } = await import(String("/src/data/delivery.ts"));
+      const original = DeliveryEngine.prototype.subscribe;
+      (window as any).savedWatchers = 0;
+      DeliveryEngine.prototype.subscribe = function (listener: any) {
+        (window as any).savedWatchers++;
+        const unsubscribe = original.call(this, listener);
+        return () => {
+          (window as any).savedWatchers--;
+          unsubscribe();
+        };
+      };
+    });
+    await spaGoto(page, "/new/publish");
+    await expect(saved).toBeVisible();
+    await expect
+      .poll(() => page.evaluate(() => (window as any).savedWatchers))
+      .toBe(1);
+    await page.getByRole("link", { name: "Settings", exact: true }).click();
+    await expect
+      .poll(() => page.evaluate(() => (window as any).savedWatchers))
+      .toBe(0);
+    if (outcome === "failure") {
+      await spaGoto(page, "/new/publish");
+      await expect(saved).toBeVisible();
+      await page.evaluate(async () => {
+        const { LocalStore } = await import(String("/src/data/store.ts"));
+        const store = new LocalStore();
+        const items = (await store.list("outbox")).sort(
+          (a: any, b: any) => b.order - a.order,
+        );
+        for (const item of items) {
+          await store.mergeOutbox(item.id, (current: any) => ({
+            ...current,
+            stopped: true,
+          }));
+          await store.discardOutbox(item.id);
+        }
+        window.dispatchEvent(new Event("online"));
+      });
+      await expect(
+        page.getByText(
+          "These saved records are no longer available in this browser.",
+          { exact: true },
+        ),
+      ).toBeVisible();
+    }
+  });
+}

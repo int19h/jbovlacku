@@ -17,7 +17,14 @@ async function outboxItems(page: Page) {
 test("a failed local write never reports a saved group and sends nothing", async ({
   page,
 }) => {
-  await page.goto("/");
+  // This page runs no app, so every fetch during publish belongs to the signer under test.
+  await page.route("**/failed-write-harness", (route) =>
+    route.fulfill({
+      contentType: "text/html",
+      body: "<!doctype html><title>Failed write test</title>",
+    }),
+  );
+  await page.goto("/failed-write-harness");
   const result = await page.evaluate(async (corePath) => {
     const core = await import(corePath);
     await core.initializeCore();
@@ -39,7 +46,7 @@ test("a failed local write never reports a saved group and sends nothing", async
     };
     const session = {
       preferences: {
-        peers: [{ id: "self", base: "/api/v1", label: "this server" }],
+        peers: [{ id: "self", base: "/failed-write-test", label: "test peer" }],
       },
       storageAvailable: true,
       backup: created.backup,
@@ -62,13 +69,34 @@ test("a failed local write never reports a saved group and sends nothing", async
       ]);
       return { calls, failed: false };
     } catch (error) {
-      return { calls, failed: true, message: String(error) };
+      const offlineCalls = calls;
+      // This probe uses the ordinary self peer, so a peer or offline bypass cannot hide a fetch.
+      const onlineSigner = new Signer(session as any, {} as any, () => false);
+      await onlineSigner
+        .publish([
+          {
+            action: {
+              kind: "judgment.set",
+              target: "jve1:" + "a".repeat(64),
+              value: "bless",
+            },
+            body: null,
+          },
+        ])
+        .catch(() => {});
+      return {
+        calls: offlineCalls,
+        foregroundProbeCalls: calls - offlineCalls,
+        failed: true,
+        message: String(error),
+      };
     } finally {
       window.fetch = oldFetch;
     }
   }, corePath);
   expect(result.calls).toBe(0);
   expect(result.failed).toBe(true);
+  expect(result.foregroundProbeCalls).toBeGreaterThan(0);
   expect(result.message).toContain("Storage failed");
 });
 
@@ -680,7 +708,7 @@ test("a native IndexedDB open failure keeps a warning and allows anonymous onlin
     page.getByRole("button", { name: /Make public|Remove/ }).first(),
   ).toBeVisible();
   await page.goto("/outbox");
-  await page.getByText(/Retained records \(0 stopped, 1 delivered\)/).click();
+  await page.getByText(/Retained records \(1 delivered\)/).click();
   await expect(
     page.getByRole("button", { name: "Export every retained record" }),
   ).toBeVisible();

@@ -29,6 +29,10 @@ import {
 } from "./history.ts";
 import { freshPeer } from "./delivery.ts";
 import {
+  discardedPredecessorReads,
+  DISCARDED_PREDECESSOR,
+} from "./outbox-graph.ts";
+import {
   describeTransport,
   type KeyBackup,
   type LocalStore,
@@ -434,6 +438,7 @@ export async function fetchBranches(
   signal?: AbortSignal,
 ): Promise<{ fetched: number }> {
   let fetched = 0;
+  let committedHeads: string[] | undefined;
   for (const k of knowledge) {
     if (k.outcome !== "complete" || !k.snapshot) continue;
     for (;;) {
@@ -509,7 +514,9 @@ export async function fetchBranches(
       if (!learned.size) break;
       // Keep the complete verified branch and its heads locally in one write, so
       // later history loads do not depend on that peer.
-      await store.recordBranch(history.identity, [...learned.values()]);
+      committedHeads = await store.restoreServerOwn(history.identity, [
+        ...learned.values(),
+      ]);
       for (const [id, envelope] of learned) history.events.set(id, envelope);
       fetched += learned.size;
       break;
@@ -522,6 +529,13 @@ export async function fetchBranches(
     history.frontier = [...history.events.keys()]
       .filter((id) => !ancestors.has(id))
       .sort();
+    if (committedHeads) {
+      if (committedHeads.join(" ") !== history.frontier.join(" "))
+        throw new Error(
+          "The local own history changed during refresh. Refresh the history before signing.",
+        );
+      history.storedHeads = committedHeads;
+    }
   }
   return { fetched };
 }
@@ -582,6 +596,10 @@ export async function queueHandover(
       tx.abort();
     };
     // Compare the current state before writing. Another tab can have retired this key meanwhile.
+    const discarded = discardedPredecessorReads(keys, [
+      ...transferEnvelope.header.previous,
+      ...acceptEnvelope.header.previous,
+    ]);
     const reads = [
       keys.get("selected"),
       keys.get(`handover:${old.identity}`),
@@ -590,6 +608,7 @@ export async function queueHandover(
       heads.get(successor.identity),
       keys.get(`handover-of:${successor.identity}`),
       keys.get(`transfer-known:${old.identity}`),
+      ...discarded,
     ] as IDBRequest[];
     let remaining = reads.length;
     const results: unknown[] = [];
@@ -597,6 +616,8 @@ export async function queueHandover(
       request.onsuccess = () => {
         results[index] = request.result;
         if (--remaining) return;
+        if (discarded.some((request) => request.result))
+          return stop(DISCARDED_PREDECESSOR);
         const [
           selected,
           handover,
@@ -777,9 +798,14 @@ export async function queueCompromise(
     let failure: Error | undefined;
     const headsRequest = heads.get(item.identity);
     const markRequest = keys.get(`compromised:${item.identity}`);
-    let remaining = 2;
+    const discarded = discardedPredecessorReads(keys, envelope.header.previous);
+    let remaining = 2 + discarded.length;
     const proceed = () => {
       if (--remaining) return;
+      if (discarded.some((request) => request.result)) {
+        failure = new LifecycleConflictError(DISCARDED_PREDECESSOR);
+        return tx.abort();
+      }
       const current = (headsRequest.result as string[] | undefined) ?? [];
       if (markRequest.result) {
         failure = new LifecycleConflictError(
@@ -797,6 +823,7 @@ export async function queueCompromise(
       heads.put([item.id], item.identity);
       keys.put(item.id, `compromised:${item.identity}`);
     };
+    for (const request of discarded) request.onsuccess = proceed;
     headsRequest.onsuccess = proceed;
     markRequest.onsuccess = proceed;
     tx.oncomplete = () => resolve();

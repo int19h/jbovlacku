@@ -460,6 +460,93 @@ for (const viewport of [
   test.describe(viewport.name, () => {
     test.use({ viewport });
 
+    test("L01: the seven source columns stay readable and scroll inside their region", async ({
+      page,
+    }, info) => {
+      await beginDraft(page, "gismu");
+      await populateGismu(page);
+      const table = page.locator(".source-table");
+      const region = table.locator("..");
+      await expect(table.locator("thead th")).toHaveText([
+        "Language",
+        "Weight",
+        "Word",
+        "Said",
+        "Stem",
+        "Stem said",
+        "Letters",
+      ]);
+      const metrics = await table.evaluate((node) => {
+        const table = node as HTMLTableElement;
+        const region = table.parentElement!;
+        const headers = [...table.querySelectorAll("th")].map((cell) => {
+          const box = cell.getBoundingClientRect();
+          const range = document.createRange();
+          range.selectNodeContents(cell);
+          return {
+            width: box.width,
+            textHeight: range.getBoundingClientRect().height,
+            lineHeight: getComputedStyle(cell).lineHeight,
+          };
+        });
+        const values = [
+          ...table.querySelectorAll("tbody > tr:first-child > td"),
+        ]
+          .slice(0, 2)
+          .map((cell) => {
+            const range = document.createRange();
+            range.selectNodeContents(cell);
+            return {
+              text: cell.textContent,
+              height: range.getBoundingClientRect().height,
+              lineHeight: getComputedStyle(cell).lineHeight,
+            };
+          });
+        return {
+          headers,
+          values,
+          regionWidth: region.clientWidth,
+          contentWidth: region.scrollWidth,
+          pageWidth: document.documentElement.scrollWidth,
+          viewport: innerWidth,
+        };
+      });
+      expect(metrics.contentWidth).toBeGreaterThan(metrics.regionWidth);
+      expect(metrics.pageWidth).toBeLessThanOrEqual(metrics.viewport);
+      for (const header of metrics.headers) {
+        expect(header.width).toBeGreaterThan(60);
+        expect(header.textHeight).toBeLessThanOrEqual(
+          parseFloat(header.lineHeight) + 1,
+        );
+      }
+      for (const value of metrics.values) {
+        expect(value.text?.trim().length).toBeGreaterThan(0);
+        expect(value.height).toBeLessThanOrEqual(
+          parseFloat(value.lineHeight) + 1,
+        );
+      }
+      const last = table.locator("thead th").last();
+      await region.focus();
+      await page.keyboard.press("End");
+      await region.evaluate((node) => {
+        node.scrollLeft = node.scrollWidth;
+      });
+      const box = (await last.boundingBox())!;
+      const parent = (await region.boundingBox())!;
+      expect(box.x + box.width).toBeLessThanOrEqual(parent.x + parent.width);
+      const letters = table
+        .locator("tbody tr")
+        .first()
+        .locator("td")
+        .nth(6)
+        .locator("input")
+        .first();
+      await letters.fill("spain");
+      await expect(letters).toHaveValue("spain");
+      expect((await letters.boundingBox())!.width).toBeGreaterThan(80);
+      await artifact(info, `source-table-${viewport.name}`, metrics, page);
+    });
+
     test("R7: first-signature and continuity sentences keep links in the text line", async ({
       page,
     }, info) => {
@@ -1940,12 +2027,10 @@ for (const viewport of [
       await expect(
         page.getByRole("button", { name: "Try now", exact: true }),
       ).toHaveCount(0);
-      await expect(
-        page.locator("summary").filter({ hasText: "1 stopped" }),
-      ).toBeVisible();
+      await expect(page.getByText("Stopped", { exact: true })).toBeVisible();
       await expandDetails(page);
       await expect(
-        page.getByRole("button", { name: "Resume delivery", exact: true }),
+        page.getByRole("button", { name: "Resume", exact: true }),
       ).toBeVisible();
       await check("outbox-stopped");
       await open(page, "/about");

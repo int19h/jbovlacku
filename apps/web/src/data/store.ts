@@ -2,7 +2,16 @@
  * Local IndexedDB storage. Version 2 adds preferences, the private overlay,
  * delivery groups, and own-history caches, and migrates version 1 outbox rows.
  */
-import type { Transport } from "../model/types.ts";
+import { utf8, verifyEnvelope } from "../../../../packages/core/src/index.ts";
+import {
+  ownGraph,
+  requiresLifecycleDelivery,
+  hasOwnDependent,
+  remainingHeads,
+  discardedPredecessorReads,
+  DISCARDED_PREDECESSOR,
+} from "./outbox-graph.ts";
+import type { Envelope, Transport } from "../model/types.ts";
 
 export interface KeyBackup {
   format: "jbovlacku-key-backup";
@@ -313,6 +322,82 @@ export class LocalStore {
       tx.onerror = () => {};
     });
   }
+  /** Checks the graph and deletes a stopped leaf in the same transaction as its frontier update. */
+  async discardOutbox(id: string): Promise<void> {
+    const db = await this.database;
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(
+        ["outbox", "ownhistory", "heads", "keys"],
+        "readwrite",
+      );
+      const outbox = tx.objectStore("outbox");
+      const own = tx.objectStore("ownhistory");
+      const heads = tx.objectStore("heads");
+      const items = outbox.getAll();
+      const history = own.getAll();
+      let failure: Error | undefined;
+      let remaining = 2;
+      const proceed = () => {
+        if (--remaining) return;
+        try {
+          const records = items.result as OutboxItem[];
+          const item = records.find((record) => record.id === id);
+          if (!item) return;
+          if (
+            Object.values(item.peers).every((peer) => peer.state === "accepted")
+          )
+            throw new Error(
+              "This record was delivered to every recipient. Its signed bytes and receipts stay in this browser.",
+            );
+          if (requiresLifecycleDelivery(item))
+            throw new Error(
+              "This lifecycle record must be delivered. Resume it or save it as a file.",
+            );
+          if (!item.stopped)
+            throw new Error("Stop retrying before you discard this record.");
+          const graph = ownGraph(
+            records,
+            history.result as Envelope[],
+            item.identity,
+          );
+          if (hasOwnDependent(graph, id))
+            throw new Error(
+              "Later records depend on this record. Resume it or save it as a file.",
+            );
+          graph.delete(id);
+          const current = heads.get(item.identity);
+          current.onsuccess = () => {
+            heads.put(
+              remainingHeads(graph, current.result ?? [], id),
+              item.identity,
+            );
+            outbox.delete(id);
+            own.delete(id);
+            // Keep only the ID so an already signed group cannot restore a discarded dependency.
+            tx.objectStore("keys").put(true, `discarded:${id}`);
+          };
+        } catch (error) {
+          failure =
+            error instanceof Error
+              ? error
+              : new Error(
+                  "The local history could not be read. Nothing was discarded.",
+                );
+          tx.abort();
+        }
+      };
+      items.onsuccess = proceed;
+      history.onsuccess = proceed;
+      tx.oncomplete = () => resolve();
+      tx.onabort = () =>
+        reject(
+          failure ??
+            tx.error ??
+            new Error("Local storage did not discard this record."),
+        );
+      tx.onerror = () => {};
+    });
+  }
   /**
    * Writes a draft only when storage still holds the state the writer last
    * saw: the exact revision, no draft, or an old draft without a revision.
@@ -603,9 +688,15 @@ export class LocalStore {
         ? drafts.get(`published:${publication.revision}`)
         : null;
       const knownTransfer = keys.get(`transfer-known:${identity}`);
-      let remaining = 4 + (publication ? 2 : 0);
+      const discarded = discardedPredecessorReads(keys, predecessors);
+      let remaining = 4 + (publication ? 2 : 0) + discarded.length;
       const proceed = () => {
         if (--remaining) return;
+        if (discarded.some((request) => request.result)) {
+          failure = new Error(DISCARDED_PREDECESSOR);
+          tx.abort();
+          return;
+        }
         if (retired.result || knownTransfer.result || compromised.result) {
           failure = new Error(
             retired.result || knownTransfer.result
@@ -663,6 +754,7 @@ export class LocalStore {
           identity,
         );
       };
+      for (const request of discarded) request.onsuccess = proceed;
       knownTransfer.onsuccess = proceed;
       retired.onsuccess = proceed;
       compromised.onsuccess = proceed;
@@ -679,6 +771,111 @@ export class LocalStore {
       tx.onerror = () => {};
     });
   }
+  /** Called after verified server evidence restores a discarded own record. */
+  onOwnRediscovery: ((identity: string) => void) | null = null;
+
+  /** Saves verified server history and clears matching discard markers in one transaction. */
+  async restoreServerOwn(
+    identity: string,
+    envelopes: Envelope[],
+  ): Promise<string[]> {
+    if (!envelopes.length) return [];
+    for (const envelope of envelopes) {
+      verifyEnvelope(utf8(JSON.stringify(envelope)));
+      if (envelope.header.issuer !== identity)
+        throw new Error("A server record does not belong to this identity.");
+    }
+    const db = await this.database;
+    let restored = false;
+    let committedHeads: string[] = [];
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(
+        ["ownhistory", "outbox", "heads", "keys", "prefs"],
+        "readwrite",
+      );
+      const own = tx.objectStore("ownhistory");
+      const heads = tx.objectStore("heads");
+      const keys = tx.objectStore("keys");
+      const prefs = tx.objectStore("prefs");
+      const history = own.getAll();
+      const items = tx.objectStore("outbox").getAll();
+      const current = heads.get(identity);
+      const noticeKey = `rediscovered:${identity}`;
+      const notice = prefs.get(noticeKey);
+      const markers = envelopes.map((envelope) =>
+        keys.get(`discarded:${envelope.id}`),
+      );
+      const reads = [history, items, current, notice, ...markers];
+      let remaining = reads.length;
+      let failure: Error | undefined;
+      for (const request of reads)
+        request.onsuccess = () => {
+          if (--remaining) return;
+          try {
+            const graph = ownGraph(
+              items.result as OutboxItem[],
+              history.result as Envelope[],
+              identity,
+            );
+            const rediscovered = new Set<string>(notice.result ?? []);
+            for (const [index, envelope] of envelopes.entries()) {
+              own.put(envelope, envelope.id);
+              graph.set(envelope.id, envelope.header.previous);
+              if (markers[index].result) {
+                keys.delete(`discarded:${envelope.id}`);
+                rediscovered.add(envelope.id);
+                restored = true;
+              }
+            }
+            committedHeads = remainingHeads(graph, current.result ?? []);
+            heads.put(committedHeads, identity);
+            if (restored) prefs.put([...rediscovered].sort(), noticeKey);
+          } catch (error) {
+            failure =
+              error instanceof Error
+                ? error
+                : new Error(
+                    "The local history could not be read. Nothing was restored.",
+                  );
+            tx.abort();
+          }
+        };
+      tx.oncomplete = () => resolve();
+      tx.onabort = () =>
+        reject(
+          failure ??
+            tx.error ??
+            new Error("Local storage did not restore the public history."),
+        );
+      tx.onerror = () => {};
+    });
+    if (restored) this.onOwnRediscovery?.(identity);
+    return committedHeads;
+  }
+
+  /** Claims pending notices once across concurrent tabs. The visible notice stays until dismissed. */
+  async takeOwnRediscoveries(identity: string): Promise<string[]> {
+    const db = await this.database;
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction("prefs", "readwrite");
+      const prefs = tx.objectStore("prefs");
+      const key = `rediscovered:${identity}`;
+      const request = prefs.get(key);
+      let ids: string[] = [];
+      request.onsuccess = () => {
+        ids = request.result ?? [];
+        if (ids.length) prefs.delete(key);
+      };
+      tx.oncomplete = () => resolve(ids);
+      tx.onabort = () =>
+        reject(
+          tx.error ??
+            new Error("Local storage did not read the public history notice."),
+        );
+      tx.onerror = () => {};
+    });
+  }
+
   /**
    * Records own records learned from another peer: the verified envelopes and
    * the heads they add, in one transaction that merges with the heads stored

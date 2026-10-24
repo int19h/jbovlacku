@@ -433,15 +433,27 @@ function expired(status = 410, code = "snapshot_expired") {
 const nextSnapshot = "sha256:" + "b".repeat(64);
 function emptyHistory() {
   const saved: string[][] = [];
+  const records = new Map<
+    string,
+    { id: string; header: { previous: string[] } }
+  >();
+  let heads: string[] = [];
   return {
     saved,
-    get: async () => [],
-    list: async () => [],
-    rememberOwn: async (_identity: string, records: { id: string }[]) => {
-      saved.push(records.map((record) => record.id));
-    },
-    recordBranch: async (_identity: string, records: { id: string }[]) => {
-      saved.push(records.map((record) => record.id));
+    get: async () => [...heads],
+    list: async (store: string) =>
+      store === "ownhistory" ? [...records.values()] : [],
+    restoreServerOwn: async (
+      _identity: string,
+      envelopes: { id: string; header: { previous: string[] } }[],
+    ) => {
+      saved.push(envelopes.map((record) => record.id));
+      for (const record of envelopes) records.set(record.id, record);
+      const ancestors = new Set(
+        [...records.values()].flatMap((record) => record.header.previous),
+      );
+      heads = [...records.keys()].filter((id) => !ancestors.has(id)).sort();
+      return [...heads];
     },
   };
 }
@@ -637,6 +649,10 @@ for (const stage of ["heads", "envelope"] as const) {
     });
     assert.equal(captures, 2);
     assert.deepEqual([...history.events.keys()], [fresh.id]);
+    assert.equal(history.snapshot, nextSnapshot);
+    assert.deepEqual(history.frontier, [fresh.id]);
+    assert.deepEqual(history.storedHeads, [fresh.id]);
+    assert.deepEqual(await store.get(), history.storedHeads);
     assert.deepEqual(store.saved, [[fresh.id]]);
   });
 }
@@ -744,6 +760,7 @@ for (const alwaysExpire of [false, true]) {
       snapshot: null,
       events: new Map(),
       frontier: [],
+      storedHeads: [],
       complete: true,
     };
     const store = emptyHistory();
@@ -760,6 +777,7 @@ for (const alwaysExpire of [false, true]) {
       assert.deepEqual(knowledge[0].acceptances, []);
       assert.deepEqual(store.saved, []);
       assert.equal(history.events.size, 0);
+      assert.deepEqual(history.storedHeads, []);
     } else {
       assert.deepEqual(await operation, { fetched: 1 });
       assert.equal(captures, 2);
@@ -771,6 +789,8 @@ for (const alwaysExpire of [false, true]) {
       ]);
       assert.deepEqual(store.saved, [[fresh.id]]);
       assert.deepEqual(history.frontier, [fresh.id]);
+      assert.deepEqual(history.storedHeads, [fresh.id]);
+      assert.deepEqual(await store.get(), history.storedHeads);
     }
   });
 }
