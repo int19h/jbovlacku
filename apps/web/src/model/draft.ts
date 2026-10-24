@@ -8,6 +8,8 @@ import {
   contentHash,
   identityFromSeed,
   inspectBody,
+  interpretDefinition,
+  omitDefinitionDefaults,
   signHeader,
   utf8,
   validateAction,
@@ -117,7 +119,10 @@ export function hintForChoice(choice: KindChoice): TypeHint | null {
 export function choiceForHint(hint: TypeHint | null): KindChoice {
   if (!hint) return "unspecified";
   for (const choice of ["object", "event", "property", "number"] as const)
-    if (JSON.stringify(hintForChoice(choice)) === JSON.stringify(hint))
+    if (
+      canonicalize(utf8(JSON.stringify(hintForChoice(choice)))) ===
+      canonicalize(utf8(JSON.stringify(hint)))
+    )
       return choice;
   return "custom";
 }
@@ -431,21 +436,39 @@ export function normalizeDraft(stored: Draft): Draft {
     original?: unknown;
   };
   const structured = old.structured ?? true;
-  const places: PlaceInput[] = (old.places ?? []).map((place) => {
+  const nested = interpretDefinition<DefinitionBody>({
+    etymology: { formation: old.formation, compound: old.compound },
+    sources: old.sources,
+    frame: {
+      places: (old.places ?? []).map((place) => ({
+        type_hints: place.hint ? [place.hint] : [],
+      })),
+      tail: old.tail
+        ? { type_hints: old.tail.hint ? [old.tail.hint] : [] }
+        : null,
+    },
+  });
+  const places: PlaceInput[] = (old.places ?? []).map((place, index) => {
     const { gloss, from, ...rest } = place as PlaceInput & {
       gloss?: string;
       from?: DraftDerivation | null;
     };
     return {
       ...rest,
+      hint: nested.frame!.places[index].type_hints[0] ?? null,
       glosses:
-        place.glosses ??
+        place.glosses?.map((gloss) => ({
+          ...gloss,
+          sense: gloss.sense ?? "",
+        })) ??
         (gloss?.trim()
           ? [{ language: old.language ?? "en", text: gloss.trim(), sense: "" }]
           : []),
       derivations:
-        place.derivations ??
-        (from ? [{ ...from, explanation: from.explanation ?? "" }] : []),
+        place.derivations?.map((derivation) => ({
+          ...derivation,
+          definition: derivation.definition ?? null,
+        })) ?? (from ? [{ ...from, explanation: from.explanation ?? "" }] : []),
     };
   });
   const { original, ...rest } = old;
@@ -508,6 +531,20 @@ export function normalizeDraft(stored: Draft): Draft {
   }
   const draft = newDraft({
     ...rest,
+    formation: nested.etymology.formation,
+    compound: nested.etymology.compound,
+    sources: nested.sources,
+    glosses:
+      old.glosses?.map((gloss) => ({ ...gloss, sense: gloss.sense ?? "" })) ??
+      [],
+    operands:
+      old.operands?.map((operand) => ({
+        ...operand,
+        maximum: operand.maximum ?? null,
+      })) ?? [],
+    tail: old.tail
+      ? { ...old.tail, hint: nested.frame!.tail!.type_hints[0] ?? null }
+      : null,
     gismu,
     ...(ai ? { ai } : {}),
     places,
@@ -1525,7 +1562,9 @@ export function coreProblems(
   origin: "native" | "import",
 ): DraftProblem[] {
   try {
-    const canonical = utf8(canonicalize(utf8(JSON.stringify(body))));
+    const canonical = utf8(
+      canonicalize(utf8(JSON.stringify(omitDefinitionDefaults(body)))),
+    );
     const seed = crypto.getRandomValues(new Uint8Array(32));
     const header = {
       version: 1 as const,
@@ -2023,7 +2062,10 @@ export function draftFromBody(
   body: DefinitionBody,
   parentId: string,
   origin: "native" | "import",
+  rawBody: unknown = body,
 ): Draft {
+  const rawFormation = (rawBody as DefinitionBody | null)?.etymology?.formation;
+  body = interpretDefinition<DefinitionBody>(body);
   const placeText = (place: Place): DraftPlace => {
     const hint = place.type_hints[0] ?? null;
     const choice = choiceForHint(hint);
@@ -2119,7 +2161,7 @@ export function draftFromBody(
     retainedFormationSources: body.etymology.formation?.sources.map(
       (_, index) => index,
     ),
-    retainedWordIpaNullSources: body.etymology.formation?.sources.flatMap(
+    retainedWordIpaNullSources: rawFormation?.sources?.flatMap(
       (source, index) => (source.word_ipa === null ? [index] : []),
     ),
     compound: body.etymology.compound,
@@ -2145,6 +2187,7 @@ export function revisionChanges(
   body: DefinitionBody,
   origin: "native" | "import",
 ): string[] {
+  body = interpretDefinition<DefinitionBody>(body);
   const changes: string[] = [];
   if (
     body.license.expression !== CC0_LICENSE.expression ||

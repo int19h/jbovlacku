@@ -22,6 +22,7 @@ import { lexicalKinds } from "./types.ts";
 import {
   buildLujvo,
   analyzeWord,
+  interpretDefinition,
   rafsiPairId,
   wordId,
 } from "../../../../packages/core/src/browser.ts";
@@ -175,7 +176,7 @@ export function currentDraft(draft: Draft): Current {
             : null,
           constraints: draft.frameConstraints,
         };
-  return structuredClone({
+  const current: Current = structuredClone({
     word_type: draft.kind,
     classification: draft.kind
       ? { kind: draft.kind, selmaho: draft.selmaho }
@@ -193,6 +194,20 @@ export function currentDraft(draft: Draft): Current {
       ),
     compound: draft.compound,
   });
+  const interpreted = interpretDefinition<DefinitionBody>({
+    frame: current.frame,
+    classification: current.classification,
+    glosses: current.glosses,
+    etymology: { formation: current.formation, compound: current.compound },
+  });
+  return {
+    ...current,
+    frame: interpreted.frame,
+    classification: current.classification ? interpreted.classification : null,
+    glosses: interpreted.glosses,
+    formation: interpreted.etymology.formation,
+    compound: interpreted.etymology.compound,
+  };
 }
 const roots: Record<Operation, string[]> = {
   type: ["/word_type"],

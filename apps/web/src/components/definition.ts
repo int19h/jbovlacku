@@ -1,6 +1,6 @@
 /**
  * The definition block used by the word page, the definition page, and the
- * publish preview. It renders the body exactly as signed.
+ * publish preview. It renders interpreted fields and keeps the original signed record.
  */
 import {
   inlineProse,
@@ -493,7 +493,13 @@ export function definitionBlock(
       source,
       disclosure("History", () => historyBody(envelope, options.revisions)),
       disclosure("Signed record", () =>
-        el("pre", { class: "json", text: visibleJson({ envelope, body }) }),
+        el("pre", {
+          class: "json",
+          text: visibleJson({
+            envelope,
+            body: record.rawBody,
+          }),
+        }),
       ),
     );
     if (body)

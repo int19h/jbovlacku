@@ -378,7 +378,7 @@ export async function placesPage(
       const origin =
         record.envelope.header.action.origin === "import" ? "import" : "native";
       const replaced = draft;
-      draft = draftFromBody(record.body, reviseId, origin);
+      draft = draftFromBody(record.body, reviseId, origin, record.rawBody);
       reviseNotice = revisionChanges(record.body, origin);
       await app.store.saveDraft(
         DRAFT_KEY,

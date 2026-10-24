@@ -128,9 +128,11 @@ test("a first-time contributor writes a short literal definition and publishes i
   expect(actions[0].transport.body.license).toEqual({
     expression: "CC0-1.0",
     url: "https://creativecommons.org/publicdomain/zero/1.0/",
-    attribution: "",
   });
-  expect(actions[0].transport.body.legacy).toBe(null);
+  expect(actions[0].transport.body).not.toHaveProperty("legacy");
+  expect(actions[0].transport.body).not.toHaveProperty("frame");
+  expect(actions[0].transport.body).not.toHaveProperty("notes");
+  expect(actions[0].transport.body.classification).toEqual({ kind: "gismu" });
   expect(actions[0].transport.envelope.header.action.origin).toBe("native");
   // The draft is gone after publication.
   await page.getByRole("link", { name: "Add a word" }).click();
@@ -215,18 +217,13 @@ test("structured places keep declared order when prose mentions place 3 first, a
   expect(body.frame.places.map((p: any) => p.index)).toEqual([1, 2, 3]);
   expect(body.frame.places[1].type_hints).toEqual([
     {
-      alternatives: [
-        { tags: ["referent"], abstractor: null, relation_arity: null },
-      ],
-      note: [],
+      alternatives: [{ tags: ["referent"] }],
     },
   ]);
   expect(body.frame.places[2].derivation).toEqual([
     {
       word: { language: "jbo", spelling: "cukta" },
-      definition: null,
       place: 5,
-      explanation: [],
     },
   ]);
   await expect(
@@ -368,13 +365,11 @@ test("the full editor preserves every structured field and supports manual headw
   expect(body.frame.places[0].type_hints[0].alternatives[0]).toEqual({
     tags: ["agent", "https://example.invalid/tags/custom"],
     abstractor: "ka",
-    relation_arity: null,
   });
   expect(body.frame.places[0].defaults[0]).toEqual({
     kind: "conventional",
     value: { format: "lojban", text: "li pa" },
     condition: [["when unspecified"]],
-    explanation: [],
   });
   expect(body.frame.constraints).toEqual([[[1, " differs from ", 2]]]);
   expect(body.text[0]).toEqual([
@@ -394,7 +389,6 @@ test("the full editor preserves every structured field and supports manual headw
       language: "jbo",
       text: "mi brodi do",
       translation: [["I brodi you"]],
-      notes: [],
     },
   ]);
   expect(body.etymology.text).toEqual([["Made up for a test."]]);
@@ -402,16 +396,13 @@ test("the full editor preserves every structured field and supports manual headw
     {
       label: "Test source",
       url: "https://example.invalid/source",
-      event: null,
-      locator: null,
     },
   ]);
   expect(body.operands).toEqual([
     {
       id: "bridi",
       category: "bridi",
-      description: [],
-      cardinality: { minimum: 1, maximum: null },
+      cardinality: { minimum: 1 },
     },
   ]);
   expect(body.labels).toEqual(["experimental", "test"]);
@@ -502,7 +493,7 @@ test("revising an imported definition keeps the parent, cites it, copies the rig
     f.definitions.imported,
   ]);
   expect(publish.envelope.header.action.origin).toBe("native");
-  expect(publish.body.legacy).toBe(null);
+  expect(publish.body).not.toHaveProperty("legacy");
   expect(publish.body.license.expression).toBe("CC0-1.0");
   expect(publish.body.sources[0].event).toBe(f.definitions.imported);
   expect(publish.body.sources.at(-1).locator).toBe("footer.publicDomainNotice");
@@ -732,7 +723,10 @@ test("a requested rafsi claim is signed even when every lookup fails, and a know
     "The English search package is saved in this browser.",
   );
   await openPublishWithClaim(page, "brodi", "cku");
-  await expect(conflicts).toContainText("cku is also claimed by cukta");
+  await expect(conflicts).toContainText("cku is also claimed by");
+  await expect(
+    conflicts.getByRole("link", { name: "cukta", exact: true }),
+  ).toBeVisible();
   await expect(conflicts).toContainText(
     /Competing claims come from the local package of snapshot/,
   );
@@ -2178,7 +2172,7 @@ test("Revise of an independently signed rich parent with compound evidence publi
     );
     return {
       id: event.envelope.id as string,
-      body,
+      body: event.body,
       admission: receipt.admission as string,
       spelling: candidate.spelling as string,
     };
