@@ -605,34 +605,39 @@ test("concurrent distinct evaluations stay bounded and same-key work is shared",
     release = resolve;
   });
   let reads = 0;
-  const delayed = {
-    async get(hash: string) {
-      if (hash === state.events[entry.envelope.id].envelope_hash) {
-        reads++;
-        await gate;
-      }
-      return objects.get(hash);
-    },
-    put: objects.put.bind(objects),
+  const getCompact = coordinator.getVerifiedRecord.bind(coordinator);
+  coordinator.getVerifiedRecord = async (binding) => {
+    if (
+      binding.envelope_hash === state.events[entry.envelope.id].envelope_hash
+    ) {
+      reads++;
+      await gate;
+    }
+    return getCompact(binding);
   };
-  const bounded: any = new DictionaryService(delayed, coordinator, options);
+  const bounded: any = new DictionaryService(objects, coordinator, options);
   const first = bounded.evaluation(snapshot, "jve1:" + "1".repeat(64));
   assert.equal(bounded.evaluation(snapshot, "jve1:" + "1".repeat(64)), first);
   const second = bounded.evaluation(snapshot, "jve1:" + "2".repeat(64));
-  await assert.rejects(
-    bounded.evaluation(snapshot, "jve1:" + "3".repeat(64)),
-    (error: any) => error.code === "resource_unavailable",
-  );
-  assert.equal(reads, 2);
-  release();
-  await Promise.all([first, second]);
-  assert.equal(bounded.sessions.size, 2);
-  await bounded.evaluation(snapshot, "jve1:" + "3".repeat(64));
-  assert.equal(bounded.sessions.size, 2);
-  assert.equal(bounded.evaluationCache.size, 2);
+  try {
+    await assert.rejects(
+      bounded.evaluation(snapshot, "jve1:" + "3".repeat(64)),
+      (error: any) => error.code === "resource_unavailable",
+    );
+    assert.equal(reads, 2);
+    release();
+    await Promise.all([first, second]);
+    assert.equal(bounded.sessions.size, 2);
+    await bounded.evaluation(snapshot, "jve1:" + "3".repeat(64));
+    assert.equal(bounded.sessions.size, 2);
+    assert.equal(bounded.evaluationCache.size, 2);
+  } finally {
+    release();
+    await Promise.allSettled([first, second]);
+  }
   coordinator.close();
 });
-test("evaluation sends original byte buffers without decoding a body collection", async () => {
+test("evaluation reuses compact records without reading or decoding original bodies", async () => {
   const { service, objects, coordinator, options } = await instance();
   const entry = event("identity.profile", {
     name: "Original source profile",
@@ -661,21 +666,21 @@ test("evaluation sends original byte buffers without decoding a body collection"
     assert.equal(
       input instanceof Uint8Array && sourceBodies.has(input),
       false,
-      "Evaluation must pass original bodies directly to the core.",
+      "Evaluation must reuse stored compact records.",
     );
     return decode.call(this, input, options);
   };
   const streamed: any = new DictionaryService(tracked, coordinator, options);
   try {
     const actual = await streamed.evaluation(snapshot);
-    assert.equal(bodyReads, 1);
+    assert.equal(bodyReads, 0);
     assert.deepEqual(actual, await (service as any).evaluation(snapshot));
   } finally {
     TextDecoder.prototype.decode = decode;
     for (const session of streamed.sessions.values()) session.free();
   }
 });
-test("streamed evaluation releases failed work and retries the original records", async () => {
+test("compact evaluation releases failed work and retries stored records", async () => {
   const { service, objects, coordinator, options } = await instance();
   const first = event("identity.profile", {
     name: "Retained profile",
@@ -691,19 +696,13 @@ test("streamed evaluation releases failed work and retries the original records"
   const lastId = Object.keys(snapshot.events).sort().at(-1)!;
   const failedHash = snapshot.events[lastId].envelope_hash;
   let fail = true;
-  const interrupted = {
-    async get(hash: string) {
-      if (fail && hash === failedHash)
-        throw new Error("Injected record read failure.");
-      return objects.get(hash);
-    },
-    put: objects.put.bind(objects),
+  const getCompact = coordinator.getVerifiedRecord.bind(coordinator);
+  coordinator.getVerifiedRecord = async (binding) => {
+    if (fail && binding.envelope_hash === failedHash)
+      throw new Error("Injected compact record read failure.");
+    return getCompact(binding);
   };
-  const streamed: any = new DictionaryService(
-    interrupted,
-    coordinator,
-    options,
-  );
+  const streamed: any = new DictionaryService(objects, coordinator, options);
   await assert.rejects(streamed.evaluation(snapshot), /record read failure/);
   assert.equal(streamed.inFlightEvaluations.size, 0);
   assert.equal(streamed.evaluationCache.size, 0);
@@ -774,46 +773,49 @@ test("package builds share work, bound concurrent snapshots, and release failed 
   });
   let reads = 0;
   let fail = false;
-  const delayed = {
-    async get(hash: string) {
-      if (hash === firstHash) {
-        reads++;
-        await gate;
-      }
-      if (fail && hash === failureHash) {
-        fail = false;
-        throw new Error("injected package read failure");
-      }
-      return objects.get(hash);
-    },
-    put: objects.put.bind(objects),
+  const getCompact = coordinator.getVerifiedRecord.bind(coordinator);
+  coordinator.getVerifiedRecord = async (binding) => {
+    if (binding.envelope_hash === firstHash) {
+      reads++;
+      await gate;
+    }
+    if (fail && binding.envelope_hash === failureHash) {
+      fail = false;
+      throw new Error("injected package read failure");
+    }
+    return getCompact(binding);
   };
-  const bounded: any = new DictionaryService(delayed, coordinator, options);
+  const bounded: any = new DictionaryService(objects, coordinator, options);
   const first = bounded.packages(snapshots[0]);
   assert.equal(bounded.packages(snapshots[0]), first);
   const second = bounded.packages(snapshots[1]);
-  await assert.rejects(
-    bounded.packages(snapshots[2]),
-    (error: any) =>
-      error.status === 503 && error.code === "resource_unavailable",
-  );
-  assert.equal(reads, 2);
-  release();
-  const built = await Promise.all([first, second]);
-  assert.deepEqual(
-    built.map((value) => value.entries.length),
-    [1, 2],
-  );
-  assert.equal(bounded.inFlightPackages.size, 0);
-  assert.equal(bounded.packageCache.size, 2);
-  fail = true;
-  const failed = bounded.packages(snapshots[2]);
-  assert.equal(bounded.packages(snapshots[2]), failed);
-  await assert.rejects(failed, /injected package read failure/);
-  assert.equal(bounded.inFlightPackages.size, 0);
-  assert.equal(bounded.packageCache.has(snapshots[2].snapshot), false);
-  assert.equal((await bounded.packages(snapshots[2])).entries.length, 3);
-  assert.equal(bounded.packageCache.size, 2);
+  try {
+    await assert.rejects(
+      bounded.packages(snapshots[2]),
+      (error: any) =>
+        error.status === 503 && error.code === "resource_unavailable",
+    );
+    assert.equal(reads, 2);
+    release();
+    const built = await Promise.all([first, second]);
+    assert.deepEqual(
+      built.map((value) => value.entries.length),
+      [1, 2],
+    );
+    assert.equal(bounded.inFlightPackages.size, 0);
+    assert.equal(bounded.packageCache.size, 2);
+    fail = true;
+    const failed = bounded.packages(snapshots[2]);
+    assert.equal(bounded.packages(snapshots[2]), failed);
+    await assert.rejects(failed, /injected package read failure/);
+    assert.equal(bounded.inFlightPackages.size, 0);
+    assert.equal(bounded.packageCache.has(snapshots[2].snapshot), false);
+    assert.equal((await bounded.packages(snapshots[2])).entries.length, 3);
+    assert.equal(bounded.packageCache.size, 2);
+  } finally {
+    release();
+    await Promise.allSettled([first, second]);
+  }
   coordinator.close();
 });
 test("search preview uses strongest lexical entry with stable ties and active-view status", async () => {
@@ -1305,7 +1307,7 @@ test("view preflight rejects invented, wrong-kind, absent, and invalid views wit
         .status,
       422,
     );
-  assert.equal(reads, 2);
+  assert.equal(reads, 0);
   for (const view of views.slice(1))
     assert.equal(
       (
@@ -1330,14 +1332,12 @@ test("committed admission returns a durable receipt while evaluation slots are b
     release = resolve;
   });
   let reads = 0;
-  const delayed = {
-    async get(hash: string) {
-      if (reads++ < 2) await gate;
-      return objects.get(hash);
-    },
-    put: objects.put.bind(objects),
+  const getCompact = coordinator.getVerifiedRecord.bind(coordinator);
+  coordinator.getVerifiedRecord = async (binding) => {
+    if (reads++ < 2) await gate;
+    return getCompact(binding);
   };
-  const bounded: any = new DictionaryService(delayed, coordinator, options);
+  const bounded: any = new DictionaryService(objects, coordinator, options);
   const first = bounded.evaluation(snapshot, "jve1:" + "1".repeat(64));
   const second = bounded.evaluation(snapshot, "jve1:" + "2".repeat(64));
   const entry = {
@@ -1347,19 +1347,24 @@ test("committed admission returns a durable receipt while evaluation slots are b
     }),
     body: null,
   };
-  const response = await bounded.admit(utf8(JSON.stringify(entry)));
-  assert.equal(response.status, 201);
-  const receipt: any = await response.json();
-  assert.equal(receipt.interpretation, "unavailable");
-  assert.deepEqual(receipt.reasons, ["evaluation_resource_unavailable"]);
-  assert.equal((await coordinator.load()).position, 2);
-  release();
-  await Promise.all([first, second]);
-  const duplicate: any = await (
-    await bounded.admit(utf8(JSON.stringify(entry)))
-  ).json();
-  assert.equal(duplicate.cursor, receipt.cursor);
-  assert.equal(duplicate.admission, "duplicate");
+  try {
+    const response = await bounded.admit(utf8(JSON.stringify(entry)));
+    assert.equal(response.status, 201);
+    const receipt: any = await response.json();
+    assert.equal(receipt.interpretation, "unavailable");
+    assert.deepEqual(receipt.reasons, ["evaluation_resource_unavailable"]);
+    assert.equal((await coordinator.load()).position, 2);
+    release();
+    await Promise.all([first, second]);
+    const duplicate: any = await (
+      await bounded.admit(utf8(JSON.stringify(entry)))
+    ).json();
+    assert.equal(duplicate.cursor, receipt.cursor);
+    assert.equal(duplicate.admission, "duplicate");
+  } finally {
+    release();
+    await Promise.allSettled([first, second]);
+  }
 });
 
 test("alternate views evict older configured snapshots while preserving the latest configured evaluation", async () => {
