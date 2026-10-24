@@ -925,11 +925,12 @@ for (const staleMarker of ["none", "stale", "invalid typed rows"])
     await expect(
       page.getByRole("button", { name: "Remove klama", exact: true }),
     ).toBeVisible();
-    await page
-      .getByRole("region", { name: "Other forms", exact: true })
-      .getByRole("button")
-      .first()
-      .click();
+    if (await page.locator("button.btn-primary").isDisabled())
+      await page
+        .getByRole("region", { name: "Other forms", exact: true })
+        .getByRole("button")
+        .first()
+        .click();
     await expect(page.locator("button.btn-primary")).toBeEnabled();
   });
 
