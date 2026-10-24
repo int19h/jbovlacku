@@ -71,6 +71,7 @@ test("all typed lujvo hydrate exact locks and reproduce their spelling", () => {
   ]) {
     const analysis = detectWord(spelling);
     const state = typedLujvoState(spelling, analysis.readings[0], null);
+    assert.equal(state.typedOrigin, true);
     assert.equal(linkedSources(state), false);
     assert.ok(state.components.every((component) => component.spelling === ""));
     const result = buildLujvo(typedLujvoRequest(state));
@@ -183,6 +184,7 @@ test("changing or clearing a typed spelling restores editable component rows", (
     );
     const draft = newDraft({ spelling: "ckusni", lujvo: state });
     changeTypedWord(draft, spelling);
+    assert.equal(draft.lujvo?.typedOrigin, undefined);
     assert.equal(draft.lujvo?.typed, undefined);
     assert.equal(draft.lujvo?.joins, undefined);
     assert.equal(draft.lujvo?.selected, null);

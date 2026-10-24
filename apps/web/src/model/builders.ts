@@ -40,12 +40,18 @@ export interface LujvoComponentState {
 }
 export interface LujvoState {
   profile: MorphologyProfile;
+  /** True only when typed analysis created these rows. Locks alone do not imply origin. */
+  typedOrigin?: true;
+  /** This saved spelling keeps ordinary editable rows, even without compound evidence. */
+  ordinarySpelling?: string;
   /** Exact spelling and boundary locks for a typed lujvo. */
   typed?: string;
   /** Legacy draft fields, cleared when the typed spelling changes. */
   typedReading?: import("../../../../packages/core/src/browser.ts").RecoveredPart[];
   readingIndex?: number;
   joins?: (string | null)[];
+  /** The rows and rafsi to which restored ordinary joins belong. */
+  restoredJoinParts?: { id: string; rafsi: string | null }[];
   components: LujvoComponentState[];
   /** The chosen candidate spelling, when the author chose one. */
   selected: string | null;

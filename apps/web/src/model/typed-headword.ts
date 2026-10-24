@@ -28,15 +28,23 @@ export function detectWord(spelling: string) {
 /** Keep authored fields and flag evidence and annotations after a spelling edit. */
 export function changeTypedWord(draft: Draft, spelling: string) {
   const changed = typedWord(draft.spelling) !== typedWord(spelling);
+  if (
+    draft.lujvo?.components.length &&
+    !draft.lujvo.typedOrigin &&
+    draft.lujvo.ordinarySpelling === undefined
+  )
+    draft.lujvo.ordinarySpelling = typedWord(draft.spelling);
   draft.spelling = spelling;
   draft.typedSpelling = typedWord(spelling) || null;
   if (!changed) return;
   draft.publishAcknowledged = [];
+  if (draft.lujvo) delete draft.lujvo.typedOrigin;
   if (draft.lujvo?.typed && draft.lujvo.typed !== typedWord(spelling)) {
     delete draft.lujvo.typed;
     delete draft.lujvo.typedReading;
     delete draft.lujvo.readingIndex;
     delete draft.lujvo.joins;
+    delete draft.lujvo.restoredJoinParts;
     draft.lujvo.selected = null;
     draft.lujvo.acknowledged = [];
   }
@@ -106,6 +114,7 @@ export function typedLujvoState(
   return {
     ...newLujvoState(),
     profile: "extended" as const,
+    typedOrigin: true as const,
     typed: spelling,
     selected: spelling,
     joins: parts.slice(1).map((part) => part.join_before ?? ""),
@@ -134,7 +143,10 @@ export function typedLujvoRequest(state: import("./builders.ts").LujvoState) {
     profile: state.profile,
     components: state.components,
     joins: state.profile === "extended" ? state.joins : undefined,
-    spelling: state.profile === "extended" ? state.typed : undefined,
+    spelling:
+      state.profile === "extended" && state.typedOrigin
+        ? state.typed
+        : undefined,
   };
 }
 export function linkedSources(

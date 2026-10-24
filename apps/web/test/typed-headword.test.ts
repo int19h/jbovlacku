@@ -590,7 +590,7 @@ for (const [version, spelling, sources, locks, incompatible] of [
   ["3", "sairzba", ["sanmi", "zbasu"], ["sai", "zba"], false],
   ["3", "bangu'y'ismu", ["bangu", "ismu"], ["bangu", "ismu"], false],
 ] as const)
-  test(`a saved version ${version} compound reopens with its exact parts and typed spelling ${spelling}${incompatible ? " with incompatible typed state" : ""}`, async ({
+  test(`an unknown-origin saved version ${version} compound keeps editable exact parts and spelling ${spelling}${incompatible ? " with incompatible typed state" : ""}`, async ({
     page,
   }) => {
     await typed(page, spelling);
@@ -653,12 +653,24 @@ for (const [version, spelling, sources, locks, incompatible] of [
         .getByRole("region", { name: "Result", exact: true })
         .getByLabel(`Form ${spelling}`, { exact: true }),
     ).toBeVisible();
-    for (const [index, source] of sources.entries())
+    await expect(page.getByLabel("Add a part", { exact: true })).toBeVisible();
+    await expect
+      .poll(async () => (await draft(page)).lujvo?.typedOrigin)
+      .toBeUndefined();
+    for (const source of sources)
       await expect(
-        page.getByLabel(`Other source word for part ${index + 1}`, {
-          exact: true,
-        }),
-      ).toHaveValue(source);
+        page.getByRole("group", { name: `Rafsi for ${source}`, exact: true }),
+      ).toBeVisible();
+    await expect(
+      page.getByText("Saved in this browser", { exact: true }),
+    ).toBeVisible();
+    await page.reload();
+    await expect(page.getByLabel("Add a part", { exact: true })).toBeVisible();
+    await expect(
+      page
+        .getByRole("region", { name: "Result", exact: true })
+        .getByLabel(`Form ${spelling}`, { exact: true }),
+    ).toBeVisible();
     await page
       .getByRole("button", { name: `Use ${spelling}`, exact: true })
       .click();
