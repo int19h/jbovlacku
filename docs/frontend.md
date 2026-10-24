@@ -227,6 +227,13 @@ Each step saves the draft in this browser and exposes its save state.
 ### Step 1: meaning and nearby definitions
 
 The first step asks for a freeform definition and its language. A headword is optional at this point.
+The optional “Lojban word” field keeps a spelling that the author already chose.
+The app normalizes the spelling to NFC for word identity and analyses its form locally with `analyzeWord`.
+The app compares its `wordId` with the local language package. Remote lookup requires explicit consent for that word and language.
+An existing word shows “Already exists”, its linked word page, its definitions, and “Add a definition”.
+The author can continue with another definition of that word. An unavailable check says that the word could not be checked.
+A local package only establishes presence or absence in its named language and snapshot.
+
 The author can use `___` for argument placeholders, but ordinary prose also works.
 Underscores are an editor convention. The draft retains their spans without assigning final place numbers automatically.
 The app preserves this original meaning draft separately from the current editable definition.
@@ -251,13 +258,28 @@ Remote draft searches use POST bodies, not draft text embedded in navigable URLs
 
 Ask which word type the author wants. Explain gismu, lujvo, cmavo, fu'ivla, cmevla, and other with short examples.
 “Recommend a type” is an optional AI action. Its result includes a short explanation and does not select the type without acceptance.
+A typed spelling preselects its detected type. The author confirms it with one action or selects another type.
+Word form alone cannot distinguish cmavo, compound cmavo, letterals, and experimental classifications.
+Unknown analysis shows its diagnostics and permits an experimental type.
+
+With a typed gismu or fu'ivla, type confirmation opens Places.
+A typed gismu shows nonblocking identical, final-vowel, and similar-consonant warnings beside confirmation, with links to every known conflicting word.
+Publish repeats that conflict review. Missing inventory coverage remains visible.
+An optional link opens the gismu builder for source-language evidence without replacing the typed spelling.
+A typed lujvo opens the component builder. Cmavo, compound cmavo, letterals, cmevla, and other kinds open Form with the spelling filled in.
 The author can also enter an existing or custom spelling and continue manually.
+Changing the spelling updates detection and marks incompatible retained evidence for review.
 
 Changing type preserves the prose and annotations. The app identifies formation fields that no longer apply and asks before removing them.
 
 ### Step 3A: lujvo builder
 
 The builder contains ordered component rows, a candidate spelling, the current definition, and the preserved original meaning.
+For a typed lujvo, analysis supplies the component readings. If several readings exist, the author chooses one.
+Every rafsi locks to its exact typed form, including full forms. Every boundary locks to its exact typed join, including optional hyphens.
+The only candidate is the typed spelling. The builder links source words and exact definitions without changing that spelling.
+It must reproduce every valid analyzed lujvo byte for byte, including extended `'y'` joins and irregular forms.
+The gismu and lujvo builders ask before replacing any spelling that the author typed.
 Authors can add dictionary words, enter recognized fu'ivla, reorder components, remove rows, or lock a particular rafsi.
 Component search includes cmavo and fu'ivla. It never filters the inventory to gismu alone.
 Each row shows source definitions and distinguishes listed assignments from automatically available long forms.
