@@ -2046,6 +2046,7 @@ export class DictionaryService {
         if (
           entry.language !== language ||
           !publication ||
+          evaluation.receipts[entry.event]?.interpretation !== "effective" ||
           publication.eligible !== "eligible" ||
           (publication.status !== "active" && !includeRetired)
         )
