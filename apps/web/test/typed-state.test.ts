@@ -46,6 +46,7 @@ for (const [original, replacement, back] of [
         await expect(page).toHaveURL(/\/new\/places$/);
       }
       const compound = (await saved(page)).compound;
+      const linkedRows = (await saved(page)).lujvo.components;
       await page
         .getByRole("list", { name: "Steps" })
         .getByRole("link", { name: /^Meaning\b/ })
@@ -63,6 +64,13 @@ for (const [original, replacement, back] of [
         .click();
       await expect(page.getByLabel("Add a part", { exact: true })).toBeHidden();
       await expect(
+        page.getByRole("radio", {
+          name: "CLL rules",
+          exact: true,
+          includeHidden: true,
+        }),
+      ).toBeDisabled();
+      await expect(
         page
           .getByRole("region", { name: "Result", exact: true })
           .getByLabel(`Form ${spelling}`, { exact: true }),
@@ -78,6 +86,18 @@ for (const [original, replacement, back] of [
         })
         .toEqual({ typed: spelling, origin: true, ordinary: undefined });
       expect((await saved(page)).compound).toEqual(compound);
+      if (metadata && back) {
+        await expect(
+          page.getByLabel("Other source word for part 1", { exact: true }),
+        ).toHaveValue("cukta");
+        await expect(
+          page.getByLabel("Other source word for part 2", { exact: true }),
+        ).toHaveValue("casnu");
+        await expect(
+          page.getByRole("button", { name: `Use ${original}`, exact: true }),
+        ).toBeEnabled();
+        expect((await saved(page)).lujvo.components).toEqual(linkedRows);
+      }
       await page.reload();
       await expect(page.getByLabel("Add a part", { exact: true })).toBeHidden();
       await expect(
@@ -85,6 +105,18 @@ for (const [original, replacement, back] of [
           .getByRole("region", { name: "Result", exact: true })
           .getByLabel(`Form ${spelling}`, { exact: true }),
       ).toBeVisible();
+      if (metadata && back) {
+        await expect(
+          page.getByLabel("Other source word for part 1", { exact: true }),
+        ).toHaveValue("cukta");
+        await expect(
+          page.getByLabel("Other source word for part 2", { exact: true }),
+        ).toHaveValue("casnu");
+        await expect(
+          page.getByRole("button", { name: `Use ${original}`, exact: true }),
+        ).toBeEnabled();
+        expect((await saved(page)).lujvo.components).toEqual(linkedRows);
+      }
     });
 
 for (const mismatch of ["typed identity", "rafsi", "join"])
@@ -164,6 +196,116 @@ async function meaningWord(page: Page, spelling: string) {
   await page.getByRole("button", { name: "New word", exact: true }).click();
   await expect(page).toHaveURL(/\/new\/type$/);
 }
+
+for (const [profile, spelling, sources] of [
+  ["extended-v2", "CKUSNI'yBRODA", ["ckusni", "broda"]],
+  ["extended-v2", "cku,sni'ybroda", ["ckusni", "broda"]],
+  ["extended-v2", "ckusni’ybroda", ["ckusni", "broda"]],
+  ["cll", "BAU,CLA", ["bangu", "clani"]],
+] as const)
+  for (const revision of [false, true])
+    test(`saved ${profile} exact presentation survives a spelling round trip: ${spelling}, ${revision ? "published revision" : "typed metadata"}`, async ({
+      page,
+    }) => {
+      await seed(page, { kind: "lujvo", word: spelling });
+      await page.evaluate(
+        async ({ profile, spelling, sources, revision, corePath }) => {
+          const { LocalStore } = await import(String("/src/data/store.ts"));
+          const { newDraft, draftToBody, draftFromBody } = await import(
+            String("/src/model/draft.ts")
+          );
+          const { analyzeWord, rafsiPairId, wordId } = await import(corePath);
+          const { typedLujvoState, buildLujvoState, selectLujvoCandidate } =
+            await import(String("/src/model/typed-headword.ts"));
+          const parts = analyzeWord(profile, spelling).readings[0];
+          const state = typedLujvoState(spelling, parts, null, profile);
+          for (const [index, source] of sources.entries()) {
+            const row = state.components[index];
+            row.spelling = source;
+            row.kind = analyzeWord(profile, source).kind;
+            row.definition = "jve1:" + "b".repeat(64);
+            row.claims = [
+              {
+                rafsi: row.locked,
+                pair: rafsiPairId(
+                  wordId({ language: "jbo", spelling: source }),
+                  row.locked,
+                ),
+              },
+            ];
+            delete row.unresolvedSource;
+          }
+          let value = newDraft({
+            kind: "lujvo",
+            spelling,
+            typedSpelling: spelling,
+            lujvo: state,
+            frameMode: "none",
+            text: "A synthetic definition.",
+          });
+          const result = buildLujvoState(state);
+          selectLujvoCandidate(value, result, result.candidates[0], true);
+          if (revision) {
+            const { body, problems } = draftToBody(value);
+            if (!body) throw new Error(JSON.stringify(problems));
+            value = draftFromBody(body, "jve1:" + "c".repeat(64), "native");
+          }
+          await new LocalStore().put("drafts", "current", value);
+        },
+        { profile, spelling, sources, revision, corePath },
+      );
+      await page.goto("/new/lujvo");
+      const form = page
+        .getByRole("region", { name: "Result", exact: true })
+        .getByLabel(`Form ${spelling}`, { exact: true });
+      await expect(form).toBeVisible();
+      await expect
+        .poll(async () => (await saved(page)).lujvo?.components.length)
+        .toBe(sources.length);
+      const before = await saved(page);
+      if (revision)
+        await expect(
+          page.getByLabel("Add a part", { exact: true }),
+        ).toBeVisible();
+      else {
+        await expect(
+          page.getByLabel("Add a part", { exact: true }),
+        ).toBeHidden();
+        await expect(
+          page.getByRole("radio", {
+            name: "CLL rules",
+            exact: true,
+            includeHidden: true,
+          }),
+        ).toBeDisabled();
+      }
+      await page
+        .getByRole("link", { name: "Type the spelling yourself", exact: true })
+        .click();
+      await page.getByLabel("Spelling", { exact: true }).fill(spelling + "x");
+      await page.getByLabel("Spelling", { exact: true }).fill(spelling);
+      await page
+        .getByRole("list", { name: "Steps" })
+        .getByRole("link", { name: /^Form\b/ })
+        .click();
+      await expect(form).toBeVisible();
+      await expect(page.locator("button.btn-primary")).toBeEnabled();
+      const after = await saved(page);
+      expect(after.lujvo.profile).toBe(profile);
+      expect(after.lujvo.components).toEqual(before.lujvo.components);
+      expect(after.compound).toEqual(before.compound);
+      await page.reload();
+      await expect(form).toBeVisible();
+      if (revision) {
+        await page
+          .getByRole("button", { name: `Remove ${sources[0]}`, exact: true })
+          .click();
+        await expect
+          .poll(async () => (await saved(page)).lujvo.restoredSpelling)
+          .toBeUndefined();
+        expect((await saved(page)).lujvo.restoredJoinParts).toBeUndefined();
+      }
+    });
 
 test("Use this word replaces a typed lujvo with fresh analysis", async ({
   page,
@@ -630,6 +772,19 @@ for (const [
   typedMarker,
 ] of [
   ["sairzba", ["sanmi", "zbasu"], ["sai", "zba"], "r", false, true, true],
+  [
+    "bangu'y'ismu",
+    ["bangu", "ismu"],
+    ["bangu", "ismu"],
+    "'y'",
+    false,
+    true,
+    true,
+  ],
+  [".SAI,rZBA.", ["sanmi", "zbasu"], ["sai", "zba"], "r", false, true, true],
+  [".SAI,rZBA.", ["sanmi", "zbasu"], ["sai", "zba"], "r", true, false, false],
+  ["bau,cla", ["bangu", "clani"], ["bau", "cla"], "", false, true, true],
+  ["bau,cla", ["bangu", "clani"], ["bau", "cla"], "", true, false, false],
   ["sairzba", ["sanmi", "zbasu"], ["sai", "zba"], "r", true, true, true],
   [
     "bangu'y'ismu",
@@ -661,7 +816,7 @@ for (const [
     false,
   ],
 ] as const)
-  test(`restored optional joins survive evidence removal and release when ordinary rows change: ${spelling}, ${legacyState ? "legacy typed rows" : "no saved rows"}, metadata ${metadata}, typed marker ${typedMarker}`, async ({
+  test(`restored optional joins survive spelling round trips and evidence removal and release when ordinary rows change: ${spelling}, ${legacyState ? "legacy typed rows" : "no saved rows"}, metadata ${metadata}, typed marker ${typedMarker}`, async ({
     page,
   }) => {
     await seed(page, { kind: "lujvo", word: spelling, detectionFor: spelling });
@@ -729,7 +884,20 @@ for (const [
               gloss: "",
             })),
           };
-        await store.put("drafts", "current", value);
+        if (metadata && !legacyState) {
+          const { draftToBody, draftFromBody } = await import(
+            String("/src/model/draft.ts")
+          );
+          value.frameMode = "none";
+          const { body, problems } = draftToBody(value);
+          if (!body) throw new Error(JSON.stringify(problems));
+          const revised = draftFromBody(
+            body,
+            "jve1:" + "b".repeat(64),
+            "native",
+          );
+          await store.put("drafts", "current", revised);
+        } else await store.put("drafts", "current", value);
       },
       {
         spelling,
@@ -773,6 +941,34 @@ for (const [
     ).toBeVisible();
     expect((await saved(page)).lujvo.joins).toEqual([join]);
     expect((await saved(page)).lujvo.typedOrigin).toBeUndefined();
+    const restoredRows = (await saved(page)).lujvo.components;
+    const signedCompound = (await saved(page)).compound;
+    await page
+      .getByRole("link", { name: "Type the spelling yourself", exact: true })
+      .click();
+    const wordField = page.getByLabel("Spelling", { exact: true });
+    await wordField.fill(spelling + "x");
+    await wordField.fill(spelling);
+    await page
+      .getByRole("list", { name: "Steps" })
+      .getByRole("link", { name: /^Form\b/ })
+      .click();
+    await expect(page.getByLabel("Add a part", { exact: true })).toBeVisible();
+    await expect(
+      page
+        .getByRole("region", { name: "Result", exact: true })
+        .getByLabel(`Form ${spelling}`, { exact: true }),
+    ).toBeVisible();
+    await expect(page.locator("button.btn-primary")).toBeEnabled();
+    expect((await saved(page)).lujvo.joins).toEqual([join]);
+    expect((await saved(page)).lujvo.components).toEqual(restoredRows);
+    expect((await saved(page)).compound).toEqual(signedCompound);
+    await page.reload();
+    await expect(
+      page
+        .getByRole("region", { name: "Result", exact: true })
+        .getByLabel(`Form ${spelling}`, { exact: true }),
+    ).toBeVisible();
     if (metadata) {
       await page
         .getByRole("link", { name: "Type the spelling yourself", exact: true })
