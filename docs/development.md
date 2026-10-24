@@ -266,6 +266,11 @@ Rights remain unknown in this extraction. Local loading grants no publication au
 Large imports need a larger explicit state work budget and enough memory.
 The traversal flag changes the work limit only. It does not remove memory or event limits.
 The loader completes admission before the server builds its snapshot, indexes, and search packages.
+The SQL loader projects only final changed event bindings and stages at most 256 compact records per batch.
+One admission transaction promotes staged rows and accepted events together. Failed admission removes its own staged rows.
+The Node server and top-level loader clear abandoned stages only while they hold the exclusive data directory lock.
+Generic test coordinators without SQL staging retain changed projections in memory.
+
 Successful admission alone does not establish successful dictionary evaluation.
 
 The server trusts its private storage. Admission checks signatures, body hashes, and canonical JSON before it stores each record.
@@ -278,12 +283,31 @@ Old compact records remain available for historical snapshots. Original envelope
 Every server evaluation uses these stored compact records. This includes cold starts, view changes, core upgrades, and checkpoint fallback.
 These paths do not repeat signature checks, body hashing, or full body parsing.
 The core uses a separate host-only port to accept the trusted projections. The browser continues to authenticate original records.
+Browser source imports the public `browser.ts` facade, which exposes no private record insertion, extraction, or restore ports.
+A source-policy test rejects host ports and direct runtime imports under `apps/web/src`.
+The shared raw Wasm artifact still contains host exports. The facade and source policy define the browser application boundary.
+
 No API route exports the private compact records as verification evidence.
+The server reconstructs exact canonical envelope text from each stored header, event ID, and decoded SSHSIG blob.
+Admission requires canonical base64, so this reconstruction preserves every signature variant and snapshot hash.
+Cold evaluation and checkpoint restore fill the envelope cache from these private fields.
+The first admission after a restart or Worker eviction needs no retained envelope reads.
+
 
 Only an extraction format change requires another projection of existing data.
 Missing or older compact records trigger a parse-only backfill from private original bytes.
 Backfill does not repeat signature checks, body hashing, or canonical JSON checks.
 It preserves invalid body schema diagnostics. It commits at most 256 rows per batch and reads at most 16 records at once.
+The native golden test pins the complete projection output to `HOST_RECORD_VERSION`.
+Its immutable fixtures live under `crates/jvc-runtime/tests/fixtures` with a separate digest file for each extraction version.
+A projection change requires a new version and golden digest. The test covers all body statuses, action kinds, and both publication projections.
+It includes legacy account evidence and attribution fields that the two projections retain differently.
+
+A stored projection that fails the extraction decoder emits `verified_record_decode_failed` with its event and binding.
+The server rebuilds that row from trusted original bytes and replaces the derived projection without another signature or body hash check.
+`verifiedRecordStatistics` exposes missing-row, decode-failure, and backfill counts for tests and diagnostic callers.
+Tests inspect committed rows directly before evaluation so automatic backfill cannot hide an admission defect.
+
 
 To complete backfill before startup, stop the service for that data directory and run this command:
 
@@ -291,6 +315,7 @@ To complete backfill before startup, stop the service for that data directory an
 npx tsx packages/importer/src/backfill-cli.ts --data .cache/node
 ```
 
+The command requires an existing data directory and coordinator database before it takes the lock.
 The command holds the same exclusive data directory lock as the server and loader.
 A repeat run skips records with the current extraction format version.
 Ordinary startup also fills missing compact rows as evaluation needs them.
