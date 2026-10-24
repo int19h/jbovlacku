@@ -130,7 +130,7 @@ It reports unavailable interpretation with `evaluation_resource_unavailable`. A 
 
 The Node adapter evaluates new snapshots in separate worker threads.
 A worker thread runs code independently within the same process. At most two evaluation runtimes remain live.
-One runtime serves completed rankings while another authenticates changed records and evaluates the next snapshot.
+One runtime serves completed rankings while another reads stored compact records and evaluates the next snapshot.
 The browser and Cloudflare Worker keep the same shared core and inline evaluation path.
 Without an explicit snapshot, word, search, identity, account, and package reads use the last completed snapshot.
 The manifest also names that completed snapshot. Interpreted results name their snapshot and view.
@@ -179,17 +179,18 @@ Cancellation stops these waits without removing accepted delivery evidence.
 
 A checkpoint is a saved evaluated state.
 The Node adapter keeps one pinned checkpoint under `evaluation-cache` in `JVC_DATA_DIR`.
-The file contains compressed Node binary data. An independent SQLite row pins its digest and calculation context.
+The file contains compressed Node binary data for evaluated results and search packages. It contains no original envelopes or compact record inputs.
+An independent SQLite row pins its digest and calculation context.
 That context includes the exact snapshot, logical inventory, event position, selected view, work limits, and Wasm artifact digest.
 The pin also retains one private base wrapper. This wrapper does not extend public snapshot retention.
 
 The core also compares its checkpoint schema and binding before restore.
-Missing, damaged, incompatible, or incorrectly bound checkpoints return to full evaluation from original records.
+Missing, damaged, incompatible, or incorrectly bound checkpoints return to evaluation from private compact records.
 The cache limits are 256 MiB compressed and 768 MiB decoded. A cache failure does not change protocol results.
 
 Startup can restore a valid older checkpoint after a crash.
 The adapter requires the same selected view, work limits, and core version, and the exact saved base inventory.
-It then reads and authenticates only new or changed record bytes from the latest inventory.
+It restores record inputs from the private compact store, then reads new or changed compact records from the latest inventory.
 The core applies its ordinary rules for incremental updates and full rebuilds from retained authenticated records.
 If the pin differs from the durable materialized snapshot, startup uses it only for calculation, even when public retention still includes it.
 Startup does not publish that base's index or mark it as completed.
@@ -267,9 +268,37 @@ The traversal flag changes the work limit only. It does not remove memory or eve
 The loader completes admission before the server builds its snapshot, indexes, and search packages.
 Successful admission alone does not establish successful dictionary evaluation.
 
-The service streams original envelopes and bodies into the shared core, with at most 16 record reads in progress per job.
-The core authenticates each envelope and the complete original body before it retains the fields needed for state.
-These fields include source selection evidence and numeric source-account evidence. Stored bodies and signed identifiers keep their original bytes.
+The server trusts its private storage. Admission checks signatures, body hashes, and canonical JSON before it stores each record.
+The offline loader uses the same admission checks. It stores each compact record in the transaction that stores the accepted event.
+A compact record contains the fields that state evaluation and search packages use.
+Its key includes the event ID, envelope hash, body mapping, and extraction format version.
+Preferred signature changes and late or shared bodies create matching compact records in that same transaction.
+Old compact records remain available for historical snapshots. Original envelopes and full bodies remain available for replication and reads.
+
+Every server evaluation uses these stored compact records. This includes cold starts, view changes, core upgrades, and checkpoint fallback.
+These paths do not repeat signature checks, body hashing, or full body parsing.
+The core uses a separate host-only port to accept the trusted projections. The browser continues to authenticate original records.
+No API route exports the private compact records as verification evidence.
+
+Only an extraction format change requires another projection of existing data.
+Missing or older compact records trigger a parse-only backfill from private original bytes.
+Backfill does not repeat signature checks, body hashing, or canonical JSON checks.
+It preserves invalid body schema diagnostics. It commits at most 256 rows per batch and reads at most 16 records at once.
+
+To complete backfill before startup, stop the service for that data directory and run this command:
+
+```sh
+npx tsx packages/importer/src/backfill-cli.ts --data .cache/node
+```
+
+The command holds the same exclusive data directory lock as the server and loader.
+A repeat run skips records with the current extraction format version.
+Ordinary startup also fills missing compact rows as evaluation needs them.
+Storage damage is outside this trust model. Restore private records and original objects from a trusted backup after such damage.
+
+The persistent checkpoint stores evaluated results separately from these private records.
+Checkpoint restoration loads record inputs from the compact store. A core or view change discards results and keeps those records.
+A transient worker fork still transfers its complete private runtime state between threads. This transfer is not the persistent checkpoint.
 Sessions retain evaluated state instead of all source bodies. Small ancestor sets use sparse storage.
 Identical history caches share storage when the snapshot contains no acceptance events. Work charges stay unchanged.
 
@@ -308,11 +337,11 @@ JVC_LENSISKU_CARRIERS=/absolute/path/to/carriers.jsonl \
 ```
 
 Search packages reuse authenticated text and attribution fields from unchanged records.
-New or changed record bytes pass the original validators. Stored objects remain immutable.
+New admissions pass the original validators. Server package builds reuse stored compact projections. Stored objects remain immutable.
 Judgments reuse package parts and search entries. Changed publications rebuild the affected language packages.
 
-Missing, changed, or late body bytes retain their separate handling. The verifier caches at most 1,024 validated public keys per builder.
-Every signature still passes the point, scalar, embedded-key, and equation rules.
+Missing and late body mappings retain their separate handling. Browser builders cache at most 1,024 validated public keys.
+Every newly admitted signature and every browser signature check passes the point, scalar, embedded-key, and equation rules.
 The existing combined-request API remains available for smaller browser snapshots. It still allocates the complete request.
 
 ### Full-data measurements
@@ -354,7 +383,7 @@ Before shutdown, resident process memory was 2.24 GiB.
 The measurements include Node and its evaluation threads.
 
 A Wasm trap retires its worker immediately. The service keeps completed state on the main thread for reads.
-A replacement restores a matching checkpoint when available and otherwise authenticates the snapshot in the background.
+A replacement restores a matching checkpoint when available and otherwise evaluates its private compact records in the background.
 Word scores can remain unavailable until that runtime returns.
 
 After publication, the service releases older runtimes after their active read, fork, or export calls finish.
@@ -918,6 +947,7 @@ node scripts/test-state-parity.mjs
 ```
 
 The runner initializes the browser WebAssembly module before it compares complete native state and ranking results.
+It also compares host-only extraction and trusted insertion with the original verifying builder.
 Ranking cases compare `rank_word`, session ranking, and `rank_with_reviewers`, including `public_shun_block` and `private_block` details.
 When `JVC_SHUN_PARITY_DIR` is set, the runner requires shun-profile cases and both block reasons, separately and together.
 Without that variable, the runner compares state only. CI sets both corpus variables before the native tests and browser comparison.
