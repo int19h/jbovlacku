@@ -267,6 +267,18 @@ function retainSources(
     const signed = compound?.components[index];
     if (signed?.rafsi === component.locked)
       return { ...signedComponent(signed), ...(old ? { id: old.id } : {}) };
+    if (authoredExact.length > 1 || fallback.length > 1)
+      return {
+        ...component,
+        ...(old ? { id: old.id } : {}),
+        spelling: "",
+        kind: "other",
+        definition: null,
+        definitions: [],
+        gloss: "",
+        claims: [],
+        unresolvedSource: "Choose a source word.",
+      };
     return { ...component, ...(old ? { id: old.id } : {}) };
   });
 }

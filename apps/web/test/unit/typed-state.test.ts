@@ -406,6 +406,12 @@ test("fresh readings retain compatible unlocked author sources and refuse ambigu
   const next = prepareLujvoBuilder(draft, cached);
   assert.equal(next.components[0].spelling, "");
   assert.ok(next.components[0].unresolvedSource);
+  // A partial cache cannot choose between the author's competing source rows.
+  draft.lujvo = state;
+  const partialCache = { ...cached, entries: cached.entries.slice(1) };
+  const stillAmbiguous = prepareLujvoBuilder(draft, partialCache);
+  assert.equal(stillAmbiguous.components[0].spelling, "");
+  assert.ok(stillAmbiguous.components[0].unresolvedSource);
   // Only the one compatible remaining source can restore the chosen definition.
   state.components.pop();
   draft.lujvo = state;
