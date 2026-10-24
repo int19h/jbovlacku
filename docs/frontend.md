@@ -278,6 +278,9 @@ Forward step links, the full-editor link, and direct Form or builder entry confi
 
 A changed or cleared spelling exits the previous typed-lujvo mode.
 A replacement lujvo starts a fresh analysis, even when the author restores an earlier spelling before reopening the builder.
+That analysis preserves author-linked sources, exact definitions, and claims for compatible rafsi.
+Matching compound evidence supplies missing sources before dictionary suggestions do.
+The [headword state model](typed-headword-state.md) defines the private fields, events, and invariants.
 
 Changing type preserves the prose and annotations. The app identifies formation fields that no longer apply and asks before removing them.
 
@@ -296,9 +299,12 @@ An explicit private marker identifies rows that typed analysis created. Rafsi lo
 
 Saved rows without this origin marker stay editable, including after removal of compound evidence.
 They retain the signed morphology version, source boundaries, and matching joins.
-Without compound metadata, saved joins remain only when the current spelling, locked parts, and complete analyzed boundaries match.
-Restored joins stay associated with their original rows and rafsi when the metadata is removed.
-Changing those rows or rafsi returns their restored joins to automatic construction.
+On first restoration without compound metadata, saved joins require matching spelling, locked parts, and complete analyzed boundaries.
+After restoration, joins and the exact spelling belong to their original rows, rafsi, and morphology profile.
+A spelling edit or removal of metadata keeps that association.
+A corrected headword can therefore recover its exact candidate, including case, commas, framing periods, and optional joins.
+Changing those rows, their order, their rafsi, or their morphology profile returns restored construction to automatic choices.
+The builder asks before an accepted candidate replaces a different entered headword.
 
 The typed path must reproduce every valid analyzed lujvo byte for byte, including extended `'y'` joins and irregular forms.
 The gismu and lujvo builders ask before replacing any spelling that the author typed.

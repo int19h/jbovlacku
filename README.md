@@ -96,6 +96,10 @@ A changed or cleared typed spelling restores ordinary builder rows. A generated 
 A replacement typed lujvo starts fresh analysis, including a return to an earlier spelling before the builder reopens.
 A private origin marker distinguishes typed analysis from ordinary rafsi locks. Meaning visits and evidence removal preserve ordinary row editing.
 Saved rows with unknown origin stay editable and keep their signed version, boundaries, and matching joins.
+Spelling corrections preserve restored joins and compatible author-linked sources, exact definitions, and claims.
+A [state model](docs/typed-headword-state.md) defines the shared transitions and their invariants.
+Seeded event sequences exercise those transitions with typed, legacy, and published-revision drafts.
+Restored older profiles preserve accepted case, commas, and apostrophe variants after an exact match with the core construction.
 
 Unconfirmed type detection follows spelling corrections after confirmation of any evidence loss.
 Forward wizard links and direct Form or builder entry confirm the selected type. Cancellation keeps the previous type and evidence.
@@ -272,11 +276,11 @@ That run restored its checkpoint in 22.68 seconds. A later restart took 29.33 se
 The repaired host measurement uses `5aefd15`, with 59,125 imported definitions in 44 languages.
 Its checkpoint restart took 7.07 seconds. Recovery after the core digest changed took 70.72 seconds.
 
-| Visible write | Reviewed host, `b6c0354` | Repaired host, `5aefd15` |
-| --- | ---: | ---: |
-| Trust choice | 30.37 s | 8.38 s |
-| Native publication | 46.71 s | 9.53 s |
-| Judgment | 35.51 s | 5.39 s |
+| Visible write      | Reviewed host, `b6c0354` | Repaired host, `5aefd15` |
+| ------------------ | -----------------------: | -----------------------: |
+| Trust choice       |                  30.37 s |                   8.38 s |
+| Native publication |                  46.71 s |                   9.53 s |
+| Judgment           |                  35.51 s |                   5.39 s |
 
 The reviewed host peaked at 4.25 GiB. Three of 91 sampled word reads reached their three-second deadline.
 Twelve health probes reached their one-second deadline.
