@@ -103,7 +103,21 @@ export async function lujvoPage(
     let hydrate = !state.components.length;
     try {
       const profile = morphologyProfile(draft.compound.morphology);
-      hydrate ||= state.profile !== profile;
+      // Ordinary rows keep the author's choices when the saved profile differs.
+      // A typed version 2 record can need its original whole-word boundaries.
+      hydrate ||=
+        profile === "extended-v2" &&
+        !!draft.typedSpelling &&
+        (state.components.length !== draft.compound.components.length ||
+          state.components.some((component, index) => {
+            const signed = draft.compound!.components[index];
+            return (
+              typedWord(component.spelling) !==
+                typedWord(signed.word.spelling) ||
+              (component.locked !== null && component.locked !== signed.rafsi)
+            );
+          }));
+      if (state.profile !== profile) saver.touch();
       state.profile = profile;
       if (draft.typedSpelling) state.typed = typedWord(draft.spelling);
       if (state.profile !== "extended") delete state.joins;

@@ -584,17 +584,18 @@ for (const spelling of ["bangu", "Bangu", "ban,gu", ".Bangu."])
     expect(saved.formation.generated).toBe("bangu");
   });
 
-for (const [version, spelling, sources, locks] of [
-  ["2", "ckusni'ybroda", ["ckusni", "broda"], ["ckusni", "broda"]],
-  ["3", "sairzba", ["sanmi", "zbasu"], ["sai", "zba"]],
-  ["3", "bangu'y'ismu", ["bangu", "ismu"], ["bangu", "ismu"]],
+for (const [version, spelling, sources, locks, incompatible] of [
+  ["2", "ckusni'ybroda", ["ckusni", "broda"], ["ckusni", "broda"], false],
+  ["2", "ckusni'ybroda", ["ckusni", "broda"], ["ckusni", "broda"], true],
+  ["3", "sairzba", ["sanmi", "zbasu"], ["sai", "zba"], false],
+  ["3", "bangu'y'ismu", ["bangu", "ismu"], ["bangu", "ismu"], false],
 ] as const)
-  test(`a saved version ${version} compound reopens with its exact parts and typed spelling ${spelling}`, async ({
+  test(`a saved version ${version} compound reopens with its exact parts and typed spelling ${spelling}${incompatible ? " with incompatible typed state" : ""}`, async ({
     page,
   }) => {
     await typed(page, spelling);
     await page.evaluate(
-      async ({ version, sources, locks }) => {
+      async ({ version, sources, locks, incompatible }) => {
         const { LocalStore } = await import(String("/src/data/store.ts"));
         const store = new LocalStore();
         const value: any = await store.get("drafts", "current");
@@ -603,6 +604,25 @@ for (const [version, spelling, sources, locks] of [
         value.kind = "lujvo";
         value.evidenceForm = value.spelling;
         value.lujvo = null;
+        if (incompatible) {
+          const { newLujvoState } = await import(
+            String("/src/model/builders.ts")
+          );
+          value.lujvo = {
+            ...newLujvoState(),
+            typed: value.spelling,
+            joins: ["", "'y"],
+            components: ["cku", "sni", "broda"].map((part, index) => ({
+              id: `old-${index}`,
+              spelling: part,
+              kind: "other",
+              definition: null,
+              gloss: "",
+              claims: [],
+              locked: part,
+            })),
+          };
+        }
         value.compound = {
           components: sources.map((spelling, index) => ({
             word: { language: "jbo", spelling },
@@ -616,7 +636,7 @@ for (const [version, spelling, sources, locks] of [
         };
         await store.put("drafts", "current", value);
       },
-      { version, sources, locks },
+      { version, sources, locks, incompatible },
     );
     await page.goto("/new/lujvo");
     if (version === "2")

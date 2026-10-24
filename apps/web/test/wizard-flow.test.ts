@@ -551,6 +551,26 @@ test("Grok 3 lujvo acknowledgments belong to the selected spelling", async ({
   await createIdentity(page);
   await seed(page, { compound: true, competitors: ["spofu"] });
   await open(page, "/new/lujvo");
+  await expect(
+    page.getByRole("radio", { name: "CLL rules", exact: true }),
+  ).toBeChecked();
+  for (const spelling of ["cukta", "valsi"])
+    await expect(
+      page
+        .getByRole("group", { name: `Rafsi for ${spelling}`, exact: true })
+        .getByRole("radio", { name: "automatic", exact: true }),
+    ).toBeChecked();
+  await expect.poll(async () => (await stored(page)).lujvo.profile).toBe("cll");
+  expect(
+    (await stored(page)).lujvo.components.map((component: any) => ({
+      id: component.id,
+      spelling: component.spelling,
+      locked: component.locked,
+    })),
+  ).toEqual([
+    { id: "a", spelling: "cukta", locked: null },
+    { id: "b", spelling: "valsi", locked: null },
+  ]);
   const claims = page.getByRole("group", { name: "Competing rafsi claims" });
   await claims.getByRole("checkbox").check();
   const next = page
