@@ -321,8 +321,14 @@ pub fn validate(
     parts: &[Part],
     tokens: &[String],
 ) -> Result<Vec<RecoveredPart>, String> {
-    validate_checked(profile, parts, tokens, &mut RecognitionBudget::default())
-        .map_err(|e| e.to_string())
+    validate_checked(
+        profile,
+        parts,
+        tokens,
+        &mut RecognitionBudget::default(),
+        true,
+    )
+    .map_err(|e| e.to_string())
 }
 #[derive(Default)]
 struct RecognitionBudget {
@@ -356,6 +362,7 @@ fn validate_checked(
     parts: &[Part],
     tokens: &[String],
     budget: &mut RecognitionBudget,
+    required_only: bool,
 ) -> Result<Vec<RecoveredPart>, BuilderError> {
     require_limit("validation parts", parts.len() as u64, 64)?;
     require_limit("validation tokens", tokens.len() as u64, 128)?;
@@ -368,7 +375,7 @@ fn validate_checked(
     let invalid = |message: &str| BuilderError::Invalid {
         message: message.into(),
     };
-    if bond(parts).as_deref() != Some(tokens) {
+    if required_only && bond(parts).as_deref() != Some(tokens) {
         return Err(invalid(
             "The tokens do not use the required construction joins.",
         ));
@@ -389,7 +396,7 @@ fn validate_checked(
         length as u64,
         crate::recognize::MAX_WORD_BYTES as u64,
     )?;
-    let reading = crate::recognize::parse(&tokens.concat())?;
+    let reading = crate::recognize::parse_profile(&tokens.concat(), profile)?;
     budget.charge(reading.spent)?;
     if reading.kind != crate::recognize::Kind::Lujvo {
         return Err(invalid(
@@ -483,7 +490,9 @@ pub struct RowAnalysis {
 }
 /// The choices of one component under the profile.
 pub fn row_choices(profile: Profile, component: &Component) -> RowAnalysis {
-    row_choices_with_parser(profile, component, crate::recognize::parse)
+    row_choices_with_parser(profile, component, |word| {
+        crate::recognize::parse_profile(word, profile)
+    })
 }
 fn row_choices_with_parser(
     profile: Profile,
@@ -705,6 +714,10 @@ impl Default for Limits {
 pub struct LujvoRequest {
     pub profile: Profile,
     pub components: Vec<Component>,
+    /// One choice per boundary. Null uses the required join. Empty means no join.
+    /// An empty list preserves version 2 construction.
+    #[serde(default)]
+    pub joins: Vec<Option<String>>,
     #[serde(default)]
     pub inventory: Inventory,
     #[serde(default)]
@@ -817,14 +830,61 @@ fn build_lujvo_with_detail_budget(
     for component in &request.components {
         require_limit("component bytes", component.spelling.len() as u64, 128)?;
         require_limit("component claims", component.claims.len() as u64, 64)?;
+        if let Some(locked) = &component.locked {
+            require_limit("locked rafsi bytes", locked.len() as u64, 128)?;
+        }
         for claim in &component.claims {
             require_limit("rafsi bytes", claim.rafsi.len() as u64, 128)?;
         }
     }
+    if request.profile == Profile::Cll && !request.joins.is_empty() {
+        return Err(BuilderError::Invalid {
+            message: "Explicit joins need the extended profile.".into(),
+        });
+    }
+    if !request.joins.is_empty()
+        && (request.joins.len() + 1 != request.components.len()
+            || request
+                .joins
+                .iter()
+                .flatten()
+                .any(|join| !join.is_empty() && !is_hyphen(join)))
+    {
+        return Err(BuilderError::Invalid {
+            message: "Choose one permitted join for each boundary.".into(),
+        });
+    }
     let rows: Vec<RowAnalysis> = request
         .components
         .iter()
-        .map(|c| row_choices(request.profile, c))
+        .enumerate()
+        .map(|(index, c)| {
+            let mut row = row_choices(request.profile, c);
+            if !request.joins.is_empty() {
+                if let Some(locked) = &c.locked {
+                    if !row.choices.iter().any(|choice| &choice.form == locked)
+                        || (request.profile == Profile::Extended
+                            && locked == &row.normalized
+                            && gismu_shape(locked).is_some()
+                            && index + 1 < request.components.len())
+                    {
+                        let core = request.profile == Profile::Extended
+                            && locked == &row.normalized
+                            && is_brivla_core(locked);
+                        row.choices.push(Choice {
+                            form: locked.clone(),
+                            origin: if core { Origin::Core } else { Origin::Claim },
+                            shape: rafsi_shape(locked),
+                            position: Position::Any,
+                            pair: None,
+                        });
+                        row.lock_valid = true;
+                        row.diagnostics.clear();
+                    }
+                }
+            }
+            row
+        })
         .collect();
     let mut diagnostics = Vec::new();
     let last = rows.len() - 1;
@@ -912,7 +972,25 @@ fn build_lujvo_with_detail_budget(
                     }
                 })
                 .collect();
-            let Some(tokens) = bond(&parts) else { return };
+            let Some(default_tokens) = bond(&parts) else {
+                return;
+            };
+            let tokens = if request.joins.is_empty() {
+                default_tokens
+            } else {
+                let defaults = recovered(&default_tokens, &parts);
+                let mut tokens = vec![parts[0].text.clone()];
+                for (index, part) in parts.iter().enumerate().skip(1) {
+                    let join = request.joins[index - 1]
+                        .as_deref()
+                        .unwrap_or(defaults[index].join_before.as_deref().unwrap_or(""));
+                    if !join.is_empty() {
+                        tokens.push(join.into());
+                    }
+                    tokens.push(part.text.clone());
+                }
+                tokens
+            };
             let spelling: String = tokens.concat();
             match score(&tokens) {
                 Ok(score) => {
@@ -988,6 +1066,7 @@ fn build_lujvo_with_detail_budget(
             &parts,
             &candidate.tokens,
             &mut recognition_budget,
+            request.joins.is_empty(),
         ) {
             Ok(recovered) => {
                 candidate.recovered = recovered;
@@ -1015,7 +1094,12 @@ fn build_lujvo_with_detail_budget(
         rejected,
         morphology: Versioned {
             id: request.profile.morphology_id().into(),
-            version: MORPHOLOGY_VERSION.into(),
+            version: if request.profile == Profile::Extended {
+                "3"
+            } else {
+                MORPHOLOGY_VERSION
+            }
+            .into(),
         },
         scoring: Versioned {
             id: request.profile.scoring_id().into(),
@@ -1114,7 +1198,12 @@ pub fn analyze_word(profile: Profile, spelling: &str) -> Analysis {
         diagnostics: vec![],
         morphology: Versioned {
             id: profile.morphology_id().into(),
-            version: MORPHOLOGY_VERSION.into(),
+            version: if profile == Profile::Extended {
+                "3"
+            } else {
+                MORPHOLOGY_VERSION
+            }
+            .into(),
         },
     };
     if spelling.len() > crate::recognize::MAX_WORD_BYTES {
@@ -1129,7 +1218,7 @@ pub fn analyze_word(profile: Profile, spelling: &str) -> Analysis {
         );
         return analysis;
     };
-    match crate::recognize::parse(&normalized) {
+    match crate::recognize::parse_profile(&normalized, profile) {
         Err(error) => analysis.diagnostics.push(error.to_string()),
         Ok(reading) => {
             use crate::recognize::Kind;
@@ -1183,6 +1272,93 @@ mod tests {
     }
     fn rafsi(items: &[&str]) -> Vec<Part> {
         items.iter().map(|i| Part::rafsi(i)).collect()
+    }
+    #[test]
+    fn exact_readings_rebuild_with_optional_and_extended_joins() {
+        for word in [
+            "ckusni",
+            "cuktysinxa",
+            "sairzba",
+            "bangu'y'ismu",
+            "sakrsakysakli",
+            "spageti'ybroda",
+            "spageti'ykla",
+            "kerlybai'ybroda",
+            "kerlybla'ykla",
+            "spageiybroda",
+            "kerlyfa'u'yiismu",
+            "klama'ybroda",
+            "aktyiismu",
+        ] {
+            let analysis = analyze_word(Profile::Extended, word);
+            assert_eq!(analysis.kind, WordKind::Lujvo, "{word}");
+            let reading = &analysis.readings[0];
+            let request: LujvoRequest = serde_json::from_value(serde_json::json!({
+                "profile": "extended",
+                "joins": reading.iter().skip(1).map(|p| p.join_before.clone().unwrap_or_default()).collect::<Vec<_>>(),
+                "components": reading.iter().enumerate().map(|(index, part)| serde_json::json!({
+                    "id": index.to_string(), "spelling": part.text, "kind": "other", "locked": part.text
+                })).collect::<Vec<_>>()
+            })).unwrap();
+            let result = build_lujvo(&request).unwrap();
+            assert_eq!(result.candidates.len(), 1, "{word}: {:?}", result.rejected);
+            assert_eq!(result.candidates[0].spelling.as_bytes(), word.as_bytes());
+            assert_eq!(result.candidates[0].tokens.concat(), word);
+            assert_eq!(result.morphology.version, "3");
+        }
+    }
+    #[test]
+    fn retained_gencmu_oracle_and_cll_profile_stay_separate() {
+        let evidence: serde_json::Value =
+            serde_json::from_str(include_str!("../evidence/typed-lujvo.json")).unwrap();
+        for case in evidence["cases"].as_array().unwrap() {
+            let word = case["word"].as_str().unwrap();
+            let analysis = analyze_word(Profile::Extended, word);
+            assert_eq!(
+                serde_json::to_value(analysis.kind).unwrap(),
+                case["kind"],
+                "{word}"
+            );
+            let old = crate::recognize::parse(word).unwrap();
+            let cll = analyze_word(Profile::Cll, word);
+            assert_eq!(cll.morphology.version, "2");
+            assert_eq!(
+                cll.kind == WordKind::Lujvo,
+                old.kind == crate::recognize::Kind::Lujvo && classic_tokens(&old.tokens),
+                "{word}"
+            );
+        }
+        let request: LujvoRequest = serde_json::from_value(serde_json::json!({
+            "profile": "cll", "joins": ["r"], "components": [
+                {"id": "a", "spelling": "sanmi", "kind": "gismu", "locked": "sai"},
+                {"id": "b", "spelling": "zbasu", "kind": "gismu", "locked": "zba"}
+            ]
+        }))
+        .unwrap();
+        assert!(build_lujvo(&request).is_err());
+    }
+    #[test]
+    fn explicit_joins_reject_missing_required_and_invalid_joins() {
+        for joins in [serde_json::json!([""]), serde_json::json!(["r"])] {
+            let request: LujvoRequest = serde_json::from_value(serde_json::json!({
+                "profile": "extended", "joins": joins,
+                "components": [
+                    {"id": "a", "spelling": "cukta", "kind": "gismu", "locked": "cukt"},
+                    {"id": "b", "spelling": "sinxa", "kind": "gismu", "locked": "sinxa"}
+                ]
+            }))
+            .unwrap();
+            assert!(build_lujvo(&request).unwrap().candidates.is_empty());
+        }
+        let request: LujvoRequest = serde_json::from_value(serde_json::json!({
+            "profile": "cll", "joins": ["y", "y"],
+            "components": [
+                {"id": "a", "spelling": "cukta", "kind": "gismu"},
+                {"id": "b", "spelling": "sinxa", "kind": "gismu"}
+            ]
+        }))
+        .unwrap();
+        assert!(build_lujvo(&request).is_err());
     }
     #[test]
     fn bonds_cvv_initial_rafsi_with_r_or_n() {
@@ -1300,6 +1476,7 @@ mod tests {
     #[test]
     fn builds_ckusni_from_components_with_long_forms_beside_short_ones() {
         let request = LujvoRequest {
+            joins: vec![],
             profile: Profile::Cll,
             components: vec![
                 Component {
@@ -1375,6 +1552,7 @@ mod tests {
     #[test]
     fn locks_limit_choices_and_an_invalid_lock_is_explained() {
         let mut request = LujvoRequest {
+            joins: vec![],
             profile: Profile::Cll,
             components: vec![
                 Component {
@@ -1432,6 +1610,7 @@ mod tests {
     #[test]
     fn repeated_components_stay_separate_and_cmavo_need_claims() {
         let request = LujvoRequest {
+            joins: vec![],
             profile: Profile::Cll,
             components: vec![
                 Component {
@@ -1503,6 +1682,7 @@ mod tests {
             locked: None,
         };
         let request = LujvoRequest {
+            joins: vec![],
             profile: Profile::Cll,
             components: (0..8).map(|i| component(&i.to_string())).collect(),
             inventory: Inventory {
@@ -1604,6 +1784,7 @@ mod tests {
         .collect();
         for profile in [Profile::Cll, Profile::Extended] {
             let mut request = LujvoRequest {
+                joins: vec![],
                 profile,
                 components: components.clone(),
                 inventory: Inventory::default(),
@@ -1804,6 +1985,7 @@ mod tests {
                 .collect(),
         };
         let request = LujvoRequest {
+            joins: vec![],
             profile: Profile::Extended,
             components: vec![
                 component("a", "bangu", "gismu", &["bau", "ban"]),
@@ -1835,11 +2017,11 @@ mod tests {
         let parts = vec![Part::rafsi("bau"), Part::core("ismu")];
         let tokens = bond(&parts).unwrap();
         let mut budget = RecognitionBudget::default();
-        assert!(validate_checked(Profile::Extended, &parts, &tokens, &mut budget).is_err());
+        assert!(validate_checked(Profile::Extended, &parts, &tokens, &mut budget, true).is_err());
         assert!(budget.spent > 0);
         budget.spent = 2_000_000;
         assert!(matches!(
-            validate_checked(Profile::Extended, &parts, &tokens, &mut budget),
+            validate_checked(Profile::Extended, &parts, &tokens, &mut budget, true),
             Err(BuilderError::ResourceLimit { .. })
         ));
     }
@@ -1912,7 +2094,7 @@ mod tests {
         for profile in [Profile::Cll, Profile::Extended] {
             let component = Component {
                 id: "a".into(),
-                spelling: "tca".repeat(26),
+                spelling: "tca".repeat(40),
                 kind: "lujvo".into(),
                 definition: None,
                 claims: vec![Claim {
@@ -1930,6 +2112,7 @@ mod tests {
                     .any(|diagnostic| diagnostic.contains("recognition work"))
             );
             let result = build_lujvo(&LujvoRequest {
+                joins: vec![],
                 profile,
                 components: vec![
                     component,
@@ -1977,8 +2160,9 @@ mod tests {
     #[test]
     fn whole_word_lock_on_exhausted_recognition_keeps_listed_rafsi() {
         for profile in [Profile::Cll, Profile::Extended] {
-            let spelling = "tca".repeat(26);
+            let spelling = "tca".repeat(40);
             let mut request = LujvoRequest {
+                joins: vec![],
                 profile,
                 components: vec![
                     Component {
@@ -2145,8 +2329,9 @@ mod tests {
     fn candidate_recognition_exhaustion_still_refuses_the_build() {
         for profile in [Profile::Cll, Profile::Extended] {
             let request = LujvoRequest {
+                joins: vec![],
                 profile,
-                components: (0..26)
+                components: (0..40)
                     .map(|index| Component {
                         id: index.to_string(),
                         spelling: "ta".into(),
@@ -2180,6 +2365,7 @@ mod tests {
             }],
         };
         LujvoRequest {
+            joins: vec![],
             profile: Profile::Cll,
             components: vec![
                 component("a", "cukta", "cku"),

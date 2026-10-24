@@ -37,6 +37,7 @@ enum LujvoParseExpectation {
     InitialOrStandaloneFinalRafsi,
 }
 struct LujvoRecognitionCache {
+    experimental: bool,
     remaining: usize,
     spent: usize,
     exhausted: bool,
@@ -55,6 +56,7 @@ impl LujvoRecognitionCache {
     }
     fn new(n: usize) -> Self {
         Self {
+            experimental: false,
             remaining: 50_000,
             spent: 0,
             exhausted: false,
@@ -820,6 +822,14 @@ fn any_extended_rafsi_starts_until_with_cache(
     if !cache.charge() {
         return false;
     }
+    if cache.experimental {
+        return index < end
+            && (is_fuhivla_shape_slice_with_cache(chars, index, end, cache)
+                || !fuhivla_rafsi_base_ends_until_with_cache(chars, index, end, cache).is_empty()
+                || ((index + 1)..=end).any(|next| {
+                    stressed_fuhivla_rafsi_slice_with_cache(chars, index, next, cache)
+                }));
+    }
     index < end
         && (is_fuhivla_shape_slice_with_cache(chars, index, end, cache)
             || !extended_rafsi_ends_until_with_cache(chars, index, end, cache).is_empty()
@@ -857,14 +867,22 @@ fn extended_rafsi_ends_until_with_cache(
             ends.push(next);
         }
     }
-    for base_end in brivla_head_ends_until_with_cache(chars, index, end, cache) {
-        if chars[index..base_end].iter().any(|value| is_y(*value)) {
-            continue;
-        }
-        if let Some(next) = hy_rafsi_hyphen_end(chars, base_end)
-            && next <= end
-        {
-            ends.push(next);
+    if cache.experimental {
+        ends.extend(
+            hy_rafsi_ends(chars, index)
+                .into_iter()
+                .filter(|next| *next <= end),
+        );
+    } else {
+        for base_end in brivla_head_ends_until_with_cache(chars, index, end, cache) {
+            if chars[index..base_end].iter().any(|value| is_y(*value)) {
+                continue;
+            }
+            if let Some(next) = hy_rafsi_hyphen_end(chars, base_end)
+                && next <= end
+            {
+                ends.push(next);
+            }
         }
     }
     ends
@@ -908,8 +926,11 @@ fn stressed_extended_rafsi_slice_with_cache(
     if !cache.charge() {
         return false;
     }
-    stressed_brivla_rafsi_slice_with_cache(chars, start, end, cache)
-        || stressed_fuhivla_rafsi_slice_with_cache(chars, start, end, cache)
+    (if cache.experimental {
+        hy_rafsi_slice(chars, start, end)
+    } else {
+        stressed_brivla_rafsi_slice_with_cache(chars, start, end, cache)
+    }) || stressed_fuhivla_rafsi_slice_with_cache(chars, start, end, cache)
 }
 
 fn stressed_y_rafsi_slice(chars: &[char], start: usize, end: usize) -> bool {
@@ -967,17 +988,27 @@ fn stressed_fuhivla_rafsi_slice_with_cache(
         .any(|head_end| {
             stressed_syllable_ends_for_fuhivla(chars, head_end, base_end)
                 .into_iter()
-                .any(|stressed_end| consonantal_chain_then_onset(chars, stressed_end, base_end))
+                .any(|stressed_end| {
+                    consonantal_chain_then_onset(chars, stressed_end, base_end, cache.experimental)
+                })
         })
 }
 
-fn consonantal_chain_then_onset(chars: &[char], index: usize, end: usize) -> bool {
-    if chars.get(index) != Some(&'\'') && has_parse_onset_end(chars, index, end) {
+fn consonantal_chain_then_onset(
+    chars: &[char],
+    index: usize,
+    end: usize,
+    experimental: bool,
+) -> bool {
+    if (experimental && chars.get(index) == Some(&'\'') && index + 1 == end)
+        || ((experimental || chars.get(index) != Some(&'\''))
+            && has_parse_onset_end(chars, index, end))
+    {
         return true;
     }
     consonantal_syllable_ends(chars, index, end)
         .into_iter()
-        .any(|next| next > index && consonantal_chain_then_onset(chars, next, end))
+        .any(|next| next > index && consonantal_chain_then_onset(chars, next, end, experimental))
 }
 
 fn fuhivla_rafsi_base_ends_until_with_cache(
@@ -1020,7 +1051,9 @@ fn fuhivla_rafsi_base_slice_with_cache(
         .into_iter()
         .filter(|head_end| *head_end > start && *head_end < end)
         .any(|head_end| {
-            chars.get(head_end) != Some(&'\'') && has_parse_onset_end(chars, head_end, end)
+            (cache.experimental && chars.get(head_end) == Some(&'\'') && head_end + 1 == end)
+                || ((cache.experimental || chars.get(head_end) != Some(&'\''))
+                    && has_parse_onset_end(chars, head_end, end))
         })
 }
 
@@ -2414,10 +2447,23 @@ pub(crate) struct Reading {
     pub spent: usize,
 }
 pub(crate) const MAX_WORD_BYTES: usize = 128;
+pub(crate) fn parse_profile(
+    word: &str,
+    profile: crate::lujvo::Profile,
+) -> Result<Reading, crate::lujvo::BuilderError> {
+    parse_with_profile(word, 50_000, profile == crate::lujvo::Profile::Extended)
+}
 pub(crate) fn parse(word: &str) -> Result<Reading, crate::lujvo::BuilderError> {
     parse_with_limit(word, 50_000)
 }
 fn parse_with_limit(word: &str, limit: usize) -> Result<Reading, crate::lujvo::BuilderError> {
+    parse_with_profile(word, limit, false)
+}
+fn parse_with_profile(
+    word: &str,
+    limit: usize,
+    experimental: bool,
+) -> Result<Reading, crate::lujvo::BuilderError> {
     use crate::lujvo::BuilderError;
     if word.len() > MAX_WORD_BYTES {
         return Err(BuilderError::ResourceLimit {
@@ -2430,8 +2476,15 @@ fn parse_with_limit(word: &str, limit: usize) -> Result<Reading, crate::lujvo::B
     let end = chars.len();
     let mut cache = LujvoRecognitionCache::new(end);
     cache.remaining = limit;
+    cache.experimental = experimental;
+    let slihykru = experimental
+        && ccv_rafsi_end(&chars, 0).is_some_and(|end| {
+            chars.get(end) == Some(&'\'')
+                && chars.get(end + 1) == Some(&'y')
+                && starts_with_onset(&chars, end + 2)
+        });
     let mut tokens = Vec::new();
-    let kind = if blocks_word_shape(&chars) {
+    let kind = if blocks_word_shape(&chars) || slihykru {
         Kind::Unknown
     } else if is_gismu_slice(&chars, 0, end) {
         Kind::Gismu

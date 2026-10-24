@@ -441,6 +441,8 @@ export interface RafsiInventoryClaim {
 export interface LujvoRequest {
   profile: MorphologyProfile;
   components: LujvoComponentRequest[];
+  /** Version 3 explicit boundary joins. Null means automatic, empty means no join. */
+  joins?: (string | null)[];
   inventory?: { snapshot?: string | null; claims?: RafsiInventoryClaim[] };
   limits?: { choice_product?: number; results?: number };
 }

@@ -16,8 +16,7 @@ The profile follows [CLL chapter 4](https://lojban.github.io/cll/4/1/):
 - A constructed candidate must parse as one lujvo and recover the intended parts and joins. Construction uses the required joins from CLL 4.11.
 - Analysis accepts legal optional hyphens, such as the `r` in `sairzba`, under the pinned recognizer. The [PEG morphology rules](https://mw.lojban.org/papri/BPFK_Section:_PEG_Morphology_Algorithm) permit such optional joins. The original CLL 4.11 construction algorithm adds only required hyphens. An analyzed spelling does not become a construction result unless its joins satisfy the construction rules.
 
-The [frontend target](frontend.md#step-3a-lujvo-builder) also permits explicit optional joins in the builder. The current construction API does not implement that control.
-An implementation needs a new morphology version for the added construction choices. Version `2` retains its required-only construction behavior.
+The CLL profile retains version `2` and required-only construction. Explicit optional joins use the extended profile version `3`.
 
 ## CLL lujvo scoring
 
@@ -27,15 +26,31 @@ The score follows [CLL 4.12](https://lojban.github.io/cll/4/12/): `1000 L - 500 
 
 ## Extended lujvo
 
-Identifier: `https://github.com/int19h/jbovlacku/blob/main/docs/morphology.md#extended-lujvo`. Version `2`.
+Identifier: `https://github.com/int19h/jbovlacku/blob/main/docs/morphology.md#extended-lujvo`. Version `3`.
 
-The extended profile adds the audited jbotci behavior for whole-word parts. It is not CLL text:
+Version `3` follows the extended rafsi rules in the gencmu experimental dialect at revision `98417655a407566f50ed491cf8074f0c55ddce64`.
+The [retained comparison](../crates/jvc-morphology/evidence/typed-lujvo.json) pins the grammar digests and one-word results.
+Its source grammar is [experimental.md](https://github.com/int19h/gencmu/blob/98417655a407566f50ed491cf8074f0c55ddce64/grammars/words/experimental.md).
+The bounded recognizer retains its jbotci lineage and adds these experimental rules only under the extended profile.
+The `mz` pair remains forbidden here. The retained comparison records `kamzi`, `bamzda`, and `.djeimz.` as unresolved differences.
+This bounded comparison does not establish complete equivalence with gencmu.
 
-- A whole brivla can serve as a part. The pinned recognizer must read each core as one gismu, lujvo, or fu'ivla. A core uses no `y`.
+The profile supports these rules:
+
+- A whole brivla can serve as a part. The recognizer must read each core as one gismu, lujvo, or fu'ivla. A core uses no `y`.
+- Borrowing rafsi permit an apostrophe onset in ordinary and stressed positions, as in `spageti'ybroda` and `spageti'ykla`.
+- Extended rafsi use classical `hy-rafsi` or borrowing rafsi. Classical forms include `kerlybai'ybroda` and `kerlybla'ykla`.
+- The `slihykru` restriction rejects a leading CCV plus `'y` before an onset. It rejects `bla'ykla` and its CgV variants.
+- Explicit joins contain one nullable string per boundary. Null uses the automatic join. An empty string selects no join.
+- Explicit choices permit `y`, `y'`, `'y`, `'y'`, `r`, and `n` only when a complete parse recovers every intended part and join.
+- An explicit rafsi lock describes morphology independently of dictionary assignment standing. Unknown and conflicting source assignments remain visible.
 - A core that ends with a vowel is followed by `'y`. A rafsi that ends with a consonant is followed by `y` before a consonant that it cannot pair with, or by `y'` before a vowel nucleus, as in `fuly'ismu`. Before `i` or `u` plus a vowel, the join is `y`, as in `aktyiismu`.
 - A rafsi part can have a shape outside the CLL table. The extended scorer gives that shape rank zero.
 - Every candidate must parse as one lujvo under the pinned recognizer. Its parsed components and joins must equal the intended sequence. Token reconstruction supplies no parse evidence.
-- A join can produce an invalid spelling. For example, bonding `leksiko` and `ismu` produces `leksiko'yismu`. The builder refuses that result after parsing it.
+- A join can produce an invalid spelling. The builder refuses a result when the complete parse differs from its intended parts or joins.
+
+Version `2` keeps its earlier recognizer and required-only construction rules. Version `3` never rewrites existing compound metadata.
+The CLL profile keeps its recognition and construction rules at version `2`.
 
 Both profiles refuse the pair `mz` in every word kind and whole-word component. The extended profile does not include jbotci's experimental `mz` relaxation.
 
