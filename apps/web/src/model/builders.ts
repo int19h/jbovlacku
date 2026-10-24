@@ -42,7 +42,7 @@ export interface LujvoState {
   profile: MorphologyProfile;
   /** True only when typed analysis created these rows. Locks alone do not imply origin. */
   typedOrigin?: true;
-  /** This saved spelling keeps ordinary editable rows, even without compound evidence. */
+  /** A saved spelling keeps ordinary rows. Empty means typed rows need fresh analysis. */
   ordinarySpelling?: string;
   /** Exact spelling and boundary locks for a typed lujvo. */
   typed?: string;

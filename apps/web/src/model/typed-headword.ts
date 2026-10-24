@@ -28,6 +28,7 @@ export function detectWord(spelling: string) {
 /** Keep authored fields and flag evidence and annotations after a spelling edit. */
 export function changeTypedWord(draft: Draft, spelling: string) {
   const changed = typedWord(draft.spelling) !== typedWord(spelling);
+  if (changed && draft.lujvo?.typedOrigin) draft.lujvo.ordinarySpelling = "";
   if (
     draft.lujvo?.components.length &&
     !draft.lujvo.typedOrigin &&
@@ -47,6 +48,10 @@ export function changeTypedWord(draft: Draft, spelling: string) {
     delete draft.lujvo.restoredJoinParts;
     draft.lujvo.selected = null;
     draft.lujvo.acknowledged = [];
+  }
+  if (draft.lujvo?.restoredJoinParts) {
+    delete draft.lujvo.joins;
+    delete draft.lujvo.restoredJoinParts;
   }
   if (
     draft.compound ||

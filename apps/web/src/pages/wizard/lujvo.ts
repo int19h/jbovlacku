@@ -102,16 +102,32 @@ export async function lujvoPage(
   const legacyTypedIdentity =
     legacyTypedRows &&
     typedWord(state.typed ?? "") === typedWord(draft.spelling);
+  const legacyParts = legacyTypedIdentity
+    ? (state.profile === "extended"
+        ? detectWord(draft.spelling)
+        : analyzeWord(state.profile, draft.spelling)
+      ).readings.find(
+        (parts) =>
+          parts.length === state.components.length &&
+          parts.every(
+            (part, index) => part.text === state.components[index].locked,
+          ) &&
+          state.joins?.length === parts.length - 1 &&
+          state.joins.every(
+            (join, index) => join === (parts[index + 1].join_before ?? ""),
+          ),
+      )
+    : undefined;
   if (
     !state.typedOrigin &&
     state.components.length &&
     state.ordinarySpelling === undefined
   )
     state.ordinarySpelling = typedWord(state.typed ?? draft.spelling);
-  const leaveTypedMode = () => {
+  const leaveTypedMode = (keepJoins = false) => {
     delete state.typedOrigin;
     delete state.typed;
-    delete state.joins;
+    if (!keepJoins) delete state.joins;
     delete state.restoredJoinParts;
     delete state.typedReading;
     delete state.readingIndex;
@@ -124,12 +140,13 @@ export async function lujvoPage(
       !typedIdentity ||
       (state.typed && state.typed !== typedWord(draft.spelling)))
   )
-    leaveTypedMode();
+    leaveTypedMode(!!legacyParts);
   const retainedCompound =
     !!draft.compound && draft.evidenceForm === typedWord(draft.spelling);
   let retainedLocks = true;
   if (retainedCompound && draft.compound) {
-    if (!state.typedOrigin) state.ordinarySpelling = typedWord(draft.spelling);
+    if (!state.typedOrigin && state.ordinarySpelling !== "")
+      state.ordinarySpelling = typedWord(draft.spelling);
     let hydrate = !state.components.length;
     try {
       const profile = morphologyProfile(draft.compound.morphology);
@@ -204,7 +221,7 @@ export async function lujvoPage(
   if (!context.live()) return;
   const typedAnalysis = typedIdentity ? detectWord(draft.spelling) : null;
   if (
-    !retainedCompound &&
+    (!retainedCompound || state.ordinarySpelling === "") &&
     state.ordinarySpelling !== typedWord(draft.spelling) &&
     typedAnalysis?.kind === "lujvo" &&
     state.typed !== typedWord(draft.spelling)

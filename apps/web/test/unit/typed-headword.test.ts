@@ -189,6 +189,9 @@ test("changing or clearing a typed spelling restores editable component rows", (
     assert.equal(draft.lujvo?.joins, undefined);
     assert.equal(draft.lujvo?.selected, null);
     assert.equal(draft.lujvo?.components.length, 2);
+    assert.equal(draft.lujvo?.ordinarySpelling, "");
+    changeTypedWord(draft, "ckusni");
+    assert.equal(draft.lujvo?.ordinarySpelling, "");
   }
 });
 
