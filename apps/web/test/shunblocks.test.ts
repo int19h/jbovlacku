@@ -602,7 +602,15 @@ test("the public shun preview says that the signed view did not load and why, on
   await expect(dialog).not.toContainText("null");
   await dialog.getByRole("button", { name: "Cancel" }).click();
   await page.unroute(manifest);
-  // The server does not answer the view probe. The view cannot load.
+  // An older peer omits the manifest view and does not answer the fallback
+  // view probe. The view cannot load.
+  await page.route(manifest, async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    delete body.view;
+    delete body.packages_available;
+    await route.fulfill({ response, json: body });
+  });
   const probe = "**/api/v1/words/jvw1%3A0000*";
   await page.route(probe, (route) =>
     route.fulfill({
@@ -638,6 +646,7 @@ test("the public shun preview says that the signed view did not load and why, on
   await expect(dialog).not.toContainText("does not know");
   await dialog.getByRole("button", { name: "Cancel" }).click();
   await page.unroute(probe);
+  await page.unroute(manifest);
   // A signed view that names a profile this client does not know does not
   // satisfy the core's body rules, so its body is unavailable. The preview
   // reports that load failure with its reason, not an unknown profile. The
@@ -680,7 +689,7 @@ test("the public shun preview says that the signed view did not load and why, on
     });
     return { id: envelope.id, envelopeText: canon(envelope), bodyText, hash };
   }, corePath);
-  await page.route(probe, async (route) => {
+  await page.route(manifest, async (route) => {
     const response = await route.fetch();
     const body = await response.json();
     body.view = future.id;

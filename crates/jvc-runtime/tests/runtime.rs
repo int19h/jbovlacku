@@ -76,12 +76,15 @@ impl Fixture {
         id
     }
     fn definition(&mut self, language: &str) -> String {
+        self.definition_after(9, Vec::new(), language)
+    }
+    fn definition_after(&mut self, seed: u8, previous: Vec<String>, language: &str) -> String {
         let mut body: Value = serde_json::from_str(include_str!(
             "../../jvc-core/tests/fixtures/definition.json"
         ))
         .unwrap();
         body["language"] = json!(language);
-        self.event(9, json!({"kind":"definition.publish","word":self.word,"language":language,"parents":[],"origin":"native"}), Some(body))
+        self.event_after(seed, previous, json!({"kind":"definition.publish","word":self.word,"language":language,"parents":[],"origin":"native"}), Some(body))
     }
     fn trust(&mut self, from: u8, to: u8, value: &str, language: &str) {
         self.event(from, json!({"kind":"trust.set","subject":key(to),"scope":{"kind":"definition","word":"*","language":language},"value":value}), None);
@@ -254,6 +257,76 @@ fn exact_net(result: &Value, target: &str, n: &str, d: &str) {
     let score = score(result, target);
     assert_eq!(score["net"][0], json!({"numerator":n,"denominator":d}));
     assert_eq!(score["net"][1], score["net"][0]);
+}
+
+#[test]
+fn ranking_uses_effective_definition_targets_in_server_and_personal_modes() {
+    let mut f = Fixture::new();
+    let visible = f.definition("en");
+    f.bless(1, &visible);
+    f.view("simple-routes-bounds-v1", &[1], 1000);
+    let hidden = f.definition_after(6, Vec::new(), "fr");
+    let transfer = f.event(
+        6,
+        json!({"kind":"identity.transfer","successor":key(10)}),
+        None,
+    );
+    let after = f.definition_after(6, vec![transfer], "fr");
+    let pending = f.definition_after(7, vec![format!("jve1:{}", "f".repeat(64))], "fr");
+    let unavailable = f.definition_after(8, Vec::new(), "fr");
+    f.bodies.remove(&unavailable);
+    for id in [&hidden, &after, &pending, &unavailable] {
+        f.bless(1, id);
+    }
+    for personal in [false, true] {
+        f.overlay = personal.then(|| json!({"version":1,"base_view":f.selected_view,"root_changes":[],"trust":[],"blocked":[],"work":null}));
+        let result = f.rank(if personal {
+            "effective-targets-personal"
+        } else {
+            "effective-targets-server"
+        });
+        assert_eq!(result["layers"], json!([[visible]]));
+        assert_eq!(result["scores"].as_array().unwrap().len(), 1);
+        assert_eq!(result["scores"][0]["target"], visible);
+        assert_eq!(result["unavailable_scores"], json!([]));
+        exact_net(&result, &visible, "1", "1");
+    }
+}
+
+#[test]
+fn inert_definition_targets_do_not_consume_comparison_limits_or_context_work() {
+    let mut f = Fixture::new();
+    let visible = f.definition("en");
+    f.trust(1, 2, "heed", "en");
+    f.trust(1, 3, "heed", "fr");
+    f.bless(2, &visible);
+    f.view("simple-routes-bounds-v1", &[1], 1000);
+    let baseline = f.rank("effective-target-budget-baseline");
+    // These signed targets exceed one million candidate pairs if the rank includes them.
+    for _ in 0..1415 {
+        f.definition("fr");
+    }
+    f.event_after(
+        9,
+        vec![visible.clone()],
+        json!({"kind":"identity.transfer","successor":key(10)}),
+        None,
+    );
+    for personal in [false, true] {
+        f.overlay = personal.then(|| json!({"version":1,"base_view":f.selected_view,"root_changes":[],"trust":[],"blocked":[],"work":null}));
+        let result = f.rank(if personal {
+            "effective-target-budget-personal"
+        } else {
+            "effective-target-budget-server"
+        });
+        assert_eq!(result["layers"], json!([[visible]]));
+        assert_eq!(result["scores"], baseline["scores"]);
+        assert_eq!(
+            result["calculation"]["completed"],
+            baseline["calculation"]["completed"]
+        );
+        assert_eq!(result["unavailable_scores"], json!([]));
+    }
 }
 
 #[test]

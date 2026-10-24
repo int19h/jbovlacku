@@ -935,7 +935,7 @@ Public reads need no account. Public event admission follows published quotas an
 | Method and path                                                   | Contract                                                                                                                                                                                                             |
 | ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GET /capabilities`                                               | Format version, size limits, accepted body types, optional service capabilities, CORS policy, peer identity, and admission-policy link.                                                                              |
-| `GET /manifest`                                                   | Current snapshot ID, manifest, materialized cursor, accepted cursor, and available language packages.                                                                                                                |
+| `GET /manifest`                                                   | Current snapshot, declared view, inventory manifest, cursors, and package availability. Raw discovery remains available when evaluation fails.                                                                          |
 | `GET /inventory?kind=K&snapshot=S&after=ID&limit=N`               | Sorted event, body, or import-selection IDs from one immutable snapshot, with next cursor.                                                                                                                           |
 | `GET /events/ID?snapshot=S`                                       | Exact envelope representation from the named snapshot, or explicit missing/withheld result.                                                                                                                          |
 | `GET /identity-heads/KEY?snapshot=S&after=ID&limit=N`             | Known maximal own event IDs for that key, from one snapshot.                                                                                                                                                         |
@@ -1053,6 +1053,7 @@ Capabilities = {
 }
 ManifestResponse = {
   snapshot: ID, logical_inventory: ID, manifest: FormatManifest,
+  view: event-ID, packages_available: boolean,
   accepted_cursor: cursor, materialized_cursor: cursor,
   packages: [{language: string, hash: ID, bytes: integer}],
   package_versions: [{language: string, version: integer, hash: ID, bytes: integer}]
@@ -1248,6 +1249,18 @@ A calculation failure leaves calculation null and lists every affected target in
 A no-judgment candidate has an exact zero score when complete graph inputs support that conclusion.
 
 ### Search package contract
+
+The server returns HTTP 200 for the manifest when publication receipts cannot be evaluated.
+Its snapshot, inventory manifest, cursors, and declared `view` remain available for record synchronization and policy inspection.
+The declared view does not claim successful evaluation. Readers can choose another view without changing the server's declaration.
+Without a configured view, the declaration uses `jve1:` followed by 64 zeroes. This sentinel does not identify an available signed policy.
+
+The manifest sets `packages_available: false` and returns empty `packages` and `package_versions` arrays in this state.
+Package downloads then return HTTP 503 with `resource_unavailable`. Existing downloaded packages remain available in the browser under their saved snapshots.
+With `packages_available: true`, empty descriptor arrays mean that the server has no language packages in that snapshot.
+
+Older servers can omit both new fields. Clients retain the earlier word-response view lookup when no explicit view choice exists.
+An absent availability field retains the earlier package-discovery behavior. A present field must be a boolean, and a present view must be an event ID.
 
 A package manifest contains exactly `version`, `language`, `snapshot`, and `parts`. Version is 1 or 2.
 The manifest response lists version 1 packages in `packages` and every other version in `package_versions`.
