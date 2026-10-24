@@ -4,7 +4,6 @@ import {
   rafsiPairId,
   wordId,
   type RecoveredPart,
-  type WordAnalysis,
 } from "../../../../packages/core/src/index.ts";
 import type { CachedPackage } from "../data/search.ts";
 import type { PackageEntryV2 } from "./types.ts";
@@ -21,7 +20,7 @@ export function detectWord(spelling: string) {
   const analysis = analyzeWord("extended", word);
   if (analysis.kind === "unknown" && /^\.|\.$/.test(word)) {
     const framed = analyzeWord("extended", word.replace(/^\.|\.$/g, ""));
-    if (framed.kind === "cmevla") return { ...framed, original: word };
+    if (framed.kind !== "unknown") return { ...framed, original: word };
   }
   return analysis;
 }
@@ -33,6 +32,14 @@ export function changeTypedWord(draft: Draft, spelling: string) {
   draft.typedSpelling = typedWord(spelling) || null;
   if (!changed) return;
   draft.publishAcknowledged = [];
+  if (draft.lujvo?.typed && draft.lujvo.typed !== typedWord(spelling)) {
+    delete draft.lujvo.typed;
+    delete draft.lujvo.typedReading;
+    delete draft.lujvo.readingIndex;
+    delete draft.lujvo.joins;
+    draft.lujvo.selected = null;
+    draft.lujvo.acknowledged = [];
+  }
   if (
     draft.compound ||
     draft.formation ||
@@ -40,17 +47,6 @@ export function changeTypedWord(draft: Draft, spelling: string) {
     draft.glosses.length
   )
     draft.review = [...new Set([...draft.review, "spelling"])];
-}
-
-export function readingOptions(
-  analysis: WordAnalysis,
-): { label: string; parts: RecoveredPart[] }[] {
-  return analysis.readings.map((parts) => ({
-    label: parts
-      .map((part) => `${part.join_before ?? ""}${part.text}`)
-      .join(" + "),
-    parts,
-  }));
 }
 
 /** Possible source words remain choices. Dictionary order grants no source authority. */
@@ -106,14 +102,11 @@ export function typedLujvoState(
   spelling: string,
   parts: RecoveredPart[],
   cached: CachedPackage | null,
-  readingIndex = 0,
 ) {
   return {
     ...newLujvoState(),
     profile: "extended" as const,
     typed: spelling,
-    typedReading: structuredClone(parts),
-    readingIndex,
     selected: spelling,
     joins: parts.slice(1).map((part) => part.join_before ?? ""),
     components: parts.map((part) => {
@@ -121,8 +114,8 @@ export function typedLujvoState(
       if (choices.length === 1) return choices[0];
       return {
         id: componentId(),
-        spelling: part.text,
-        kind: detectWord(part.text).kind,
+        spelling: "",
+        kind: "other",
         definition: null,
         gloss: "",
         claims: [],
@@ -133,4 +126,21 @@ export function typedLujvoState(
       };
     }),
   };
+}
+
+/** Construct morphology from exact locks. Blank source fields create no attribution. */
+export function typedLujvoRequest(state: import("./builders.ts").LujvoState) {
+  return {
+    profile: state.profile,
+    components: state.components,
+    joins: state.profile === "extended" ? state.joins : undefined,
+    spelling: state.profile === "extended" ? state.typed : undefined,
+  };
+}
+export function linkedSources(
+  state: import("./builders.ts").LujvoState,
+): boolean {
+  return state.components.every(
+    (component) => !!component.spelling.trim() && !component.unresolvedSource,
+  );
 }

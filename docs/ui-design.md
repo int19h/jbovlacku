@@ -236,7 +236,9 @@ Direct navigation to Places preserves manual spelling, classification, and notes
 
 The main builder uses a 480px basis. The definition column uses a 300px basis, with a 40px gap.
 The result card shows the 44px form with underlined component rafsi, construction score, and recovered components.
-A typed lujvo offers a reading selector when analysis is ambiguous. Its exact rafsi and joins stay locked.
+A typed lujvo offers a source-word selector when a rafsi has competing assignments. Its exact rafsi and joins stay locked.
+An unknown source stays blank. “Continue without compound metadata” proceeds without source attribution.
+Saving compound metadata requires an explicit source word for every part.
 Its only candidate is the typed word. Builder actions ask before replacing a typed spelling.
 A taken or available label names its snapshot and coverage limits. It never promises global uniqueness.
 A construction score describes the stated algorithm. It does not guarantee readability or editorial endorsement.

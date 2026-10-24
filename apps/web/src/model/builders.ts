@@ -42,6 +42,7 @@ export interface LujvoState {
   profile: MorphologyProfile;
   /** Exact spelling and boundary locks for a typed lujvo. */
   typed?: string;
+  /** Legacy draft fields, cleared when the typed spelling changes. */
   typedReading?: import("../../../../packages/core/src/index.ts").RecoveredPart[];
   readingIndex?: number;
   joins?: (string | null)[];
@@ -479,6 +480,14 @@ export function compoundMetadata(
   components: LujvoComponentState[],
   notes: string,
 ): Compound {
+  if (
+    components.some(
+      (component) => !component.spelling.trim() || component.unresolvedSource,
+    )
+  )
+    throw new Error(
+      "Link every source word before recording compound metadata.",
+    );
   return {
     components: candidate.parts.map((part) => {
       const component = components.find((c) => c.id === part.id);

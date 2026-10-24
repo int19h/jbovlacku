@@ -4,17 +4,20 @@ import { readFile } from "node:fs/promises";
 import {
   initializeCore,
   buildLujvo,
-  type WordAnalysis,
+  morphologyProfile,
+  analyzeWord as awaitlessAnalyze,
 } from "../../../../packages/core/src/index.ts";
 import {
   changeTypedWord,
   detectWord,
-  readingOptions,
+  typedLujvoRequest,
+  linkedSources,
   sourceOptions,
   typedLujvoState,
   typedWord,
 } from "../../src/model/typed-headword.ts";
 import { newDraft, normalizeDraft } from "../../src/model/draft.ts";
+import { compoundMetadata } from "../../src/model/builders.ts";
 import type { CachedPackage } from "../../src/data/search.ts";
 
 before(async () =>
@@ -35,6 +38,9 @@ test("typed detection preserves identity spelling and exposes unknown diagnostic
     ["ckusni", "lujvo"],
     ["lo", "cmavo"],
     [".lojban.", "cmevla"],
+    [".djeimz.", "cmevla"],
+    [".akme", "fuivla"],
+    [".i", "cmavo"],
     ["zzzz", "unknown"],
   ])
     assert.equal(detectWord(spelling).kind, kind);
@@ -57,42 +63,47 @@ test("all typed lujvo hydrate exact locks and reproduce their spelling", () => {
     "kerlybla'ykla",
     "bangu'y'ismu",
     "sakrsakysakli",
+    "klama'ybroda",
+    "kerlyxambrga",
+    ".eiksyselrirni",
+    ".eiksyspe",
+    ".SAI,rZBA.",
   ]) {
     const analysis = detectWord(spelling);
     const state = typedLujvoState(spelling, analysis.readings[0], null);
-    const result = buildLujvo({
-      profile: state.profile,
-      components: state.components,
-      joins: state.joins,
-    });
+    assert.equal(linkedSources(state), false);
+    assert.ok(state.components.every((component) => component.spelling === ""));
+    const result = buildLujvo(typedLujvoRequest(state));
     assert.equal(result.candidates.length, 1, spelling);
     assert.equal(result.candidates[0].spelling, spelling);
     assert.equal(result.candidates[0].tokens.join(""), spelling);
   }
 });
 
-test("a second analysis reading keeps its exact parts and joins through reload", () => {
-  const first = [
-    { text: "bau", kind: "rafsi" as const, join_before: null },
-    { text: "kla", kind: "rafsi" as const, join_before: "r" },
-  ];
-  const second = [
-    { text: "bangu", kind: "core" as const, join_before: null },
-    { text: "klama", kind: "rafsi" as const, join_before: "'y" },
-  ];
-  const analysis = {
-    ...detectWord("baukla"),
-    readings: [first, second],
-  } satisfies WordAnalysis;
-  const options = readingOptions(analysis);
-  const state = typedLujvoState("bangu'yklama", options[1].parts, null, 1);
-  const restored = normalizeDraft(newDraft({ lujvo: state })).lujvo!;
-  assert.equal(restored.readingIndex, 1);
-  assert.deepEqual(restored.typedReading, second);
-  assert.deepEqual(restored.joins, ["'y"]);
+test("stored morphology selects the actual version and rejects unknown evidence", () => {
+  const id =
+    "https://github.com/int19h/jbovlacku/blob/main/docs/morphology.md#extended-lujvo";
+  const profile = morphologyProfile({ id, version: "2" });
+  assert.equal(profile, "extended-v2");
+  const analysis = awaitlessAnalyze(profile, "ckusni'ybroda");
   assert.deepEqual(
-    restored.components.map((component) => component.locked),
-    ["bangu", "klama"],
+    analysis.readings[0].map((part) => part.text),
+    ["ckusni", "broda"],
+  );
+  const state = {
+    ...typedLujvoState("ckusni'ybroda", analysis.readings[0], null),
+    profile,
+  };
+  state.components[0].spelling = "ckusni";
+  state.components[0].kind = "lujvo";
+  state.components[1].spelling = "broda";
+  state.components[1].kind = "gismu";
+  const rebuilt = buildLujvo(typedLujvoRequest(state));
+  assert.equal(rebuilt.morphology.version, "2");
+  assert.equal(rebuilt.candidates[0].spelling, "ckusni'ybroda");
+  assert.throws(
+    () => morphologyProfile({ id, version: "4" }),
+    /Unsupported morphology/,
   );
 });
 
@@ -161,4 +172,46 @@ test("later spelling edits keep annotations and mark retained evidence for revie
   assert.equal(draft.glosses[0].text, "bookmark");
   assert.deepEqual(draft.review, ["spelling"]);
   assert.deepEqual(draft.publishAcknowledged, []);
+});
+
+test("changing or clearing a typed spelling restores editable component rows", () => {
+  for (const spelling of ["", "baukla"]) {
+    const state = typedLujvoState(
+      "ckusni",
+      detectWord("ckusni").readings[0],
+      null,
+    );
+    const draft = newDraft({ spelling: "ckusni", lujvo: state });
+    changeTypedWord(draft, spelling);
+    assert.equal(draft.lujvo?.typed, undefined);
+    assert.equal(draft.lujvo?.joins, undefined);
+    assert.equal(draft.lujvo?.selected, null);
+    assert.equal(draft.lujvo?.components.length, 2);
+  }
+});
+
+test("unknown sources cannot become signed compound attribution", () => {
+  const state = typedLujvoState(
+    "ckusni",
+    detectWord("ckusni").readings[0],
+    null,
+  );
+  const result = buildLujvo(typedLujvoRequest(state));
+  assert.throws(
+    () => compoundMetadata(result, result.candidates[0], state.components, ""),
+    /Link every source/,
+  );
+  for (const [index, spelling] of ["cukta", "sinxa"].entries()) {
+    state.components[index].spelling = spelling;
+    delete state.components[index].unresolvedSource;
+  }
+  assert.deepEqual(
+    compoundMetadata(
+      result,
+      result.candidates[0],
+      state.components,
+      "",
+    ).components.map((part) => part.word.spelling),
+    ["cukta", "sinxa"],
+  );
 });

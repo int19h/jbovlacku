@@ -101,8 +101,10 @@ export async function typePage(
   const spelling = typedWord(draft.spelling);
   const analysis = spelling ? detectWord(spelling) : null;
   if (analysis && draft.detectionFor !== spelling) {
-    if (!draft.compound && !draft.formation)
-      draft.kind = analysis.kind === "unknown" ? "other" : analysis.kind;
+    const detected = analysis.kind === "unknown" ? "other" : analysis.kind;
+    if (draft.kind === null) draft.kind = detected;
+    else if (draft.kind !== detected)
+      draft.review = [...new Set([...draft.review, "word type"])];
     draft.detectionFor = spelling;
     saver.touch();
   }
@@ -125,6 +127,13 @@ export async function typePage(
   );
   const detection = el("div", { role: "status", "aria-live": "polite" });
   if (analysis) {
+    if (draft.review.includes("word type"))
+      detection.append(
+        p(
+          "The spelling changed. Review the word type that you chose.",
+          "small",
+        ),
+      );
     detection.append(
       p(
         `Detected form: ${analysis.kind === "fuivla" ? "fu'ivla" : analysis.kind}. You can choose another kind.`,

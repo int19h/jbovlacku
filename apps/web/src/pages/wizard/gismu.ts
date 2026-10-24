@@ -1,3 +1,4 @@
+import { detectWord } from "../../model/typed-headword.ts";
 import {
   assistanceAction,
   inferenceLog,
@@ -115,9 +116,13 @@ export async function gismuPage(
   const state = (draft.gismu ??= newGismuState());
   const evidenceOnly =
     route.params.get("evidence") === "1" && !!draft.typedSpelling;
+  const scoringForm = (spelling: string) =>
+    evidenceOnly
+      ? (detectWord(spelling).normalized ?? spelling.trim())
+      : spelling.trim();
   if (evidenceOnly) {
-    state.manual = draft.spelling;
-    state.selected = draft.spelling;
+    state.manual = scoringForm(draft.spelling);
+    state.selected = state.manual;
   }
   const presets = builderPresets();
   if (!existingBuilder && draft.formation?.sources.length) {
@@ -396,7 +401,7 @@ export async function gismuPage(
       })),
       candidates: state.candidates,
       window: Math.max(state.window, 32),
-      manual: state.manual.trim() || null,
+      manual: scoringForm(state.manual) || null,
       inventory,
       limits: { work: 60_000_000 },
     });
@@ -870,8 +875,12 @@ export async function gismuPage(
     if (!result) return null;
     if (state.selected) {
       const found =
-        result.candidates.find((c) => c.form === state.selected) ??
-        (result.manual?.form === state.selected ? result.manual : null);
+        result.candidates.find(
+          (c) => c.form === scoringForm(state.selected!),
+        ) ??
+        (result.manual?.form === scoringForm(state.selected!)
+          ? result.manual
+          : null);
       if (found) return found;
     }
     return null;
@@ -1227,7 +1236,7 @@ export async function gismuPage(
           claims: inventory.claims,
         },
         window: Math.max(state.window, 32),
-        manual: state.manual.trim() || null,
+        manual: scoringForm(state.manual) || null,
         limits: { work: 60_000_000 },
       });
       resultFingerprint = fingerprint;
@@ -1277,7 +1286,7 @@ export async function gismuPage(
       };
     const candidate = chosen();
     if (candidate) return { candidate, reason: "" };
-    const manual = state.manual.trim();
+    const manual = scoringForm(state.manual);
     if (!manual) return { candidate: null, reason: "" };
     if (result?.manual?.form === manual)
       return { candidate: result.manual, reason: "" };
@@ -1292,10 +1301,7 @@ export async function gismuPage(
     if (!primary) return;
     const { candidate, reason } = usable();
     primary.textContent = `Use ${candidate?.form ?? (state.manual.trim() || "this form")}`;
-    primary.disabled =
-      !candidate ||
-      unacknowledged(candidate).length > 0 ||
-      (evidenceOnly && candidate.form !== draft.spelling);
+    primary.disabled = !candidate || unacknowledged(candidate).length > 0;
     primary.title = candidate
       ? unacknowledged(candidate).length
         ? "Acknowledge every known conflict first, or choose another form."
@@ -1319,8 +1325,6 @@ export async function gismuPage(
           return;
         }
         const { candidate } = usable();
-        if (candidate && evidenceOnly && candidate.form !== draft.spelling)
-          return;
         if (candidate && result) {
           if (unacknowledged(candidate).length) return;
           if (
@@ -1332,7 +1336,9 @@ export async function gismuPage(
             return;
           if (
             draft.typedSpelling &&
-            draft.spelling !== candidate.form &&
+            (evidenceOnly
+              ? (detectWord(draft.spelling).normalized ?? draft.spelling)
+              : draft.spelling) !== candidate.form &&
             !confirm(
               `Replace the typed spelling "${draft.spelling}" with "${candidate.form}"?`,
             )
@@ -1340,8 +1346,13 @@ export async function gismuPage(
             return;
           draft.compound = null;
           if (draft.spelling !== candidate.form) draft.publishAcknowledged = [];
-          draft.spelling = candidate.form;
-          draft.evidenceForm = candidate.form;
+          const selectedSpelling =
+            evidenceOnly &&
+            detectWord(draft.spelling).normalized === candidate.form
+              ? draft.spelling
+              : candidate.form;
+          draft.spelling = selectedSpelling;
+          draft.evidenceForm = selectedSpelling;
           const preset = presets.find((pr) => pr.id === state.preset) ?? null;
           draft.formation = formationMetadata({
             result,

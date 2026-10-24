@@ -96,8 +96,9 @@ for (const spelling of [
   "bangu'y'ismu",
   "sakrsakysakli",
   "SAI,rZBA",
+  ".eiksyspe",
 ])
-  test(`typed lujvo ${spelling} keeps exact rafsi and joins through reload and the publication body`, async ({
+  test(`typed lujvo ${spelling} keeps exact morphology without invented compound attribution`, async ({
     page,
   }) => {
     await typed(page, spelling);
@@ -108,7 +109,11 @@ for (const spelling of [
     ).toBeVisible();
     await expect(
       page.getByRole("button", { name: `Use ${spelling}`, exact: true }),
-    ).toBeEnabled();
+    ).toBeDisabled();
+    for (const source of await page
+      .getByRole("textbox", { name: /^Other source word for part/ })
+      .all())
+      await expect(source).toHaveValue("");
     await page.reload();
     await expect(
       result.getByLabel(`Form ${spelling}`, { exact: true }),
@@ -117,13 +122,16 @@ for (const spelling of [
       .getByLabel("Current definition", { exact: true })
       .fill("A synthetic test definition.");
     await page
-      .getByRole("button", { name: `Use ${spelling}`, exact: true })
+      .getByRole("button", {
+        name: "Continue without compound metadata",
+        exact: true,
+      })
       .click();
     await expect(page).toHaveURL(/\/new\/places/);
     const saved = await draft(page);
     expect(saved.spelling).toBe(spelling);
     expect(saved.lujvo.selected).toBe(spelling);
-    expect(saved.compound.morphology.version).toBe("3");
+    expect(saved.compound).toBeNull();
     const publication = await page.evaluate(async () => {
       const { LocalStore } = await import(String("/src/data/store.ts"));
       const { draftToBody } = await import(String("/src/model/draft.ts"));
@@ -135,6 +143,16 @@ for (const spelling of [
       publication.problems.filter((problem: any) => problem.blocking),
     ).toEqual([]);
   });
+
+async function linkSources(page: Page, words: string[]) {
+  for (const [index, word] of words.entries()) {
+    const field = page.getByLabel(`Other source word for part ${index + 1}`, {
+      exact: true,
+    });
+    await field.fill(word);
+    await field.press("Tab");
+  }
+}
 
 for (const [spelling, kind] of [
   ["lo", "cmavo"],
@@ -320,6 +338,10 @@ for (const spelling of ["sairzba", "bangu'y'ismu", "SAI,rZBA"])
     await createIdentity(page);
     await typed(page, spelling);
     await page.getByRole("button", { name: "Link the lujvo parts" }).click();
+    await linkSources(
+      page,
+      spelling === "bangu'y'ismu" ? ["bangu", "ismu"] : ["sanmi", "zbasu"],
+    );
     await page
       .getByLabel("Current definition", { exact: true })
       .fill("A synthetic publication definition.");
@@ -411,6 +433,7 @@ test("later spelling edits update detection and flag retained evidence without r
 }) => {
   await typed(page, "ckusni");
   await page.getByRole("button", { name: "Link the lujvo parts" }).click();
+  await linkSources(page, ["cukta", "sinxa"]);
   await page
     .getByLabel("Current definition", { exact: true })
     .fill("A synthetic retained definition.");
@@ -437,6 +460,8 @@ test("later spelling edits update detection and flag retained evidence without r
   expect(saved.evidenceForm).toBe("ckusni");
   expect(saved.compound).not.toBeNull();
   expect(saved.review).toContain("spelling");
+  expect(saved.kind).toBe("lujvo");
+  await expect(page.getByRole("radio", { name: /^lujvo/ })).toBeChecked();
   expect(saved.text).toEqual([["A synthetic retained definition."]]);
 });
 
@@ -528,14 +553,216 @@ for (const kind of ["gismu", "lujvo"] as const)
     expect((await draft(page)).spelling).toBe(selected);
   });
 
-test("source-language evidence preserves the typed gismu", async ({ page }) => {
+for (const spelling of ["bangu", "Bangu", "ban,gu", ".Bangu."])
+  test(`source-language evidence preserves the typed gismu ${spelling}`, async ({
+    page,
+  }) => {
+    await seedBuilder(page, "gismu");
+    await page.evaluate(async (spelling) => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const store = new LocalStore();
+      const value: any = await store.get("drafts", "current");
+      value.spelling = spelling;
+      value.typedSpelling = spelling;
+      await store.put("drafts", "current", value);
+    }, spelling);
+    await page.goto("/new/gismu?evidence=1");
+    const primary = page.getByRole("button", {
+      name: "Use bangu",
+      exact: true,
+    });
+    await expect(primary).toBeEnabled();
+    await page
+      .getByLabel("Type a form yourself", { exact: true })
+      .fill(spelling);
+    await expect(primary).toBeEnabled();
+    await primary.click();
+    await expect(page).toHaveURL(/\/new\/places/);
+    const saved = await draft(page);
+    expect(saved.spelling).toBe(spelling);
+    expect(saved.evidenceForm).toBe(spelling);
+    expect(saved.formation.generated).toBe("bangu");
+  });
+
+for (const [version, spelling, sources, locks] of [
+  ["2", "ckusni'ybroda", ["ckusni", "broda"], ["ckusni", "broda"]],
+  ["3", "sairzba", ["sanmi", "zbasu"], ["sai", "zba"]],
+  ["3", "bangu'y'ismu", ["bangu", "ismu"], ["bangu", "ismu"]],
+] as const)
+  test(`a saved version ${version} compound reopens with its exact parts and typed spelling ${spelling}`, async ({
+    page,
+  }) => {
+    await typed(page, spelling);
+    await page.evaluate(
+      async ({ version, sources, locks }) => {
+        const { LocalStore } = await import(String("/src/data/store.ts"));
+        const store = new LocalStore();
+        const value: any = await store.get("drafts", "current");
+        const base =
+          "https://github.com/int19h/jbovlacku/blob/main/docs/morphology.md#";
+        value.kind = "lujvo";
+        value.evidenceForm = value.spelling;
+        value.lujvo = null;
+        value.compound = {
+          components: sources.map((spelling, index) => ({
+            word: { language: "jbo", spelling },
+            definition: null,
+            rafsi: locks[index],
+          })),
+          morphology: { id: base + "extended-lujvo", version },
+          scoring: { id: base + "extended-lujvo-scoring", version: "1" },
+          score: null,
+          notes: [],
+        };
+        await store.put("drafts", "current", value);
+      },
+      { version, sources, locks },
+    );
+    await page.goto("/new/lujvo");
+    if (version === "2")
+      await expect(
+        page.getByText("Saved morphology: extended version 2.", {
+          exact: true,
+        }),
+      ).toBeVisible();
+    await expect
+      .poll(async () => (await draft(page)).lujvo?.profile)
+      .toBe(version === "2" ? "extended-v2" : "extended");
+    await expect(
+      page
+        .getByRole("region", { name: "Result", exact: true })
+        .getByLabel(`Form ${spelling}`, { exact: true }),
+    ).toBeVisible();
+    for (const [index, source] of sources.entries())
+      await expect(
+        page.getByLabel(`Other source word for part ${index + 1}`, {
+          exact: true,
+        }),
+      ).toHaveValue(source);
+    await page
+      .getByRole("button", { name: `Use ${spelling}`, exact: true })
+      .click();
+    await expect(page).toHaveURL(/\/new\/places$/);
+    expect((await draft(page)).compound.morphology.version).toBe(version);
+    expect(
+      (await draft(page)).compound.components.map((part: any) => part.rafsi),
+    ).toEqual(locks);
+  });
+
+test("clearing a typed lujvo restores the ordinary component builder", async ({
+  page,
+}) => {
+  await typed(page, "ckusni");
+  await page.getByRole("button", { name: "Link the lujvo parts" }).click();
+  await page
+    .getByRole("list", { name: "Steps" })
+    .getByRole("link", { name: /^Meaning\b/ })
+    .click();
+  await page.getByLabel("Lojban word", { exact: true }).fill("");
+  await page.getByRole("button", { name: "New word", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Build the lujvo", exact: true })
+    .click();
+  await expect(page.getByLabel("Add a part", { exact: true })).toBeVisible();
+  expect((await draft(page)).lujvo.typed).toBeUndefined();
+  const remove = page.getByRole("button", { name: /^Remove(?: |$)/ });
+  while (await remove.count()) await remove.first().click();
+  for (const word of ["bangu", "sinxa"]) {
+    await page.getByLabel("Add a part", { exact: true }).fill(word);
+    await page
+      .getByRole("button", { name: `Add ${word} as entered`, exact: true })
+      .click();
+  }
+  const primary = page.locator("button.btn-primary");
+  await expect(primary).toBeEnabled();
+  const spelling = (await primary.innerText()).replace(/^Use /, "");
+  await primary.click();
+  await expect(page).toHaveURL(/\/new\/places$/);
+  expect((await draft(page)).spelling).toBe(spelling);
+  expect(
+    (await draft(page)).compound.components.map(
+      (part: any) => part.word.spelling,
+    ),
+  ).toEqual(["bangu", "sinxa"]);
+});
+
+test("a different normalized gismu candidate still asks in evidence mode", async ({
+  page,
+}) => {
   await seedBuilder(page, "gismu");
   await page.goto("/new/gismu?evidence=1");
+  await page.getByRole("button", { name: "Choose cukta", exact: true }).click();
+  const primary = page.getByRole("button", { name: "Use cukta", exact: true });
+  await expect(primary).toBeEnabled();
+  page.once("dialog", (dialog) => {
+    expect(dialog.message()).toContain(
+      'Replace the typed spelling "bangu" with "cukta"?',
+    );
+    void dialog.dismiss();
+  });
+  await primary.click();
+  expect((await draft(page)).spelling).toBe("bangu");
+  page.once("dialog", (dialog) => void dialog.accept());
+  await primary.click();
+  await expect(page).toHaveURL(/\/new\/places$/);
+  expect((await draft(page)).spelling).toBe("cukta");
+});
+
+test("an authored compound-cmavo type survives a spelling correction without formation evidence", async ({
+  page,
+}) => {
+  await typed(page, "lo'e");
+  await page.getByRole("radio", { name: /^Other/ }).check();
+  await page
+    .getByLabel(
+      "Which other kind? Every lexical kind that the format permits is listed.",
+    )
+    .selectOption("compound");
+  await page.locator("button.btn-primary").click();
+  await page.getByLabel("Spelling", { exact: true }).fill("lo'a");
+  await page
+    .getByRole("list", { name: "Steps" })
+    .getByRole("link", { name: /^Type\b/ })
+    .click();
+  await expect(page.getByRole("radio", { name: /^Other/ })).toBeChecked();
+  await expect(
+    page.getByLabel(
+      "Which other kind? Every lexical kind that the format permits is listed.",
+    ),
+  ).toHaveValue("compound");
+  await expect(page.locator("main")).toContainText("Detected form: cmavo.");
+  await expect(page.locator("main")).toContainText(
+    "Review the word type that you chose.",
+  );
+  const value = await draft(page);
+  expect(value.kind).toBe("compound");
+  expect(value.formation).toBeNull();
+  expect(value.compound).toBeNull();
+});
+
+test("ordinary generation asks before replacing equivalent typed bytes", async ({
+  page,
+}) => {
+  await seedBuilder(page, "gismu");
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore();
+    const value: any = await store.get("drafts", "current");
+    value.spelling = "Bangu";
+    value.typedSpelling = "Bangu";
+    value.gismu.manual = "bangu";
+    value.gismu.selected = "bangu";
+    await store.put("drafts", "current", value);
+  });
+  await page.goto("/new/gismu");
   const primary = page.getByRole("button", { name: "Use bangu", exact: true });
   await expect(primary).toBeEnabled();
+  page.once("dialog", (dialog) => {
+    expect(dialog.message()).toContain(
+      'Replace the typed spelling "Bangu" with "bangu"?',
+    );
+    void dialog.dismiss();
+  });
   await primary.click();
-  await expect(page).toHaveURL(/\/new\/places/);
-  const saved = await draft(page);
-  expect(saved.spelling).toBe("bangu");
-  expect(saved.formation.generated).toBe("bangu");
+  expect((await draft(page)).spelling).toBe("Bangu");
 });

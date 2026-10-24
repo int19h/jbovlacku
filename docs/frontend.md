@@ -265,17 +265,23 @@ Unknown analysis shows its diagnostics and permits an experimental type.
 With a typed gismu or fu'ivla, type confirmation opens Places.
 A typed gismu shows nonblocking identical, final-vowel, and similar-consonant warnings beside confirmation, with links to every known conflicting word.
 Publish repeats that conflict review. Missing inventory coverage remains visible.
-An optional link opens the gismu builder for source-language evidence without replacing the typed spelling.
+An optional link opens the gismu builder for source-language evidence without replacing an equivalent typed spelling.
+Scoring uses the normalized form. The headword and its evidence binding keep the exact typed bytes.
+A different normalized candidate requires replacement confirmation.
 A typed lujvo opens the component builder. Cmavo, compound cmavo, letterals, cmevla, and other kinds open Form with the spelling filled in.
 The author can also enter an existing or custom spelling and continue manually.
 Changing the spelling updates detection and marks incompatible retained evidence for review.
+It preserves the type the author chose. A changed or cleared spelling exits the previous typed-lujvo mode.
 
 Changing type preserves the prose and annotations. The app identifies formation fields that no longer apply and asks before removing them.
 
 ### Step 3A: lujvo builder
 
 The builder contains ordered component rows, a candidate spelling, the current definition, and the preserved original meaning.
-For a typed lujvo, analysis supplies the component readings. If several readings exist, the author chooses one.
+For a typed lujvo, analysis supplies one component sequence.
+When a rafsi has several known source assignments, the author chooses its intended source word.
+A missing source stays blank. The author must link every source to save compound metadata.
+“Continue without compound metadata” preserves the spelling and saves no compound attribution.
 Every rafsi locks to its exact typed form, including full forms. Every boundary locks to its exact typed join, including optional hyphens.
 The only candidate is the typed spelling. The builder links source words and exact definitions without changing that spelling.
 It must reproduce every valid analyzed lujvo byte for byte, including extended `'y'` joins and irregular forms.
