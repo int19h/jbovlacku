@@ -224,6 +224,8 @@ An explicit AI action can mark a proposal “AI pick” and show its reason. It 
 A typed word preselects its detected type. Unknown analysis shows its diagnostics and leaves experimental types available.
 An unconfirmed preselection follows spelling corrections. Confirmed choices stay selected until the author changes them.
 Selecting or confirming a type clears its review notice.
+Forward step links and the full-editor link also confirm the current type.
+Cancellation of evidence removal keeps the previous selection visible.
 One confirmation action opens Places for gismu and fu'ivla, the component builder for lujvo, or Form for the other kinds.
 Beside confirmation, a typed gismu shows linked closeness warnings and an optional “Add source-language evidence” action.
 The primary button names the selected next action, such as “Build the lujvo.”
@@ -242,6 +244,7 @@ A typed lujvo offers a source-word selector when a rafsi has competing assignmen
 An unknown source stays blank. “Continue without compound metadata” proceeds without source attribution.
 Saving compound metadata requires an explicit source word for every part.
 Its only candidate is the typed word. Builder actions ask before replacing a typed spelling.
+Only rows from typed analysis use this fixed layout. Ordinary rows and saved rows with unknown origin stay editable.
 A taken or available label names its snapshot and coverage limits. It never promises global uniqueness.
 A construction score describes the stated algorithm. It does not guarantee readability or editorial endorsement.
 

@@ -271,8 +271,10 @@ A different normalized candidate requires replacement confirmation.
 A typed lujvo opens the component builder. Cmavo, compound cmavo, letterals, cmevla, and other kinds open Form with the spelling filled in.
 The author can also enter an existing or custom spelling and continue manually.
 Changing the spelling updates detection and marks incompatible retained evidence for review.
-It preserves the type the author chose. An unconfirmed automatic type follows the new detection.
+It preserves the type the author chose. An unconfirmed automatic type follows the new detection after the usual evidence-loss confirmation.
+Cancellation keeps the previous type and evidence, and marks the type for review.
 Selecting or confirming a type clears the type-review notice.
+Forward step links, the full-editor link, and direct Form or builder entry confirm the selected type too.
 A changed or cleared spelling exits the previous typed-lujvo mode.
 
 Changing type preserves the prose and annotations. The app identifies formation fields that no longer apply and asks before removing them.
@@ -286,8 +288,16 @@ A missing source stays blank. The author must link every source to save compound
 “Continue without compound metadata” preserves the spelling and saves no compound attribution.
 Every rafsi locks to its exact typed form, including full forms. Every boundary locks to its exact typed join, including optional hyphens.
 The only candidate is the typed spelling. The builder links source words and exact definitions without changing that spelling.
+
 A spelling accepted from the ordinary builder keeps editable component rows when the builder reopens.
-It must reproduce every valid analyzed lujvo byte for byte, including extended `'y'` joins and irregular forms.
+An explicit private marker identifies rows that typed analysis created. Rafsi locks and Meaning edits never create that marker.
+
+Saved rows without this origin marker stay editable, including after removal of compound evidence.
+They retain the signed morphology version, source boundaries, and matching joins.
+Restored joins stay associated with their original rows and rafsi when the metadata is removed.
+Changing those rows or rafsi returns their restored joins to automatic construction.
+
+The typed path must reproduce every valid analyzed lujvo byte for byte, including extended `'y'` joins and irregular forms.
 The gismu and lujvo builders ask before replacing any spelling that the author typed.
 Authors can add dictionary words, enter recognized fu'ivla, reorder components, remove rows, or lock a particular rafsi.
 Component search includes cmavo and fu'ivla. It never filters the inventory to gismu alone.

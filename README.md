@@ -91,8 +91,15 @@ Type confirmation opens Places for a typed gismu or fu'ivla, source linking for 
 The typed lujvo path locks the exact analyzed rafsi and joins, including [optional hyphens and experimental forms](docs/morphology.md).
 It preserves the entered spelling through publication, including case, commas, and framing periods. Source choices and exact definitions stay editable.
 Unknown source fields stay blank. Authors can link every source to save compound evidence, or continue with no compound metadata.
+
 A changed or cleared typed spelling restores ordinary builder rows. A generated replacement reopens with editable rows.
-Unconfirmed type detection follows spelling corrections. A confirmed type stays selected, and completed type review clears its notice.
+A private origin marker distinguishes typed analysis from ordinary rafsi locks. Meaning visits and evidence removal preserve ordinary row editing.
+Saved rows with unknown origin stay editable and keep their signed version, boundaries, and matching joins.
+
+Unconfirmed type detection follows spelling corrections after confirmation of any evidence loss.
+Forward wizard links and direct Form or builder entry confirm the selected type. Cancellation keeps the previous type and evidence.
+A confirmed type stays selected, and completed type review clears its notice.
+
 New lujvo builders use the extended profile. Manual boundary controls for a generated spelling remain a target change.
 The CLL profile retains required-only construction and version 2. New extended construction and recognition use version 3.
 Saved extended version 2 records reopen with their original rules and component boundaries. Unknown versions stay unsupported.
