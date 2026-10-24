@@ -60,6 +60,7 @@ test("the lujvo builder offers long forms beside listed rafsi, recovers parts, h
       .sort();
   }, f.words.cukta);
   await startDraft(page, "lujvo");
+  await page.getByRole("radio", { name: "CLL rules" }).check();
   await expect(
     page.getByRole("heading", { name: "Build the lujvo" }),
   ).toBeVisible();
@@ -207,6 +208,7 @@ test("the extended profile joins whole-word parts that CLL rules reject", async 
   page,
 }) => {
   await startDraft(page, "lujvo");
+  await page.getByRole("radio", { name: "CLL rules" }).check();
   await page.getByLabel("Add a part").fill("fulta");
   await page.getByRole("button", { name: "Add fulta as entered" }).click();
   await page.getByLabel("Add a part").fill("ismu");

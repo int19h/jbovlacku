@@ -213,6 +213,9 @@ export interface Draft {
   meaning: string;
   language: string;
   spelling: string;
+  /** The exact spelling last entered by the author. */
+  typedSpelling?: string | null;
+  detectionFor?: string;
   kind: LexicalKind | null;
   selmaho: string[];
   /** Attributed morphology notes from the manual Form step. */

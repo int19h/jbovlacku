@@ -89,7 +89,7 @@ function presetRows(
   });
 }
 export async function gismuPage(
-  _route: Route,
+  route: Route,
   context: RenderContext,
   app: App,
 ) {
@@ -113,6 +113,12 @@ export async function gismuPage(
   }
   const existingBuilder = draft.gismu;
   const state = (draft.gismu ??= newGismuState());
+  const evidenceOnly =
+    route.params.get("evidence") === "1" && !!draft.typedSpelling;
+  if (evidenceOnly) {
+    state.manual = draft.spelling;
+    state.selected = draft.spelling;
+  }
   const presets = builderPresets();
   if (!existingBuilder && draft.formation?.sources.length) {
     state.rows = sourceRowsFromFormation(
@@ -1286,7 +1292,10 @@ export async function gismuPage(
     if (!primary) return;
     const { candidate, reason } = usable();
     primary.textContent = `Use ${candidate?.form ?? (state.manual.trim() || "this form")}`;
-    primary.disabled = !candidate || unacknowledged(candidate).length > 0;
+    primary.disabled =
+      !candidate ||
+      unacknowledged(candidate).length > 0 ||
+      (evidenceOnly && candidate.form !== draft.spelling);
     primary.title = candidate
       ? unacknowledged(candidate).length
         ? "Acknowledge every known conflict first, or choose another form."
@@ -1310,12 +1319,22 @@ export async function gismuPage(
           return;
         }
         const { candidate } = usable();
+        if (candidate && evidenceOnly && candidate.form !== draft.spelling)
+          return;
         if (candidate && result) {
           if (unacknowledged(candidate).length) return;
           if (
             draft.compound &&
             !confirm(
               "Use this gismu and remove the previous compound evidence? The prose and annotations stay.",
+            )
+          )
+            return;
+          if (
+            draft.typedSpelling &&
+            draft.spelling !== candidate.form &&
+            !confirm(
+              `Replace the typed spelling "${draft.spelling}" with "${candidate.form}"?`,
             )
           )
             return;

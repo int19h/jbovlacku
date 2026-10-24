@@ -85,7 +85,13 @@ Remote search offers a retired-results filter that shows each publication's stat
 The rafsi page lists known assignments across words from version 2 packages, and the claim page signs a claim with its pair blessing.
 The lujvo builder offers short rafsi, gismu stems, whole gismu, whole-word parts under the extended profile, locks, CLL scores, recovered parts, and every competing rafsi claim from the local package.
 If several parts share the same competing rafsi claim, the builder shows one acknowledgment for that claim.
-Choosing [optional hyphens](docs/morphology.md) in the lujvo builder remains a target change. The builder adds only the required hyphens.
+A word entered on Meaning gets local form detection and an exact identity lookup in the selected language package.
+A remote exact-word check requires consent for that word and language. Missing coverage stays visible.
+Type confirmation opens Places for a typed gismu or fu'ivla, source linking for a lujvo, and Form for the other kinds.
+The typed lujvo path locks the exact analyzed rafsi and joins, including [optional hyphens and experimental forms](docs/morphology.md).
+It preserves the entered spelling through publication. Source choices and exact definitions stay editable.
+New lujvo builders use the extended profile. Manual boundary controls for a generated spelling remain a target change.
+The CLL profile retains required-only construction and version 2. Extended construction and recognition use version 3.
 The gismu generator offers the CLL 1987, CLL 1995, and Ilmen presets with pinned sources, custom weights, exact scores, tied ranks, per-language contributions, root and rafsi conflicts, and manual forms without fabricated evidence.
 The core and builders keep the optional full pronunciation, `word_ipa`, in signed formation sources.
 Draft reload preserves private `stem` and `ipa` values. Neither enters a signed formation source.

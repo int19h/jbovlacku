@@ -1,3 +1,10 @@
+import {
+  detectWord,
+  typedWord,
+  typedLujvoState,
+  readingOptions,
+  sourceOptions,
+} from "../../model/typed-headword.ts";
 import { currentDraft } from "../../model/assistance.ts";
 import { assistanceAction } from "../../components/assistance.ts";
 /**
@@ -87,9 +94,21 @@ export async function lujvoPage(
     }
     saver.touch();
   }
-  const state = (draft.lujvo ??= newLujvoState());
+  let state = (draft.lujvo ??= newLujvoState());
   const cached = await cachedPackage(app.store);
   if (!context.live()) return;
+  const typedAnalysis = draft.typedSpelling ? detectWord(draft.spelling) : null;
+  if (
+    typedAnalysis?.kind === "lujvo" &&
+    state.typed !== typedWord(draft.spelling)
+  ) {
+    state = draft.lujvo = typedLujvoState(
+      typedWord(draft.spelling),
+      typedAnalysis.readings[0],
+      cached,
+    );
+    saver.touch();
+  }
   const inventory: PackageInventory = inventoryFromPackage(cached);
   const builderCurrent = () => {
     const morphology =
@@ -135,6 +154,35 @@ export async function lujvoPage(
       el("bdi", { text: draft.meaning || "(no meaning yet)" }),
     ),
   );
+  if (state.typed) {
+    section.append(
+      p(
+        `Link the components of ${state.typed}. Its rafsi and joins stay fixed.`,
+        "small",
+      ),
+    );
+    const readings = readingOptions(typedAnalysis!);
+    if (readings.length > 1) {
+      const reading = field("Component reading", {
+        options: readings.map((item, index) => ({
+          value: String(index),
+          label: item.label,
+        })),
+        value: String(state.readingIndex ?? 0),
+      });
+      reading.input.addEventListener("change", () => {
+        state = draft.lujvo = typedLujvoState(
+          state.typed!,
+          readings[Number(reading.input.value)].parts,
+          cached,
+          Number(reading.input.value),
+        );
+        saver.touch();
+        rebuild();
+      });
+      section.append(reading.wrapper);
+    }
+  }
   // Profile.
   const profileGroup = el("div", {
     class: "seg",
@@ -169,6 +217,7 @@ export async function lujvoPage(
       "meta",
     ),
   );
+  if (state.typed) profileGroup.closest("div")!.hidden = true;
   // Component rows.
   const list = el("ol", {
     class: "parts",
@@ -196,21 +245,23 @@ export async function lujvoPage(
   });
   addRow.append(addField.wrapper);
   section.append(addRow, addResults);
-  section.append(
-    assistanceAction(app, draft, saver, context, {
-      key: "components",
-      label: "Suggest components",
-      operation: "lujvo",
-      profile: "components",
-      current: builderCurrent,
-    }),
-    assistanceAction(app, draft, saver, context, {
-      key: "lujvo",
-      label: "Suggest a lujvo",
-      operation: "lujvo",
-      current: builderCurrent,
-    }),
-  );
+  if (state.typed) addRow.hidden = true;
+  if (!state.typed)
+    section.append(
+      assistanceAction(app, draft, saver, context, {
+        key: "components",
+        label: "Suggest components",
+        operation: "lujvo",
+        profile: "components",
+        current: builderCurrent,
+      }),
+      assistanceAction(app, draft, saver, context, {
+        key: "lujvo",
+        label: "Suggest a lujvo",
+        operation: "lujvo",
+        current: builderCurrent,
+      }),
+    );
   // Result card and alternatives.
   const resultCard = el("div", {
     class: "card",
@@ -396,6 +447,12 @@ export async function lujvoPage(
   let failure: string | null = null;
   const chosenCandidate = (): LujvoCandidate | null => {
     if (!result?.candidates.length) return null;
+    if (state.typed)
+      return (
+        result.candidates.find(
+          (candidate) => candidate.spelling === state.typed,
+        ) ?? null
+      );
     return state.selected
       ? (result.candidates.find((c) => c.spelling === state.selected) ?? null)
       : result.candidates[0];
@@ -418,6 +475,93 @@ export async function lujvoPage(
         style:
           "padding:14px 16px;display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center",
       });
+      if (state.typed) {
+        const part =
+          state.typedReading?.[index] ??
+          detectWord(state.typed).readings[state.readingIndex ?? 0][index];
+        const options = sourceOptions(part, cached);
+        item.append(
+          el("strong", { lang: "jbo", text: component.locked ?? "" }),
+          p(
+            `Exact join before this part: ${index ? JSON.stringify(state.joins?.[index - 1] ?? "") : "none"}.`,
+            "meta",
+          ),
+        );
+        if (options.length) {
+          const source = field(`Source word for part ${index + 1}`, {
+            options: [
+              { value: "", label: "Choose a source word" },
+              ...options.map((choice) => ({
+                value: choice.spelling,
+                label: `${choice.spelling} ${choice.gloss}`,
+              })),
+            ],
+            value: component.unresolvedSource ? "" : component.spelling,
+          });
+          source.input.addEventListener("change", () => {
+            const choice = options.find(
+              (choice) => choice.spelling === source.input.value,
+            );
+            if (!choice) return;
+            state.components[index] = { ...choice, id: component.id };
+            saver.touch();
+            rebuild();
+          });
+          item.append(source.wrapper);
+        }
+        const source = field(`Other source word for part ${index + 1}`, {
+          value: options.some(
+            (option) => option.spelling === component.spelling,
+          )
+            ? ""
+            : component.spelling,
+          lang: "jbo",
+          spellcheck: false,
+        });
+        source.input.addEventListener("change", () => {
+          const spelling = typedWord(source.input.value);
+          if (!spelling) return;
+          component.spelling = spelling;
+          component.kind = detectWord(spelling).kind;
+          component.definition = null;
+          component.definitions = [];
+          component.claims = [];
+          delete component.unresolvedSource;
+          saver.touch();
+          rebuild();
+        });
+        item.append(source.wrapper);
+        if (!options.length)
+          item.append(
+            p(
+              "No source word is linked in the local package. Enter one if you know it. The rafsi stays fixed.",
+              "meta",
+            ),
+          );
+        if (component.definitions?.length) {
+          const definition = field(
+            `Exact definition of ${component.spelling}`,
+            {
+              options: [
+                { value: "", label: "no specific definition" },
+                ...component.definitions.map((entry) => ({
+                  value: entry.event,
+                  label: entry.summary,
+                })),
+              ],
+              value: component.definition ?? "",
+            },
+          );
+          definition.input.addEventListener("change", () => {
+            component.definition = definition.input.value || null;
+            saver.touch();
+            rebuild();
+          });
+          item.append(definition.wrapper);
+        }
+        list.append(item);
+        return;
+      }
       const moves = el("div", {
         style: "display:flex;flex-direction:column;gap:2px",
       });
@@ -761,23 +905,26 @@ export async function lujvoPage(
       : "Availability in the local package is unknown: no package is downloaded.";
     resultCard.append(availability);
     const checked = candidate.spelling;
-    void getWord(wordId({ language: "jbo", spelling: checked }), {
-      signal: context.signal,
-    })
-      .then((word) => {
-        if (!context.live() || chosenCandidate()?.spelling !== checked) return;
-        // A word response without definitions means the server knows no definition of this spelling.
-        availability.textContent += word.definitions.length
-          ? ` The server defines ${checked} in snapshot ${word.snapshot.slice(7, 19)}….`
-          : ` The server has no definition of ${checked} in snapshot ${word.snapshot.slice(7, 19)}….`;
+    if (!state.typed)
+      void getWord(wordId({ language: "jbo", spelling: checked }), {
+        signal: context.signal,
       })
-      .catch((error: unknown) => {
-        if (!context.live() || chosenCandidate()?.spelling !== checked) return;
-        availability.textContent +=
-          error instanceof RequestError && error.status === 404
-            ? ` The server has no definition of ${checked} now.`
-            : ` The server could not be asked: ${describe(error)}.`;
-      });
+        .then((word) => {
+          if (!context.live() || chosenCandidate()?.spelling !== checked)
+            return;
+          // A word response without definitions means the server knows no definition of this spelling.
+          availability.textContent += word.definitions.length
+            ? ` The server defines ${checked} in snapshot ${word.snapshot.slice(7, 19)}….`
+            : ` The server has no definition of ${checked} in snapshot ${word.snapshot.slice(7, 19)}….`;
+        })
+        .catch((error: unknown) => {
+          if (!context.live() || chosenCandidate()?.spelling !== checked)
+            return;
+          availability.textContent +=
+            error instanceof RequestError && error.status === 404
+              ? ` The server has no definition of ${checked} now.`
+              : ` The server could not be asked: ${describe(error)}.`;
+        });
     if (candidate.unlisted.length)
       resultCard.append(
         p(
@@ -852,6 +999,8 @@ export async function lujvoPage(
       try {
         result = buildLujvo({
           profile: state.profile,
+          joins: state.joins,
+          spelling: state.typed,
           components: state.components.map((c) => ({
             id: c.id,
             spelling: c.spelling,
@@ -881,7 +1030,12 @@ export async function lujvoPage(
     if (!primary) return;
     const candidate = chosenCandidate();
     primary.textContent = `Use ${candidate?.spelling ?? "this form"}`;
-    primary.disabled = !candidate || unacknowledged(candidate).length > 0;
+    primary.disabled =
+      !candidate ||
+      unacknowledged(candidate).length > 0 ||
+      state.components.some(
+        (component) => component.unresolvedSource === "Choose a source word.",
+      );
     primary.title =
       candidate && unacknowledged(candidate).length
         ? "Acknowledge every competing claim first, or choose another form."
@@ -904,6 +1058,14 @@ export async function lujvoPage(
           draft.formation &&
           !confirm(
             "Use this lujvo and remove the previous generation evidence? The prose and annotations stay.",
+          )
+        )
+          return;
+        if (
+          draft.typedSpelling &&
+          typedWord(draft.spelling) !== candidate.spelling &&
+          !confirm(
+            `Replace the typed spelling "${draft.spelling}" with "${candidate.spelling}"?`,
           )
         )
           return;

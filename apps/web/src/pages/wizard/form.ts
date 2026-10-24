@@ -1,3 +1,4 @@
+import { changeTypedWord, detectWord } from "../../model/typed-headword.ts";
 import { assistanceAction } from "../../components/assistance.ts";
 /**
  * Step 3C: the manual Form screen. Spelling, attributed morphology notes, and
@@ -106,12 +107,19 @@ export async function formPage(route: Route, context: RenderContext, app: App) {
   });
   spelling.input.style.fontSize = "24px";
   spelling.input.addEventListener("input", () => {
-    if (draft.spelling !== spelling.input.value) draft.publishAcknowledged = [];
-    draft.spelling = spelling.input.value;
+    changeTypedWord(draft, spelling.input.value);
+    renderDetection();
     saver.touch();
     refresh();
   });
   section.append(spelling.wrapper);
+  const detection = el("p", { class: "small", role: "status" });
+  const renderDetection = () => {
+    const analysis = detectWord(draft.spelling);
+    detection.textContent = `Detected form: ${analysis.kind}. ${analysis.diagnostics.join(" ")}`;
+  };
+  renderDetection();
+  section.append(detection);
   if (kind === "cmavo" || kind === "compound" || kind === "letteral") {
     const selmaho = field("selma'o", {
       value: draft.selmaho.join(", "),

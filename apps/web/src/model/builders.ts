@@ -36,9 +36,15 @@ export interface LujvoComponentState {
   /** Known rafsi claims of the word, from the package or entered by hand. */
   claims: { rafsi: string; pair: string }[];
   locked: string | null;
+  unresolvedSource?: string;
 }
 export interface LujvoState {
   profile: MorphologyProfile;
+  /** Exact spelling and boundary locks for a typed lujvo. */
+  typed?: string;
+  typedReading?: import("../../../../packages/core/src/index.ts").RecoveredPart[];
+  readingIndex?: number;
+  joins?: (string | null)[];
   components: LujvoComponentState[];
   /** The chosen candidate spelling, when the author chose one. */
   selected: string | null;
@@ -276,7 +282,7 @@ export interface GismuState {
   window: number;
 }
 export const newLujvoState = (): LujvoState => ({
-  profile: "cll",
+  profile: "extended",
   components: [],
   selected: null,
   acknowledged: [],

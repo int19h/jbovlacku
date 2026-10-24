@@ -1,3 +1,4 @@
+import { changeTypedWord } from "../../model/typed-headword.ts";
 import { hintLabel, mappingKind } from "../../model/assistance.ts";
 import {
   assistanceAction,
@@ -465,7 +466,7 @@ export async function placesPage(
   if (draft.review.length)
     main.append(
       p(
-        `Marked for review after a change of ${draft.review.join(", ")}: translations and language-specific glosses were not relabeled.`,
+        `Marked for review after a change of ${draft.review.join(", ")}: retained evidence, places, and glosses stay unchanged. Review them for the current word and language.`,
         "notice",
       ),
     );
@@ -481,7 +482,7 @@ export async function placesPage(
       wrapperClass: "",
     });
     spelling.input.addEventListener("input", () => {
-      draft.spelling = spelling.input.value;
+      changeTypedWord(draft, spelling.input.value);
       h1.textContent = draft.spelling || "Full editor";
       saver.touch();
     });
