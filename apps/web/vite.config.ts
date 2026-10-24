@@ -6,6 +6,7 @@ const generated = fileURLToPath(
 );
 export default defineConfig({
   root: fileURLToPath(new URL(".", import.meta.url)),
+  cacheDir: fileURLToPath(new URL("../../.cache/vite", import.meta.url)),
   build: { outDir: "dist", emptyOutDir: true },
   optimizeDeps: { include: ["jose"] },
   server: {
