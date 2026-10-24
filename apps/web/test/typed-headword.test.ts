@@ -58,7 +58,16 @@ test("typed gismu shows linked closeness warnings beside confirmation and again 
     closeness.getByRole("link", { name: "Add source-language evidence" }),
   ).toBeVisible();
   await page.getByRole("button", { name: "Continue to places" }).click();
-  await page.goto("/new/publish");
+  await expect(page).toHaveURL(/\/new\/places$/);
+  await expect.poll(async () => (await draft(page)).kind).toBe("gismu");
+  await page
+    .getByLabel("Definition text", { exact: true })
+    .fill((await draft(page)).meaning);
+  await page
+    .getByRole("list", { name: "Steps" })
+    .getByRole("link", { name: /^Publish\b/ })
+    .click();
+  await expect(page).toHaveURL(/\/new\/publish$/);
   await expect(
     page
       .getByRole("region", { name: "Known conflicts" })
@@ -406,12 +415,23 @@ test("later spelling edits update detection and flag retained evidence without r
     .getByLabel("Current definition", { exact: true })
     .fill("A synthetic retained definition.");
   await page.getByRole("button", { name: "Use ckusni", exact: true }).click();
-  await page.goto("/new/editor");
+  await expect(page).toHaveURL(/\/new\/places$/);
+  await expect
+    .poll(async () => (await draft(page)).evidenceForm)
+    .toBe("ckusni");
+  await page
+    .getByRole("link", { name: "Skip to the full editor", exact: true })
+    .click();
+  await expect(page).toHaveURL(/\/new\/editor$/);
   await page.getByLabel("Headword", { exact: true }).fill("bangu");
   await expect(
     page.getByText("Saved in this browser", { exact: true }),
   ).toBeVisible();
-  await page.goto("/new/type");
+  await page
+    .getByRole("list", { name: "Steps" })
+    .getByRole("link", { name: /^Type\b/ })
+    .click();
+  await expect(page).toHaveURL(/\/new\/type$/);
   await expect(page.locator("main")).toContainText("Detected form: gismu.");
   const saved = await draft(page);
   expect(saved.evidenceForm).toBe("ckusni");
