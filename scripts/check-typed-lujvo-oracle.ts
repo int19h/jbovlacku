@@ -10,11 +10,7 @@ import {
   typedLujvoState,
   typedLujvoRequest,
 } from "../apps/web/src/model/typed-headword.ts";
-import {
-  analyzeWord,
-  buildLujvo,
-  initializeCore,
-} from "../packages/core/src/index.ts";
+import { buildLujvo, initializeCore } from "../packages/core/src/index.ts";
 
 const reference = process.argv[2];
 const output = process.argv[3];
