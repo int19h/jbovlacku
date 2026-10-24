@@ -496,6 +496,8 @@ export function confirmKindChange(
     if (!draft.compound && !draft.formation) draft.evidenceForm = null;
   }
   draft.kind = kind;
+  delete draft.autoDetectedKind;
+  draft.review = draft.review.filter((field) => field !== "word type");
   return true;
 }
 /** Removes structured evidence only after the author confirms the exact loss. */

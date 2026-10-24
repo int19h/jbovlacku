@@ -786,3 +786,169 @@ test("ordinary generation asks before replacing equivalent typed bytes", async (
   await primary.click();
   expect((await draft(page)).spelling).toBe("Bangu");
 });
+
+async function editMeaningWord(page: Page, spelling: string) {
+  await page
+    .getByRole("list", { name: "Steps" })
+    .getByRole("link", { name: /^Meaning\b/ })
+    .click();
+  await page.getByLabel("Lojban word", { exact: true }).fill(spelling);
+  await page.getByRole("button", { name: "New word", exact: true }).click();
+  await expect(page).toHaveURL(/\/new\/type$/);
+}
+
+test("an unconfirmed detected type follows a corrected spelling", async ({
+  page,
+}) => {
+  await typed(page, "klama");
+  await expect(page.getByRole("radio", { name: /^gismu/ })).toBeChecked();
+  await editMeaningWord(page, "ckusni");
+  await expect(page.getByRole("radio", { name: /^lujvo/ })).toBeChecked();
+  await expect(
+    page.getByRole("button", { name: "Link the lujvo parts", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText(
+      "The spelling changed. Review the word type that you chose.",
+      { exact: true },
+    ),
+  ).toBeHidden();
+  await expect
+    .poll(async () => (await draft(page)).autoDetectedKind)
+    .toBe("lujvo");
+  expect((await draft(page)).review).not.toContain("word type");
+});
+
+for (const completion of ["selection", "confirmation", "matching spelling"])
+  test(`an accepted type stays selected and its review clears after ${completion}`, async ({
+    page,
+  }) => {
+    await typed(page, "klama");
+    await page
+      .getByRole("button", { name: "Continue to places", exact: true })
+      .click();
+    await expect(page).toHaveURL(/\/new\/places$/);
+    expect((await draft(page)).autoDetectedKind).toBeUndefined();
+    await editMeaningWord(page, "ckusni");
+    await expect(page.getByRole("radio", { name: /^gismu/ })).toBeChecked();
+    const note = page.getByText(
+      "The spelling changed. Review the word type that you chose.",
+      { exact: true },
+    );
+    await expect(note).toBeVisible();
+    if (completion === "selection")
+      await page.getByRole("radio", { name: /^lujvo/ }).check();
+    else if (completion === "confirmation") {
+      await page
+        .getByRole("button", { name: "Continue to places", exact: true })
+        .click();
+      await expect(page).toHaveURL(/\/new\/places$/);
+      await page
+        .getByRole("list", { name: "Steps" })
+        .getByRole("link", { name: /^Type\b/ })
+        .click();
+    } else await editMeaningWord(page, "bangu");
+    await expect(note).toBeHidden();
+    await expect
+      .poll(async () => {
+        const saved = await draft(page);
+        return {
+          kind: saved.kind,
+          detectionFor: saved.detectionFor,
+          review: saved.review.includes("word type"),
+        };
+      })
+      .toEqual({
+        kind: completion === "selection" ? "lujvo" : "gismu",
+        detectionFor: completion === "matching spelling" ? "bangu" : "ckusni",
+        review: false,
+      });
+    await page.reload();
+    await expect(note).toBeHidden();
+  });
+
+for (const staleMarker of ["none", "stale", "invalid typed rows"])
+  test(`an ordinary generated lujvo stays editable after replacing a typed word${staleMarker === "none" ? "" : ` with ${staleMarker}`}`, async ({
+    page,
+  }) => {
+    await typed(page, "klama");
+    await page.getByRole("radio", { name: /^lujvo/ }).check();
+    await page
+      .getByRole("button", { name: "Link the lujvo parts", exact: true })
+      .click();
+    for (const word of ["bangu", "sinxa"]) {
+      await page.getByLabel("Add a part", { exact: true }).fill(word);
+      await page
+        .getByRole("button", { name: `Add ${word} as entered`, exact: true })
+        .click();
+    }
+    const use = page.locator("button.btn-primary");
+    await expect(use).toBeEnabled();
+    const spelling = (await use.innerText()).replace(/^Use /, "");
+    page.once("dialog", (dialog) => {
+      expect(dialog.message()).toContain('Replace the typed spelling "klama"');
+      void dialog.accept();
+    });
+    await use.click();
+    await expect(page).toHaveURL(/\/new\/places$/);
+    expect((await draft(page)).spelling).toBe(spelling);
+    expect((await draft(page)).typedSpelling).toBeNull();
+    if (staleMarker !== "none") {
+      await page.evaluate(async (mode) => {
+        const { LocalStore } = await import(String("/src/data/store.ts"));
+        const store = new LocalStore();
+        const value: any = await store.get("drafts", "current");
+        value.typedSpelling = mode === "stale" ? "klama" : value.spelling;
+        if (mode === "invalid typed rows") value.lujvo.typed = value.spelling;
+        await store.put("drafts", "current", value);
+      }, staleMarker);
+      await page.reload();
+    }
+    await page
+      .getByRole("list", { name: "Steps" })
+      .getByRole("link", { name: /^Form\b/ })
+      .click();
+    await expect(page.getByLabel("Add a part", { exact: true })).toBeVisible();
+    for (const word of ["bangu", "sinxa"])
+      await expect(
+        page
+          .getByRole("group", { name: `Rafsi for ${word}`, exact: true })
+          .getByRole("radio", { name: "automatic", exact: true }),
+      ).toBeChecked();
+    await expect
+      .poll(async () => (await draft(page)).lujvo.typed)
+      .toBeUndefined();
+    await page.getByLabel("Add a part", { exact: true }).fill("klama");
+    await page
+      .getByRole("button", { name: "Add klama as entered", exact: true })
+      .click();
+    await expect(
+      page.getByRole("button", { name: "Remove klama", exact: true }),
+    ).toBeVisible();
+    await page
+      .getByRole("region", { name: "Other forms", exact: true })
+      .getByRole("button")
+      .first()
+      .click();
+    await expect(page.locator("button.btn-primary")).toBeEnabled();
+  });
+
+test("returning to unknown morphology clears a completed Other type review", async ({
+  page,
+}) => {
+  await typed(page, "zzzz");
+  await page.locator("button.btn-primary").click();
+  await expect(page).toHaveURL(/\/new\/form$/);
+  await editMeaningWord(page, "klama");
+  const note = page.getByText(
+    "The spelling changed. Review the word type that you chose.",
+    { exact: true },
+  );
+  await expect(note).toBeVisible();
+  await editMeaningWord(page, "zzzz");
+  await expect(page.getByRole("radio", { name: /^Other/ })).toBeChecked();
+  await expect(note).toBeHidden();
+  await expect
+    .poll(async () => (await draft(page)).review.includes("word type"))
+    .toBe(false);
+});

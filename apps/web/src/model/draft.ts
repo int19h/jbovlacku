@@ -216,6 +216,8 @@ export interface Draft {
   /** The exact spelling last entered by the author. */
   typedSpelling?: string | null;
   detectionFor?: string;
+  /** An automatic preselection that the author has not accepted yet. */
+  autoDetectedKind?: LexicalKind;
   kind: LexicalKind | null;
   selmaho: string[];
   /** Attributed morphology notes from the manual Form step. */

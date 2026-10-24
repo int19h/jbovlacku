@@ -100,12 +100,29 @@ export async function typePage(
   const saver = new DraftSaver(app, draft);
   const spelling = typedWord(draft.spelling);
   const analysis = spelling ? detectWord(spelling) : null;
-  if (analysis && draft.detectionFor !== spelling) {
-    const detected = analysis.kind === "unknown" ? "other" : analysis.kind;
-    if (draft.kind === null) draft.kind = detected;
-    else if (draft.kind !== detected)
+  const detected = analysis
+    ? analysis.kind === "unknown"
+      ? "other"
+      : analysis.kind
+    : null;
+  if (draft.detectionFor !== spelling) {
+    if (draft.kind === null || draft.kind === draft.autoDetectedKind) {
+      draft.kind = detected;
+      if (detected) draft.autoDetectedKind = detected;
+      else delete draft.autoDetectedKind;
+      draft.review = draft.review.filter((field) => field !== "word type");
+    } else if (detected && draft.kind !== detected) {
       draft.review = [...new Set([...draft.review, "word type"])];
+    }
     draft.detectionFor = spelling;
+    saver.touch();
+  }
+  if (
+    detected &&
+    draft.kind === detected &&
+    draft.review.includes("word type")
+  ) {
+    draft.review = draft.review.filter((field) => field !== "word type");
     saver.touch();
   }
   const labelFor = () =>
@@ -126,14 +143,13 @@ export async function typePage(
     }),
   );
   const detection = el("div", { role: "status", "aria-live": "polite" });
+  const typeReview = p(
+    "The spelling changed. Review the word type that you chose.",
+    "small",
+  );
+  typeReview.hidden = !draft.review.includes("word type");
+  detection.append(typeReview);
   if (analysis) {
-    if (draft.review.includes("word type"))
-      detection.append(
-        p(
-          "The spelling changed. Review the word type that you chose.",
-          "small",
-        ),
-      );
     detection.append(
       p(
         `Detected form: ${analysis.kind === "fuivla" ? "fu'ivla" : analysis.kind}. You can choose another kind.`,
@@ -232,7 +248,7 @@ export async function typePage(
         }),
       );
     select.addEventListener("change", () => {
-      draft.kind = select.value as LexicalKind;
+      if (!confirmKindChange(draft, select.value as LexicalKind)) return;
       saver.touch();
       refreshPrimary();
     });
@@ -356,6 +372,7 @@ export async function typePage(
     const button = primary.querySelector<HTMLButtonElement>(".btn-primary");
     if (!button) return;
     button.textContent = labelFor();
+    typeReview.hidden = !draft.review.includes("word type");
     renderRoots();
     button.disabled = !draft.kind;
   };
@@ -365,7 +382,7 @@ export async function typePage(
       label: labelFor(),
       disabled: !draft.kind,
       action: async () => {
-        if (!draft.kind) return;
+        if (!draft.kind || !confirmKindChange(draft, draft.kind)) return;
         const places =
           spelling && (draft.kind === "gismu" || draft.kind === "fuivla");
         draft.step = Math.max(draft.step, places ? 4 : 3) as Draft["step"];
@@ -375,4 +392,7 @@ export async function typePage(
     },
   });
   main.append(primary);
+  main.addEventListener("assist-change", refreshPrimary, {
+    signal: context.signal,
+  });
 }

@@ -97,8 +97,12 @@ export async function lujvoPage(
     saver.touch();
   }
   let state = (draft.lujvo ??= newLujvoState());
+  const typedIdentity =
+    !!draft.typedSpelling &&
+    typedWord(draft.typedSpelling) === typedWord(draft.spelling);
   const retainedCompound =
     !!draft.compound && draft.evidenceForm === typedWord(draft.spelling);
+  let retainedLocks = true;
   if (retainedCompound && draft.compound) {
     let hydrate = !state.components.length;
     try {
@@ -107,7 +111,7 @@ export async function lujvoPage(
       // A typed version 2 record can need its original whole-word boundaries.
       hydrate ||=
         profile === "extended-v2" &&
-        !!draft.typedSpelling &&
+        typedIdentity &&
         (state.components.length !== draft.compound.components.length ||
           state.components.some((component, index) => {
             const signed = draft.compound!.components[index];
@@ -119,7 +123,6 @@ export async function lujvoPage(
           }));
       if (state.profile !== profile) saver.touch();
       state.profile = profile;
-      if (draft.typedSpelling) state.typed = typedWord(draft.spelling);
       if (state.profile !== "extended") delete state.joins;
     } catch (error) {
       main.append(p(String(error), "notice"));
@@ -140,7 +143,18 @@ export async function lujvoPage(
         locked: component.rafsi,
         gloss: "",
       }));
-      if (state.profile === "extended" && state.typed) {
+      saver.touch();
+    }
+    retainedLocks =
+      state.components.length === draft.compound.components.length &&
+      state.components.every(
+        (component, index) =>
+          component.locked !== null &&
+          component.locked === draft.compound!.components[index].rafsi,
+      );
+    if (typedIdentity && retainedLocks) {
+      state.typed = typedWord(draft.spelling);
+      if (state.profile === "extended") {
         const parts = detectWord(state.typed).readings[0];
         if (
           parts?.length === state.components.length &&
@@ -153,7 +167,12 @@ export async function lujvoPage(
       saver.touch();
     }
   }
-  if (state.typed && state.typed !== typedWord(draft.spelling)) {
+  if (
+    state.typed &&
+    (!typedIdentity ||
+      !retainedLocks ||
+      state.typed !== typedWord(draft.spelling))
+  ) {
     delete state.typed;
     delete state.joins;
     delete state.typedReading;
@@ -163,7 +182,7 @@ export async function lujvoPage(
   }
   const cached = await cachedPackage(app.store);
   if (!context.live()) return;
-  const typedAnalysis = draft.typedSpelling ? detectWord(draft.spelling) : null;
+  const typedAnalysis = typedIdentity ? detectWord(draft.spelling) : null;
   if (
     !retainedCompound &&
     typedAnalysis?.kind === "lujvo" &&
@@ -1119,6 +1138,7 @@ export async function lujvoPage(
     draft.formation = null;
     if (draft.spelling !== candidate.spelling) draft.publishAcknowledged = [];
     draft.spelling = candidate.spelling;
+    draft.typedSpelling = state.typed ? typedWord(candidate.spelling) : null;
     draft.evidenceForm = withMetadata ? candidate.spelling : null;
     draft.compound = withMetadata
       ? compoundMetadata(result, candidate, state.components, "")

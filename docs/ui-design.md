@@ -222,6 +222,8 @@ The main column uses a 480px basis and the suggestion panel a 260px basis, with 
 An explicit AI action can mark a proposal “AI pick” and show its reason. It does not select the type automatically.
 “Have the spelling already? Type it in and skip the builder” opens manual entry.
 A typed word preselects its detected type. Unknown analysis shows its diagnostics and leaves experimental types available.
+An unconfirmed preselection follows spelling corrections. Confirmed choices stay selected until the author changes them.
+Selecting or confirming a type clears its review notice.
 One confirmation action opens Places for gismu and fu'ivla, the component builder for lujvo, or Form for the other kinds.
 Beside confirmation, a typed gismu shows linked closeness warnings and an optional “Add source-language evidence” action.
 The primary button names the selected next action, such as “Build the lujvo.”
