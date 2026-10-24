@@ -121,6 +121,14 @@ Zero allocations and removals also prevent that addition. It applies private blo
 A cancelled or incomplete local calculation keeps personal scores unavailable and offers the site view. "Recompute from records" compares a local site-view calculation with the server scores.
 A planned handover creates and tests a successor key, shows the old key's heads from every configured peer, searches for an existing transfer, and saves the transfer, the acceptance, and the encrypted successor key in one transaction before upload. Partial upload reads "Old key retired, acceptance waiting", and retries reuse the stored events.
 A compromise notice previews the retained and excluded records of a chosen causal frontier, blocks on missing history, and needs explicit approval for an empty frontier. Ordinary signing from a retired or compromised key is refused.
+
+Before lifecycle signatures, peer history scans include accepted records that still wait for evaluation.
+The browser pins each scan to the peer's accepted snapshot and authenticates its signed lifecycle evidence.
+These raw history reads start no evaluation. Final handover, compromise, and recovery scans also load accepted own history.
+Ordinary own-history loads on word, person, and trust pages use the last completed snapshot.
+If an accepted snapshot expires, the browser starts the scan again, with at most three attempts under the original limits.
+Repeated expiry leaves the peer scan incomplete and blocks the signature.
+
 The [web UI design](docs/ui-design.md) defines the layouts. The reading, identity, trust, delivery, authoring, and builder screens follow it.
 The built Node app keeps Type and trust card labels separate from their descriptions.
 Draft placeholders have no extra underline, and helper text does not shift neighboring controls.
@@ -189,27 +197,55 @@ The Node loader can retain a larger explicit traversal budget for a local import
 
 The Node adapter serves the revised SQL import with 59,125 definitions in 44 languages.
 The extraction omits derived vectors and cache fields from signed bodies.
-The adapter retains an evaluated checkpoint and keeps completed reads available during new evaluation.
-It captures at most one checkpoint per minute and flushes the latest state on shutdown.
+
+The adapter retains an evaluated checkpoint and uses separate Node worker threads for completed reads and new evaluation.
+A worker thread runs code independently within the same process. At most two evaluation runtimes remain live.
+After publication, the host releases the older runtime when its active calls finish.
+
+It keeps that snapshot's completed state and packages in the bounded cache.
+Pinned reads use those results without restarting evaluation. Word scores remain unavailable after the older runtime stops.
+The next evaluation can evict the older cached result when it needs the slot.
+
+Workers transfer state bytes without retaining another parsed JavaScript state. Judgment updates share unchanged result objects on the main thread.
+
+The adapter normally captures at most one checkpoint per minute. A failed live export can retry once immediately.
+Shutdown closes idle connections and grants up to ten seconds for evaluation.
+It saves the latest completed checkpoint before stopping its worker, without waiting for the capture interval.
+Durable handlers and file operations can extend shutdown beyond that limit.
+
+A faulted worker leaves completed results available on the main thread.
+Word responses can report unavailable scores while a replacement restores in the background.
+
 After publication, the browser shows a pending notice until the accepted records reach the evaluated word view.
+After a profile publication, the profile page waits for that evaluated view before it requests the new claim.
+Personal recomputation also waits for locally accepted records before it downloads the next snapshot.
+These waits stop after fifteen seconds and preserve accepted delivery evidence for another refresh.
+A full-dictionary evaluation can outlast that wait. A refresh reuses the accepted record without another signature.
 
-On this VM, readiness with a checkpoint took 6.49 seconds, and the first `klama` request took 0.053 seconds.
-Five consecutive signed endorsements became visible in 3.47, 1.84, 1.94, 1.81, and 1.97 seconds.
-Warm word requests took 61 to 251 milliseconds across English, French, and Russian definition packages.
-Search took 19 to 76 milliseconds. Package manifests took 1.5 to 2.6 milliseconds.
+The server, worker, and Wasm artifacts at `fedfec3` match the earlier measurement at `b6c0354`.
+That run restored its checkpoint in 22.68 seconds. A later restart took 29.33 seconds.
+The repaired host measurement uses `5aefd15`, with 59,125 imported definitions in 44 languages.
+Its checkpoint restart took 7.07 seconds. Recovery after the core digest changed took 70.72 seconds.
 
-The checkpoint used 63.80 MiB. Peak process memory reached 3.69 GiB, including 1.67 GiB of Wasm linear memory.
+| Visible write | Reviewed host, `b6c0354` | Repaired host, `5aefd15` |
+| --- | ---: | ---: |
+| Trust choice | 30.37 s | 8.38 s |
+| Native publication | 46.71 s | 9.53 s |
+| Judgment | 35.51 s | 5.39 s |
+
+The reviewed host peaked at 4.25 GiB. Three of 91 sampled word reads reached their three-second deadline.
+Twelve health probes reached their one-second deadline.
+
+The repaired host peaked at 3.94 GiB. All 96 sampled dictionary reads completed within three seconds.
+Between its first write and final visible result, 89 of 90 health probes succeeded. One reached its one-second deadline.
+
+These runs differ in inventory and concurrent work. They do not isolate the effect of one fix.
+Admission, package construction, and enclosing checkpoint serialization still use the main thread.
+Dense ancestry and overlapping runtimes still require several GiB. These measurements do not establish a latency guarantee.
 
 After a crash, the adapter can restore an older valid checkpoint and evaluate the later records.
 If the checkpoint predates the stored materialized snapshot, interpreted reads wait for catch-up.
 Recovery does not expose that older checkpoint as the current public snapshot.
-A full-data crash restart reached readiness in 6.79 seconds and returned the latest word state 1.78 seconds later.
-Startup through that first response took 8.56 seconds. The manifest and changes endpoint kept the same materialized cursor.
-Recovery replayed one record without a rebuild and peaked at 3.02 GiB of process memory.
-
-Process startup through the first word response with a checkpoint took 6.54 seconds.
-Without a checkpoint, initial readiness took 31.15 seconds, and the first word request then took 66.64 seconds.
-That cold request still exceeds the original 30-second target.
 The [development guide](docs/development.md#initial-lensisku-data) describes state reuse, checkpoint costs, and the measurement limits.
 A larger traversal budget does not remove memory limits.
 

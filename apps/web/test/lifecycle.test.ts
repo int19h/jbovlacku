@@ -602,6 +602,7 @@ async function mirrorBranchSetup(page: Page) {
           },
         });
       const base = {
+        history: "accepted",
         view: "jve1:" + "0".repeat(64),
         identity: old.identity,
         items: [],

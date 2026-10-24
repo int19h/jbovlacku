@@ -187,11 +187,13 @@ function normalize(record: StoredRecord): StoredRecord {
 export async function syncRecords(
   store: LocalStore,
   options: RequestOptions & {
+    fresh?: boolean;
     onProgress?: (progress: RecordsProgress) => void;
   } = {},
 ): Promise<SnapshotInventory> {
   const progress = options.onProgress ?? (() => {});
   const check = () => options.signal?.throwIfAborted();
+  progress({ phase: "inventory", loaded: 0, total: 0, bytes: 0 });
   const manifest = await getManifest(options);
   const snapshot = manifest.snapshot;
   const declared = manifest.manifest as {
@@ -199,7 +201,6 @@ export async function syncRecords(
     bodies?: { count?: number; hash?: string };
     import_selections?: { count?: number; hash?: string };
   };
-  progress({ phase: "inventory", loaded: 0, total: 0, bytes: 0 });
   const events = await inventoryIds("events", snapshot, options);
   const bodies = await inventoryIds("bodies", snapshot, options);
   const selections = await inventoryIds("import_selections", snapshot, options);

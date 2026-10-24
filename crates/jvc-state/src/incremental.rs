@@ -81,6 +81,8 @@ impl EvaluatedState {
             self.unresolved.clear();
             return;
         }
+        // Discard this state's old ancestry before allocating its replacement.
+        self.graph = None;
         let graph = Graph::new(self.prepared.nodes.clone(), &self.prepared.options.limits);
         self.evaluation = evaluate_graph(&self.prepared.options, &graph);
         self.remaining_work = graph.budget.get();
@@ -120,6 +122,22 @@ impl EvaluatedState {
         if self.prepared.event_limit_exceeded {
             rebuild_reason = Some("event_limit".into());
         }
+        // An unavailable base or any global action requires a full rebuild.
+        // Decide before constructing ancestry that the rebuild would discard.
+        if rebuild_reason.is_none() && self.graph.is_none() && !added.is_empty() {
+            if !self.evaluation.available {
+                rebuild_reason = Some("base_unavailable".into());
+            } else if added.values().any(|node| !supports_local_update(node)) {
+                rebuild_reason = Some(
+                    if next_ready_id(&added).is_some() {
+                        "global_action"
+                    } else {
+                        "batch_dependencies"
+                    }
+                    .into(),
+                );
+            }
+        }
         if rebuild_reason.is_none() && self.graph.is_none() {
             let graph = Graph::new(self.prepared.nodes.clone(), &self.prepared.options.limits);
             if graph.resource.get() {
@@ -131,20 +149,7 @@ impl EvaluatedState {
         }
         while rebuild_reason.is_none() && !added.is_empty() {
             // Prefer dependencies from this same batch before their consumers.
-            let next = added
-                .iter()
-                .find(|(_, node)| {
-                    node.previous.iter().all(|id| !added.contains_key(id))
-                        && node.action["target"]
-                            .as_str()
-                            .is_none_or(|id| !added.contains_key(id))
-                        && node.action["parents"]
-                            .as_array()
-                            .into_iter()
-                            .flatten()
-                            .all(|id| id.as_str().is_none_or(|id| !added.contains_key(id)))
-                })
-                .map(|(id, _)| id.clone());
+            let next = next_ready_id(&added);
             let Some(id) = next else {
                 rebuild_reason = Some("batch_dependencies".into());
                 break;
@@ -173,10 +178,7 @@ impl EvaluatedState {
         if !self.evaluation.available || graph.resource.get() {
             return Err("base_unavailable");
         }
-        if !node.semantic
-            || !(node.kind == "judgment.set"
-                || node.kind == "definition.publish" && node.action["origin"] == "native")
-        {
+        if !supports_local_update(node) {
             return Err("global_action");
         }
         if graph.appended >= APPENDS_BEFORE_REBASE {
@@ -430,6 +432,29 @@ impl EvaluatedState {
     }
 }
 
+fn supports_local_update(node: &Node) -> bool {
+    node.semantic
+        && (node.kind == "judgment.set"
+            || node.kind == "definition.publish" && node.action["origin"] == "native")
+}
+
+fn next_ready_id(added: &BTreeMap<String, Node>) -> Option<String> {
+    added
+        .iter()
+        .find(|(_, node)| {
+            node.previous.iter().all(|id| !added.contains_key(id))
+                && node.action["target"]
+                    .as_str()
+                    .is_none_or(|id| !added.contains_key(id))
+                && node.action["parents"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .all(|id| id.as_str().is_none_or(|id| !added.contains_key(id)))
+        })
+        .map(|(id, _)| id.clone())
+}
+
 fn references(value: &Value, result: &mut BTreeSet<String>) {
     match value {
         Value::String(id) if jvc_core::valid_id(id, "jve1:") => {
@@ -467,4 +492,251 @@ fn unresolved(prepared: &PreparedEvaluationInput) -> BTreeSet<String> {
     }
     result.retain(|id| !prepared.nodes.contains_key(id));
     result
+}
+
+#[cfg(test)]
+mod rebuild_tests {
+    use super::*;
+    use jvc_core::{
+        Header, body_descriptor, canonical_value, identity_from_seed, sign_header, verify_envelope,
+    };
+    use serde_json::json;
+
+    fn event(
+        seed: u8,
+        nonce: u8,
+        action: Value,
+        body: Option<Value>,
+    ) -> (VerifiedEnvelope, Option<Vec<u8>>) {
+        let body = body.map(|value| canonical_value(&value).unwrap());
+        let signed = sign_header(
+            &[seed; 32],
+            Header {
+                version: 1,
+                issuer: identity_from_seed(&[seed; 32]),
+                previous: Vec::new(),
+                nonce: format!("{nonce:032x}"),
+                action,
+                content: body.as_deref().map(|bytes| body_descriptor(bytes).unwrap()),
+            },
+        )
+        .unwrap();
+        (
+            verify_envelope(&signed.canonical_envelope().unwrap()).unwrap(),
+            body,
+        )
+    }
+    fn base() -> PreparedEvaluationInput {
+        let (view, body) = event(
+            1,
+            1,
+            json!({"kind":"view.publish","parents":[]}),
+            Some(
+                json!({"name":"fixture","description":[],"roots":[{"identity":identity_from_seed(&[1;32]),"q":{"numerator":1,"denominator":1}}],"rafsi_threshold":{"numerator":1,"denominator":1},"H":{"numerator":3,"denominator":1},"alpha":{"numerator":1,"denominator":2},"excluded":[],"calculation":"simple-routes-bounds-v1","work":1000,"import_sets":[],"account_witnesses":[],"account_authority":false,"notes":[]}),
+            ),
+        );
+        let mut input = PreparedEvaluationInput::new(EvaluationOptions {
+            selected_view: view.id().into(),
+            import_selections: BTreeMap::new(),
+            overlay: None,
+            limits: Limits::default(),
+        });
+        input.add_record(&view, body.as_deref());
+        assert!(input.clone().evaluate().available);
+        input
+    }
+
+    fn publication() -> (VerifiedEnvelope, Option<Vec<u8>>) {
+        event(
+            1,
+            4,
+            json!({"kind":"definition.publish","word":jvc_core::word_id(&json!({"language":"jbo","spelling":"banli"})).unwrap(),"language":"en","parents":[],"origin":"native"}),
+            Some(
+                serde_json::from_str(include_str!(
+                    "../../jvc-core/tests/fixtures/definition.json"
+                ))
+                .unwrap(),
+            ),
+        )
+    }
+
+    fn assert_restored_rebuild(
+        mut complete: PreparedEvaluationInput,
+        records: &[&(VerifiedEnvelope, Option<Vec<u8>>)],
+        reason: &str,
+    ) {
+        let saved = complete
+            .clone()
+            .into_state()
+            .checkpoint("host-checked")
+            .unwrap();
+        let state = EvaluatedState::restore_host_checkpoint(&saved, "host-checked").unwrap();
+        assert!(state.graph.is_none());
+        let mut delta = PreparedEvaluationInput::new(complete.options.clone());
+        for (record, body) in records {
+            complete.add_record(record, body.as_deref());
+            delta.add_record(record, body.as_deref());
+        }
+        let before = graph::construction_count();
+        let state = state.advance(delta, &[]);
+        assert_eq!(
+            graph::construction_count() - before,
+            1,
+            "a restored rebuild constructed ancestry twice"
+        );
+        assert!(state.statistics().rebuilt);
+        assert_eq!(state.statistics().reason.as_deref(), Some(reason));
+        assert_eq!(state.statistics().incremental_records, 0);
+        assert!(state.judgment_changes().is_none());
+        assert_eq!(state.evaluation(), &complete.clone().evaluate());
+        let full = complete.into_state();
+        assert_eq!(state.remaining_work, full.remaining_work);
+        assert_eq!(state.unresolved, full.unresolved);
+        let graph = state.graph.as_ref().unwrap();
+        let full_graph = full.graph.as_ref().unwrap();
+        assert_eq!(graph.budget.get(), full_graph.budget.get());
+        assert_eq!(graph.resource.get(), full_graph.resource.get());
+    }
+
+    #[test]
+    fn restored_mixed_updates_construct_one_graph_and_match_full_state() {
+        let publication = publication();
+        let profile = event(
+            2,
+            2,
+            json!({"kind":"identity.profile"}),
+            Some(json!({"name":"fixture","bio":[],"links":[]})),
+        );
+        let judgment = event(
+            1,
+            5,
+            json!({"kind":"judgment.set","target":publication.0.id(),"value":"bless"}),
+            None,
+        );
+        let mut complete = base();
+        complete.add_record(&publication.0, publication.1.as_deref());
+        assert!(complete.nodes[publication.0.id()].semantic);
+        for records in [
+            vec![&profile, &judgment],
+            vec![&profile, &publication],
+            vec![&profile, &publication, &judgment],
+        ] {
+            // A publication in the delta must be new, rather than a duplicate.
+            let input = if records
+                .iter()
+                .any(|record| record.0.id() == publication.0.id())
+            {
+                base()
+            } else {
+                complete.clone()
+            };
+            assert_restored_rebuild(input, &records, "global_action");
+        }
+    }
+
+    fn assert_unavailable_updates(unavailable_reason: &str) {
+        let publication = publication();
+        let trust = event(
+            2,
+            3,
+            json!({"kind":"trust.set","subject":identity_from_seed(&[1;32]),"scope":{"kind":"*","word":"*","language":"*"},"value":"heed"}),
+            None,
+        );
+        let judgment = event(
+            1,
+            5,
+            json!({"kind":"judgment.set","target":publication.0.id(),"value":"bless"}),
+            None,
+        );
+        for records in [
+            vec![&trust],
+            vec![&publication],
+            vec![&judgment],
+            vec![&trust, &publication, &judgment],
+        ] {
+            let mut complete = base();
+            if unavailable_reason == "invalid_overlay" {
+                complete.options.overlay = Some(json!({}));
+            } else {
+                complete.options.limits.traversal = 1;
+            }
+            let evaluation = complete.clone().evaluate();
+            assert!(!evaluation.available);
+            assert!(evaluation.reasons.contains(unavailable_reason));
+            assert_restored_rebuild(complete, &records, "base_unavailable");
+        }
+    }
+
+    #[test]
+    fn restored_invalid_overlay_updates_construct_one_graph_and_match_full_state() {
+        assert_unavailable_updates("invalid_overlay");
+    }
+
+    #[test]
+    fn restored_resource_unavailable_updates_construct_one_graph_and_match_full_state() {
+        assert_unavailable_updates("resource_unavailable");
+    }
+
+    #[test]
+    fn restored_mixed_updates_preserve_traversal_exhaustion() {
+        let publication = publication();
+        let profile = event(
+            2,
+            2,
+            json!({"kind":"identity.profile"}),
+            Some(json!({"name":"fixture","bio":[],"links":[]})),
+        );
+        let mut complete = base();
+        let used = complete.options.limits.traversal - complete.clone().into_state().remaining_work;
+        complete.options.limits.traversal = used;
+        assert!(complete.clone().evaluate().available);
+        let mut expected = complete.clone();
+        for (record, body) in [&profile, &publication] {
+            expected.add_record(record, body.as_deref());
+        }
+        let evaluation = expected.evaluate();
+        assert!(!evaluation.available);
+        assert!(evaluation.reasons.contains("resource_unavailable"));
+        assert_restored_rebuild(complete, &[&profile, &publication], "global_action");
+    }
+
+    #[test]
+    fn restored_global_updates_construct_one_graph_and_match_full_state() {
+        let profile = event(
+            2,
+            2,
+            json!({"kind":"identity.profile"}),
+            Some(json!({"name":"fixture","bio":[],"links":[]})),
+        );
+        let trust = event(
+            2,
+            3,
+            json!({"kind":"trust.set","subject":identity_from_seed(&[1;32]),"scope":{"kind":"*","word":"*","language":"*"},"value":"heed"}),
+            None,
+        );
+        for records in [vec![&profile], vec![&trust], vec![&profile, &trust]] {
+            let mut complete = base();
+            let saved = complete
+                .clone()
+                .into_state()
+                .checkpoint("host-checked")
+                .unwrap();
+            let state = EvaluatedState::restore_host_checkpoint(&saved, "host-checked").unwrap();
+            let mut delta = PreparedEvaluationInput::new(complete.options.clone());
+            for (record, body) in records {
+                complete.add_record(record, body.as_deref());
+                delta.add_record(record, body.as_deref());
+            }
+            let before = graph::construction_count();
+            let state = state.advance(delta, &[]);
+            assert_eq!(
+                graph::construction_count() - before,
+                1,
+                "a known global update rebuilt ancestry twice"
+            );
+            assert_eq!(state.statistics().reason.as_deref(), Some("global_action"));
+            assert_eq!(state.statistics().incremental_records, 0);
+            assert_eq!(state.evaluation(), &complete.evaluate());
+        }
+    }
 }

@@ -1100,6 +1100,11 @@ ActivityResponse = {
   items: [{id: event-ID, action: action-object, interpretation: interpretation-string, seen: cursor | null}],
   next: event-ID | null
 }
+AcceptedActivityResponse = {
+  snapshot: ID, identity: identity-string, history: "accepted",
+  items: [{id: event-ID, action: action-object, interpretation: "unavailable", seen: cursor | null}],
+  next: event-ID | null
+}
 RecordsResponse = {
   snapshot: ID, logical_inventory: ID,
   items: [{id: event-ID, envelope: envelope-object, body: canonical-object | null,
@@ -1146,6 +1151,21 @@ If the selected view cannot be evaluated, the identity route returns HTTP 503 wi
 `/identities/KEY` and `/identities/KEY/activity` are the only identity paths. A longer path is HTTP 404.
 The counts describe events signed by that exact key in the snapshot. They are raw authorship, not imported source attribution.
 Activity items use event-ID order, which is stable but not chronological. `seen` is this server's receipt position, for navigation only.
+
+Lifecycle safety reads must include accepted records that still wait for evaluation.
+Without a snapshot parameter, `/identity-heads/KEY` names the latest accepted snapshot.
+The client pins later head pages, activity pages, and envelope reads to that snapshot.
+
+`/identities/KEY/activity?accepted=1` lists raw history from its requested snapshot without evaluating state or requiring an available view.
+Without a snapshot parameter, this mode uses the latest accepted snapshot.
+Its response includes `history: "accepted"`, and every item has interpretation `unavailable`.
+It omits `view` because it supplies no evaluated result.
+Other values of `accepted` return HTTP 400.
+Ordinary activity responses keep their completed-view behavior and omit this marker.
+
+A lifecycle scan must require the accepted-history marker and its pinned snapshot on every activity page.
+An ignored mode, incomplete page sequence, unavailable record, or invalid signature cannot establish an empty history.
+The client authenticates listed lifecycle claims from their signed envelopes before it uses them.
 
 The records transport returns the committed envelope representation of the snapshot with its body when retained. Pages hold at most 200 records, and the encoded `items` bytes, as the response carries them before any transport compression, stay under 4 MiB. A page always holds at least one item, so one item can exceed that bound alone.
 `body_status` `missing` means that the snapshot never retained the body. `unavailable` means that the snapshot retained it and storage did not return it now. A client keeps the two apart: a missing body is a fact of the snapshot, and an unavailable one deserves another request.

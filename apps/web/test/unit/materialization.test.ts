@@ -8,6 +8,8 @@ import type { Receipt } from "../../src/model/types.ts";
 };
 const {
   getWord,
+  getIdentity,
+  getManifest,
   selfPeer,
   rememberAcceptedReceipt,
   hasPendingMaterialization,
@@ -314,6 +316,100 @@ test("repeated transient receipt failures stop at the original materialization d
     assert.equal(hasPendingMaterialization(), true);
   } finally {
     AbortSignal.timeout = originalTimeout;
+    rememberAcceptedReceipt(completed(), selfPeer);
+  }
+});
+
+const identity = "ed25519:" + "1".repeat(64);
+const identityResponse = () => ({
+  snapshot,
+  identity,
+  actor: identity,
+  profile: { state: "none", claims: [] },
+  counts: {},
+});
+const manifestResponse = () => ({ snapshot, packages: [] });
+for (const kind of ["profile", "manifest"] as const) {
+  test(`a fresh local ${kind} waits before fetching the completed view`, async () => {
+    rememberAcceptedReceipt(receipt(), selfPeer);
+    let release!: (value: Receipt) => void;
+    const gate = new Promise<Receipt>((resolve) => {
+      release = resolve;
+    });
+    const paths: string[] = [];
+    serve((path) => {
+      paths.push(path);
+      return path.includes("/receipts/")
+        ? gate
+        : kind === "profile"
+          ? identityResponse()
+          : manifestResponse();
+    });
+    const pending =
+      kind === "profile"
+        ? getIdentity(identity, { fresh: true })
+        : getManifest({ fresh: true });
+    try {
+      assert.equal(paths.length, 1);
+      assert.match(paths[0], /\/receipts\//);
+      release(completed());
+      assert.equal((await pending).snapshot, snapshot);
+      assert.equal(paths.length, 2);
+      assert.ok(!paths[1].includes("snapshot="));
+      assert.equal(hasPendingMaterialization(), false);
+    } finally {
+      release(completed());
+      await pending.catch(() => {});
+      rememberAcceptedReceipt(completed(), selfPeer);
+    }
+  });
+  test(`cancelling a fresh ${kind} prevents a later view request`, async () => {
+    rememberAcceptedReceipt(receipt(), selfPeer);
+    const controller = new AbortController();
+    let requests = 0;
+    serve(() => {
+      requests++;
+      setImmediate(() => controller.abort());
+      return receipt();
+    });
+    try {
+      const options = { fresh: true, signal: controller.signal };
+      const pending =
+        kind === "profile"
+          ? getIdentity(identity, options)
+          : getManifest(options);
+      await assert.rejects(
+        pending,
+        (error: unknown) => (error as Error).name === "AbortError",
+      );
+      await new Promise<void>((resolve) => setTimeout(resolve, 250));
+      assert.equal(requests, 1);
+      assert.equal(hasPendingMaterialization(), true);
+    } finally {
+      rememberAcceptedReceipt(completed(), selfPeer);
+    }
+  });
+}
+test("ordinary, historical, and remote identity and manifest requests remain immediate", async () => {
+  rememberAcceptedReceipt(receipt(), selfPeer);
+  const paths: string[] = [];
+  serve((path) => {
+    paths.push(path);
+    return path.includes("/identities/")
+      ? identityResponse()
+      : manifestResponse();
+  });
+  try {
+    await getIdentity(identity);
+    await getIdentity(identity, { snapshot, fresh: true });
+    const peer = { id: "remote", base: "/remote", label: "Remote" };
+    await getIdentity(identity, { fresh: true, peer });
+    await getManifest();
+    await getManifest({ fresh: true, peer });
+    assert.equal(paths.length, 5);
+    assert.ok(paths.every((path) => !path.includes("/receipts/")));
+    assert.equal(hasPendingMaterialization(), true);
+  } finally {
     rememberAcceptedReceipt(completed(), selfPeer);
   }
 });
