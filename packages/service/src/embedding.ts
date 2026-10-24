@@ -4,13 +4,18 @@ import {
   isObject,
   EMBEDDING_MODEL,
   EMBEDDING_ROUTE,
+  EMBEDDING_QUOTE_TOKENS,
+  validEmbeddingInputPrice,
   type ProviderConfig,
 } from "./inference.ts";
 
-export { EMBEDDING_MODEL, EMBEDDING_ROUTE } from "./inference.ts";
+export {
+  EMBEDDING_MODEL,
+  EMBEDDING_ROUTE,
+  EMBEDDING_QUOTE_TOKENS,
+} from "./inference.ts";
 export const EMBEDDING_DIMENSIONS = 4096;
 export const EMBEDDING_RESPONSE_BYTES = 2 * 1024 * 1024;
-export const EMBEDDING_QUOTE_TOKENS = 32000;
 
 export interface EmbeddingUsage {
   inputTokens: number | null;
@@ -45,17 +50,15 @@ export function prepareEmbedding(
     !embedding ||
     embedding.model !== EMBEDDING_MODEL ||
     embedding.route !== EMBEDDING_ROUTE ||
-    !Number.isFinite(embedding.inputPrice) ||
-    embedding.inputPrice <= 0 ||
-    embedding.inputPrice > 1000 ||
+    !validEmbeddingInputPrice(embedding.inputPrice) ||
     !Number.isFinite(config.maxPrice) ||
-    config.maxPrice <= 0 ||
-    (embedding.inputPrice * EMBEDDING_QUOTE_TOKENS) / 1000000 <= 0
+    config.maxPrice <= 0
   )
     throw new AssistanceError(
       503,
       "embedding_configuration",
-      "The embedding configuration is unavailable.",
+      config.embeddingDisabledReason ??
+        "The embedding configuration is unavailable.",
     );
   if (!Array.isArray(inputs) || inputs.length < 1 || inputs.length > 8)
     throw new AssistanceError(

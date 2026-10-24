@@ -90,17 +90,33 @@ test("embedding configuration pins the model and route with a separate input pri
   );
   for (const env of [
     { JVC_AI_EMBEDDING_MODEL: "another-model" },
+    { JVC_AI_EMBEDDING_MODEL: "" },
     { JVC_AI_EMBEDDING_PROVIDER_ROUTE: "another-route" },
+    { JVC_AI_EMBEDDING_PROVIDER_ROUTE: "" },
     { JVC_AI_EMBEDDING_INPUT_PRICE: "NaN" },
     { JVC_AI_EMBEDDING_INPUT_PRICE: "-1" },
     { JVC_AI_EMBEDDING_INPUT_PRICE: "0" },
-  ])
-    assert.throws(() =>
-      providerConfig(
-        { JVC_AI_ENABLED: "enabled", ...env },
-        async () => "unused",
-      ),
+    { JVC_AI_EMBEDDING_INPUT_PRICE: "" },
+    { JVC_AI_EMBEDDING_INPUT_PRICE: "5e-324" },
+  ]) {
+    const generation = providerConfig(
+      { JVC_AI_ENABLED: "enabled", ...env },
+      async () => "unused",
+    )!;
+    assert.equal(generation.model, defaults.model);
+    assert.deepEqual(generation.operations, defaults.operations);
+    assert.equal(generation.embedding, undefined);
+    assert.match(
+      generation.embeddingDisabledReason!,
+      /^Embedding inference is disabled because JVC_AI_EMBEDDING_/,
     );
+    assert.throws(
+      () => prepareEmbedding([bytes("public")], generation),
+      (failure: any) =>
+        failure.code === "embedding_configuration" &&
+        failure.message === generation.embeddingDisabledReason,
+    );
+  }
   const configured = providerConfig(
     { JVC_AI_ENABLED: "enabled", JVC_AI_EMBEDDING_INPUT_PRICE: "0.02" },
     async () => "unused",

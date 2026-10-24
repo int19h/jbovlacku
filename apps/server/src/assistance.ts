@@ -60,14 +60,17 @@ export function nodeAssistance(
       "JVC_AI_KEY_FILE is required when AI assistance is enabled.",
     );
   const path = env.JVC_AI_KEY_FILE;
+  const provider = providerConfig(env, async () => {
+    try {
+      return await readFile(path, "utf8");
+    } catch {
+      throw new Error("The configured AI key file is unavailable.");
+    }
+  });
+  if (provider?.embeddingDisabledReason)
+    console.warn(provider.embeddingDisabledReason);
   return {
     budgetStore,
-    provider: providerConfig(env, async () => {
-      try {
-        return await readFile(path, "utf8");
-      } catch {
-        throw new Error("The configured AI key file is unavailable.");
-      }
-    }),
+    provider,
   };
 }

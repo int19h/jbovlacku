@@ -4,6 +4,16 @@ import { promptFiles } from "./prompt-bundle.ts";
 
 export const EMBEDDING_MODEL = "qwen/qwen3-embedding-8b";
 export const EMBEDDING_ROUTE = "nebius";
+export const EMBEDDING_QUOTE_TOKENS = 32000;
+export function validEmbeddingInputPrice(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isFinite(value) &&
+    value > 0 &&
+    value <= 1000 &&
+    (value * EMBEDDING_QUOTE_TOKENS) / 1000000 > 0
+  );
+}
 export interface EmbeddingConfig {
   model: typeof EMBEDDING_MODEL;
   route: typeof EMBEDDING_ROUTE;
@@ -28,6 +38,7 @@ export class AssistanceError extends Error {
     public status: number,
     public code: string,
     message: string,
+    public operation?: string,
   ) {
     super(message);
   }
@@ -149,6 +160,7 @@ export interface ProviderConfig {
   inputPrice: number;
   outputPrice: number;
   embedding?: EmbeddingConfig;
+  embeddingDisabledReason?: string;
   hourlyBudgetUsd: number;
   dailyBudgetUsd: number;
   networkHourlyBudgetUsd: number;
@@ -322,13 +334,26 @@ export function providerConfig(
     );
   }
   const maxPrice = number("JVC_AI_MAX_PRICE", 10, 0.001, 100);
-  if (
-    (env.JVC_AI_EMBEDDING_MODEL ?? EMBEDDING_MODEL) !== EMBEDDING_MODEL ||
-    (env.JVC_AI_EMBEDDING_PROVIDER_ROUTE ?? EMBEDDING_ROUTE) !== EMBEDDING_ROUTE
-  )
-    throw new Error(
-      "The embedding adapter requires qwen/qwen3-embedding-8b through nebius.",
-    );
+  let embedding: EmbeddingConfig | undefined;
+  let embeddingDisabledReason: string | undefined;
+  const embeddingPrice = Number(env.JVC_AI_EMBEDDING_INPUT_PRICE ?? 0.01);
+  const invalidEmbeddingField =
+    (env.JVC_AI_EMBEDDING_MODEL ?? EMBEDDING_MODEL) !== EMBEDDING_MODEL
+      ? "JVC_AI_EMBEDDING_MODEL"
+      : (env.JVC_AI_EMBEDDING_PROVIDER_ROUTE ?? EMBEDDING_ROUTE) !==
+          EMBEDDING_ROUTE
+        ? "JVC_AI_EMBEDDING_PROVIDER_ROUTE"
+        : !validEmbeddingInputPrice(embeddingPrice)
+          ? "JVC_AI_EMBEDDING_INPUT_PRICE"
+          : null;
+  if (invalidEmbeddingField)
+    embeddingDisabledReason = `Embedding inference is disabled because ${invalidEmbeddingField} is invalid.`;
+  else
+    embedding = {
+      model: EMBEDDING_MODEL,
+      route: EMBEDDING_ROUTE,
+      inputPrice: embeddingPrice,
+    };
   const hourlyBudgetUsd = number(
     "JVC_AI_HOURLY_BUDGET_USD",
     32,
@@ -359,16 +384,8 @@ export function providerConfig(
     maxPrice,
     inputPrice: number("JVC_AI_INPUT_PRICE", 0.1, 0, 1000),
     outputPrice: number("JVC_AI_OUTPUT_PRICE", 0.2, 0, 1000),
-    embedding: {
-      model: EMBEDDING_MODEL,
-      route: EMBEDDING_ROUTE,
-      inputPrice: number(
-        "JVC_AI_EMBEDDING_INPUT_PRICE",
-        0.01,
-        Number.MIN_VALUE,
-        1000,
-      ),
-    },
+    embedding,
+    embeddingDisabledReason,
     hourlyBudgetUsd,
     dailyBudgetUsd,
     networkHourlyBudgetUsd: number(

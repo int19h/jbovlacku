@@ -33,6 +33,34 @@ test(
     const mock = createServer((request, response) => {
       paths.push(request.url!);
       response.setHeader("content-type", "application/json");
+      if (request.url === "/generation/chat/completions") {
+        response.end(
+          JSON.stringify({
+            choices: [
+              {
+                finish_reason: "tool_calls",
+                message: {
+                  tool_calls: [
+                    {
+                      id: "answer",
+                      type: "function",
+                      function: {
+                        name: "submit_answer",
+                        arguments: JSON.stringify({
+                          word_type: "gismu",
+                          reason: "Root.",
+                        }),
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+            usage: { prompt_tokens: 1, completion_tokens: 1, cost: 0.000001 },
+          }),
+        );
+        return;
+      }
       if (request.url === "/redirect/embeddings") {
         response.statusCode = 302;
         response.setHeader("location", "/redirect-target");
@@ -93,6 +121,31 @@ test(
         costReports: 0,
       });
       assert.deepEqual(paths, ["/good/embeddings", "/redirect/embeddings"]);
+      for (const field of [
+        "JVC_AI_EMBEDDING_MODEL",
+        "JVC_AI_EMBEDDING_PROVIDER_ROUTE",
+        "JVC_AI_EMBEDDING_INPUT_PRICE",
+      ]) {
+        const generation = (await (
+          await worker.dispatchFetch(
+            `http://localhost/generation?field=${field}`,
+          )
+        ).json()) as any;
+        assert.deepEqual(generation.answer, {
+          word_type: "gismu",
+          reason: "Root.",
+        });
+        assert.equal(generation.embedding, false);
+        assert.equal(generation.answers, 1);
+        assert.equal(
+          generation.diagnostic,
+          `Embedding inference is disabled because ${field} is invalid.`,
+        );
+      }
+      assert.deepEqual(
+        paths.slice(2),
+        Array(3).fill("/generation/chat/completions"),
+      );
     } finally {
       await worker?.dispose();
       if (mock.listening)
