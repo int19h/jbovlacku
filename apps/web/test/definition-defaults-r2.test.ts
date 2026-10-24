@@ -47,10 +47,16 @@ test("invalid saved arity stays editable and arity controls save whole numbers",
     page.locator("aside").getByRole("button", { name: "Publish", exact: true }),
   ).toBeDisabled();
   await page.getByRole("link", { name: "Edit", exact: true }).click();
-  await page.getByLabel("Count for alternative 1", { exact: true }).fill("2.9");
-  await page
-    .getByLabel("Minimum number of places", { exact: true })
-    .fill("1.9");
+  const count = page.getByLabel("Count for alternative 1", { exact: true });
+  await count.fill("2.9");
+  await expect(count).toHaveValue("2.9");
+  await count.blur();
+  await expect(count).toHaveValue("2");
+  const minimum = page.getByLabel("Minimum number of places", { exact: true });
+  await minimum.fill("1.9");
+  await expect(minimum).toHaveValue("1.9");
+  await minimum.blur();
+  await expect(minimum).toHaveValue("1");
   await expect
     .poll(async () =>
       page.evaluate(async () => {

@@ -260,9 +260,13 @@ function hintEditor(
                 ? { mode: "context" }
                 : null;
         emit();
+        return n;
       };
       arityMode.input.addEventListener("change", syncArity);
       count.input.addEventListener("input", syncArity);
+      count.input.addEventListener("change", () => {
+        count.input.value = String(syncArity());
+      });
       tags.wrapper.style.flex = "2 1 220px";
       row.append(
         tags.wrapper,
@@ -1185,6 +1189,9 @@ export async function placesPage(
         );
         saver.touch();
         refreshArity();
+      });
+      minimum.input.addEventListener("change", () => {
+        minimum.input.value = String(draft.variadicMinimum);
       });
       const tailDescription = field(
         `Places ${draft.places.length + 1} and on`,
