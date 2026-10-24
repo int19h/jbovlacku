@@ -1315,6 +1315,112 @@ fn native(f: &mut Fixture, k: u8) -> String {
     body["legacy"] = Value::Null;
     f.event(k,vec![],json!({"kind":"definition.publish","word":word_id(&body["word"]).unwrap(),"language":"en","parents":[],"origin":"native"}),Some(body))
 }
+
+fn native_rafsi_fixture() -> Fixture {
+    let mut f = Fixture::new();
+    let mut policy: Value = serde_json::from_slice(&f.input.bodies[&f.base_view]).unwrap();
+    policy["import_sets"] = json!([]);
+    policy["account_authority"] = json!(false);
+    f.input.selected_view = f.event(
+        20,
+        vec![],
+        json!({"kind":"view.publish","parents":[]}),
+        Some(policy),
+    );
+    f
+}
+
+#[test]
+fn rafsi_gate_ignores_inert_definitions_without_losing_missing_definition_uncertainty() {
+    for deprecated in [false, true] {
+        let mut f = native_rafsi_fixture();
+        let (claim, _) = rafsi(&mut f, 3);
+        let hidden = native(&mut f, 4);
+        if deprecated {
+            let visible = native(&mut f, 5);
+            f.event(
+                5,
+                vec![visible.clone()],
+                json!({"kind":"status.set","target":visible,"value":"deprecated"}),
+                None,
+            );
+        }
+        f.event(
+            4,
+            vec![],
+            json!({"kind":"identity.transfer","successor":key(6)}),
+            None,
+        );
+        let result = evaluate_observed(&f.input);
+        assert_eq!(
+            result.receipts[&hidden].interpretation,
+            jvc_state::Interpretation::Inert
+        );
+        assert_eq!(
+            result.publications[&claim].eligible,
+            if deprecated {
+                jvc_state::Eligibility::Inactive
+            } else {
+                jvc_state::Eligibility::Unknown
+            }
+        );
+        if deprecated {
+            let missing = native(&mut f, 7);
+            f.input.bodies.remove(&missing);
+            let result = evaluate_observed(&f.input);
+            assert_eq!(
+                result.publications[&claim].eligible,
+                jvc_state::Eligibility::Unknown
+            );
+        }
+    }
+}
+
+#[test]
+fn rafsi_gate_ignores_inert_claims_without_losing_missing_claim_uncertainty() {
+    for deprecated in [false, true] {
+        let mut f = native_rafsi_fixture();
+        native(&mut f, 5);
+        let (hidden, _) = rafsi(&mut f, 3);
+        if deprecated {
+            let (visible, _) = rafsi(&mut f, 4);
+            f.event(
+                4,
+                vec![visible.clone()],
+                json!({"kind":"status.set","target":visible,"value":"deprecated"}),
+                None,
+            );
+        }
+        f.event(
+            3,
+            vec![],
+            json!({"kind":"identity.transfer","successor":key(6)}),
+            None,
+        );
+        let result = evaluate_observed(&f.input);
+        assert_eq!(
+            result.receipts[&hidden].interpretation,
+            jvc_state::Interpretation::Inert
+        );
+        assert_eq!(
+            result.publications[&hidden].eligible,
+            if deprecated {
+                jvc_state::Eligibility::Inactive
+            } else {
+                jvc_state::Eligibility::Unknown
+            }
+        );
+        if deprecated {
+            let (missing, _) = rafsi(&mut f, 7);
+            f.input.bodies.remove(&missing);
+            let result = evaluate_observed(&f.input);
+            assert_eq!(
+                result.publications[&hidden].eligible,
+                jvc_state::Eligibility::Unknown
+            );
+        }
+    }
+}
 #[test]
 fn native_post_transfer_old_key_status_is_inert() {
     let mut f = Fixture::new();
