@@ -1255,7 +1255,11 @@ Its snapshot, inventory manifest, cursors, and declared `view` remain available 
 The declared view does not claim successful evaluation. Readers can choose another view without changing the server's declaration.
 Without a configured view, the declaration uses `jve1:` followed by 64 zeroes. This sentinel does not identify an available signed policy.
 
-The manifest sets `packages_available: false` and returns empty `packages` and `package_versions` arrays in this state.
+Clients treat this sentinel as no selected view and do not fetch a signed policy for it.
+Record synchronization requires a real view selection and never saves this sentinel as the inventory's view.
+A reader's explicit selection of a real signed view still overrides the server declaration.
+
+When publication receipts cannot be evaluated, the manifest sets `packages_available: false` and returns empty `packages` and `package_versions` arrays.
 Package downloads then return HTTP 503 with `resource_unavailable`. Existing downloaded packages remain available in the browser under their saved snapshots.
 With `packages_available: true`, empty descriptor arrays mean that the server has no language packages in that snapshot.
 

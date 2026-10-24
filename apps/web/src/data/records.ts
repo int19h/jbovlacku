@@ -428,7 +428,7 @@ export async function syncRecords(
         options,
       )) as { view?: unknown }
     ).view;
-  if (!eventId(view))
+  if (!eventId(view) || view === "jve1:" + "0".repeat(64))
     throw new RecordsError(
       "The server did not report its selected view.",
       "invalid",

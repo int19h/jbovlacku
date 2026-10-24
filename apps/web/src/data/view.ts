@@ -18,7 +18,7 @@ export async function loadSiteView(signal?: AbortSignal): Promise<{
         signal,
       }).catch(() => null)
     )?.view;
-  if (!view)
+  if (!view || view === "jve1:" + "0".repeat(64))
     return {
       id: "",
       body: null,
