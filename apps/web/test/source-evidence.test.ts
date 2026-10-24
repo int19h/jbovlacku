@@ -449,7 +449,7 @@ test("bulk source suggestions stop after declined consent and hide empty detail 
   await expect(
     page.getByLabel("Native word for English", { exact: true }),
   ).toBeVisible();
-  await expect(page.locator('td[colspan="8"]:visible')).toHaveCount(0);
+  await expect(page.locator(".source-row-details:visible")).toHaveCount(0);
 });
 
 test("bulk suggestions disable repeated starts and stop on cancellation", async ({
@@ -479,7 +479,12 @@ test("bulk source action appears after adding a row to an empty custom profile",
   await expect(
     page.getByLabel("Native word for English", { exact: true }),
   ).toBeVisible();
-  await page.getByRole("button", { name: "Remove row 1", exact: true }).click();
+  await page
+    .getByRole("button", {
+      name: "Remove the English source row 1",
+      exact: true,
+    })
+    .click();
   assistant.releaseCapabilities();
   await expect.poll(assistant.capabilityReads).toBeGreaterThan(0);
   await expect(
@@ -503,7 +508,12 @@ test("source undo follows its row after an earlier row is removed", async ({
     .click();
   await allow(page);
   await page.getByRole("button", { name: "Use this", exact: true }).click();
-  await page.getByRole("button", { name: "Remove row 1", exact: true }).click();
+  await page
+    .getByRole("button", {
+      name: "Remove the English source row 1",
+      exact: true,
+    })
+    .click();
   await expect.poll(async () => (await stored(page)).gismu.rows.length).toBe(1);
   await page.reload();
   await page
@@ -655,7 +665,7 @@ test("empty source detail rows collapse with assistance off", async ({
   await expect(
     page.getByLabel("Native word for English", { exact: true }),
   ).toBeVisible();
-  await expect(page.locator('td[colspan="8"]:visible')).toHaveCount(0);
+  await expect(page.locator(".source-row-details:visible")).toHaveCount(0);
 });
 
 test("manual selection preserves unchanged canonical source evidence and historical scores", async ({

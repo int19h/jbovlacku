@@ -42,7 +42,18 @@ Settings can show Zbalermorna beside Latin headwords on word and search pages. A
 Public identity pages show the signed profile, counts, and activity. Trust actions offer a private rule or a public signed record.
 The local key edits its public profile, with a signed preview of the name, biography, and HTTPS links under the format limits. A rafsi pair link opens the pair's word and rafsi from the local search packages.
 The browser keeps the key's own records that it fetched from a server, so later signatures read them locally. It handles at most 4,096 own events per key and 64 concurrent branches. Above those limits it refuses to sign in this browser and says so.
-The Not delivered page lists unfinished delivery only. It supports receipt lookup before retry, identical retries, Retry-After, Stop retrying, export, and Resume delivery.
+The Not delivered page lists waiting and stopped records. The header marker counts both, and stopped rows offer Resume and Save as file.
+Stopped records stay in the browser until the author resumes delivery. The page describes retry reasons only for waiting records.
+Discard asks first and removes an unfinished stopped record only when no later local own record depends on it.
+Compromise, transfer, and acceptance records must be delivered and cannot be discarded. Fully delivered records keep their signed bytes and receipts.
+The storage transaction checks these rules again and restores retained predecessors to the frontier after a discard.
+If authenticated server history later includes a discarded record, the browser restores its history and permits later signatures to follow it.
+The app tells the author once that the record reached a server. The notice stays through navigation until dismissed.
+Delivery supports receipt lookup before retry, identical retries, Retry-After, and Stop retrying. A first online publication shows neutral progress until delivery returns an outcome.
+Saved publication pages keep receiving delivery updates after a reload and stop listening when the author leaves the page.
+Updates keep focus on delivery controls and announce only short status changes. Try now stays disabled through the group retry and final refresh.
+If storage cannot be read, the saved page keeps known records and offers Retry reading. It reports missing records only after a successful read.
+Delivered records leave the list but keep their receipts in retained history. With no waiting or stopped records, the page shows a short empty state.
 Downloaded search packages permit local search without a request for each query. Version 2 packages carry authors, notes, and rafsi for result rows.
 Signing needs localhost or HTTPS. A plain HTTP Tailscale address supports reading only.
 
@@ -81,7 +92,10 @@ Draft reload preserves private `stem` and `ipa` values. Neither enters a signed 
 Publication keeps each source row's word, `word_ipa`, scoring input, weight, and notes.
 New unknown pronunciations omit `word_ipa`. Revisions preserve an authenticated original null value without copying it into fresh source rows.
 Known weights, including zero, survive regardless of private `stem` or `ipa` values.
-The gismu source editor has seven columns. It keeps pronunciation and stem evidence separate from scoring letters.
+The gismu source editor has seven readable columns inside its own scrolling region at 360 and 1280 CSS pixels.
+Each Remove action includes a row number and names its source language when known, including after a custom language edit.
+The names stay unique for alternatives and rows with no language yet.
+It keeps pronunciation and stem evidence separate from scoring letters.
 It preserves original IPA inputs and shows that conversion to scoring letters is unavailable.
 Source notes stay editable when assistance is off. The publication review shows all signed source evidence.
 Source edits also update the publication copy after form selection. Descriptive edits keep the recorded scores.
@@ -128,6 +142,7 @@ These raw history reads start no evaluation. Final handover, compromise, and rec
 Ordinary own-history loads on word, person, and trust pages use the last completed snapshot.
 If an accepted snapshot expires, the browser starts the scan again, with at most three attempts under the original limits.
 Repeated expiry leaves the peer scan incomplete and blocks the signature.
+Only a successful scan restores discarded server records. Lifecycle commits compare its stored heads and reject discarded predecessors or later head changes.
 
 The [web UI design](docs/ui-design.md) defines the layouts. The reading, identity, trust, delivery, authoring, and builder screens follow it.
 The built Node app keeps Type and trust card labels separate from their descriptions.

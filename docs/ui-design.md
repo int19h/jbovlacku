@@ -392,8 +392,10 @@ The app retains signed bytes and receipts. The row stays listed with â€œStoppedâ
 It offers Resume and Save as file. The header marker counts waiting and stopped records and stays while either exists.
 Stopping does not retract a public record or guarantee that an in-flight request stopped.
 
-Offer Discard only when no later local own record reaches this stopped record through predecessor links.
-Otherwise, explain that later records depend on it and keep Resume and Save as file. A server copy does not lift this restriction.
+Offer Discard only for an unfinished stopped record when no later local own record reaches it through predecessor links.
+When later records depend on it, explain this restriction and keep Resume and Save as file. A server copy does not lift this restriction.
+Compromise notices, handover transfers, and handover acceptances must be delivered. Their stopped rows offer Resume and Save as file, without Discard.
+The discard transaction refuses these lifecycle records and records that every recipient already accepted. It keeps their signed bytes, receipts, and lifecycle markers.
 Discard asks first, then deletes the local signed bytes and receipts. It does not retract a copy that a server already holds.
 
 The app removes the discarded ID and recomputes maximal own references from the remaining local graph.

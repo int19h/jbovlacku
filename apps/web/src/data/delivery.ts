@@ -57,15 +57,16 @@ export function isNotDelivered(
   online = navigator.onLine,
 ): boolean {
   return (
-    isActive(item) &&
-    (!online ||
-      Object.values(item.peers).some(
-        (peer) =>
-          peer.state !== "accepted" &&
-          (peer.state !== "queued" ||
-            peer.attempts > 0 ||
-            peer.failure !== null),
-      ))
+    (item.stopped && !isFinished(item)) ||
+    (isActive(item) &&
+      (!online ||
+        Object.values(item.peers).some(
+          (peer) =>
+            peer.state !== "accepted" &&
+            (peer.state !== "queued" ||
+              peer.attempts > 0 ||
+              peer.failure !== null),
+        )))
   );
 }
 /** True only when every record reached every selected recipient. */
@@ -267,6 +268,7 @@ export function mergePeer(
 export class DeliveryEngine {
   private timer: ReturnType<typeof setTimeout> | undefined;
   private listeners = new Set<DeliveryListener>();
+  private readErrors = new Map<DeliveryListener, (error: unknown) => void>();
   private inFlight = new Map<string, Promise<OutboxItem | undefined>>();
   constructor(private store: LocalStore) {
     window.addEventListener("online", () => {
@@ -281,15 +283,32 @@ export class DeliveryEngine {
       if (document.visibilityState === "visible") void this.tick();
     });
   }
-  subscribe(listener: DeliveryListener) {
+  subscribe(
+    listener: DeliveryListener,
+    onReadError?: (error: unknown) => void,
+  ) {
     this.listeners.add(listener);
-    void this.items()
-      .then(listener)
-      .catch(() => listener([]));
-    return () => this.listeners.delete(listener);
+    if (onReadError) this.readErrors.set(listener, onReadError);
+    void this.items().then(listener, (error) =>
+      onReadError ? onReadError(error) : listener([]),
+    );
+    return () => {
+      this.listeners.delete(listener);
+      this.readErrors.delete(listener);
+    };
   }
   private async notify() {
-    const items = await this.items().catch(() => [] as OutboxItem[]);
+    let items: OutboxItem[];
+    try {
+      items = await this.items();
+    } catch (error) {
+      for (const listener of this.listeners) {
+        const onReadError = this.readErrors.get(listener);
+        if (onReadError) onReadError(error);
+        else listener([]);
+      }
+      return;
+    }
     for (const listener of this.listeners) listener(items);
   }
   /** Reads every record from storage. Other tabs can write at any time, so nothing is cached. */
@@ -519,6 +538,15 @@ export class DeliveryEngine {
   async stop(id: string) {
     await this.store.mergeOutbox(id, (item) => ({ ...item, stopped: true }));
     await this.notify();
+  }
+  /** Deletes a stopped leaf after storage checks its current dependencies. */
+  async discard(id: string) {
+    try {
+      await this.store.discardOutbox(id);
+    } finally {
+      await this.notify();
+      this.schedule();
+    }
   }
   /** Resumes delivery with the same bytes and recipients, after a receipt lookup. */
   async resume(id: string) {

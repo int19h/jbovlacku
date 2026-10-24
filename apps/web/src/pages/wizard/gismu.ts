@@ -459,7 +459,7 @@ export async function gismuPage(
         ),
       );
     rowsBox.replaceChildren();
-    const table = el("table", { class: "small", style: "min-width:680px" });
+    const table = el("table", { class: "small source-table" });
     table.append(
       el(
         "thead",
@@ -474,13 +474,16 @@ export async function gismuPage(
           el("th", { scope: "col", text: "Stem" }),
           el("th", { scope: "col", text: "Stem said" }),
           el("th", { scope: "col", text: "Letters" }),
-          el("th", { scope: "col", text: "" }),
         ),
       ),
     );
     const tbody = el("tbody");
     state.rows.forEach((row, index) => {
       const sourceKey = sourceRowKey(row);
+      const removeLabel = () =>
+        row.name || row.language
+          ? `Remove the ${row.name || row.language} source row ${index + 1}`
+          : `Remove source row ${index + 1}`;
       const marked = (field: "input" | "word_ipa" | "stem" | "ipa") =>
         sourceReviewMarks(row).some((mark) => mark.field === field);
       const tr = el("tr");
@@ -503,6 +506,10 @@ export async function gismuPage(
           row.name = row.language;
           code.value = row.language;
           renameManualLabels(tr, previousName, row.name);
+          renameManualLabels(tools, previousName, row.name);
+          tools
+            .querySelector("[data-source-remove]")
+            ?.setAttribute("aria-label", removeLabel());
           const details = detailRows.get(sourceKey);
           if (details) {
             renameManualLabels(details.row, previousName, row.name);
@@ -633,7 +640,7 @@ export async function gismuPage(
           ),
         );
       }
-      const tools = el("td", { class: "right", style: "white-space:nowrap" });
+      const tools = el("div", { class: "actions" });
       tools.append(
         button(
           "Alternative",
@@ -672,7 +679,8 @@ export async function gismuPage(
           },
           {
             class: "btn btn-quiet btn-icon",
-            "aria-label": `Remove row ${index + 1}`,
+            "aria-label": removeLabel(),
+            "data-source-remove": "",
           },
         ),
       );
@@ -700,11 +708,11 @@ export async function gismuPage(
         detailCell("Stem", "stem"),
         detailCell("Stem said", "ipa"),
         inputCell,
-        tools,
       );
       tbody.append(tr);
       const control = sourceControl(row);
-      const details = el("td", { colspan: "8" });
+      const details = el("td", { colspan: "7" });
+      tbody.append(el("tr", {}, el("td", { colspan: "7" }, tools)));
       const showNotes =
         sourceNotes(row).length > 0 || notesEditing.has(sourceKey);
       if (showNotes) {
@@ -812,7 +820,7 @@ export async function gismuPage(
         details.append(reviewBox);
       }
       details.append(control);
-      const detailRow = el("tr", {}, details);
+      const detailRow = el("tr", { class: "source-row-details" }, details);
       detailRows.set(sourceKey, {
         row: detailRow,
         notes: showNotes || review.length > 0,
