@@ -841,7 +841,8 @@ Invalid vectors or a model mismatch never remove a reported charge.
 Financial failures and model mismatch use separate error codes. Later profile services must handle compatibility state.
 
 The embedding deadline covers admission, key loading, transport, response reading, and settlement preparation.
-A caller's abort signal detaches its response. The server continues the admitted request and its settlement.
+During admission, a caller's abort signal prevents dispatch and removes any unsent reservation.
+After admission completes, a caller's abort signal detaches its response. The server continues key loading, the request, and settlement.
 At the deadline, the caller stops waiting. A transport that ignores abort keeps its execution slot until it ends.
 This prevents replacement requests from creating unbounded concurrent transport work.
 `AssistanceService.embeddingOperations` returns at most 64 diagnostic records, with active operations first.

@@ -121,6 +121,7 @@ Both local adapters offer operator-controlled assistance, off by default, with s
 They reserve costs before admission and enforce server and network spending limits that survive a restart.
 IPv6 limits also count /48 prefixes. The Worker stores large spending ledgers in atomic parts.
 The host service also admits bounded embedding batches through the same spending ledger and execution slots.
+Caller cancellation during embedding admission prevents dispatch and removes any unsent reservation.
 Its provider adapter pins `qwen/qwen3-embedding-8b` to the Nebius route through OpenRouter, with fallback and redirects disabled.
 Invalid embedding configuration disables embedding alone and preserves generation on both hosts.
 Interrupted operations retain unknown-cost charges after restart. Errors after reservation carry their operation IDs.

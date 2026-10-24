@@ -631,6 +631,103 @@ test("admission and settlement waits cannot extend the caller deadline or dispat
   );
 });
 
+for (const blockedSave of ["retry", "reservation"] as const) {
+  test(`caller abort during the ${blockedSave} save leaves no dispatch, charge, or summary`, async () => {
+    const durable = store();
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const background: Promise<unknown>[] = [];
+    let saves = 0;
+    let calls = 0;
+    const budgetStore: AssistanceBudgetStore = {
+      load: () => durable.load(),
+      async save(snapshot) {
+        saves++;
+        if (blockedSave === "retry" && saves === 2)
+          throw new Error("The first reservation save failed.");
+        await durable.save(snapshot);
+        if (saves === (blockedSave === "retry" ? 3 : 2)) {
+          entered.resolve();
+          await release.promise;
+        }
+      },
+    };
+    const service = new AssistanceService(
+      {
+        provider: config({
+          fetch: async () => {
+            calls++;
+            return Response.json(embedding());
+          },
+        }),
+        budgetStore,
+        waitUntil: (work) => {
+          background.push(work);
+        },
+      },
+      "embedding-test",
+      async () => [],
+    );
+    if (blockedSave === "retry") {
+      await assert.rejects(
+        service.embed(input, { kind: "index" }),
+        (failure: any) => {
+          assert.equal(failure.code, "billing_unavailable");
+          assert.match(failure.operation, /^embedding:index:/);
+          return true;
+        },
+      );
+      assert.deepEqual(entries(durable), []);
+    }
+    const caller = new AbortController();
+    const pending = service
+      .embed(input, { kind: "index" }, caller.signal)
+      .catch((failure) => failure);
+    await entered.promise;
+    const saved = entries(durable);
+    if (blockedSave === "reservation") {
+      assert.equal(saved.length, 1);
+      assert.equal(saved[0].active, true);
+      assert.equal(saved[0].reservedUsd, quote);
+    } else assert.deepEqual(saved, []);
+    caller.abort();
+    const failure = await pending;
+    if (blockedSave === "reservation") {
+      assert.equal(failure.code, "embedding_canceled");
+      assert.equal(failure.operation, saved[0].id);
+    } else {
+      assert.equal(failure.name, "AbortError");
+      assert.equal(failure.operation, undefined);
+    }
+    release.resolve();
+    await Promise.all(background);
+    const afterCancellation = entries(durable);
+    const canceledDiagnostics = await service.embeddingOperations();
+    const canceledCalls = calls;
+    // Later admissions exercise compaction without creating a charge for canceled work.
+    await service.embed(input, { kind: "index" });
+    await service.embed(input, { kind: "index" });
+    const later = entries(durable);
+    assert.equal(canceledCalls, 0);
+    assert.deepEqual(afterCancellation, []);
+    assert.deepEqual(canceledDiagnostics, []);
+    assert.equal(calls, 2);
+    assert(
+      later.some((entry) => entry.id.startsWith("embedding:index:summary:")),
+    );
+    assert.equal(
+      later.reduce((sum, entry) => sum + entry.settledUsd, 0),
+      0.000002,
+    );
+    assert(later.every((entry) => entry.id !== failure.operation));
+    assert(
+      !(await service.embeddingOperations()).some(
+        (entry) => entry.id === failure.operation,
+      ),
+    );
+  });
+}
+
 test("unsent failures release their reservation and no disabled capability is introduced", async () => {
   const { service, budgetStore } = fixture(
     config({

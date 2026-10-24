@@ -1173,6 +1173,7 @@ export class AssistanceService {
         throw new AssistanceError(limit.status, failure.code, failure.message);
       }
       signal.throwIfAborted();
+      callerSignal?.throwIfAborted();
       const id = `embedding:${caller.kind}:${crypto.randomUUID()}`;
       operationId = id;
       this.budgetEntries.set(id, {
@@ -1187,10 +1188,11 @@ export class AssistanceService {
       });
       try {
         await this.saveBudget();
-        if (signal.aborted) {
+        if (signal.aborted || callerSignal?.aborted) {
           this.budgetEntries.delete(id);
           await this.saveBudget();
           signal.throwIfAborted();
+          callerSignal?.throwIfAborted();
         }
       } catch (failure) {
         this.budgetEntries.delete(id);
@@ -1239,7 +1241,7 @@ export class AssistanceService {
         callerSignal?.aborted ? 499 : 502,
         callerSignal?.aborted ? "embedding_canceled" : "embedding_provider",
         callerSignal?.aborted
-          ? "The caller stopped waiting. Admitted embedding work continues on the server."
+          ? "The caller stopped waiting. Read its operation status before another attempt."
           : "The embedding provider request failed.",
         operationId,
       );
