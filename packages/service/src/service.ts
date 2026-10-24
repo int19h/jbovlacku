@@ -692,6 +692,11 @@ export class DictionaryService {
       this.prunePackageRecords();
     }
     this.inFlightPackages.add(snapshot.snapshot);
+    const key = snapshot.snapshot + "|" + this.options.selectedView;
+    if (this.retiredSessions.has(key) && !this.sessions.has(key)) {
+      this.retiredSessions.delete(key);
+      this.evaluationCache.delete(key);
+    }
     let previous: MaterializedPackages | undefined;
     const pending = this.evaluation(snapshot)
       .then(async () => {

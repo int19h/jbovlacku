@@ -388,6 +388,51 @@ test("publication releases the superseded configured runtime and keeps cached re
   assert.equal((service as any).retiredSessions.has(oldKey), true);
 });
 
+test("publication retry rebuilds a retired result before it becomes current", async () => {
+  const checkpoints = new MemoryCheckpoints();
+  const { service, coordinator, definition, profile } =
+    await fixture(checkpoints);
+  service.options.evaluationRuntime = {
+    create: createEvaluationSession,
+    restore: restoreHostEvaluationSession,
+  };
+  const internals = service as any;
+  const previous = coordinator.state.snapshot!;
+  const mark = coordinator.markMaterialized.bind(coordinator);
+  coordinator.markMaterialized = async () => {
+    throw new Error("Synthetic publication failure.");
+  };
+  await service.admitMany([
+    utf8(
+      JSON.stringify(
+        judgment(definition.envelope.id, "4", [profile.envelope.id], "bless"),
+      ),
+    ),
+  ]);
+  await assert.rejects(
+    service.flushMaterialization(),
+    /Synthetic publication failure/,
+  );
+  const current = coordinator.state.snapshot!;
+  const key = current + "|" + service.options.selectedView;
+  assert.equal(coordinator.state.materialized_snapshot, previous);
+  assert.equal(internals.sessions.has(key), true);
+  internals.retireSupersededSessions();
+  assert.equal(internals.retiredSessions.has(key), true);
+  assert.equal(internals.sessions.has(key), false);
+  assert.equal(internals.evaluationCache.has(key), true);
+  coordinator.markMaterialized = mark;
+  await internals.packages(await coordinator.getSnapshot(current));
+  await service.flushCheckpoints();
+  assert.equal(coordinator.state.materialized_snapshot, current);
+  assert.equal(internals.sessions.has(key), true);
+  assert.equal(internals.retiredSessions.has(key), false);
+  assert.equal(checkpoints.saved?.binding.snapshot, current);
+  const detail = await read(service, "/words/" + wordId(word));
+  assert.ok(detail.scores.length);
+  assert.equal(internals.sessionRepairs.size, 0);
+});
+
 test("pinned previous-snapshot reads reuse cached results while another write completes", async () => {
   const { service, coordinator, definition, profile } = await fixture();
   const internals = service as any;
