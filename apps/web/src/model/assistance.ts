@@ -8,6 +8,7 @@ import {
   hintForChoice,
   signedFormation,
   retainedNullPronunciations,
+  interpretDraftDefinition,
 } from "./draft.ts";
 import type { DraftProblem } from "./draft.ts";
 import type {
@@ -22,7 +23,6 @@ import { lexicalKinds } from "./types.ts";
 import {
   buildLujvo,
   analyzeWord,
-  interpretDefinition,
   rafsiPairId,
   wordId,
 } from "../../../../packages/core/src/browser.ts";
@@ -194,7 +194,7 @@ export function currentDraft(draft: Draft): Current {
       ),
     compound: draft.compound,
   });
-  const interpreted = interpretDefinition<DefinitionBody>({
+  const interpreted = interpretDraftDefinition<DefinitionBody>({
     frame: current.frame,
     classification: current.classification,
     glosses: current.glosses,
@@ -479,7 +479,7 @@ export function sourceCurrent(draft: Draft, id: string | number): Current {
     candidates: [],
     conflicts: [],
   };
-  current.formation = interpretDefinition<DefinitionBody>({
+  current.formation = interpretDraftDefinition<DefinitionBody>({
     etymology: { formation: current.formation },
   }).etymology.formation;
   return current;

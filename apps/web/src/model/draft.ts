@@ -425,6 +425,28 @@ export function newPlace(index: number): DraftPlace {
     constraints: [],
   };
 }
+function assertFiniteDraftNumbers(value: unknown) {
+  const pending = [value];
+  const seen = new Set<object>();
+  while (pending.length) {
+    const next = pending.pop();
+    if (typeof next === "number" && !Number.isFinite(next))
+      throw new Error("A draft number must be finite.");
+    if (next && typeof next === "object" && !seen.has(next)) {
+      seen.add(next);
+      pending.push(...Object.values(next));
+    }
+  }
+}
+/** Keep invalid draft values editable when the strict core parser refuses them. */
+export function interpretDraftDefinition<T>(body: unknown): T {
+  try {
+    assertFiniteDraftNumbers(body);
+    return interpretDefinition<T>(body);
+  } catch {
+    return structuredClone(body) as T;
+  }
+}
 /**
  * Fills fields that an older draft of this prototype lacks. Nothing is
  * dropped: the old single gloss and the old single derivation become
@@ -436,9 +458,12 @@ export function normalizeDraft(stored: Draft): Draft {
     original?: unknown;
   };
   const structured = old.structured ?? true;
-  const nested = interpretDefinition<DefinitionBody>({
-    etymology: { formation: old.formation, compound: old.compound },
-    sources: old.sources,
+  const nested = interpretDraftDefinition<DefinitionBody>({
+    etymology: {
+      formation: old.formation === undefined ? null : old.formation,
+      compound: old.compound === undefined ? null : old.compound,
+    },
+    sources: old.sources === undefined ? [] : old.sources,
     frame: {
       places: (old.places ?? []).map((place) => ({
         type_hints: place.hint ? [place.hint] : [],
@@ -1562,6 +1587,7 @@ export function coreProblems(
   origin: "native" | "import",
 ): DraftProblem[] {
   try {
+    assertFiniteDraftNumbers(body);
     const canonical = utf8(
       canonicalize(utf8(JSON.stringify(omitDefinitionDefaults(body)))),
     );
