@@ -653,7 +653,7 @@ It marks local requests with an internal binding and ignores every client IP hea
 The ordinary Wrangler command leaves assistance off unless the operator supplies the key, enables assistance, and configures trusted edge identity.
 For an edge host, set `JVC_TRUST_CF_CONNECTING_IP=enabled` only where Cloudflare controls `CF-Connecting-IP`.
 The Worker also requires platform request metadata and a valid IP address. Synthetic metadata alone does not enable header trust.
-An invalid generation setting disables assistance on the Worker and emits one fixed error per coordinator instance. Manual routes remain available.
+An invalid generation configuration disables assistance on the Worker and emits one fixed error per coordinator instance. Manual routes remain available.
 Hosted secret setup and deployment remain separate operator work.
 
 Node permits assistance on direct loopback by default and ignores forwarding headers.
