@@ -262,7 +262,9 @@ function hintEditor(
         emit();
         return n;
       };
-      arityMode.input.addEventListener("change", syncArity);
+      arityMode.input.addEventListener("change", () => {
+        count.input.value = String(syncArity());
+      });
       count.input.addEventListener("input", syncArity);
       count.input.addEventListener("change", () => {
         count.input.value = String(syncArity());

@@ -48,6 +48,19 @@ test("invalid saved arity stays editable and arity controls save whole numbers",
   ).toBeDisabled();
   await page.getByRole("link", { name: "Edit", exact: true }).click();
   const count = page.getByLabel("Count for alternative 1", { exact: true });
+  await page
+    .getByLabel("Relation arity for alternative 1", { exact: true })
+    .selectOption("variadic");
+  await expect(count).toHaveValue("1");
+  await expect
+    .poll(async () =>
+      page.evaluate(async () => {
+        const { LocalStore } = await import(String("/src/data/store.ts"));
+        const draft = await new LocalStore().get("drafts", "current");
+        return draft.places[0].hint.alternatives[0].relation_arity;
+      }),
+    )
+    .toEqual({ mode: "variadic", minimum: 1 });
   await count.fill("2.9");
   await expect(count).toHaveValue("2.9");
   await count.blur();
@@ -63,12 +76,12 @@ test("invalid saved arity stays editable and arity controls save whole numbers",
         const { LocalStore } = await import(String("/src/data/store.ts"));
         const draft = await new LocalStore().get("drafts", "current");
         return [
-          draft.places[0].hint.alternatives[0].relation_arity.count,
+          draft.places[0].hint.alternatives[0].relation_arity,
           draft.variadicMinimum,
         ];
       }),
     )
-    .toEqual([2, 1]);
+    .toEqual([{ mode: "variadic", minimum: 2 }, 1]);
   await page.reload();
   await expect(
     page.getByLabel("Count for alternative 1", { exact: true }),
