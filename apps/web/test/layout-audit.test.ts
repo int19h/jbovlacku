@@ -707,9 +707,16 @@ for (const viewport of [
       await expect
         .soft(claim)
         .toHaveText(
-          "cku is also claimed by cukta, vlacku. Readers judge each pair separately.",
+          /^cku is also claimed by (?:cukta, vlacku|vlacku, cukta)\. Readers judge each pair separately\.$/,
         );
       await expectSentence(claim, 2);
+      expect
+        .soft((await claim.getByRole("link").allTextContents()).sort())
+        .toEqual(["cukta", "vlacku"]);
+      for (const spelling of ["cukta", "vlacku"])
+        await expect
+          .soft(claim.getByRole("link", { name: spelling, exact: true }))
+          .toHaveAttribute("href", `/word/${spelling}`);
       await expectSentence(
         conflicts
           .locator("p.warn")
