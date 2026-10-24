@@ -451,7 +451,7 @@ for (const profile of ["cll", "extended"]) {
     page,
   }) => {
     await startDraft(page, "lujvo");
-    const spelling = "tca".repeat(26);
+    const spelling = "tca".repeat(40);
     await page.evaluate(
       async ({ spelling, profile }) => {
         const { LocalStore } = await import(String("/src/data/store.ts"));
@@ -512,7 +512,7 @@ test("single-word recognition gives no component-lock or result-count advice", a
   page,
 }) => {
   await startDraft(page, "lujvo");
-  await page.getByLabel("Add a part").fill("tca".repeat(26));
+  await page.getByLabel("Add a part").fill("tca".repeat(40));
   const matches = page.getByRole("list", { name: "Matching words" });
   await expect(matches).toContainText(
     "recognition work is 50001, above the limit of 50000.",
