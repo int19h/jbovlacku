@@ -418,6 +418,30 @@ test("authenticated package projections preserve raw builds and canonical part b
   const raw = await buildPackages(snapshot, objects);
   const prepared = await buildPackages(snapshot, objects, projections);
   assert.deepEqual(prepared, raw);
+  const fallback = await buildPackages(
+    snapshot,
+    objects,
+    projections.map((record: any) => ({ ...record, missing: true })),
+  );
+  assert.deepEqual(fallback, raw);
+  const compact = projections.map((record: any) => ({
+    ...record,
+    body: record.body
+      ? Object.defineProperty({ ...record.body }, "toJSON", {
+          value() {
+            throw new Error("Compact fields must not be interpreted again.");
+          },
+        })
+      : null,
+  }));
+  const trusted = await buildPackages(
+    snapshot,
+    objects,
+    compact,
+    undefined,
+    true,
+  );
+  assert.deepEqual(trusted, raw);
   for (const pkg of [
     ...Object.values(prepared.packages),
     ...Object.values(prepared.packages2),

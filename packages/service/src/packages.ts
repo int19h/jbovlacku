@@ -135,7 +135,10 @@ export async function buildPackages(
           else {
             const checked = inspectBody(envelope, bytes);
             if (checked.availability === "valid")
-              body = checked.body as Record<string, unknown>;
+              body =
+                kind === "definition.publish"
+                  ? interpretDefinition(checked.body)
+                  : (checked.body as Record<string, unknown>);
           }
         }
         yield {
@@ -174,7 +177,9 @@ export async function buildPackages(
         envelope_hash: event.envelope_hash,
         body:
           checked?.availability === "valid"
-            ? (checked.body as Record<string, unknown>)
+            ? kind === "definition.publish"
+              ? interpretDefinition<Record<string, unknown>>(checked.body)
+              : (checked.body as Record<string, unknown>)
             : null,
         missing: event.body_hash !== null && (!envelope || !bytes),
       };
@@ -198,7 +203,7 @@ export async function buildPackages(
     if (record.missing)
       throw new Error("Retained publication bytes are unavailable.");
     if (!record.body) continue;
-    const body = interpretDefinition<Record<string, any>>(record.body);
+    const body = record.body as Record<string, any>;
     const entry: SearchEntry = {
       event: record.id,
       word: body.word,
