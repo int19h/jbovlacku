@@ -1,5 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import type { LexicalKind } from "../src/model/types.ts";
+import { corePath } from "./helpers.ts";
 
 const reviewText = "The spelling changed. Review the word type that you chose.";
 async function saved(page: Page): Promise<any> {
@@ -423,67 +424,126 @@ test("a genuinely different typed spelling starts a new typed analysis after an 
   expect((await saved(page)).lujvo.ordinarySpelling).toBeUndefined();
 });
 
-test("restored optional joins survive evidence removal and release when ordinary rows change", async ({
-  page,
-}) => {
-  await seed(page, { kind: "lujvo", word: "sairzba", detectionFor: "sairzba" });
-  await page.evaluate(async () => {
-    const { LocalStore } = await import(String("/src/data/store.ts"));
-    const store = new LocalStore();
-    const value: any = await store.get("drafts", "current");
-    const base =
-      "https://github.com/int19h/jbovlacku/blob/main/docs/morphology.md#";
-    value.compound = {
-      components: [
-        {
-          word: { language: "jbo", spelling: "sanmi" },
-          rafsi: "sai",
-          definition: null,
-        },
-        {
-          word: { language: "jbo", spelling: "zbasu" },
-          rafsi: "zba",
-          definition: null,
-        },
-      ],
-      morphology: { id: base + "extended-lujvo", version: "3" },
-      scoring: { id: base + "extended-lujvo-scoring", version: "1" },
-      score: null,
-      notes: [],
-    };
-    value.evidenceForm = "sairzba";
-    await store.put("drafts", "current", value);
+for (const [spelling, sources, locks, join, legacyState] of [
+  ["sairzba", ["sanmi", "zbasu"], ["sai", "zba"], "r", false],
+  ["sairzba", ["sanmi", "zbasu"], ["sai", "zba"], "r", true],
+  ["bangu'y'ismu", ["bangu", "ismu"], ["bangu", "ismu"], "'y'", true],
+] as const)
+  test(`restored optional joins survive evidence removal and release when ordinary rows change: ${spelling}, ${legacyState ? "legacy typed rows" : "no saved rows"}`, async ({
+    page,
+  }) => {
+    await seed(page, { kind: "lujvo", word: spelling, detectionFor: spelling });
+    await page.evaluate(
+      async ({ spelling, sources, locks, join, legacyState, corePath }) => {
+        const { LocalStore } = await import(String("/src/data/store.ts"));
+        const { newLujvoState } = await import(
+          String("/src/model/builders.ts")
+        );
+        const { detectWord } = await import(
+          String("/src/model/typed-headword.ts")
+        );
+        const { rafsiPairId, wordId } = await import(corePath);
+        const store = new LocalStore();
+        const value: any = await store.get("drafts", "current");
+        const base =
+          "https://github.com/int19h/jbovlacku/blob/main/docs/morphology.md#";
+        value.compound = {
+          components: sources.map((source, index) => ({
+            word: { language: "jbo", spelling: source },
+            rafsi: locks[index],
+            definition: null,
+          })),
+          morphology: { id: base + "extended-lujvo", version: "3" },
+          scoring: { id: base + "extended-lujvo-scoring", version: "1" },
+          score: null,
+          notes: [],
+        };
+        value.evidenceForm = spelling;
+        if (legacyState)
+          value.lujvo = {
+            ...newLujvoState(),
+            typed: spelling,
+            selected: spelling,
+            joins: [join],
+            components: sources.map((source, index) => ({
+              id: `legacy-${index}`,
+              spelling: source,
+              kind: detectWord(source).kind,
+              definition: null,
+              claims: [
+                {
+                  rafsi: locks[index],
+                  pair: rafsiPairId(
+                    wordId({ language: "jbo", spelling: source }),
+                    locks[index],
+                  ),
+                },
+              ],
+              locked: locks[index],
+              gloss: "",
+            })),
+          };
+        await store.put("drafts", "current", value);
+      },
+      { spelling, sources, locks, join, legacyState, corePath },
+    );
+    await page.goto("/new/lujvo");
+    await expect(
+      page
+        .getByRole("region", { name: "Result", exact: true })
+        .getByLabel(`Form ${spelling}`, { exact: true }),
+    ).toBeVisible();
+    await expect
+      .poll(async () => {
+        const state = (await saved(page)).lujvo;
+        return {
+          joins: state?.joins,
+          typed: state?.typed,
+          origin: state?.typedOrigin,
+          ordinary: state?.ordinarySpelling,
+        };
+      })
+      .toEqual({
+        joins: [join],
+        typed: undefined,
+        origin: undefined,
+        ordinary: spelling,
+      });
+    await expect(page.getByLabel("Add a part", { exact: true })).toBeVisible();
+    await page.reload();
+    await expect(
+      page
+        .getByRole("region", { name: "Result", exact: true })
+        .getByLabel(`Form ${spelling}`, { exact: true }),
+    ).toBeVisible();
+    expect((await saved(page)).lujvo.joins).toEqual([join]);
+    expect((await saved(page)).lujvo.typedOrigin).toBeUndefined();
+    await page
+      .getByRole("link", { name: "Type the spelling yourself", exact: true })
+      .click();
+    page.once("dialog", (dialog) => void dialog.accept());
+    await page
+      .getByRole("button", { name: "Remove formation evidence", exact: true })
+      .click();
+    await expect.poll(async () => (await saved(page)).compound).toBeNull();
+    expect((await saved(page)).lujvo.joins).toEqual([join]);
+    await page
+      .getByRole("list", { name: "Steps" })
+      .getByRole("link", { name: /^Form\b/ })
+      .click();
+    await expect(page.getByLabel("Add a part", { exact: true })).toBeVisible();
+    await page.getByLabel("Add a part", { exact: true }).fill("klama");
+    await page
+      .getByRole("button", { name: "Add klama as entered", exact: true })
+      .click();
+    await expect
+      .poll(async () => (await saved(page)).lujvo?.joins)
+      .toBeUndefined();
+    expect((await saved(page)).lujvo.restoredJoinParts).toBeUndefined();
+    if (sources[0] === "bangu")
+      await page
+        .getByRole("group", { name: "Rafsi for bangu", exact: true })
+        .getByRole("radio", { name: /^bang stem/ })
+        .check();
+    await expect(page.locator("button.btn-primary")).toBeEnabled();
   });
-  await page.goto("/new/lujvo");
-  await expect(
-    page
-      .getByRole("region", { name: "Result", exact: true })
-      .getByLabel("Form sairzba", { exact: true }),
-  ).toBeVisible();
-  await expect
-    .poll(async () => (await saved(page)).lujvo?.joins)
-    .toEqual(["r"]);
-  await page
-    .getByRole("link", { name: "Type the spelling yourself", exact: true })
-    .click();
-  page.once("dialog", (dialog) => void dialog.accept());
-  await page
-    .getByRole("button", { name: "Remove formation evidence", exact: true })
-    .click();
-  await expect.poll(async () => (await saved(page)).compound).toBeNull();
-  expect((await saved(page)).lujvo.joins).toEqual(["r"]);
-  await page
-    .getByRole("list", { name: "Steps" })
-    .getByRole("link", { name: /^Form\b/ })
-    .click();
-  await expect(page.getByLabel("Add a part", { exact: true })).toBeVisible();
-  await page.getByLabel("Add a part", { exact: true }).fill("klama");
-  await page
-    .getByRole("button", { name: "Add klama as entered", exact: true })
-    .click();
-  await expect(page.locator("button.btn-primary")).toBeEnabled();
-  await expect
-    .poll(async () => (await saved(page)).lujvo?.joins)
-    .toBeUndefined();
-  expect((await saved(page)).lujvo.restoredJoinParts).toBeUndefined();
-});

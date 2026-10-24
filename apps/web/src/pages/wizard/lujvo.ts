@@ -99,6 +99,9 @@ export async function lujvoPage(
     !!draft.typedSpelling &&
     typedWord(draft.typedSpelling) === typedWord(draft.spelling);
   const legacyTypedRows = !!state.typed && !state.typedOrigin;
+  const legacyTypedIdentity =
+    legacyTypedRows &&
+    typedWord(state.typed ?? "") === typedWord(draft.spelling);
   if (
     !state.typedOrigin &&
     state.components.length &&
@@ -183,7 +186,7 @@ export async function lujvoPage(
     if (
       state.profile === "extended" &&
       retainedLocks &&
-      (hydrate || state.typedOrigin)
+      (hydrate || state.typedOrigin || legacyTypedIdentity)
     ) {
       const parts = detectWord(draft.spelling).readings[0];
       if (
