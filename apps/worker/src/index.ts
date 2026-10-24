@@ -81,6 +81,8 @@ export class AdmissionCoordinator
     let provider: ProviderConfig | undefined;
     try {
       provider = providerConfig(env, async () => env.JVC_AI_KEY ?? "");
+      if (provider?.embeddingDisabledReason)
+        console.warn(provider.embeddingDisabledReason);
       if (!this.localIdentity && !this.trustEdgeIdentity) provider = undefined;
       if (provider) provider.concurrency = Math.min(provider.concurrency, 2);
     } catch {

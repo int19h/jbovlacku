@@ -614,6 +614,9 @@ Both local adapters accept these variables:
 | `JVC_AI_CONCURRENCY`               | Maximum active jobs. The default is two. Node permits one through four. The Worker caps this value at two.                                                           |
 | `JVC_AI_INPUT_PRICE`               | Model input price in USD per million tokens. The default is 0.10.                                                                                                    |
 | `JVC_AI_OUTPUT_PRICE`              | Model output price in USD per million tokens. The default is 0.20.                                                                                                   |
+| `JVC_AI_EMBEDDING_MODEL`           | Embedding model. The adapter permits only `qwen/qwen3-embedding-8b`, which is the default.                                                                           |
+| `JVC_AI_EMBEDDING_PROVIDER_ROUTE`  | Embedding route. The adapter permits only `nebius`, which is the default.                                                                                            |
+| `JVC_AI_EMBEDDING_INPUT_PRICE`     | Embedding input price in USD per million tokens. The default is 0.01.                                                                                               |
 | `JVC_AI_HOURLY_BUDGET_USD`         | Server spending limit for the past hour. The default is 32 USD.                                                                                                      |
 | `JVC_AI_DAILY_BUDGET_USD`          | Server spending limit for the past day. The default is 160 USD.                                                                                                      |
 | `JVC_AI_NETWORK_HOURLY_BUDGET_USD` | Hourly allowance for each network. The default is one quarter of the configured server hourly limit.                                                                 |
@@ -650,7 +653,7 @@ It marks local requests with an internal binding and ignores every client IP hea
 The ordinary Wrangler command leaves assistance off unless the operator supplies the key, enables assistance, and configures trusted edge identity.
 For an edge host, set `JVC_TRUST_CF_CONNECTING_IP=enabled` only where Cloudflare controls `CF-Connecting-IP`.
 The Worker also requires platform request metadata and a valid IP address. Synthetic metadata alone does not enable header trust.
-An invalid AI setting disables assistance on the Worker and emits one fixed error per coordinator instance. Manual routes remain available.
+An invalid generation configuration disables assistance on the Worker and emits one fixed error per coordinator instance. Manual routes remain available.
 Hosted secret setup and deployment remain separate operator work.
 
 Node permits assistance on direct loopback by default and ignores forwarding headers.
@@ -813,7 +816,56 @@ Recovery starts those windows at the later of the restart time and the stored jo
 A legacy record without a deadline uses the restart time. The lost job cannot report its final cost.
 The ledger contains cost records, network hashes, and its private hash key. It contains no draft text or provider credential.
 An unreadable or unwritable ledger blocks new assistance jobs.
+The same ledger also controls host embedding calls through `AssistanceService.embed`.
+An embedding query uses the caller's network limits. Operator index and probe batches use the server limits.
+Query callers must supply a valid IP address, a normalized IPv6 /64, or the trusted local host marker `local`.
+All these operations share the server's hourly and daily limits and execution slots with generation.
+The existing Node key file and Worker key binding also serve embedding requests.
+An invalid or empty `JVC_AI_EMBEDDING_*` value disables embedding alone on both hosts.
+The host emits a fixed warning that names the invalid field. Generation profiles and remembered browser consent stay unchanged.
+
+Each embedding batch permits one through eight inputs, with at most 4,096 UTF-8 bytes per input and 32 KiB in total.
+Inputs already include the exact profile prefix. The adapter rejects malformed UTF-8 and preserves the remaining bytes.
+Encoded requests permit 64 KiB. Provider responses permit 2 MiB.
+The adapter pins the model and Nebius route, disables fallback and redirects, and makes no automatic retry.
+The embedding input price must be positive. The route price cap uses the lower of that price and `JVC_AI_MAX_PRICE`.
+It accepts the exact returned model names `qwen/qwen3-embedding-8b` and `Qwen/Qwen3-Embedding-8B`.
+The adapter rejects invalid input indices, dimensions other than 4,096, and nonfinite or zero vectors.
+It produces unit-normalized float32 vectors.
+
+An embedding reservation quotes 32,000 input tokens per input at the configured embedding price.
+At the default price, one input reserves 0.000320 USD. Eight inputs reserve 0.002560 USD.
+This conservative quote covers provider normalization without assuming that original byte counts bound token counts.
+A reported cost replaces that estimate. An unknown sent charge keeps the estimate through the normal spending windows.
+Invalid vectors or a model mismatch never remove a reported charge.
+Financial failures and model mismatch use separate error codes. Later profile services must handle compatibility state.
+
+The embedding deadline covers admission, key loading, transport, response reading, and settlement preparation.
+During admission, a caller's abort signal prevents dispatch and removes any unsent reservation.
+After admission completes, a caller's abort signal detaches its response. The server continues key loading, the request, and settlement.
+At the deadline, the caller stops waiting. A transport that ignores abort keeps its execution slot until it ends.
+This prevents replacement requests from creating unbounded concurrent transport work.
+`AssistanceService.embeddingOperations` returns at most 64 diagnostic records, with active operations first.
+The records expose operation IDs, purpose, deadline, transport state, and spending estimates without input text or credentials.
+After restart, reservations remain charged and appear as retained operations.
+An operation that was active at restart has unknown cost and retains the larger of its reservation and accumulated charges.
+Retained records do not establish whether an earlier request completed or lost its transport.
+Every error after an embedding reservation names its operation through the error's `operation` field.
+An operator can inspect these records and request a new bounded attempt through the same service after a limit clears.
+The earlier charge remains. A stuck transport requires its completion or a service restart before its slot returns.
+Job pause, resume, and explicit retry links belong to later indexing work.
+
+These host methods expose no browser route. Semantic search remains disabled until storage and query services pass their tests.
+Compatible query caching and current-view filtering also belong to those later services.
 At most 16,384 cost records remain within a day. Reaching this bound also refuses new jobs with a retry interval.
+On a later admission, the service combines completed operator batches with known costs into hourly summary rows.
+Queries, generation jobs, errors, and unknown charges keep their individual rows.
+A summary ages from its latest charge, so earlier charges can stay counted for up to one extra hour.
+Summaries retain the operator's spending identity and count against server limits. They consume no client network share.
+Recent batch diagnostics keep the individual charge and link to their summary through `summary`.
+An aggregate diagnostic has `aggregated: true`. Restart retains the financial summary without claiming individual batch outcomes.
+Mocked tests run two complete indexes of 59,129 inputs each, retain 8,192 assistance history rows, and admit another generation job.
+The ledger keeps its existing row limit, 32 MiB Worker storage bound, and atomic 64 KiB parts.
 A local workerd test measured a valid maximum ledger with escaped 128-character IDs and two hashes per record.
 Its JSON occupied 17,858,669 bytes. The old single stored value occupied 6,324,340 bytes.
 The split form used 273 parts. Its largest stored part occupied 65,549 bytes, including serialization overhead. The manifest occupied 112 bytes.
