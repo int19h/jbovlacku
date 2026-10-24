@@ -1330,6 +1330,127 @@ fn native_rafsi_fixture() -> Fixture {
     f
 }
 
+fn assert_pending_cutoff_rafsi(claim_cutoff: bool) {
+    for retained in [false, true] {
+        let mut f = native_rafsi_fixture();
+        let (claim, _) = rafsi(&mut f, 3);
+        let definition = native(&mut f, 4);
+        let (issuer, publication, deprecated) = if claim_cutoff {
+            let (deprecated, _) = rafsi(&mut f, 5);
+            (3, claim.clone(), deprecated)
+        } else {
+            (4, definition, native(&mut f, 5))
+        };
+        f.event(
+            5,
+            vec![deprecated.clone()],
+            json!({"kind":"status.set","target":deprecated,"value":"deprecated"}),
+            None,
+        );
+        let safe = f.event(
+            issuer,
+            if retained {
+                vec![publication.clone()]
+            } else {
+                vec![]
+            },
+            json!({"kind":"identity.merge"}),
+            None,
+        );
+        let safe_event = f.input.events.last().unwrap().clone();
+        let compromise = f.compromise(issuer, vec![safe.clone()], vec![safe.clone()]);
+        f.remove(&safe);
+        let pending = f.input.clone();
+        let result = evaluate_observed(&f.input);
+        let receipt = &result.receipts[&publication];
+        assert_eq!(receipt.interpretation, jvc_state::Interpretation::Suspended);
+        assert!(receipt.reasons.contains("cutoff_pending"));
+        assert!(!receipt.reasons.contains("outside_retained_history"));
+        assert_eq!(result.publications[&publication].status, Status::Uncertain);
+        assert_eq!(
+            result.publications[&claim].eligible,
+            jvc_state::Eligibility::Unknown
+        );
+        assert_eq!(
+            result.receipts[&compromise].interpretation,
+            jvc_state::Interpretation::Pending
+        );
+
+        // Independent active evidence can establish eligibility while this cutoff waits.
+        if claim_cutoff {
+            rafsi(&mut f, 7);
+        } else {
+            native(&mut f, 7);
+        }
+        assert_eq!(
+            evaluate_observed(&f.input).publications[&claim].eligible,
+            jvc_state::Eligibility::Eligible
+        );
+
+        f.input = pending;
+        f.input.events.push(safe_event);
+        let result = evaluate_observed(&f.input);
+        assert_eq!(
+            result.receipts[&publication].interpretation,
+            if retained {
+                jvc_state::Interpretation::Effective
+            } else {
+                jvc_state::Interpretation::Inert
+            }
+        );
+        assert!(
+            !result.receipts[&publication]
+                .reasons
+                .contains("cutoff_pending")
+        );
+        assert_eq!(
+            result.publications[&claim].eligible,
+            if retained {
+                jvc_state::Eligibility::Eligible
+            } else {
+                jvc_state::Eligibility::Inactive
+            }
+        );
+    }
+}
+
+#[test]
+fn pending_cutoff_definition_keeps_rafsi_unknown_until_safe_history_arrives() {
+    assert_pending_cutoff_rafsi(false);
+}
+
+#[test]
+fn pending_cutoff_claim_keeps_rafsi_unknown_until_safe_history_arrives() {
+    assert_pending_cutoff_rafsi(true);
+}
+
+#[test]
+fn pending_cutoff_keeps_explicit_view_adoption_and_ordinary_incomplete_content_rules() {
+    let mut f = native_rafsi_fixture();
+    let selected = f.input.selected_view.clone();
+    f.compromise(20, vec![fake("jve1:")], vec![fake("jve1:")]);
+    let definition = native(&mut f, 4);
+    f.event(
+        4,
+        vec![fake("jve1:")],
+        json!({"kind":"identity.merge"}),
+        None,
+    );
+    let result = evaluate_observed(&f.input);
+    assert!(result.available);
+    assert!(result.policy.is_some());
+    assert_eq!(
+        result.receipts[&definition].interpretation,
+        jvc_state::Interpretation::Effective
+    );
+    assert_eq!(result.publications[&definition].status, Status::Uncertain);
+    assert!(
+        !result.receipts[&selected]
+            .reasons
+            .contains("cutoff_pending")
+    );
+}
+
 #[test]
 fn rafsi_gate_ignores_inert_definitions_without_losing_missing_definition_uncertainty() {
     for deprecated in [false, true] {
