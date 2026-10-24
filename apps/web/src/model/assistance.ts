@@ -479,6 +479,9 @@ export function sourceCurrent(draft: Draft, id: string | number): Current {
     candidates: [],
     conflicts: [],
   };
+  current.formation = interpretDefinition<DefinitionBody>({
+    etymology: { formation: current.formation },
+  }).etymology.formation;
   return current;
 }
 export interface SourceTarget {

@@ -1,9 +1,22 @@
-import { test } from "node:test";
+import { before, test } from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { initializeCore } from "../../../../packages/core/src/index.ts";
 import * as builders from "../../src/model/builders.ts";
 import { newDraft, normalizeDraft } from "../../src/model/draft.ts";
 import type { GismuRowState } from "../../src/model/builders.ts";
 import type { FormationSource } from "../../src/model/types.ts";
+
+before(async () =>
+  initializeCore(
+    await readFile(
+      new URL(
+        "../../../../packages/core/generated/jvc_runtime_bg.wasm",
+        import.meta.url,
+      ),
+    ),
+  ),
+);
 
 const row = (): GismuRowState => ({
   language: "en",
