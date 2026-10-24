@@ -1077,6 +1077,16 @@ export class AssistanceService {
   private running = 0;
   private embeddingWork = new Map<string, EmbeddingOperation>();
   private embeddingSlots = new Map<string, number>();
+  private embeddingFailedWaits = new Set<string>();
+  private embeddingSettled = new Map<
+    string,
+    {
+      reservedUsd: number;
+      chargedUsd: number;
+      costKnown: boolean;
+      summary: string | null;
+    }
+  >();
   private budgetEntries = new Map<string, AssistanceBudgetEntry>();
   private networkHashKey = "";
   private budgetLoaded = false;
@@ -1121,6 +1131,7 @@ export class AssistanceService {
       );
     const deadline = Date.now() + config.timeoutMs;
     const prepared = prepareEmbedding(inputs, config);
+    let operationId: string | undefined;
     const controller = new AbortController();
     const timer = setTimeout(
       () =>
@@ -1163,6 +1174,7 @@ export class AssistanceService {
       }
       signal.throwIfAborted();
       const id = `embedding:${caller.kind}:${crypto.randomUUID()}`;
+      operationId = id;
       this.budgetEntries.set(id, {
         id,
         at: Date.now(),
@@ -1204,10 +1216,34 @@ export class AssistanceService {
       .finally(() => clearTimeout(timer));
     // Both hosts retain their existing background-work policy.
     this.options.waitUntil?.(work.catch(() => {}));
-    return abortable(
-      work,
-      callerSignal ? AbortSignal.any([signal, callerSignal]) : signal,
-    );
+    try {
+      return await abortable(
+        work,
+        callerSignal ? AbortSignal.any([signal, callerSignal]) : signal,
+      );
+    } catch (failure) {
+      if (!operationId) throw failure;
+      if (this.embeddingWork.has(operationId))
+        this.embeddingFailedWaits.add(operationId);
+      if (failure instanceof AssistanceError) {
+        const error = new AssistanceError(
+          failure.status,
+          failure.code,
+          failure.message,
+          operationId,
+        );
+        error.name = failure.name;
+        throw error;
+      }
+      throw new AssistanceError(
+        callerSignal?.aborted ? 499 : 502,
+        callerSignal?.aborted ? "embedding_canceled" : "embedding_provider",
+        callerSignal?.aborted
+          ? "The caller stopped waiting. Admitted embedding work continues on the server."
+          : "The embedding provider request failed.",
+        operationId,
+      );
+    }
   }
 
   /** Bounded diagnostics contain no inputs, vectors, network addresses, or keys. */
@@ -1224,6 +1260,7 @@ export class AssistanceService {
         .map((id) => {
           const entry = this.budgetEntries.get(id);
           const work = this.embeddingWork.get(id);
+          const settled = this.embeddingSettled.get(id);
           return {
             ...(work ?? {
               id,
@@ -1234,9 +1271,11 @@ export class AssistanceService {
               error: null,
             }),
             active: entry?.active ?? false,
-            reservedUsd: entry?.reservedUsd ?? 0,
-            chargedUsd: entry?.settledUsd ?? 0,
-            costKnown: entry?.costKnown ?? true,
+            reservedUsd: entry?.reservedUsd ?? settled?.reservedUsd ?? 0,
+            chargedUsd: entry?.settledUsd ?? settled?.chargedUsd ?? 0,
+            costKnown: entry?.costKnown ?? settled?.costKnown ?? true,
+            summary: settled?.summary ?? null,
+            aggregated: /^embedding:(index|probe):summary:/.test(id),
           };
         })
         .sort(
@@ -1269,8 +1308,11 @@ export class AssistanceService {
         (item) =>
           !item.transportPending && !["preparing", "sent"].includes(item.state),
       );
-      for (const old of terminal.slice(0, Math.max(0, terminal.length - 64)))
+      for (const old of terminal.slice(0, Math.max(0, terminal.length - 64))) {
         this.embeddingWork.delete(old.id);
+        this.embeddingSettled.delete(old.id);
+        this.embeddingFailedWaits.delete(old.id);
+      }
     };
     try {
       const result = await requestEmbedding(prepared, config, signal, {
@@ -1326,6 +1368,12 @@ export class AssistanceService {
           if (!entry) return;
           entry.active = false;
           if (!sent || (recorded && entry.costKnown)) entry.reservedUsd = 0;
+          this.embeddingSettled.set(operation.id, {
+            reservedUsd: entry.reservedUsd,
+            chargedUsd: entry.settledUsd,
+            costKnown: entry.costKnown,
+            summary: null,
+          });
           if (!entry.reservedUsd && !entry.settledUsd)
             this.budgetEntries.delete(operation.id);
           await this.saveBudget();
@@ -1403,11 +1451,16 @@ export class AssistanceService {
             entries.set(entry.id, {
               id: entry.id,
               reservedUsd: entry.reservedUsd,
-              settledUsd: entry.settledUsd,
+              settledUsd: entry.active
+                ? Math.max(entry.reservedUsd, entry.settledUsd)
+                : entry.settledUsd,
               networkHashes:
                 snapshot.version === 2 ? [...entry.networkHashes] : [],
               deadline: snapshot.version === 2 ? entry.deadline : entry.at,
-              costKnown: snapshot.version === 2 ? entry.costKnown : false,
+              costKnown:
+                !entry.active && snapshot.version === 2
+                  ? entry.costKnown
+                  : false,
               at: entry.active
                 ? Math.max(
                     entry.at,
@@ -1502,6 +1555,7 @@ export class AssistanceService {
     for (const [id, entry] of this.budgetEntries)
       if (!entry.active && entry.at + 86400000 <= now)
         this.budgetEntries.delete(id);
+    this.compactOperatorCosts();
     const scopes = [
       { hash: null, hour: config.hourlyBudgetUsd, day: config.dailyBudgetUsd },
       ...networkHashes.map((hash) => ({
@@ -1604,6 +1658,50 @@ export class AssistanceService {
           "billing_limit",
         )
       : null;
+  }
+  /** Successful operator batches share a conservative charge row for each hour. */
+  private compactOperatorCosts() {
+    for (const operation of this.embeddingWork.values()) {
+      if (
+        operation.kind === "query" ||
+        operation.state !== "completed" ||
+        this.embeddingFailedWaits.has(operation.id) ||
+        this.embeddingSlots.has(operation.id)
+      )
+        continue;
+      const entry = this.budgetEntries.get(operation.id);
+      if (
+        !entry ||
+        entry.active ||
+        !entry.costKnown ||
+        entry.reservedUsd !== 0 ||
+        entry.networkHashes.length !== 1
+      )
+        continue;
+      const id = `embedding:${operation.kind}:summary:${Math.floor(entry.at / 3600000)}`;
+      const previous = this.budgetEntries.get(id);
+      if (
+        previous &&
+        (previous.active ||
+          !previous.costKnown ||
+          previous.reservedUsd !== 0 ||
+          previous.networkHashes.length !== 1 ||
+          previous.networkHashes[0] !== entry.networkHashes[0])
+      )
+        continue;
+      const total = (previous?.settledUsd ?? 0) + entry.settledUsd;
+      if (!Number.isFinite(total)) continue;
+      this.budgetEntries.set(id, {
+        ...entry,
+        id,
+        at: Math.max(entry.at, previous?.at ?? 0),
+        deadline: Math.max(entry.deadline, previous?.deadline ?? 0),
+        settledUsd: total,
+      });
+      this.budgetEntries.delete(operation.id);
+      const diagnostic = this.embeddingSettled.get(operation.id);
+      if (diagnostic) diagnostic.summary = id;
+    }
   }
   private async settleCost(
     id: string,

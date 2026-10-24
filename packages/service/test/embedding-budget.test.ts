@@ -15,6 +15,9 @@ import {
   type ProviderConfig,
 } from "../src/inference.ts";
 import { EMBEDDING_MODEL } from "../src/embedding.ts";
+import { DictionaryService } from "../src/service.ts";
+import { emptyState } from "../src/storage.ts";
+import { nodeAssistance } from "../../../apps/server/src/assistance.ts";
 
 before(async () =>
   initializeCore(
@@ -462,27 +465,37 @@ test("generation occupies the same execution slots as embedding", async () => {
 });
 
 test("restart keeps interrupted embedding reservations and permits supported later attempts", async () => {
-  const budget = store({
-    version: 2,
-    networkHashKey: "ab".repeat(32),
-    entries: [
-      {
-        id: "embedding:index:interrupted",
-        at: Date.now(),
-        reservedUsd: quote,
-        settledUsd: 0,
-        active: true,
-        deadline: Date.now() + 1000,
-        networkHashes: ["cd".repeat(32)],
-        costKnown: false,
+  const gate = deferred<void>();
+  let dispatched = false;
+  const original = fixture(
+    config({
+      fetch: async () => {
+        dispatched = true;
+        await gate.promise;
+        return Response.json(embedding());
       },
-    ],
-  });
-  const { service } = fixture(config({ hourlyBudgetUsd: quote * 1.5 }), budget);
+    }),
+  );
+  const inFlight = original.service.embed(input, { kind: "index" });
+  await until(() => dispatched);
+  const written = original.budgetStore.snapshot()!;
+  assert.equal(written.entries[0].active, true);
+  assert(written.version === 2);
+  assert.equal(written.entries[0].costKnown, true);
+  assert.equal(written.entries[0].settledUsd, 0);
+  const budget = store(written);
+  const { service } = fixture(
+    config({ hourlyBudgetUsd: quote * 2, dailyBudgetUsd: quote * 1.5 }),
+    budget,
+  );
   const [interrupted] = await service.embeddingOperations();
+  assert.equal(interrupted.id, written.entries[0].id);
   assert.equal(interrupted.state, "retained");
   assert.equal(interrupted.active, false);
   assert.equal(interrupted.reservedUsd, quote);
+  assert.equal(interrupted.costKnown, false);
+  assert.equal(interrupted.chargedUsd, quote);
+  assert.equal(entries(budget)[0].costKnown, false);
   await assert.rejects(
     service.embed(input, { kind: "index" }),
     rejectCode("billing_limit"),
@@ -491,6 +504,8 @@ test("restart keeps interrupted embedding reservations and permits supported lat
   await recovered.embed(input, { kind: "index" });
   assert.equal(entries(budget).length, 2);
   assert.equal(entries(budget)[0].reservedUsd, quote);
+  gate.resolve();
+  await inFlight;
 });
 
 test("storage failures block paid dispatch and recover through the same service", async () => {
@@ -546,8 +561,8 @@ test("admission and settlement waits cannot extend the caller deadline or dispat
     load: () => durable.load(),
     async save(snapshot) {
       saves++;
-      if (saves === 1) await gate.promise;
       await durable.save(snapshot);
+      if (saves === 2) await gate.promise;
     },
   };
   const service = new AssistanceService(
@@ -565,18 +580,28 @@ test("admission and settlement waits cannot extend the caller deadline or dispat
     async () => [],
   );
   const first = service.embed(input, { kind: "index" });
-  const firstRejected = assert.rejects(first, rejectCode("embedding_timeout"));
-  await until(() => saves === 1);
+  let timedOutOperation: string | undefined;
+  const firstRejected = assert.rejects(first, (failure: any) => {
+    assert.equal(failure.code, "embedding_timeout");
+    timedOutOperation = failure.operation;
+    return true;
+  });
+  await until(() => saves === 2);
+  const reserved = durable.snapshot()!.entries[0];
+  assert.equal(reserved.active, true);
+  assert.equal(reserved.reservedUsd, quote);
   const secondRejected = assert.rejects(
     service.embed(input, query()),
     rejectCode("embedding_timeout"),
   );
   await Promise.all([firstRejected, secondRejected]);
+  assert.equal(timedOutOperation, reserved.id);
   assert.equal(calls, 0);
   gate.resolve();
   await service.embeddingOperations();
   assert.equal(calls, 0);
   assert.equal(durable.snapshot()!.entries.length, 0);
+  assert(saves >= 3);
 
   const settlement = deferred<void>();
   let settlementStarted = false;
@@ -626,13 +651,32 @@ test("unsent failures release their reservation and no disabled capability is in
     }),
     rejectCode("feature_disabled"),
   );
+  const dictionary = new DictionaryService(
+    { get: async () => null, put: async () => {} },
+    {
+      load: async () => emptyState(),
+      getSnapshot: async () => null,
+      compareAndSwap: async () => true,
+    },
+    {
+      assistance: { provider: config() },
+      serverId: "embedding-test",
+      policyUrl: "https://example.test/policy",
+    },
+  );
+  const capabilities = (await (
+    await dictionary.fetch(new Request("http://localhost/api/v1/capabilities"))
+  ).json()) as any;
+  assert.equal(capabilities.features.assistance, true);
+  assert.equal(capabilities.features.semantic_search, false);
+  assert.deepEqual(capabilities.embedding_profiles, []);
   assert.equal(
-    await service.route(
-      new Request("http://localhost/search/semantic"),
-      "/search/semantic",
-      async () => new Uint8Array(),
-    ),
-    null,
+    (
+      await dictionary.fetch(
+        new Request("http://localhost/api/v1/search/semantic"),
+      )
+    ).status,
+    404,
   );
 });
 
@@ -774,4 +818,143 @@ test("key-loader failures are unavailable credentials and route failures are not
       rejectCode("embedding_provider"),
     );
   }
+});
+
+test("invalid embedding settings leave Node generation and browser consent profiles unchanged", async (t) => {
+  const warning = t.mock.method(console, "warn", () => {});
+  const variants = [
+    { JVC_AI_EMBEDDING_MODEL: "" },
+    { JVC_AI_EMBEDDING_MODEL: "private-invalid-model" },
+    { JVC_AI_EMBEDDING_PROVIDER_ROUTE: "" },
+    { JVC_AI_EMBEDDING_PROVIDER_ROUTE: "private-invalid-route" },
+    { JVC_AI_EMBEDDING_INPUT_PRICE: "" },
+    { JVC_AI_EMBEDDING_INPUT_PRICE: "NaN" },
+    { JVC_AI_EMBEDDING_INPUT_PRICE: "0" },
+    { JVC_AI_EMBEDDING_INPUT_PRICE: "5e-324" },
+  ];
+  const capabilities = async (provider: ProviderConfig) => {
+    const service = new DictionaryService(
+      { get: async () => null, put: async () => {} },
+      {
+        load: async () => emptyState(),
+        getSnapshot: async () => null,
+        compareAndSwap: async () => true,
+      },
+      {
+        serverId: "test",
+        policyUrl: "https://example.test/policy",
+        assistance: { provider },
+      },
+    );
+    return (await (
+      await service.fetch(new Request("http://localhost/api/v1/capabilities"))
+    ).json()) as any;
+  };
+  const baseline = await capabilities(config());
+  for (const variant of variants) {
+    const budget = store();
+    const options = nodeAssistance(
+      {
+        JVC_AI_ENABLED: "enabled",
+        JVC_AI_KEY_FILE: "/synthetic/unread",
+        ...variant,
+      },
+      budget,
+    );
+    const provider = options.provider!;
+    assert(provider);
+    assert.equal(provider.embedding, undefined);
+    assert.match(
+      provider.embeddingDisabledReason!,
+      /^Embedding inference is disabled because JVC_AI_EMBEDDING_/,
+    );
+    assert(!provider.embeddingDisabledReason!.includes("private-invalid"));
+    assert.deepEqual(
+      (await capabilities(provider)).assistance_profiles,
+      baseline.assistance_profiles,
+    );
+    provider.key = async () => "disposable-shared-key";
+    let turns = 0;
+    provider.fetch = async () => {
+      turns++;
+      return Response.json(completion());
+    };
+    const work: Promise<unknown>[] = [];
+    const instance = new AssistanceService(
+      {
+        ...options,
+        waitUntil: (promise) => {
+          work.push(promise);
+        },
+      },
+      "test",
+      async () => [],
+    );
+    assert.equal((await generation(instance)).status, 202);
+    await Promise.all(work);
+    assert.equal(turns, 1);
+    await assert.rejects(
+      instance.embed(input, { kind: "probe" }),
+      (failure: any) =>
+        failure.code === "embedding_configuration" &&
+        failure.message === provider.embeddingDisabledReason,
+    );
+    assert.equal(entries(budget).length, 1);
+  }
+  assert.equal(warning.mock.calls.length, variants.length);
+});
+
+test("every admitted embedding failure names its own operation, including shared caller aborts", async () => {
+  for (const fetcher of [
+    async () => {
+      throw new Error("Transport failed.");
+    },
+    async () => Response.json({ ...embedding(), model: "different" }),
+    async () => new Response("invalid JSON"),
+  ] as (typeof fetch)[]) {
+    const { service } = fixture(config({ fetch: fetcher }));
+    let failureId: string | undefined;
+    await assert.rejects(service.embed(input, query()), (failure: any) => {
+      assert.match(failure.operation, /^embedding:query:/);
+      failureId = failure.operation;
+      return true;
+    });
+    assert.equal((await service.embeddingOperations())[0].id, failureId);
+  }
+  const caller = new AbortController();
+  const reason = new AssistanceError(499, "caller_left", "The caller left.");
+  const gate = deferred<void>();
+  let calls = 0;
+  const { service, background } = fixture(
+    config({
+      fetch: async () => {
+        calls++;
+        await gate.promise;
+        return Response.json(embedding());
+      },
+    }),
+  );
+  const first = service
+    .embed(input, query("192.0.2.1"), caller.signal)
+    .catch((failure) => failure);
+  const second = service
+    .embed(input, query("192.0.2.2"), caller.signal)
+    .catch((failure) => failure);
+  await until(() => calls === 2);
+  caller.abort(reason);
+  const errors = await Promise.all([first, second]);
+  assert.notEqual(errors[0], errors[1]);
+  assert.notEqual(errors[0].operation, errors[1].operation);
+  assert.equal(reason.operation, undefined);
+  for (const failure of errors) {
+    assert.equal(failure.code, reason.code);
+    assert.equal(failure.status, reason.status);
+    assert(
+      (await service.embeddingOperations()).some(
+        (entry) => entry.id === failure.operation,
+      ),
+    );
+  }
+  gate.resolve();
+  await Promise.all(background);
 });
