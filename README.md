@@ -15,10 +15,10 @@ It does not restrict expressly authorized work on private GitHub issues and pull
 The Rust libraries implement canonical records, SSHSIG signatures, causal state, identity continuity, imported account controls, and exact ranking bounds.
 Native and WebAssembly builds share the format rules. The TypeScript application uses generated WebAssembly bindings.
 
-The definition validator accepts an omitted or null `word_ipa` field on formation sources.
-It rejects `stem` and `ipa` source fields, including null and empty values.
-Formation sources still require explicit `input`, `weight`, and `notes`, including their empty or null values.
-Every other [optional definition field](docs/format.md#absent-fields-and-compatibility) still requires its explicit value in the current validator.
+The definition validator accepts omitted [optional definition fields](docs/format.md#absent-fields-and-compatibility) and their explicit default values.
+Readers and editors apply defaults to separate interpreted values. Stored bodies, exports, hashes, signatures, and event IDs retain the original signed content.
+New definitions omit optional fields with default values. Required fields and imported source evidence remain required.
+Formation sources accept an omitted or null `word_ipa`. They reject `stem` and `ipa`, including null and empty values.
 
 The shared core accepts `entity`, `mass`, and `tuple` as retired tags in signed version 1 bodies.
 Sorting and uniqueness compare signed tag strings. A retired tag can appear beside its current equivalent without an automatic merge.
@@ -81,7 +81,17 @@ Manual authoring works without AI. Publish signs the definition, a separate auth
 Revise copies a publication into a new draft with its exact parent and keeps every field: links, code, operands, literal circled characters, every gloss with its language and sense, every derivation, and the frame role. The page names the only changes a native revision makes. A revision of imported text cites the imported publication and copies the source-rights reference once.
 Each rich text field of a draft holds its exact value, and only an edit of that field parses text, so an untouched field never changes. In structured editing every rich text node has a text form, and a backslash keeps a circled numeral or a token character literal. Pasted circled numbers stay literal unless the author chooses references. Removing a place keeps the referent of every other reference. The shared core checks the finished body before Publish is enabled, and every blocking problem names its field.
 A draft saved by the earlier prototype opens a choice to export it, convert it into a wizard draft, or discard it. The old license and attribution fields stay in the export only, because new definitions publish under CC0 1.0.
-Remote search offers a retired-results filter that shows each publication's status. The lujvo builder says whether a candidate spelling is taken in the local package and on the server.
+Remote lexical search, word pages, and downloaded language packages exclude definitions whose receipts are not effective.
+Word pages and language packages retain effective deprecated definitions.
+Remote search includes them through its retired-results filter and shows each publication's status.
+Reads pinned to an earlier retained snapshot use that snapshot's state. Word pages and remote searches also use their requested view.
+Core definition rankings exclude definitions without effective receipts.
+Rafsi eligibility uses effective publication evidence and preserves missing-data uncertainty.
+Resolved cutoffs and transfers keep their publication exclusions when another cutoff is pending.
+Otherwise, pending compromise cutoffs suspend definition and rafsi receipts. Suspended publications do not prove an inactive rafsi assignment.
+When evaluation reaches a resource limit, the manifest keeps raw synchronization and signed view inspection available and marks package downloads unavailable.
+The browser does not load or save an unconfigured server view as a signed policy.
+The lujvo builder says whether a candidate spelling is taken in the local package and on the server.
 The rafsi page lists known assignments across words from version 2 packages, and the claim page signs a claim with its pair blessing.
 The lujvo builder offers short rafsi, gismu stems, whole gismu, whole-word parts under the extended profile, locks, CLL scores, recovered parts, and every competing rafsi claim from the local package.
 If several parts share the same competing rafsi claim, the builder shows one acknowledgment for that claim.
@@ -128,7 +138,7 @@ The gismu generator offers the CLL 1987, CLL 1995, and Ilmen presets with pinned
 The core and builders keep the optional full pronunciation, `word_ipa`, in signed formation sources.
 Draft reload preserves private `stem` and `ipa` values. Neither enters a signed formation source.
 Publication keeps each source row's word, `word_ipa`, scoring input, weight, and notes.
-New unknown pronunciations omit `word_ipa`. Revisions preserve an authenticated original null value without copying it into fresh source rows.
+New signatures omit unknown `word_ipa` values. Retained signed bodies and private revision markers preserve original field presence without copying it into fresh source rows.
 Known weights, including zero, survive regardless of private `stem` or `ipa` values.
 The gismu source editor has seven readable columns inside its own scrolling region at 360 and 1280 CSS pixels.
 Each Remove action includes a row number and names its source language when known, including after a custom language edit.
@@ -158,6 +168,15 @@ The private attempt log offers Markdown and JSON export. Signed publications omi
 Both local adapters offer operator-controlled assistance, off by default, with server-held keys and bounded private jobs.
 They reserve costs before admission and enforce server and network spending limits that survive a restart.
 IPv6 limits also count /48 prefixes. The Worker stores large spending ledgers in atomic parts.
+The host service also admits bounded embedding batches through the same spending ledger and execution slots.
+Caller cancellation during embedding admission prevents dispatch and removes any unsent reservation.
+Its provider adapter pins `qwen/qwen3-embedding-8b` to the Nebius route through OpenRouter, with fallback and redirects disabled.
+Invalid embedding configuration disables embedding alone and preserves generation on both hosts.
+Interrupted operations retain unknown-cost charges after restart. Errors after reservation carry their operation IDs.
+Completed operator batches with known costs share hourly ledger rows, while recent diagnostics retain their individual charges.
+Mocked capacity tests cover two 59,129-input index runs, 8,192 assistance history rows, and a subsequent generation job.
+Mocked tests cover provider validation, caller departure, unknown charges, deadlines, and interrupted reservations after restart.
+Semantic storage, search routes, indexing, and query caching remain unfinished. The semantic capability stays disabled.
 A discarded result returns a clear status. Spending failures distinguish pending costs, timed limits, and requests that cannot fit.
 The default spending share admits every enabled operation at each reasoning effort, with decision reports enabled or disabled.
 Each task uses an output cap based on recorded prompt tests. An explicit operator limit replaces the automatic caps.

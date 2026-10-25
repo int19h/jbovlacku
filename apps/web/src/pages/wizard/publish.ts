@@ -202,7 +202,7 @@ export async function publishPage(
         ),
         definitionBlock(
           app,
-          { envelope, body, bodyError: null },
+          { envelope, body, rawBody: null, bodyError: null },
           {
             score: null,
             unavailable: true,

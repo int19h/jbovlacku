@@ -8,6 +8,7 @@ import {
   hintForChoice,
   signedFormation,
   retainedNullPronunciations,
+  interpretDraftDefinition,
 } from "./draft.ts";
 import type { DraftProblem } from "./draft.ts";
 import type {
@@ -183,7 +184,7 @@ export function currentDraft(draft: Draft): Current {
             : null,
           constraints: draft.frameConstraints,
         };
-  return structuredClone({
+  const current: Current = structuredClone({
     word_type: draft.kind,
     classification: draft.kind
       ? { kind: draft.kind, selmaho: draft.selmaho }
@@ -201,6 +202,20 @@ export function currentDraft(draft: Draft): Current {
       ),
     compound: draft.compound,
   });
+  const interpreted = interpretDraftDefinition<DefinitionBody>({
+    frame: current.frame,
+    classification: current.classification,
+    glosses: current.glosses,
+    etymology: { formation: current.formation, compound: current.compound },
+  });
+  return {
+    ...current,
+    frame: interpreted.frame,
+    classification: current.classification ? interpreted.classification : null,
+    glosses: interpreted.glosses,
+    formation: interpreted.etymology.formation,
+    compound: interpreted.etymology.compound,
+  };
 }
 const roots: Record<Operation, string[]> = {
   type: ["/word_type"],
@@ -493,6 +508,9 @@ export function sourceCurrent(draft: Draft, id: string | number): Current {
     candidates: [],
     conflicts: [],
   };
+  current.formation = interpretDraftDefinition<DefinitionBody>({
+    etymology: { formation: current.formation },
+  }).etymology.formation;
   return current;
 }
 export interface SourceTarget {

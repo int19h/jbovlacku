@@ -1,4 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
+import { realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { fixture } from "./helpers.ts";
 import type { RafsiInventoryClaim } from "../../../packages/core/src/index.ts";
 
@@ -411,8 +413,23 @@ for (const measure of ["recognition work", "build recognition work"]) {
   test(`the wizard limits lock advice to shared build work for ${measure} from WebAssembly`, async ({
     page,
   }) => {
+    const originalPath = fileURLToPath(
+      new URL(
+        "../../../packages/core/generated/jvc_runtime.js",
+        import.meta.url,
+      ),
+    );
+    const runtimePaths = new Set([
+      `/@fs${originalPath}`,
+      `/@fs${realpathSync(originalPath)}`,
+      "/packages/core/generated/jvc_runtime.js",
+    ]);
+    let interceptions = 0;
+    let replacements = 0;
     await page.route(
-      "**/packages/core/generated/jvc_runtime.js",
+      (url) =>
+        url.pathname.endsWith("/jvc_runtime.js") &&
+        runtimePaths.has(url.pathname),
       async (route) => {
         const response = await route.fetch();
         const failure = JSON.stringify({
@@ -421,14 +438,22 @@ for (const measure of ["recognition work", "build recognition work"]) {
           value: 50001,
           limit: 50000,
         });
-        const body = (await response.text()).replace(
-          "export function build_lujvo(bytes) {",
-          `export function build_lujvo(bytes) { throw ${JSON.stringify(failure)};`,
+        interceptions++;
+        const original = await response.text();
+        const marker = "export function build_lujvo(bytes) {";
+        expect(original).toContain(marker);
+        const body = original.replace(
+          marker,
+          `${marker} throw ${JSON.stringify(failure)};`,
         );
+        expect(body).not.toBe(original);
+        replacements++;
         await route.fulfill({ response, body });
       },
     );
     await startDraft(page, "lujvo");
+    expect(interceptions).toBeGreaterThan(0);
+    expect(replacements).toBe(interceptions);
     for (const spelling of ["bangu", "sinxa"]) {
       await page.getByLabel("Add a part").fill(spelling);
       await page

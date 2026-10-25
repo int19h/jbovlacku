@@ -98,6 +98,40 @@ fn main() {
         &serde_json::to_vec(&input).unwrap(),
         serde_json::to_value(inspect_body(&malformed_event, Some(&malformed))).unwrap(),
     );
+    let minimal = json!({"word":{"language":"jbo","spelling":"broda"},"language":"en","text":[["Default fixture"]],"classification":{"kind":"gismu"},"license":{"expression":"CC0-1.0"}});
+    let mut nested = minimal.clone();
+    nested["frame"] = json!({"role":"predicate","arity":{"mode":"variadic","minimum":1},"places":[{"index":1,"type_hints":[{"alternatives":[{"abstractor":"nu"}]}]}],"tail":{"from":2}});
+    nested["etymology"] = json!({"formation":{"method":"unknown","sources":[{"language":"en","word":"test"}],"weights_profile":{},"candidates":[{"form":"broda"}]}});
+    let mut invalid = minimal.clone();
+    invalid["notes"] = Value::Null;
+    let mut duplicates = nested.clone();
+    duplicates["frame"]["places"][0]["type_hints"][0]["alternatives"] =
+        json!([{"tags":["entity"]},{"tags":["entity"],"abstractor":null,"relation_arity":null}]);
+    for (name, value, valid) in [
+        ("definition-omitted-defaults", minimal.clone(), true),
+        (
+            "definition-explicit-defaults",
+            interpret_definition(&minimal),
+            true,
+        ),
+        ("definition-nested-defaults", nested, true),
+        ("definition-invalid-present-default", invalid, false),
+        ("definition-duplicate-after-defaults", duplicates, false),
+    ] {
+        let bytes = canonical_value(&value).unwrap();
+        let event = make(
+            "05",
+            json!({"kind":"definition.publish","word":word_id(&minimal["word"]).unwrap(),"language":"en","parents":[],"origin":"native"}),
+            Some(&bytes),
+        );
+        let availability = inspect_body(&event, Some(&bytes));
+        assert_eq!(
+            matches!(availability, BodyAvailability::Valid { .. }),
+            valid,
+            "{name}"
+        );
+        add(name, "body", &serde_json::to_vec(&json!({"envelope":hex::encode(event.canonical_envelope().unwrap()),"body":hex::encode(bytes)})).unwrap(), serde_json::to_value(availability).unwrap());
+    }
     let inert = make("03", json!({"kind":"unknown","other":null}), None);
     let inert_wire = inert.canonical_envelope().unwrap();
     add(

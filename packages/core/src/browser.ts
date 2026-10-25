@@ -19,6 +19,8 @@ export {
   rafsiPairId,
   validateAction,
   inspectBody,
+  interpretDefinition,
+  omitDefinitionDefaults,
   prepareSigning,
   finishSigning,
   type EvaluationRequest,

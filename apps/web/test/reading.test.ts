@@ -1076,22 +1076,29 @@ test("a focus choice made while a page loads is kept, Enter then submits the sea
 }) => {
   await page.goto("/");
   const field = page.getByLabel("Search words and meanings");
-  // The Trust page waits for the view probe, which the test holds.
-  let releaseProbe = () => {};
-  const probeHeld = new Promise<void>((resolve) => (releaseProbe = resolve));
-  const probe = "**/api/v1/words/jvw1%3A0000*";
-  await page.route(probe, async (route) => {
-    await probeHeld;
+  // The Trust page waits for the manifest, which the test holds.
+  let releaseManifest = () => {};
+  const manifestHeld = new Promise<void>(
+    (resolve) => (releaseManifest = resolve),
+  );
+  let capture = () => {};
+  const captured = new Promise<void>((resolve) => (capture = resolve));
+  const manifest = "**/api/v1/manifest";
+  await page.route(manifest, async (route) => {
+    capture();
+    await manifestHeld;
     await route.continue();
   });
   await page.getByRole("link", { name: /^Trust:/ }).click();
+  await captured;
   await expect(
     page.getByRole("radio", { name: "Site view only" }),
   ).toBeVisible();
+  await expect(page.locator("main")).not.toContainText("Calculation profile");
   // The reader moves to the search field while the page still loads.
   await field.click();
   await expect(field).toBeFocused();
-  releaseProbe();
+  releaseManifest();
   await expect(page.locator("main")).toContainText("Calculation profile");
   await expect(field).toBeFocused();
   await expect(page.locator("main h1")).not.toBeFocused();
@@ -1104,7 +1111,7 @@ test("a focus choice made while a page loads is kept, Enter then submits the sea
       .getByRole("link", { name: "cukta", exact: true })
       .first(),
   ).toBeVisible();
-  await page.unroute(probe);
+  await page.unroute(manifest);
   // A search starts and its request is held. The reader keeps typing in the
   // same field. The finished page leaves focus and the typed text alone.
   let releaseSearch = () => {};
@@ -1192,12 +1199,11 @@ test("a focus move to the header field without key or pointer events is kept, wh
 }) => {
   const field = page.getByLabel("Search words and meanings");
   const heading = page.locator("main h1");
-  const probe = "**/api/v1/words/jvw1%3A0000*";
+  const manifest = "**/api/v1/manifest";
   /**
-   * Holds the Trust page's view probe and opens the Trust page from the header
-   * link. The client caches the probe response, so the cache is cleared first,
-   * with the same view preference. The content after the probe must be absent
-   * while the request waits.
+   * Holds the Trust page's manifest and opens the Trust page from the header
+   * link. Cached word responses are cleared with the same view preference.
+   * The signed view content must be absent while the request waits.
    */
   const openHeldTrust = async () => {
     await page.evaluate(async () => {
@@ -1208,11 +1214,15 @@ test("a focus move to the header field without key or pointer events is kept, wh
     });
     let release = () => {};
     const held = new Promise<void>((resolve) => (release = resolve));
-    await page.route(probe, async (route) => {
+    let capture = () => {};
+    const captured = new Promise<void>((resolve) => (capture = resolve));
+    await page.route(manifest, async (route) => {
+      capture();
       await held;
       await route.continue();
     });
     await page.getByRole("link", { name: /^Trust:/ }).click();
+    await captured;
     await expect(
       page.getByRole("radio", { name: "Site view only" }),
     ).toBeVisible();
@@ -1220,7 +1230,7 @@ test("a focus move to the header field without key or pointer events is kept, wh
     return async () => {
       release();
       await expect(page.locator("main")).toContainText("Calculation profile");
-      await page.unroute(probe);
+      await page.unroute(manifest);
     };
   };
   await page.goto("/search?q=klama&lang=en");
@@ -1304,9 +1314,9 @@ test("a scrolling key on the activating footer link that stays focused during th
   const trustLink = page.locator("footer").getByRole("link", {
     name: "Trust: site view",
   });
-  const probe = "**/api/v1/words/jvw1%3A0000*";
-  // Each pass starts from a fresh page load, so no probe answer is cached,
-  // holds the Trust page's view probe, and activates the footer link.
+  const manifest = "**/api/v1/manifest";
+  // Each pass starts from a fresh page load, holds the Trust page's
+  // manifest request, and activates the footer link.
   for (const pass of [
     { activate: "Enter", key: null },
     { activate: "Enter", key: "ArrowDown" },
@@ -1318,7 +1328,10 @@ test("a scrolling key on the activating footer link that stays focused during th
     await expect(trustLink).toBeVisible();
     let release = () => {};
     const held = new Promise<void>((resolve) => (release = resolve));
-    await page.route(probe, async (route) => {
+    let capture = () => {};
+    const captured = new Promise<void>((resolve) => (capture = resolve));
+    await page.route(manifest, async (route) => {
+      capture();
       await held;
       await route.continue();
     });
@@ -1327,6 +1340,7 @@ test("a scrolling key on the activating footer link that stays focused during th
       await trustLink.focus();
       await page.keyboard.press("Enter");
     }
+    await captured;
     await expect(page).toHaveURL(/\/trust$/);
     await expect(
       page.getByRole("radio", { name: "Site view only" }),
@@ -1340,7 +1354,7 @@ test("a scrolling key on the activating footer link that stays focused during th
     await expect(page.locator("main")).toContainText("Calculation profile");
     await expect(heading).toHaveText("Trust");
     await expect(heading).toBeFocused();
-    await page.unroute(probe);
+    await page.unroute(manifest);
   }
 });
 
@@ -1421,20 +1435,24 @@ test.describe("touch input", () => {
       name: "Trust: site view",
     });
     const control = page.getByRole("button", { name: "page control" });
-    const probe = "**/api/v1/words/jvw1%3A0000*";
+    const manifest = "**/api/v1/manifest";
     for (const pass of ["tap", "click", "script", "tap on text"] as const) {
-      // A fresh page load, so no probe answer is cached. The footer link is
+      // A fresh page load clears the request cache. The footer link is
       // activated by keyboard, so no pointer event comes before the action.
       await page.goto("/");
       await expect(trustLink).toBeVisible();
       let release = () => {};
       const held = new Promise<void>((resolve) => (release = resolve));
-      await page.route(probe, async (route) => {
+      let capture = () => {};
+      const captured = new Promise<void>((resolve) => (capture = resolve));
+      await page.route(manifest, async (route) => {
+        capture();
         await held;
         await route.continue();
       });
       await trustLink.focus();
       await page.keyboard.press("Enter");
+      await captured;
       await expect(
         page.getByRole("radio", { name: "Site view only" }),
       ).toBeVisible();
@@ -1460,7 +1478,122 @@ test.describe("touch input", () => {
         await expect(control).toBeFocused();
         await expect(heading).not.toBeFocused();
       } else await expect(heading).toBeFocused();
-      await page.unroute(probe);
+      await page.unroute(manifest);
     }
   });
+});
+
+test("signed record disclosures retain each body's original omitted or explicit fields", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const publications = await page.evaluate(async (path) => {
+    const core = await import(path);
+    const seed = crypto.getRandomValues(new Uint8Array(32));
+    const minimal = {
+      word: { language: "jbo", spelling: "brode" },
+      language: "en",
+      text: [["Definition defaults disclosure fixture."]],
+      classification: { kind: "gismu" },
+      frame: {
+        role: "predicate",
+        arity: { mode: "context" },
+        places: [{ index: 1 }],
+      },
+      etymology: {
+        formation: {
+          method: "unknown",
+          sources: [{ language: "en", word: "test" }],
+        },
+      },
+      license: { expression: "CC0-1.0" },
+    };
+    const bodies = [minimal, core.interpretDefinition(minimal)];
+    const result = [];
+    let previous: string[] = [];
+    for (const [index, body] of bodies.entries()) {
+      const bytes = core.utf8(
+        core.canonicalize(core.utf8(JSON.stringify(body))),
+      );
+      const header = {
+        version: 1,
+        issuer: core.identityFromSeed(seed),
+        previous,
+        nonce: String(index + 4).repeat(32),
+        action: {
+          kind: "definition.publish",
+          word: core.wordId(minimal.word),
+          language: "en",
+          parents: [],
+          origin: "native",
+        },
+        content: { hash: core.contentHash(bytes), bytes: bytes.length },
+      };
+      const envelope = core.signHeader(seed, header);
+      const response = await fetch("/api/v1/events", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ envelope, body }),
+      });
+      if (!response.ok) throw new Error(await response.text());
+      result.push({
+        id: envelope.id,
+        body,
+        hash: header.content.hash,
+        bytes: header.content.bytes,
+      });
+      previous = [envelope.id];
+    }
+    return result;
+  }, corePath);
+  expect(publications[0].id).not.toBe(publications[1].id);
+  expect(publications[0].hash).not.toBe(publications[1].hash);
+  for (const publication of publications) {
+    await page.goto(`/definition/${encodeURIComponent(publication.id)}`);
+    await expect(page.locator("article.definition")).toContainText(
+      "Definition defaults disclosure fixture.",
+    );
+    const disclosure = page.locator("article.definition details", {
+      has: page.locator("summary", { hasText: /^Signed record$/ }),
+    });
+    await disclosure.locator("summary").click();
+    const displayed = JSON.parse(
+      await disclosure.locator("pre.json").innerText(),
+    );
+    expect(displayed.envelope.id).toBe(publication.id);
+    expect(displayed.body).toEqual(publication.body);
+    const inspected = await page.evaluate(
+      async ({ path, displayed }) => {
+        const core = await import(path);
+        const bytes = core.utf8(
+          core.canonicalize(core.utf8(JSON.stringify(displayed.body))),
+        );
+        return {
+          hash: core.contentHash(bytes),
+          bytes: bytes.length,
+          availability: core.inspectBody(
+            core.utf8(JSON.stringify(displayed.envelope)),
+            bytes,
+          ).availability,
+        };
+      },
+      { path: corePath, displayed },
+    );
+    expect(inspected).toEqual({
+      hash: publication.hash,
+      bytes: publication.bytes,
+      availability: "valid",
+    });
+  }
+  await page.goto(`/definition/${encodeURIComponent(publications[0].id)}`);
+  await page.getByRole("link", { name: "Revise", exact: true }).click();
+  await expect(
+    page.getByRole("textbox", { name: "Definition text" }),
+  ).toHaveValue("Definition defaults disclosure fixture.");
+  await expect(page.getByLabel("Description for place 1")).toHaveValue("");
+  await page.reload();
+  await expect(
+    page.getByRole("textbox", { name: "Definition text" }),
+  ).toHaveValue("Definition defaults disclosure fixture.");
+  await expect(page.getByLabel("Description for place 1")).toHaveValue("");
 });

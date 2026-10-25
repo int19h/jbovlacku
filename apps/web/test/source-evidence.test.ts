@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { acceptFirstSignature, createIdentity } from "./helpers.ts";
+import { acceptFirstSignature, corePath, createIdentity } from "./helpers.ts";
 test.setTimeout(20000);
 test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: "ignoreErrors" });
@@ -770,7 +770,11 @@ test("a blank alternative keeps the scored formation and its selection reason", 
     .click();
   await page.getByRole("button", { name: "Use brodu", exact: true }).click();
   await expect(page).toHaveURL(/\/new\/places$/);
-  expect((await stored(page)).formation).toEqual(formation);
+  expect((await stored(page)).formation).toEqual({
+    ...formation,
+    sources: formation.sources.map((source) => ({ ...source, word_ipa: null })),
+  });
+  expect(formation.sources[0]).not.toHaveProperty("word_ipa");
 });
 
 test("dropping notes after Use this form then publishing through the step bar signs current source text", async ({
@@ -838,9 +842,17 @@ test("dropping notes after Use this form then publishing through the step bar si
   expect(published).toHaveLength(1);
   expect(published[0].body.etymology.formation.sources[0]).toMatchObject({
     word: "",
-    notes: [],
     word_ipa: "ˈbʊks",
   });
+  expect(published[0].body.etymology.formation.sources[0]).not.toHaveProperty(
+    "notes",
+  );
+  const interpreted = await page.evaluate(
+    async ({ corePath, body }) =>
+      (await import(corePath)).interpretDefinition(body),
+    { corePath, body: published[0].body },
+  );
+  expect(interpreted.etymology.formation.sources[0].notes).toEqual([]);
   expect(published[0].body.etymology.formation.sources[0]).not.toHaveProperty(
     "stem",
   );

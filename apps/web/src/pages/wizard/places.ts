@@ -246,8 +246,12 @@ function hintEditor(
       });
       count.input.min = "0";
       count.input.max = "65535";
+      count.input.step = "1";
       const syncArity = () => {
-        const n = Math.max(0, Math.min(65535, Number(count.input.value) || 0));
+        const n = Math.max(
+          0,
+          Math.min(65535, Math.trunc(Number(count.input.value) || 0)),
+        );
         alt.relation_arity =
           arityMode.input.value === "fixed"
             ? { mode: "fixed", count: n }
@@ -257,9 +261,15 @@ function hintEditor(
                 ? { mode: "context" }
                 : null;
         emit();
+        return n;
       };
-      arityMode.input.addEventListener("change", syncArity);
+      arityMode.input.addEventListener("change", () => {
+        count.input.value = String(syncArity());
+      });
       count.input.addEventListener("input", syncArity);
+      count.input.addEventListener("change", () => {
+        count.input.value = String(syncArity());
+      });
       tags.wrapper.style.flex = "2 1 220px";
       row.append(
         tags.wrapper,
@@ -379,7 +389,7 @@ export async function placesPage(
       const origin =
         record.envelope.header.action.origin === "import" ? "import" : "native";
       const replaced = draft;
-      draft = draftFromBody(record.body, reviseId, origin);
+      draft = draftFromBody(record.body, reviseId, origin, record.rawBody);
       reviseNotice = revisionChanges(record.body, origin);
       await app.store.saveDraft(
         DRAFT_KEY,
@@ -1173,13 +1183,18 @@ export async function placesPage(
         wrapperClass: "",
       });
       minimum.input.min = "0";
+      minimum.input.max = "256";
+      minimum.input.step = "1";
       minimum.input.addEventListener("input", () => {
         draft.variadicMinimum = Math.min(
           256,
-          Math.max(0, Number(minimum.input.value) || 0),
+          Math.max(0, Math.trunc(Number(minimum.input.value) || 0)),
         );
         saver.touch();
         refreshArity();
+      });
+      minimum.input.addEventListener("change", () => {
+        minimum.input.value = String(draft.variadicMinimum);
       });
       const tailDescription = field(
         `Places ${draft.places.length + 1} and on`,
