@@ -1070,10 +1070,12 @@ test("cancel during the cache-reuse check does not restart the calculation, and 
 });
 
 /** A disposable calculator over its own store, with every worker load recorded. */
-const calculatorHarness = `async () => {
+const calculatorHarness = `async (corePath) => {
+  const core = await import(corePath);
+  await core.initializeCore();
   const { LocalStore } = await import("/src/data/store.ts");
   const { PersonalCalculator, overlayDigest } = await import("/src/data/personal.ts");
-  const store = new LocalStore();
+  const store = new LocalStore("calculator-test-" + crypto.randomUUID());
   const loads = [];
   const RealWorker = window.Worker;
   class RecordingWorker extends RealWorker {
@@ -1117,8 +1119,8 @@ test("a private Ignore or an identity change during record loading reaches the w
   const f = fixture();
   await page.goto("/");
   const outcome = await page.evaluate(
-    async ({ harness, cuktaWord, cukta1, curator, allScope }) => {
-      const h = await new Function("return " + harness)()();
+    async ({ harness, corePath, cuktaWord, cukta1, curator, allScope }) => {
+      const h = await new Function("return " + harness)()(corePath);
       try {
         // One run reads the private choices once.
         const first = await h.calc.ensure({ mode: "personal" });
@@ -1181,6 +1183,7 @@ test("a private Ignore or an identity change during record loading reaches the w
     },
     {
       harness: calculatorHarness,
+      corePath,
       cuktaWord: f.words.cukta,
       cukta1: f.definitions.cukta1,
       curator: f.identities.curator,
@@ -1216,10 +1219,14 @@ test("an old ready-state reuse check released after a newer calculation leaves t
   const f = fixture();
   await page.goto("/");
   const outcome = await page.evaluate(
-    async ({ harness, cuktaWord, cukta1, curator, allScope }) => {
-      const h = await new Function("return " + harness)()();
+    async ({ harness, corePath, cuktaWord, cukta1, curator, allScope }) => {
+      const h = await new Function("return " + harness)()(corePath);
       try {
-        await h.calc.ensure({ mode: "personal" });
+        const initial = await h.calc.ensure({ mode: "personal" });
+        if (initial.state !== "ready")
+          throw new Error(
+            `The reuse test needs a ready calculation: ${JSON.stringify(initial)}`,
+          );
         // The old call waits inside the reuse check.
         const hold = h.gateRead("inventory", "latest");
         const old = h.calc.ensure({ mode: "personal" });
@@ -1253,6 +1260,7 @@ test("an old ready-state reuse check released after a newer calculation leaves t
     },
     {
       harness: calculatorHarness,
+      corePath,
       cuktaWord: f.words.cukta,
       cukta1: f.definitions.cukta1,
       curator: f.identities.curator,

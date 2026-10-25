@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { acceptFirstSignature, createIdentity } from "./helpers.ts";
+import { acceptFirstSignature, corePath, createIdentity } from "./helpers.ts";
 
 test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: "ignoreErrors" });
@@ -54,7 +54,9 @@ async function seed(
 ) {
   await page.goto("/search");
   await page.evaluate(
-    async ({ patch, revise }) => {
+    async ({ patch, revise, corePath }) => {
+      const core = await import(corePath);
+      await core.initializeCore();
       const { LocalStore } = await import(String("/src/data/store.ts"));
       const { newDraft, draftToBody, draftFromBody } = await import(
         String("/src/model/draft.ts")
@@ -76,7 +78,7 @@ async function seed(
       }
       await store.put("drafts", "current", draft);
     },
-    { patch, revise },
+    { patch, revise, corePath },
   );
   await page.goto("/new/gismu");
 }
