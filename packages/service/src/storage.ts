@@ -3,6 +3,10 @@ import type {
   VerifiedRecordBinding,
 } from "./verified-records.ts";
 import type { Header } from "../../core/src/index.ts";
+import type {
+  SemanticRecordBinding,
+  StoredSemanticRecord,
+} from "./semantic/storage.ts";
 export interface ObjectStore {
   get(hash: string): Promise<Uint8Array | null>;
   put(hash: string, bytes: Uint8Array): Promise<void>;
@@ -45,6 +49,10 @@ export const emptyState = (): State => ({
   materialized_snapshot: null,
 });
 export interface Coordinator {
+  getSemanticRecord?(
+    binding: SemanticRecordBinding,
+  ): Promise<StoredSemanticRecord | null>;
+  saveSemanticRecords?(records: StoredSemanticRecord[]): Promise<void>;
   getVerifiedRecord?(
     binding: VerifiedRecordBinding,
   ): Promise<StoredVerifiedRecord | null>;
@@ -52,6 +60,7 @@ export interface Coordinator {
   stageVerifiedRecords?(
     stage: string,
     records: StoredVerifiedRecord[],
+    semanticRecords?: StoredSemanticRecord[],
   ): Promise<void>;
   discardVerifiedRecordStage?(stage: string): Promise<void>;
   load(): Promise<State>;
@@ -67,6 +76,7 @@ export interface Coordinator {
     changedIds?: string[],
     verifiedRecords?: StoredVerifiedRecord[],
     verifiedStage?: string,
+    semanticRecords?: StoredSemanticRecord[],
   ): Promise<boolean>;
 }
 export interface Snapshot {

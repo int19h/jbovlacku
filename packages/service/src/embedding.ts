@@ -8,6 +8,7 @@ import {
   validEmbeddingInputPrice,
   type ProviderConfig,
 } from "./inference.ts";
+import { normalizeVector } from "./semantic/vector.ts";
 
 export {
   EMBEDDING_MODEL,
@@ -181,24 +182,14 @@ function normalizedVector(value: unknown): Float32Array {
       "embedding_vector",
       "The embedding vector has invalid dimensions or values.",
     );
-  const scale = Math.max(...value.map(Math.abs));
-  if (scale === 0)
-    throw error(
-      "embedding_vector",
-      "The embedding provider returned a zero vector.",
-    );
-  const scaled = value.map((item) => item / scale);
-  const norm = Math.sqrt(scaled.reduce((sum, item) => sum + item * item, 0));
-  const vector = Float32Array.from(scaled, (item) => item / norm);
-  const resultNorm = Math.sqrt(
-    vector.reduce((sum, item) => sum + item * item, 0),
-  );
-  if (!Number.isFinite(resultNorm) || Math.abs(resultNorm - 1) > 0.0001)
+  try {
+    return normalizeVector(value, EMBEDDING_DIMENSIONS);
+  } catch {
     throw error(
       "embedding_vector",
       "The embedding vector cannot use unit normalization.",
     );
-  return vector;
+  }
 }
 
 /** The budget service owns dispatch, the deadline, and all callbacks. No retries occur. */

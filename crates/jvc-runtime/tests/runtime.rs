@@ -1240,6 +1240,34 @@ fn host_record_projection_matches_its_versioned_golden_digest() {
         )
         .unwrap();
         let value: Value = serde_json::from_slice(&compact).unwrap();
+        let options = canonical_value(
+            &json!({"selected_view":"jve1:".to_owned()+&"0".repeat(64),"import_selections":{}}),
+        )
+        .unwrap();
+        let mut builder = jvc_runtime::EvaluationSessionBuilder::new(&options).unwrap();
+        builder.add_host_verified_record(&compact).unwrap();
+        let semantic_bytes = jvc_runtime::extract_host_semantic_record_bytes(
+            input.envelope.as_bytes(),
+            input.body.as_deref().map(str::as_bytes),
+        )
+        .unwrap();
+        let semantic: Value = serde_json::from_slice(&semantic_bytes).unwrap();
+        assert!(value.get("semantic").is_none());
+        if value["package"]["kind"] == "definition.publish" && value["body_status"] == "present" {
+            let original: Value = serde_json::from_str(input.body.as_ref().unwrap()).unwrap();
+            assert_eq!(
+                semantic["semantic"]["body"],
+                jvc_core::interpret_definition(&original)
+            );
+            assert_eq!(semantic["semantic"]["body"]["legacy"], original["legacy"]);
+            assert_eq!(
+                semantic["semantic"]["body_hash"],
+                value["package"]["body_hash"]
+            );
+            assert_eq!(semantic["semantic"]["id"], value["id"]);
+        } else {
+            assert!(semantic["semantic"].is_null());
+        }
         statuses.insert(value["body_status"].as_str().unwrap().to_owned());
         actions.insert(value["state"]["node"]["kind"].as_str().unwrap().to_owned());
         if !value["package"].is_null() {
@@ -1309,8 +1337,18 @@ fn sparse_definition_projection_applies_defaults_after_original_validation() {
         &jvc_runtime::extract_host_record_bytes(envelope, Some(body)).unwrap(),
     )
     .unwrap();
-    assert_eq!(host["version"], 2);
+    assert_eq!(host["version"], jvc_runtime::HOST_RECORD_VERSION);
     assert_eq!(host["package"], verified);
+    let semantic: Value = serde_json::from_slice(
+        &jvc_runtime::extract_host_semantic_record_bytes(envelope, Some(body)).unwrap(),
+    )
+    .unwrap();
+    assert!(host.get("semantic").is_none());
+    assert_eq!(
+        semantic["semantic"]["body"],
+        jvc_core::interpret_definition(&raw)
+    );
+    assert_eq!(semantic["semantic"]["body_hash"], verified["body_hash"]);
     assert_eq!(verified["body"]["glosses"], json!([]));
     assert_eq!(verified["body"]["notes"], json!([]));
     assert_eq!(verified["body"]["classification"]["selmaho"], json!([]));
@@ -1326,9 +1364,99 @@ fn sparse_definition_projection_applies_defaults_after_original_validation() {
     .unwrap();
     assert_eq!(bad["body_status"], "invalid");
     assert!(bad["package"]["body"].is_null());
+    assert!(bad.get("semantic").is_none());
     let explicit = fixture.event(9, json!({"kind":"definition.publish","word":fixture.word,"language":"en","parents":[],"origin":"native"}), Some(jvc_core::interpret_definition(&raw)));
     assert_ne!(id, explicit);
     fixture.view("simple-routes-bounds-v1", &[9], 1000);
     fixture.bless(9, &id);
     fixture.rank("definition-defaults-sparse");
+}
+
+#[test]
+fn evaluation_record_version_two_bytes_match_the_original_golden() {
+    let inputs: Vec<Value> =
+        serde_json::from_str(include_str!("fixtures/host-record-inputs-v2.json")).unwrap();
+    let mut bytes = Vec::new();
+    for input in inputs {
+        let compact = jvc_runtime::extract_host_record_bytes(
+            input["envelope"].as_str().unwrap().as_bytes(),
+            input["body"].as_str().map(str::as_bytes),
+        )
+        .unwrap();
+        assert_eq!(jvc_runtime::HOST_RECORD_VERSION, 2);
+        bytes.extend_from_slice(input["name"].as_str().unwrap().as_bytes());
+        bytes.push(b'\n');
+        bytes.extend_from_slice(&compact);
+        bytes.push(b'\n');
+    }
+    assert_eq!(
+        jvc_core::hash_id("sha256:", b"", &bytes),
+        include_str!("fixtures/host-record-v2.sha256").trim()
+    );
+}
+
+#[test]
+fn semantic_projection_matches_its_independent_versioned_golden_digest() {
+    let input_path = format!(
+        "{}/tests/fixtures/semantic-record-inputs-v{}.json",
+        env!("CARGO_MANIFEST_DIR"),
+        jvc_runtime::SEMANTIC_PROJECTION_VERSION
+    );
+    let inputs: Vec<Value> = serde_json::from_slice(&std::fs::read(input_path).unwrap()).unwrap();
+    let mut bytes = Vec::new();
+    for input in inputs {
+        let projection = jvc_runtime::extract_host_semantic_record_bytes(
+            input["envelope"].as_str().unwrap().as_bytes(),
+            input["body"].as_str().map(str::as_bytes),
+        )
+        .unwrap();
+        assert_eq!(
+            jvc_runtime::check_host_semantic_record(&projection).unwrap(),
+            input["envelope"]
+                .as_str()
+                .and_then(|e| serde_json::from_str::<Value>(e).ok())
+                .unwrap()["id"]
+                .as_str()
+                .unwrap()
+        );
+        bytes.extend_from_slice(input["name"].as_str().unwrap().as_bytes());
+        bytes.push(b'\n');
+        bytes.extend_from_slice(&projection);
+        bytes.push(b'\n');
+    }
+    let expected_path = format!(
+        "{}/tests/fixtures/semantic-record-v{}.sha256",
+        env!("CARGO_MANIFEST_DIR"),
+        jvc_runtime::SEMANTIC_PROJECTION_VERSION
+    );
+    assert_eq!(
+        jvc_core::hash_id("sha256:", b"", &bytes),
+        std::fs::read_to_string(expected_path).unwrap().trim()
+    );
+}
+
+#[test]
+fn signed_invalid_definition_action_keeps_an_inert_decodable_record() {
+    let mut fixture = Fixture::new();
+    let id = fixture.definition("en");
+    let event = jvc_core::verify_envelope(fixture.events[0].as_bytes()).unwrap();
+    let mut header = event.header().clone();
+    header.action["unexpected"] = json!(true);
+    let signed = sign_header(&[9; 32], header).unwrap();
+    let compact = jvc_runtime::extract_host_record_bytes(
+        &signed.canonical_envelope().unwrap(),
+        Some(fixture.bodies[&id].as_bytes()),
+    )
+    .unwrap();
+    let value: Value = serde_json::from_slice(&compact).unwrap();
+    assert_eq!(value["version"], 2);
+    assert_eq!(value["action_valid"], false);
+    assert_eq!(value["body_status"], "invalid");
+    assert!(value["package"]["body"].is_null());
+    let options = canonical_value(
+        &json!({"selected_view":"jve1:".to_owned()+&"0".repeat(64),"import_selections":{}}),
+    )
+    .unwrap();
+    let mut builder = jvc_runtime::EvaluationSessionBuilder::new(&options).unwrap();
+    builder.add_host_verified_record(&compact).unwrap();
 }

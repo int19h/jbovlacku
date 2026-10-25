@@ -1,3 +1,8 @@
+import {
+  readSemanticRecord,
+  backfillSemanticRecords,
+  semanticRecordStatistics,
+} from "../src/semantic/storage.ts";
 import type {
   CheckpointBinding,
   CheckpointStore,
@@ -29,10 +34,13 @@ import {
   initializeCore,
   utf8,
   hostRecordVersion,
+  semanticProjectionVersion,
   extractHostVerifiedRecord,
   prepareAdmission,
 } from "../../core/src/index.ts";
 import type { ObjectStore } from "../src/storage.ts";
+import { createQwenProfile } from "../src/semantic/profile.ts";
+import { semanticDocument } from "../src/semantic/records.ts";
 
 before(async () =>
   initializeCore(
@@ -589,6 +597,15 @@ test("admission persists final preferred-envelope and nonpreferred late-body bin
           " must commit the final compact binding without lazy backfill",
       );
       assert.equal(compactRecord(row).body_status, "present");
+      assert.ok(
+        await f.coordinator.getSemanticRecord({
+          id: preferred.prepared.id,
+          envelope_hash: event.envelope_hash,
+          body_hash: event.body_hash,
+          version: semanticProjectionVersion(),
+        }),
+        "Admission must commit the exact semantic binding too.",
+      );
       assert.deepEqual(verifiedRecordStatistics(f.coordinator), {
         missing: 0,
         decode_failed: 0,
@@ -688,7 +705,7 @@ test("malformed current-version rows report their event and repair once without 
   }
 });
 
-test("version 1 definition rows backfill interpreted defaults without changing stored signed bodies", async () => {
+test("older definition rows backfill semantic evidence and defaults without changing signed bodies", async () => {
   const f = await fixture();
   try {
     const body = {
@@ -716,7 +733,25 @@ test("version 1 definition rows backfill interpreted defaults without changing s
     const originalEnvelope = f.bytes.get(event.envelope_hash)!.slice();
     const originalBody = f.bytes.get(event.body_hash!)!.slice();
     const db = new DatabaseSync(f.path);
-    db.exec("UPDATE verified_records SET version=1");
+    const prior = JSON.parse(
+      (await f.coordinator.getVerifiedRecord({
+        id: record.envelope.id,
+        envelope_hash: event.envelope_hash,
+        body_hash: event.body_hash,
+        version: hostRecordVersion(),
+      }))!.compact,
+    );
+    const evidence = await readSemanticRecord(
+      f.coordinator,
+      f.objects,
+      record.envelope.id,
+      event,
+    );
+    prior.version = 3;
+    prior.semantic = JSON.parse(evidence.projection).semantic;
+    db.prepare("UPDATE verified_records SET version=3,compact=?").run(
+      JSON.stringify(prior),
+    );
     db.close();
     assert.equal(await backfillVerifiedRecords(f.coordinator, f.objects), 1);
     const compact = compactRecord(
@@ -727,7 +762,7 @@ test("version 1 definition rows backfill interpreted defaults without changing s
         event,
       ),
     );
-    assert.equal(compact.version, 2);
+    assert.equal(compact.version, hostRecordVersion());
     assert.equal(compact.body_status, "present");
     assert.deepEqual(compact.package!.body!.glosses, []);
     assert.deepEqual(compact.package!.body!.classification, {
@@ -735,6 +770,27 @@ test("version 1 definition rows backfill interpreted defaults without changing s
       selmaho: [],
     });
     assert.deepEqual(compact.package!.body!.notes, []);
+    assert.equal("semantic" in compact, false);
+    const semantic = await readSemanticRecord(
+      f.coordinator,
+      f.objects,
+      record.envelope.id,
+      event,
+    );
+    assert.deepEqual(JSON.parse(semantic.projection).semantic.body, {
+      ...body,
+      classification: { kind: "gismu", selmaho: [] },
+      frame: null,
+      glosses: [],
+      operands: [],
+      notes: [],
+      etymology: { text: [], formation: null, compound: null },
+      examples: [],
+      labels: [],
+      sources: [],
+      license: { expression: "CC0-1.0", url: null, attribution: "" },
+      legacy: null,
+    });
     assert.equal(compact.package!.body_hash, event.body_hash);
     assert.deepEqual(f.bytes.get(event.envelope_hash), originalEnvelope);
     assert.deepEqual(f.bytes.get(event.body_hash!), originalBody);
@@ -743,6 +799,152 @@ test("version 1 definition rows backfill interpreted defaults without changing s
     assert.equal(await backfillVerifiedRecords(f.coordinator, f.objects), 0);
     assert.deepEqual(f.reads, []);
   } finally {
+    f.coordinator.close();
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
+test("late definition bodies create semantic inputs only for the new exact body mapping", async () => {
+  const f = await fixture();
+  try {
+    const profile = createQwenProfile();
+    const body = {
+      word: { language: "jbo" as const, spelling: "broda" },
+      language: "en",
+      text: [["Literal $x_{1}$ and unmatched $a+b."]],
+      classification: { kind: "gismu" },
+      license: { expression: "CC0-1.0" },
+    };
+    const publication = createEvent(
+      seed,
+      [],
+      "f".repeat(32),
+      {
+        kind: "definition.publish",
+        word: wordId(body.word),
+        language: "en",
+        parents: [],
+        origin: "native",
+      },
+      body,
+    );
+    await f.service.admitMany([
+      utf8(JSON.stringify({ ...publication, body: null })),
+    ]);
+    const id = publication.envelope.id;
+    const missing = (await f.coordinator.load()).events[id];
+    const before = await readSemanticRecord(
+      f.coordinator,
+      f.objects,
+      id,
+      missing,
+    );
+    assert.equal(semanticDocument(profile, before), null);
+    await f.service.admitMany([utf8(JSON.stringify(publication))]);
+    const present = (await f.coordinator.load()).events[id];
+    const after = await readSemanticRecord(
+      f.coordinator,
+      f.objects,
+      id,
+      present,
+    );
+    const document = semanticDocument(profile, after)!;
+    assert.equal(document.body, publication.envelope.header.content!.hash);
+    assert.deepEqual(document.definition.text, body.text);
+    assert.deepEqual(document.definition.frame, null);
+    assert.equal(
+      semanticDocument(
+        profile,
+        await readSemanticRecord(f.coordinator, f.objects, id, missing),
+      ),
+      null,
+    );
+    assert.notEqual(before.body_hash, after.body_hash);
+    f.reads.length = 0;
+    assert.equal(await backfillSemanticRecords(f.coordinator, f.objects), 0);
+    assert.deepEqual(f.reads, []);
+  } finally {
+    f.coordinator.close();
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
+test("damaged current semantic projections repair once from private original bytes", async () => {
+  const f = await fixture();
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    const body = {
+      word: { language: "jbo" as const, spelling: "broda" },
+      language: "en",
+      text: [["A sparse definition."]],
+      classification: { kind: "gismu" },
+      license: { expression: "CC0-1.0" },
+    };
+    const publication = createEvent(
+      seed,
+      [],
+      "d".repeat(32),
+      {
+        kind: "definition.publish",
+        word: wordId(body.word),
+        language: "en",
+        parents: [],
+        origin: "native",
+      },
+      body,
+    );
+    await f.service.admitMany([utf8(JSON.stringify(publication))]);
+    const id = publication.envelope.id;
+    const event = (await f.coordinator.load()).events[id];
+    const expected = await readSemanticRecord(
+      f.coordinator,
+      f.objects,
+      id,
+      event,
+    );
+    const db = new DatabaseSync(f.path);
+    const mutations = [
+      (value: any) => delete value.semantic,
+      (value: any) => (value.semantic = "broken"),
+      (value: any) => (value.semantic = null),
+      (value: any) => (value.semantic.body = null),
+      (value: any) => (value.semantic.body.glosses = null),
+      (value: any) => (value.semantic.body.frame = { places: null }),
+      (value: any) => (value.semantic.body_hash = "sha256:" + "0".repeat(64)),
+      (value: any) => (value.semantic.unexpected = true),
+    ];
+    for (const mutate of mutations) {
+      const compact = JSON.parse(expected.projection);
+      mutate(compact);
+      db.prepare("UPDATE semantic_records SET projection=?").run(
+        JSON.stringify(compact),
+      );
+      const repaired = await readSemanticRecord(
+        f.coordinator,
+        f.objects,
+        id,
+        event,
+      );
+      assert.equal(repaired.projection, expected.projection);
+      f.reads.length = 0;
+      assert.deepEqual(
+        await readSemanticRecord(f.coordinator, f.objects, id, event),
+        expected,
+      );
+      assert.deepEqual(f.reads, []);
+    }
+    assert.equal(
+      semanticRecordStatistics(f.coordinator).decode_failed,
+      mutations.length,
+    );
+    assert.equal(
+      semanticRecordStatistics(f.coordinator).backfilled,
+      mutations.length,
+    );
+    db.close();
+  } finally {
+    console.warn = warn;
     f.coordinator.close();
     await rm(f.directory, { recursive: true, force: true });
   }

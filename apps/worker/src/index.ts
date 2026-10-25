@@ -2,6 +2,10 @@ import type {
   StoredVerifiedRecord,
   VerifiedRecordBinding,
 } from "../../../packages/service/src/verified-records.ts";
+import type {
+  SemanticRecordBinding,
+  StoredSemanticRecord,
+} from "../../../packages/service/src/semantic/storage.ts";
 import { D1IndexStore } from "./index-store.ts";
 import { workerAssistanceBudgetStore } from "./assistance.ts";
 import { SqlRowsCoordinator } from "../../../packages/service/src/sql-coordinator.ts";
@@ -117,6 +121,12 @@ export class AdmissionCoordinator
   saveVerifiedRecords(records: StoredVerifiedRecord[]) {
     return this.coordinator.saveVerifiedRecords(records);
   }
+  getSemanticRecord(binding: SemanticRecordBinding) {
+    return this.coordinator.getSemanticRecord(binding);
+  }
+  saveSemanticRecords(records: StoredSemanticRecord[]) {
+    return this.coordinator.saveSemanticRecords(records);
+  }
   compareAndSwap(
     revision: number,
     state: State,
@@ -124,6 +134,7 @@ export class AdmissionCoordinator
     changedIds?: string[],
     verifiedRecords?: StoredVerifiedRecord[],
     verifiedStage?: string,
+    semanticRecords?: StoredSemanticRecord[],
   ) {
     return this.coordinator.compareAndSwap(
       revision,
@@ -132,6 +143,7 @@ export class AdmissionCoordinator
       changedIds,
       verifiedRecords,
       verifiedStage,
+      semanticRecords,
     );
   }
   async fetch(request: Request): Promise<Response> {

@@ -2282,7 +2282,8 @@ test("GET session refreshes its real lifetime and cookie", async () => {
   assert.equal(((await again.json()) as any).csrf, headers["x-csrf-token"]);
 });
 
-test("admission extends session through the advertised job lifetime", async () => {
+test("admission extends session through the advertised job lifetime", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
   const instance = service({
     sessionTtlMs: 30,
     ttlMs: 2000,
@@ -2301,7 +2302,8 @@ test("admission extends session through the advertised job lifetime", async () =
       /Max-Age=(\d+)/.exec(response.headers.get("set-cookie") ?? "")?.[1],
     ) >= 2,
   );
-  await new Promise((resolve) => setTimeout(resolve, 60));
+  t.mock.timers.tick(60);
+  assert.equal((await poll(instance, accepted.job, headers)).state, "completed");
   const result = await instance.fetch(
     privateRequest(`/jobs/${accepted.job}`, headers),
   );
