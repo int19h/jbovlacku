@@ -16,8 +16,7 @@ The profile follows [CLL chapter 4](https://lojban.github.io/cll/4/1/):
 - A constructed candidate must parse as one lujvo and recover the intended parts and joins. Construction uses the required joins from CLL 4.11.
 - Analysis accepts legal optional hyphens, such as the `r` in `sairzba`, under the pinned recognizer. The [PEG morphology rules](https://mw.lojban.org/papri/BPFK_Section:_PEG_Morphology_Algorithm) permit such optional joins. The original CLL 4.11 construction algorithm adds only required hyphens. An analyzed spelling does not become a construction result unless its joins satisfy the construction rules.
 
-The [frontend target](frontend.md#step-3a-lujvo-builder) also permits explicit optional joins in the builder. The current construction API does not implement that control.
-An implementation needs a new morphology version for the added construction choices. Version `2` retains its required-only construction behavior.
+The CLL profile retains version `2` and required-only construction. Explicit optional joins use the extended profile version `3`.
 
 ## CLL lujvo scoring
 
@@ -27,21 +26,65 @@ The score follows [CLL 4.12](https://lojban.github.io/cll/4/12/): `1000 L - 500 
 
 ## Extended lujvo
 
-Identifier: `https://github.com/int19h/jbovlacku/blob/main/docs/morphology.md#extended-lujvo`. Version `2`.
+Identifier: `https://github.com/int19h/jbovlacku/blob/main/docs/morphology.md#extended-lujvo`. Version `3`.
+
+### Version 2
+
+Version `2` uses the recognizer and required-only construction at revision `0cd2bb9bb50d93748fbf44a25b165401710c400a`.
+Callers select `extended-v2` to inspect or rebuild records with this version.
+The morphology identifier remains the extended identifier above, and the version remains `2`.
 
 The extended profile adds the audited jbotci behavior for whole-word parts. It is not CLL text:
 
 - A whole brivla can serve as a part. The pinned recognizer must read each core as one gismu, lujvo, or fu'ivla. A core uses no `y`.
-- A core that ends with a vowel is followed by `'y`. A rafsi that ends with a consonant is followed by `y` before a consonant that it cannot pair with, or by `y'` before a vowel nucleus, as in `fuly'ismu`. Before `i` or `u` plus a vowel, the join is `y`, as in `aktyiismu`.
+- A core that ends with a vowel is followed by `'y`. A rafsi that ends with a consonant can need a join. If the next consonant cannot pair with its final consonant, the join is `y`. Before a vowel nucleus, the join is `y'`, as in `fuly'ismu`. Before `i` or `u` plus a vowel, the join is `y`, as in `aktyiismu`.
 - A rafsi part can have a shape outside the CLL table. The extended scorer gives that shape rank zero.
 - Every candidate must parse as one lujvo under the pinned recognizer. Its parsed components and joins must equal the intended sequence. Token reconstruction supplies no parse evidence.
 - A join can produce an invalid spelling. For example, bonding `leksiko` and `ismu` produces `leksiko'yismu`. The builder refuses that result after parsing it.
 
-Both profiles refuse the pair `mz` in every word kind and whole-word component. The extended profile does not include jbotci's experimental `mz` relaxation.
+Version `2` and the CLL profile refuse the pair `mz` in every word kind and whole-word component. Version `2` does not include jbotci's experimental `mz` relaxation.
+
+For example, the parts `ckusni` and `broda` build `ckusni'ybroda` with the first part retained as one whole-word core.
+Explicit boundary joins and spelling overrides are unavailable in this version.
+
+### Version 3
+
+Version `3` follows the extended rafsi rules in the gencmu experimental dialect at revision `98417655a407566f50ed491cf8074f0c55ddce64`.
+The [retained comparison](../crates/jvc-morphology/evidence/typed-lujvo.json) pins the grammar digests and one-word results.
+Its source grammar is [experimental.md](https://github.com/int19h/gencmu/blob/98417655a407566f50ed491cf8074f0c55ddce64/grammars/words/experimental.md).
+The bounded recognizer retains its jbotci lineage and adds these experimental rules only under the extended profile.
+Version `3` permits the pair `mz` in every word kind and whole-word component, as the experimental grammar does.
+This bounded comparison does not establish complete equivalence with gencmu.
+
+The profile supports these rules:
+
+- A whole gismu or borrowing can supply an extended rafsi when the experimental grammar recovers that exact part.
+- A compound core can split into shorter rafsi under version `3`. Its parts must match that recovered sequence, rather than version `2` whole-word bonding.
+- Borrowing rafsi permit an apostrophe onset in ordinary and stressed positions, as in `spageti'ybroda` and `spageti'ykla`.
+- Extended rafsi use classical `hy-rafsi` or borrowing rafsi. Classical forms include `kerlybai'ybroda` and `kerlybla'ykla`.
+- The `slihykru` restriction rejects CCV plus `'y` before an onset at the start of every brivla. This includes nested brivla tests after a possible cmavo. It rejects `bla'ykla` and its CgV variants. Thus `baibla'ykla` stays one lujvo because its tail is not a separate brivla.
+- Explicit joins contain one nullable string per boundary. Null uses the automatic join. An empty string selects no join.
+- Explicit choices permit `y`, `y'`, `'y`, `'y'`, `r`, and `n` only when a complete parse recovers every intended part and join.
+- An explicit rafsi lock describes morphology independently of dictionary assignment standing. Unknown and conflicting source assignments remain visible.
+- A core that ends with a vowel is followed by `'y`. A rafsi that ends with a consonant is followed by `y` before a consonant that it cannot pair with, or by `y'` before a vowel nucleus, as in `fuly'ismu`. Before `i` or `u` plus a vowel, the join is `y`, as in `aktyiismu`.
+- A rafsi part can have a shape outside the CLL table. The extended scorer gives that shape rank zero.
+- Every candidate must parse as one lujvo under the pinned recognizer. Its parsed components and joins must equal the intended sequence. Token reconstruction supplies no parse evidence.
+- A join can produce an invalid spelling. The builder refuses a result when the complete parse differs from its intended parts or joins.
+
+A request can also supply the exact entered `spelling`. Its normalization must equal the complete parsed candidate.
+Normalization uses lowercase letters, omits commas, and reads `h` and curly apostrophes as apostrophes.
+Typed presentation can include one leading and one trailing framing period. Detection and reconstruction omit them from component rafsi.
+The construction score uses those normalized tokens. The candidate spelling and its presentation tokens keep the original bytes.
+A mismatched spelling produces no candidate. The override never bypasses segmentation or recognition limits.
+
+Version `2` keeps its earlier recognizer and required-only construction rules. Version `3` never rewrites existing compound metadata.
+The CLL profile keeps its recognition and construction rules at version `2`.
+
+Version `2` and the CLL profile refuse `mz`. Version `3` permits it. New authoring uses version `3`.
 
 Extended analysis also accepts the join `'y'`, as in `bangu'y'ismu`. It reports the full token as the join before the next component. A nonfinal whole gismu is a core. A final whole gismu can be a rafsi under the CLL component rules.
 
-The word recognizer ports the pure recognition functions from jbotci's `segment.rs` and the indicator table from `cmavo.rs`. Contract macros and source diagnostic types do not enter the port. The crate adds work limits and uses the CLL consonant-pair restrictions. It returns spelling spans without jbotci's stress and glide marks.
+The word recognizer ports the pure recognition functions from jbotci's `segment.rs` and the indicator table from `cmavo.rs`. Contract macros and source diagnostic types do not enter the port. The crate adds work limits. Version `2` and CLL use CLL consonant-pair restrictions. Version `3` permits `mz`. It returns spelling spans without jbotci's stress and glide marks.
 
 The CLL profile restricts lujvo components and construction joins. General word recognition uses the pinned jbotci lineage for both profiles. This is not full equivalence with gencmu's `cll-ebnf` grammar. For example, jbotci and gencmu `bpfk` recognize `ismu`, while gencmu `cll-ebnf` rejects it. The retained [reference results](../crates/jvc-morphology/evidence/word-parses.json) record this difference. Fu'ivla classification is advisory under the CLL profile. Every such analysis reports that the extended jbotci lineage does not establish CLL validity.
 

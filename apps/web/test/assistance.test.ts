@@ -188,6 +188,7 @@ function proposals(body: any): any[] {
   return [];
 }
 interface MockOptions {
+  lujvoProposals?: any[];
   deepLog?: boolean;
   delay?: boolean;
   failure?: string;
@@ -237,7 +238,11 @@ async function mockAssistant(page: Page, options: MockOptions = {}) {
       draft_revision: body.draft_revision,
       proposals: options.invalid
         ? [{ path: "/identity", value: "bad" }]
-        : structuredClone(proposals(body)),
+        : structuredClone(
+            body.operation === "lujvo" && options.lujvoProposals
+              ? options.lujvoProposals
+              : proposals(body),
+          ),
       explanation:
         'A literal explanation <img src=x onerror="window.injected=true">.',
       provenance: {
@@ -3208,4 +3213,193 @@ test("Dismiss clears the completed suggestion announcement", async ({
   await panel.getByRole("button", { name: "Dismiss", exact: true }).click();
   await expect(panel).toHaveCount(0);
   await expect(page.locator(".ai-action [role=status]")).toHaveText("");
+});
+
+for (const action of ["Suggest a lujvo", "Suggest components"] as const)
+  test(`R7 ${action} Undo restores exact rows and joins after reload and a later author edit`, async ({
+    page,
+  }) => {
+    const components = [
+      {
+        word: { language: "jbo", spelling: "sanmi" },
+        definition: null,
+        rafsi: "sai",
+      },
+      {
+        word: { language: "jbo", spelling: "zbasu" },
+        definition: null,
+        rafsi: "zba",
+      },
+    ];
+    await mockAssistant(page, {
+      lujvoProposals: [
+        { path: "/compound", value: { ...compound, components } },
+        ...(action === "Suggest a lujvo"
+          ? [{ path: "/spelling", value: "saizba" }]
+          : []),
+      ],
+    });
+    await draft(
+      page,
+      {
+        kind: "lujvo",
+        spelling: "sairzba",
+        typedSpelling: null,
+        glosses: [{ language: "en", text: "synthetic", sense: "" }],
+        lujvo: {
+          profile: "extended",
+          typed: "sairzba",
+          selected: "sairzba",
+          joins: ["r"],
+          acknowledged: [],
+          components: components.map((component, index) => ({
+            id: `legacy-${index}`,
+            spelling: component.word.spelling,
+            kind: "gismu",
+            definition: null,
+            claims: [{ rafsi: component.rafsi, pair: "synthetic-pair" }],
+            locked: component.rafsi,
+            gloss: "",
+          })),
+        },
+      },
+      "/new/lujvo",
+    );
+    await expect(
+      page.getByLabel("Form sairzba", { exact: true }),
+    ).toBeVisible();
+    await expect
+      .poll(async () => (await stored(page)).lujvo?.restoredSpelling)
+      .toBe("sairzba");
+    const original = await stored(page);
+    await page.getByRole("button", { name: action, exact: true }).click();
+    await allow(page);
+    await page.getByRole("button", { name: "Use this", exact: true }).click();
+    await expect(page.getByLabel("Form saizba", { exact: true })).toBeVisible();
+    await page.reload();
+    await page
+      .getByRole("list", { name: "Steps" })
+      .getByRole("link", { name: /^Meaning\b/ })
+      .click();
+    await page
+      .getByLabel("Meaning", { exact: true })
+      .fill("A later author meaning.");
+    await page
+      .getByRole("list", { name: "Steps" })
+      .getByRole("link", { name: /^Form\b/ })
+      .click();
+    await page
+      .getByRole("button", { name: `Undo ${action}`, exact: true })
+      .click();
+    await expect(
+      page.getByLabel("Form sairzba", { exact: true }),
+    ).toBeVisible();
+    const undone = await stored(page);
+    expect(undone.spelling).toBe("sairzba");
+    expect(undone.lujvo).toEqual(original.lujvo);
+    expect(undone.meaning).toBe("A later author meaning.");
+    expect(undone.text).toEqual(original.text);
+    expect(undone.glosses).toEqual(original.glosses);
+    await page.reload();
+    await expect(
+      page.getByLabel("Form sairzba", { exact: true }),
+    ).toBeVisible();
+  });
+
+for (const reverse of [false, true])
+  test(`R8 AI lujvo replacement ignores discarded evidence in either proposal order: ${reverse}`, async ({
+    page,
+  }) => {
+    const components = [
+      {
+        word: { language: "jbo", spelling: "sanmi" },
+        definition: null,
+        rafsi: "sai",
+      },
+      {
+        word: { language: "jbo", spelling: "zbasu" },
+        definition: null,
+        rafsi: "zba",
+      },
+    ];
+    const proposals = [
+      { path: "/spelling", value: "saizba" },
+      { path: "/compound", value: { ...compound, components } },
+    ];
+    if (reverse) proposals.reverse();
+    await mockAssistant(page, { lujvoProposals: proposals });
+    await draft(
+      page,
+      {
+        kind: "lujvo",
+        spelling: "sairzba",
+        typedSpelling: null,
+        compound: {
+          ...compound,
+          components,
+          morphology: {
+            id: "https://github.com/int19h/jbovlacku/blob/main/docs/morphology.md#extended-lujvo",
+            version: "3",
+          },
+        },
+        evidenceForm: "sairzba",
+        lujvo: {
+          profile: "extended",
+          ordinarySpelling: "sairzba",
+          selected: "sairzba",
+          acknowledged: [],
+          components: components.map((row, index) => ({
+            id: `source-${index}`,
+            spelling: row.word.spelling,
+            kind: "gismu",
+            definition: null,
+            claims: [{ rafsi: row.rafsi, pair: "synthetic-pair" }],
+            locked: row.rafsi,
+            gloss: "",
+          })),
+        },
+      },
+      "/new/lujvo",
+    );
+    await page
+      .getByRole("button", { name: "Suggest a lujvo", exact: true })
+      .click();
+    await allow(page);
+    await page.getByRole("button", { name: "Use this", exact: true }).click();
+    await expect.poll(async () => (await stored(page)).spelling).toBe("saizba");
+    expect((await stored(page)).compound).toBeNull();
+    expect((await stored(page)).review).toEqual([]);
+  });
+
+test("R8 component-only AI preserves the typed headword and later Use asks before replacing it", async ({
+  page,
+}) => {
+  await mockAssistant(page);
+  await draft(
+    page,
+    {
+      kind: "lujvo",
+      spelling: "sanzbax",
+      typedSpelling: "sanzbax",
+    },
+    "/new/lujvo",
+  );
+  await page
+    .getByRole("button", { name: "Suggest components", exact: true })
+    .click();
+  await allow(page);
+  await page.getByRole("button", { name: "Use this", exact: true }).click();
+  await expect(page.getByLabel("Form ckusni", { exact: true })).toBeVisible();
+  await page.reload();
+  expect((await stored(page)).typedSpelling).toBe("sanzbax");
+  let replacement = "";
+  page.once("dialog", (dialog) => {
+    replacement = dialog.message();
+    void dialog.dismiss();
+  });
+  await page.getByRole("button", { name: "Use ckusni", exact: true }).click();
+  expect(replacement).toBe(
+    'Replace the typed spelling "sanzbax" with "ckusni"?',
+  );
+  expect((await stored(page)).spelling).toBe("sanzbax");
 });

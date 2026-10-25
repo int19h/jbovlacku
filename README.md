@@ -95,7 +95,48 @@ The lujvo builder says whether a candidate spelling is taken in the local packag
 The rafsi page lists known assignments across words from version 2 packages, and the claim page signs a claim with its pair blessing.
 The lujvo builder offers short rafsi, gismu stems, whole gismu, whole-word parts under the extended profile, locks, CLL scores, recovered parts, and every competing rafsi claim from the local package.
 If several parts share the same competing rafsi claim, the builder shows one acknowledgment for that claim.
-Choosing [optional hyphens](docs/morphology.md) in the lujvo builder remains a target change. The builder adds only the required hyphens.
+A word entered on Meaning gets local form detection and an exact identity lookup in the selected language package.
+A remote exact-word check requires consent for that word and language. Missing coverage stays visible.
+Type confirmation opens Places for a typed gismu or fu'ivla, source linking for a lujvo, and Form for the other kinds.
+The typed lujvo path locks the exact analyzed rafsi and joins, including [optional hyphens and experimental forms](docs/morphology.md).
+It preserves the entered spelling through publication, including case, commas, and framing periods. Source choices and exact definitions stay editable.
+Unknown source fields stay blank. Authors can link every source to save compound evidence, or continue with no compound metadata.
+
+A changed or cleared typed spelling restores ordinary builder rows. A generated replacement reopens with editable rows.
+A replacement typed lujvo starts fresh analysis, including a return to an earlier spelling before the builder reopens.
+A private origin marker distinguishes typed analysis from ordinary rafsi locks. Meaning visits and evidence removal preserve ordinary row editing.
+
+Saved rows with unknown origin stay editable and keep their signed version, boundaries, and matching joins.
+Spelling corrections preserve restored joins and compatible author-linked sources, exact definitions, and claims.
+Restored older profiles preserve accepted case, commas, and apostrophe variants after an exact match with the core construction.
+Released restoration stays released through reopening, reload, and rafsi relocking.
+Removing every row from a published revision starts a complete signed restoration on the next matching builder visit.
+It restores sources, locks, profile, and exact joins together, including `bangu'y'ismu` and `sairzba`.
+
+Fresh typed analysis uses matching signed or restored profile evidence instead of a private ordinary profile choice.
+Profile history survives visits to other typed words and removal of compound evidence.
+An unsupported historical reading keeps ordinary profile choices across reopening and reload.
+AI component acceptance creates clean ordinary rows. Conditional Undo restores prior construction and preserves later author edits.
+Component-only suggestions and evidence-only gismu Use preserve typed identity and the later replacement confirmation.
+Replaced evidence does not create a new spelling review. Retained annotations and earlier review marks stay intact.
+
+A [state model](docs/typed-headword-state.md) defines the shared transitions and their invariants.
+Seeded event sequences exercise those transitions with typed, legacy, and published-revision drafts.
+The event model inventories all production writers. Its seeded sequences include AI component and source apply and Undo.
+They also include gismu Use, manual Form Use, source synchronization, and all rafsi choices.
+Its preservation checks compare interpreted definition defaults while keeping real evidence edits and signed source bytes distinct.
+
+Historical fallback rows follow the current word and retry missing sources after a package download. Unresolved retries keep an authored ordinary profile.
+
+Unconfirmed type detection follows spelling corrections after confirmation of any evidence loss.
+Forward wizard links and direct Form or builder entry confirm the selected type. Cancellation keeps the previous type and evidence.
+A confirmed type stays selected, and completed type review clears its notice.
+
+New lujvo builders use the extended profile. Manual boundary controls for a generated spelling remain a target change.
+The CLL profile retains required-only construction and version 2. New extended construction and recognition use version 3.
+Saved extended version 2 records reopen with their original rules and component boundaries. Unknown versions stay unsupported.
+The extended profile permits `mz`, consonantal-syllable borrowings, and the experimental rafsi rules. The CLL and extended version 2 profiles retain their earlier rules.
+Source-language evidence scores a normalized gismu while its headword and evidence binding keep the typed bytes.
 The gismu generator offers the CLL 1987, CLL 1995, and Ilmen presets with pinned sources, custom weights, exact scores, tied ranks, per-language contributions, root and rafsi conflicts, and manual forms without fabricated evidence.
 The core and builders keep the optional full pronunciation, `word_ipa`, in signed formation sources.
 Draft reload preserves private `stem` and `ipa` values. Neither enters a signed formation source.
@@ -278,11 +319,11 @@ That run restored its checkpoint in 22.68 seconds. A later restart took 29.33 se
 The repaired host measurement uses `5aefd15`, with 59,125 imported definitions in 44 languages.
 Its checkpoint restart took 7.07 seconds. Recovery after the core digest changed took 70.72 seconds.
 
-| Visible write | Reviewed host, `b6c0354` | Repaired host, `5aefd15` |
-| --- | ---: | ---: |
-| Trust choice | 30.37 s | 8.38 s |
-| Native publication | 46.71 s | 9.53 s |
-| Judgment | 35.51 s | 5.39 s |
+| Visible write      | Reviewed host, `b6c0354` | Repaired host, `5aefd15` |
+| ------------------ | -----------------------: | -----------------------: |
+| Trust choice       |                  30.37 s |                   8.38 s |
+| Native publication |                  46.71 s |                   9.53 s |
+| Judgment           |                  35.51 s |                   5.39 s |
 
 The reviewed host peaked at 4.25 GiB. Three of 91 sampled word reads reached their three-second deadline.
 Twelve health probes reached their one-second deadline.

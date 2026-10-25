@@ -28,6 +28,8 @@ import {
 } from "../../../../packages/core/src/browser.ts";
 import {
   componentId,
+  newLujvoState,
+  normalizeLujvoEvidence,
   formationSource,
   normalizeSourceRow,
   syncFormationSources,
@@ -37,6 +39,12 @@ import {
   type GismuRowState,
   type SourceReview,
 } from "./builders.ts";
+
+import {
+  changeTypedWord,
+  reconcileLujvoUndo,
+  typedWord,
+} from "./typed-headword.ts";
 
 export type Operation =
   | "type"
@@ -317,16 +325,24 @@ export function applyFrame(draft: Draft, frame: Frame | null) {
 }
 /** Proposals remain ordinary editable data. Publication uses the existing signer. */
 export function applyProposals(draft: Draft, result: Suggestion) {
+  if (draft.lujvo) normalizeLujvoEvidence(draft.lujvo);
   const baseline =
     result.operation === "definition" || result.operation === "places-glosses"
       ? assistanceProblems(draft)
       : undefined;
-  for (const proposal of result.proposals) {
+  // Discard replaced evidence before deciding which retained fields need review.
+  const proposals = [...result.proposals].sort(
+    (left, right) =>
+      Number(right.path === "/compound") - Number(left.path === "/compound"),
+  );
+  for (const proposal of proposals) {
     const value = structuredClone(proposal.value);
     switch (proposal.path) {
       case "/word_type":
         if (draft.kind !== value) draft.selmaho = [];
         draft.kind = value as Draft["kind"];
+        delete draft.autoDetectedKind;
+        draft.review = draft.review.filter((field) => field !== "word type");
         break;
       case "/classification/selmaho":
         draft.selmaho = value as string[];
@@ -344,8 +360,9 @@ export function applyProposals(draft: Draft, result: Suggestion) {
         }));
         break;
       case "/spelling":
-        draft.spelling = value as string;
-        draft.publishAcknowledged = [];
+        changeTypedWord(draft, value as string);
+        if (result.proposals.some((p) => p.path === "/compound"))
+          draft.typedSpelling = null;
         break;
       case "/compound": {
         const compound = value as Compound;
@@ -381,18 +398,30 @@ export function applyProposals(draft: Draft, result: Suggestion) {
             "The proposed form does not match its deterministic construction.",
           );
         draft.lujvo = {
-          ...draft.lujvo,
+          ...newLujvoState(),
           profile: draft.lujvo?.profile ?? "cll",
+          ...(draft.lujvo?.restoredEvidenceHistory
+            ? {
+                restoredEvidenceHistory: structuredClone(
+                  draft.lujvo.restoredEvidenceHistory,
+                ),
+              }
+            : {}),
+          ordinarySpelling: typedWord(draft.spelling),
+          restoredReleased: true,
           components,
           selected: typeof spelling === "string" ? spelling : null,
           acknowledged: [],
         };
         // The builder supplies formation evidence only after the author uses a checked candidate.
         draft.compound = null;
-        draft.evidenceForm = null;
+        if (!draft.formation) draft.evidenceForm = null;
         break;
       }
     }
+  }
+  if (result.proposals.some((p) => p.path === "/compound") && draft.lujvo) {
+    draft.lujvo.ordinarySpelling = typedWord(draft.spelling);
   }
   if (
     result.operation === "definition" ||
@@ -927,6 +956,7 @@ export function restorePatches(draft: Draft, record: AssistanceRecord): number {
     else delete row.sourceReview;
   }
   syncFormationSources(draft);
+  reconcileLujvoUndo(draft, record.before?.lujvo);
   return kept;
 }
 

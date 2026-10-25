@@ -227,6 +227,13 @@ Each step saves the draft in this browser and exposes its save state.
 ### Step 1: meaning and nearby definitions
 
 The first step asks for a freeform definition and its language. A headword is optional at this point.
+The optional “Lojban word” field keeps a spelling that the author already chose.
+The app normalizes the spelling to NFC for word identity and analyses its form locally with `analyzeWord`.
+The app compares its `wordId` with the local language package. Remote lookup requires explicit consent for that word and language.
+An existing word shows “Already exists”, its linked word page, its definitions, and “Add a definition”.
+The author can continue with another definition of that word. An unavailable check says that the word could not be checked.
+A local package only establishes presence or absence in its named language and snapshot.
+
 The author can use `___` for argument placeholders, but ordinary prose also works.
 Underscores are an editor convention. The draft retains their spans without assigning final place numbers automatically.
 The app preserves this original meaning draft separately from the current editable definition.
@@ -251,13 +258,80 @@ Remote draft searches use POST bodies, not draft text embedded in navigable URLs
 
 Ask which word type the author wants. Explain gismu, lujvo, cmavo, fu'ivla, cmevla, and other with short examples.
 “Recommend a type” is an optional AI action. Its result includes a short explanation and does not select the type without acceptance.
+A typed spelling preselects its detected type. The author confirms it with one action or selects another type.
+Word form alone cannot distinguish cmavo, compound cmavo, letterals, and experimental classifications.
+Unknown analysis shows its diagnostics and permits an experimental type.
+
+With a typed gismu or fu'ivla, type confirmation opens Places.
+A typed gismu shows nonblocking identical, final-vowel, and similar-consonant warnings beside confirmation, with links to every known conflicting word.
+Publish repeats that conflict review. Missing inventory coverage remains visible.
+An optional link opens the gismu builder for source-language evidence without replacing an equivalent typed spelling.
+Scoring uses the normalized form. The headword and its evidence binding keep the exact typed bytes.
+A different normalized candidate requires replacement confirmation.
+A typed lujvo opens the component builder. Cmavo, compound cmavo, letterals, cmevla, and other kinds open Form with the spelling filled in.
 The author can also enter an existing or custom spelling and continue manually.
+Changing the spelling updates detection and marks incompatible retained evidence for review.
+It preserves the type the author chose. An unconfirmed automatic type follows the new detection after the usual evidence-loss confirmation.
+Cancellation keeps the previous type and evidence, and marks the type for review.
+Selecting or confirming a type clears the type-review notice.
+Forward step links, the full-editor link, and direct Form or builder entry confirm the selected type too.
+
+A changed or cleared spelling exits the previous typed-lujvo mode.
+A replacement lujvo starts a fresh analysis, even when the author restores an earlier spelling before reopening the builder.
+Fresh analysis uses the morphology profile from matching signed or restored evidence.
+A private ordinary profile choice does not change that typed profile.
+
+That analysis preserves author-linked sources, exact definitions, and claims for compatible rafsi.
+Matching compound evidence supplies missing sources before dictionary suggestions do.
+The [headword state model](typed-headword-state.md) defines the private fields, events, and invariants.
 
 Changing type preserves the prose and annotations. The app identifies formation fields that no longer apply and asks before removing them.
 
 ### Step 3A: lujvo builder
 
 The builder contains ordered component rows, a candidate spelling, the current definition, and the preserved original meaning.
+For a typed lujvo, analysis supplies one component sequence.
+When a rafsi has several known source assignments, the author chooses its intended source word.
+A missing source stays blank. The author must link every source to save compound metadata.
+“Continue without compound metadata” preserves the spelling and saves no compound attribution.
+
+Every rafsi locks to its exact typed form, including full forms. Every boundary locks to its exact typed join, including optional hyphens.
+The only candidate is the typed spelling. The builder links source words and exact definitions without changing that spelling.
+Fixed typed layout requires an exact construction under the selected evidence profile.
+If a historical profile cannot construct that spelling, ordinary profile controls remain available.
+
+The fallback shows the current word's analyzed parts. Missing sources permit another analysis after a local package becomes available.
+Repeated unresolved analysis preserves an ordinary profile that the author already chose.
+
+A spelling accepted from the ordinary builder keeps editable component rows when the builder reopens.
+An explicit private marker identifies rows that typed analysis created. Rafsi locks and Meaning edits never create that marker.
+
+Saved rows without this origin marker stay editable, including after removal of compound evidence.
+They retain the signed morphology version, source boundaries, and matching joins.
+On first restoration without compound metadata, saved joins require matching spelling, locked parts, and complete analyzed boundaries.
+After restoration, joins and the exact spelling belong to their original rows, rafsi, and morphology profile.
+A spelling edit or removal of metadata keeps that association.
+A corrected headword can therefore recover its exact candidate, including case, commas, framing periods, and optional joins.
+
+Changing those rows, their order, their rafsi, or their morphology profile returns restored construction to automatic choices.
+That release persists through later builder visits and reloads.
+It remains released if the author restores an earlier lock or replaces rows with identical rafsi.
+If every row is removed from a published revision, the next builder visit starts a complete restoration from matching signed evidence.
+That restoration recovers sources, locks, profile, and exact joins together. It clears the former release and ordinary profile choice.
+Partial rows do not start that restoration. A spelling mismatch defers it until the signed spelling returns.
+The builder asks before an accepted candidate replaces a different entered headword.
+
+Accepted AI component suggestions create ordinary editable rows without inherited typed or restored construction.
+A suggested lujvo spelling uses ordinary selection semantics.
+Component-only suggestions keep the current headword's typed identity. A later Use still asks before replacing that headword.
+Undo restores the prior rows and their construction while the affected fields still match the accepted suggestion.
+It preserves later author edits under the same conditional Undo rules.
+Gismu acceptance also updates headword state before it binds generation evidence.
+Evidence-only gismu acceptance keeps equivalent typed bytes and their typed identity across repeated visits.
+Form replacements mark retained evidence and annotations for review. Evidence discarded by that same action cannot add a new spelling review.
+
+The typed path must reproduce every valid analyzed lujvo byte for byte, including extended `'y'` joins and irregular forms.
+The gismu and lujvo builders ask before replacing any spelling that the author typed.
 Authors can add dictionary words, enter recognized fu'ivla, reorder components, remove rows, or lock a particular rafsi.
 Component search includes cmavo and fu'ivla. It never filters the inventory to gismu alone.
 Each row shows source definitions and distinguishes listed assignments from automatically available long forms.
@@ -556,7 +630,9 @@ For gismu sources, language, algorithm input, and weight determine the scores. N
 Source edits update the copy used for publication. An empty alternative row does not change the formation.
 A source reopened from signed evidence remains present even when its algorithm input is null.
 Validation preserves the draft. Loading an older draft synchronizes descriptive source edits once.
+Source synchronization preserves the formation's headword binding, including after AI source acceptance or conditional Undo.
 If scoring inputs change, publication waits for a new form selection or removal of the old evidence.
+Using manual Form with changed scoring inputs replaces the stale scores with manual evidence bound to the current headword.
 Unrelated definition and place suggestions remain usable. Acceptance refuses any new blocking frame or reference problem.
 The form action stays disabled while the generator recalculates. A chosen score must describe the exact current scoring inputs.
 Changing the chosen form invalidates morphology and conflict review. It marks formation-dependent annotations for review rather than deleting them.
@@ -935,7 +1011,7 @@ Public reads need no account. Public event admission follows published quotas an
 | Method and path                                                   | Contract                                                                                                                                                                                                             |
 | ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GET /capabilities`                                               | Format version, size limits, accepted body types, optional service capabilities, CORS policy, peer identity, and admission-policy link.                                                                              |
-| `GET /manifest`                                                   | Current snapshot, declared view, inventory manifest, cursors, and package availability. Raw discovery remains available when evaluation fails.                                                                          |
+| `GET /manifest`                                                   | Current snapshot, declared view, inventory manifest, cursors, and package availability. Raw discovery remains available when evaluation fails.                                                                       |
 | `GET /inventory?kind=K&snapshot=S&after=ID&limit=N`               | Sorted event, body, or import-selection IDs from one immutable snapshot, with next cursor.                                                                                                                           |
 | `GET /events/ID?snapshot=S`                                       | Exact envelope representation from the named snapshot, or explicit missing/withheld result.                                                                                                                          |
 | `GET /identity-heads/KEY?snapshot=S&after=ID&limit=N`             | Known maximal own event IDs for that key, from one snapshot.                                                                                                                                                         |

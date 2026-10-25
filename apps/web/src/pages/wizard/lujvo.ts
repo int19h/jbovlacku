@@ -1,3 +1,17 @@
+import {
+  detectWord,
+  typedWord,
+  prepareLujvoBuilder,
+  reconcileLujvoRows,
+  editLujvoRows,
+  chooseLujvoAlternative,
+  selectLujvoSource,
+  selectLujvoCandidate,
+  selectLujvoProfile,
+  linkedSources,
+  buildLujvoState,
+  sourceOptions,
+} from "../../model/typed-headword.ts";
 import { currentDraft } from "../../model/assistance.ts";
 import { assistanceAction } from "../../components/assistance.ts";
 /**
@@ -7,7 +21,6 @@ import { assistanceAction } from "../../components/assistance.ts";
  */
 import {
   analyzeWord,
-  buildLujvo,
   BuilderError,
   rafsiPairId,
   wordId,
@@ -39,7 +52,6 @@ import {
   inventoryFromPackage,
   inventoryCoverage,
   lujvoConflictKey,
-  newLujvoState,
   type LujvoComponentState,
   type PackageInventory,
 } from "../../model/builders.ts";
@@ -80,16 +92,21 @@ export async function lujvoPage(
   }
   const saver = new DraftSaver(app, draft);
   // Changes made while opening the builder are saved like any other edit.
-  if (draft.kind !== "lujvo") {
-    if (!confirmKindChange(draft, "lujvo")) {
-      navigate("/new/type", { replace: true });
-      return;
-    }
-    saver.touch();
+  if (!confirmKindChange(draft, "lujvo")) {
+    navigate("/new/type", { replace: true });
+    return;
   }
-  const state = (draft.lujvo ??= newLujvoState());
+  saver.touch();
   const cached = await cachedPackage(app.store);
   if (!context.live()) return;
+  let state;
+  try {
+    state = prepareLujvoBuilder(draft, cached);
+    saver.touch();
+  } catch (error) {
+    main.append(p(String(error), "notice"));
+    return;
+  }
   const inventory: PackageInventory = inventoryFromPackage(cached);
   const builderCurrent = () => {
     const morphology =
@@ -103,8 +120,9 @@ export async function lujvoPage(
     return {
       ...currentDraft(draft),
       spelling: chosenCandidate()?.spelling ?? draft.spelling,
-      compound:
-        result && chosenCandidate()
+      compound: !linkedSources(state)
+        ? null
+        : result && chosenCandidate()
           ? compoundMetadata(result, chosenCandidate()!, state.components, "")
           : state.components.length
             ? {
@@ -135,6 +153,16 @@ export async function lujvoPage(
       el("bdi", { text: draft.meaning || "(no meaning yet)" }),
     ),
   );
+  if (state.typed) {
+    section.append(
+      p(
+        `Link the source words of ${state.typed}. Its rafsi and joins stay fixed. Fill every source to save compound metadata, or continue without it.`,
+        "small",
+      ),
+    );
+  }
+  if (state.profile === "extended-v2")
+    section.append(p("Saved morphology: extended version 2.", "meta"));
   // Profile.
   const profileGroup = el("div", {
     class: "seg",
@@ -142,11 +170,15 @@ export async function lujvoPage(
     "aria-label": "Morphology profile",
   });
   for (const [value, label] of [
+    ...(state.profile === "extended-v2"
+      ? [["extended-v2", "Extended version 2 (saved record)"]]
+      : []),
     ["cll", "CLL rules"],
     ["extended", "Extended: whole-word parts"],
   ] as const) {
     const input = el("input", { type: "radio", name: "profile", value });
     input.checked = state.profile === value;
+    input.disabled = !!state.typedOrigin;
     const wrapper = el(
       "label",
       { class: input.checked ? "on" : "" },
@@ -154,7 +186,7 @@ export async function lujvoPage(
       text(label),
     );
     input.addEventListener("change", () => {
-      state.profile = value as MorphologyProfile;
+      selectLujvoProfile(state, value as MorphologyProfile);
       for (const l of profileGroup.querySelectorAll("label"))
         l.classList.toggle("on", l.querySelector("input")!.checked);
       saver.touch();
@@ -169,6 +201,7 @@ export async function lujvoPage(
       "meta",
     ),
   );
+  if (state.typed) profileGroup.closest("div")!.hidden = true;
   // Component rows.
   const list = el("ol", {
     class: "parts",
@@ -196,21 +229,23 @@ export async function lujvoPage(
   });
   addRow.append(addField.wrapper);
   section.append(addRow, addResults);
-  section.append(
-    assistanceAction(app, draft, saver, context, {
-      key: "components",
-      label: "Suggest components",
-      operation: "lujvo",
-      profile: "components",
-      current: builderCurrent,
-    }),
-    assistanceAction(app, draft, saver, context, {
-      key: "lujvo",
-      label: "Suggest a lujvo",
-      operation: "lujvo",
-      current: builderCurrent,
-    }),
-  );
+  if (state.typed) addRow.hidden = true;
+  if (!state.typed)
+    section.append(
+      assistanceAction(app, draft, saver, context, {
+        key: "components",
+        label: "Suggest components",
+        operation: "lujvo",
+        profile: "components",
+        current: builderCurrent,
+      }),
+      assistanceAction(app, draft, saver, context, {
+        key: "lujvo",
+        label: "Suggest a lujvo",
+        operation: "lujvo",
+        current: builderCurrent,
+      }),
+    );
   // Result card and alternatives.
   const resultCard = el("div", {
     class: "card",
@@ -296,25 +331,27 @@ export async function lujvoPage(
           "Add",
           () => {
             const id = wordId({ language: "jbo", spelling: hit.word.spelling });
-            state.components.push({
-              id: componentId(),
-              spelling: hit.word.spelling,
-              kind,
-              // A specific definition is recorded only when the author chooses one below.
-              definition: null,
-              definitions: hit.entries.map((e) => ({
-                event: e.event,
-                summary:
-                  e.glosses.map((g) => g.text).join(", ") ||
-                  Array.from(e.plain_text).slice(0, 60).join(""),
-              })),
-              gloss: entry.glosses[0]?.text ?? "",
-              claims: [...new Set(rafsi)].map((r) => ({
-                rafsi: r,
-                pair: rafsiPairId(id, r),
-              })),
-              locked: null,
-            });
+            editLujvoRows(state, (rows) =>
+              rows.push({
+                id: componentId(),
+                spelling: hit.word.spelling,
+                kind,
+                // A specific definition is recorded only when the author chooses one below.
+                definition: null,
+                definitions: hit.entries.map((e) => ({
+                  event: e.event,
+                  summary:
+                    e.glosses.map((g) => g.text).join(", ") ||
+                    Array.from(e.plain_text).slice(0, 60).join(""),
+                })),
+                gloss: entry.glosses[0]?.text ?? "",
+                claims: [...new Set(rafsi)].map((r) => ({
+                  rafsi: r,
+                  pair: rafsiPairId(id, r),
+                })),
+                locked: null,
+              }),
+            );
             addField.input.value = "";
             addResults.replaceChildren();
             saver.touch();
@@ -357,15 +394,17 @@ export async function lujvoPage(
         button(
           "Add as entered",
           () => {
-            state.components.push({
-              id: componentId(),
-              spelling: analysis.normalized!,
-              kind,
-              definition: null,
-              gloss: "",
-              claims: [],
-              locked: null,
-            });
+            editLujvoRows(state, (rows) =>
+              rows.push({
+                id: componentId(),
+                spelling: analysis.normalized!,
+                kind,
+                definition: null,
+                gloss: "",
+                claims: [],
+                locked: null,
+              }),
+            );
             addField.input.value = "";
             addResults.replaceChildren();
             saver.touch();
@@ -396,6 +435,12 @@ export async function lujvoPage(
   let failure: string | null = null;
   const chosenCandidate = (): LujvoCandidate | null => {
     if (!result?.candidates.length) return null;
+    if (state.typed)
+      return (
+        result.candidates.find(
+          (candidate) => candidate.spelling === state.typed,
+        ) ?? null
+      );
     return state.selected
       ? (result.candidates.find((c) => c.spelling === state.selected) ?? null)
       : result.candidates[0];
@@ -418,16 +463,99 @@ export async function lujvoPage(
         style:
           "padding:14px 16px;display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center",
       });
+      if (state.typed) {
+        const part = {
+          text: component.locked ?? "",
+          kind: "rafsi" as const,
+          join_before: index ? (state.joins?.[index - 1] ?? "") : null,
+        };
+        const options = sourceOptions(part, cached);
+        item.append(
+          el("strong", { lang: "jbo", text: component.locked ?? "" }),
+          p(
+            `Exact join before this part: ${index ? JSON.stringify(state.joins?.[index - 1] ?? "") : "none"}.`,
+            "meta",
+          ),
+        );
+        if (options.length) {
+          const source = field(`Source word for part ${index + 1}`, {
+            options: [
+              { value: "", label: "Choose a source word" },
+              ...options.map((choice) => ({
+                value: choice.spelling,
+                label: `${choice.spelling} ${choice.gloss}`,
+              })),
+            ],
+            value: component.unresolvedSource ? "" : component.spelling,
+          });
+          source.input.addEventListener("change", () => {
+            const choice = options.find(
+              (choice) => choice.spelling === source.input.value,
+            );
+            if (!choice) return;
+            selectLujvoSource(state, index, choice);
+            saver.touch();
+            rebuild();
+          });
+          item.append(source.wrapper);
+        }
+        const source = field(`Other source word for part ${index + 1}`, {
+          value: options.some(
+            (option) => option.spelling === component.spelling,
+          )
+            ? ""
+            : component.spelling,
+          lang: "jbo",
+          spellcheck: false,
+        });
+        source.input.addEventListener("change", () => {
+          selectLujvoSource(state, index, source.input.value);
+          saver.touch();
+          rebuild();
+        });
+        item.append(source.wrapper);
+        if (!options.length && !component.spelling)
+          item.append(
+            p(
+              "No source word is linked. Enter one to record its attribution, or continue without compound metadata. The rafsi stays fixed.",
+              "meta",
+            ),
+          );
+        if (component.definitions?.length) {
+          const definition = field(
+            `Exact definition of ${component.spelling}`,
+            {
+              options: [
+                { value: "", label: "no specific definition" },
+                ...component.definitions.map((entry) => ({
+                  value: entry.event,
+                  label: entry.summary,
+                })),
+              ],
+              value: component.definition ?? "",
+            },
+          );
+          definition.input.addEventListener("change", () => {
+            editLujvoRows(state, (rows) => {
+              rows[index].definition = definition.input.value || null;
+            });
+            saver.touch();
+            rebuild();
+          });
+          item.append(definition.wrapper);
+        }
+        list.append(item);
+        return;
+      }
       const moves = el("div", {
         style: "display:flex;flex-direction:column;gap:2px",
       });
       const move = (delta: number) => {
         const target = index + delta;
         if (target < 0 || target >= state.components.length) return;
-        [state.components[index], state.components[target]] = [
-          state.components[target],
-          state.components[index],
-        ];
+        editLujvoRows(state, (rows) => {
+          [rows[index], rows[target]] = [rows[target], rows[index]];
+        });
         saver.touch();
         renderRows();
         rebuild();
@@ -477,7 +605,9 @@ export async function lujvoPage(
             }),
           );
         pick.addEventListener("change", () => {
-          component.definition = pick.value || null;
+          editLujvoRows(state, (rows) => {
+            rows[index].definition = pick.value || null;
+          });
           saver.touch();
           rebuild();
         });
@@ -513,7 +643,9 @@ export async function lujvoPage(
         );
         if (title) wrapper.title = title;
         input.addEventListener("change", () => {
-          component.locked = value;
+          editLujvoRows(state, (rows) => {
+            rows[index].locked = value;
+          });
           saver.touch();
           renderRows();
           rebuild();
@@ -570,12 +702,14 @@ export async function lujvoPage(
           .split(",")
           .map((s) => s.trim().toLowerCase())
           .filter(Boolean);
-        component.claims = [
-          ...packaged,
-          ...entered
-            .filter((r) => !packaged.some((c) => c.rafsi === r))
-            .map((r) => ({ rafsi: r, pair: rafsiPairId(id, r) })),
-        ];
+        editLujvoRows(state, (rows) => {
+          rows[index].claims = [
+            ...packaged,
+            ...entered
+              .filter((r) => !packaged.some((c) => c.rafsi === r))
+              .map((r) => ({ rafsi: r, pair: rafsiPairId(id, r) })),
+          ];
+        });
         saver.touch();
         rebuild();
         renderRows();
@@ -583,7 +717,9 @@ export async function lujvoPage(
       const remove = button(
         icon("close", "", 18),
         () => {
-          state.components.splice(index, 1);
+          editLujvoRows(state, (rows) => {
+            rows.splice(index, 1);
+          });
           saver.touch();
           renderRows();
           rebuild();
@@ -655,11 +791,7 @@ export async function lujvoPage(
               : button(
                   "Use",
                   () => {
-                    if (state.selected !== other.spelling) {
-                      state.acknowledged = [];
-                      draft.publishAcknowledged = [];
-                    }
-                    state.selected = other.spelling;
+                    chooseLujvoAlternative(draft, other.spelling);
                     saver.touch();
                     renderResult();
                   },
@@ -761,23 +893,26 @@ export async function lujvoPage(
       : "Availability in the local package is unknown: no package is downloaded.";
     resultCard.append(availability);
     const checked = candidate.spelling;
-    void getWord(wordId({ language: "jbo", spelling: checked }), {
-      signal: context.signal,
-    })
-      .then((word) => {
-        if (!context.live() || chosenCandidate()?.spelling !== checked) return;
-        // A word response without definitions means the server knows no definition of this spelling.
-        availability.textContent += word.definitions.length
-          ? ` The server defines ${checked} in snapshot ${word.snapshot.slice(7, 19)}….`
-          : ` The server has no definition of ${checked} in snapshot ${word.snapshot.slice(7, 19)}….`;
+    if (!state.typed)
+      void getWord(wordId({ language: "jbo", spelling: checked }), {
+        signal: context.signal,
       })
-      .catch((error: unknown) => {
-        if (!context.live() || chosenCandidate()?.spelling !== checked) return;
-        availability.textContent +=
-          error instanceof RequestError && error.status === 404
-            ? ` The server has no definition of ${checked} now.`
-            : ` The server could not be asked: ${describe(error)}.`;
-      });
+        .then((word) => {
+          if (!context.live() || chosenCandidate()?.spelling !== checked)
+            return;
+          // A word response without definitions means the server knows no definition of this spelling.
+          availability.textContent += word.definitions.length
+            ? ` The server defines ${checked} in snapshot ${word.snapshot.slice(7, 19)}….`
+            : ` The server has no definition of ${checked} in snapshot ${word.snapshot.slice(7, 19)}….`;
+        })
+        .catch((error: unknown) => {
+          if (!context.live() || chosenCandidate()?.spelling !== checked)
+            return;
+          availability.textContent +=
+            error instanceof RequestError && error.status === 404
+              ? ` The server has no definition of ${checked} now.`
+              : ` The server could not be asked: ${describe(error)}.`;
+        });
     if (candidate.unlisted.length)
       resultCard.append(
         p(
@@ -848,18 +983,10 @@ export async function lujvoPage(
   const rebuild = () => {
     failure = null;
     result = null;
+    reconcileLujvoRows(state);
     if (state.components.length >= 2) {
       try {
-        result = buildLujvo({
-          profile: state.profile,
-          components: state.components.map((c) => ({
-            id: c.id,
-            spelling: c.spelling,
-            kind: c.kind,
-            definition: c.definition,
-            claims: c.claims,
-            locked: c.locked,
-          })),
+        result = buildLujvoState(state, {
           inventory: { snapshot: inventory.snapshot, claims: inventory.claims },
           limits: { choice_product: 20000, results: 64 },
         });
@@ -881,15 +1008,55 @@ export async function lujvoPage(
     if (!primary) return;
     const candidate = chosenCandidate();
     primary.textContent = `Use ${candidate?.spelling ?? "this form"}`;
-    primary.disabled = !candidate || unacknowledged(candidate).length > 0;
+    primary.disabled =
+      !candidate ||
+      unacknowledged(candidate).length > 0 ||
+      !linkedSources(state);
     primary.title =
       candidate && unacknowledged(candidate).length
         ? "Acknowledge every competing claim first, or choose another form."
         : "";
   };
+  const useCandidate = async (withMetadata: boolean) => {
+    const candidate = chosenCandidate();
+    if (
+      !candidate ||
+      !result ||
+      (withMetadata &&
+        (unacknowledged(candidate).length || !linkedSources(state)))
+    )
+      return;
+    if (
+      draft.formation &&
+      !confirm(
+        "Use this lujvo and remove the previous generation evidence? The prose and annotations stay.",
+      )
+    )
+      return;
+    if (
+      draft.typedSpelling &&
+      typedWord(draft.spelling) !== candidate.spelling &&
+      !confirm(
+        `Replace the typed spelling "${draft.spelling}" with "${candidate.spelling}"?`,
+      )
+    )
+      return;
+    selectLujvoCandidate(draft, result, candidate, withMetadata);
+    if (!(await saver.flush())) return;
+    navigate("/new/places");
+  };
   bar = actionBar(saver, {
     back: { label: "Back", href: "/new/type" },
     extra: [
+      ...(state.typed
+        ? [
+            button(
+              "Continue without compound metadata",
+              () => useCandidate(false),
+              { class: "btn btn-quiet" },
+            ),
+          ]
+        : []),
       link("Type the spelling yourself", "/new/form?manual=1", {
         class: "btn btn-quiet",
       }),
@@ -897,32 +1064,7 @@ export async function lujvoPage(
     primary: {
       label: "Use this form",
       disabled: true,
-      action: async () => {
-        const candidate = chosenCandidate();
-        if (!candidate || !result || unacknowledged(candidate).length) return;
-        if (
-          draft.formation &&
-          !confirm(
-            "Use this lujvo and remove the previous generation evidence? The prose and annotations stay.",
-          )
-        )
-          return;
-        draft.formation = null;
-        if (draft.spelling !== candidate.spelling)
-          draft.publishAcknowledged = [];
-        draft.spelling = candidate.spelling;
-        draft.evidenceForm = candidate.spelling;
-        draft.compound = compoundMetadata(
-          result,
-          candidate,
-          state.components,
-          "",
-        );
-        state.selected = candidate.spelling;
-        draft.step = Math.max(draft.step, 4) as Draft["step"];
-        if (!(await saver.flush())) return;
-        navigate("/new/places");
-      },
+      action: () => useCandidate(true),
     },
   });
   main.append(bar);

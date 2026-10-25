@@ -1,0 +1,737 @@
+{
+  "reference": "https://github.com/int19h/gencmu",
+  "revision": "98417655a407566f50ed491cf8074f0c55ddce64",
+  "dialect": "experimental",
+  "stage": "forms",
+  "criterion": "One lexical token, optional PAUSE tokens, exact brivla-word tree child",
+  "sources": {
+    "grammars/dialects/experimental.md": "28b8705c0c62af9a2ad2dd1cc8fecbe4b754c3d0f841f7f2723a11a39a4d53e0",
+    "grammars/words/experimental.md": "08c4c5f9f36d592194b1694e22b70649189bfaa3537b6e2188b613b6ca090b18",
+    "grammars/words/bpfk.md": "4567d2b1c8c0a28a3968ca66b4f3c3bedff49554847a292f2b0e0281fdd6ca7e",
+    "grammars/words/forms.md": "00ccd2595ed8b4865754f6fd9b1ce6d28eafb3024e3a3a5c363932a54789cc3e",
+    "grammars/words/shapes.md": "41fd3d82a3318f5076163a4736f59499feeb27d2aa9b440a4d3e8c47c4a1e8a0"
+  },
+  "cases": [
+    {
+      "word": "ckusni",
+      "oracle_tags": [
+        [
+          "BRIVLA",
+          "Continued",
+          "Onset",
+          "Run-Final",
+          "Run-Initial",
+          "Word"
+        ]
+      ],
+      "kind": "lujvo",
+      "tree_rule": "lujvo",
+      "rebuilt": "ckusni"
+    },
+    {
+      "word": "cuktysinxa",
+      "oracle_tags": [
+        [
+          "BRIVLA",
+          "Continued",
+          "Onset",
+          "Run-Final",
+          "Run-Initial",
+          "Word"
+        ]
+      ],
+      "kind": "lujvo",
+      "tree_rule": "lujvo",
+      "rebuilt": "cuktysinxa"
+    },
+    {
+      "word": "sairzba",
+      "oracle_tags": [
+        [
+          "BRIVLA",
+          "Continued",
+          "Onset",
+          "Run-Final",
+          "Run-Initial",
+          "Word"
+        ]
+      ],
+      "kind": "lujvo",
+      "tree_rule": "lujvo",
+      "rebuilt": "sairzba"
+    },
+    {
+      "word": "bangu'y'ismu",
+      "oracle_tags": [
+        [
+          "BRIVLA",
+          "Continued",
+          "Onset",
+          "Run-Final",
+          "Run-Initial",
+          "Word"
+        ]
+      ],
+      "kind": "lujvo",
+      "tree_rule": "lujvo",
+      "rebuilt": "bangu'y'ismu"
+    },
+    {
+      "word": "sakrsakysakli",
+      "oracle_tags": [
+        [
+          "BRIVLA",
+          "Continued",
+          "Onset",
+          "Run-Final",
+          "Run-Initial",
+          "Word"
+        ]
+      ],
+      "kind": "lujvo",
+      "tree_rule": "lujvo",
+      "rebuilt": "sakrsakysakli"
+    },
+    {
+      "word": "spageti'ybroda",
+      "oracle_tags": [
+        [
+          "BRIVLA",
+          "Continued",
+          "Onset",
+          "Run-Final",
+          "Run-Initial",
+          "Word"
+        ]
+      ],
+      "kind": "lujvo",
+      "tree_rule": "lujvo",
+      "rebuilt": "spageti'ybroda"
+    },
+    {
+      "word": "spageti'ykla",
+      "oracle_tags": [
+        [
+          "BRIVLA",
+          "Continued",
+          "Onset",
+          "Run-Final",
+          "Run-Initial",
+          "Word"
+        ]
+      ],
+      "kind": "lujvo",
+      "tree_rule": "lujvo",
+      "rebuilt": "spageti'ykla"
+    },
+    {
+      "word": "kerlybai'ybroda",
+      "oracle_tags": [
+        [
+          "BRIVLA",
+          "Continued",
+          "Onset",
+          "Run-Final",
+          "Run-Initial",
+          "Word"
+        ]
+      ],
+      "kind": "lujvo",
+      "tree_rule": "lujvo",
+      "rebuilt": "kerlybai'ybroda"
+    },
+    {
+      "word": "kerlybla'ykla",
+      "oracle_tags": [
+        [
+          "BRIVLA",
+          "Continued",
+          "Onset",
+          "Run-Final",
+          "Run-Initial",
+          "Word"
+        ]
+      ],
+      "kind": "lujvo",
+      "tree_rule": "lujvo",
+      "rebuilt": "kerlybla'ykla"
+    },
+    {
+      "word": "klama'ybroda",
+      "oracle_tags": [
+        [
+          "BRIVLA",
+          "Continued",
+          "Onset",
+          "Run-Final",
+          "Run-Initial",
+          "Word"
+        ]
+      ],
+      "kind": "lujvo",
+      "tree_rule": "lujvo",
+      "rebuilt": "klama'ybroda"
+    },
+    {
+      "word": "spageiybroda",
+      "oracle_tags": [
+        [
+          "BRIVLA",
+          "Continued",
+          "Onset",
+          "Run-Final",
+          "Run-Initial",
+          "Word"
+        ]
+      ],
+      "kind": "lujvo",
+      "tree_rule": "lujvo",
+      "rebuilt": "spageiybroda"
+    },
+    {
+      "word": "aktyiismu",
+      "oracle_tags": [
+        [
+          "BRIVLA",
+          "Continued",
+          "Run-Final",
+          "Run-Initial",
+          "Word"
+        ]
+      ],
+      "kind": "lujvo",
+      "tree_rule": "lujvo",
+      "rebuilt": "aktyiismu"
+    },
+    {
+      "word": "kerlyfa'u'yiismu",
+      "oracle_tags": [
+        [
+          "BRIVLA",
+          "Continued",
+          "Onset",
+          "Run-Final",
+          "Run-Initial",
+          "Word"
+        ]
+      ],
+      "kind": "lujvo",
+      "tree_rule": "lujvo",
+      "rebuilt": "kerlyfa'u'yiismu"
+    },
+    {
+      "word": "sakli'ybroda",
+      "oracle_tags": [
+        [
+          "BRIVLA",
+          "Continued",
+          "Onset",
+          "Run-Final",
+          "Run-Initial",
+          "Word"
+        ]
+      ],
+      "kind": "lujvo",
+      "tree_rule": "lujvo",
+      "rebuilt": "sakli'ybroda"
+    },
+    {
+      "word": "gismu'ybroda",
+      "oracle_tags": [
+        [
+          "BRIVLA",
+          "Continued",
+          "Onset",
+          "Run-Final",
+          "Run-Initial",
+          "Word"
+        ]
+      ],
+      "kind": "lujvo",
+      "tree_rule": "lujvo",
+      "rebuilt": "gismu'ybroda"
+    },
+    {
+      "word": "ixla'ybroda",
+      "oracle_tags": [
+        [
+          "BRIVLA",
+          "Continued",
+          "Run-Final",
+          "Run-Initial",
+          "Word"
+        ]
+      ],
+      "kind": "lujvo",
+      "tree_rule": "lujvo",
+      "rebuilt": "ixla'ybroda"
+    },
+    {
+      "word": "uspi'ybe'a",
+      "oracle_tags": [
+        [
+          "BRIVLA",
+          "Continued",
+          "Run-Final",
+          "Run-Initial",
+          "Word"
+        ]
+      ],
+      "kind": "lujvo",
+      "tree_rule": "lujvo",
+      "rebuilt": "uspi'ybe'a"
+    },
+    {
+      "word": "baibla'ykla",
+      "oracle_tags": [
+        [
+          "BRIVLA",
+          "Continued",
+          "Onset",
+          "Run-Final",
+          "Run-Initial",
+          "Word"
+        ]
+      ],
+      "kind": "lujvo",
+      "tree_rule": "lujvo",
+      "rebuilt": "baibla'ykla"
+    },
+    {
+      "word": "bai'ybla'ykla",
+      "oracle_tags": [
+        [
+          "BRIVLA",
+          "Continued",
+          "Onset",
+          "Run-Final",
+          "Run-Initial",
+          "Word"
+        ]
+      ],
+      "kind": "lujvo",
+      "tree_rule": "lujvo",
+      "rebuilt": "bai'ybla'ykla"
+    },
+    {
+      "word": "saibla'ykla",
+      "oracle_tags": [
+        [
+          "BRIVLA",
+          "Continued",
+          "Onset",
+          "Run-Final",
+          "Run-Initial",
+          "Word"
+        ]
+      ],
+      "kind": "lujvo",
+      "tree_rule": "lujvo",
+      "rebuilt": "saibla'ykla"
+    },
+    {
+      "word": "islenskygu'e",
+      "oracle_tags": [
+        [
+          "BRIVLA",
+          "Continued",
+          "Run-Final",
+          "Run-Initial",
+          "Word"
+        ]
+      ],
+      "kind": "lujvo",
+      "tree_rule": "lujvo",
+      "rebuilt": "islenskygu'e"
+    },
+    {
+      "word": "islenskybroda",
+      "oracle_tags": [
+        [
+          "BRIVLA",
+          "Continued",
+          "Run-Final",
+          "Run-Initial",
+          "Word"
+        ]
+      ],
+      "kind": "lujvo",
+      "tree_rule": "lujvo",
+      "rebuilt": "islenskybroda"
+    },
+    {
+      "word": "ibalskybroda",
+      "oracle_tags": [
+        [
+          "BRIVLA",
+          "Continued",
+          "Run-Final",
+          "Run-Initial",
+          "Word"
+        ]
+      ],
+      "kind": "lujvo",
+      "tree_rule": "lujvo",
+      "rebuilt": "ibalskybroda"
+    },
+    {
+      "word": "kerlyxambrga",
+      "oracle_tags": [
+        [
+          "BRIVLA",
+          "Continued",
+          "Onset",
+          "Run-Final",
+          "Run-Initial",
+          "Word"
+        ]
+      ],
+      "kind": "lujvo",
+      "tree_rule": "lujvo",
+      "rebuilt": "kerlyxambrga"
+    },
+    {
+      "word": "cuktybangrtai",
+      "oracle_tags": [
+        [
+          "BRIVLA",
+          "Continued",
+          "Onset",
+          "Run-Final",
+          "Run-Initial",
+          "Word"
+        ]
+      ],
+      "kind": "lujvo",
+      "tree_rule": "lujvo",
+      "rebuilt": "cuktybangrtai"
+    },
+    {
+      "word": "bangu'ybangrtai",
+      "oracle_tags": [
+        [
+          "BRIVLA",
+          "Continued",
+          "Onset",
+          "Run-Final",
+          "Run-Initial",
+          "Word"
+        ]
+      ],
+      "kind": "lujvo",
+      "tree_rule": "lujvo",
+      "rebuilt": "bangu'ybangrtai"
+    },
+    {
+      "word": "bla'ykla",
+      "oracle_tags": [
+        [
+          "FOREIGN",
+          "Run-Final",
+          "Run-Initial"
+        ]
+      ],
+      "kind": "unknown",
+      "tree_rule": null,
+      "rebuilt": null
+    },
+    {
+      "word": "bla'ykuiska",
+      "oracle_tags": [
+        [
+          "FOREIGN",
+          "Run-Final",
+          "Run-Initial"
+        ]
+      ],
+      "kind": "unknown",
+      "tree_rule": null,
+      "rebuilt": null
+    },
+    {
+      "word": "kla'ykuiska",
+      "oracle_tags": [
+        [
+          "FOREIGN",
+          "Run-Final",
+          "Run-Initial"
+        ]
+      ],
+      "kind": "unknown",
+      "tree_rule": null,
+      "rebuilt": null
+    },
+    {
+      "word": "bla'ytcuiska",
+      "oracle_tags": [
+        [
+          "FOREIGN",
+          "Run-Final",
+          "Run-Initial"
+        ]
+      ],
+      "kind": "unknown",
+      "tree_rule": null,
+      "rebuilt": null
+    },
+    {
+      "word": "spagetiybroda",
+      "oracle_tags": [
+        [
+          "FOREIGN",
+          "Run-Final",
+          "Run-Initial"
+        ]
+      ],
+      "kind": "unknown",
+      "tree_rule": null,
+      "rebuilt": null
+    },
+    {
+      "word": "spagekuykla",
+      "oracle_tags": [
+        [
+          "FOREIGN",
+          "Run-Final",
+          "Run-Initial"
+        ]
+      ],
+      "kind": "unknown",
+      "tree_rule": null,
+      "rebuilt": null
+    },
+    {
+      "word": "balskybroda",
+      "oracle_tags": [
+        [
+          "FOREIGN",
+          "Run-Final",
+          "Run-Initial"
+        ]
+      ],
+      "kind": "unknown",
+      "tree_rule": null,
+      "rebuilt": null
+    },
+    {
+      "word": "lenskybroda",
+      "oracle_tags": [
+        [
+          "FOREIGN",
+          "Run-Final",
+          "Run-Initial"
+        ]
+      ],
+      "kind": "unknown",
+      "tree_rule": null,
+      "rebuilt": null
+    },
+    {
+      "word": "tenskybroda",
+      "oracle_tags": [
+        [
+          "FOREIGN",
+          "Run-Final",
+          "Run-Initial"
+        ]
+      ],
+      "kind": "unknown",
+      "tree_rule": null,
+      "rebuilt": null
+    },
+    {
+      "word": "bangrybroda",
+      "oracle_tags": [
+        [
+          "FOREIGN",
+          "Run-Final",
+          "Run-Initial"
+        ]
+      ],
+      "kind": "unknown",
+      "tree_rule": null,
+      "rebuilt": null
+    },
+    {
+      "word": "barklysakli",
+      "oracle_tags": [
+        [
+          "FOREIGN",
+          "Run-Final",
+          "Run-Initial"
+        ]
+      ],
+      "kind": "unknown",
+      "tree_rule": null,
+      "rebuilt": null
+    },
+    {
+      "word": "balskykla",
+      "oracle_tags": [
+        [
+          "FOREIGN",
+          "Run-Final",
+          "Run-Initial"
+        ]
+      ],
+      "kind": "unknown",
+      "tree_rule": null,
+      "rebuilt": null
+    },
+    {
+      "word": "kamzi",
+      "oracle_tags": [
+        [
+          "BRIVLA",
+          "Continued",
+          "Onset",
+          "Run-Final",
+          "Run-Initial",
+          "Word"
+        ]
+      ],
+      "kind": "gismu",
+      "tree_rule": "gismu",
+      "rebuilt": null
+    },
+    {
+      "word": "bamzda",
+      "oracle_tags": [
+        [
+          "BRIVLA",
+          "Continued",
+          "Onset",
+          "Run-Final",
+          "Run-Initial",
+          "Word"
+        ]
+      ],
+      "kind": "lujvo",
+      "tree_rule": "lujvo",
+      "rebuilt": null
+    },
+    {
+      "word": ".djeimz.",
+      "oracle_tags": [
+        [
+          "PAUSE",
+          "Period-Initial",
+          "Period-Only"
+        ],
+        [
+          "CMEVLA",
+          "Continued",
+          "Onset",
+          "Run-Final",
+          "Run-Initial",
+          "Word"
+        ],
+        [
+          "PAUSE",
+          "Period-Initial",
+          "Period-Only"
+        ]
+      ],
+      "kind": "cmevla",
+      "tree_rule": null,
+      "rebuilt": null
+    },
+    {
+      "word": "bangrtai",
+      "oracle_tags": [
+        [
+          "BRIVLA",
+          "Continued",
+          "Onset",
+          "Run-Final",
+          "Run-Initial",
+          "Word"
+        ]
+      ],
+      "kind": "fuivla",
+      "tree_rule": "fuhivla",
+      "rebuilt": null
+    },
+    {
+      "word": "xambrga",
+      "oracle_tags": [
+        [
+          "BRIVLA",
+          "Continued",
+          "Onset",
+          "Run-Final",
+          "Run-Initial",
+          "Word"
+        ]
+      ],
+      "kind": "fuivla",
+      "tree_rule": "fuhivla",
+      "rebuilt": null
+    },
+    {
+      "word": "cmagnitude",
+      "oracle_tags": [
+        [
+          "BRIVLA",
+          "Continued",
+          "Onset",
+          "Run-Final",
+          "Run-Initial",
+          "Word"
+        ]
+      ],
+      "kind": "fuivla",
+      "tree_rule": "fuhivla",
+      "rebuilt": null
+    },
+    {
+      "word": "depsnce",
+      "oracle_tags": [
+        [
+          "BRIVLA",
+          "Continued",
+          "Onset",
+          "Run-Final",
+          "Run-Initial",
+          "Word"
+        ]
+      ],
+      "kind": "fuivla",
+      "tree_rule": "fuhivla",
+      "rebuilt": null
+    },
+    {
+      "word": "regnaftngi",
+      "oracle_tags": [
+        [
+          "BRIVLA",
+          "Continued",
+          "Onset",
+          "Run-Final",
+          "Run-Initial",
+          "Word"
+        ]
+      ],
+      "kind": "fuivla",
+      "tree_rule": "fuhivla",
+      "rebuilt": null
+    },
+    {
+      "word": "sparnribia",
+      "oracle_tags": [
+        [
+          "BRIVLA",
+          "Cgv-Warning",
+          "Continued",
+          "Onset",
+          "Run-Final",
+          "Run-Initial",
+          "Word"
+        ]
+      ],
+      "kind": "fuivla",
+      "tree_rule": "fuhivla",
+      "rebuilt": null
+    }
+  ]
+}

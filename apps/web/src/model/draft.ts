@@ -26,6 +26,7 @@ import { placeGlyph } from "../lib/format.ts";
 import { cloneAssistance } from "./assistance.ts";
 import {
   syncFormationSources,
+  normalizeLujvoEvidence,
   formationSourcesFromRows,
   sameFormationSources,
 } from "./builders.ts";
@@ -218,6 +219,11 @@ export interface Draft {
   meaning: string;
   language: string;
   spelling: string;
+  /** The exact spelling last entered by the author. */
+  typedSpelling?: string | null;
+  detectionFor?: string;
+  /** An automatic preselection that the author has not accepted yet. */
+  autoDetectedKind?: LexicalKind;
   kind: LexicalKind | null;
   selmaho: string[];
   /** Attributed morphology notes from the manual Form step. */
@@ -541,6 +547,7 @@ export function normalizeDraft(stored: Draft): Draft {
       if (migratedRow) record.key = sourceRowKey(migratedRow);
     }
     for (const snapshot of [record.before, record.after]) {
+      if (snapshot?.lujvo) normalizeLujvoEvidence(snapshot.lujvo);
       if (!snapshot?.gismu) continue;
       snapshot.gismu.rows = snapshot.gismu.rows.map((row, index) => {
         const current =
@@ -579,6 +586,7 @@ export function normalizeDraft(stored: Draft): Draft {
       (old.formation || old.compound ? (old.spelling ?? "") : null),
   });
   if (draft.formation) draft.formation = { ...draft.formation };
+  if (draft.lujvo) normalizeLujvoEvidence(draft.lujvo);
   syncFormationSources(draft);
   return draft;
 }

@@ -1,3 +1,7 @@
+import {
+  clearWordEvidence,
+  selectWordKind,
+} from "../../model/typed-headword.ts";
 /** Shared wizard pieces: draft persistence, the step bar, and the action bar. */
 import {
   el,
@@ -153,6 +157,25 @@ export function guardDraftNavigation(
   const saver = pendingSaver;
   // Without a saver the verdict is synchronous, so ordinary navigation stays synchronous.
   if (!saver) return true;
+  const path = new URL(target, location.href).pathname;
+  const forward = [
+    "/new/lujvo",
+    "/new/gismu",
+    "/new/form",
+    "/new/places",
+    "/new/publish",
+    "/new/editor",
+  ].includes(path);
+  if (forward && saver.draft.autoDetectedKind !== undefined) {
+    const kind =
+      path === "/new/lujvo"
+        ? "lujvo"
+        : path === "/new/gismu"
+          ? "gismu"
+          : saver.draft.kind;
+    if (!confirmKindChange(saver.draft, kind)) return false;
+    saver.touch();
+  }
   if (saver.leaving === target) {
     saver.detach();
     return true;
@@ -488,14 +511,8 @@ export function confirmKindChange(
       `Changing the type to ${kind ?? "none"} no longer uses: ${dropping.join(", ")}. Remove those fields? The prose and annotations stay.`,
     );
     if (!ok) return false;
-    if (kind !== "lujvo") draft.compound = null;
-    if (kind !== "gismu") {
-      draft.formation = null;
-      for (const row of draft.gismu?.rows ?? []) delete row.sourceReview;
-    }
-    if (!draft.compound && !draft.formation) draft.evidenceForm = null;
   }
-  draft.kind = kind;
+  selectWordKind(draft, kind);
   return true;
 }
 /** Removes structured evidence only after the author confirms the exact loss. */
@@ -507,9 +524,6 @@ export function removeFormationEvidence(draft: Draft): boolean {
     )
   )
     return false;
-  draft.compound = null;
-  draft.formation = null;
-  draft.evidenceForm = null;
-  draft.publishAcknowledged = [];
+  clearWordEvidence(draft);
   return true;
 }

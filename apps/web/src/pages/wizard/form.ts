@@ -1,3 +1,8 @@
+import {
+  changeTypedWord,
+  detectWord,
+  useManualForm,
+} from "../../model/typed-headword.ts";
 import { assistanceAction } from "../../components/assistance.ts";
 /**
  * Step 3C: the manual Form screen. Spelling, attributed morphology notes, and
@@ -8,9 +13,10 @@ import { el, p, text, field, link, button } from "../../lib/dom.ts";
 import { navigate, type RenderContext, type Route } from "../../app/router.ts";
 import type { App } from "../../app/context.ts";
 import type { Draft } from "../../model/draft.ts";
-import { manualFormation, syncFormationSources } from "../../model/builders.ts";
+import { syncFormationSources } from "../../model/builders.ts";
 import {
   actionBar,
+  confirmKindChange,
   DraftSaver,
   loadDraft,
   stepBar,
@@ -28,6 +34,8 @@ export async function formPage(route: Route, context: RenderContext, app: App) {
     return;
   }
   const saver = new DraftSaver(app, draft);
+  if (draft.kind) confirmKindChange(draft, draft.kind);
+  saver.touch();
   main.append(stepBar(draft, 3));
   const kind = draft.kind;
   const section = el("section", {
@@ -106,12 +114,19 @@ export async function formPage(route: Route, context: RenderContext, app: App) {
   });
   spelling.input.style.fontSize = "24px";
   spelling.input.addEventListener("input", () => {
-    if (draft.spelling !== spelling.input.value) draft.publishAcknowledged = [];
-    draft.spelling = spelling.input.value;
+    changeTypedWord(draft, spelling.input.value);
+    renderDetection();
     saver.touch();
     refresh();
   });
   section.append(spelling.wrapper);
+  const detection = el("p", { class: "small", role: "status" });
+  const renderDetection = () => {
+    const analysis = detectWord(draft.spelling);
+    detection.textContent = `Detected form: ${analysis.kind}. ${analysis.diagnostics.join(" ")}`;
+  };
+  renderDetection();
+  section.append(detection);
   if (kind === "cmavo" || kind === "compound" || kind === "letteral") {
     const selmaho = field("selma'o", {
       value: draft.selmaho.join(", "),
@@ -178,18 +193,7 @@ export async function formPage(route: Route, context: RenderContext, app: App) {
       disabled: !draft.spelling.trim(),
       action: async () => {
         if (!draft.spelling.trim()) return;
-        if (
-          kind === "gismu" &&
-          draft.gismu &&
-          (!draft.formation || syncFormationSources(draft))
-        ) {
-          draft.formation = manualFormation(
-            draft.gismu.rows,
-            draft.gismu.reason,
-          );
-          if (draft.formation) draft.evidenceForm = draft.spelling;
-        }
-        draft.step = Math.max(draft.step, 4) as Draft["step"];
+        useManualForm(draft);
         if (!(await saver.flush())) return;
         navigate("/new/places");
       },
