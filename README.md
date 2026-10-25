@@ -145,7 +145,12 @@ Recipe inputs preserve literal imported markers and mathematics. They exclude to
 The codecs encode unit vectors as little-endian float32.
 They reject invalid dimensions, nonfinite values, incorrect byte lengths, and vectors outside the unit norm tolerance.
 Only provider output receives normalization.
-Vector storage, semantic search routes, indexing, and query caching remain unfinished. The semantic capability stays disabled.
+The Node host stores vectors and exact event, envelope, body, input, and extraction bindings in a separate SQLite database.
+Its [operator command](docs/semantic-search.md) prepares eligible definitions in bounded pages and resumes fresh indexing through the shared embedding budget.
+Equal inputs share a vector under the same complete profile. Distinct publications retain their own associations.
+The job saves each operation link before dispatch. Interrupted sent batches need an explicit linked retry and keep their earlier charges.
+Mocked tests cover partial progress, restart, failures, retirement, atomic publication, and rollback.
+Semantic search routes, query caching, and Worker vector storage remain unfinished. The semantic capability stays disabled.
 A discarded result returns a clear status. Spending failures distinguish pending costs, timed limits, and requests that cannot fit.
 The default spending share admits every enabled operation at each reasoning effort, with decision reports enabled or disabled.
 Each task uses an output cap based on recorded prompt tests. An explicit operator limit replaces the automatic caps.
