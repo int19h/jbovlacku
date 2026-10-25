@@ -180,7 +180,7 @@ export async function meaningPage(
       text("Plain words are fine. Use "),
       el("span", { class: "blank", text: "___" }),
       text(
-        " for each thing the word talks about. Underscores stay placeholders until you approve their numbering in the Places step.",
+        " for each thing the word talks about. Each semicolon restarts numbering at 1. You can also use ① through ⑳ or {place N}. A backslash keeps a circled character literal. You approve numbering in the Places step.",
       ),
     ),
   );

@@ -1,4 +1,5 @@
 import { changeTypedWord } from "../../model/typed-headword.ts";
+import { placeCountNote } from "../../components/place-count-note.ts";
 import { hintLabel, mappingKind } from "../../model/assistance.ts";
 import {
   assistanceAction,
@@ -80,6 +81,54 @@ import {
   DRAFT_KEY,
 } from "./common.ts";
 import { describeArity } from "../../components/definition.ts";
+
+function numberingParts(
+  parts: ReturnType<typeof numberPlaceholders>["parts"],
+): HTMLElement {
+  const breakdown = el("ol", { "aria-label": "Places used in each part" });
+  for (const [index, part] of parts.entries()) {
+    breakdown.append(
+      el(
+        "li",
+        { style: "margin:8px 0;overflow-wrap:anywhere" },
+        p(
+          `Part ${index + 1}: ${part.places.length ? `places ${part.places.join(", ")}` : "no places"}`,
+          "meta",
+        ),
+        renderRichText(editorToRichText(part.text, true), { placeHref: null }),
+      ),
+    );
+  }
+  return breakdown;
+}
+
+/** Splits edited prose without treating literal glyphs as place references. */
+function definitionParts(
+  value: RichText,
+): ReturnType<typeof numberPlaceholders>["parts"] {
+  const parts: { rich: RichText; places: Set<number> }[] = [
+    { rich: [[]], places: new Set() },
+  ];
+  for (const [index, paragraph] of value.entries()) {
+    if (index) parts.at(-1)!.rich.push([]);
+    for (const node of paragraph) {
+      if (typeof node === "string") {
+        for (const [index, fragment] of node.split(";").entries()) {
+          if (index) parts.push({ rich: [[]], places: new Set() });
+          if (fragment) parts.at(-1)!.rich.at(-1)!.push(fragment);
+        }
+      } else {
+        const part = parts.at(-1)!;
+        part.rich.at(-1)!.push(node);
+        if (typeof node === "number") part.places.add(node);
+      }
+    }
+  }
+  return parts.map((part) => ({
+    text: richTextToEditor(part.rich),
+    places: [...part.places].sort((a, b) => a - b),
+  }));
+}
 
 const standardTags = [
   "referent",
@@ -736,7 +785,7 @@ export async function placesPage(
     suggest.append(
       text(
         proposal.count
-          ? `Your meaning has ${proposal.count} placeholder${proposal.count === 1 ? "" : "s"}. `
+          ? `Your meaning has ${proposal.count} place${proposal.count === 1 ? "" : "s"}. `
           : "Start from your meaning. ",
       ),
       button(
@@ -749,8 +798,9 @@ export async function placesPage(
             draft.text = remapRich(draft.text, () => "literal");
           editor.input.value = editorText(draft.text, draft.structured);
           if (proposal.count && !draft.places.length) {
-            draft.places = Array.from({ length: proposal.count }, (_, i) =>
-              newPlace(i + 1),
+            draft.places = Array.from(
+              { length: Math.min(256, proposal.count) },
+              (_, i) => newPlace(i + 1),
             );
             if (draft.frameMode === "none") draft.frameMode = "fixed";
             draft.fixedZeroApproved = false;
@@ -764,6 +814,7 @@ export async function placesPage(
       ),
       text(" You approve the numbering below before publishing."),
     );
+    if (proposal.count) suggest.append(numberingParts(proposal.parts));
     defSection.append(suggest);
   }
   // Glosses. Each gloss keeps its own language and sense.
@@ -858,7 +909,17 @@ export async function placesPage(
   const list = el("ol", { class: "place-list" });
   const tailBox = el("div");
   const numbering = el("div");
-  placesSection.append(list, tailBox, numbering);
+  const placeAdvice = el("div");
+  placesSection.append(placeAdvice, list, tailBox, numbering);
+  const refreshPlaceAdvice = () => {
+    const note = placeCountNote(draft, () => {
+      draft.placeCountNoteHidden = true;
+      saver.touch();
+      refreshPlaceAdvice();
+      arity.focus();
+    });
+    placeAdvice.replaceChildren(...(note ? [note] : []));
+  };
   const addPlace = () => {
     if (draft.places.length >= 256) {
       app.announce("A frame declares at most 256 places.");
@@ -1135,6 +1196,9 @@ export async function placesPage(
         numbering.append(p("Place numbering approved.", "meta"));
       return;
     }
+    const parts = definitionParts(draft.text);
+    if (parts.some((part) => part.places.length))
+      numbering.append(numberingParts(parts));
     numbering.append(
       el(
         "div",
@@ -1158,6 +1222,7 @@ export async function placesPage(
   const rebuildHooks: (() => void)[] = [];
   const renderPlaces = () => {
     refreshArity();
+    refreshPlaceAdvice();
     for (const hook of rebuildHooks) hook();
     list.replaceChildren();
     if (draft.frameMode === "none") {
