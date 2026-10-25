@@ -296,6 +296,9 @@ A larger traversal budget does not remove memory limits.
 [Issue 9](https://github.com/int19h/jbovlacku/issues/9) tracks ranking CPU limits.
 [Issue 11](https://github.com/int19h/jbovlacku/issues/11) tracks state evaluation beyond the local corpus.
 [Issue 10](https://github.com/int19h/jbovlacku/issues/10) tracks URL serialization and invisible headword characters.
+The browser tests wait for the shared core before they prepare signed fixtures.
+Controlled tests keep delivery acceptance, word-view readiness, and AI control readiness separate.
+The calculator race tests use their own browser database.
 The development guide lists local tests. Their scope does not establish full specification conformance or public deployment readiness.
 
 ## Documentation

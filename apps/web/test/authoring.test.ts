@@ -913,6 +913,9 @@ test("a fully disconnected author signs a complete definition into storage and l
     },
     { spelling: "brodvi", rafsi: "rod" },
   );
+  const previousSnapshot = await page.evaluate(
+    async () => (await (await fetch("/api/v1/manifest")).json()).snapshot,
+  );
   await page.route("**/api/v1/**", (route) => route.abort("connectionreset"));
   await spaGoto(page, "/new/publish");
   await page
@@ -943,6 +946,35 @@ test("a fully disconnected author signs a complete definition into storage and l
   expect(before).toHaveLength(4);
   expect(before.map((r: any) => r.state)).not.toContain("accepted");
   await page.unroute("**/api/v1/**");
+  // Model durable acceptance before the word view catches up.
+  let materialized = false;
+  for (const path of ["**/api/v1/events", "**/api/v1/receipts/*"])
+    await page.route(path, async (route) => {
+      const response = await route.fetch();
+      if (!response.ok || materialized) {
+        await route.fulfill({ response });
+        return;
+      }
+      const receipt = await response.json();
+      await route.fulfill({
+        response,
+        json: {
+          ...receipt,
+          snapshot: null,
+          interpretation: "unavailable",
+          reasons: ["index_lag", "evaluation_pending"],
+        },
+      });
+    });
+  await page.route("**/api/v1/words/**", async (route) => {
+    if (materialized) {
+      await route.continue();
+      return;
+    }
+    const url = new URL(route.request().url());
+    url.searchParams.set("snapshot", previousSnapshot);
+    await route.fulfill({ response: await route.fetch({ url: url.href }) });
+  });
   // The saved panel delivers every unfinished record with its exact bytes.
   await saved.getByRole("button", { name: "Try now" }).click();
   await expect(saved).toContainText("Published.");
@@ -955,7 +987,19 @@ test("a fully disconnected author signs a complete definition into storage and l
   expect(after.map((r: any) => [r.id, r.transport])).toEqual(
     before.map((r: any) => [r.id, r.transport]),
   );
-  await page.goto("/word/brodvi");
+  // Keep the accepted receipts in this app session and request a fresh view.
+  await spaGoto(page, "/word/brodvi?fresh=1");
+  await expect(
+    page.getByText(
+      "This server stored your records. Its word view is updating.",
+    ),
+  ).toBeVisible();
+  await expect(
+    page.getByText(
+      "No definitions are available for this word in the selected view.",
+    ),
+  ).toHaveCount(0);
+  materialized = true;
   await expect(
     page
       .getByText(
