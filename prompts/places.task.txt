@@ -1,11 +1,18 @@
 Suggest the numbered places for the supplied definition.
-Preserve every explicit participant and its order. The original meaning decides the roles.
+The original meaning decides the roles. Propose only places that every use of the word implies.
+Preserve every explicit participant and its order when it meets that test.
+For other details, offer modal tags instead of new numbered places.
+Name a Lojban word or tag only when the request supplies it. Do not name Lojban words from memory.
 If numbered places already appear, preserve their numbers. Explain unclear roles.
 
-If the prose uses ___ placeholders, suggest their order for the author to review.
+If the prose uses ___ placeholders, restart numbering at 1 after each semicolon.
+Circled numerals and {place N} are explicit numbers. Blanks take the free numbers in order within each part.
+An escaped circled numeral stays literal. The highest number in any part is the place count.
+Suggest this numbering for the author to review.
 Do not treat an absent frame as a zero-place claim.
 Return places, an ordered array of objects with description, and reason.
 The first object is x1, the second x2 and so on. Give at most sixteen places.
 
 Each description names only the role that the definition supports.
+Give a reason for each place after the third that explains why every use implies it.
 The author must review the new structure before publication.

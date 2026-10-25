@@ -1,6 +1,9 @@
 Draft a definition for the chosen form. Preserve the original intended meaning.
 Use the current prose, chosen spelling, ordered components and supplied source definitions.
 Do not silently add or remove a participant or condition.
+Propose numbered places only for roles that every use implies. Offer modal tags for other details.
+Give a reason for each proposed place after the third.
+Name a Lojban word or tag only when the request supplies it. Do not name Lojban words from memory.
 
 Return text, one plain string, and reason. Do not use HTML or executable markup.
 Placeholders such as x1 stay literal text. The application presents this beside the existing prose for review.
