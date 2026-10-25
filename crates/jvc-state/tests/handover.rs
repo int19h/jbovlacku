@@ -1315,6 +1315,325 @@ fn native(f: &mut Fixture, k: u8) -> String {
     body["legacy"] = Value::Null;
     f.event(k,vec![],json!({"kind":"definition.publish","word":word_id(&body["word"]).unwrap(),"language":"en","parents":[],"origin":"native"}),Some(body))
 }
+
+fn native_rafsi_fixture() -> Fixture {
+    let mut f = Fixture::new();
+    let mut policy: Value = serde_json::from_slice(&f.input.bodies[&f.base_view]).unwrap();
+    policy["import_sets"] = json!([]);
+    policy["account_authority"] = json!(false);
+    f.input.selected_view = f.event(
+        20,
+        vec![],
+        json!({"kind":"view.publish","parents":[]}),
+        Some(policy),
+    );
+    f
+}
+
+fn assert_pending_cutoff_rafsi(claim_cutoff: bool) {
+    for retained in [false, true] {
+        let mut f = native_rafsi_fixture();
+        let (claim, _) = rafsi(&mut f, 3);
+        let definition = native(&mut f, 4);
+        let (issuer, publication, deprecated) = if claim_cutoff {
+            let (deprecated, _) = rafsi(&mut f, 5);
+            (3, claim.clone(), deprecated)
+        } else {
+            (4, definition, native(&mut f, 5))
+        };
+        f.event(
+            5,
+            vec![deprecated.clone()],
+            json!({"kind":"status.set","target":deprecated,"value":"deprecated"}),
+            None,
+        );
+        let safe = f.event(
+            issuer,
+            if retained {
+                vec![publication.clone()]
+            } else {
+                vec![]
+            },
+            json!({"kind":"identity.merge"}),
+            None,
+        );
+        let safe_event = f.input.events.last().unwrap().clone();
+        let compromise = f.compromise(issuer, vec![safe.clone()], vec![safe.clone()]);
+        f.remove(&safe);
+        let pending = f.input.clone();
+        let result = evaluate_observed(&f.input);
+        let receipt = &result.receipts[&publication];
+        assert_eq!(receipt.interpretation, jvc_state::Interpretation::Suspended);
+        assert!(receipt.reasons.contains("cutoff_pending"));
+        assert!(!receipt.reasons.contains("outside_retained_history"));
+        assert_eq!(result.publications[&publication].status, Status::Uncertain);
+        assert_eq!(
+            result.publications[&claim].eligible,
+            jvc_state::Eligibility::Unknown
+        );
+        assert_eq!(
+            result.receipts[&compromise].interpretation,
+            jvc_state::Interpretation::Pending
+        );
+
+        // Independent active evidence can establish eligibility while this cutoff waits.
+        if claim_cutoff {
+            rafsi(&mut f, 7);
+        } else {
+            native(&mut f, 7);
+        }
+        assert_eq!(
+            evaluate_observed(&f.input).publications[&claim].eligible,
+            jvc_state::Eligibility::Eligible
+        );
+
+        f.input = pending;
+        f.input.events.push(safe_event);
+        let result = evaluate_observed(&f.input);
+        assert_eq!(
+            result.receipts[&publication].interpretation,
+            if retained {
+                jvc_state::Interpretation::Effective
+            } else {
+                jvc_state::Interpretation::Inert
+            }
+        );
+        assert!(
+            !result.receipts[&publication]
+                .reasons
+                .contains("cutoff_pending")
+        );
+        assert_eq!(
+            result.publications[&claim].eligible,
+            if retained {
+                jvc_state::Eligibility::Eligible
+            } else {
+                jvc_state::Eligibility::Inactive
+            }
+        );
+    }
+}
+
+#[test]
+fn pending_cutoff_definition_keeps_rafsi_unknown_until_safe_history_arrives() {
+    assert_pending_cutoff_rafsi(false);
+}
+
+#[test]
+fn pending_cutoff_claim_keeps_rafsi_unknown_until_safe_history_arrives() {
+    assert_pending_cutoff_rafsi(true);
+}
+
+#[test]
+fn pending_cutoff_keeps_explicit_view_adoption_and_ordinary_incomplete_content_rules() {
+    let mut f = native_rafsi_fixture();
+    let selected = f.input.selected_view.clone();
+    f.compromise(20, vec![fake("jve1:")], vec![fake("jve1:")]);
+    let definition = native(&mut f, 4);
+    f.event(
+        4,
+        vec![fake("jve1:")],
+        json!({"kind":"identity.merge"}),
+        None,
+    );
+    let result = evaluate_observed(&f.input);
+    assert!(result.available);
+    assert!(result.policy.is_some());
+    assert_eq!(
+        result.receipts[&definition].interpretation,
+        jvc_state::Interpretation::Effective
+    );
+    assert_eq!(result.publications[&definition].status, Status::Uncertain);
+    assert!(
+        !result.receipts[&selected]
+            .reasons
+            .contains("cutoff_pending")
+    );
+}
+
+fn assert_resolved_exclusion_survives_pending_cutoff(transfer: bool) {
+    for claim_excluded in [false, true] {
+        let mut f = native_rafsi_fixture();
+        let (publication, claim, deprecated) = if claim_excluded {
+            let (claim, _) = rafsi(&mut f, 3);
+            native(&mut f, 4);
+            let (deprecated, _) = rafsi(&mut f, 5);
+            (claim.clone(), claim, deprecated)
+        } else {
+            let publication = native(&mut f, 3);
+            let (claim, _) = rafsi(&mut f, 4);
+            (publication, claim, native(&mut f, 5))
+        };
+        f.event(
+            5,
+            vec![deprecated.clone()],
+            json!({"kind":"status.set","target":deprecated,"value":"deprecated"}),
+            None,
+        );
+        if transfer {
+            f.event(
+                3,
+                vec![],
+                json!({"kind":"identity.transfer","successor":key(6)}),
+                None,
+            );
+        } else {
+            f.compromise(3, vec![], vec![]);
+        }
+        for pending in [false, true] {
+            if pending {
+                f.compromise(3, vec![fake("jve1:")], vec![fake("jve1:")]);
+            }
+            let result = evaluate_observed(&f.input);
+            let receipt = &result.receipts[&publication];
+            assert_eq!(receipt.interpretation, jvc_state::Interpretation::Inert);
+            assert!(receipt.reasons.contains("outside_retained_history"));
+            assert!(!receipt.reasons.contains("cutoff_pending"));
+            assert_eq!(
+                result.publications[&claim].eligible,
+                jvc_state::Eligibility::Inactive
+            );
+        }
+    }
+}
+
+#[test]
+fn resolved_exclusion_from_complete_cutoff_survives_a_pending_cutoff() {
+    assert_resolved_exclusion_survives_pending_cutoff(false);
+}
+
+#[test]
+fn resolved_exclusion_from_transfer_survives_a_pending_cutoff() {
+    assert_resolved_exclusion_survives_pending_cutoff(true);
+}
+
+#[test]
+fn incomplete_transfer_does_not_make_a_pending_cutoff_publication_certainly_excluded() {
+    let mut f = native_rafsi_fixture();
+    let (claim, _) = rafsi(&mut f, 3);
+    native(&mut f, 4);
+    let (deprecated, _) = rafsi(&mut f, 5);
+    f.event(
+        5,
+        vec![deprecated.clone()],
+        json!({"kind":"status.set","target":deprecated,"value":"deprecated"}),
+        None,
+    );
+    f.event(
+        3,
+        vec![fake("jve1:")],
+        json!({"kind":"identity.transfer","successor":key(6)}),
+        None,
+    );
+    f.compromise(3, vec![fake("jve1:")], vec![fake("jve1:")]);
+    let result = evaluate_observed(&f.input);
+    assert_eq!(
+        result.receipts[&claim].interpretation,
+        jvc_state::Interpretation::Suspended
+    );
+    assert!(result.receipts[&claim].reasons.contains("cutoff_pending"));
+    assert!(
+        !result.receipts[&claim]
+            .reasons
+            .contains("outside_retained_history")
+    );
+    assert_eq!(
+        result.publications[&claim].eligible,
+        jvc_state::Eligibility::Unknown
+    );
+}
+
+#[test]
+fn rafsi_gate_ignores_inert_definitions_without_losing_missing_definition_uncertainty() {
+    for deprecated in [false, true] {
+        let mut f = native_rafsi_fixture();
+        let (claim, _) = rafsi(&mut f, 3);
+        let hidden = native(&mut f, 4);
+        if deprecated {
+            let visible = native(&mut f, 5);
+            f.event(
+                5,
+                vec![visible.clone()],
+                json!({"kind":"status.set","target":visible,"value":"deprecated"}),
+                None,
+            );
+        }
+        f.event(
+            4,
+            vec![],
+            json!({"kind":"identity.transfer","successor":key(6)}),
+            None,
+        );
+        let result = evaluate_observed(&f.input);
+        assert_eq!(
+            result.receipts[&hidden].interpretation,
+            jvc_state::Interpretation::Inert
+        );
+        assert_eq!(
+            result.publications[&claim].eligible,
+            if deprecated {
+                jvc_state::Eligibility::Inactive
+            } else {
+                jvc_state::Eligibility::Unknown
+            }
+        );
+        if deprecated {
+            let missing = native(&mut f, 7);
+            f.input.bodies.remove(&missing);
+            let result = evaluate_observed(&f.input);
+            assert_eq!(
+                result.publications[&claim].eligible,
+                jvc_state::Eligibility::Unknown
+            );
+        }
+    }
+}
+
+#[test]
+fn rafsi_gate_ignores_inert_claims_without_losing_missing_claim_uncertainty() {
+    for deprecated in [false, true] {
+        let mut f = native_rafsi_fixture();
+        native(&mut f, 5);
+        let (hidden, _) = rafsi(&mut f, 3);
+        if deprecated {
+            let (visible, _) = rafsi(&mut f, 4);
+            f.event(
+                4,
+                vec![visible.clone()],
+                json!({"kind":"status.set","target":visible,"value":"deprecated"}),
+                None,
+            );
+        }
+        f.event(
+            3,
+            vec![],
+            json!({"kind":"identity.transfer","successor":key(6)}),
+            None,
+        );
+        let result = evaluate_observed(&f.input);
+        assert_eq!(
+            result.receipts[&hidden].interpretation,
+            jvc_state::Interpretation::Inert
+        );
+        assert_eq!(
+            result.publications[&hidden].eligible,
+            if deprecated {
+                jvc_state::Eligibility::Inactive
+            } else {
+                jvc_state::Eligibility::Unknown
+            }
+        );
+        if deprecated {
+            let (missing, _) = rafsi(&mut f, 7);
+            f.input.bodies.remove(&missing);
+            let result = evaluate_observed(&f.input);
+            assert_eq!(
+                result.publications[&hidden].eligible,
+                jvc_state::Eligibility::Unknown
+            );
+        }
+    }
+}
 #[test]
 fn native_post_transfer_old_key_status_is_inert() {
     let mut f = Fixture::new();

@@ -57,6 +57,8 @@ export interface MaterializedPackage {
 }
 export interface MaterializedPackages {
   entries: SearchEntry[];
+  /** Private cache metadata. Null means that publication receipts are unavailable. */
+  effectiveDefinitions?: string[] | null;
   packages: Record<string, MaterializedPackage>;
   /** Version 2 packages by language. */
   packages2: Record<string, MaterializedPackage>;
@@ -64,6 +66,17 @@ export interface MaterializedPackages {
 export interface PackageRecord extends EvaluationPackageRecord {
   envelope_hash: string;
   missing: boolean;
+}
+export function sameEffectiveDefinitions(
+  previous: readonly string[] | null | undefined,
+  current: readonly string[] | null,
+): boolean {
+  if (current === null) return previous === null;
+  return (
+    previous !== null &&
+    previous?.length === current.length &&
+    previous.every((id, index) => id === current[index])
+  );
 }
 export function plainDefinitionText(value: unknown): string {
   if (!Array.isArray(value)) return "";
@@ -97,9 +110,14 @@ export async function buildPackages(
   prepared?: PackageRecord[],
   reuse?: { previous: MaterializedPackages; changed: PackageRecord[] },
   trustedHostRecords = false,
+  effectiveDefinitions?: string[] | null,
 ): Promise<MaterializedPackages> {
   const entries: SearchEntry[] = [];
   const entries2: SearchEntryV2[] = [];
+  const included =
+    effectiveDefinitions === undefined
+      ? undefined
+      : new Set(effectiveDefinitions ?? []);
   // Rafsi spellings from retained claim bodies, by word ID.
   const rafsiByWord = new Map<string, Set<string>>();
   const incompleteRafsi = new Set<string>();
@@ -266,6 +284,20 @@ export async function buildPackages(
         .filter((entry) => changedIds.has(entry.event))
         .map((entry) => entry.language),
     );
+    if (reuse && included) {
+      const previousIncluded =
+        reuse.previous.effectiveDefinitions === undefined
+          ? undefined
+          : new Set(reuse.previous.effectiveDefinitions ?? []);
+      // Lifecycle and dependency changes can change the membership of unchanged publications.
+      for (const records of [reuse.previous.entries, entries])
+        for (const entry of records)
+          if (
+            !previousIncluded ||
+            previousIncluded.has(entry.event) !== included.has(entry.event)
+          )
+            changedLanguages.add(entry.language);
+    }
     for (const record of prepared ?? [])
       if (
         changedIds.has(record.id) ||
@@ -276,7 +308,11 @@ export async function buildPackages(
     for (const language of [
       ...new Set(all.map((entry) => entry.language)),
     ].sort()) {
-      const selected = all.filter((entry) => entry.language === language);
+      const selected = all.filter(
+        (entry) =>
+          entry.language === language &&
+          (!included || included.has(entry.event)),
+      );
       const previous = (
         version === 1 ? reuse?.previous.packages : reuse?.previous.packages2
       )?.[language];
@@ -336,6 +372,7 @@ export async function buildPackages(
   };
   return {
     entries,
+    ...(effectiveDefinitions !== undefined ? { effectiveDefinitions } : {}),
     packages: await build(entries, 1),
     packages2: await build(entries2, 2),
   };
@@ -379,7 +416,7 @@ export async function rebasePackages(
   ))
     job.result[job.language] = result;
   return {
-    entries: previous.entries,
+    ...previous,
     packages,
     packages2,
   };

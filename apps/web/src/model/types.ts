@@ -408,6 +408,9 @@ export interface Capabilities {
 }
 export interface Manifest {
   snapshot: string;
+  /** Absent on older servers. This is the declared selection, without an evaluation claim. */
+  view?: string;
+  packages_available?: boolean;
   logical_inventory: string;
   manifest: unknown;
   accepted_cursor: string;

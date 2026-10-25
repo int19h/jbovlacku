@@ -1076,22 +1076,29 @@ test("a focus choice made while a page loads is kept, Enter then submits the sea
 }) => {
   await page.goto("/");
   const field = page.getByLabel("Search words and meanings");
-  // The Trust page waits for the view probe, which the test holds.
-  let releaseProbe = () => {};
-  const probeHeld = new Promise<void>((resolve) => (releaseProbe = resolve));
-  const probe = "**/api/v1/words/jvw1%3A0000*";
-  await page.route(probe, async (route) => {
-    await probeHeld;
+  // The Trust page waits for the manifest, which the test holds.
+  let releaseManifest = () => {};
+  const manifestHeld = new Promise<void>(
+    (resolve) => (releaseManifest = resolve),
+  );
+  let capture = () => {};
+  const captured = new Promise<void>((resolve) => (capture = resolve));
+  const manifest = "**/api/v1/manifest";
+  await page.route(manifest, async (route) => {
+    capture();
+    await manifestHeld;
     await route.continue();
   });
   await page.getByRole("link", { name: /^Trust:/ }).click();
+  await captured;
   await expect(
     page.getByRole("radio", { name: "Site view only" }),
   ).toBeVisible();
+  await expect(page.locator("main")).not.toContainText("Calculation profile");
   // The reader moves to the search field while the page still loads.
   await field.click();
   await expect(field).toBeFocused();
-  releaseProbe();
+  releaseManifest();
   await expect(page.locator("main")).toContainText("Calculation profile");
   await expect(field).toBeFocused();
   await expect(page.locator("main h1")).not.toBeFocused();
@@ -1104,7 +1111,7 @@ test("a focus choice made while a page loads is kept, Enter then submits the sea
       .getByRole("link", { name: "cukta", exact: true })
       .first(),
   ).toBeVisible();
-  await page.unroute(probe);
+  await page.unroute(manifest);
   // A search starts and its request is held. The reader keeps typing in the
   // same field. The finished page leaves focus and the typed text alone.
   let releaseSearch = () => {};
@@ -1192,12 +1199,11 @@ test("a focus move to the header field without key or pointer events is kept, wh
 }) => {
   const field = page.getByLabel("Search words and meanings");
   const heading = page.locator("main h1");
-  const probe = "**/api/v1/words/jvw1%3A0000*";
+  const manifest = "**/api/v1/manifest";
   /**
-   * Holds the Trust page's view probe and opens the Trust page from the header
-   * link. The client caches the probe response, so the cache is cleared first,
-   * with the same view preference. The content after the probe must be absent
-   * while the request waits.
+   * Holds the Trust page's manifest and opens the Trust page from the header
+   * link. Cached word responses are cleared with the same view preference.
+   * The signed view content must be absent while the request waits.
    */
   const openHeldTrust = async () => {
     await page.evaluate(async () => {
@@ -1208,11 +1214,15 @@ test("a focus move to the header field without key or pointer events is kept, wh
     });
     let release = () => {};
     const held = new Promise<void>((resolve) => (release = resolve));
-    await page.route(probe, async (route) => {
+    let capture = () => {};
+    const captured = new Promise<void>((resolve) => (capture = resolve));
+    await page.route(manifest, async (route) => {
+      capture();
       await held;
       await route.continue();
     });
     await page.getByRole("link", { name: /^Trust:/ }).click();
+    await captured;
     await expect(
       page.getByRole("radio", { name: "Site view only" }),
     ).toBeVisible();
@@ -1220,7 +1230,7 @@ test("a focus move to the header field without key or pointer events is kept, wh
     return async () => {
       release();
       await expect(page.locator("main")).toContainText("Calculation profile");
-      await page.unroute(probe);
+      await page.unroute(manifest);
     };
   };
   await page.goto("/search?q=klama&lang=en");
@@ -1304,9 +1314,9 @@ test("a scrolling key on the activating footer link that stays focused during th
   const trustLink = page.locator("footer").getByRole("link", {
     name: "Trust: site view",
   });
-  const probe = "**/api/v1/words/jvw1%3A0000*";
-  // Each pass starts from a fresh page load, so no probe answer is cached,
-  // holds the Trust page's view probe, and activates the footer link.
+  const manifest = "**/api/v1/manifest";
+  // Each pass starts from a fresh page load, holds the Trust page's
+  // manifest request, and activates the footer link.
   for (const pass of [
     { activate: "Enter", key: null },
     { activate: "Enter", key: "ArrowDown" },
@@ -1318,7 +1328,10 @@ test("a scrolling key on the activating footer link that stays focused during th
     await expect(trustLink).toBeVisible();
     let release = () => {};
     const held = new Promise<void>((resolve) => (release = resolve));
-    await page.route(probe, async (route) => {
+    let capture = () => {};
+    const captured = new Promise<void>((resolve) => (capture = resolve));
+    await page.route(manifest, async (route) => {
+      capture();
       await held;
       await route.continue();
     });
@@ -1327,6 +1340,7 @@ test("a scrolling key on the activating footer link that stays focused during th
       await trustLink.focus();
       await page.keyboard.press("Enter");
     }
+    await captured;
     await expect(page).toHaveURL(/\/trust$/);
     await expect(
       page.getByRole("radio", { name: "Site view only" }),
@@ -1340,7 +1354,7 @@ test("a scrolling key on the activating footer link that stays focused during th
     await expect(page.locator("main")).toContainText("Calculation profile");
     await expect(heading).toHaveText("Trust");
     await expect(heading).toBeFocused();
-    await page.unroute(probe);
+    await page.unroute(manifest);
   }
 });
 
@@ -1421,20 +1435,24 @@ test.describe("touch input", () => {
       name: "Trust: site view",
     });
     const control = page.getByRole("button", { name: "page control" });
-    const probe = "**/api/v1/words/jvw1%3A0000*";
+    const manifest = "**/api/v1/manifest";
     for (const pass of ["tap", "click", "script", "tap on text"] as const) {
-      // A fresh page load, so no probe answer is cached. The footer link is
+      // A fresh page load clears the request cache. The footer link is
       // activated by keyboard, so no pointer event comes before the action.
       await page.goto("/");
       await expect(trustLink).toBeVisible();
       let release = () => {};
       const held = new Promise<void>((resolve) => (release = resolve));
-      await page.route(probe, async (route) => {
+      let capture = () => {};
+      const captured = new Promise<void>((resolve) => (capture = resolve));
+      await page.route(manifest, async (route) => {
+        capture();
         await held;
         await route.continue();
       });
       await trustLink.focus();
       await page.keyboard.press("Enter");
+      await captured;
       await expect(
         page.getByRole("radio", { name: "Site view only" }),
       ).toBeVisible();
@@ -1460,7 +1478,7 @@ test.describe("touch input", () => {
         await expect(control).toBeFocused();
         await expect(heading).not.toBeFocused();
       } else await expect(heading).toBeFocused();
-      await page.unroute(probe);
+      await page.unroute(manifest);
     }
   });
 });
