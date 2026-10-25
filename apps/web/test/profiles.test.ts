@@ -260,7 +260,14 @@ test("the personal view follows the chosen profile, private blocks and own publi
   // A public shun by this identity is a signed declaration. In the personal
   // view it is a block as well. The site view under the refusal profile has no
   // route through this identity, so it changes nothing there.
-  await page.goto(`/identity/${encodeURIComponent(f.identities.scoped)}`);
+  // Keep the completed personal calculation while the new record is signed.
+  await page.evaluate(
+    async (target) => {
+      const { navigate } = await import(String("/src/app/router.ts"));
+      navigate(target);
+    },
+    `/identity/${encodeURIComponent(f.identities.scoped)}`,
+  );
   await page.getByRole("button", { name: "Ignore their judgments" }).click();
   await page.getByRole("radio", { name: /Publicly/ }).check();
   await page
@@ -282,8 +289,8 @@ test("the personal view follows the chosen profile, private blocks and own publi
   await unlock.getByRole("button", { name: "Unlock" }).click();
   await acceptFirstSignature(page);
   await expect(page.getByRole("status")).toContainText(/Signed/);
-  // Delivery runs after the signature. Wait until the server accepted the
-  // shun, so the next page load and the recompute see one snapshot.
+  // Delivery and materialization finish separately. Wait for both before
+  // comparing the newer word content with the retained local calculation.
   await expect
     .poll(
       () =>
@@ -295,7 +302,12 @@ test("the personal view follows the chosen profile, private blocks and own publi
       { timeout: 20000 },
     )
     .toEqual(["accepted"]);
-  await page.goto("/word/dunda");
+  await page.evaluate(async () => {
+    const { getManifest } = await import(String("/src/data/api.ts"));
+    const { navigate } = await import(String("/src/app/router.ts"));
+    await getManifest({ fresh: true });
+    navigate("/word/dunda?fresh=1");
+  });
   // The signed shun moved the snapshot. The personal view refuses the older
   // calculation until an explicit recompute, which includes the new record.
   await page
