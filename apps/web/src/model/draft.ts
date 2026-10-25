@@ -24,6 +24,7 @@ import { placeGlyph } from "../lib/format.ts";
 import { cloneAssistance } from "./assistance.ts";
 import {
   syncFormationSources,
+  normalizeLujvoEvidence,
   formationSourcesFromRows,
   sameFormationSources,
 } from "./builders.ts";
@@ -498,6 +499,7 @@ export function normalizeDraft(stored: Draft): Draft {
       if (migratedRow) record.key = sourceRowKey(migratedRow);
     }
     for (const snapshot of [record.before, record.after]) {
+      if (snapshot?.lujvo) normalizeLujvoEvidence(snapshot.lujvo);
       if (!snapshot?.gismu) continue;
       snapshot.gismu.rows = snapshot.gismu.rows.map((row, index) => {
         const current =
@@ -522,6 +524,7 @@ export function normalizeDraft(stored: Draft): Draft {
       (old.formation || old.compound ? (old.spelling ?? "") : null),
   });
   if (draft.formation) draft.formation = { ...draft.formation };
+  if (draft.lujvo) normalizeLujvoEvidence(draft.lujvo);
   syncFormationSources(draft);
   return draft;
 }

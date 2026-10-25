@@ -1348,9 +1348,8 @@ export async function gismuPage(
             detectWord(draft.spelling).normalized === candidate.form
               ? draft.spelling
               : candidate.form;
-          selectGismuSpelling(draft, selectedSpelling);
           const preset = presets.find((pr) => pr.id === state.preset) ?? null;
-          draft.formation = formationMetadata({
+          const formation = formationMetadata({
             result,
             candidate,
             rows: state.rows,
@@ -1370,6 +1369,7 @@ export async function gismuPage(
               .filter((c) => c.snapshot),
             reason: state.reason,
           });
+          selectGismuSpelling(draft, selectedSpelling, formation, evidenceOnly);
         } else return;
         draft.step = Math.max(draft.step, 4) as Draft["step"];
         if (!(await saver.flush())) return;

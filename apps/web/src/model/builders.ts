@@ -58,15 +58,49 @@ export interface LujvoState {
   restoredSpelling?: string;
   /** The morphology version that restored these boundaries and spelling. */
   restoredProfile?: MorphologyProfile;
-  /** A row, rafsi, or profile edit permanently releases this restoration. */
+  /** Release lasts until a new restoration from signed evidence with no rows. */
   restoredReleased?: true;
-  /** Retained analysis evidence survives release and explicit metadata removal. */
+  /** Legacy single-entry evidence, migrated into restoredEvidenceHistory. */
   restoredEvidence?: { spelling: string; profile: MorphologyProfile };
+  /** Exact spelling keys retain profiles across visits to other typed words. */
+  restoredEvidenceHistory?: { spelling: string; profile: MorphologyProfile }[];
   components: LujvoComponentState[];
   /** The chosen candidate spelling, when the author chose one. */
   selected: string | null;
   /** Conflict keys bound to the chosen spelling, snapshot, and competing claims. */
   acknowledged: string[];
+}
+/** Migrate the former single spelling without replacing newer keyed evidence. */
+export function normalizeLujvoEvidence(state: LujvoState) {
+  const old = state.restoredEvidence;
+  if (!old) return;
+  state.restoredEvidenceHistory ??= [];
+  if (
+    !state.restoredEvidenceHistory.some(
+      (entry) => entry.spelling === old.spelling,
+    )
+  )
+    state.restoredEvidenceHistory.push({ ...old });
+  delete state.restoredEvidence;
+}
+/** Keep profile evidence independent of the current row construction. */
+export function rememberLujvoEvidence(
+  state: LujvoState,
+  spelling: string,
+  profile: MorphologyProfile,
+  replace = false,
+) {
+  normalizeLujvoEvidence(state);
+  const existing = state.restoredEvidenceHistory?.find(
+    (entry) => entry.spelling === spelling,
+  );
+  if (existing && (!replace || existing.profile === profile)) return;
+  state.restoredEvidenceHistory = [
+    ...(state.restoredEvidenceHistory ?? []).filter(
+      (entry) => entry.spelling !== spelling,
+    ),
+    { spelling, profile },
+  ];
 }
 export interface GismuRowState {
   /** Stable browser identity. Older drafts receive it when they open. */

@@ -1,4 +1,8 @@
-import { changeTypedWord, detectWord } from "../../model/typed-headword.ts";
+import {
+  changeTypedWord,
+  detectWord,
+  useManualForm,
+} from "../../model/typed-headword.ts";
 import { assistanceAction } from "../../components/assistance.ts";
 /**
  * Step 3C: the manual Form screen. Spelling, attributed morphology notes, and
@@ -9,7 +13,7 @@ import { el, p, text, field, link, button } from "../../lib/dom.ts";
 import { navigate, type RenderContext, type Route } from "../../app/router.ts";
 import type { App } from "../../app/context.ts";
 import type { Draft } from "../../model/draft.ts";
-import { manualFormation, syncFormationSources } from "../../model/builders.ts";
+import { syncFormationSources } from "../../model/builders.ts";
 import {
   actionBar,
   confirmKindChange,
@@ -189,18 +193,7 @@ export async function formPage(route: Route, context: RenderContext, app: App) {
       disabled: !draft.spelling.trim(),
       action: async () => {
         if (!draft.spelling.trim()) return;
-        if (
-          kind === "gismu" &&
-          draft.gismu &&
-          (!draft.formation || syncFormationSources(draft))
-        ) {
-          draft.formation = manualFormation(
-            draft.gismu.rows,
-            draft.gismu.reason,
-          );
-          if (draft.formation) draft.evidenceForm = draft.spelling;
-        }
-        draft.step = Math.max(draft.step, 4) as Draft["step"];
+        useManualForm(draft);
         if (!(await saver.flush())) return;
         navigate("/new/places");
       },

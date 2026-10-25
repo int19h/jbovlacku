@@ -15,12 +15,21 @@ import {
   type RecoveredPart,
 } from "../../../../packages/core/src/browser.ts";
 import type { CachedPackage } from "../data/search.ts";
-import type { Compound, LexicalKind, PackageEntryV2 } from "./types.ts";
+import type {
+  Compound,
+  Formation,
+  LexicalKind,
+  PackageEntryV2,
+} from "./types.ts";
 import type { Draft } from "./draft.ts";
 import {
   componentId,
   compoundMetadata,
   newLujvoState,
+  manualFormation,
+  syncFormationSources,
+  normalizeLujvoEvidence,
+  rememberLujvoEvidence,
   type LujvoComponentState,
   type LujvoState,
 } from "./builders.ts";
@@ -98,6 +107,7 @@ export function selectWordKind(draft: Draft, kind: LexicalKind | null) {
 
 /** Apply explicit evidence removal without discarding builder inputs. */
 export function clearWordEvidence(draft: Draft) {
+  if (draft.lujvo) reconcileLujvoRows(draft.lujvo);
   draft.compound = null;
   draft.formation = null;
   draft.evidenceForm = null;
@@ -113,11 +123,9 @@ function rowParts(state: LujvoState) {
 
 /** Release restored boundaries only after their actual rows or rafsi change. */
 export function reconcileLujvoRows(state: LujvoState) {
+  normalizeLujvoEvidence(state);
   if (state.restoredSpelling && state.restoredProfile)
-    state.restoredEvidence ??= {
-      spelling: state.restoredSpelling,
-      profile: state.restoredProfile,
-    };
+    rememberLujvoEvidence(state, state.restoredSpelling, state.restoredProfile);
   if (
     !state.typedOrigin &&
     state.restoredJoinParts &&
@@ -182,11 +190,33 @@ export function selectLujvoSource(
 }
 
 /** Record a confirmed gismu choice and keep the previous component inputs. */
-export function selectGismuSpelling(draft: Draft, spelling: string) {
-  changeTypedWord(draft, spelling);
+export function selectGismuSpelling(
+  draft: Draft,
+  spelling: string,
+  formation: Formation,
+  evidenceOnly = false,
+) {
+  const typed =
+    evidenceOnly && draft.spelling === spelling ? draft.typedSpelling : null;
   draft.compound = null;
-  draft.typedSpelling = null;
+  draft.formation = null;
+  changeTypedWord(draft, spelling);
+  draft.typedSpelling = typed;
+  draft.formation = formation;
   draft.evidenceForm = spelling;
+}
+
+/** Form accepts changed source inputs as manual evidence without old scores. */
+export function useManualForm(draft: Draft) {
+  if (
+    draft.kind === "gismu" &&
+    draft.gismu &&
+    (!draft.formation || syncFormationSources(draft))
+  ) {
+    draft.formation = manualFormation(draft.gismu.rows, draft.gismu.reason);
+    if (draft.formation) draft.evidenceForm = draft.spelling;
+  }
+  draft.step = Math.max(draft.step, 4) as Draft["step"];
 }
 
 function matchingJoinedReading(state: LujvoState, spelling: string) {
@@ -219,7 +249,7 @@ function leaveTypedMode(state: LujvoState, keepJoins: boolean) {
     state.restoredJoinParts = rowParts(state);
     state.restoredSpelling = spelling;
     state.restoredProfile = state.profile;
-    if (spelling) state.restoredEvidence = { spelling, profile: state.profile };
+    if (spelling) rememberLujvoEvidence(state, spelling, state.profile);
   } else {
     delete state.joins;
     delete state.restoredJoinParts;
@@ -244,10 +274,7 @@ export function reconcileLujvoUndo(draft: Draft, original?: LujvoState | null) {
       !!matchingJoinedReading(state, state.typed ?? "");
     leaveTypedMode(state, keepJoins);
     if (original?.typedOrigin && original.typed)
-      state.restoredEvidence = {
-        spelling: original.typed,
-        profile: original.profile,
-      };
+      rememberLujvoEvidence(state, original.typed, original.profile, true);
     state.ordinarySpelling = "";
   }
   reconcileLujvoRows(state);
@@ -402,6 +429,14 @@ export function prepareLujvoBuilder(
     draft.compound && draft.evidenceForm === spelling ? draft.compound : null;
   if (retainedCompound) {
     const signedProfile = morphologyProfile(retainedCompound.morphology);
+    rememberLujvoEvidence(state, spelling, signedProfile, true);
+    // Empty rows request a complete new restoration, including signed boundaries.
+    const empty = !state.components.length;
+    if (empty) {
+      delete state.restoredReleased;
+      delete state.profileChosen;
+      state.ordinarySpelling = spelling;
+    }
     const profile =
       state.profileChosen && !state.typedOrigin ? state.profile : signedProfile;
     if (!state.typedOrigin && state.ordinarySpelling !== "")
@@ -455,11 +490,12 @@ export function prepareLujvoBuilder(
     }
   }
   // An ordinary profile choice never changes the word's retained analysis evidence.
+  const savedProfile = state.restoredEvidenceHistory?.find(
+    (entry) => entry.spelling === spelling,
+  )?.profile;
   const analysisProfile = retainedCompound
     ? morphologyProfile(retainedCompound.morphology)
-    : state.restoredEvidence?.spelling === spelling
-      ? state.restoredEvidence.profile
-      : "extended";
+    : (savedProfile ?? "extended");
   const analysis = typedIdentity
     ? analysisProfile === "extended"
       ? detectWord(spelling)
@@ -477,6 +513,10 @@ export function prepareLujvoBuilder(
       cached,
       analysisProfile,
     );
+    if (state.restoredEvidenceHistory)
+      next.restoredEvidenceHistory = structuredClone(
+        state.restoredEvidenceHistory,
+      );
     next.components = retainSources(
       next.components,
       state.components,
@@ -489,6 +529,7 @@ export function prepareLujvoBuilder(
       // Keep ordinary controls available so the author can choose another profile.
       state.profile = analysisProfile;
       delete state.profileChosen;
+      state.ordinarySpelling = spelling;
       state.restoredReleased = true;
       delete state.joins;
       delete state.restoredJoinParts;
@@ -498,7 +539,7 @@ export function prepareLujvoBuilder(
   }
   if (state.typedOrigin && !exactTypedConstruction(state)) {
     leaveTypedMode(state, false);
-    state.ordinarySpelling = "";
+    state.ordinarySpelling = spelling;
     state.restoredReleased = true;
   }
   if (
@@ -519,10 +560,7 @@ export function prepareLujvoBuilder(
       if (!state.restoredSpelling && associated)
         state.restoredSpelling = associated;
       if (state.restoredSpelling)
-        state.restoredEvidence ??= {
-          spelling: state.restoredSpelling,
-          profile: state.profile,
-        };
+        rememberLujvoEvidence(state, state.restoredSpelling, state.profile);
     }
   }
   return state;

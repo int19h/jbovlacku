@@ -28,6 +28,7 @@ import {
 import {
   componentId,
   newLujvoState,
+  normalizeLujvoEvidence,
   formationSource,
   normalizeSourceRow,
   syncFormationSources,
@@ -309,11 +310,17 @@ export function applyFrame(draft: Draft, frame: Frame | null) {
 }
 /** Proposals remain ordinary editable data. Publication uses the existing signer. */
 export function applyProposals(draft: Draft, result: Suggestion) {
+  if (draft.lujvo) normalizeLujvoEvidence(draft.lujvo);
   const baseline =
     result.operation === "definition" || result.operation === "places-glosses"
       ? assistanceProblems(draft)
       : undefined;
-  for (const proposal of result.proposals) {
+  // Discard replaced evidence before deciding which retained fields need review.
+  const proposals = [...result.proposals].sort(
+    (left, right) =>
+      Number(right.path === "/compound") - Number(left.path === "/compound"),
+  );
+  for (const proposal of proposals) {
     const value = structuredClone(proposal.value);
     switch (proposal.path) {
       case "/word_type":
@@ -378,23 +385,28 @@ export function applyProposals(draft: Draft, result: Suggestion) {
         draft.lujvo = {
           ...newLujvoState(),
           profile: draft.lujvo?.profile ?? "cll",
+          ...(draft.lujvo?.restoredEvidenceHistory
+            ? {
+                restoredEvidenceHistory: structuredClone(
+                  draft.lujvo.restoredEvidenceHistory,
+                ),
+              }
+            : {}),
           ordinarySpelling: typedWord(draft.spelling),
           restoredReleased: true,
           components,
           selected: typeof spelling === "string" ? spelling : null,
           acknowledged: [],
         };
-        draft.typedSpelling = null;
         // The builder supplies formation evidence only after the author uses a checked candidate.
         draft.compound = null;
-        draft.evidenceForm = null;
+        if (!draft.formation) draft.evidenceForm = null;
         break;
       }
     }
   }
   if (result.proposals.some((p) => p.path === "/compound") && draft.lujvo) {
     draft.lujvo.ordinarySpelling = typedWord(draft.spelling);
-    draft.typedSpelling = null;
   }
   if (
     result.operation === "definition" ||
