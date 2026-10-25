@@ -110,6 +110,10 @@ A published revision starts with copied evidence and its exact parent, without i
 “New word” retains entered content and chooses the next wizard step. Starting a separate draft uses fresh state.
 Removing evidence does not remove compatible saved rows or their joins.
 
+Requested-word initialization uses `newDraft` without inherited builder state.
+A separate draft or confirmed draft replacement also starts with fresh rows, joins, and profile state.
+Discard removes the saved draft. It does not migrate its builder state into another draft.
+
 ## Invariants
 
 For supported construction, a typed candidate rebuilds its exact spelling, including case, commas, framing dots, and optional joins.
