@@ -62,7 +62,10 @@ Supported typed rows have one exact candidate. Their profile controls stay hidde
 A profile event cannot change their fixed reading.
 
 If a historical constructor cannot rebuild the reading, the rows stay ordinary and the profile controls stay available.
-The fallback associates those ordinary rows with the current headword, so subsequent visits preserve an explicit profile choice.
+The fallback uses the fresh reading's rows, even after a visit to another word.
+It associates those ordinary rows with the headword only when every source is resolved.
+Missing sources leave fresh analysis available for the next visit, reload, or spelling correction after a package download.
+An explicit ordinary profile choice survives repeated unresolved analysis. A supported fresh typed reading still uses its evidence profile.
 Compatible old rows keep author-linked sources, definitions, claims, and IDs.
 Exact locked parts take precedence. An unlocked source can match an existing claim, a recognized whole word, or a gismu stem.
 
@@ -167,6 +170,18 @@ Spelling edits preserve evidence bindings and set review marks instead of rewrit
 An explicit manual Form action can replace stale generation evidence and bind the new manual evidence to the current headword.
 Source synchronization and AI source edits preserve that binding.
 Only retained evidence and annotations can cause a new spelling review during a form replacement. Existing review marks persist.
+
+Source invariants compare complete interpreted values with the core's definition defaults.
+An absent `word_ipa` and explicit null both mean unknown. Present pronunciation, input, weight, notes, and source order remain distinct.
+The same rule applies to nested hints, place defaults, derivations, and source references during reload and draft import.
+
+Preservation comparisons map editor fields to definition fields before applying defaults.
+An empty editor gloss sense means the wire value null. Flattened place defaults and derivations retain their complete values in that comparison.
+Rich text keeps its exact nodes and text. A changed code node, note, condition, explanation, or nonempty sense remains a real edit.
+
+Private row IDs, source choices, profile choices, joins, spelling bindings, and Undo decisions retain their exact comparisons.
+Default interpretation never equates distinct signed body bytes or event IDs.
+Undo preserves later evidence edits, and signature inspection still compares the exact canonical source body.
 
 Exact rebuilding of the current headword applies after reconciliation when it matches the builder's associated spelling.
 During pending headword edits, the row and evidence preservation rules apply instead.

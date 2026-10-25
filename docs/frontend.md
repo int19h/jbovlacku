@@ -299,6 +299,8 @@ Every rafsi locks to its exact typed form, including full forms. Every boundary 
 The only candidate is the typed spelling. The builder links source words and exact definitions without changing that spelling.
 Fixed typed layout requires an exact construction under the selected evidence profile.
 If a historical profile cannot construct that spelling, ordinary profile controls remain available.
+The fallback shows the current word's analyzed parts. Missing sources permit another analysis after a local package becomes available.
+Repeated unresolved analysis preserves an ordinary profile that the author already chose.
 
 A spelling accepted from the ordinary builder keeps editable component rows when the builder reopens.
 An explicit private marker identifies rows that typed analysis created. Rafsi locks and Meaning edits never create that marker.
@@ -1008,7 +1010,7 @@ Public reads need no account. Public event admission follows published quotas an
 | Method and path                                                   | Contract                                                                                                                                                                                                             |
 | ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GET /capabilities`                                               | Format version, size limits, accepted body types, optional service capabilities, CORS policy, peer identity, and admission-policy link.                                                                              |
-| `GET /manifest`                                                   | Current snapshot, declared view, inventory manifest, cursors, and package availability. Raw discovery remains available when evaluation fails.                                                                          |
+| `GET /manifest`                                                   | Current snapshot, declared view, inventory manifest, cursors, and package availability. Raw discovery remains available when evaluation fails.                                                                       |
 | `GET /inventory?kind=K&snapshot=S&after=ID&limit=N`               | Sorted event, body, or import-selection IDs from one immutable snapshot, with next cursor.                                                                                                                           |
 | `GET /events/ID?snapshot=S`                                       | Exact envelope representation from the named snapshot, or explicit missing/withheld result.                                                                                                                          |
 | `GET /identity-heads/KEY?snapshot=S&after=ID&limit=N`             | Known maximal own event IDs for that key, from one snapshot.                                                                                                                                                         |

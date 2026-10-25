@@ -124,6 +124,8 @@ A [state model](docs/typed-headword-state.md) defines the shared transitions and
 Seeded event sequences exercise those transitions with typed, legacy, and published-revision drafts.
 The event model inventories all production writers. Its seeded sequences include AI component and source apply and Undo.
 They also include gismu Use, manual Form Use, source synchronization, and all rafsi choices.
+Its preservation checks compare interpreted definition defaults while keeping real evidence edits and signed source bytes distinct.
+Historical fallback rows follow the current word and retry missing sources after a package download. Unresolved retries keep an authored ordinary profile.
 
 Unconfirmed type detection follows spelling corrections after confirmation of any evidence loss.
 Forward wizard links and direct Form or builder entry confirm the selected type. Cancellation keeps the previous type and evidence.
