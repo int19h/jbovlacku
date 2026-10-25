@@ -8,6 +8,11 @@ import {
   rafsiPairId,
   wordId,
   generateGismu,
+  interpretDefinition,
+  createEvent,
+  inspectBody,
+  canonicalize,
+  utf8,
   type MorphologyProfile,
 } from "../../../../packages/core/src/index.ts";
 import {
@@ -17,6 +22,7 @@ import {
   formationMetadata,
   formationSourcesFromRows,
   sameScoringSources,
+  sameFormationSources,
   syncFormationSources,
   sourceReviewMarks,
 } from "../../src/model/builders.ts";
@@ -59,6 +65,7 @@ import {
   type AssistanceRecord,
 } from "../../src/model/assistance.ts";
 import type { CachedPackage } from "../../src/data/search.ts";
+import type { DefinitionBody, FormationSource } from "../../src/model/types.ts";
 
 before(async () =>
   initializeCore(
@@ -212,13 +219,61 @@ function candidate(state: LujvoState) {
   }
 }
 
+function interpretedSources(sources: FormationSource[]) {
+  return interpretDefinition<DefinitionBody>({
+    etymology: { formation: { method: "unknown", sources } },
+  }).etymology.formation!.sources;
+}
+
+// Draft fields use editor names. Compare their complete definition values.
+function preservedDefinition(draft: Draft) {
+  const glosses = (values: Draft["glosses"]) =>
+    values.map((gloss) => ({
+      ...gloss,
+      sense: gloss.sense === "" ? null : gloss.sense,
+    }));
+  return interpretDefinition({
+    text: draft.text,
+    notes: draft.notes,
+    glosses: glosses(draft.glosses),
+    sources: draft.sources,
+    frame: {
+      places: draft.places.map(({ hint, derivations, ...place }) => ({
+        ...place,
+        glosses: glosses(place.glosses),
+        type_hints: hint ? [hint] : [],
+        derivation: derivations.map(({ word, ...entry }) => ({
+          ...entry,
+          word: { language: "jbo", spelling: word },
+        })),
+        defaults: place.defaults.map(
+          ({ format, language, text, ...entry }) => ({
+            ...entry,
+            // Keep the editor's language even when this Lojban value does not use it.
+            language,
+            value: {
+              format,
+              text,
+              ...(format === "prose" ? { language } : {}),
+            },
+          }),
+        ),
+      })),
+    },
+  });
+}
+
 function invariants(draft: Draft) {
   if (draft.gismu && draft.formation) {
     const sources = formationSourcesFromRows(draft.gismu.rows);
     const stale =
       draft.formation.method === "algorithmic" &&
       !sameScoringSources(draft.formation.sources, sources);
-    if (!stale) assert.deepEqual(draft.formation.sources, sources);
+    if (!stale)
+      assert.deepEqual(
+        interpretedSources(draft.formation.sources),
+        interpretedSources(sources),
+      );
   }
   const state = draft.lujvo;
   if (!state) return;
@@ -365,6 +420,198 @@ function sourceSuggestion(scoring = false, word = "volume"): Suggestion {
   } as Suggestion;
 }
 
+function withDefaultAnnotations(draft: Draft, explicit: boolean) {
+  const body = {
+    frame: {
+      places: [
+        {
+          index: 1,
+          glosses: [{ language: "en", text: "An exact place gloss." }],
+          type_hints: [{ alternatives: [{ abstractor: "nu" }] }],
+          defaults: [
+            { kind: "conventional", value: { format: "lojban", text: "zo'e" } },
+          ],
+          derivation: [
+            { word: { language: "jbo", spelling: "broda" }, place: 1 },
+          ],
+        },
+      ],
+    },
+    sources: [{ label: "An authored reference." }],
+    glosses: [{ language: "en", text: "An exact word gloss." }],
+  };
+  const values = (explicit
+    ? interpretDefinition(body)
+    : body) as unknown as DefinitionBody;
+  const place = values.frame!.places[0];
+  draft.places = [
+    {
+      ...newPlace(1),
+      description: [["An exact ", { code: "nu broda" }, " description."]],
+      glosses: place.glosses as Draft["glosses"],
+      hint: place.type_hints[0],
+      defaults: place.defaults.map(({ value, ...entry }) => ({
+        ...entry,
+        ...value,
+        language: "language" in value ? value.language : "en",
+      })),
+      derivations: place.derivation.map(({ word, ...entry }) => ({
+        ...entry,
+        word: word.spelling,
+      })),
+    },
+  ];
+  draft.sources = values.sources as Draft["sources"];
+  draft.glosses = values.glosses as Draft["glosses"];
+  return draft;
+}
+
+test("definition comparisons equate only omitted defaults and retain real source changes", () => {
+  const sparse = [{ language: "en", word: "book" }] as FormationSource[];
+  const explicit = interpretedSources(sparse);
+  assert.notDeepEqual(sparse, explicit);
+  assert.deepEqual(interpretedSources(sparse), explicit);
+  assert.ok(sameFormationSources(sparse, explicit));
+  const changes = [
+    { language: "fr" },
+    { word: "volume" },
+    { word_ipa: "bʊk" },
+    { word_ipa: "" },
+    { word_ipa: " " },
+    { input: { format: "lojbanized", text: "buk" } },
+    { weight: { numerator: "1", denominator: "1" } },
+    { notes: [["An exact note."]] },
+  ];
+  for (const change of changes)
+    assert.notDeepEqual(
+      interpretedSources([{ ...sparse[0], ...change } as FormationSource]),
+      explicit,
+    );
+  const two = [
+    ...sparse,
+    { language: "fr", word: "livre" },
+  ] as FormationSource[];
+  assert.notDeepEqual(
+    interpretedSources(two),
+    interpretedSources([...two].reverse()),
+  );
+  const input = { format: "lojbanized" as const, text: "buk" };
+  assert.notDeepEqual(
+    interpretedSources([{ ...sparse[0], input }]),
+    interpretedSources([{ ...sparse[0], input: { ...input, text: "buk " } }]),
+  );
+});
+
+test("reload compares nested defaults while keeping rich text and source evidence exact", () => {
+  const sparse = withDefaultAnnotations(newDraft(), false);
+  const before = structuredClone(sparse);
+  const restored = normalizeDraft(structuredClone(sparse));
+  assert.deepEqual(preservedDefinition(restored), preservedDefinition(sparse));
+  assert.deepEqual(
+    preservedDefinition(withDefaultAnnotations(newDraft(), true)),
+    preservedDefinition(sparse),
+  );
+  assert.deepEqual(sparse, before);
+  for (const field of ["text", "notes"] as const) {
+    const changed = structuredClone(restored);
+    changed[field] = [["A real edit."]];
+    assert.notDeepEqual(
+      preservedDefinition(changed),
+      preservedDefinition(sparse),
+    );
+  }
+  for (const edit of [
+    (draft: Draft) => {
+      draft.places[0].hint!.alternatives[0].abstractor = "ka";
+    },
+    (draft: Draft) => {
+      draft.sources[0].url = "https://example.org/source";
+    },
+    (draft: Draft) => {
+      draft.glosses[0].sense = "A real sense.";
+    },
+    (draft: Draft) => {
+      draft.places[0].glosses[0].sense = "A real place sense.";
+    },
+    (draft: Draft) => {
+      draft.places[0].defaults[0].condition = [["A real condition."]];
+    },
+    (draft: Draft) => {
+      draft.places[0].defaults[0].language = "fr";
+    },
+    (draft: Draft) => {
+      draft.places[0].derivations[0].explanation = [["A real explanation."]];
+    },
+    (draft: Draft) => {
+      draft.places[0].description = [[{ code: "nu brode" }]];
+    },
+  ]) {
+    const changed = structuredClone(restored);
+    edit(changed);
+    assert.notDeepEqual(
+      preservedDefinition(changed),
+      preservedDefinition(sparse),
+    );
+  }
+});
+
+test("source Undo after default interpretation preserves later evidence and signed source bytes", () => {
+  let draft = withDefaultAnnotations(
+    newDraft({ spelling: "cukta", kind: "gismu" }),
+    false,
+  );
+  selectGismuSpelling(draft, "cukta", gismuFormation(draft));
+  const before = structuredClone(draft);
+  applySource(draft, "source-en", sourceSuggestion());
+  const after = structuredClone(draft);
+  const record = {
+    key: "source-source-en",
+    before,
+    after,
+    patches: undoPatches(before, after),
+  } as AssistanceRecord;
+  draft = normalizeDraft(structuredClone(draft));
+  draft.gismu!.rows[0].word_ipa = "bʊk";
+  restorePatches(draft, record);
+  assert.equal(draft.gismu!.rows[0].word, "book");
+  assert.equal(draft.gismu!.rows[0].word_ipa, "bʊk");
+  assert.deepEqual(preservedDefinition(draft), preservedDefinition(before));
+  invariants(draft);
+  const { body, problems } = draftToBody(draft);
+  assert.ok(body, JSON.stringify(problems));
+  const publication = createEvent(
+    new Uint8Array(32).fill(87),
+    [],
+    "1".repeat(32),
+    {
+      kind: "definition.publish",
+      word: wordId(body.word),
+      language: body.language,
+      parents: [],
+      origin: "native",
+    },
+    body,
+  );
+  const exact = canonicalize(utf8(JSON.stringify(publication.body)));
+  const inspected = inspectBody(
+    utf8(JSON.stringify(publication.envelope)),
+    utf8(exact),
+  );
+  assert.equal(inspected.availability, "valid");
+  assert.equal(canonicalize(utf8(JSON.stringify(inspected.body))), exact);
+  assert.deepEqual(
+    interpretedSources(
+      (publication.body as DefinitionBody).etymology.formation!.sources,
+    ),
+    interpretedSources(draft.formation!.sources),
+  );
+  assert.equal(
+    (publication.body as DefinitionBody).etymology.formation!.sources[0]
+      .word_ipa,
+    "bʊk",
+  );
+});
+
 test("lujvo validation rejects a spelling without checked components", () => {
   assert.throws(
     () =>
@@ -498,6 +745,111 @@ test("unsupported historical fresh analysis keeps an ordinary profile choice thr
     invariants(draft);
   }
   invariants(draft);
+});
+
+for (const mode of ["legacy", "revision"] as const)
+  for (const retry of ["reopen", "reload", "typo"] as const)
+    test(`missing historical sources retry with current rows after ${retry}, ${mode}`, () => {
+      let draft = fixture("BAU,CLA", mode, "cll");
+      prepareLujvoBuilder(draft, cached);
+      clearWordEvidence(draft);
+      changeTypedWord(draft, "ckusnu");
+      prepareLujvoBuilder(draft, cached);
+      assert.deepEqual(
+        draft.lujvo!.components.map((row) => row.locked),
+        ["cku", "snu"],
+      );
+      changeTypedWord(draft, "BAU,CLA");
+      const fallback = prepareLujvoBuilder(draft, null);
+      assert.deepEqual(
+        fallback.components.map((row) => row.locked),
+        ["bau", "cla"],
+      );
+      assert.ok(
+        fallback.components.every(
+          (row) => !row.spelling && row.unresolvedSource,
+        ),
+      );
+      assert.equal(fallback.typedOrigin, undefined);
+      assert.equal(fallback.ordinarySpelling, "");
+      assert.equal(fallback.profile, "cll");
+      invariants(draft);
+      if (retry === "reload") draft = normalizeDraft(structuredClone(draft));
+      if (retry === "typo") {
+        changeTypedWord(draft, "BAU,CLAx");
+        prepareLujvoBuilder(draft, cached);
+        changeTypedWord(draft, "BAU,CLA");
+      }
+      const state = prepareLujvoBuilder(draft, cached);
+      assert.equal(state.typedOrigin, true);
+      assert.equal(state.typed, "BAU,CLA");
+      assert.deepEqual(
+        state.components.map((row) => row.spelling),
+        ["bangu", "clani"],
+      );
+      assert.equal(buildLujvoState(state).candidates[0].spelling, "BAU,CLA");
+      assert.equal(draft.spelling, "BAU,CLA");
+      invariants(draft);
+    });
+
+test("an explicit profile survives repeated unresolved historical analysis and reload", () => {
+  let draft = fixture("BAU,CLA", "legacy", "cll");
+  prepareLujvoBuilder(draft, cached);
+  changeTypedWord(draft, "ckusnu");
+  prepareLujvoBuilder(draft, cached);
+  changeTypedWord(draft, "BAU,CLA");
+  const fallback = prepareLujvoBuilder(draft, null);
+  selectLujvoProfile(fallback, "extended-v2");
+  for (let visit = 0; visit < 3; visit++) {
+    draft = normalizeDraft(structuredClone(draft));
+    const state = prepareLujvoBuilder(draft, null);
+    assert.deepEqual(
+      state.components.map((row) => row.locked),
+      ["bau", "cla"],
+    );
+    assert.equal(state.profile, "extended-v2");
+    assert.equal(state.profileChosen, true);
+    assert.equal(state.ordinarySpelling, "");
+    assert.equal(state.typedOrigin, undefined);
+    invariants(draft);
+  }
+});
+
+test("a genuine historical gap uses the current sai and zba rows and keeps an authored profile", () => {
+  let draft = fixture("sairzba", "typed");
+  draft.lujvo!.restoredEvidenceHistory = [
+    { spelling: "sairzba", profile: "cll" },
+  ];
+  changeTypedWord(draft, "ckusnu");
+  prepareLujvoBuilder(draft, cached);
+  changeTypedWord(draft, "sairzba");
+  const fallback = prepareLujvoBuilder(draft, cached);
+  assert.deepEqual(
+    fallback.components.map((row) => row.locked),
+    ["sai", "zba"],
+  );
+  assert.deepEqual(
+    fallback.components.map((row) => row.spelling),
+    ["sanmi", "zbasu"],
+  );
+  assert.equal(fallback.ordinarySpelling, "sairzba");
+  assert.equal(fallback.profile, "cll");
+  assert.equal(fallback.typedOrigin, undefined);
+  assert.equal(buildLujvoState(fallback).candidates[0].spelling, "saizba");
+  assert.equal(draft.spelling, "sairzba");
+  selectLujvoProfile(fallback, "extended");
+  for (let visit = 0; visit < 3; visit++) {
+    draft = normalizeDraft(structuredClone(draft));
+    const state = prepareLujvoBuilder(draft, cached);
+    assert.deepEqual(
+      state.components.map((row) => row.locked),
+      ["sai", "zba"],
+    );
+    assert.equal(state.profile, "extended");
+    assert.equal(state.profileChosen, true);
+    assert.equal(state.typedOrigin, undefined);
+    invariants(draft);
+  }
 });
 
 test("older restored snapshots retain their profile evidence before a release", () => {
@@ -1108,9 +1460,9 @@ test("random production event sequences preserve draft invariants after every ev
       return (bits >>> 0) % n;
     };
     const pick = <T>(values: readonly T[]) => values[random(values.length)];
-    let draft = fixture(
-      pick(words),
-      pick(["typed", "legacy", "revision"] as const),
+    let draft = withDefaultAnnotations(
+      fixture(pick(words), pick(["typed", "legacy", "revision"] as const)),
+      seed % 2 === 0,
     );
     let earlier = draft.spelling;
     const history: string[] = [];
@@ -1590,11 +1942,10 @@ test("random production event sequences preserve draft invariants after every ev
             "typed source draft",
           ].includes(event)
         ) {
-          assert.deepEqual(draft.text, before.text);
-          assert.deepEqual(draft.notes, before.notes);
-          assert.deepEqual(draft.glosses, before.glosses);
-          assert.deepEqual(draft.places, before.places);
-          assert.deepEqual(draft.sources, before.sources);
+          assert.deepEqual(
+            preservedDefinition(draft),
+            preservedDefinition(before),
+          );
           assert.deepEqual(draft.parents, before.parents);
           assert.equal(draft.meaning, before.meaning);
         }

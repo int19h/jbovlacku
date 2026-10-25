@@ -197,6 +197,254 @@ async function meaningWord(page: Page, spelling: string) {
   await expect(page).toHaveURL(/\/new\/type$/);
 }
 
+async function historicalDraft(
+  page: Page,
+  mode: "legacy" | "revision" | "gap",
+) {
+  await seed(page, {
+    kind: "lujvo",
+    word: mode === "gap" ? "sairzba" : "BAU,CLA",
+  });
+  await page.evaluate(
+    async ({ mode, corePath }) => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const { newDraft, draftToBody, draftFromBody } = await import(
+        String("/src/model/draft.ts")
+      );
+      const { typedLujvoState, buildLujvoState, selectLujvoCandidate } =
+        await import(String("/src/model/typed-headword.ts"));
+      const { analyzeWord, rafsiPairId, wordId } = await import(corePath);
+      const spelling = mode === "gap" ? "sairzba" : "BAU,CLA";
+      const profile = mode === "gap" ? "extended" : "cll";
+      const state = typedLujvoState(
+        spelling,
+        analyzeWord(profile, spelling).readings[0],
+        null,
+        profile,
+      );
+      for (const [index, source] of (mode === "gap"
+        ? ["sanmi", "zbasu"]
+        : ["bangu", "clani"]
+      ).entries()) {
+        const row = state.components[index];
+        row.spelling = source;
+        row.kind = "gismu";
+        row.claims = [
+          {
+            rafsi: row.locked,
+            pair: rafsiPairId(
+              wordId({ language: "jbo", spelling: source }),
+              row.locked,
+            ),
+          },
+        ];
+        delete row.unresolvedSource;
+      }
+      let value = newDraft({
+        spelling,
+        typedSpelling: spelling,
+        kind: "lujvo",
+        text: "A synthetic definition.",
+        frameMode: "none",
+        lujvo: state,
+      });
+      if (mode === "revision") {
+        const result = buildLujvoState(state);
+        selectLujvoCandidate(value, result, result.candidates[0], true);
+        const { body, problems } = draftToBody(value);
+        if (!body) throw new Error(JSON.stringify(problems));
+        value = draftFromBody(body, "jve1:" + "c".repeat(64), "native");
+      } else if (mode === "legacy") {
+        delete state.typedOrigin;
+        value.typedSpelling = null;
+      } else state.restoredEvidenceHistory = [{ spelling, profile: "cll" }];
+      await new LocalStore().put("drafts", "current", value);
+    },
+    { mode, corePath },
+  );
+  await page.goto("/new/lujvo");
+  await expect(
+    page
+      .getByRole("region", { name: "Result", exact: true })
+      .getByLabel(`Form ${mode === "gap" ? "sairzba" : "BAU,CLA"}`, {
+        exact: true,
+      }),
+  ).toBeVisible();
+  if (mode === "revision") {
+    await page
+      .getByRole("link", { name: "Type the spelling yourself", exact: true })
+      .click();
+    page.once("dialog", (dialog) => void dialog.accept());
+    await page
+      .getByRole("button", { name: "Remove formation evidence", exact: true })
+      .click();
+    await expect.poll(async () => (await saved(page)).compound).toBeNull();
+  }
+  await meaningWord(page, "ckusnu");
+  await page
+    .getByRole("button", { name: "Link the lujvo parts", exact: true })
+    .click();
+  await expect
+    .poll(async () =>
+      (await saved(page)).lujvo?.components.map((row: any) => row.locked),
+    )
+    .toEqual(["cku", "snu"]);
+  await meaningWord(page, mode === "gap" ? "sairzba" : "BAU,CLA");
+  await page
+    .getByRole("button", { name: "Link the lujvo parts", exact: true })
+    .click();
+  await expect
+    .poll(async () =>
+      (await saved(page)).lujvo?.components.map((row: any) => row.locked),
+    )
+    .toEqual(mode === "gap" ? ["sai", "zba"] : ["bau", "cla"]);
+}
+
+async function historicalPackage(page: Page) {
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    await new LocalStore().put("packages", "en", {
+      snapshot: "sha256:" + "a".repeat(64),
+      version: 2,
+      entries: [
+        ["bangu", "bau"],
+        ["clani", "cla"],
+        ["sanmi", "sai"],
+        ["zbasu", "zba"],
+      ].map(([spelling, rafsi], index) => ({
+        event: "jve1:" + String(index).repeat(64),
+        word: { language: "jbo", spelling },
+        language: "en",
+        glosses: [],
+        plain_text: "Synthetic source.",
+        classification: { kind: "gismu", selmaho: [] },
+        body: null,
+        issuer: "ed25519:" + "a".repeat(64),
+        notes: false,
+        rafsi: [rafsi],
+        rafsi_complete: true,
+        attribution: null,
+      })),
+    });
+  });
+}
+
+for (const mode of ["legacy", "revision"] as const)
+  for (const retry of ["reopen", "reload", "typo"] as const)
+    test(`R9 missing CLL sources retry after cache download and ${retry}, ${mode}`, async ({
+      page,
+    }) => {
+      await historicalDraft(page, mode);
+      const fallback = (await saved(page)).lujvo;
+      expect(fallback.ordinarySpelling).toBe("");
+      expect(fallback.typedOrigin).toBeUndefined();
+      expect(fallback.components.map((row: any) => row.spelling)).toEqual([
+        "",
+        "",
+      ]);
+      await expect(
+        page.getByRole("radio", { name: "CLL rules", exact: true }),
+      ).toBeChecked();
+      await historicalPackage(page);
+      if (retry === "reload") await page.reload();
+      else if (retry === "reopen") await page.goto("/new/lujvo");
+      else {
+        await page
+          .getByRole("link", {
+            name: "Type the spelling yourself",
+            exact: true,
+          })
+          .click();
+        await page.getByLabel("Spelling", { exact: true }).fill("BAU,CLAx");
+        await page.getByLabel("Spelling", { exact: true }).fill("BAU,CLA");
+        await page
+          .getByRole("list", { name: "Steps" })
+          .getByRole("link", { name: /^Form\b/ })
+          .click();
+      }
+      await expect(
+        page
+          .getByRole("region", { name: "Result", exact: true })
+          .getByLabel("Form BAU,CLA", { exact: true }),
+      ).toBeVisible();
+      await expect(
+        page.getByRole("button", { name: "Use BAU,CLA", exact: true }),
+      ).toBeEnabled();
+      await expect
+        .poll(async () => (await saved(page)).lujvo?.typedOrigin)
+        .toBe(true);
+      expect(
+        (await saved(page)).lujvo.components.map((row: any) => row.spelling),
+      ).toEqual(["bangu", "clani"]);
+      expect((await saved(page)).spelling).toBe("BAU,CLA");
+    });
+
+test("R9 an authored profile survives repeated cache absence and reload", async ({
+  page,
+}) => {
+  await historicalDraft(page, "legacy");
+  await page
+    .getByRole("radio", { name: "Extended: whole-word parts", exact: true })
+    .check();
+  await expect
+    .poll(async () => (await saved(page)).lujvo?.profileChosen)
+    .toBe(true);
+  for (let visit = 0; visit < 2; visit++) {
+    await page.reload();
+    await expect(
+      page.getByRole("radio", {
+        name: "Extended: whole-word parts",
+        exact: true,
+      }),
+    ).toBeChecked();
+    await expect
+      .poll(async () => (await saved(page)).lujvo?.profileChosen)
+      .toBe(true);
+    expect((await saved(page)).lujvo.ordinarySpelling).toBe("");
+    expect(
+      (await saved(page)).lujvo.components.map((row: any) => row.locked),
+    ).toEqual(["bau", "cla"]);
+  }
+});
+
+test("R9 a genuine CLL gap keeps sai and zba rows and an authored profile", async ({
+  page,
+}) => {
+  await seed(page, { kind: "lujvo", word: "sairzba" });
+  await historicalPackage(page);
+  await historicalDraft(page, "gap");
+  await expect(
+    page.getByRole("group", { name: "Rafsi for sanmi", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("group", { name: "Rafsi for zbasu", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page
+      .getByRole("region", { name: "Result", exact: true })
+      .getByLabel("Form saizba", { exact: true }),
+  ).toBeVisible();
+  expect((await saved(page)).spelling).toBe("sairzba");
+  expect((await saved(page)).lujvo.ordinarySpelling).toBe("sairzba");
+  await page
+    .getByRole("radio", { name: "Extended: whole-word parts", exact: true })
+    .check();
+  await expect
+    .poll(async () => (await saved(page)).lujvo?.profileChosen)
+    .toBe(true);
+  await page.reload();
+  await expect(
+    page.getByRole("radio", {
+      name: "Extended: whole-word parts",
+      exact: true,
+    }),
+  ).toBeChecked();
+  expect((await saved(page)).lujvo.profileChosen).toBe(true);
+  expect(
+    (await saved(page)).lujvo.components.map((row: any) => row.locked),
+  ).toEqual(["sai", "zba"]);
+});
+
 for (const [profile, spelling, sources] of [
   ["extended-v2", "CKUSNI'yBRODA", ["ckusni", "broda"]],
   ["extended-v2", "cku,sni'ybroda", ["ckusni", "broda"]],
