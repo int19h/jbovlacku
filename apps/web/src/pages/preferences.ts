@@ -31,9 +31,11 @@ export async function preferencesPage(
   // Languages.
   const languages = new Set<string>(["en", prefs.definitionLanguage]);
   let manifestLanguages: string[] = [];
+  let packagesAvailable = true;
   try {
     const manifest = await getManifest({ signal: context.signal });
     manifestLanguages = manifest.packages.map((pkg) => pkg.language);
+    packagesAvailable = manifest.packages_available !== false;
     for (const tag of manifestLanguages) languages.add(tag);
   } catch {}
   if (!context.live()) return;
@@ -149,6 +151,13 @@ export async function preferencesPage(
       );
       packages.append(row);
     }
+    if (!packagesAvailable)
+      packages.append(
+        p(
+          "Search packages are temporarily unavailable. The service cannot evaluate publication receipts.",
+          "notice",
+        ),
+      );
     const available = manifestLanguages.filter((tag) => !keys.includes(tag));
     if (available.length) {
       const pick = field("Download a package", {
@@ -186,7 +195,7 @@ export async function preferencesPage(
           go,
         ),
       );
-    } else if (!keys.length)
+    } else if (!keys.length && packagesAvailable)
       packages.append(p("This server offers no search package yet.", "small"));
     for (const key of keys)
       if (manifestLanguages.includes(key))

@@ -420,12 +420,15 @@ export async function syncRecords(
       );
     await store.put("selections", hash, prepared.canonical);
   }
-  const chosen = getPreferredView();
-  const probe = (await api(
-    `/words/jvw1:${"0".repeat(64)}?snapshot=${encodeURIComponent(snapshot)}${chosen ? `&view=${encodeURIComponent(chosen)}` : ""}`,
-    options,
-  )) as { view?: unknown };
-  if (!eventId(probe.view))
+  let view: unknown = getPreferredView() ?? manifest.view;
+  if (view === undefined)
+    view = (
+      (await api(
+        `/words/jvw1:${"0".repeat(64)}?snapshot=${encodeURIComponent(snapshot)}`,
+        options,
+      )) as { view?: unknown }
+    ).view;
+  if (!eventId(view) || view === "jve1:" + "0".repeat(64))
     throw new RecordsError(
       "The server did not report its selected view.",
       "invalid",
@@ -433,7 +436,7 @@ export async function syncRecords(
   const inventory: SnapshotInventory = {
     snapshot,
     logical_inventory: manifest.logical_inventory,
-    view: probe.view,
+    view,
     events,
     bodies,
     selections,

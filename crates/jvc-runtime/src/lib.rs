@@ -412,6 +412,15 @@ fn rank_word_state(
         .filter(|p| p.word == word && p.eligible != jvc_state::Eligibility::NotSelected)
     {
         if publication.kind == "definition.publish" {
+            if !evaluation
+                .receipts
+                .get(&publication.id)
+                .is_some_and(|receipt| {
+                    receipt.interpretation == jvc_state::Interpretation::Effective
+                })
+            {
+                continue;
+            }
             let eligible = publication.eligible == jvc_state::Eligibility::Eligible
                 && publication.content_available
                 && matches!(

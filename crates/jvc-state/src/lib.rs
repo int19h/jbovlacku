@@ -345,6 +345,16 @@ fn evaluate_graph(input: &EvaluationOptions, graph: &graph::Graph) -> Evaluation
         } else if !graph.own_complete(id) {
             reasons.insert("own_history_pending".into());
             Interpretation::Pending
+        } else if matches!(node.kind.as_str(), "definition.publish" | "rafsi.publish")
+            && graph.excluded_by_resolved(id)
+        {
+            reasons.insert("outside_retained_history".into());
+            Interpretation::Inert
+        } else if graph.pending_cutoffs.contains(&node.issuer)
+            && matches!(node.kind.as_str(), "definition.publish" | "rafsi.publish")
+        {
+            reasons.insert("cutoff_pending".into());
+            Interpretation::Suspended
         } else if graph.suspended(&node.issuer)
             && !matches!(
                 node.kind.as_str(),
@@ -722,15 +732,38 @@ fn registers(graph: &graph::Graph, result: &mut Evaluation) {
     }
 }
 fn rafsi_gate(result: &mut Evaluation) {
+    let receipts = &result.receipts;
+    let effective = |id: &str| {
+        receipts
+            .get(id)
+            .is_some_and(|r| r.interpretation == Interpretation::Effective)
+    };
+    let excluded = |id: &str| {
+        receipts.get(id).is_some_and(|r| {
+            r.interpretation == Interpretation::Inert
+                || r.reasons.contains("outside_retained_history")
+        })
+    };
     let missing_selection = result.reasons.contains("import_selection_unavailable")
         || result.reasons.contains("selection_publications_pending");
     let unknown_word = result.publications.values().any(|p| {
-        p.kind == "definition.publish" && p.word.is_empty() && p.eligible == Eligibility::Unknown
+        p.kind == "definition.publish"
+            && !excluded(&p.id)
+            && p.word.is_empty()
+            && p.eligible == Eligibility::Unknown
     });
     let mut assignments: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut definition_gates: BTreeMap<String, (bool, bool)> = BTreeMap::new();
+    let mut uncertain_words = BTreeSet::new();
     for (id, p) in &result.publications {
         if p.kind == "definition.publish" && p.eligible != Eligibility::NotSelected {
+            if !effective(id) {
+                // Missing evidence blocks an all-deprecated result. Excluded history does not.
+                if !excluded(id) {
+                    uncertain_words.insert(p.word.clone());
+                }
+                continue;
+            }
             let (active, deprecated) = definition_gates
                 .entry(p.word.clone())
                 .or_insert((false, true));
@@ -749,17 +782,24 @@ fn rafsi_gate(result: &mut Evaluation) {
         let word = &result.publications[&ids[0]].word;
         let (active_definition, deprecated) =
             definition_gates.get(word).copied().unwrap_or_default();
-        let all_deprecated = deprecated && !missing_selection && !unknown_word;
-        let active_claim = ids.iter().any(|id| {
-            let p = &result.publications[id];
-            p.content_available && p.eligible == Eligibility::Eligible && p.status == Status::Active
-        });
-        let all_claims_deprecated = ids.iter().all(|id| {
-            let p = &result.publications[id];
-            p.content_available
+        let all_deprecated =
+            deprecated && !uncertain_words.contains(word) && !missing_selection && !unknown_word;
+        let retained_claims: Vec<_> = ids.iter().filter(|id| !excluded(id)).collect();
+        let active_claim = retained_claims.iter().any(|id| {
+            let p = &result.publications[id.as_str()];
+            effective(id)
+                && p.content_available
                 && p.eligible == Eligibility::Eligible
-                && p.status == Status::Deprecated
+                && p.status == Status::Active
         });
+        let all_claims_deprecated = !retained_claims.is_empty()
+            && retained_claims.iter().all(|id| {
+                let p = &result.publications[id.as_str()];
+                effective(id)
+                    && p.content_available
+                    && p.eligible == Eligibility::Eligible
+                    && p.status == Status::Deprecated
+            });
         let eligibility = if active_claim && active_definition {
             Eligibility::Eligible
         } else if all_deprecated || all_claims_deprecated {

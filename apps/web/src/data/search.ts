@@ -239,6 +239,10 @@ async function downloadVersion(
     ? AbortSignal.any([options.signal, deadline])
     : deadline;
   const manifest = await getManifest({ ...options, signal });
+  if (manifest.packages_available === false)
+    throw new Error(
+      "Search packages are temporarily unavailable. The service cannot evaluate publication receipts.",
+    );
   for (const descriptor of manifest.packages)
     if (!count(descriptor.bytes, 1048576)) throw invalidPackage();
   const versions = Array.isArray(manifest.package_versions)
