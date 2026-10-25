@@ -23,6 +23,8 @@ async function seed(
   ).toBeVisible();
   await page.evaluate(
     async ({ spelling, profile, mode, corePath }) => {
+      const core = await import(corePath);
+      await core.initializeCore();
       const { LocalStore } = await import(String("/src/data/store.ts"));
       const { newDraft, draftFromBody, draftToBody } = await import(
         String("/src/model/draft.ts")
@@ -33,7 +35,7 @@ async function seed(
         buildLujvoState,
         selectLujvoCandidate,
       } = await import(String("/src/model/typed-headword.ts"));
-      const { analyzeWord, rafsiPairId, wordId } = await import(corePath);
+      const { analyzeWord, rafsiPairId, wordId } = core;
       const reading =
         profile === "extended"
           ? detectWord(spelling).readings[0]

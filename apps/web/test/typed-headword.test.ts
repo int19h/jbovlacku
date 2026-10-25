@@ -1,5 +1,10 @@
 import { test, expect, type Page } from "@playwright/test";
-import { createIdentity, acceptFirstSignature, PASSPHRASE } from "./helpers.ts";
+import {
+  createIdentity,
+  acceptFirstSignature,
+  corePath,
+  PASSPHRASE,
+} from "./helpers.ts";
 
 async function packageDownload(page: Page) {
   await page.goto("/preferences");
@@ -132,12 +137,14 @@ for (const spelling of [
     expect(saved.spelling).toBe(spelling);
     expect(saved.lujvo.selected).toBe(spelling);
     expect(saved.compound).toBeNull();
-    const publication = await page.evaluate(async () => {
+    const publication = await page.evaluate(async (corePath) => {
+      const core = await import(corePath);
+      await core.initializeCore();
       const { LocalStore } = await import(String("/src/data/store.ts"));
       const { draftToBody } = await import(String("/src/model/draft.ts"));
       const saved = await new LocalStore().get("drafts", "current");
       return draftToBody(saved);
-    });
+    }, corePath);
     expect(publication.body?.word.spelling).toBe(spelling);
     expect(
       publication.problems.filter((problem: any) => problem.blocking),

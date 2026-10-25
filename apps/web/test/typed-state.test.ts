@@ -130,11 +130,13 @@ for (const mismatch of ["typed identity", "rafsi", "join"])
     });
     await page.evaluate(
       async ({ mismatch, corePath }) => {
+        const core = await import(corePath);
+        await core.initializeCore();
         const { LocalStore } = await import(String("/src/data/store.ts"));
         const { newLujvoState } = await import(
           String("/src/model/builders.ts")
         );
-        const { rafsiPairId, wordId } = await import(corePath);
+        const { rafsiPairId, wordId } = core;
         const store = new LocalStore();
         const value: any = await store.get("drafts", "current");
         value.lujvo = {
@@ -207,13 +209,15 @@ async function historicalDraft(
   });
   await page.evaluate(
     async ({ mode, corePath }) => {
+      const core = await import(corePath);
+      await core.initializeCore();
       const { LocalStore } = await import(String("/src/data/store.ts"));
       const { newDraft, draftToBody, draftFromBody } = await import(
         String("/src/model/draft.ts")
       );
       const { typedLujvoState, buildLujvoState, selectLujvoCandidate } =
         await import(String("/src/model/typed-headword.ts"));
-      const { analyzeWord, rafsiPairId, wordId } = await import(corePath);
+      const { analyzeWord, rafsiPairId, wordId } = core;
       const spelling = mode === "gap" ? "sairzba" : "BAU,CLA";
       const profile = mode === "gap" ? "extended" : "cll";
       const state = typedLujvoState(
@@ -458,11 +462,13 @@ for (const [profile, spelling, sources] of [
       await seed(page, { kind: "lujvo", word: spelling });
       await page.evaluate(
         async ({ profile, spelling, sources, revision, corePath }) => {
+          const core = await import(corePath);
+          await core.initializeCore();
           const { LocalStore } = await import(String("/src/data/store.ts"));
           const { newDraft, draftToBody, draftFromBody } = await import(
             String("/src/model/draft.ts")
           );
-          const { analyzeWord, rafsiPairId, wordId } = await import(corePath);
+          const { analyzeWord, rafsiPairId, wordId } = core;
           const { typedLujvoState, buildLujvoState, selectLujvoCandidate } =
             await import(String("/src/model/typed-headword.ts"));
           const parts = analyzeWord(profile, spelling).readings[0];
@@ -1079,6 +1085,8 @@ for (const [
         typedMarker,
         corePath,
       }) => {
+        const core = await import(corePath);
+        await core.initializeCore();
         const { LocalStore } = await import(String("/src/data/store.ts"));
         const { newLujvoState } = await import(
           String("/src/model/builders.ts")
@@ -1086,7 +1094,7 @@ for (const [
         const { detectWord } = await import(
           String("/src/model/typed-headword.ts")
         );
-        const { rafsiPairId, wordId } = await import(corePath);
+        const { rafsiPairId, wordId } = core;
         const store = new LocalStore();
         const value: any = await store.get("drafts", "current");
         const base =
