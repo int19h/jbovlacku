@@ -78,10 +78,10 @@ test("portable profile parsing rejects invalid schemas, Unicode, and non-JSON va
     { ...profile, document: { ...profile.document, prefix: "\ud800" } },
     { ...profile, query: { ...profile.query, unknown: true } },
     { ...profile, query: { ...profile.query, truncation: "silent" } },
-    { ...profile, parameters: { nan: NaN } },
-    { ...profile, parameters: { omitted: undefined } },
-    { ...profile, parameters: { malformed: "\udfff" } },
-    { ...profile, parameters: { value: new Date() } },
+    { ...profile, parameters: { ...profile.parameters, nan: NaN } },
+    { ...profile, parameters: { ...profile.parameters, omitted: undefined } },
+    { ...profile, parameters: { ...profile.parameters, malformed: "\udfff" } },
+    { ...profile, parameters: { ...profile.parameters, value: new Date() } },
   );
   for (const value of invalid) assert.throws(() => profileId(value));
   const valid = new TextDecoder().decode(canonicalBytes(profile));
