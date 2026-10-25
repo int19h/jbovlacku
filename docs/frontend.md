@@ -237,6 +237,12 @@ A local package only establishes presence or absence in its named language and s
 The author can use `___` for argument placeholders, but ordinary prose also works.
 Underscores are an editor convention. The draft retains their spans without assigning final place numbers automatically.
 The app preserves this original meaning draft separately from the current editable definition.
+Each `;` restarts placeholder numbering at 1. The place count is the highest number used in any part.
+Unescaped circled numerals `①` through `⑳` and `{place N}` name explicit place numbers.
+Within each part, blanks take the free numbers in order, including when explicit numbers appear after the blanks.
+A backslash before a circled numeral keeps it literal, as in the structured editor.
+The “N placeholders found” message reports places, rather than placeholder occurrences.
+Before approval on the Places step, the author sees each part and the places that it uses.
 
 The nearby-definition panel uses its local lexical package by default. It does not inherit remote upload from the ordinary search setting.
 If the package is missing, offer a download or continue manually. No private draft uploads passively.
@@ -510,7 +516,29 @@ Removing a declared place requires removal, replacement, or literalization of ev
 
 A null frame means unspecified structure. The wizard never substitutes a guessed zero-place frame.
 
+The Places step and the full editor show a place-count note for every word type with more than three declared places.
+Count the declared numbered places. A repeating tail counts as one place.
+Null frames and operand places of constructed predicates do not count.
+The note never blocks Next or Publish and asks for no acknowledgment.
+The author can hide it for the current draft. This choice and the note leave no trace in signed records.
+
+For four or five places, the heading is “Does every place belong?” and the text is:
+
+> A place stays in the meaning even when nobody says it. Only zi'o removes it. That is why a container with no lid is not a botpi, whose x4 is the lid. Keep the places that the idea cannot do without, and add other details when needed with a tag such as sepi'o ("using tool").
+
+For six or more places, substitute the count for N in “Are all N places needed?” and use this text:
+
+> Few good definitions have more than five places, because a word with that many is hard to use. A place stays in the meaning even when nobody says it, and only zi'o removes it. Keep the places that the idea cannot do without, and add other details when needed with a tag such as sepi'o ("using tool").
+
+“More about places” explains that an omitted place is zo'e, the value that the speaker means.
+It cites CLL 7.7 and explains that zbasu still has a maker. zi'o makes a different relation, also under CLL 7.7.
+A modal adds a place to any bridi without changing the numbered ones, under CLL 9.5.
+Examples include BAI tags sepi'o, ma'e, and bau, and fi'o with any selbri.
+The help gives bamri as a good four-place example: x1 buys x2 from x3 for price x4.
+
 “Suggest places and glosses” is an optional AI action based on the current meaning, word form, component evidence, and existing draft annotations.
+The AI proposes only places that every use implies and offers modal tags for other details.
+It gives a reason for each place after the third. It names only Lojban words that the request supplies.
 The result proposes typed fields and identifies unresolved mappings. The author reviews the rendered text and table before accepting changes.
 The definition of the whole word decides the meaning and the types. Component definitions only identify which role a place plays. Any word form that follows the selected morphology rules is accepted, including lower-scoring rafsi and optional hyphens.
 A type suggestion gives one to three alternatives for a place, each with a short reason. A line under the row lists each alternative and its reason. `unclear` means that the definition does not describe the place. An empty hint then reads “unspecified”. An existing hint stays unchanged.
