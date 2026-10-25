@@ -25,7 +25,7 @@ import { NodeEvaluationRuntime } from "./evaluation.ts";
 import { FileCheckpointStore } from "./checkpoint.ts";
 
 const usage =
-  "Use semantic-cli.ts --data DIRECTORY --command prepare|run|status|recover|retry|publish|rollback|retire [--job ID] [--batch ID] [--after BATCH_ID] [--max-batches N] [--concurrency N] [--pages N]. Stop the server for this directory first.";
+  "Use semantic-cli.ts --data DIRECTORY --command prepare|run|status|recover|retry|publish|unpublish|rollback|retire [--job ID] [--batch ID] [--after BATCH_ID] [--max-batches N] [--concurrency N] [--pages N]. Stop the server for this directory first.";
 const allowed = new Set([
   "data",
   "command",
@@ -139,6 +139,7 @@ async function main() {
       "recover",
       "retry",
       "publish",
+      "unpublish",
       "rollback",
       "retire",
     ].includes(command)
@@ -241,6 +242,12 @@ async function main() {
       if (!(await vectors.publish(id!, old)))
         throw new Error(
           "The semantic publication changed. Read its status before another attempt.",
+        );
+    } else if (command === "unpublish") {
+      const generation = await vectors.generation(id!);
+      if (!(await vectors.unpublish(generation.profile, generation.view, id!)))
+        throw new Error(
+          "The named generation is no longer current. Read its status before another attempt.",
         );
     } else if (command === "rollback") {
       const generation = await vectors.generation(id!);

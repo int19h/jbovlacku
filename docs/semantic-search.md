@@ -105,6 +105,7 @@ Provider or storage failure pauses the job. Manual dictionary reads and admissio
 An unexpected returned model or a conflicting vector suspends the complete profile in durable storage.
 That suspension also blocks vector pages and publication. It does not follow from a spending refusal or unknown cost.
 After repairing the provider, prepare a fresh profile and generation. The command cannot reset a suspended epoch.
+If retained vectors leave too little capacity, unpublish the old current generation and retire its unused generations before indexing the replacement.
 
 ## Publish and retain generations
 
@@ -120,7 +121,20 @@ npx tsx apps/server/src/semantic-cli.ts --data "$JVC_DATA_DIR" --command rollbac
 Rollback requires the named generation to remain current and a retained rollback generation.
 Publication changes only the derived index pointer. It does not enable public semantic routes.
 Current generations, rollback generations, and jobs with active batches cannot retire.
-After those references end, use `retire --job GENERATION_ID` to remove that generation's associations and unreferenced input and vector bytes.
+Use the exact current generation ID to remove its publication pointer:
+
+```sh
+npx tsx apps/server/src/semantic-cli.ts --data "$JVC_DATA_DIR" --command unpublish --job "$JVC_INDEX_JOB"
+```
+
+Unpublish removes that current pointer and its rollback reference in one transaction.
+It requires the named generation to remain current. A stale generation ID leaves every pointer unchanged.
+It works for suspended profiles and preserves unrelated profiles and views.
+Vectors and associations remain available until separate retirement. The command does not reset the profile suspension.
+
+After those references end, use `retire --job GENERATION_ID` for each unused generation, including its former rollback generation.
+Retirement removes that generation's associations and unreferenced input and vector bytes.
+Another current or rollback pointer still protects any generation that it names. Running jobs and active batches also remain protected.
 
 The store permits 300,000 associations and 100,000 vectors by default.
 Its separate logical allowance for retained document inputs and vector bytes is 2 GiB.

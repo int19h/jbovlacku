@@ -390,6 +390,160 @@ test("retirement frees orphaned bytes and keeps vectors used by another generati
     }
   }));
 
+test("unpublish compares the exact current generation and preserves other profile and view pointers", async () =>
+  fixture(async (store, path) => {
+    const old = await prepared(store, documents(2));
+    await new SemanticIndexer(store, embedder()).run(old.id);
+    await store.publish(old.id, null);
+    const current = await prepared(store, documents(1), hash(2001));
+    await new SemanticIndexer(store, embedder()).run(current.id);
+    await store.publish(current.id, old.id);
+    const otherViewSource = source(documents(1), hash(2002));
+    otherViewSource.context.view = hash(2200, "jve1:");
+    const otherView = await store.create(otherViewSource.context, profile());
+    await new SemanticIndexer(store, embedder()).prepare(
+      otherView.id,
+      otherViewSource,
+    );
+    await store.publish(otherView.id, null);
+    const otherProfile = await prepared(
+      store,
+      documents(1),
+      hash(2003),
+      createQwenProfile("78".repeat(16)),
+    );
+    await new SemanticIndexer(store, embedder()).run(otherProfile.id);
+    await store.publish(otherProfile.id, null);
+    const database = new DatabaseSync(path);
+    try {
+      const pointers = () =>
+        database
+          .prepare("SELECT * FROM semantic_current ORDER BY profile,view")
+          .all();
+      const before = pointers();
+      assert.equal(
+        await store.unpublish(current.profile, current.view, old.id),
+        false,
+      );
+      assert.equal(
+        await store.unpublish(current.profile, current.view, otherProfile.id),
+        false,
+      );
+      assert.equal(
+        await store.unpublish(current.profile, otherView.view, current.id),
+        false,
+      );
+      assert.deepEqual(pointers(), before);
+      const associations = database
+        .prepare("SELECT COUNT(*) AS n FROM semantic_associations")
+        .get()!.n;
+      const vectors = database
+        .prepare("SELECT COUNT(*) AS n FROM semantic_vectors")
+        .get()!.n;
+      assert.equal(
+        await store.unpublish(current.profile, current.view, current.id),
+        true,
+      );
+      assert.equal(await store.current(current.profile, current.view), null);
+      assert.equal(
+        await store.current(otherView.profile, otherView.view),
+        otherView.id,
+      );
+      assert.equal(
+        await store.current(otherProfile.profile, otherProfile.view),
+        otherProfile.id,
+      );
+      assert.equal(
+        database
+          .prepare("SELECT COUNT(*) AS n FROM semantic_associations")
+          .get()!.n,
+        associations,
+      );
+      assert.equal(
+        database.prepare("SELECT COUNT(*) AS n FROM semantic_vectors").get()!.n,
+        vectors,
+      );
+      await store.retire(current.id);
+      await store.retire(old.id);
+      assert.equal((await store.generation(current.id)).state, "retired");
+      assert.equal((await store.generation(old.id)).state, "retired");
+      assert.equal((await store.coverage(otherView.id)).indexed, 1);
+      assert.equal((await store.coverage(otherProfile.id)).indexed, 1);
+      assert.equal(
+        database.prepare("SELECT COUNT(*) AS n FROM semantic_vectors").get()!.n,
+        2,
+      );
+      await assert.rejects(store.retire(otherView.id), /rollback reference/);
+      await assert.rejects(store.retire(otherProfile.id), /rollback reference/);
+    } finally {
+      database.close();
+    }
+  }));
+
+test("unpublish lets a suspended profile retire and frees capacity for its fresh replacement", async () =>
+  fixture(
+    async (store, path) => {
+      const old = await prepared(store, documents(2));
+      await new SemanticIndexer(store, embedder()).run(old.id);
+      await store.publish(old.id, null);
+      await store.suspend(old.profile, "embedding_model_mismatch");
+      const next = await prepared(
+        store,
+        documents(2),
+        hash(2001),
+        createQwenProfile("90".repeat(16)),
+      );
+      await store.publish(next.id, null);
+      const replacement = new SemanticIndexer(store, embedder());
+      assert.equal(
+        (await replacement.run(next.id)).generation.error,
+        "semantic_capacity",
+      );
+      await assert.rejects(store.retire(old.id), /rollback reference/);
+      assert.equal(await store.unpublish(old.profile, old.view, old.id), true);
+      assert.equal(
+        await store.compatibility(old.profile),
+        "embedding_model_mismatch",
+      );
+      await store.retire(old.id);
+      assert.equal(await store.current(next.profile, next.view), next.id);
+      const database = new DatabaseSync(path);
+      try {
+        assert.equal(
+          database
+            .prepare(
+              "SELECT COUNT(*) AS n FROM semantic_vectors WHERE profile=?",
+            )
+            .get(old.profile)!.n,
+          0,
+        );
+      } finally {
+        database.close();
+      }
+      const failed = (await store.batches(next.id))[0];
+      await store.retry(failed.id);
+      assert.equal((await replacement.run(next.id)).coverage.indexed, 2);
+    },
+    { ...DEFAULT_VECTOR_LIMITS, vectors: 2 },
+  ));
+
+test("unpublish keeps retirement guards for running jobs and prepared or sent batches", async () =>
+  fixture(async (store) => {
+    const job = await prepared(store, documents(1));
+    await store.publish(job.id, null);
+    await store.start(job.id);
+    const batch = (await store.claim(job.id))!;
+    assert.equal(await store.unpublish(job.profile, job.view, job.id), true);
+    await assert.rejects(store.retire(job.id), /Pause the job/);
+    await store.pause(job.id);
+    await assert.rejects(store.retire(job.id), /Pause the job/);
+    await store.sent(batch.id, "embedding:index:retirement-guard");
+    await assert.rejects(store.retire(job.id), /Pause the job/);
+    await store.recover(job.id);
+    await store.retire(job.id);
+    assert.equal((await store.generation(job.id)).state, "retired");
+  }));
+
 test("operator pause stops new claims and waits for admitted batches to settle", async () =>
   fixture(async (store) => {
     const job = await prepared(store, documents(20));

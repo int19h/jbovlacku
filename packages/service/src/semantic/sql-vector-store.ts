@@ -736,6 +736,24 @@ export class SqlVectorStore implements VectorStore {
       return String(row.rollback);
     });
   }
+  /** Remove only this exact current pointer. A separate retirement removes derived bytes. */
+  async unpublish(profile: string, view: string, expected: string) {
+    return this.sql.transaction(() => {
+      const row = this.sql.exec(
+        "SELECT generation FROM semantic_current WHERE profile=? AND view=?",
+        profile,
+        view,
+      )[0];
+      if (row?.generation !== expected) return false;
+      this.sql.exec(
+        "DELETE FROM semantic_current WHERE profile=? AND view=? AND generation=?",
+        profile,
+        view,
+        expected,
+      );
+      return true;
+    });
+  }
   async retire(id: string) {
     this.sql.transaction(() => {
       const generation = this.active(id);

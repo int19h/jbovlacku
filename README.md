@@ -149,7 +149,7 @@ The Node host stores vectors and exact event, envelope, body, input, and extract
 Its [operator command](docs/semantic-search.md) prepares eligible definitions in bounded pages and resumes fresh indexing through the shared embedding budget.
 Equal inputs share a vector under the same complete profile. Distinct publications retain their own associations.
 The job saves each operation link before dispatch. Interrupted sent batches need an explicit linked retry and keep their earlier charges.
-Mocked tests cover partial progress, restart, failures, retirement, atomic publication, and rollback.
+Mocked tests cover partial progress, restart, failures, retirement, atomic publication, rollback, and explicit removal of current pointers.
 Semantic search routes, query caching, and Worker vector storage remain unfinished. The semantic capability stays disabled.
 A discarded result returns a clear status. Spending failures distinguish pending costs, timed limits, and requests that cannot fit.
 The default spending share admits every enabled operation at each reasoning effort, with decision reports enabled or disabled.

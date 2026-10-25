@@ -80,6 +80,7 @@ export interface VectorStore {
   finish(id: string): Promise<void>;
   current(profile: string, view: string): Promise<string | null>;
   publish(id: string, expected: string | null): Promise<boolean>;
+  unpublish(profile: string, view: string, expected: string): Promise<boolean>;
   rollback(profile: string, view: string, expected: string): Promise<string>;
   retire(id: string): Promise<void>;
 }
