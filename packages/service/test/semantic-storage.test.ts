@@ -368,6 +368,7 @@ for (const backend of ["node", "worker-sql"] as const)
           ),
         ),
       );
+      await service.flushMaterialization();
     } finally {
       if (coordinator instanceof SqliteCoordinator) coordinator.close();
       database.close();
