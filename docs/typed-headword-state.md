@@ -66,6 +66,7 @@ The fallback uses the fresh reading's rows, even after a visit to another word.
 It associates those ordinary rows with the headword only when every source is resolved.
 Missing sources leave fresh analysis available for the next visit, reload, or spelling correction after a package download.
 An explicit ordinary profile choice survives repeated unresolved analysis. A supported fresh typed reading still uses its evidence profile.
+
 Compatible old rows keep author-linked sources, definitions, claims, and IDs.
 Exact locked parts take precedence. An unlocked source can match an existing claim, a recognized whole word, or a gismu stem.
 

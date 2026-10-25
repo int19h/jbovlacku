@@ -299,6 +299,7 @@ Every rafsi locks to its exact typed form, including full forms. Every boundary 
 The only candidate is the typed spelling. The builder links source words and exact definitions without changing that spelling.
 Fixed typed layout requires an exact construction under the selected evidence profile.
 If a historical profile cannot construct that spelling, ordinary profile controls remain available.
+
 The fallback shows the current word's analyzed parts. Missing sources permit another analysis after a local package becomes available.
 Repeated unresolved analysis preserves an ordinary profile that the author already chose.
 
