@@ -1489,6 +1489,7 @@ test("signed record disclosures retain each body's original omitted or explicit 
   await page.goto("/");
   const publications = await page.evaluate(async (path) => {
     const core = await import(path);
+    await core.initializeCore();
     const seed = crypto.getRandomValues(new Uint8Array(32));
     const minimal = {
       word: { language: "jbo", spelling: "brode" },
@@ -1565,6 +1566,7 @@ test("signed record disclosures retain each body's original omitted or explicit 
     const inspected = await page.evaluate(
       async ({ path, displayed }) => {
         const core = await import(path);
+        await core.initializeCore();
         const bytes = core.utf8(
           core.canonicalize(core.utf8(JSON.stringify(displayed.body))),
         );

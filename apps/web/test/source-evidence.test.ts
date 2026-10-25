@@ -900,22 +900,49 @@ test("scoring edits block publication through the step bar until the author remo
 test("bulk source suggestions keep focus after a completed loop and declined consent", async ({
   page,
 }) => {
-  await mock(page);
+  const mocked = await mock(page, { delayCapabilities: true });
   await seed(page, { gismu: state([source(), source("zh", "Chinese")]) });
   const bulk = page.getByRole("button", {
     name: "Suggest source words",
     exact: true,
   });
+  await expect(page.locator(".ai-source-actions")).toBeHidden();
+  mocked.releaseCapabilities();
+  await expect(bulk).toBeVisible();
+  await expect(bulk).toBeEnabled();
   await bulk.focus();
   await bulk.press("Enter");
-  await page
-    .getByRole("dialog")
-    .getByRole("button", { name: "Not now", exact: true })
-    .click();
+  const consent = page.getByRole("dialog", {
+    name: "Before using AI assistance",
+  });
+  // Native dialog closure returns focus before the app's close listeners run.
+  // Hold those listeners so this interval does not depend on machine speed.
+  await consent.evaluate((dialog) => {
+    dialog.addEventListener(
+      "close",
+      (event) => {
+        event.stopImmediatePropagation();
+        dialog.setAttribute("data-close-held", "true");
+      },
+      { capture: true, once: true },
+    );
+  });
+  await consent.getByRole("button", { name: "Not now", exact: true }).click();
+  const closed = page.locator('dialog[data-close-held="true"]');
+  await expect(closed).toHaveCount(1);
+  await expect(bulk).toBeFocused();
+  await expect(bulk).toBeDisabled();
+  await bulk.press("Enter");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  expect(mocked.calls).toHaveLength(0);
+  await closed.evaluate((dialog) => dialog.dispatchEvent(new Event("close")));
+  // Focus alone does not mean that the previous loop finished.
+  await expect(bulk).toBeEnabled();
   await expect(bulk).toBeFocused();
   await bulk.press("Enter");
   await allow(page);
   await expect(page.getByText("Mock source.", { exact: true })).toHaveCount(2);
+  await expect(bulk).toBeEnabled();
   await expect(bulk).toBeFocused();
 });
 

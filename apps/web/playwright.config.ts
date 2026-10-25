@@ -52,7 +52,7 @@ export default defineConfig({
       timeout: 120000,
     },
     {
-      command: "npm run dev:web",
+      command: "npm run dev:web -- --configLoader runner",
       url: `http://127.0.0.1:${webPort}`,
       env: {
         JVC_WEB_API_TARGET: `http://127.0.0.1:${apiPort}`,

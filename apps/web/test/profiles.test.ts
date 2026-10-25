@@ -282,8 +282,9 @@ test("the personal view follows the chosen profile, private blocks and own publi
   await unlock.getByRole("button", { name: "Unlock" }).click();
   await acceptFirstSignature(page);
   await expect(page.getByRole("status")).toContainText(/Signed/);
-  // Delivery runs after the signature. Wait until the server accepted the
-  // shun, so the next page load and the recompute see one snapshot.
+  // Acceptance can precede the completed word view. The persisted inventory
+  // still names the pre-shun snapshot. Wait for materialization in this
+  // document, which tracks the accepted receipt.
   await expect
     .poll(
       () =>
@@ -295,9 +296,14 @@ test("the personal view follows the chosen profile, private blocks and own publi
       { timeout: 20000 },
     )
     .toEqual(["accepted"]);
-  await page.goto("/word/dunda");
-  // The signed shun moved the snapshot. The personal view refuses the older
-  // calculation until an explicit recompute, which includes the new record.
+  await page.evaluate(async () => {
+    const { getManifest } = await import(String("/src/data/api.ts"));
+    const { navigate } = await import(String("/src/app/router.ts"));
+    await getManifest({ fresh: true });
+    navigate("/word/dunda?fresh=1");
+  });
+  // The word view now includes the shun, but the local calculation still
+  // uses the persisted pre-shun inventory. Recompute includes the new record.
   await page
     .getByRole("button", { name: "Recompute for this snapshot" })
     .click();

@@ -1,12 +1,17 @@
 import { defineConfig, searchForWorkspaceRoot } from "vite";
 import { existsSync, realpathSync } from "node:fs";
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 const generated = fileURLToPath(
   new URL("../../packages/core/generated", import.meta.url),
 );
+const testRoot =
+  process.env.JVC_PLAYWRIGHT_RUN_ROOT ?? process.env.JVC_TEST_ROOT;
 export default defineConfig({
   root: fileURLToPath(new URL(".", import.meta.url)),
-  cacheDir: fileURLToPath(new URL("../../.cache/vite", import.meta.url)),
+  cacheDir: testRoot
+    ? resolve(testRoot, "vite-cache")
+    : fileURLToPath(new URL("../../.cache/vite", import.meta.url)),
   build: { outDir: "dist", emptyOutDir: true },
   optimizeDeps: { include: ["jose"] },
   server: {
