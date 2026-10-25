@@ -13,7 +13,7 @@ async function* sources(directory: string): AsyncGenerator<string> {
 }
 test("browser sources import only the public core facade and never call host storage ports", async () => {
   const forbidden =
-    /^(addHostVerifiedRecord|extractHostVerifiedRecord|checkHostVerifiedRecord|inspectHostStoredBody|restoreHostEvaluationSession|add_host_verified_record|extract_host_verified_record|check_host_verified_record|inspect_host_stored_body|restore_host_result_checkpoint)$/;
+    /^(extractHostSemanticRecord|checkHostSemanticRecord|extract_host_semantic_record|check_host_semantic_record|addHostVerifiedRecord|extractHostVerifiedRecord|checkHostVerifiedRecord|inspectHostStoredBody|restoreHostEvaluationSession|add_host_verified_record|extract_host_verified_record|check_host_verified_record|inspect_host_stored_body|restore_host_result_checkpoint)$/;
   for await (const path of sources("apps/web/src")) {
     const text = await readFile(path, "utf8");
     assert.doesNotMatch(

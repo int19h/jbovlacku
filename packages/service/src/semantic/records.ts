@@ -1,9 +1,4 @@
-import {
-  checkHostVerifiedRecord,
-  hostRecordVersion,
-  type HostVerifiedRecord,
-} from "../../../core/src/index.ts";
-import type { StoredVerifiedRecord } from "../verified-records.ts";
+import { checkedSemanticRecord, type StoredSemanticRecord } from "./storage.ts";
 import { documentInput, inputHash } from "./profile.ts";
 import { SemanticError, type EmbeddingProfile } from "./types.ts";
 
@@ -24,18 +19,9 @@ export interface SemanticDocument {
  */
 export function semanticDocument(
   profile: EmbeddingProfile,
-  record: StoredVerifiedRecord,
+  record: StoredSemanticRecord,
 ): SemanticDocument | null {
-  if (
-    record.version !== hostRecordVersion() ||
-    checkHostVerifiedRecord(record.compact) !== record.id
-  )
-    throw new SemanticError(
-      503,
-      "semantic_record",
-      "The stored record binding is invalid.",
-    );
-  const compact = JSON.parse(record.compact) as HostVerifiedRecord;
+  const compact = checkedSemanticRecord(record);
   if (
     !compact.action_valid ||
     compact.body_status !== "present" ||

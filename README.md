@@ -129,12 +129,13 @@ Completed operator batches with known costs share hourly ledger rows, while rece
 Mocked capacity tests cover two 59,129-input index runs, 8,192 assistance history rows, and a subsequent generation job.
 Mocked tests cover provider validation, caller departure, unknown charges, deadlines, and interrupted reservations after restart.
 The host can create fresh application profiles and derive bounded `definition-json-v1` and `literal-query-v1` inputs.
-Private compact records retain complete interpreted definition evidence and bind each input to its original event and body hash.
+Separate private semantic rows retain complete interpreted evidence and bind each input to its original event and body hash.
+Admission commits semantic rows and compact evaluation rows together. Evaluation and checkpoint restore never load semantic rows.
 Recipe inputs preserve literal imported markers and mathematics. They exclude top-level notes, etymology, and import evidence.
 The codecs encode unit vectors as little-endian float32.
 They reject invalid dimensions, nonfinite values, incorrect byte lengths, and vectors outside the unit norm tolerance.
 Only provider output receives normalization.
-Semantic storage, search routes, indexing, and query caching remain unfinished. The semantic capability stays disabled.
+Vector storage, semantic search routes, indexing, and query caching remain unfinished. The semantic capability stays disabled.
 A discarded result returns a clear status. Spending failures distinguish pending costs, timed limits, and requests that cannot fit.
 The default spending share admits every enabled operation at each reasoning effort, with decision reports enabled or disabled.
 Each task uses an output cap based on recorded prompt tests. An explicit operator limit replaces the automatic caps.

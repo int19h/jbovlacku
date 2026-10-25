@@ -1,7 +1,13 @@
+import { prepareAdmissionRecords } from "./admission-records.ts";
+import {
+  projectSemanticRecord,
+  semanticRecordKey,
+  retainSemanticRecords,
+  type StoredSemanticRecord,
+} from "./semantic/storage.ts";
 import {
   readVerifiedRecord,
   streamVerifiedRecords,
-  prepareVerifiedRecords,
   retainVerifiedRecords,
   projectVerifiedRecord,
   verifiedRecordKey,
@@ -1421,6 +1427,7 @@ export class DictionaryService {
       );
     const prepared = requests.map(prepareAdmission);
     const projections = new Map<string, StoredVerifiedRecord>();
+    const semanticProjections = new Map<string, StoredSemanticRecord>();
     for (const p of prepared) {
       const record = projectVerifiedRecord(
         p.id,
@@ -1432,6 +1439,13 @@ export class DictionaryService {
         p.body === null ? undefined : utf8(p.body),
       );
       projections.set(verifiedRecordKey(record), record);
+      const semantic = projectSemanticRecord(
+        p.id,
+        record,
+        utf8(p.envelope),
+        p.body === null ? undefined : utf8(p.body),
+      );
+      semanticProjections.set(semanticRecordKey(semantic), semantic);
       await this.objects.put(p.envelope_hash, utf8(p.envelope));
       this.canonicalEnvelopes.set(p.envelope_hash, p.envelope);
       if (p.body !== null)
@@ -1526,12 +1540,14 @@ export class DictionaryService {
           ),
         };
       }
-      const verified = await prepareVerifiedRecords(
-        this.objects,
-        next.events,
-        changedIds,
-        projections,
-      );
+      const { verifiedRecords: verified, semanticRecords } =
+        await prepareAdmissionRecords(
+          this.objects,
+          next.events,
+          changedIds,
+          projections,
+          semanticProjections,
+        );
       const snapshot = await this.buildSnapshot(next);
       this.snapshotPositions.set(snapshot.snapshot, next.position);
       next.snapshot = snapshot.snapshot;
@@ -1544,10 +1560,14 @@ export class DictionaryService {
           snapshot,
           [...changedIds],
           verified,
+          undefined,
+          semanticRecords,
         )
       ) {
         if (!this.coordinator.saveVerifiedRecords)
           await retainVerifiedRecords(this.coordinator, verified);
+        if (!this.coordinator.saveSemanticRecords)
+          await retainSemanticRecords(this.coordinator, semanticRecords);
         this.rememberDelta(snapshot.snapshot, state.snapshot, [...changedIds]);
         if (this.options.asyncMaterialization)
           this.queueMaterialization(snapshot);

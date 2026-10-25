@@ -1,3 +1,8 @@
+import {
+  readSemanticRecord,
+  backfillSemanticRecords,
+  semanticRecordStatistics,
+} from "../src/semantic/storage.ts";
 import type {
   CheckpointBinding,
   CheckpointStore,
@@ -29,6 +34,7 @@ import {
   initializeCore,
   utf8,
   hostRecordVersion,
+  semanticProjectionVersion,
   extractHostVerifiedRecord,
   prepareAdmission,
 } from "../../core/src/index.ts";
@@ -591,6 +597,15 @@ test("admission persists final preferred-envelope and nonpreferred late-body bin
           " must commit the final compact binding without lazy backfill",
       );
       assert.equal(compactRecord(row).body_status, "present");
+      assert.ok(
+        await f.coordinator.getSemanticRecord({
+          id: preferred.prepared.id,
+          envelope_hash: event.envelope_hash,
+          body_hash: event.body_hash,
+          version: semanticProjectionVersion(),
+        }),
+        "Admission must commit the exact semantic binding too.",
+      );
       assert.deepEqual(verifiedRecordStatistics(f.coordinator), {
         missing: 0,
         decode_failed: 0,
@@ -718,7 +733,25 @@ test("older definition rows backfill semantic evidence and defaults without chan
     const originalEnvelope = f.bytes.get(event.envelope_hash)!.slice();
     const originalBody = f.bytes.get(event.body_hash!)!.slice();
     const db = new DatabaseSync(f.path);
-    db.exec("UPDATE verified_records SET version=2");
+    const prior = JSON.parse(
+      (await f.coordinator.getVerifiedRecord({
+        id: record.envelope.id,
+        envelope_hash: event.envelope_hash,
+        body_hash: event.body_hash,
+        version: hostRecordVersion(),
+      }))!.compact,
+    );
+    const evidence = await readSemanticRecord(
+      f.coordinator,
+      f.objects,
+      record.envelope.id,
+      event,
+    );
+    prior.version = 3;
+    prior.semantic = JSON.parse(evidence.projection).semantic;
+    db.prepare("UPDATE verified_records SET version=3,compact=?").run(
+      JSON.stringify(prior),
+    );
     db.close();
     assert.equal(await backfillVerifiedRecords(f.coordinator, f.objects), 1);
     const compact = compactRecord(
@@ -737,7 +770,14 @@ test("older definition rows backfill semantic evidence and defaults without chan
       selmaho: [],
     });
     assert.deepEqual(compact.package!.body!.notes, []);
-    assert.deepEqual(compact.semantic!.body, {
+    assert.equal("semantic" in compact, false);
+    const semantic = await readSemanticRecord(
+      f.coordinator,
+      f.objects,
+      record.envelope.id,
+      event,
+    );
+    assert.deepEqual(JSON.parse(semantic.projection).semantic.body, {
       ...body,
       classification: { kind: "gismu", selmaho: [] },
       frame: null,
@@ -793,7 +833,7 @@ test("late definition bodies create semantic inputs only for the new exact body 
     ]);
     const id = publication.envelope.id;
     const missing = (await f.coordinator.load()).events[id];
-    const before = await readVerifiedRecord(
+    const before = await readSemanticRecord(
       f.coordinator,
       f.objects,
       id,
@@ -802,7 +842,7 @@ test("late definition bodies create semantic inputs only for the new exact body 
     assert.equal(semanticDocument(profile, before), null);
     await f.service.admitMany([utf8(JSON.stringify(publication))]);
     const present = (await f.coordinator.load()).events[id];
-    const after = await readVerifiedRecord(
+    const after = await readSemanticRecord(
       f.coordinator,
       f.objects,
       id,
@@ -815,13 +855,13 @@ test("late definition bodies create semantic inputs only for the new exact body 
     assert.equal(
       semanticDocument(
         profile,
-        await readVerifiedRecord(f.coordinator, f.objects, id, missing),
+        await readSemanticRecord(f.coordinator, f.objects, id, missing),
       ),
       null,
     );
     assert.notEqual(before.body_hash, after.body_hash);
     f.reads.length = 0;
-    assert.equal(await backfillVerifiedRecords(f.coordinator, f.objects), 0);
+    assert.equal(await backfillSemanticRecords(f.coordinator, f.objects), 0);
     assert.deepEqual(f.reads, []);
   } finally {
     f.coordinator.close();
@@ -857,7 +897,7 @@ test("damaged current semantic projections repair once from private original byt
     await f.service.admitMany([utf8(JSON.stringify(publication))]);
     const id = publication.envelope.id;
     const event = (await f.coordinator.load()).events[id];
-    const expected = await readVerifiedRecord(
+    const expected = await readSemanticRecord(
       f.coordinator,
       f.objects,
       id,
@@ -875,31 +915,31 @@ test("damaged current semantic projections repair once from private original byt
       (value: any) => (value.semantic.unexpected = true),
     ];
     for (const mutate of mutations) {
-      const compact = JSON.parse(expected.compact);
+      const compact = JSON.parse(expected.projection);
       mutate(compact);
-      db.prepare("UPDATE verified_records SET compact=?").run(
+      db.prepare("UPDATE semantic_records SET projection=?").run(
         JSON.stringify(compact),
       );
-      const repaired = await readVerifiedRecord(
+      const repaired = await readSemanticRecord(
         f.coordinator,
         f.objects,
         id,
         event,
       );
-      assert.equal(repaired.compact, expected.compact);
+      assert.equal(repaired.projection, expected.projection);
       f.reads.length = 0;
       assert.deepEqual(
-        await readVerifiedRecord(f.coordinator, f.objects, id, event),
+        await readSemanticRecord(f.coordinator, f.objects, id, event),
         expected,
       );
       assert.deepEqual(f.reads, []);
     }
     assert.equal(
-      verifiedRecordStatistics(f.coordinator).decode_failed,
+      semanticRecordStatistics(f.coordinator).decode_failed,
       mutations.length,
     );
     assert.equal(
-      verifiedRecordStatistics(f.coordinator).backfilled,
+      semanticRecordStatistics(f.coordinator).backfilled,
       mutations.length,
     );
     db.close();

@@ -262,11 +262,28 @@ export interface HostVerifiedRecord {
   id: string;
   state: unknown;
   package: EvaluationPackageRecord | null;
-  /** Complete interpreted definition evidence. This field stays in private host storage. */
+  body_status: "none" | "missing" | "present" | "invalid";
+  action_valid: boolean;
+}
+/** Semantic evidence has its own private row and never enters evaluation records. */
+export interface HostSemanticRecord {
+  version: number;
+  id: string;
+  kind: string;
+  body_hash: string | null;
   semantic: (EvaluationPackageRecord & { kind: "definition.publish" }) | null;
   body_status: "none" | "missing" | "present" | "invalid";
   action_valid: boolean;
 }
+export const semanticProjectionVersion = (): number =>
+  wasm.semantic_projection_version();
+export const extractHostSemanticRecord = (
+  envelope: Uint8Array,
+  body?: Uint8Array,
+): string =>
+  new TextDecoder().decode(wasm.extract_host_semantic_record(envelope, body));
+export const checkHostSemanticRecord = (record: string): string =>
+  wasm.check_host_semantic_record(utf8(record));
 export const hostRecordVersion = (): number => wasm.host_record_version();
 /** Decode private projection fields without record verification. */
 export const checkHostVerifiedRecord = (record: string): string =>

@@ -2,6 +2,10 @@ import {
   type StoredVerifiedRecord,
   type VerifiedRecordBinding,
 } from "./verified-records.ts";
+import type {
+  SemanticRecordBinding,
+  StoredSemanticRecord,
+} from "./semantic/storage.ts";
 import {
   freezeSnapshotCache,
   serializeSnapshotCache,
@@ -52,6 +56,12 @@ export class SqlRowsCoordinator {
     );
     sql.exec(
       "CREATE TABLE IF NOT EXISTS verified_records (id TEXT NOT NULL, envelope_hash TEXT NOT NULL, body_hash TEXT NOT NULL, version INTEGER NOT NULL, compact TEXT NOT NULL, PRIMARY KEY(id,envelope_hash,body_hash,version))",
+    );
+    sql.exec(
+      "CREATE TABLE IF NOT EXISTS semantic_records (id TEXT NOT NULL, envelope_hash TEXT NOT NULL, body_hash TEXT NOT NULL, version INTEGER NOT NULL, projection TEXT NOT NULL, PRIMARY KEY(id,envelope_hash,body_hash,version))",
+    );
+    sql.exec(
+      "CREATE TABLE IF NOT EXISTS semantic_record_staging (stage TEXT NOT NULL, id TEXT NOT NULL, envelope_hash TEXT NOT NULL, body_hash TEXT NOT NULL, version INTEGER NOT NULL, projection TEXT NOT NULL, PRIMARY KEY(stage,id,envelope_hash,body_hash,version))",
     );
     sql.exec(
       "CREATE TABLE IF NOT EXISTS receipts (position INTEGER PRIMARY KEY, id TEXT UNIQUE NOT NULL)",
@@ -120,13 +130,43 @@ export class SqlRowsCoordinator {
   async saveVerifiedRecords(records: StoredVerifiedRecord[]): Promise<void> {
     this.sql.transaction(() => this.writeVerifiedRecords(records));
   }
+  async getSemanticRecord(
+    binding: SemanticRecordBinding,
+  ): Promise<StoredSemanticRecord | null> {
+    const row = this.sql.exec(
+      "SELECT projection FROM semantic_records WHERE id=? AND envelope_hash=? AND body_hash=? AND version=?",
+      binding.id,
+      binding.envelope_hash,
+      binding.body_hash ?? "",
+      binding.version,
+    )[0];
+    return row ? { ...binding, projection: String(row.projection) } : null;
+  }
+  private writeSemanticRecords(records: StoredSemanticRecord[]) {
+    for (const record of records)
+      this.sql.exec(
+        "INSERT INTO semantic_records VALUES(?,?,?,?,?) ON CONFLICT(id,envelope_hash,body_hash,version) DO UPDATE SET projection=excluded.projection",
+        record.id,
+        record.envelope_hash,
+        record.body_hash ?? "",
+        record.version,
+        record.projection,
+      );
+  }
+  async saveSemanticRecords(records: StoredSemanticRecord[]): Promise<void> {
+    this.sql.transaction(() => this.writeSemanticRecords(records));
+  }
   /** Only a host that holds the exclusive data directory lock can clear abandoned loader stages. */
   async discardAbandonedVerifiedRecordStages(): Promise<void> {
-    this.sql.exec("DELETE FROM verified_record_staging");
+    this.sql.transaction(() => {
+      this.sql.exec("DELETE FROM verified_record_staging");
+      this.sql.exec("DELETE FROM semantic_record_staging");
+    });
   }
   async stageVerifiedRecords(
     stage: string,
     records: StoredVerifiedRecord[],
+    semanticRecords: StoredSemanticRecord[] = [],
   ): Promise<void> {
     this.sql.transaction(() => {
       for (const record of records)
@@ -139,12 +179,30 @@ export class SqlRowsCoordinator {
           record.version,
           record.compact,
         );
+      for (const record of semanticRecords)
+        this.sql.exec(
+          "INSERT INTO semantic_record_staging VALUES(?,?,?,?,?,?) ON CONFLICT(stage,id,envelope_hash,body_hash,version) DO UPDATE SET projection=excluded.projection",
+          stage,
+          record.id,
+          record.envelope_hash,
+          record.body_hash ?? "",
+          record.version,
+          record.projection,
+        );
     });
   }
   async discardVerifiedRecordStage(stage: string): Promise<void> {
-    this.sql.exec("DELETE FROM verified_record_staging WHERE stage=?", stage);
+    this.sql.transaction(() => {
+      this.sql.exec("DELETE FROM verified_record_staging WHERE stage=?", stage);
+      this.sql.exec("DELETE FROM semantic_record_staging WHERE stage=?", stage);
+    });
   }
   private promoteVerifiedRecordStage(stage: string) {
+    this.sql.exec(
+      "INSERT INTO semantic_records SELECT id,envelope_hash,body_hash,version,projection FROM semantic_record_staging WHERE stage=? ON CONFLICT(id,envelope_hash,body_hash,version) DO UPDATE SET projection=excluded.projection",
+      stage,
+    );
+    this.sql.exec("DELETE FROM semantic_record_staging WHERE stage=?", stage);
     this.sql.exec(
       "INSERT INTO verified_records SELECT id,envelope_hash,body_hash,version,compact FROM verified_record_staging WHERE stage=? ON CONFLICT(id,envelope_hash,body_hash,version) DO UPDATE SET compact=excluded.compact",
       stage,
@@ -495,6 +553,7 @@ export class SqlRowsCoordinator {
     changedIds?: string[],
     verifiedRecords: StoredVerifiedRecord[] = [],
     verifiedStage?: string,
+    semanticRecords: StoredSemanticRecord[] = [],
   ): Promise<boolean> {
     const expiredIds: string[] = [];
     const committed = this.sql.transaction(() => {
@@ -507,6 +566,7 @@ export class SqlRowsCoordinator {
       expiredIds.push(...this.expireSnapshots(state.materialized_snapshot));
       this.save(state, changedIds);
       this.writeVerifiedRecords(verifiedRecords);
+      this.writeSemanticRecords(semanticRecords);
       if (verifiedStage) this.promoteVerifiedRecordStage(verifiedStage);
       return true;
     });

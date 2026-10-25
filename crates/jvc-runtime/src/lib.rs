@@ -823,7 +823,7 @@ fn required_semantic<'de, D: serde::Deserializer<'de>>(
     Option::deserialize(deserializer)
 }
 // Versioned golden files in tests/fixtures are immutable. A projection change needs a new version.
-pub const HOST_RECORD_VERSION: u32 = 3;
+pub const HOST_RECORD_VERSION: u32 = 4;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct HostRecord {
@@ -831,8 +831,6 @@ struct HostRecord {
     id: String,
     state: jvc_state::HostVerifiedRecord,
     package: Value,
-    #[serde(deserialize_with = "required_semantic")]
-    semantic: Option<SemanticProjection>,
     body_status: String,
     action_valid: bool,
 }
@@ -848,23 +846,17 @@ pub fn extract_host_record_bytes(envelope: &[u8], body: Option<&[u8]>) -> Result
         jvc_core::BodyAvailability::Invalid { .. } => "invalid",
     }
     .into();
-    let (state, (package, semantic)) = jvc_state::HostVerifiedRecord::extract_with(
+    let (state, package) = jvc_state::HostVerifiedRecord::extract_with(
         &event.id,
         &event.header,
         availability,
-        |availability| {
-            (
-                search_projection(&event.id, &event.header, availability),
-                semantic_projection(&event.id, &event.header, availability),
-            )
-        },
+        |availability| search_projection(&event.id, &event.header, availability),
     );
     serde_json::to_vec(&HostRecord {
         version: HOST_RECORD_VERSION,
         id: event.id,
         state,
         package,
-        semantic,
         body_status,
         action_valid: jvc_core::validate_action(&event.header).is_ok(),
     })
@@ -906,9 +898,77 @@ fn decode_host_record(bytes: &[u8]) -> Result<HostRecord> {
             "extraction version or event ID does not match",
         ));
     }
+    Ok(record)
+}
+
+pub const SEMANTIC_PROJECTION_VERSION: u32 = 1;
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HostSemanticRecord {
+    version: u32,
+    id: String,
+    kind: String,
+    body_hash: Option<String>,
+    #[serde(deserialize_with = "required_semantic")]
+    semantic: Option<SemanticProjection>,
+    body_status: String,
+    action_valid: bool,
+}
+/// The caller supplies admitted private originals. Evaluation never reads this record.
+pub fn extract_host_semantic_record_bytes(envelope: &[u8], body: Option<&[u8]>) -> Result<Vec<u8>> {
+    let event: jvc_core::Envelope = serde_json::from_slice(envelope)
+        .map_err(|e| Error::new("semantic_record", e.to_string()))?;
+    let availability = jvc_core::inspect_host_stored_body(&event.header, body);
+    let body_status = match &availability {
+        jvc_core::BodyAvailability::Absent => "none",
+        jvc_core::BodyAvailability::Missing => "missing",
+        jvc_core::BodyAvailability::Valid { .. } => "present",
+        jvc_core::BodyAvailability::Invalid { .. } => "invalid",
+    }
+    .into();
+    serde_json::to_vec(&HostSemanticRecord {
+        version: SEMANTIC_PROJECTION_VERSION,
+        id: event.id.clone(),
+        kind: event.header.action["kind"]
+            .as_str()
+            .unwrap_or_default()
+            .into(),
+        body_hash: event.header.content.as_ref().map(|c| c.hash.clone()),
+        semantic: semantic_projection(&event.id, &event.header, &availability),
+        body_status,
+        action_valid: jvc_core::validate_action(&event.header).is_ok(),
+    })
+    .map_err(|e| Error::new("semantic_record", e.to_string()))
+}
+#[wasm_bindgen]
+pub fn semantic_projection_version() -> u32 {
+    SEMANTIC_PROJECTION_VERSION
+}
+#[wasm_bindgen]
+pub fn extract_host_semantic_record(
+    envelope: &[u8],
+    body: Option<Vec<u8>>,
+) -> std::result::Result<Vec<u8>, JsValue> {
+    extract_host_semantic_record_bytes(envelope, body.as_deref()).map_err(fail)
+}
+#[wasm_bindgen]
+pub fn check_host_semantic_record(bytes: &[u8]) -> std::result::Result<String, JsValue> {
+    decode_host_semantic_record(bytes)
+        .map(|record| record.id)
+        .map_err(fail)
+}
+fn decode_host_semantic_record(bytes: &[u8]) -> Result<HostSemanticRecord> {
+    let record: HostSemanticRecord =
+        serde_json::from_slice(bytes).map_err(|e| Error::new("semantic_record", e.to_string()))?;
+    if record.version != SEMANTIC_PROJECTION_VERSION {
+        return Err(Error::new(
+            "semantic_record",
+            "semantic extraction version does not match",
+        ));
+    }
     let expected = record.action_valid
         && record.body_status == "present"
-        && record.package["kind"] == "definition.publish";
+        && record.kind == "definition.publish";
     if expected != record.semantic.is_some() {
         return Err(Error::new(
             "host_record",
@@ -922,10 +982,7 @@ fn decode_host_record(bytes: &[u8]) -> Result<HostRecord> {
         // Decode the derived schema without authenticating or validating original bodies again.
         let valid = semantic.id == record.id
             && semantic.kind == "definition.publish"
-            && record.package["id"] == semantic.id
-            && record.package["issuer"] == semantic.issuer
-            && record.package["word"] == semantic.word
-            && record.package["body_hash"] == semantic.body_hash
+            && record.body_hash.as_deref() == Some(&semantic.body_hash)
             && body.is_object()
             && body.get("frame").is_some()
             && body.get("legacy").is_some()
@@ -939,17 +996,7 @@ fn decode_host_record(bytes: &[u8]) -> Result<HostRecord> {
                 "text", "glosses", "notes", "operands", "examples", "labels", "sources",
             ]
             .iter()
-            .all(|key| body[key].is_array())
-            && [
-                "word",
-                "language",
-                "text",
-                "glosses",
-                "classification",
-                "notes",
-            ]
-            .iter()
-            .all(|key| body[key] == record.package["body"][key]);
+            .all(|key| body[key].is_array());
         if !valid {
             return Err(Error::new(
                 "host_record",

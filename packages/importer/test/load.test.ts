@@ -9,6 +9,7 @@ import { once } from "node:events";
 import {
   initializeCore,
   hostRecordVersion,
+  semanticProjectionVersion,
   identityFromSeed,
   createEvent,
   prepareSelection,
@@ -141,6 +142,15 @@ test("offline load accepts any carrier order and preserves receipts on rerun", a
       "The offline transaction must include every compact record.",
     );
     assert.equal(JSON.parse(compact.compact).id, id);
+    assert.equal("semantic" in JSON.parse(compact.compact), false);
+    assert.ok(
+      await first.coordinator.getSemanticRecord({
+        id,
+        envelope_hash: event.envelope_hash,
+        body_hash: event.body_hash,
+        version: semanticProjectionVersion(),
+      }),
+    );
   }
   const service = new DictionaryService(first.objects, first.coordinator, {
     serverId: "loader-test",
@@ -904,14 +914,19 @@ test("large offline admission stages bounded projections and rolls promotion bac
     const count = () =>
       database.prepare("SELECT COUNT(*) AS n FROM verified_records").get()!.n;
     const originalCount = count();
+    const semanticCount = () =>
+      database.prepare("SELECT COUNT(*) AS n FROM semantic_records").get()!.n;
+    const originalSemanticCount = semanticCount();
     const stage = current.coordinator.stageVerifiedRecords.bind(
       current.coordinator,
     );
     const sizes: number[] = [];
-    current.coordinator.stageVerifiedRecords = async (id, rows) => {
+    current.coordinator.stageVerifiedRecords = async (id, rows, semantic) => {
       assert.ok(rows.length > 0 && rows.length <= 256);
       sizes.push(rows.length);
-      await stage(id, rows);
+      assert.equal(semantic?.length, rows.length);
+      await stage(id, rows, semantic);
+      assert.equal(semanticCount(), originalSemanticCount);
       assert.equal(
         count(),
         originalCount,
@@ -931,6 +946,13 @@ test("large offline admission stages bounded projections and rolls promotion bac
     );
     assert.equal((await current.coordinator.load()).position, before.position);
     assert.equal(count(), originalCount);
+    assert.equal(semanticCount(), originalSemanticCount);
+    assert.equal(
+      database
+        .prepare("SELECT COUNT(*) AS n FROM semantic_record_staging")
+        .get()!.n,
+      0,
+    );
     assert.equal(
       database
         .prepare("SELECT COUNT(*) AS n FROM verified_record_staging")
@@ -942,6 +964,10 @@ test("large offline admission stages bounded projections and rolls promotion bac
     await admitImportProposal(f.proposal, current.coordinator, current.objects);
     assert.deepEqual(sizes, [256, 256, 88]);
     assert.equal(Number(count()), Number(originalCount) + extra.length);
+    assert.equal(
+      Number(semanticCount()),
+      Number(originalSemanticCount) + extra.length,
+    );
     assert.equal(
       database
         .prepare("SELECT COUNT(*) AS n FROM verified_record_staging")
@@ -961,7 +987,13 @@ test("large offline admission stages bounded projections and rolls promotion bac
       body_hash: event.body_hash,
       version: hostRecordVersion(),
     });
-    await stage("abandoned-before-crash", [compact!]);
+    const semantic = await current.coordinator.getSemanticRecord({
+      id,
+      envelope_hash: event.envelope_hash,
+      body_hash: event.body_hash,
+      version: semanticProjectionVersion(),
+    });
+    await stage("abandoned-before-crash", [compact!], [semantic!]);
     assert.equal(
       database
         .prepare("SELECT COUNT(*) AS n FROM verified_record_staging")
@@ -976,6 +1008,12 @@ test("large offline admission stages bounded projections and rolls promotion bac
   await loadImportProposal(f);
   const reopened = new DatabaseSync(join(f.directory, "coordinator.sqlite"));
   try {
+    assert.equal(
+      reopened
+        .prepare("SELECT COUNT(*) AS n FROM semantic_record_staging")
+        .get()!.n,
+      0,
+    );
     assert.equal(
       reopened
         .prepare("SELECT COUNT(*) AS n FROM verified_record_staging")

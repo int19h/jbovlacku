@@ -1,6 +1,10 @@
+import { prepareAdmissionRecords } from "../../service/src/admission-records.ts";
+import {
+  retainSemanticRecords,
+  type StoredSemanticRecord,
+} from "../../service/src/semantic/storage.ts";
 import { randomUUID } from "node:crypto";
 import {
-  prepareVerifiedRecords,
   retainVerifiedRecords,
   type StoredVerifiedRecord,
 } from "../../service/src/verified-records.ts";
@@ -319,30 +323,47 @@ export async function admitImportProposal(
       coordinator.discardVerifiedRecordStage;
     const stage = canStage ? randomUUID() : undefined;
     let verified: StoredVerifiedRecord[] = [];
+    let semantic: StoredSemanticRecord[] = [];
     try {
       if (stage) {
         let batch: string[] = [];
         for (const id of changedIds) {
           batch.push(id);
           if (batch.length === 256) {
+            const records = await prepareAdmissionRecords(
+              objects,
+              next.events,
+              batch,
+            );
             await coordinator.stageVerifiedRecords!(
               stage,
-              await prepareVerifiedRecords(objects, next.events, batch),
+              records.verifiedRecords,
+              records.semanticRecords,
             );
             batch = [];
           }
         }
-        if (batch.length)
+        if (batch.length) {
+          const records = await prepareAdmissionRecords(
+            objects,
+            next.events,
+            batch,
+          );
           await coordinator.stageVerifiedRecords!(
             stage,
-            await prepareVerifiedRecords(objects, next.events, batch),
+            records.verifiedRecords,
+            records.semanticRecords,
           );
-      } else
-        verified = await prepareVerifiedRecords(
+        }
+      } else {
+        const records = await prepareAdmissionRecords(
           objects,
           next.events,
           changedIds,
         );
+        verified = records.verifiedRecords;
+        semantic = records.semanticRecords;
+      }
       if (
         !(await coordinator.compareAndSwap(
           state.revision,
@@ -351,6 +372,7 @@ export async function admitImportProposal(
           [...changedIds],
           verified,
           stage,
+          semantic,
         ))
       )
         throw new Error(
@@ -358,6 +380,8 @@ export async function admitImportProposal(
         );
       if (!coordinator.saveVerifiedRecords)
         await retainVerifiedRecords(coordinator, verified);
+      if (!coordinator.saveSemanticRecords)
+        await retainSemanticRecords(coordinator, semantic);
     } finally {
       if (stage) await coordinator.discardVerifiedRecordStage!(stage);
     }

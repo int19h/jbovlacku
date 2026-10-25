@@ -3,9 +3,9 @@ import { readFile } from "node:fs/promises";
 import { before, test } from "node:test";
 import {
   canonicalize,
-  checkHostVerifiedRecord,
+  checkHostSemanticRecord,
   contentHash,
-  hostRecordVersion,
+  semanticProjectionVersion,
   identityFromSeed,
   initializeCore,
   interpretDefinition,
@@ -15,6 +15,7 @@ import {
   verifyEnvelope,
 } from "../../core/src/index.ts";
 import { projectVerifiedRecord } from "../src/verified-records.ts";
+import { projectSemanticRecord } from "../src/semantic/storage.ts";
 import { createQwenProfile, documentInput } from "../src/semantic/profile.ts";
 import { semanticDocument } from "../src/semantic/records.ts";
 
@@ -47,7 +48,7 @@ function project(input: Input) {
     envelope_hash: contentHash(bytes),
     body_hash: input.body ? (envelope.header.content.hash as string) : null,
   };
-  return projectVerifiedRecord(
+  return projectSemanticRecord(
     envelope.id,
     event,
     bytes,
@@ -67,7 +68,15 @@ test("private semantic projections retain complete interpreted evidence and orig
     const record = project(input);
     const document = semanticDocument(profile, record)!;
     const body = JSON.parse(input.body!);
-    const compact = JSON.parse(record.compact);
+    const compact = JSON.parse(
+      projectVerifiedRecord(
+        record.id,
+        record,
+        utf8(input.envelope),
+        utf8(input.body!),
+      ).compact,
+    );
+    assert.equal(compact.semantic, undefined);
     assert.deepEqual(
       document.definition,
       interpretDefinition(body),
@@ -76,7 +85,7 @@ test("private semantic projections retain complete interpreted evidence and orig
     assert.equal(document.event, record.id);
     assert.equal(document.envelope, record.envelope_hash);
     assert.equal(document.body, contentHash(utf8(input.body!)));
-    assert.equal(document.extraction_version, hostRecordVersion());
+    assert.equal(document.extraction_version, semanticProjectionVersion());
     assert.equal(document.input_hash, contentHash(document.input));
     assert.deepEqual(document.input, documentInput(profile, body));
     assert.equal(canonicalize(utf8(JSON.stringify(body))), input.body);
@@ -110,9 +119,12 @@ test("a signed invalid definition action retains an inert compact record that de
   )!;
   const envelope = verifyEnvelope(utf8(input.envelope));
   const record = project(input);
-  assert.equal(checkHostVerifiedRecord(record.compact), envelope.envelope.id);
+  assert.equal(
+    checkHostSemanticRecord(record.projection),
+    envelope.envelope.id,
+  );
   assert.equal(envelope.action_valid, false);
-  const compact = JSON.parse(record.compact);
+  const compact = JSON.parse(record.projection);
   assert.equal(compact.action_valid, false);
   assert.equal(compact.semantic, null);
   assert.equal(semanticDocument(createQwenProfile(), record), null);
@@ -123,7 +135,7 @@ test("semantic extraction requires the current schema and exact event/body bindi
   const record = project(
     inputs.find((input) => input.name === "native-definition")!,
   );
-  assert.equal(hostRecordVersion(), 3);
+  assert.equal(semanticProjectionVersion(), 1);
   assert.throws(
     () => semanticDocument(profile, { ...record, version: 2 }),
     /binding/,
@@ -141,15 +153,18 @@ test("semantic extraction requires the current schema and exact event/body bindi
       }),
     /binding/,
   );
-  for (const oldVersion of [1, 2]) {
-    const compact = JSON.parse(record.compact);
+  for (const oldVersion of [0, 2]) {
+    const compact = JSON.parse(record.projection);
     compact.version = oldVersion;
-    assert.throws(() => checkHostVerifiedRecord(JSON.stringify(compact)));
+    assert.throws(() => checkHostSemanticRecord(JSON.stringify(compact)));
   }
-  const changed = JSON.parse(record.compact);
+  const changed = JSON.parse(record.projection);
   changed.semantic.id = "jve1:" + "0".repeat(64);
   assert.throws(() =>
-    semanticDocument(profile, { ...record, compact: JSON.stringify(changed) }),
+    semanticDocument(profile, {
+      ...record,
+      projection: JSON.stringify(changed),
+    }),
   );
 });
 
@@ -177,7 +192,7 @@ test("equivalent interpreted bodies keep distinct signed hashes and the same rec
       content: { hash: contentHash(bytes), bytes: bytes.length },
     });
     const envelopeBytes = utf8(JSON.stringify(envelope));
-    const record = projectVerifiedRecord(
+    const record = projectSemanticRecord(
       envelope.id,
       {
         envelope_hash: contentHash(envelopeBytes),
