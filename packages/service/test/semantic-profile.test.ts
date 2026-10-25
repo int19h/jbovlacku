@@ -3,9 +3,12 @@ import { readFile } from "node:fs/promises";
 import { before, test } from "node:test";
 import {
   contentHash,
+  createEvent,
   initializeCore,
   interpretDefinition,
+  prepareAdmission,
   utf8,
+  wordId,
 } from "../../core/src/index.ts";
 import {
   canonicalBytes,
@@ -30,7 +33,7 @@ before(async () =>
 
 const text = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
 const definition = () => ({
-  word: { language: "jbo", spelling: "broda" },
+  word: { language: "jbo" as const, spelling: "broda" },
   language: "en",
   text: [["A public test definition."]],
   classification: { kind: "gismu" },
@@ -214,6 +217,22 @@ test("native frames retain numbered references and all interpreted place values"
       constraints: [[["This frame constraint is outside the recipe."]]],
     },
   };
+  const publication = createEvent(
+    new Uint8Array(32).fill(73),
+    [],
+    "2".repeat(32),
+    {
+      kind: "definition.publish",
+      word: wordId(body.word),
+      language: body.language,
+      parents: [],
+      origin: "native",
+    },
+    body,
+  );
+  const admitted = prepareAdmission(utf8(JSON.stringify(publication)));
+  assert.equal(admitted.action_valid, true);
+  assert.equal(admitted.body_status, "present");
   const input = JSON.parse(text(documentInput(profile, body)));
   const interpreted = interpretDefinition(body);
   assert.deepEqual(input.text, body.text);
