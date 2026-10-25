@@ -232,7 +232,9 @@ test("R7 an unsupported saved historical reading keeps profile controls availabl
     }),
   ).toBeEnabled();
   await expect(page.getByLabel("Form saizba", { exact: true })).toBeVisible();
-  expect((await saved(page)).lujvo.typedOrigin).toBeUndefined();
+  await expect
+    .poll(async () => (await saved(page)).lujvo.typedOrigin)
+    .toBeUndefined();
   await page
     .getByRole("radio", { name: "Extended: whole-word parts", exact: true })
     .check();
