@@ -987,7 +987,9 @@ test("signed evidence alone decides whether cached draft source rows publish", (
           evidenceForm: "broda",
         });
         const restored = normalizeDraft(JSON.parse(JSON.stringify(draft)));
-        assert.deepEqual(restored.formation!.sources, [privateRow]);
+        assert.deepEqual(restored.formation!.sources, [
+          { ...privateRow, word_ipa: privateRow.word_ipa ?? null },
+        ]);
         const before = structuredClone(restored);
         const built = draftToBody(restored);
         const context = `${name}, stem=${String(stem)}, ipa=${String(ipa)}`;

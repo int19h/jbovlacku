@@ -1,5 +1,7 @@
-import { test } from "node:test";
+import { before, test } from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { initializeCore } from "../../../../packages/core/src/index.ts";
 import {
   newDraft,
   normalizeDraft,
@@ -26,6 +28,17 @@ import {
   resolveSourceReview,
 } from "../../src/model/builders.ts";
 import type { GismuRowState } from "../../src/model/builders.ts";
+
+before(async () =>
+  initializeCore(
+    await readFile(
+      new URL(
+        "../../../../packages/core/generated/jvc_runtime_bg.wasm",
+        import.meta.url,
+      ),
+    ),
+  ),
+);
 
 function example() {
   return newDraft({

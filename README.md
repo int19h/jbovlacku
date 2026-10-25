@@ -15,10 +15,10 @@ It does not restrict expressly authorized work on private GitHub issues and pull
 The Rust libraries implement canonical records, SSHSIG signatures, causal state, identity continuity, imported account controls, and exact ranking bounds.
 Native and WebAssembly builds share the format rules. The TypeScript application uses generated WebAssembly bindings.
 
-The definition validator accepts an omitted or null `word_ipa` field on formation sources.
-It rejects `stem` and `ipa` source fields, including null and empty values.
-Formation sources still require explicit `input`, `weight`, and `notes`, including their empty or null values.
-Every other [optional definition field](docs/format.md#absent-fields-and-compatibility) still requires its explicit value in the current validator.
+The definition validator accepts omitted [optional definition fields](docs/format.md#absent-fields-and-compatibility) and their explicit default values.
+Readers and editors apply defaults to separate interpreted values. Stored bodies, exports, hashes, signatures, and event IDs retain the original signed content.
+New definitions omit optional fields with default values. Required fields and imported source evidence remain required.
+Formation sources accept an omitted or null `word_ipa`. They reject `stem` and `ipa`, including null and empty values.
 
 The shared core accepts `entity`, `mass`, and `tuple` as retired tags in signed version 1 bodies.
 Sorting and uniqueness compare signed tag strings. A retired tag can appear beside its current equivalent without an automatic merge.
@@ -90,7 +90,7 @@ The gismu generator offers the CLL 1987, CLL 1995, and Ilmen presets with pinned
 The core and builders keep the optional full pronunciation, `word_ipa`, in signed formation sources.
 Draft reload preserves private `stem` and `ipa` values. Neither enters a signed formation source.
 Publication keeps each source row's word, `word_ipa`, scoring input, weight, and notes.
-New unknown pronunciations omit `word_ipa`. Revisions preserve an authenticated original null value without copying it into fresh source rows.
+New signatures omit unknown `word_ipa` values. Retained signed bodies and private revision markers preserve original field presence without copying it into fresh source rows.
 Known weights, including zero, survive regardless of private `stem` or `ipa` values.
 The gismu source editor has seven readable columns inside its own scrolling region at 360 and 1280 CSS pixels.
 Each Remove action includes a row number and names its source language when known, including after a custom language edit.

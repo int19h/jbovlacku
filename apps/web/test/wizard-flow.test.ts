@@ -464,14 +464,31 @@ test("draft export keeps private source evidence while publication and Revise ke
     {
       language: "fr",
       word: "",
-      input: null,
       weight: { numerator: 1, denominator: 2 },
-      notes: [],
     },
   ]);
   expect(published.body.etymology.formation.sources[1]).not.toHaveProperty(
     "word_ipa",
   );
+  expect(published.body.etymology.formation.sources[1]).not.toHaveProperty(
+    "input",
+  );
+  expect(published.body.etymology.formation.sources[1]).not.toHaveProperty(
+    "notes",
+  );
+  const interpreted = await page.evaluate(
+    async ({ corePath, body }) =>
+      (await import(corePath)).interpretDefinition(body),
+    { corePath, body: published.body },
+  );
+  expect(interpreted.etymology.formation.sources[1]).toEqual({
+    language: "fr",
+    word: "",
+    weight: { numerator: 1, denominator: 2 },
+    input: null,
+    notes: [],
+    word_ipa: null,
+  });
   await page.goto(
     `/new/editor?revise=${encodeURIComponent(published.envelope.id)}`,
   );
@@ -481,7 +498,7 @@ test("draft export keeps private source evidence while publication and Revise ke
   const revision = await stored(page);
   expect(revision.gismu).toBeNull();
   expect(revision.formation.sources).toEqual(
-    published.body.etymology.formation.sources,
+    interpreted.etymology.formation.sources,
   );
 });
 
@@ -639,13 +656,19 @@ test("N3 manual root reviews stay private without a formation method claim", asy
   await unlock.getByRole("button", { name: "Unlock", exact: true }).click();
   await acceptFirstSignature(page);
   await expect(page).toHaveURL(/\/word\/cukta/);
-  const formation = await page.evaluate(async () => {
+  const body = await page.evaluate(async () => {
     const { LocalStore } = await import(String("/src/data/store.ts"));
     const items = await new LocalStore().list("outbox");
     return JSON.parse(items.find((item: any) => item.order === 0).transport)
-      .body.etymology.formation;
+      .body;
   });
-  expect(formation ?? null).toBeNull();
+  expect(body).not.toHaveProperty("etymology");
+  const interpreted = await page.evaluate(
+    async ({ corePath, body }) =>
+      (await import(corePath)).interpretDefinition(body),
+    { corePath, body },
+  );
+  expect(interpreted.etymology.formation).toBeNull();
 });
 
 test("F7 Grok 7 Publish reviews saved compound conflicts and rejects changed coverage", async ({
@@ -902,7 +925,13 @@ test("Grok 3 Publish does not reuse conflicts of a different historical generate
   await expect
     .poll(async () => (await stored(page)).publishAcknowledged.length)
     .toBe(1);
-  expect((await stored(page)).formation).toEqual(historical);
+  expect((await stored(page)).formation).toEqual({
+    ...historical,
+    sources: historical.sources.map((source: unknown) => ({
+      ...(source as object),
+      word_ipa: null,
+    })),
+  });
 });
 
 test("F7 a new current root acknowledgment appends to historical formation evidence", async ({
@@ -940,6 +969,10 @@ test("F7 a new current root acknowledgment appends to historical formation evide
   const formation = (await stored(page)).formation;
   expect(formation).toEqual({
     ...historical,
+    sources: historical.sources.map((source: unknown) => ({
+      ...(source as object),
+      word_ipa: null,
+    })),
     conflicts: [
       historical.conflicts[0],
       {

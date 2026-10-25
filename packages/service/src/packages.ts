@@ -2,6 +2,7 @@ import {
   canonicalize,
   contentHash,
   inspectBody,
+  interpretDefinition,
   utf8,
   type EvaluationPackageRecord,
 } from "../../core/src/index.ts";
@@ -134,7 +135,10 @@ export async function buildPackages(
           else {
             const checked = inspectBody(envelope, bytes);
             if (checked.availability === "valid")
-              body = checked.body as Record<string, unknown>;
+              body =
+                kind === "definition.publish"
+                  ? interpretDefinition(checked.body)
+                  : (checked.body as Record<string, unknown>);
           }
         }
         yield {
@@ -173,7 +177,9 @@ export async function buildPackages(
         envelope_hash: event.envelope_hash,
         body:
           checked?.availability === "valid"
-            ? (checked.body as Record<string, unknown>)
+            ? kind === "definition.publish"
+              ? interpretDefinition<Record<string, unknown>>(checked.body)
+              : (checked.body as Record<string, unknown>)
             : null,
         missing: event.body_hash !== null && (!envelope || !bytes),
       };

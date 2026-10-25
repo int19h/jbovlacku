@@ -17,6 +17,7 @@ import {
   contentHash,
   createEvent,
   identityFromSeed,
+  omitDefinitionDefaults,
   prepareAdmission,
   prepareSelection,
   utf8,
@@ -991,10 +992,6 @@ function planDefinition(
   }
   const { body, lexical } = extract(stage, rows[0], manifest, result);
   sourceWordId(body.word);
-  if (Buffer.byteLength(canonical(body)) > 256 * 1024)
-    throw new SourceRowError(
-      "The retained definition and source history exceed the 256 KiB body limit.",
-    );
   const lexicalDigest = digest(lexical);
   const entry = journal
     .prepare("SELECT * FROM entries WHERE record=?")
@@ -1052,6 +1049,19 @@ function planDefinition(
       );
     if (old.length === 1)
       reuse = { event: old[0].event as string, disposition: "reverted" };
+  }
+  if (!reuse) {
+    if (current)
+      body.sources.push({
+        label: "Prior imported source version",
+        url: null,
+        event: entry.selected,
+        locator: `definitions/definitionid=${id}`,
+      });
+    if (Buffer.byteLength(canonical(omitDefinitionDefaults(body))) > 256 * 1024)
+      throw new SourceRowError(
+        "The retained definition and source history exceed the 256 KiB body limit.",
+      );
   }
   return { body, lexical, lexicalDigest, entry, current, baseline, reuse };
 }
@@ -1630,16 +1640,6 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
             disposition = reuse.disposition;
             result[reuse.disposition]++;
           } else {
-            const priorBody = current
-              ? JSON.parse(current.carrier).body
-              : undefined;
-            if (priorBody)
-              body.sources.push({
-                label: "Prior imported source version",
-                url: null,
-                event: entry.selected,
-                locator: `definitions/definitionid=${id}`,
-              });
             const carrier = sign(
               journal,
               options.seed,
