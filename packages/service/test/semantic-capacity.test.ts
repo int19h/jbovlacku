@@ -18,7 +18,7 @@ test("cold restore at current dictionary size keeps semantic evidence outside th
   const inputs = JSON.parse(
     await readFile(
       new URL(
-        "../../../crates/jvc-runtime/tests/fixtures/host-record-inputs-v4.json",
+        "../../../crates/jvc-runtime/tests/fixtures/host-record-inputs-v2.json",
         import.meta.url,
       ),
       "utf8",

@@ -1373,7 +1373,7 @@ fn sparse_definition_projection_applies_defaults_after_original_validation() {
 }
 
 #[test]
-fn evaluation_record_bytes_match_the_pre_semantic_projection() {
+fn evaluation_record_version_two_bytes_match_the_original_golden() {
     let inputs: Vec<Value> =
         serde_json::from_str(include_str!("fixtures/host-record-inputs-v2.json")).unwrap();
     let mut bytes = Vec::new();
@@ -1383,12 +1383,10 @@ fn evaluation_record_bytes_match_the_pre_semantic_projection() {
             input["body"].as_str().map(str::as_bytes),
         )
         .unwrap();
-        let projected = String::from_utf8(compact).unwrap();
-        let before = projected.replacen("\"version\":4", "\"version\":2", 1);
-        assert_eq!(projected.len(), before.len());
+        assert_eq!(jvc_runtime::HOST_RECORD_VERSION, 2);
         bytes.extend_from_slice(input["name"].as_str().unwrap().as_bytes());
         bytes.push(b'\n');
-        bytes.extend_from_slice(before.as_bytes());
+        bytes.extend_from_slice(&compact);
         bytes.push(b'\n');
     }
     assert_eq!(
@@ -1435,4 +1433,30 @@ fn semantic_projection_matches_its_independent_versioned_golden_digest() {
         jvc_core::hash_id("sha256:", b"", &bytes),
         std::fs::read_to_string(expected_path).unwrap().trim()
     );
+}
+
+#[test]
+fn signed_invalid_definition_action_keeps_an_inert_decodable_record() {
+    let mut fixture = Fixture::new();
+    let id = fixture.definition("en");
+    let event = jvc_core::verify_envelope(fixture.events[0].as_bytes()).unwrap();
+    let mut header = event.header().clone();
+    header.action["unexpected"] = json!(true);
+    let signed = sign_header(&[9; 32], header).unwrap();
+    let compact = jvc_runtime::extract_host_record_bytes(
+        &signed.canonical_envelope().unwrap(),
+        Some(fixture.bodies[&id].as_bytes()),
+    )
+    .unwrap();
+    let value: Value = serde_json::from_slice(&compact).unwrap();
+    assert_eq!(value["version"], 2);
+    assert_eq!(value["action_valid"], false);
+    assert_eq!(value["body_status"], "invalid");
+    assert!(value["package"]["body"].is_null());
+    let options = canonical_value(
+        &json!({"selected_view":"jve1:".to_owned()+&"0".repeat(64),"import_selections":{}}),
+    )
+    .unwrap();
+    let mut builder = jvc_runtime::EvaluationSessionBuilder::new(&options).unwrap();
+    builder.add_host_verified_record(&compact).unwrap();
 }

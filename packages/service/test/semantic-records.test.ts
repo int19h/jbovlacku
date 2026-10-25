@@ -34,7 +34,7 @@ before(async () => {
   inputs = JSON.parse(
     await readFile(
       new URL(
-        "../../../crates/jvc-runtime/tests/fixtures/host-record-inputs-v3.json",
+        "../../../crates/jvc-runtime/tests/fixtures/semantic-record-inputs-v1.json",
         import.meta.url,
       ),
       "utf8",
