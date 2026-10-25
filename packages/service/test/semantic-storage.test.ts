@@ -26,6 +26,15 @@ import {
   semanticProjectionVersion,
 } from "../../core/src/index.ts";
 import type { ObjectStore } from "../src/storage.ts";
+import type {
+  CheckpointBinding,
+  CheckpointStore,
+  ServiceCheckpoint,
+} from "../src/checkpoint.ts";
+import {
+  identityFromSeed,
+  restoreHostEvaluationSession,
+} from "../../core/src/index.ts";
 
 before(async () =>
   initializeCore(
@@ -105,16 +114,69 @@ for (const backend of ["node", "worker-sql"] as const)
         stored.set(hash, bytes.slice());
       },
     };
+    const view = createEvent(
+      new Uint8Array(32).fill(75),
+      [],
+      "4".repeat(32),
+      { kind: "view.publish", parents: [] },
+      {
+        name: "Counter test view",
+        description: [],
+        roots: [
+          {
+            identity: identityFromSeed(new Uint8Array(32).fill(75)),
+            q: { numerator: 1, denominator: 1 },
+          },
+        ],
+        rafsi_threshold: { numerator: 1, denominator: 1 },
+        H: { numerator: 3, denominator: 1 },
+        alpha: { numerator: 1, denominator: 2 },
+        excluded: [],
+        calculation: "simple-routes-bounds-v1",
+        work: 1000,
+        import_sets: [],
+        account_witnesses: [],
+        account_authority: false,
+        notes: [],
+      },
+    );
+    let saved:
+      | { binding: CheckpointBinding; payload: ServiceCheckpoint }
+      | undefined;
+    const checkpoints: CheckpointStore = {
+      async load(binding) {
+        return saved &&
+          JSON.stringify(saved.binding) === JSON.stringify(binding)
+          ? structuredClone(saved.payload)
+          : null;
+      },
+      async save(binding, payload) {
+        saved = structuredClone({ binding, payload });
+      },
+    };
     const options = {
       serverId: "semantic-store-test",
       policyUrl: "https://example.invalid/policy",
+      selectedView: view.envelope.id,
+      asyncMaterialization: true,
+      coreVersion: "semantic-counter-core",
+      checkpointIntervalMs: 0,
+      checkpoints,
     };
     const service = new DictionaryService(objects, coordinator, options);
     const count = (table: string) =>
       Number(database.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()!.n);
     try {
       const first = publication("1");
-      await service.admitMany([utf8(JSON.stringify(first))]);
+      await service.admitMany([
+        utf8(JSON.stringify(first)),
+        utf8(JSON.stringify(view)),
+      ]);
+      await service.flushMaterialization();
+      assert.ok(
+        saved,
+        "The service must save a real result checkpoint before the restore measurement.",
+      );
       const state = await coordinator.load();
       const id = first.envelope.id;
       const event = state.events[id];
@@ -140,8 +202,8 @@ for (const backend of ["node", "worker-sql"] as const)
       );
       assert.equal("semantic" in JSON.parse(verified.compact), false);
       assert.ok(semanticDocument(createQwenProfile(), semantic));
-      assert.equal(count("semantic_records"), 1);
-      assert.equal(count("verified_records"), 1);
+      assert.equal(count("semantic_records"), 2);
+      assert.equal(count("verified_records"), 2);
       database.exec(
         "CREATE TRIGGER reject_semantic_stage BEFORE INSERT ON semantic_record_staging BEGIN SELECT RAISE(ABORT,'Synthetic semantic staging failure'); END",
       );
@@ -192,19 +254,31 @@ for (const backend of ["node", "worker-sql"] as const)
         (await coordinator.load()).events[second.envelope.id],
         undefined,
       );
-      assert.equal(count("verified_records"), 1);
-      assert.equal(count("semantic_records"), 1);
+      assert.equal(count("verified_records"), 2);
+      assert.equal(count("semantic_records"), 2);
       database.exec("DROP TRIGGER reject_semantic");
 
-      database.exec(
-        "UPDATE semantic_records SET projection='damaged semantic row'",
-      );
+      database
+        .prepare(
+          "UPDATE semantic_records SET projection='damaged semantic row' WHERE id=?",
+        )
+        .run(id);
+      const measured = {
+        cold_evaluation: { original_record_reads: 0, semantic_record_reads: 0 },
+        checkpoint_restore: {
+          original_record_reads: 0,
+          semantic_record_reads: 0,
+        },
+      };
+      let phase: keyof typeof measured = "cold_evaluation";
       const getSemantic = coordinator.getSemanticRecord.bind(coordinator);
       coordinator.getSemanticRecord = async () => {
+        measured[phase].semantic_record_reads++;
         throw new Error("Evaluation read semantic storage.");
       };
       const unavailable: ObjectStore = {
         async get() {
+          measured[phase].original_record_reads++;
           throw new Error("Evaluation read originals.");
         },
         async put() {
@@ -216,7 +290,41 @@ for (const backend of ["node", "worker-sql"] as const)
         ...options,
         coreVersion: "new-core",
       });
-      await (cold as any).evaluation(snapshot);
+      const coldState = await (cold as any).evaluation(snapshot);
+      assert.equal(coldState.available, true);
+      assert.deepEqual(measured.cold_evaluation, {
+        original_record_reads: 0,
+        semantic_record_reads: 0,
+      });
+      phase = "checkpoint_restore";
+      let restoreCalls = 0;
+      const restored = new DictionaryService(unavailable, coordinator, {
+        ...options,
+        evaluationRuntime: {
+          create() {
+            throw new Error("The checkpoint restore fell back to evaluation.");
+          },
+          restore(bytes, binding, records) {
+            restoreCalls++;
+            return restoreHostEvaluationSession(bytes, binding, records);
+          },
+        },
+      });
+      await restored.initialize();
+      assert.equal(restoreCalls, 1);
+      assert.deepEqual(await (restored as any).evaluation(snapshot), coldState);
+      assert.deepEqual(measured.checkpoint_restore, {
+        original_record_reads: 0,
+        semantic_record_reads: 0,
+      });
+      console.log(
+        JSON.stringify({
+          backend,
+          records: Object.keys(snapshot!.events).length,
+          checkpoint_restore_calls: restoreCalls,
+          ...measured,
+        }),
+      );
       assert.equal(await backfillVerifiedRecords(coordinator, unavailable), 0);
       assert.equal(semanticRecordStatistics(coordinator).decode_failed, 0);
       coordinator.getSemanticRecord = getSemantic;
@@ -236,7 +344,9 @@ for (const backend of ["node", "worker-sql"] as const)
         (await readVerifiedRecord(coordinator, unavailable, id, event)).compact,
         verified.compact,
       );
-      database.exec("UPDATE semantic_records SET version=0");
+      database
+        .prepare("UPDATE semantic_records SET version=0 WHERE id=?")
+        .run(id);
       assert.equal(await backfillVerifiedRecords(coordinator, unavailable), 0);
       assert.equal(await backfillSemanticRecords(coordinator, objects), 1);
       reads.length = 0;
