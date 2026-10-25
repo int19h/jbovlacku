@@ -207,8 +207,8 @@ export function comparison(
   add("Language", a.language, b.language);
   add(
     "Type",
-    `${a.classification.kind} ${a.classification.selmaho.join(" ")}`.trim(),
-    `${b.classification.kind} ${b.classification.selmaho.join(" ")}`.trim(),
+    `${a.classification.kind === "fuhivla" ? "fu'ivla" : a.classification.kind} ${a.classification.selmaho.join(" ")}`.trim(),
+    `${b.classification.kind === "fuhivla" ? "fu'ivla" : b.classification.kind} ${b.classification.selmaho.join(" ")}`.trim(),
   );
   const frameText = (body: DefinitionBody) =>
     body.frame

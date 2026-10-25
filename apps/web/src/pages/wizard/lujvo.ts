@@ -582,7 +582,10 @@ export async function lujvoPage(
           style: "font-size:18px",
           text: component.spelling,
         }),
-        text(` ${component.kind}`, "meta"),
+        text(
+          ` ${component.kind === "fuhivla" ? "fu'ivla" : component.kind}`,
+          "meta",
+        ),
       );
       if (component.gloss) name.append(text(` ${component.gloss}`, "meta"));
       if (component.definitions?.length) {

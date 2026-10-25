@@ -664,6 +664,12 @@ test("the component picker shows fu'ivla and stores fuhivla", async ({
   await matches
     .getByRole("button", { name: "Add leksiko as entered", exact: true })
     .click();
+  const components = page.getByRole("list", {
+    name: "Components",
+    exact: true,
+  });
+  await expect(components).toContainText("fu'ivla");
+  await expect(components).not.toContainText("fuhivla");
   await expect
     .poll(async () => (await currentDraft(page)).lujvo.components[0]?.kind)
     .toBe("fuhivla");

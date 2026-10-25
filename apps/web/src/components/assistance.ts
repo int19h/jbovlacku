@@ -741,7 +741,9 @@ export function assistanceAction(
           el("pre", {
             text:
               typeof proposal.value === "string"
-                ? proposal.value
+                ? proposal.path === "/word_type" && proposal.value === "fuhivla"
+                  ? "fu'ivla"
+                  : proposal.value
                 : json(proposal.value),
           }),
         );
