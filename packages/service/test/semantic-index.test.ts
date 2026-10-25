@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { before, test } from "node:test";
 import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import {
   initializeCore,
@@ -48,8 +49,7 @@ const hash = (n: number, prefix = "sha256:") =>
 const profile = () => createQwenProfile("12".repeat(16));
 const unit = () => Float32Array.from({ length: 4096 }, (_, i) => (i ? 0 : 1));
 const usage = { inputTokens: 20, totalTokens: 20, costUsd: 0.0000002 };
-const base =
-  process.env.JVC_TEST_ROOT ?? "/build/jbovlacku/review/semantic-index/unit";
+const base = process.env.JVC_TEST_ROOT ?? tmpdir();
 async function fixture(
   run: (store: SqliteVectorStore, path: string) => Promise<void>,
   limits = DEFAULT_VECTOR_LIMITS,
