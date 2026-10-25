@@ -260,14 +260,7 @@ test("the personal view follows the chosen profile, private blocks and own publi
   // A public shun by this identity is a signed declaration. In the personal
   // view it is a block as well. The site view under the refusal profile has no
   // route through this identity, so it changes nothing there.
-  // Keep the completed personal calculation while the new record is signed.
-  await page.evaluate(
-    async (target) => {
-      const { navigate } = await import(String("/src/app/router.ts"));
-      navigate(target);
-    },
-    `/identity/${encodeURIComponent(f.identities.scoped)}`,
-  );
+  await page.goto(`/identity/${encodeURIComponent(f.identities.scoped)}`);
   await page.getByRole("button", { name: "Ignore their judgments" }).click();
   await page.getByRole("radio", { name: /Publicly/ }).check();
   await page
@@ -289,8 +282,9 @@ test("the personal view follows the chosen profile, private blocks and own publi
   await unlock.getByRole("button", { name: "Unlock" }).click();
   await acceptFirstSignature(page);
   await expect(page.getByRole("status")).toContainText(/Signed/);
-  // Delivery and materialization finish separately. Wait for both before
-  // comparing the newer word content with the retained local calculation.
+  // Acceptance can precede the completed word view. The persisted inventory
+  // still names the pre-shun snapshot. Wait for materialization in this
+  // document, which tracks the accepted receipt.
   await expect
     .poll(
       () =>
@@ -308,8 +302,8 @@ test("the personal view follows the chosen profile, private blocks and own publi
     await getManifest({ fresh: true });
     navigate("/word/dunda?fresh=1");
   });
-  // The signed shun moved the snapshot. The personal view refuses the older
-  // calculation until an explicit recompute, which includes the new record.
+  // The word view now includes the shun, but the local calculation still
+  // uses the persisted pre-shun inventory. Recompute includes the new record.
   await page
     .getByRole("button", { name: "Recompute for this snapshot" })
     .click();
