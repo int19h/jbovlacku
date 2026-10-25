@@ -470,7 +470,7 @@ export function schemaFor(spec: TaskCase): JsonObject {
           "gismu",
           "lujvo",
           "cmavo",
-          "fuivla",
+          "fuhivla",
           "cmevla",
           "compound",
           "letteral",

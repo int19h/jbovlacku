@@ -1,4 +1,4 @@
 Suggest one word type for the supplied meaning.
-Choose gismu, lujvo, cmavo, fuivla, cmevla, compound, letteral or other.
+Choose gismu, lujvo, cmavo, fuhivla, cmevla, compound, letteral or other.
 Explain the choice in one short paragraph. The author decides whether to use it.
 Do not judge whether a spelling is valid. Return word_type and reason.

@@ -42,7 +42,7 @@ const cards: {
     example: "bangu",
   },
   {
-    kind: "fuivla",
+    kind: "fuhivla",
     title: "fu'ivla",
     explanation: "Borrowed word.",
     example: "leksiko",
@@ -127,7 +127,7 @@ export async function typePage(
     saver.touch();
   }
   const labelFor = () =>
-    spelling && (draft.kind === "gismu" || draft.kind === "fuivla")
+    spelling && (draft.kind === "gismu" || draft.kind === "fuhivla")
       ? "Continue to places"
       : spelling && draft.kind === "lujvo"
         ? "Link the lujvo parts"
@@ -153,7 +153,7 @@ export async function typePage(
   if (analysis) {
     detection.append(
       p(
-        `Detected form: ${analysis.kind === "fuivla" ? "fu'ivla" : analysis.kind}. You can choose another kind.`,
+        `Detected form: ${analysis.kind === "fuhivla" ? "fu'ivla" : analysis.kind}. You can choose another kind.`,
         "small",
       ),
     );
@@ -388,7 +388,7 @@ export async function typePage(
       action: async () => {
         if (!draft.kind || !confirmKindChange(draft, draft.kind)) return;
         const places =
-          spelling && (draft.kind === "gismu" || draft.kind === "fuivla");
+          spelling && (draft.kind === "gismu" || draft.kind === "fuhivla");
         draft.step = Math.max(draft.step, places ? 4 : 3) as Draft["step"];
         if (!(await saver.flush())) return;
         navigate(places ? "/new/places" : formPath(draft));

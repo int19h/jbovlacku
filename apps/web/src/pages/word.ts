@@ -203,7 +203,7 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
       .filter(Boolean),
   );
   kindTag.textContent = [...kinds]
-    .map((k) => (k === "fuivla" ? "fu'ivla" : k))
+    .map((k) => (k === "fuhivla" ? "fu'ivla" : k))
     .join(" · ");
   // Composition line from any compound evidence.
   const compound = [...records.values()]

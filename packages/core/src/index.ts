@@ -510,7 +510,7 @@ export interface RecoveredPart {
 export interface WordAnalysis {
   original: string;
   normalized: string | null;
-  kind: "gismu" | "lujvo" | "cmavo" | "fuivla" | "cmevla" | "unknown";
+  kind: "gismu" | "lujvo" | "cmavo" | "fuhivla" | "cmevla" | "unknown";
   readings: RecoveredPart[][];
   diagnostics: string[];
   morphology: { id: string; version: string };

@@ -196,7 +196,7 @@ export async function publishPage(
             text: body.word.spelling,
           }),
           text(
-            `${body.classification.kind === "fuivla" ? "fu'ivla" : body.classification.kind}${body.classification.selmaho.length ? ` ${body.classification.selmaho.join(", ")}` : ""} · ${body.language}`,
+            `${body.classification.kind === "fuhivla" ? "fu'ivla" : body.classification.kind}${body.classification.selmaho.length ? ` ${body.classification.selmaho.join(", ")}` : ""} · ${body.language}`,
             "meta",
           ),
         ),

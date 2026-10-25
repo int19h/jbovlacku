@@ -501,7 +501,7 @@ export async function placesPage(
         { value: "", label: "choose" },
         ...lexicalKinds.map((k) => ({
           value: k,
-          label: k === "fuivla" ? "fu'ivla" : k,
+          label: k === "fuhivla" ? "fu'ivla" : k,
         })),
       ],
       value: draft.kind ?? "",

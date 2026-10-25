@@ -652,3 +652,19 @@ test("source Remove names stay unique for alternatives and empty language rows",
   expect(names.every((name) => name && name.trim())).toBe(true);
   expect(new Set(names).size).toBe(names.length);
 });
+
+test("the component picker shows fu'ivla and stores fuhivla", async ({
+  page,
+}) => {
+  await startDraft(page, "lujvo");
+  await page.getByLabel("Add a part").fill("leksiko");
+  const matches = page.getByRole("list", { name: "Matching words" });
+  await expect(matches).toContainText("fu'ivla, not in the local package");
+  await expect(matches).not.toContainText("fuhivla");
+  await matches
+    .getByRole("button", { name: "Add leksiko as entered", exact: true })
+    .click();
+  await expect
+    .poll(async () => (await currentDraft(page)).lujvo.components[0]?.kind)
+    .toBe("fuhivla");
+});

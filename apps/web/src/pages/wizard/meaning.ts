@@ -283,7 +283,7 @@ export async function meaningPage(
     const analysis = detectWord(spelling);
     typedStatus.append(
       p(
-        `Detected form: ${analysis.kind === "fuivla" ? "fu'ivla" : analysis.kind}.`,
+        `Detected form: ${analysis.kind === "fuhivla" ? "fu'ivla" : analysis.kind}.`,
         "small",
       ),
     );

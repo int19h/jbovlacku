@@ -1513,3 +1513,24 @@ test("SQL revision limits include the prior source before dry planning and signi
     }
   }
 });
+
+test("SQL imports map source fu'ivla classifications and preserve source evidence", async () => {
+  const bytes = Buffer.from(
+    fixture.toString().replace("1\tgismu\r\n", "1\tfu'ivla\r\n"),
+  );
+  assert.notDeepEqual(bytes, fixture);
+  const input = await setup(bytes);
+  const result = await importSqlSnapshot(input);
+  assert.equal(result.report.added, 4);
+  const definitions = (await carriers(input.output)).filter(
+    (row) => row.body.legacy,
+  );
+  const changed = definitions.filter(
+    (row) => row.body.classification.kind === "fuhivla",
+  );
+  assert.equal(changed.length, 2);
+  for (const row of changed) {
+    assert.equal(prepareAdmission(utf8(canonical(row))).action_valid, true);
+    assert.equal(row.body.legacy.original.valsitypes.descriptor, "fu'ivla");
+  }
+});

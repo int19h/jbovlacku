@@ -374,8 +374,8 @@ export async function lujvoPage(
     ) {
       const item = el("li", { class: "similar-item" });
       const kind =
-        analysis.kind === "fuivla"
-          ? "fuivla"
+        analysis.kind === "fuhivla"
+          ? "fuhivla"
           : analysis.kind === "gismu"
             ? "gismu"
             : analysis.kind === "lujvo"
@@ -387,7 +387,10 @@ export async function lujvoPage(
                   : "other";
       item.append(
         el("span", { class: "hw", lang: "jbo", text: analysis.normalized }),
-        text(` ${kind}, not in the local package`, "meta"),
+        text(
+          ` ${kind === "fuhivla" ? "fu'ivla" : kind}, not in the local package`,
+          "meta",
+        ),
         analysis.diagnostics.length
           ? text(` · ${analysis.diagnostics[0]}`, "meta")
           : text(""),

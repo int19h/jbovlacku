@@ -35,7 +35,7 @@ for (const row of rows) {
   const analysis = detectWord(row.word);
   expectedCounts[expected] = (expectedCounts[expected] ?? 0) + 1;
   actualCounts[analysis.kind] = (actualCounts[analysis.kind] ?? 0) + 1;
-  const brivla = ["gismu", "lujvo", "fuivla"].includes(expected);
+  const brivla = ["gismu", "lujvo", "fuhivla"].includes(expected);
   if (brivla) expectedBrivla++;
   if (analysis.kind !== expected)
     mismatches.push({

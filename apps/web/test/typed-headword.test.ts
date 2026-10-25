@@ -1051,3 +1051,39 @@ test("R8 gismu replacement reviews retained annotations and manual Form Use rebi
   await page.reload();
   expect((await draft(page)).evidenceForm).toBe("cukta");
 });
+
+test("fu'ivla publication signs fuhivla and keeps the visible spelling", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await typed(page, "leksiko");
+  await expect(page.getByRole("radio", { name: /^fu'ivla/ })).toBeChecked();
+  await page.getByRole("button", { name: "Continue to places" }).click();
+  await expect.poll(async () => (await draft(page)).kind).toBe("fuhivla");
+  await page
+    .getByLabel("Definition text", { exact: true })
+    .fill("A synthetic borrowing definition.");
+  await page.getByRole("button", { name: "Review", exact: true }).click();
+  await expect(page.locator("main")).toContainText("fu'ivla");
+  await page
+    .locator("aside")
+    .getByRole("button", { name: "Publish", exact: true })
+    .click();
+  const unlock = page.getByRole("dialog", { name: "Unlock your key" });
+  if (await unlock.isVisible()) {
+    await unlock.getByLabel("Passphrase").fill(PASSPHRASE);
+    await unlock.getByRole("button", { name: "Unlock", exact: true }).click();
+  }
+  await acceptFirstSignature(page);
+  await expect(page).toHaveURL(/\/word\//);
+  await expect(page.locator("main")).toContainText("fu'ivla");
+  const published = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const rows: any[] = await new LocalStore().list("outbox");
+    return rows
+      .map((row) => JSON.parse(row.transport))
+      .find((row) => row.envelope.header.action.kind === "definition.publish");
+  });
+  expect(published.body.classification.kind).toBe("fuhivla");
+  expect(published.body.word.spelling).toBe("leksiko");
+});

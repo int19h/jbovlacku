@@ -2488,7 +2488,7 @@ const INDICATORS: &[&str] = &[
 pub(crate) enum Kind {
     Gismu,
     Lujvo,
-    Fuivla,
+    Fuhivla,
     Cmavo,
     Cmevla,
     Unknown,
@@ -2551,7 +2551,7 @@ fn parse_with_profile(
             Kind::Unknown
         }
     } else if is_fuhivla_shape_slice_with_cache(&chars, 0, end, &mut cache) {
-        Kind::Fuivla
+        Kind::Fuhivla
     } else {
         Kind::Unknown
     };

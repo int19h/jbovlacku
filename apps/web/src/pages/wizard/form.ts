@@ -163,7 +163,7 @@ export async function formPage(route: Route, context: RenderContext, app: App) {
   });
   section.append(notes.wrapper);
   if (
-    kind === "fuivla" ||
+    kind === "fuhivla" ||
     kind === "cmevla" ||
     kind === "other" ||
     kind === "compound" ||

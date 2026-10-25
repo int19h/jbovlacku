@@ -134,7 +134,7 @@ export type LexicalKind =
   | "gismu"
   | "cmavo"
   | "lujvo"
-  | "fuivla"
+  | "fuhivla"
   | "cmevla"
   | "compound"
   | "letteral"
@@ -143,7 +143,7 @@ export const lexicalKinds: LexicalKind[] = [
   "gismu",
   "cmavo",
   "lujvo",
-  "fuivla",
+  "fuhivla",
   "cmevla",
   "compound",
   "letteral",

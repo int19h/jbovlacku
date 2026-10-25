@@ -900,7 +900,7 @@ fn definition(h: &Header, b: &Value, r: &mut Rich) -> Result<()> {
     oneof(
         &b["classification"]["kind"],
         &[
-            "gismu", "cmavo", "lujvo", "fuivla", "cmevla", "compound", "letteral", "other",
+            "gismu", "cmavo", "lujvo", "fuhivla", "cmevla", "compound", "letteral", "other",
         ],
     )?;
     for s in array(&b["classification"]["selmaho"], usize::MAX)? {

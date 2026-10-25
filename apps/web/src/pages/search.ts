@@ -536,7 +536,7 @@ function hitRow(
   rafsiSpan.hidden = true;
   line1.append(rafsiSpan);
   if (kind && kind !== "unknown")
-    line1.append(text(kind === "fuivla" ? "fu'ivla" : kind, "meta"));
+    line1.append(text(kind === "fuhivla" ? "fu'ivla" : kind, "meta"));
   if (hit.preview && hit.preview.status !== "active")
     line1.append(
       el("span", {

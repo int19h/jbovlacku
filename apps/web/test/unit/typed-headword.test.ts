@@ -34,12 +34,12 @@ before(async () =>
 test("typed detection preserves identity spelling and exposes unknown diagnostics", () => {
   for (const [spelling, kind] of [
     ["bangu", "gismu"],
-    ["leksiko", "fuivla"],
+    ["leksiko", "fuhivla"],
     ["ckusni", "lujvo"],
     ["lo", "cmavo"],
     [".lojban.", "cmevla"],
     [".djeimz.", "cmevla"],
-    [".akme", "fuivla"],
+    [".akme", "fuhivla"],
     [".i", "cmavo"],
     ["zzzz", "unknown"],
   ])

@@ -291,7 +291,7 @@ fn is_brivla_core_for(profile: Profile, text: &str) -> bool {
                 r.kind,
                 crate::recognize::Kind::Gismu
                     | crate::recognize::Kind::Lujvo
-                    | crate::recognize::Kind::Fuivla
+                    | crate::recognize::Kind::Fuhivla
             )
         })
 }
@@ -359,7 +359,7 @@ impl RecognitionBudget {
                 core.kind,
                 crate::recognize::Kind::Gismu
                     | crate::recognize::Kind::Lujvo
-                    | crate::recognize::Kind::Fuivla
+                    | crate::recognize::Kind::Fuhivla
             );
         self.cores.insert(text.into(), valid);
         Ok(valid)
@@ -440,7 +440,7 @@ pub struct Component {
     /// The caller's stable row identifier.
     pub id: String,
     pub spelling: String,
-    /// The declared lexical kind: gismu, cmavo, lujvo, fuivla, cmevla, or other.
+    /// The declared lexical kind: gismu, cmavo, lujvo, fu'ivla, cmevla, or other.
     pub kind: String,
     #[serde(default)]
     pub definition: Option<String>,
@@ -646,7 +646,7 @@ fn row_choices_with_parser(
                     reading.kind,
                     crate::recognize::Kind::Gismu
                         | crate::recognize::Kind::Lujvo
-                        | crate::recognize::Kind::Fuivla
+                        | crate::recognize::Kind::Fuhivla
                 )
             {
                 if profile != Profile::Cll {
@@ -1239,7 +1239,7 @@ pub enum WordKind {
     Gismu,
     Lujvo,
     Cmavo,
-    Fuivla,
+    Fuhivla,
     Cmevla,
     Unknown,
 }
@@ -1297,13 +1297,13 @@ pub fn analyze_word(profile: Profile, spelling: &str) -> Analysis {
                 Kind::Gismu => WordKind::Gismu,
                 Kind::Cmavo => WordKind::Cmavo,
                 Kind::Cmevla => WordKind::Cmevla,
-                Kind::Fuivla => WordKind::Fuivla,
+                Kind::Fuhivla => WordKind::Fuhivla,
                 Kind::Lujvo if profile != Profile::Cll || classic_tokens(&reading.tokens) => {
                     WordKind::Lujvo
                 }
                 _ => WordKind::Unknown,
             };
-            if profile == Profile::Cll && analysis.kind == WordKind::Fuivla {
+            if profile == Profile::Cll && analysis.kind == WordKind::Fuhivla {
                 analysis.diagnostics.push("Fu'ivla recognition uses the extended jbotci lineage. This classification does not establish CLL validity.".into());
             }
             if analysis.kind == WordKind::Lujvo {
@@ -1426,7 +1426,7 @@ mod tests {
         ] {
             assert_eq!(
                 analyze_word(Profile::Extended, word).kind,
-                WordKind::Fuivla,
+                WordKind::Fuhivla,
                 "{word}"
             );
         }
@@ -1956,9 +1956,12 @@ mod tests {
         assert_eq!(analyze_word(Profile::Cll, "ka'a").kind, WordKind::Cmavo);
         assert_eq!(analyze_word(Profile::Cll, "djan.").normalized, None);
         assert_eq!(analyze_word(Profile::Cll, "djan").kind, WordKind::Cmevla);
-        assert_eq!(analyze_word(Profile::Cll, "iismu").kind, WordKind::Fuivla);
+        assert_eq!(analyze_word(Profile::Cll, "iismu").kind, WordKind::Fuhivla);
         assert_eq!(analyze_word(Profile::Cll, "aaaa").kind, WordKind::Unknown);
-        assert_eq!(analyze_word(Profile::Cll, "leksiko").kind, WordKind::Fuivla);
+        assert_eq!(
+            analyze_word(Profile::Cll, "leksiko").kind,
+            WordKind::Fuhivla
+        );
         let a = analyze_word(Profile::Cll, "ckusni");
         assert_eq!(
             a.readings[0]
@@ -2146,7 +2149,7 @@ mod tests {
         }
         assert_eq!(
             analyze_word(Profile::Extended, "gimspageti").kind,
-            WordKind::Fuivla
+            WordKind::Fuhivla
         );
         assert_eq!(
             analyze_word(Profile::Extended, "baurismu").kind,
@@ -2169,7 +2172,7 @@ mod tests {
         for count in [8, 12, 16, 24, 30] {
             let text = format!("{}sakli", "sakr".repeat(count));
             let analysis = analyze_word(Profile::Cll, &text);
-            assert_eq!(analysis.kind, WordKind::Fuivla, "{text}");
+            assert_eq!(analysis.kind, WordKind::Fuhivla, "{text}");
             assert!(analysis.readings.is_empty());
         }
         let text = "sakr".repeat(40);
@@ -2193,6 +2196,9 @@ mod tests {
             for (name, profile) in [("cll-ebnf", Profile::Cll), ("bpfk", Profile::Extended)] {
                 let expected = if case["jbotci_kind"] == "lujvo" && case[name]["ok"] == false {
                     "unknown"
+                } else if case["jbotci_kind"] == "fuivla" {
+                    // Preserve the archived label and compare its current spelling.
+                    "fuhivla"
                 } else {
                     case["jbotci_kind"].as_str().unwrap()
                 };
@@ -2220,6 +2226,18 @@ mod tests {
         }
     }
     #[test]
+    fn fuhivla_kind_serialization_has_no_legacy_alias() {
+        assert_eq!(
+            serde_json::to_string(&WordKind::Fuhivla).unwrap(),
+            "\"fuhivla\""
+        );
+        assert_eq!(
+            serde_json::from_str::<WordKind>("\"fuhivla\"").unwrap(),
+            WordKind::Fuhivla
+        );
+        assert!(serde_json::from_str::<WordKind>("\"fuivla\"").is_err());
+    }
+    #[test]
     fn builder_rejects_false_extended_winners() {
         let component = |id: &str, word: &str, kind: &str, claims: &[&str]| Component {
             id: id.into(),
@@ -2241,7 +2259,7 @@ mod tests {
             profile: Profile::Extended,
             components: vec![
                 component("a", "bangu", "gismu", &["bau", "ban"]),
-                component("b", "ismu", "fuivla", &[]),
+                component("b", "ismu", "fuhivla", &[]),
             ],
             inventory: Inventory::default(),
             limits: Limits {
@@ -2299,11 +2317,11 @@ mod tests {
         assert!(!budget.cores.contains_key(&"a".repeat(129)));
     }
     #[test]
-    fn classic_fuivla_analysis_reports_its_recognition_scope() {
+    fn classic_fuhivla_analysis_reports_its_recognition_scope() {
         let classic = analyze_word(Profile::Cll, "ismu");
         let extended = analyze_word(Profile::Extended, "ismu");
-        assert_eq!(classic.kind, WordKind::Fuivla);
-        assert_eq!(extended.kind, WordKind::Fuivla);
+        assert_eq!(classic.kind, WordKind::Fuhivla);
+        assert_eq!(extended.kind, WordKind::Fuhivla);
         assert!(
             classic
                 .diagnostics
@@ -2324,7 +2342,7 @@ mod tests {
         let component = Component {
             id: "a".into(),
             spelling: "ismu".into(),
-            kind: "fuivla".into(),
+            kind: "fuhivla".into(),
             definition: None,
             claims: vec![],
             locked: Some("ismu".into()),

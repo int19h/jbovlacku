@@ -711,7 +711,7 @@ function extract(
       {
         "cmavo-compound": "compound",
         "bu-letteral": "letteral",
-        "fu'ivla": "fuivla",
+        "fu'ivla": "fuhivla",
         "zei-lujvo": "lujvo",
         "non-canonical lujvo": "lujvo",
       } as Record<string, string>
@@ -720,7 +720,7 @@ function extract(
     "gismu",
     "cmavo",
     "lujvo",
-    "fuivla",
+    "fuhivla",
     "cmevla",
     "compound",
     "letteral",
