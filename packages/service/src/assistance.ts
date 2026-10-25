@@ -1121,6 +1121,7 @@ export class AssistanceService {
     inputs: readonly Uint8Array[],
     caller: EmbeddingCaller,
     callerSignal?: AbortSignal,
+    beforeSend?: (operation: string) => Promise<void>,
   ): Promise<EmbeddingResult & { operation: string }> {
     callerSignal?.throwIfAborted();
     const config = this.options.provider;
@@ -1231,7 +1232,7 @@ export class AssistanceService {
     });
     const work = admission
       .then((operation) =>
-        this.executeEmbedding(operation, prepared, config, signal),
+        this.executeEmbedding(operation, prepared, config, signal, beforeSend),
       )
       .finally(() => clearTimeout(timer));
     // Both hosts retain their existing background-work policy.
@@ -1314,6 +1315,7 @@ export class AssistanceService {
     prepared: ReturnType<typeof prepareEmbedding>,
     config: ProviderConfig,
     signal: AbortSignal,
+    beforeSend?: (operation: string) => Promise<void>,
   ): Promise<EmbeddingResult & { operation: string }> {
     let sent = false;
     let recorded = false;
@@ -1336,7 +1338,9 @@ export class AssistanceService {
     };
     try {
       const result = await requestEmbedding(prepared, config, signal, {
-        sent: () => {
+        sent: async () => {
+          await beforeSend?.(operation.id);
+          signal.throwIfAborted();
           sent = true;
           operation.state = "sent";
           operation.transportPending = true;

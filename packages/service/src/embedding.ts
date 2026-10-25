@@ -198,7 +198,7 @@ export async function requestEmbedding(
   config: ProviderConfig,
   signal: AbortSignal,
   callbacks: {
-    sent(): void;
+    sent(): void | Promise<void>;
     transportEnded(): void;
     cost(usage: EmbeddingUsage): Promise<void>;
   },
@@ -221,7 +221,7 @@ export async function requestEmbedding(
       "The provider key is unavailable.",
     );
   signal.throwIfAborted();
-  callbacks.sent();
+  await callbacks.sent();
   // Keep the transport separate from the deadline race. An ignored abort holds
   // its execution slot until the original transport actually ends.
   const transport = (async () => {

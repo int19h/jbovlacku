@@ -129,6 +129,58 @@ const entries = (budget: ReturnType<typeof store>) => {
   assert(snapshot?.version === 2);
   return snapshot.entries;
 };
+
+test("an operator saves its operation link before dispatch", async () => {
+  let linked: string | null = null;
+  const budget = store();
+  const { service } = fixture(
+    config({
+      fetch: async () => {
+        assert(linked?.startsWith("embedding:index:"));
+        assert(
+          entries(budget).some((entry) => entry.id === linked && entry.active),
+        );
+        return Response.json(embedding());
+      },
+    }),
+    budget,
+  );
+  const result = await service.embed(
+    input,
+    { kind: "index" },
+    undefined,
+    async (operation) => {
+      linked = operation;
+    },
+  );
+  assert.equal(result.operation, linked);
+});
+
+test("a failed operator link prevents dispatch and releases the unsent reservation", async () => {
+  let sends = 0;
+  const budget = store();
+  const { service } = fixture(
+    config({
+      fetch: async () => {
+        sends++;
+        return Response.json(embedding());
+      },
+    }),
+    budget,
+  );
+  await assert.rejects(
+    service.embed(input, { kind: "index" }, undefined, async () => {
+      throw new Error("The job store did not save its operation link.");
+    }),
+  );
+  assert.equal(sends, 0);
+  assert.equal(entries(budget).length, 0);
+  const operation = (await service.embeddingOperations())[0];
+  assert.equal(operation.state, "failed");
+  assert.equal(operation.transportPending, false);
+  assert.equal(operation.reservedUsd, 0);
+  assert.equal(operation.chargedUsd, 0);
+});
 const draft = (): AssistRequest => ({
   operation: "type",
   draft_revision: "shared-budget",
