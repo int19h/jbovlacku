@@ -188,6 +188,7 @@ function proposals(body: any): any[] {
   return [];
 }
 interface MockOptions {
+  lujvoProposals?: any[];
   deepLog?: boolean;
   delay?: boolean;
   failure?: string;
@@ -237,7 +238,11 @@ async function mockAssistant(page: Page, options: MockOptions = {}) {
       draft_revision: body.draft_revision,
       proposals: options.invalid
         ? [{ path: "/identity", value: "bad" }]
-        : structuredClone(proposals(body)),
+        : structuredClone(
+            body.operation === "lujvo" && options.lujvoProposals
+              ? options.lujvoProposals
+              : proposals(body),
+          ),
       explanation:
         'A literal explanation <img src=x onerror="window.injected=true">.',
       provenance: {
@@ -3209,3 +3214,94 @@ test("Dismiss clears the completed suggestion announcement", async ({
   await expect(panel).toHaveCount(0);
   await expect(page.locator(".ai-action [role=status]")).toHaveText("");
 });
+
+for (const action of ["Suggest a lujvo", "Suggest components"] as const)
+  test(`R7 ${action} Undo restores exact rows and joins after reload and a later author edit`, async ({
+    page,
+  }) => {
+    const components = [
+      {
+        word: { language: "jbo", spelling: "sanmi" },
+        definition: null,
+        rafsi: "sai",
+      },
+      {
+        word: { language: "jbo", spelling: "zbasu" },
+        definition: null,
+        rafsi: "zba",
+      },
+    ];
+    await mockAssistant(page, {
+      lujvoProposals: [
+        { path: "/compound", value: { ...compound, components } },
+        ...(action === "Suggest a lujvo"
+          ? [{ path: "/spelling", value: "saizba" }]
+          : []),
+      ],
+    });
+    await draft(
+      page,
+      {
+        kind: "lujvo",
+        spelling: "sairzba",
+        typedSpelling: null,
+        glosses: [{ language: "en", text: "synthetic", sense: "" }],
+        lujvo: {
+          profile: "extended",
+          typed: "sairzba",
+          selected: "sairzba",
+          joins: ["r"],
+          acknowledged: [],
+          components: components.map((component, index) => ({
+            id: `legacy-${index}`,
+            spelling: component.word.spelling,
+            kind: "gismu",
+            definition: null,
+            claims: [{ rafsi: component.rafsi, pair: "synthetic-pair" }],
+            locked: component.rafsi,
+            gloss: "",
+          })),
+        },
+      },
+      "/new/lujvo",
+    );
+    await expect(
+      page.getByLabel("Form sairzba", { exact: true }),
+    ).toBeVisible();
+    await expect
+      .poll(async () => (await stored(page)).lujvo?.restoredSpelling)
+      .toBe("sairzba");
+    const original = await stored(page);
+    await page.getByRole("button", { name: action, exact: true }).click();
+    await allow(page);
+    await page.getByRole("button", { name: "Use this", exact: true }).click();
+    await expect(page.getByLabel("Form saizba", { exact: true })).toBeVisible();
+    await page.reload();
+    await page
+      .getByRole("list", { name: "Steps" })
+      .getByRole("link", { name: /^Meaning\b/ })
+      .click();
+    await page
+      .getByLabel("Meaning", { exact: true })
+      .fill("A later author meaning.");
+    await page
+      .getByRole("list", { name: "Steps" })
+      .getByRole("link", { name: /^Form\b/ })
+      .click();
+    await page
+      .getByRole("button", { name: `Undo ${action}`, exact: true })
+      .click();
+    await expect(
+      page.getByLabel("Form sairzba", { exact: true }),
+    ).toBeVisible();
+    const undone = await stored(page);
+    expect(undone.spelling).toBe("sairzba");
+    expect(undone.lujvo).toEqual(original.lujvo);
+    expect(undone.meaning).toBe("A later author meaning.");
+    expect(undone.text).toEqual(original.text);
+    expect(undone.glosses).toEqual(original.glosses);
+    await page.reload();
+    await expect(
+      page.getByLabel("Form sairzba", { exact: true }),
+    ).toBeVisible();
+  });
