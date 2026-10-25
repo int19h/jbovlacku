@@ -3305,3 +3305,101 @@ for (const action of ["Suggest a lujvo", "Suggest components"] as const)
       page.getByLabel("Form sairzba", { exact: true }),
     ).toBeVisible();
   });
+
+for (const reverse of [false, true])
+  test(`R8 AI lujvo replacement ignores discarded evidence in either proposal order: ${reverse}`, async ({
+    page,
+  }) => {
+    const components = [
+      {
+        word: { language: "jbo", spelling: "sanmi" },
+        definition: null,
+        rafsi: "sai",
+      },
+      {
+        word: { language: "jbo", spelling: "zbasu" },
+        definition: null,
+        rafsi: "zba",
+      },
+    ];
+    const proposals = [
+      { path: "/spelling", value: "saizba" },
+      { path: "/compound", value: { ...compound, components } },
+    ];
+    if (reverse) proposals.reverse();
+    await mockAssistant(page, { lujvoProposals: proposals });
+    await draft(
+      page,
+      {
+        kind: "lujvo",
+        spelling: "sairzba",
+        typedSpelling: null,
+        compound: {
+          ...compound,
+          components,
+          morphology: {
+            id: "https://github.com/int19h/jbovlacku/blob/main/docs/morphology.md#extended-lujvo",
+            version: "3",
+          },
+        },
+        evidenceForm: "sairzba",
+        lujvo: {
+          profile: "extended",
+          ordinarySpelling: "sairzba",
+          selected: "sairzba",
+          acknowledged: [],
+          components: components.map((row, index) => ({
+            id: `source-${index}`,
+            spelling: row.word.spelling,
+            kind: "gismu",
+            definition: null,
+            claims: [{ rafsi: row.rafsi, pair: "synthetic-pair" }],
+            locked: row.rafsi,
+            gloss: "",
+          })),
+        },
+      },
+      "/new/lujvo",
+    );
+    await page
+      .getByRole("button", { name: "Suggest a lujvo", exact: true })
+      .click();
+    await allow(page);
+    await page.getByRole("button", { name: "Use this", exact: true }).click();
+    await expect.poll(async () => (await stored(page)).spelling).toBe("saizba");
+    expect((await stored(page)).compound).toBeNull();
+    expect((await stored(page)).review).toEqual([]);
+  });
+
+test("R8 component-only AI preserves the typed headword and later Use asks before replacing it", async ({
+  page,
+}) => {
+  await mockAssistant(page);
+  await draft(
+    page,
+    {
+      kind: "lujvo",
+      spelling: "sanzbax",
+      typedSpelling: "sanzbax",
+    },
+    "/new/lujvo",
+  );
+  await page
+    .getByRole("button", { name: "Suggest components", exact: true })
+    .click();
+  await allow(page);
+  await page.getByRole("button", { name: "Use this", exact: true }).click();
+  await expect(page.getByLabel("Form ckusni", { exact: true })).toBeVisible();
+  await page.reload();
+  expect((await stored(page)).typedSpelling).toBe("sanzbax");
+  let replacement = "";
+  page.once("dialog", (dialog) => {
+    replacement = dialog.message();
+    void dialog.dismiss();
+  });
+  await page.getByRole("button", { name: "Use ckusni", exact: true }).click();
+  expect(replacement).toBe(
+    'Replace the typed spelling "sanzbax" with "ckusni"?',
+  );
+  expect((await stored(page)).spelling).toBe("sanzbax");
+});

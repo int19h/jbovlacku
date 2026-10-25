@@ -313,13 +313,19 @@ A corrected headword can therefore recover its exact candidate, including case, 
 Changing those rows, their order, their rafsi, or their morphology profile returns restored construction to automatic choices.
 That release persists through later builder visits and reloads.
 It remains released if the author restores an earlier lock or replaces rows with identical rafsi.
+If every row is removed from a published revision, the next builder visit starts a complete restoration from matching signed evidence.
+That restoration recovers sources, locks, profile, and exact joins together. It clears the former release and ordinary profile choice.
+Partial rows do not start that restoration. A spelling mismatch defers it until the signed spelling returns.
 The builder asks before an accepted candidate replaces a different entered headword.
 
 Accepted AI component suggestions create ordinary editable rows without inherited typed or restored construction.
 A suggested lujvo spelling uses ordinary selection semantics.
+Component-only suggestions keep the current headword's typed identity. A later Use still asks before replacing that headword.
 Undo restores the prior rows and their construction while the affected fields still match the accepted suggestion.
 It preserves later author edits under the same conditional Undo rules.
 Gismu acceptance also updates headword state before it binds generation evidence.
+Evidence-only gismu acceptance keeps equivalent typed bytes and their typed identity across repeated visits.
+Form replacements mark retained evidence and annotations for review. Evidence discarded by that same action cannot add a new spelling review.
 
 The typed path must reproduce every valid analyzed lujvo byte for byte, including extended `'y'` joins and irregular forms.
 The gismu and lujvo builders ask before replacing any spelling that the author typed.
@@ -621,7 +627,9 @@ For gismu sources, language, algorithm input, and weight determine the scores. N
 Source edits update the copy used for publication. An empty alternative row does not change the formation.
 A source reopened from signed evidence remains present even when its algorithm input is null.
 Validation preserves the draft. Loading an older draft synchronizes descriptive source edits once.
+Source synchronization preserves the formation's headword binding, including after AI source acceptance or conditional Undo.
 If scoring inputs change, publication waits for a new form selection or removal of the old evidence.
+Using manual Form with changed scoring inputs replaces the stale scores with manual evidence bound to the current headword.
 Unrelated definition and place suggestions remain usable. Acceptance refuses any new blocking frame or reference problem.
 The form action stays disabled while the generator recalculates. A chosen score must describe the exact current scoring inputs.
 Changing the chosen form invalidates morphology and conflict review. It marks formation-dependent annotations for review rather than deleting them.

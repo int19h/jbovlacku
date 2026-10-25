@@ -100,13 +100,20 @@ Saved rows with unknown origin stay editable and keep their signed version, boun
 Spelling corrections preserve restored joins and compatible author-linked sources, exact definitions, and claims.
 Restored older profiles preserve accepted case, commas, and apostrophe variants after an exact match with the core construction.
 Released restoration stays released through reopening, reload, and rafsi relocking.
+Removing every row from a published revision starts a complete signed restoration on the next matching builder visit.
+It restores sources, locks, profile, and exact joins together, including `bangu'y'ismu` and `sairzba`.
 
 Fresh typed analysis uses matching signed or restored profile evidence instead of a private ordinary profile choice.
+Profile history survives visits to other typed words and removal of compound evidence.
+An unsupported historical reading keeps ordinary profile choices across reopening and reload.
 AI component acceptance creates clean ordinary rows. Conditional Undo restores prior construction and preserves later author edits.
+Component-only suggestions and evidence-only gismu Use preserve typed identity and the later replacement confirmation.
+Replaced evidence does not create a new spelling review. Retained annotations and earlier review marks stay intact.
 
 A [state model](docs/typed-headword-state.md) defines the shared transitions and their invariants.
 Seeded event sequences exercise those transitions with typed, legacy, and published-revision drafts.
-The event model and seeded sequences include AI apply and Undo, gismu acceptance, source controls, and all rafsi choices.
+The event model inventories all production writers. Its seeded sequences include AI component and source apply and Undo.
+They also include gismu Use, manual Form Use, source synchronization, and all rafsi choices.
 
 Unconfirmed type detection follows spelling corrections after confirmation of any evidence loss.
 Forward wizard links and direct Form or builder entry confirm the selected type. Cancellation keeps the previous type and evidence.

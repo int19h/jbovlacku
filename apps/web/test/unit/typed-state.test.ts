@@ -7,13 +7,24 @@ import {
   morphologyProfile,
   rafsiPairId,
   wordId,
+  generateGismu,
   type MorphologyProfile,
 } from "../../../../packages/core/src/index.ts";
-import type { LujvoState } from "../../src/model/builders.ts";
+import {
+  type LujvoState,
+  newGismuState,
+  manualFormation,
+  formationMetadata,
+  formationSourcesFromRows,
+  sameScoringSources,
+  syncFormationSources,
+  sourceReviewMarks,
+} from "../../src/model/builders.ts";
 import {
   draftFromBody,
   draftToBody,
   newDraft,
+  newPlace,
   normalizeDraft,
   type Draft,
 } from "../../src/model/draft.ts";
@@ -36,9 +47,12 @@ import {
   selectWordKind,
   typedLujvoState,
   typedWord,
+  useManualForm,
 } from "../../src/model/typed-headword.ts";
 import {
   applyProposals,
+  applySource,
+  validateSuggestion,
   undoPatches,
   restorePatches,
   type Suggestion,
@@ -199,8 +213,20 @@ function candidate(state: LujvoState) {
 }
 
 function invariants(draft: Draft) {
+  if (draft.gismu && draft.formation) {
+    const sources = formationSourcesFromRows(draft.gismu.rows);
+    const stale =
+      draft.formation.method === "algorithmic" &&
+      !sameScoringSources(draft.formation.sources, sources);
+    if (!stale) assert.deepEqual(draft.formation.sources, sources);
+  }
   const state = draft.lujvo;
   if (!state) return;
+  assert.equal(state.restoredEvidence, undefined);
+  assert.equal(
+    new Set(state.restoredEvidenceHistory?.map((entry) => entry.spelling)).size,
+    state.restoredEvidenceHistory?.length ?? 0,
+  );
   assert.equal(
     new Set(state.components.map((row) => row.id)).size,
     state.components.length,
@@ -269,6 +295,11 @@ function suggestion(spelling = true): Suggestion {
   } as Suggestion;
 }
 function acceptSuggestion(draft: Draft, result: Suggestion) {
+  assert.equal(
+    draft.lujvo?.typedOrigin,
+    undefined,
+    "Typed rows hide AI component actions.",
+  );
   const before = structuredClone(draft);
   applyProposals(draft, result);
   const after = structuredClone(draft);
@@ -279,6 +310,142 @@ function acceptSuggestion(draft: Draft, result: Suggestion) {
     patches: undoPatches(before, after),
   } as AssistanceRecord;
 }
+
+function sourceRows() {
+  return [
+    {
+      id: "source-en",
+      language: "en",
+      name: "English",
+      word: "book",
+      input: "cukta",
+      weight: { numerator: "1", denominator: "1" },
+      aiNoteGroup: [],
+    },
+  ];
+}
+function gismuFormation(draft: Draft, spelling = "cukta") {
+  const state = (draft.gismu ??= { ...newGismuState(), rows: sourceRows() });
+  const result = generateGismu({
+    sources: state.rows.map((row) => ({
+      language: row.language,
+      word: row.word,
+      input: row.input,
+      weight: row.weight,
+    })),
+    manual: spelling,
+    window: 4,
+  });
+  return formationMetadata({
+    result,
+    candidate: result.manual!,
+    rows: state.rows,
+    preset: null,
+    acknowledged: [],
+    reason: state.reason,
+  });
+}
+function sourceSuggestion(scoring = false, word = "volume"): Suggestion {
+  return {
+    operation: "gismu-sources",
+    proposals: [
+      {
+        path: "/formation/sources",
+        value: [
+          {
+            word,
+            notes: [[`Note: A synthetic source for ${word}.`]],
+            ...(scoring
+              ? { input: { format: "lojbanized", text: "volum" } }
+              : {}),
+          },
+        ],
+      },
+    ],
+  } as Suggestion;
+}
+
+test("lujvo validation rejects a spelling without checked components", () => {
+  assert.throws(
+    () =>
+      validateSuggestion(
+        {
+          ...suggestion(),
+          draft_revision: "revision",
+          explanation: "Synthetic.",
+          provenance: { provider: "mock", model: "mock", recipe: "test" },
+          log: {},
+          proposals: [{ path: "/spelling", value: "saizba" }],
+        },
+        "lujvo",
+        "revision",
+      ),
+    /needs checked components/,
+  );
+});
+
+test("spelling review depends on retained fields after AI or gismu selection", () => {
+  for (const retained of [
+    "none",
+    "glosses",
+    "places",
+    "formation",
+    "review",
+  ] as const)
+    for (const reverse of [false, true]) {
+      const draft = fixture("ckusnu", "revision");
+      draft.glosses = [];
+      if (retained === "glosses")
+        draft.glosses = [{ language: "en", text: "book", sense: "" }];
+      if (retained === "places") draft.places = [newPlace(1)];
+      if (retained === "review") draft.review = ["spelling"];
+      if (retained === "formation") {
+        draft.formation = manualFormation([], "Retained evidence.");
+        draft.evidenceForm = "original binding";
+      }
+      const result = suggestion();
+      if (reverse) result.proposals.reverse();
+      const formation = structuredClone(draft.formation);
+      applyProposals(draft, result);
+      assert.deepEqual(draft.review, retained === "none" ? [] : ["spelling"]);
+      assert.deepEqual(draft.formation, formation);
+      assert.equal(draft.evidenceForm, formation ? "original binding" : null);
+    }
+  for (const retained of ["none", "glosses", "places", "review"] as const) {
+    const draft = fixture("ckusnu", "revision");
+    draft.glosses = retained === "glosses" ? draft.glosses : [];
+    if (retained === "places") draft.places = [newPlace(1)];
+    if (retained === "review") draft.review = ["spelling"];
+    draft.formation = manualFormation([], "Previous formation.");
+    const formation = gismuFormation(draft, "cukte");
+    selectGismuSpelling(draft, "cukte", formation);
+    assert.deepEqual(draft.review, retained === "none" ? [] : ["spelling"]);
+    assert.equal(draft.compound, null);
+    assert.deepEqual(draft.formation, formation);
+    assert.equal(draft.evidenceForm, "cukte");
+  }
+});
+
+test("component-only AI and evidence-only gismu Use keep the typed headword identity", () => {
+  const draft = fixture("BAU,CLA", "revision", "cll");
+  changeTypedWord(draft, "BAU,CLA");
+  prepareLujvoBuilder(draft, cached);
+  applyProposals(draft, suggestion(false));
+  assert.equal(draft.typedSpelling, "BAU,CLA");
+  assert.equal(draft.spelling, "BAU,CLA");
+  prepareLujvoBuilder(draft, cached);
+  assert.equal(draft.lujvo!.typedOrigin, undefined);
+  assert.equal(draft.lujvo!.ordinarySpelling, "BAU,CLA");
+  const root = newDraft({
+    spelling: "CUKTA",
+    typedSpelling: "CUKTA",
+    kind: "gismu",
+  });
+  selectGismuSpelling(root, "CUKTA", gismuFormation(root), true);
+  assert.equal(root.typedSpelling, "CUKTA");
+  assert.equal(root.evidenceForm, "CUKTA");
+  assert.deepEqual(root.review, []);
+});
 
 test("fresh typed analysis uses matching signed or restored profile after an ordinary profile choice", () => {
   for (const [spelling, profile] of [
@@ -304,8 +471,8 @@ test("fresh typed analysis uses matching signed or restored profile after an ord
     }
 });
 
-test("unsupported historical fresh analysis keeps ordinary profile controls available", () => {
-  const draft = fixture("sairzba", "typed");
+test("unsupported historical fresh analysis keeps an ordinary profile choice through reopen and reload", () => {
+  let draft = fixture("sairzba", "typed");
   const built = buildLujvoState(draft.lujvo!);
   selectLujvoCandidate(draft, built, built.candidates[0], true);
   draft.compound!.morphology = {
@@ -321,23 +488,194 @@ test("unsupported historical fresh analysis keeps ordinary profile controls avai
   assert.equal(buildLujvoState(state).candidates[0].spelling, "saizba");
   selectLujvoProfile(state, "extended");
   assert.equal(state.profile, "extended");
+  for (let visit = 0; visit < 3; visit++) {
+    draft = normalizeDraft(structuredClone(draft));
+    const reopened = prepareLujvoBuilder(draft, cached);
+    assert.equal(reopened.ordinarySpelling, "sairzba");
+    assert.equal(reopened.profile, "extended");
+    assert.equal(reopened.profileChosen, true);
+    assert.equal(reopened.typedOrigin, undefined);
+    invariants(draft);
+  }
   invariants(draft);
 });
 
 test("older restored snapshots retain their profile evidence before a release", () => {
   const draft = fixture("CKUSNI'yBRODA", "legacy", "extended-v2");
   const state = prepareLujvoBuilder(draft, cached);
-  delete state.restoredEvidence;
+  delete state.restoredEvidenceHistory;
   selectLujvoProfile(state, "cll");
-  assert.deepEqual(state.restoredEvidence, {
-    spelling: "CKUSNI'yBRODA",
-    profile: "extended-v2",
-  });
+  assert.deepEqual(state.restoredEvidenceHistory, [
+    {
+      spelling: "CKUSNI'yBRODA",
+      profile: "extended-v2",
+    },
+  ]);
   state.ordinarySpelling = "";
   changeTypedWord(draft, "CKUSNI'yBRODA");
   prepareLujvoBuilder(draft, cached);
   assert.equal(draft.lujvo!.typedOrigin, true);
   assert.equal(draft.lujvo!.profile, "extended-v2");
+});
+
+test("keyed profile history survives other typed words and migrates the former single entry", () => {
+  for (const mode of ["legacy", "revision"] as const)
+    for (const migrate of [false, true]) {
+      let draft = fixture("BAU,CLA", mode, "cll");
+      let state = prepareLujvoBuilder(draft, cached);
+      clearWordEvidence(draft);
+      if (migrate) {
+        state.restoredEvidence = { spelling: "BAU,CLA", profile: "cll" };
+        delete state.restoredEvidenceHistory;
+        draft = normalizeDraft(structuredClone(draft));
+        assert.equal(draft.lujvo!.restoredEvidence, undefined);
+      }
+      for (const spelling of ["ckusnu", "ckusni", "BAU,CLA"]) {
+        changeTypedWord(draft, spelling);
+        state = prepareLujvoBuilder(draft, cached);
+        draft = normalizeDraft(structuredClone(draft));
+        state = prepareLujvoBuilder(draft, cached);
+        assert.equal(state.typedOrigin, true);
+        assert.equal(
+          state.profile,
+          spelling === "BAU,CLA" ? "cll" : "extended",
+        );
+        assert.equal(buildLujvoState(state).candidates[0].spelling, spelling);
+        assert.ok(
+          state.restoredEvidenceHistory?.some(
+            (entry) => entry.spelling === "BAU,CLA" && entry.profile === "cll",
+          ),
+        );
+        invariants(draft);
+      }
+    }
+});
+
+test("migration preserves newer keyed profile evidence in drafts and Undo snapshots", () => {
+  const before = fixture("BAU,CLA", "legacy", "cll");
+  const old = { spelling: "BAU,CLA", profile: "cll" as const };
+  before.lujvo!.restoredEvidence = old;
+  before.lujvo!.restoredEvidenceHistory = [{ ...old, profile: "extended" }];
+  const record = {
+    key: "lujvo",
+    before,
+    after: structuredClone(before),
+  } as AssistanceRecord;
+  const draft = structuredClone(before);
+  draft.ai = { records: [record] } as Draft["ai"];
+  const migrated = normalizeDraft(draft);
+  for (const state of [
+    migrated.lujvo,
+    migrated.ai!.records[0].before!.lujvo,
+    migrated.ai!.records[0].after!.lujvo,
+  ]) {
+    assert.equal(state!.restoredEvidence, undefined);
+    assert.deepEqual(state!.restoredEvidenceHistory, [
+      { ...old, profile: "extended" },
+    ]);
+  }
+});
+
+test("empty published rows start a complete signed restoration after reopen, reload and typo correction", () => {
+  for (const spelling of ["bangu'y'ismu", "sairzba"])
+    for (const typo of [false, true]) {
+      let draft = fixture(spelling, "revision");
+      let state = prepareLujvoBuilder(draft, cached);
+      const compound = structuredClone(draft.compound);
+      const sources = state.components.map((row) => row.spelling);
+      selectLujvoProfile(state, "cll");
+      editLujvoRows(state, (rows) => rows.splice(0));
+      assert.equal(state.restoredReleased, true);
+      if (typo) {
+        changeTypedWord(draft, spelling + "x");
+        prepareLujvoBuilder(draft, cached);
+        assert.equal(draft.lujvo!.components.length, 0);
+        changeTypedWord(draft, spelling);
+      }
+      for (let visit = 0; visit < 3; visit++) {
+        draft = normalizeDraft(structuredClone(draft));
+        state = prepareLujvoBuilder(draft, cached);
+        assert.equal(state.restoredReleased, undefined);
+        assert.equal(state.restoredSpelling, spelling);
+        assert.equal(state.profile, "extended");
+        assert.equal(state.profileChosen, undefined);
+        assert.deepEqual(
+          state.components.map((row) => row.spelling),
+          sources,
+        );
+        assert.deepEqual(
+          state.components.map((row) => row.locked),
+          compound!.components.map((row) => row.rafsi),
+        );
+        assert.deepEqual(state.joins, [spelling === "sairzba" ? "r" : "'y'"]);
+        assert.equal(buildLujvoState(state).candidates[0].spelling, spelling);
+        assert.deepEqual(draft.compound, compound);
+        invariants(draft);
+      }
+    }
+});
+
+test("manual Form Use rebinds changed scoring evidence and source sync preserves existing bindings", () => {
+  let draft = newDraft({
+    spelling: "cukta",
+    typedSpelling: "cukta",
+    kind: "gismu",
+  });
+  const formation = gismuFormation(draft);
+  selectGismuSpelling(draft, "cukta", formation);
+  changeTypedWord(draft, "cukte");
+  draft.gismu!.rows[0].word = "volume";
+  assert.equal(syncFormationSources(draft), false);
+  assert.equal(draft.formation!.sources[0].word, "volume");
+  assert.equal(draft.evidenceForm, "cukta");
+  draft.gismu!.rows[0].input = "volum";
+  const previous = structuredClone(draft.formation);
+  assert.equal(syncFormationSources(draft), true);
+  assert.deepEqual(draft.formation, previous);
+  useManualForm(draft);
+  assert.equal(draft.formation!.method, "non-algorithmic");
+  assert.equal(draft.formation!.selected_score, null);
+  assert.equal(draft.formation!.sources[0].input!.text, "volum");
+  assert.equal(draft.evidenceForm, "cukte");
+  assert.equal(draft.typedSpelling, "cukte");
+  assert.deepEqual(draft.review, ["spelling"]);
+  draft = normalizeDraft(structuredClone(draft));
+  invariants(draft);
+});
+
+test("gismu source apply and conditional Undo preserve headword and evidence binding after reload", () => {
+  for (const scoring of [false, true]) {
+    let draft = newDraft({
+      spelling: "CUKTA",
+      typedSpelling: "CUKTA",
+      kind: "gismu",
+    });
+    selectGismuSpelling(draft, "CUKTA", gismuFormation(draft), true);
+    const before = structuredClone(draft);
+    applySource(draft, "source-en", sourceSuggestion(scoring));
+    const after = structuredClone(draft);
+    const record = {
+      key: "source-source-en",
+      before,
+      after,
+      patches: undoPatches(before, after),
+    } as AssistanceRecord;
+    assert.equal(draft.spelling, "CUKTA");
+    assert.equal(draft.typedSpelling, "CUKTA");
+    assert.equal(draft.evidenceForm, "CUKTA");
+    if (scoring) {
+      assert.equal(syncFormationSources(draft), true);
+      assert.deepEqual(draft.formation, before.formation);
+    } else assert.equal(draft.formation!.sources[0].word, "volume");
+    draft = normalizeDraft(structuredClone(draft));
+    draft.gismu!.rows[0].word_ipa = "A later pronunciation.";
+    restorePatches(draft, record);
+    assert.equal(draft.gismu!.rows[0].word, "book");
+    assert.equal(draft.gismu!.rows[0].word_ipa, "A later pronunciation.");
+    assert.equal(draft.evidenceForm, "CUKTA");
+    assert.deepEqual(draft.review, before.review);
+    invariants(draft);
+  }
 });
 
 test("row and rafsi releases persist through relock, replacement, reopen and reload for every profile", () => {
@@ -423,7 +761,8 @@ test("Undo preserves later component edits and releases incompatible restored jo
 
 test("partial Undo keeps later ordinary profile, rafsi, and source choices", () => {
   for (const edit of ["profile", "rafsi", "source"] as const) {
-    const draft = fixture("ckusnu", "typed");
+    const draft = fixture("ckusnu", "legacy");
+    prepareLujvoBuilder(draft, cached);
     const record = acceptSuggestion(draft, suggestion());
     if (edit === "profile") selectLujvoProfile(draft.lujvo!, "cll");
     if (edit === "rafsi")
@@ -432,20 +771,17 @@ test("partial Undo keeps later ordinary profile, rafsi, and source choices", () 
       });
     if (edit === "source") selectLujvoSource(draft.lujvo!, 0, "cukte");
     restorePatches(draft, record);
+    prepareLujvoBuilder(draft, cached);
     if (edit === "profile") {
       assert.equal(draft.lujvo!.profile, "cll");
       assert.equal(draft.lujvo!.profileChosen, true);
       assert.equal(draft.lujvo!.typedOrigin, undefined);
-      assert.deepEqual(draft.lujvo!.restoredEvidence, {
-        spelling: "ckusnu",
-        profile: "extended",
-      });
-      changeTypedWord(draft, "ckusnux");
-      changeTypedWord(draft, "ckusnu");
-      prepareLujvoBuilder(draft, cached);
-      assert.equal(draft.lujvo!.typedOrigin, true);
-      assert.equal(draft.lujvo!.profile, "extended");
-      assert.equal(draft.lujvo!.profileChosen, undefined);
+      assert.deepEqual(draft.lujvo!.restoredEvidenceHistory, [
+        {
+          spelling: "ckusnu",
+          profile: "extended",
+        },
+      ]);
     }
     if (edit === "rafsi") {
       assert.equal(draft.lujvo!.components[0].locked, "sanm");
@@ -748,6 +1084,7 @@ test("private restoration and release fields never enter published compound evid
   assert.equal(state.restoredReleased, true);
   for (const field of [
     "restoredEvidence",
+    "restoredEvidenceHistory",
     "restoredReleased",
     "restoredJoinParts",
     "restoredSpelling",
@@ -761,7 +1098,7 @@ test("private restoration and release fields never enter published compound evid
 
 test("random production event sequences preserve draft invariants after every event", () => {
   const coverage = new Map<string, number>();
-  const mutations = new Set<string>();
+  const mutations = new Map<string, number>();
   for (let seed = 1; seed <= 24; seed++) {
     let bits = seed * 0x9e3779b1;
     const random = (n: number) => {
@@ -778,6 +1115,7 @@ test("random production event sequences preserve draft invariants after every ev
     let earlier = draft.spelling;
     const history: string[] = [];
     let accepted: AssistanceRecord | null = null;
+    let acceptedSource: AssistanceRecord | null = null;
     const events = [
       "type",
       "paste",
@@ -801,6 +1139,7 @@ test("random production event sequences preserve draft invariants after every ev
       "link sources",
       "add row",
       "remove row",
+      "remove every row",
       "reorder rows",
       "change rafsi",
       "relock rafsi",
@@ -812,16 +1151,38 @@ test("random production event sequences preserve draft invariants after every ev
       "dictionary Add",
       "replace row",
       "alternative candidate",
-      "AI spelling",
       "AI components",
       "AI lujvo",
       "AI Undo",
       "gismu Use",
+      "gismu evidence Use",
+      "gismu source draft",
+      "typed source draft",
+      "Form Use",
+      "sync formation sources",
+      "AI gismu source",
+      "AI source Undo",
       "change profile",
       "Use candidate",
     ];
-    for (let step = 0; step < 100; step++) {
-      const event = pick(events);
+    for (let step = 0; step < 120; step++) {
+      const prefix = [
+        "gismu source draft",
+        "gismu evidence Use",
+        "gismu Use",
+        "sync formation sources",
+        "AI gismu source",
+        "Form Use",
+        "AI gismu source",
+        "AI source Undo",
+        "typed source draft",
+        "Source word",
+        "Other source word",
+      ];
+      const event =
+        step >= 100 && step < 100 + prefix.length
+          ? prefix[step - 100]
+          : pick(events);
       history.push(event);
       coverage.set(event, (coverage.get(event) ?? 0) + 1);
       const before = structuredClone(draft);
@@ -872,16 +1233,14 @@ test("random production event sequences preserve draft invariants after every ev
             if (retained && !before.lujvo?.profileChosen)
               assert.equal(
                 state.profile,
-                before.compound!.morphology.version === "2"
-                  ? "extended-v2"
-                  : "extended",
+                morphologyProfile(before.compound!.morphology),
               );
             const word = typedWord(before.spelling);
             const profile = retained
               ? morphologyProfile(before.compound!.morphology)
-              : before.lujvo?.restoredEvidence?.spelling === word
-                ? before.lujvo.restoredEvidence.profile
-                : "extended";
+              : (before.lujvo?.restoredEvidenceHistory?.find(
+                  (entry) => entry.spelling === word,
+                )?.profile ?? "extended");
             const analysis =
               profile === "extended"
                 ? detectWord(word)
@@ -964,7 +1323,7 @@ test("random production event sequences preserve draft invariants after every ev
             break;
           case "separate draft":
           case "requested word":
-            accepted = null;
+            accepted = acceptedSource = null;
             draft = newDraft(
               event === "requested word" ? { spelling: pick(words) } : {},
             );
@@ -973,7 +1332,7 @@ test("random production event sequences preserve draft invariants after every ev
             assert.deepEqual(draft.review, []);
             break;
           case "revise publication": {
-            accepted = null;
+            accepted = acceptedSource = null;
             const v2 = !!random(2);
             draft = fixture(
               v2
@@ -992,7 +1351,7 @@ test("random production event sequences preserve draft invariants after every ev
             break;
           }
           case "legacy draft":
-            accepted = null;
+            accepted = acceptedSource = null;
             draft = fixture(pick(words), "legacy");
             break;
           case "remove evidence":
@@ -1032,15 +1391,13 @@ test("random production event sequences preserve draft invariants after every ev
               );
             break;
           }
-          case "AI spelling":
-            accepted = acceptSuggestion(draft, {
-              operation: "lujvo",
-              proposals: [{ path: "/spelling", value: pick(words) }],
-            } as Suggestion);
-            break;
           case "AI components":
           case "AI lujvo":
-            if (!draft.lujvo?.typedOrigin)
+            if (
+              draft.kind === "lujvo" &&
+              draft.lujvo &&
+              !draft.lujvo.typedOrigin
+            )
               accepted = acceptSuggestion(
                 draft,
                 suggestion(event === "AI lujvo"),
@@ -1049,11 +1406,97 @@ test("random production event sequences preserve draft invariants after every ev
           case "AI Undo":
             if (accepted) {
               restorePatches(draft, accepted);
-              accepted = null;
+              accepted = acceptedSource = null;
             }
             break;
+          case "gismu source draft":
+            draft = newDraft({
+              spelling: "CUKTA",
+              typedSpelling: "CUKTA",
+              kind: "gismu",
+              gismu: { ...newGismuState(), rows: sourceRows() },
+            });
+            accepted = acceptedSource = null;
+            break;
+          case "typed source draft":
+            draft = fixture("ckusnu", "typed");
+            accepted = acceptedSource = null;
+            break;
           case "gismu Use":
-            selectGismuSpelling(draft, "bangu");
+            if (
+              draft.kind === "gismu" &&
+              draft.gismu?.rows.length &&
+              !draft.gismu.rows.some((row) =>
+                sourceReviewMarks(row).some((mark) => mark.field === "input"),
+              )
+            ) {
+              selectGismuSpelling(draft, "cukta", gismuFormation(draft));
+              assert.equal(draft.typedSpelling, null);
+            }
+            break;
+          case "gismu evidence Use":
+            if (
+              draft.kind === "gismu" &&
+              draft.gismu?.rows.length &&
+              draft.typedSpelling &&
+              !draft.gismu.rows.some((row) =>
+                sourceReviewMarks(row).some((mark) => mark.field === "input"),
+              ) &&
+              detectWord(draft.spelling).kind === "gismu"
+            ) {
+              const spelling = draft.spelling;
+              const typed = draft.typedSpelling;
+              selectGismuSpelling(
+                draft,
+                spelling,
+                gismuFormation(draft, detectWord(spelling).normalized!),
+                true,
+              );
+              assert.equal(draft.spelling, spelling);
+              assert.equal(draft.typedSpelling, typed);
+              assert.equal(draft.evidenceForm, spelling);
+            }
+            break;
+          case "Form Use":
+            if (draft.spelling.trim()) useManualForm(draft);
+            break;
+          case "sync formation sources":
+            if (draft.gismu?.rows.length) {
+              const row = draft.gismu.rows[0];
+              row.word = row.word === "volume" ? "book" : "volume";
+              const binding = draft.evidenceForm;
+              syncFormationSources(draft);
+              assert.equal(draft.evidenceForm, binding);
+            }
+            break;
+          case "AI gismu source":
+            if (draft.kind === "gismu" && draft.gismu?.rows.length) {
+              const old = structuredClone(draft);
+              applySource(
+                draft,
+                draft.gismu.rows[0].id!,
+                sourceSuggestion(
+                  step === 104 || !!random(2),
+                  step === 106 ? "book" : "volume",
+                ),
+              );
+              const after = structuredClone(draft);
+              acceptedSource = {
+                key: `source-${draft.gismu.rows[0].id}`,
+                before: old,
+                after,
+                patches: undoPatches(old, after),
+              } as AssistanceRecord;
+              assert.equal(draft.evidenceForm, old.evidenceForm);
+              assert.equal(draft.spelling, old.spelling);
+              assert.equal(draft.typedSpelling, old.typedSpelling);
+            }
+            break;
+          case "AI source Undo":
+            if (acceptedSource) {
+              restorePatches(draft, acceptedSource);
+              acceptedSource = null;
+            }
             break;
           case "alternative candidate": {
             if (!draft.lujvo || draft.lujvo.typedOrigin) break;
@@ -1101,6 +1544,7 @@ test("random production event sequences preserve draft invariants after every ev
                 });
               if (event === "remove row")
                 rows.splice(random(Math.max(1, state.components.length)), 1);
+              if (event === "remove every row") rows.splice(0);
               if (event === "reorder rows") rows.reverse();
               if (rows.length) {
                 const row = rows[random(rows.length)];
@@ -1135,13 +1579,15 @@ test("random production event sequences preserve draft invariants after every ev
         }
         invariants(draft);
         if (JSON.stringify(before) !== JSON.stringify(draft))
-          mutations.add(event);
+          mutations.set(event, (mutations.get(event) ?? 0) + 1);
         if (
           ![
             "revise publication",
             "legacy draft",
             "separate draft",
             "requested word",
+            "gismu source draft",
+            "typed source draft",
           ].includes(event)
         ) {
           assert.deepEqual(draft.text, before.text);
@@ -1160,7 +1606,7 @@ test("random production event sequences preserve draft invariants after every ev
       }
     }
   }
-  assert.equal(coverage.size, 40);
+  assert.equal(coverage.size, 47);
   for (const event of [
     "Source word",
     "Other source word",
@@ -1172,11 +1618,16 @@ test("random production event sequences preserve draft invariants after every ev
     "relock rafsi",
     "different rafsi",
     "change profile",
-    "AI spelling",
     "AI components",
     "AI lujvo",
     "AI Undo",
     "gismu Use",
+    "gismu evidence Use",
+    "Form Use",
+    "sync formation sources",
+    "AI gismu source",
+    "AI source Undo",
+    "remove every row",
     "alternative candidate",
     "Use candidate",
   ])
@@ -1186,4 +1637,15 @@ test("random production event sequences preserve draft invariants after every ev
     );
   for (const [event, count] of coverage)
     assert.ok(count > 20, `${event}: ${count}`);
+  console.info(
+    "Production event coverage",
+    JSON.stringify(
+      Object.fromEntries(
+        [...coverage].map(([event, attempted]) => [
+          event,
+          { attempted, effective: mutations.get(event) ?? 0 },
+        ]),
+      ),
+    ),
+  );
 });

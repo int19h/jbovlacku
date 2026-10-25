@@ -965,3 +965,82 @@ test("returning to unknown morphology clears a completed Other type review", asy
     .poll(async () => (await draft(page)).review.includes("word type"))
     .toBe(false);
 });
+
+test("R8 repeated gismu evidence visits retain typed identity and later replacement confirmation", async ({
+  page,
+}) => {
+  await seedBuilder(page, "gismu");
+  for (let visit = 0; visit < 2; visit++) {
+    await page.goto("/new/gismu?evidence=1");
+    await expect(
+      page.getByRole("button", { name: "Use bangu", exact: true }),
+    ).toBeEnabled();
+    await page.getByRole("button", { name: "Use bangu", exact: true }).click();
+    await expect(page).toHaveURL(/\/new\/places$/);
+    expect((await draft(page)).typedSpelling).toBe("bangu");
+    await page.reload();
+  }
+  await page.goto("/new/gismu");
+  await page.getByRole("button", { name: "Choose cukta", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Use cukta", exact: true }),
+  ).toBeEnabled();
+  let replacement = "";
+  page.once("dialog", (dialog) => {
+    replacement = dialog.message();
+    void dialog.dismiss();
+  });
+  await page.getByRole("button", { name: "Use cukta", exact: true }).click();
+  expect(replacement).toBe('Replace the typed spelling "bangu" with "cukta"?');
+  expect((await draft(page)).spelling).toBe("bangu");
+});
+
+test("R8 gismu replacement reviews retained annotations and manual Form Use rebinds changed source evidence", async ({
+  page,
+}) => {
+  await seedBuilder(page, "gismu");
+  await page.goto("/new/gismu?evidence=1");
+  await page.getByRole("button", { name: "Use bangu", exact: true }).click();
+  await expect(page).toHaveURL(/\/new\/places$/);
+  await page.goto("/new/gismu");
+  await page.getByLabel("Type a form yourself", { exact: true }).fill("cukte");
+  await expect(
+    page.getByRole("button", { name: "Use cukte", exact: true }),
+  ).toBeEnabled();
+  page.once("dialog", (dialog) => void dialog.accept());
+  await page.getByRole("button", { name: "Use cukte", exact: true }).click();
+  await expect(page).toHaveURL(/\/new\/places$/);
+  expect((await draft(page)).review).toEqual([]);
+  expect((await draft(page)).evidenceForm).toBe("cukte");
+  await page.goto("/new/gismu");
+  await page
+    .getByLabel("Native word for English", { exact: true })
+    .fill("volume");
+  await expect
+    .poll(async () => (await draft(page)).formation.sources[0].word)
+    .toBe("volume");
+  expect((await draft(page)).evidenceForm).toBe("cukte");
+  await page
+    .getByLabel("Scoring letters for English", { exact: true })
+    .fill("volum");
+  await expect(
+    page.getByText(/^The source scoring inputs changed\./),
+  ).toBeVisible();
+  await page
+    .getByRole("link", { name: "Enter without generation", exact: true })
+    .click();
+  await page.getByLabel("Spelling", { exact: true }).fill("cukta");
+  await expect(
+    page.getByText(/^The source scoring inputs changed\./),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Use cukta", exact: true }).click();
+  await expect(page).toHaveURL(/\/new\/places$/);
+  const manual = await draft(page);
+  expect(manual.formation.method).toBe("non-algorithmic");
+  expect(manual.formation.selected_score).toBeNull();
+  expect(manual.formation.sources[0].input.text).toBe("volum");
+  expect(manual.evidenceForm).toBe("cukta");
+  expect(manual.review).toEqual(["spelling"]);
+  await page.reload();
+  expect((await draft(page)).evidenceForm).toBe("cukta");
+});
