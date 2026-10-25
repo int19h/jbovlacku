@@ -17,10 +17,12 @@ An empty value requires fresh typed analysis after a replacement.
 Each component keeps its stable `id`, source `spelling`, `kind`, selected `definition`, available `definitions`, `gloss`, and rafsi `claims`.
 `locked` keeps a selected rafsi. `unresolvedSource` marks a missing source choice.
 `profile` selects the exact morphology version.
-`profileChosen` records an explicit ordinary profile choice. It takes precedence over the profile in retained evidence.
+`profileChosen` records an explicit ordinary profile choice. It takes precedence over retained evidence only while those rows stay ordinary.
 
 `joins` keeps explicit boundaries. `restoredJoinParts` binds restored ordinary joins to row IDs and locks.
 `restoredSpelling` keeps the exact bytes for those rows. `restoredProfile` binds them to their morphology version.
+`restoredReleased` records a released construction. Reopening, relocking, replacing rows, and reloading cannot restore that construction again.
+`restoredEvidence` keeps the spelling and profile identity after release or metadata removal. It does not authorize restored joins.
 `selected` keeps a candidate choice. `acknowledged` keeps reviews of candidate conflicts.
 
 `compound` and `formation` keep attributed evidence. `evidenceForm` binds that evidence to its selected spelling.
@@ -45,7 +47,11 @@ Legacy rows gain row-associated joins only after a complete matching reading con
 Published revisions without rows recover sources, locks, profile, and exact boundaries from their evidence.
 
 A new typed lujvo receives a fresh reading and exact spelling and boundary locks.
-Its profile controls stay hidden and disabled. A profile event cannot change its fixed reading.
+Fresh analysis uses matching signed metadata first, then matching `restoredEvidence`, then the current extended profile.
+An ordinary profile choice never supplies the profile for fresh typed analysis.
+Supported typed rows have one exact candidate. Their profile controls stay hidden and disabled.
+A profile event cannot change their fixed reading.
+If a historical constructor cannot rebuild the reading, the rows stay ordinary and the profile controls stay available.
 Compatible old rows keep author-linked sources, definitions, claims, and IDs.
 Exact locked parts take precedence. An unlocked source can match an existing claim, a recognized whole word, or a gismu stem.
 
@@ -55,17 +61,45 @@ Matching compound evidence supplies missing sources before dictionary suggestion
 
 A changed part receives a new row. Dictionary order never chooses an ambiguous source.
 
-Changing ordinary rows, their order, or their rafsi releases their restored joins to automatic construction.
-Changing source attribution without changing a row or rafsi keeps its joins.
+Dictionary Add and Add as entered append ordinary rows. Remove deletes a row. Move changes the row order.
+These events, row replacement, and a changed rafsi release restored joins and exact spelling before construction.
+Rafsi controls include automatic, the current lock again, and a different lock. Selecting the same lock preserves restoration.
+Clearing a lock and then restoring it does not undo a release.
+The release persists for every morphology profile through navigation and reload.
+
+The typed Source word list replaces source attribution while it keeps the row ID and exact rafsi.
+Other source word changes its source spelling, resets its definition and claims, and marks an empty source unresolved.
+Exact-definition controls change the selected source definition. Other rafsi you know replaces the entered claims.
+These attribution events preserve restoration when the row identity, order, and exact rafsi stay the same.
 Changing the morphology profile also releases restored joins and their exact spelling.
 
 Reopening ordinary rows keeps that explicit profile choice. Fresh typed analysis starts without that private choice marker.
 
-Choosing a candidate records its spelling, evidence, selected candidate, and builder mode.
+Choosing an alternative candidate previews it and clears conflict reviews without replacing the headword or evidence.
+Using a candidate records its spelling, evidence, selected candidate, and builder mode.
 An ordinary selection records `ordinarySpelling`. A typed selection keeps its typed binding.
 Selection without metadata removes compound evidence only through that explicit action.
 
-Reload preserves the same state. Legacy migration uses the same builder-open transition.
+Accepting an AI spelling alone uses the manual spelling transition.
+Accepting Suggest components or Suggest a lujvo creates fresh ordinary rows under the current ordinary profile.
+The new rows have no old joins, restoration snapshot, or typed binding. Their construction starts with automatic joins.
+A supplied spelling records an ordinary selection. Without one, the current headword stays associated with the suggested ordinary rows.
+Spelling changes clear publication reviews and mark retained annotations for review. Compound evidence clears only through this accepted action.
+Proposal order does not change these results.
+
+AI Undo restores each accepted field only if its current value still matches the accepted value.
+The undo snapshot includes rows, joins, restoration markers, source choices, spelling markers, evidence, and review marks.
+Reload preserves the snapshot. Later unrelated author edits survive Undo.
+If later row or profile edits prevent a full restoration, Undo releases incompatible restored construction.
+If later edits invalidate restored typed rows, Undo exits typed mode before rebuilding.
+A later ordinary profile choice also keeps Undo in ordinary mode, even when that profile can rebuild the old spelling.
+The old typed profile remains separate evidence for future fresh analysis.
+
+Gismu Use shares the spelling transition, exits typed mode, and records its accepted spelling as ordinary input.
+It keeps the old component inputs, clears compound evidence, and binds the new formation evidence to the selected spelling.
+Equivalent typed presentation can remain exact when the author adds gismu evidence.
+
+Reload and draft import normalize saved state. Legacy migration uses the same builder-open transition.
 A published revision starts with copied evidence and its exact parent, without invented typed origin.
 “New word” retains entered content and chooses the next wizard step. Starting a separate draft uses fresh state.
 Removing evidence does not remove compatible saved rows or their joins.
@@ -79,14 +113,18 @@ Fresh analysis on a later builder visit can replace those rows and their candida
 
 Ordinary rows never become locked typed rows merely because their rafsi are locked.
 No spelling edit silently removes author-linked sources, compatible joins, prose, or signed evidence.
-Every replacement typed lujvo receives fresh analysis, including a spelling round trip before the next builder visit.
+Every supported replacement typed lujvo enters typed mode after fresh analysis, including a spelling round trip before the next builder visit.
+Its profile comes from matching signed or restored evidence, never an ordinary profile override.
+A historical construction gap cannot create typed rows with locked, unusable profile controls.
 
 Compatible author choices survive that fresh analysis. Incompatible parts never inherit another part's attribution.
 A source remains unresolved until the author chooses it, matching signed evidence supplies it, or exactly one dictionary source supplies it.
 Unresolved sources cannot produce compound attribution.
 
 An unchanged row and rafsi retain their joins across navigation, reload, and evidence removal.
-A genuine row or rafsi change releases restored joins before construction.
+A genuine row or rafsi change releases restored joins before construction. A return to the former values does not undo the release.
+Restored profile evidence can guide fresh analysis without reviving released joins.
+A complete AI Undo restores the old rows and their exact joins together.
 Spelling edits preserve evidence bindings and set review marks instead of rewriting signed metadata.
 
 Exact rebuilding of the current headword applies after reconciliation when it matches the builder's associated spelling.
@@ -100,5 +138,7 @@ It preserves the core's score, parts, claims, and morphology and scoring version
 This restoration requires a construction that the saved profile supports.
 The historical CLL constructor cannot restore optional joins that it does not generate, even when its analyzer accepts them.
 For example, it analyzes `SAI,rZBA` but constructs `saizba` from `sai` and `zba`.
-The browser reports that mismatch instead of presenting a changed spelling as an exact restoration.
+An ordinary restoration reports that mismatch instead of presenting a changed spelling as an exact restoration.
+An unsupported typed reading returns to ordinary construction with profile controls available.
+Its automatic candidate does not replace the headword until the author confirms Use.
 The historical CLL and extended version 2 profiles reject framing dots, so their restored spellings cannot contain framing dots.

@@ -1,4 +1,4 @@
-import { detectWord } from "../../model/typed-headword.ts";
+import { detectWord, selectGismuSpelling } from "../../model/typed-headword.ts";
 import {
   assistanceAction,
   inferenceLog,
@@ -1342,15 +1342,13 @@ export async function gismuPage(
             )
           )
             return;
-          draft.compound = null;
           if (draft.spelling !== candidate.form) draft.publishAcknowledged = [];
           const selectedSpelling =
             evidenceOnly &&
             detectWord(draft.spelling).normalized === candidate.form
               ? draft.spelling
               : candidate.form;
-          draft.spelling = selectedSpelling;
-          draft.evidenceForm = selectedSpelling;
+          selectGismuSpelling(draft, selectedSpelling);
           const preset = presets.find((pr) => pr.id === state.preset) ?? null;
           draft.formation = formationMetadata({
             result,

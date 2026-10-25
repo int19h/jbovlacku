@@ -113,6 +113,11 @@ function rowParts(state: LujvoState) {
 
 /** Release restored boundaries only after their actual rows or rafsi change. */
 export function reconcileLujvoRows(state: LujvoState) {
+  if (state.restoredSpelling && state.restoredProfile)
+    state.restoredEvidence ??= {
+      spelling: state.restoredSpelling,
+      profile: state.restoredProfile,
+    };
   if (
     !state.typedOrigin &&
     state.restoredJoinParts &&
@@ -125,6 +130,7 @@ export function reconcileLujvoRows(state: LujvoState) {
           component.locked !== state.restoredJoinParts![index].rafsi,
       ))
   ) {
+    state.restoredReleased = true;
     delete state.joins;
     delete state.restoredJoinParts;
     delete state.restoredSpelling;
@@ -141,6 +147,46 @@ export function selectLujvoProfile(
   if (state.profile !== profile) state.profileChosen = true;
   state.profile = profile;
   reconcileLujvoRows(state);
+}
+
+/** Apply a row control and release construction before the next save or build. */
+export function editLujvoRows(
+  state: LujvoState,
+  edit: (rows: LujvoComponentState[]) => void,
+) {
+  edit(state.components);
+  reconcileLujvoRows(state);
+}
+
+/** A source choice changes attribution while its exact part and row stay fixed. */
+export function selectLujvoSource(
+  state: LujvoState,
+  index: number,
+  source: LujvoComponentState | string,
+) {
+  const row = state.components[index];
+  if (typeof source !== "string") {
+    state.components[index] = { ...source, id: row.id, locked: row.locked };
+  } else {
+    const spelling = typedWord(source);
+    Object.assign(row, {
+      spelling,
+      kind: detectWord(spelling).kind,
+      definition: null,
+      definitions: [],
+      claims: [],
+    });
+    if (spelling) delete row.unresolvedSource;
+    else row.unresolvedSource = "Link a source word if you know it.";
+  }
+}
+
+/** Record a confirmed gismu choice and keep the previous component inputs. */
+export function selectGismuSpelling(draft: Draft, spelling: string) {
+  changeTypedWord(draft, spelling);
+  draft.compound = null;
+  draft.typedSpelling = null;
+  draft.evidenceForm = spelling;
 }
 
 function matchingJoinedReading(state: LujvoState, spelling: string) {
@@ -173,12 +219,38 @@ function leaveTypedMode(state: LujvoState, keepJoins: boolean) {
     state.restoredJoinParts = rowParts(state);
     state.restoredSpelling = spelling;
     state.restoredProfile = state.profile;
+    if (spelling) state.restoredEvidence = { spelling, profile: state.profile };
   } else {
     delete state.joins;
     delete state.restoredJoinParts;
     delete state.restoredSpelling;
     delete state.restoredProfile;
   }
+}
+
+/** Partial Undo cannot bind restored typed rows to a later edited headword. */
+export function reconcileLujvoUndo(draft: Draft, original?: LujvoState | null) {
+  const state = draft.lujvo;
+  if (!state) return;
+  if (
+    state.typedOrigin &&
+    (state.typed !== typedWord(draft.spelling) ||
+      draft.typedSpelling !== state.typed ||
+      state.profileChosen ||
+      !exactTypedConstruction(state))
+  ) {
+    const keepJoins =
+      exactTypedConstruction(state) &&
+      !!matchingJoinedReading(state, state.typed ?? "");
+    leaveTypedMode(state, keepJoins);
+    if (original?.typedOrigin && original.typed)
+      state.restoredEvidence = {
+        spelling: original.typed,
+        profile: original.profile,
+      };
+    state.ordinarySpelling = "";
+  }
+  reconcileLujvoRows(state);
 }
 
 function matchingLockedReading(state: LujvoState, spelling: string) {
@@ -283,6 +355,19 @@ function retainSources(
   });
 }
 
+function exactTypedConstruction(state: LujvoState): boolean {
+  try {
+    const candidates = buildLujvoState(state).candidates;
+    return (
+      candidates.length === 1 &&
+      candidates[0].spelling === state.typed &&
+      candidates[0].tokens.join("") === state.typed
+    );
+  } catch {
+    return false;
+  }
+}
+
 /** Reconcile a builder visit. No browser, storage, or provider work occurs here. */
 export function prepareLujvoBuilder(
   draft: Draft,
@@ -336,12 +421,7 @@ export function prepareLujvoBuilder(
             );
           })));
     state.profile = profile;
-    if (profile !== "extended" && !state.typedOrigin) {
-      delete state.joins;
-      delete state.restoredJoinParts;
-      delete state.restoredSpelling;
-      delete state.restoredProfile;
-    }
+    reconcileLujvoRows(state);
     if (hydrate)
       state.components = retainSources(
         retainedCompound.components.map(signedComponent),
@@ -360,6 +440,7 @@ export function prepareLujvoBuilder(
     if (
       profile === "extended" &&
       retainedLocks &&
+      !state.restoredReleased &&
       (hydrate || state.typedOrigin || legacyTypedIdentity)
     ) {
       const parts = detectWord(spelling).readings.find(
@@ -373,12 +454,16 @@ export function prepareLujvoBuilder(
         state.joins = parts.slice(1).map((part) => part.join_before ?? "");
     }
   }
+  // An ordinary profile choice never changes the word's retained analysis evidence.
+  const analysisProfile = retainedCompound
+    ? morphologyProfile(retainedCompound.morphology)
+    : state.restoredEvidence?.spelling === spelling
+      ? state.restoredEvidence.profile
+      : "extended";
   const analysis = typedIdentity
-    ? retainedCompound
-      ? state.profile === "extended"
-        ? detectWord(spelling)
-        : analyzeWord(state.profile, spelling)
-      : detectWord(spelling)
+    ? analysisProfile === "extended"
+      ? detectWord(spelling)
+      : analyzeWord(analysisProfile, spelling)
     : null;
   if (
     (!retainedCompound || state.ordinarySpelling === "") &&
@@ -390,7 +475,7 @@ export function prepareLujvoBuilder(
       spelling,
       analysis.readings[0],
       cached,
-      retainedCompound ? state.profile : "extended",
+      analysisProfile,
     );
     next.components = retainSources(
       next.components,
@@ -398,10 +483,27 @@ export function prepareLujvoBuilder(
       retainedCompound,
       next.profile,
     );
-    state = draft.lujvo = next;
+    if (exactTypedConstruction(next)) state = draft.lujvo = next;
+    else {
+      // Historical analyzers can accept joins their constructor cannot produce.
+      // Keep ordinary controls available so the author can choose another profile.
+      state.profile = analysisProfile;
+      delete state.profileChosen;
+      state.restoredReleased = true;
+      delete state.joins;
+      delete state.restoredJoinParts;
+      delete state.restoredSpelling;
+      delete state.restoredProfile;
+    }
+  }
+  if (state.typedOrigin && !exactTypedConstruction(state)) {
+    leaveTypedMode(state, false);
+    state.ordinarySpelling = "";
+    state.restoredReleased = true;
   }
   if (
     !state.typedOrigin &&
+    !state.restoredReleased &&
     (state.joins || (state.profile !== "extended" && !state.profileChosen))
   ) {
     const matches =
@@ -416,9 +518,24 @@ export function prepareLujvoBuilder(
       state.restoredProfile ??= state.profile;
       if (!state.restoredSpelling && associated)
         state.restoredSpelling = associated;
+      if (state.restoredSpelling)
+        state.restoredEvidence ??= {
+          spelling: state.restoredSpelling,
+          profile: state.profile,
+        };
     }
   }
   return state;
+}
+
+/** Preview another ordinary candidate without replacing the headword or evidence. */
+export function chooseLujvoAlternative(draft: Draft, spelling: string) {
+  const state = draft.lujvo!;
+  if (state.selected !== spelling) {
+    state.acknowledged = [];
+    draft.publishAcknowledged = [];
+  }
+  state.selected = spelling;
 }
 
 /** Record a confirmed form choice after the page checks conflicts and replacement. */

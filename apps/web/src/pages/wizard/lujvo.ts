@@ -3,6 +3,9 @@ import {
   typedWord,
   prepareLujvoBuilder,
   reconcileLujvoRows,
+  editLujvoRows,
+  chooseLujvoAlternative,
+  selectLujvoSource,
   selectLujvoCandidate,
   selectLujvoProfile,
   linkedSources,
@@ -328,25 +331,27 @@ export async function lujvoPage(
           "Add",
           () => {
             const id = wordId({ language: "jbo", spelling: hit.word.spelling });
-            state.components.push({
-              id: componentId(),
-              spelling: hit.word.spelling,
-              kind,
-              // A specific definition is recorded only when the author chooses one below.
-              definition: null,
-              definitions: hit.entries.map((e) => ({
-                event: e.event,
-                summary:
-                  e.glosses.map((g) => g.text).join(", ") ||
-                  Array.from(e.plain_text).slice(0, 60).join(""),
-              })),
-              gloss: entry.glosses[0]?.text ?? "",
-              claims: [...new Set(rafsi)].map((r) => ({
-                rafsi: r,
-                pair: rafsiPairId(id, r),
-              })),
-              locked: null,
-            });
+            editLujvoRows(state, (rows) =>
+              rows.push({
+                id: componentId(),
+                spelling: hit.word.spelling,
+                kind,
+                // A specific definition is recorded only when the author chooses one below.
+                definition: null,
+                definitions: hit.entries.map((e) => ({
+                  event: e.event,
+                  summary:
+                    e.glosses.map((g) => g.text).join(", ") ||
+                    Array.from(e.plain_text).slice(0, 60).join(""),
+                })),
+                gloss: entry.glosses[0]?.text ?? "",
+                claims: [...new Set(rafsi)].map((r) => ({
+                  rafsi: r,
+                  pair: rafsiPairId(id, r),
+                })),
+                locked: null,
+              }),
+            );
             addField.input.value = "";
             addResults.replaceChildren();
             saver.touch();
@@ -389,15 +394,17 @@ export async function lujvoPage(
         button(
           "Add as entered",
           () => {
-            state.components.push({
-              id: componentId(),
-              spelling: analysis.normalized!,
-              kind,
-              definition: null,
-              gloss: "",
-              claims: [],
-              locked: null,
-            });
+            editLujvoRows(state, (rows) =>
+              rows.push({
+                id: componentId(),
+                spelling: analysis.normalized!,
+                kind,
+                definition: null,
+                gloss: "",
+                claims: [],
+                locked: null,
+              }),
+            );
             addField.input.value = "";
             addResults.replaceChildren();
             saver.touch();
@@ -486,7 +493,7 @@ export async function lujvoPage(
               (choice) => choice.spelling === source.input.value,
             );
             if (!choice) return;
-            state.components[index] = { ...choice, id: component.id };
+            selectLujvoSource(state, index, choice);
             saver.touch();
             rebuild();
           });
@@ -502,15 +509,7 @@ export async function lujvoPage(
           spellcheck: false,
         });
         source.input.addEventListener("change", () => {
-          const spelling = typedWord(source.input.value);
-          component.spelling = spelling;
-          component.kind = detectWord(spelling).kind;
-          component.definition = null;
-          component.definitions = [];
-          component.claims = [];
-          if (spelling) delete component.unresolvedSource;
-          else
-            component.unresolvedSource = "Link a source word if you know it.";
+          selectLujvoSource(state, index, source.input.value);
           saver.touch();
           rebuild();
         });
@@ -537,7 +536,9 @@ export async function lujvoPage(
             },
           );
           definition.input.addEventListener("change", () => {
-            component.definition = definition.input.value || null;
+            editLujvoRows(state, (rows) => {
+              rows[index].definition = definition.input.value || null;
+            });
             saver.touch();
             rebuild();
           });
@@ -552,10 +553,9 @@ export async function lujvoPage(
       const move = (delta: number) => {
         const target = index + delta;
         if (target < 0 || target >= state.components.length) return;
-        [state.components[index], state.components[target]] = [
-          state.components[target],
-          state.components[index],
-        ];
+        editLujvoRows(state, (rows) => {
+          [rows[index], rows[target]] = [rows[target], rows[index]];
+        });
         saver.touch();
         renderRows();
         rebuild();
@@ -605,7 +605,9 @@ export async function lujvoPage(
             }),
           );
         pick.addEventListener("change", () => {
-          component.definition = pick.value || null;
+          editLujvoRows(state, (rows) => {
+            rows[index].definition = pick.value || null;
+          });
           saver.touch();
           rebuild();
         });
@@ -641,7 +643,9 @@ export async function lujvoPage(
         );
         if (title) wrapper.title = title;
         input.addEventListener("change", () => {
-          component.locked = value;
+          editLujvoRows(state, (rows) => {
+            rows[index].locked = value;
+          });
           saver.touch();
           renderRows();
           rebuild();
@@ -698,12 +702,14 @@ export async function lujvoPage(
           .split(",")
           .map((s) => s.trim().toLowerCase())
           .filter(Boolean);
-        component.claims = [
-          ...packaged,
-          ...entered
-            .filter((r) => !packaged.some((c) => c.rafsi === r))
-            .map((r) => ({ rafsi: r, pair: rafsiPairId(id, r) })),
-        ];
+        editLujvoRows(state, (rows) => {
+          rows[index].claims = [
+            ...packaged,
+            ...entered
+              .filter((r) => !packaged.some((c) => c.rafsi === r))
+              .map((r) => ({ rafsi: r, pair: rafsiPairId(id, r) })),
+          ];
+        });
         saver.touch();
         rebuild();
         renderRows();
@@ -711,7 +717,9 @@ export async function lujvoPage(
       const remove = button(
         icon("close", "", 18),
         () => {
-          state.components.splice(index, 1);
+          editLujvoRows(state, (rows) => {
+            rows.splice(index, 1);
+          });
           saver.touch();
           renderRows();
           rebuild();
@@ -783,11 +791,7 @@ export async function lujvoPage(
               : button(
                   "Use",
                   () => {
-                    if (state.selected !== other.spelling) {
-                      state.acknowledged = [];
-                      draft.publishAcknowledged = [];
-                    }
-                    state.selected = other.spelling;
+                    chooseLujvoAlternative(draft, other.spelling);
                     saver.touch();
                     renderResult();
                   },

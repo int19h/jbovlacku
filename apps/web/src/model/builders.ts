@@ -58,6 +58,10 @@ export interface LujvoState {
   restoredSpelling?: string;
   /** The morphology version that restored these boundaries and spelling. */
   restoredProfile?: MorphologyProfile;
+  /** A row, rafsi, or profile edit permanently releases this restoration. */
+  restoredReleased?: true;
+  /** Retained analysis evidence survives release and explicit metadata removal. */
+  restoredEvidence?: { spelling: string; profile: MorphologyProfile };
   components: LujvoComponentState[];
   /** The chosen candidate spelling, when the author chose one. */
   selected: string | null;

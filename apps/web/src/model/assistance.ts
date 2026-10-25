@@ -27,6 +27,7 @@ import {
 } from "../../../../packages/core/src/browser.ts";
 import {
   componentId,
+  newLujvoState,
   formationSource,
   normalizeSourceRow,
   syncFormationSources,
@@ -36,6 +37,12 @@ import {
   type GismuRowState,
   type SourceReview,
 } from "./builders.ts";
+
+import {
+  changeTypedWord,
+  reconcileLujvoUndo,
+  typedWord,
+} from "./typed-headword.ts";
 
 export type Operation =
   | "type"
@@ -331,8 +338,9 @@ export function applyProposals(draft: Draft, result: Suggestion) {
         }));
         break;
       case "/spelling":
-        draft.spelling = value as string;
-        draft.publishAcknowledged = [];
+        changeTypedWord(draft, value as string);
+        if (result.proposals.some((p) => p.path === "/compound"))
+          draft.typedSpelling = null;
         break;
       case "/compound": {
         const compound = value as Compound;
@@ -368,18 +376,25 @@ export function applyProposals(draft: Draft, result: Suggestion) {
             "The proposed form does not match its deterministic construction.",
           );
         draft.lujvo = {
-          ...draft.lujvo,
+          ...newLujvoState(),
           profile: draft.lujvo?.profile ?? "cll",
+          ordinarySpelling: typedWord(draft.spelling),
+          restoredReleased: true,
           components,
           selected: typeof spelling === "string" ? spelling : null,
           acknowledged: [],
         };
+        draft.typedSpelling = null;
         // The builder supplies formation evidence only after the author uses a checked candidate.
         draft.compound = null;
         draft.evidenceForm = null;
         break;
       }
     }
+  }
+  if (result.proposals.some((p) => p.path === "/compound") && draft.lujvo) {
+    draft.lujvo.ordinarySpelling = typedWord(draft.spelling);
+    draft.typedSpelling = null;
   }
   if (
     result.operation === "definition" ||
@@ -911,6 +926,7 @@ export function restorePatches(draft: Draft, record: AssistanceRecord): number {
     else delete row.sourceReview;
   }
   syncFormationSources(draft);
+  reconcileLujvoUndo(draft, record.before?.lujvo);
   return kept;
 }
 
