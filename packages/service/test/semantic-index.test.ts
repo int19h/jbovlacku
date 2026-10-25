@@ -9,7 +9,11 @@ import {
   wordId,
   type Evaluation,
 } from "../../core/src/index.ts";
-import { SqliteVectorStore } from "../../../apps/server/src/semantic.ts";
+import {
+  closeSemanticIndexHost,
+  SqliteVectorStore,
+} from "../../../apps/server/src/semantic.ts";
+import { lockDataDirectory } from "../../importer/src/load-lock.ts";
 import { SqliteAssistanceBudgetStore } from "../../../apps/server/src/assistance.ts";
 import { AssistanceService } from "../src/assistance.ts";
 import { AssistanceError, providerConfig } from "../src/inference.ts";
@@ -707,3 +711,92 @@ test("a lost sent response retains the shared charge and a distinct explicit ret
       budget.close();
     }
   }));
+
+test("CLI teardown keeps stores and the directory lock until an abort-ignoring transport ends", async () => {
+  await mkdir(base, { recursive: true });
+  const directory = await mkdtemp(join(base, "drain-"));
+  const vectors = new SqliteVectorStore(join(directory, "vectors.sqlite"));
+  const budget = new SqliteAssistanceBudgetStore(
+    join(directory, "budget.sqlite"),
+  );
+  const release = await lockDataDirectory(directory, "semantic-index-test");
+  let resolveTransport!: () => void;
+  const transport = new Promise<void>((resolve) => {
+    resolveTransport = resolve;
+  });
+  let sends = 0;
+  let closed = false;
+  let closing: Promise<void> | undefined;
+  const config = providerConfig(
+    { JVC_AI_ENABLED: "enabled" },
+    async () => "disposable-test-key",
+  )!;
+  config.timeoutMs = 40;
+  config.fetch = async () => {
+    sends++;
+    await transport;
+    return Response.json({
+      model: "qwen/qwen3-embedding-8b",
+      data: [{ index: 0, embedding: Array.from(unit()) }],
+      usage: { prompt_tokens: 20, total_tokens: 20, cost: 0.0000002 },
+    });
+  };
+  const assistance = new AssistanceService(
+    { provider: config, budgetStore: budget },
+    "test",
+    async () => [],
+  );
+  try {
+    const job = await prepared(vectors, documents(1));
+    const result = await new SemanticIndexer(vectors, assistance).run(job.id, {
+      concurrency: 1,
+    });
+    assert.equal(result.coverage.failed, 1);
+    assert.equal(sends, 1);
+    assert.equal(
+      (await assistance.embeddingOperations())[0].transportPending,
+      true,
+    );
+    closing = closeSemanticIndexHost(assistance, budget, vectors, async () => {
+      closed = true;
+      await release();
+    });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(closed, false);
+    await assert.rejects(
+      lockDataDirectory(directory, "another-host"),
+      /directory is locked/,
+    );
+    assert.equal((await vectors.coverage(job.id)).indexed, 0);
+    const snapshot = (await budget.load())!;
+    assert.equal(snapshot.version, 2);
+    if (snapshot.version !== 2)
+      throw new Error("The budget schema differs from version 2.");
+    const charge = snapshot.entries[0];
+    assert.equal(charge.costKnown, false);
+    assert(charge.reservedUsd > 0);
+    resolveTransport();
+    await closing;
+    assert.equal(closed, true);
+    assert.equal(sends, 1);
+    const budgetRead = new SqliteAssistanceBudgetStore(
+      join(directory, "budget.sqlite"),
+    );
+    try {
+      assert.deepEqual((await budgetRead.load())!.entries[0], charge);
+    } finally {
+      budgetRead.close();
+    }
+    await assert.rejects(
+      vectors.coverage(job.id),
+      /database is not open|statement has been finalized/,
+    );
+    const releaseNext = await lockDataDirectory(directory, "next-host");
+    await releaseNext();
+  } finally {
+    resolveTransport();
+    if (closing) await closing;
+    else await closeSemanticIndexHost(assistance, budget, vectors, release);
+    await rm(directory, { recursive: true });
+  }
+});

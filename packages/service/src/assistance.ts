@@ -1095,6 +1095,7 @@ export class AssistanceService {
   private running = 0;
   private embeddingWork = new Map<string, EmbeddingOperation>();
   private embeddingSlots = new Map<string, number>();
+  private embeddingLifetimes = new Set<Promise<void>>();
   private embeddingFailedWaits = new Set<string>();
   private embeddingSettled = new Map<
     string,
@@ -1150,6 +1151,15 @@ export class AssistanceService {
       );
     const deadline = Date.now() + config.timeoutMs;
     const prepared = prepareEmbedding(inputs, config);
+    let resolveLifetime!: () => void;
+    const lifetime = new Promise<void>((resolve) => {
+      resolveLifetime = resolve;
+    });
+    this.embeddingLifetimes.add(lifetime);
+    const drained = () => {
+      this.embeddingLifetimes.delete(lifetime);
+      resolveLifetime();
+    };
     let operationId: string | undefined;
     const controller = new AbortController();
     const timer = setTimeout(
@@ -1232,9 +1242,19 @@ export class AssistanceService {
     });
     const work = admission
       .then((operation) =>
-        this.executeEmbedding(operation, prepared, config, signal, beforeSend),
+        this.executeEmbedding(
+          operation,
+          prepared,
+          config,
+          signal,
+          beforeSend,
+          drained,
+        ),
       )
-      .finally(() => clearTimeout(timer));
+      .finally(() => {
+        clearTimeout(timer);
+        if (!operationId || !this.embeddingSlots.has(operationId)) drained();
+      });
     // Both hosts retain their existing background-work policy.
     this.options.waitUntil?.(work.catch(() => {}));
     try {
@@ -1265,6 +1285,12 @@ export class AssistanceService {
         operationId,
       );
     }
+  }
+
+  /** Stop new host calls first. Keep storage and its lock until admitted transport and settlement end. */
+  async drainEmbeddingTransports(): Promise<void> {
+    while (this.embeddingLifetimes.size)
+      await Promise.all([...this.embeddingLifetimes]);
   }
 
   /** Bounded diagnostics contain no inputs, vectors, network addresses, or keys. */
@@ -1316,6 +1342,7 @@ export class AssistanceService {
     config: ProviderConfig,
     signal: AbortSignal,
     beforeSend?: (operation: string) => Promise<void>,
+    drained?: () => void,
   ): Promise<EmbeddingResult & { operation: string }> {
     let sent = false;
     let recorded = false;
@@ -1326,6 +1353,7 @@ export class AssistanceService {
       released = true;
       this.embeddingSlots.delete(operation.id);
       this.running--;
+      drained?.();
       const terminal = [...this.embeddingWork.values()].filter(
         (item) =>
           !item.transportPending && !["preparing", "sent"].includes(item.state),

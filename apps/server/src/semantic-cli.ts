@@ -14,7 +14,7 @@ import {
   readLoadedView,
   stateTraversalLimit,
 } from "../../../packages/importer/src/load-config.ts";
-import { SqliteVectorStore } from "./semantic.ts";
+import { closeSemanticIndexHost, SqliteVectorStore } from "./semantic.ts";
 import {
   FileObjectStore,
   SqliteCoordinator,
@@ -157,6 +157,7 @@ async function main() {
   const release = await lockDataDirectory(directory, "semantic-index-operator");
   let vectors: SqliteVectorStore | undefined;
   let budget: SqliteAssistanceBudgetStore | undefined;
+  let assistance: AssistanceService | undefined;
   const stop = new AbortController();
   const signal = () => stop.abort();
   process.on("SIGINT", signal);
@@ -190,7 +191,7 @@ async function main() {
         throw new Error(
           "The application profile requires the configured OpenRouter endpoint.",
         );
-      const assistance = new AssistanceService(
+      assistance = new AssistanceService(
         options,
         "semantic-index-operator",
         async () => [],
@@ -266,11 +267,9 @@ async function main() {
     });
     vectors.checkpoint();
   } finally {
+    await closeSemanticIndexHost(assistance, budget, vectors, release);
     process.off("SIGINT", signal);
     process.off("SIGTERM", signal);
-    budget?.close();
-    vectors?.close();
-    await release();
   }
 }
 main().catch((failure) => {

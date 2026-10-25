@@ -66,6 +66,9 @@ Changed definitions keep their own event and body associations. New inputs remai
 An unsupported input size counts as a failed definition rather than an omitted definition.
 
 SIGINT or SIGTERM stops new claims and lets admitted batches settle before shutdown.
+The command keeps its directory lock and stores open until every actual provider transport ends.
+A provider that ignores abort can keep shutdown waiting after the caller's deadline.
+This wait retains the original operation. It sends no replacement request and preserves its conservative charge.
 A normal bounded pass remains paused when eligible definitions still lack vectors.
 Its `index_incomplete` reason describes that partial coverage. It does not erase progress.
 Status lists at most 64 batches and exposes a cursor when more diagnostic rows remain.

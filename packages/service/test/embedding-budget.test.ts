@@ -181,6 +181,86 @@ test("a failed operator link prevents dispatch and releases the unsent reservati
   assert.equal(operation.reservedUsd, 0);
   assert.equal(operation.chargedUsd, 0);
 });
+
+test("host drain includes an interrupted admission before an execution slot exists", async () => {
+  const durable = store();
+  const gate = deferred<void>();
+  let saving = false;
+  let sends = 0;
+  const budget: AssistanceBudgetStore = {
+    load: durable.load,
+    async save(snapshot) {
+      if (!saving && snapshot.entries.some((entry) => entry.active)) {
+        saving = true;
+        await gate.promise;
+      }
+      await durable.save(snapshot);
+    },
+  };
+  const service = new AssistanceService(
+    {
+      provider: config({
+        timeoutMs: 40,
+        fetch: async () => {
+          sends++;
+          return Response.json(embedding());
+        },
+      }),
+      budgetStore: budget,
+    },
+    "test",
+    async () => [],
+  );
+  const caller = service
+    .embed(input, { kind: "index" })
+    .catch((failure) => failure);
+  await until(() => saving);
+  const failure = await caller;
+  assert.equal(failure.code, "embedding_timeout");
+  let drained = false;
+  const shutdown = service.drainEmbeddingTransports().then(() => {
+    drained = true;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(drained, false);
+  gate.resolve();
+  await shutdown;
+  assert.equal(sends, 0);
+  assert.equal(entries(durable).length, 0);
+});
+
+test("host drain includes a preparing dispatch hook after its caller times out", async () => {
+  const gate = deferred<void>();
+  let preparing = false;
+  let sends = 0;
+  const { service, budgetStore } = fixture(
+    config({
+      timeoutMs: 40,
+      fetch: async () => {
+        sends++;
+        return Response.json(embedding());
+      },
+    }),
+  );
+  const caller = service
+    .embed(input, { kind: "index" }, undefined, async () => {
+      preparing = true;
+      await gate.promise;
+    })
+    .catch((failure) => failure);
+  await until(() => preparing);
+  assert.equal((await caller).code, "embedding_timeout");
+  let drained = false;
+  const shutdown = service.drainEmbeddingTransports().then(() => {
+    drained = true;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(drained, false);
+  gate.resolve();
+  await shutdown;
+  assert.equal(sends, 0);
+  assert.equal(entries(budgetStore).length, 0);
+});
 const draft = (): AssistRequest => ({
   operation: "type",
   draft_revision: "shared-budget",
