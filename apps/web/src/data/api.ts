@@ -7,6 +7,7 @@ import {
   canonicalize,
   contentHash,
   inspectBody,
+  interpretDefinition,
   utf8,
   verifyEnvelope,
 } from "../../../../packages/core/src/browser.ts";
@@ -212,6 +213,8 @@ export async function getBody(
 export interface LoadedRecord<B = unknown> {
   envelope: Envelope;
   body: B | null;
+  /** Original authenticated JSON, before definition defaults. */
+  rawBody: unknown | null;
   /** Why the body is unavailable, when it is. */
   bodyError: string | null;
 }
@@ -229,6 +232,7 @@ export function loadRecord<B = unknown>(
       const envelope = await getEnvelope(id, snapshot, options);
       let body: unknown = null;
       let bodyError: string | null = null;
+      let rawBody: unknown = null;
       if (envelope.header.content) {
         try {
           body = await getBody(
@@ -245,6 +249,9 @@ export function loadRecord<B = unknown>(
             throw new Error(
               "This signed body does not satisfy the format rules. Its content is unavailable.",
             );
+          rawBody = body;
+          if (envelope.header.action.kind === "definition.publish")
+            body = interpretDefinition(body);
         } catch (error) {
           body = null;
           bodyError =
@@ -252,7 +259,7 @@ export function loadRecord<B = unknown>(
           if (error instanceof TransportError) recordCache.delete(key);
         }
       }
-      return { envelope, body, bodyError };
+      return { envelope, body, rawBody, bodyError };
     })();
     recordCache.set(key, pending);
     pending.catch(() => recordCache.delete(key));

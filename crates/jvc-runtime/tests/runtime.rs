@@ -1221,8 +1221,12 @@ fn host_record_projection_matches_its_versioned_golden_digest() {
         envelope: String,
         body: Option<String>,
     }
-    let inputs: Vec<Input> =
-        serde_json::from_slice(include_bytes!("fixtures/host-record-inputs.json")).unwrap();
+    let input_path = format!(
+        "{}/tests/fixtures/host-record-inputs-v{}.json",
+        env!("CARGO_MANIFEST_DIR"),
+        jvc_runtime::HOST_RECORD_VERSION
+    );
+    let inputs: Vec<Input> = serde_json::from_slice(&std::fs::read(input_path).unwrap()).unwrap();
     let mut bytes = Vec::new();
     let mut statuses = std::collections::BTreeSet::new();
     let mut publications = std::collections::BTreeSet::new();
@@ -1285,4 +1289,46 @@ fn host_record_projection_matches_its_versioned_golden_digest() {
         expected.trim(),
         "A projection change requires HOST_RECORD_VERSION to change."
     );
+}
+
+#[test]
+fn sparse_definition_projection_applies_defaults_after_original_validation() {
+    let mut fixture = Fixture::new();
+    let raw = json!({"word":{"language":"jbo","spelling":"banli"},"language":"en","text":[["Sparse projection"]],"classification":{"kind":"gismu"},"license":{"expression":"CC0-1.0"}});
+    let id = fixture.event(9, json!({"kind":"definition.publish","word":fixture.word,"language":"en","parents":[],"origin":"native"}), Some(raw.clone()));
+    let body = fixture.bodies[&id].as_bytes();
+    let envelope = fixture.events[0].as_bytes();
+    let options = canonical_value(
+        &json!({"selected_view":"jve1:".to_owned()+&"0".repeat(64),"import_selections":{}}),
+    )
+    .unwrap();
+    let mut builder = jvc_runtime::EvaluationSessionBuilder::new(&options).unwrap();
+    let verified: Value =
+        serde_json::from_str(&builder.add_record(envelope, Some(body.to_vec())).unwrap()).unwrap();
+    let host: Value = serde_json::from_slice(
+        &jvc_runtime::extract_host_record_bytes(envelope, Some(body)).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(host["version"], 2);
+    assert_eq!(host["package"], verified);
+    assert_eq!(verified["body"]["glosses"], json!([]));
+    assert_eq!(verified["body"]["notes"], json!([]));
+    assert_eq!(verified["body"]["classification"]["selmaho"], json!([]));
+    assert_eq!(
+        verified["body_hash"],
+        jvc_core::hash_id("sha256:", b"", body)
+    );
+    assert_eq!(serde_json::from_slice::<Value>(body).unwrap(), raw);
+    let invalid = canonical_value(&json!({"word":raw["word"],"language":"en","text":raw["text"],"classification":raw["classification"],"license":raw["license"],"notes":null})).unwrap();
+    let bad: Value = serde_json::from_slice(
+        &jvc_runtime::extract_host_record_bytes(envelope, Some(&invalid)).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(bad["body_status"], "invalid");
+    assert!(bad["package"]["body"].is_null());
+    let explicit = fixture.event(9, json!({"kind":"definition.publish","word":fixture.word,"language":"en","parents":[],"origin":"native"}), Some(jvc_core::interpret_definition(&raw)));
+    assert_ne!(id, explicit);
+    fixture.view("simple-routes-bounds-v1", &[9], 1000);
+    fixture.bless(9, &id);
+    fixture.rank("definition-defaults-sparse");
 }

@@ -19,6 +19,18 @@ pub fn runtime_canonicalize(bytes: &[u8]) -> std::result::Result<String, JsValue
     jvc_core::canonicalize_json(bytes).map(text).map_err(fail)
 }
 #[wasm_bindgen]
+pub fn definition_interpret(bytes: &[u8]) -> std::result::Result<String, JsValue> {
+    output(jvc_core::interpret_definition(
+        &parse_json(bytes).map_err(fail)?,
+    ))
+}
+#[wasm_bindgen]
+pub fn definition_omit_defaults(bytes: &[u8]) -> std::result::Result<String, JsValue> {
+    output(jvc_core::omit_definition_defaults(
+        &parse_json(bytes).map_err(fail)?,
+    ))
+}
+#[wasm_bindgen]
 pub fn runtime_verify_record(bytes: &[u8]) -> std::result::Result<String, JsValue> {
     let event = verify_envelope(bytes).map_err(fail)?;
     output(
@@ -717,6 +729,13 @@ fn search_projection(
         return Value::Null;
     }
     let body = if let jvc_core::BodyAvailability::Valid { body } = availability {
+        let interpreted;
+        let body = if kind == "definition.publish" {
+            interpreted = jvc_core::interpret_definition(body);
+            &interpreted
+        } else {
+            body
+        };
         let selected = if kind == "definition.publish" {
             &[
                 "word",
@@ -776,7 +795,7 @@ fn search_projection(
     json!({"id":id,"issuer":header.issuer,"kind":kind,"word":header.action["word"],"body_hash":header.content.as_ref().map(|c| &c.hash),"body":body})
 }
 // Versioned golden files in tests/fixtures are immutable. A projection change needs a new version.
-pub const HOST_RECORD_VERSION: u32 = 1;
+pub const HOST_RECORD_VERSION: u32 = 2;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct HostRecord {

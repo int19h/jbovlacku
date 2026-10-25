@@ -123,7 +123,11 @@ async function unusedPort() {
 const ports = [await unusedPort(), await unusedPort()];
 const children: ChildProcess[] = [];
 const logs: string[] = [];
-async function start(index: number, aiEnabled = true) {
+async function start(
+  index: number,
+  aiEnabled = true,
+  invalidEmbedding = false,
+) {
   const args =
     index === 0
       ? [join(root, "apps/server/dist/main.js")]
@@ -149,6 +153,9 @@ async function start(index: number, aiEnabled = true) {
       JVC_AI_PROVIDER_ROUTE: "meta",
       JVC_AI_PROVIDER_NAME: "Local test provider",
       JVC_AI_REASONING_EFFORT: "medium",
+      JVC_AI_EMBEDDING_MODEL: invalidEmbedding ? "" : "qwen/qwen3-embedding-8b",
+      JVC_AI_EMBEDDING_PROVIDER_ROUTE: invalidEmbedding ? "" : "nebius",
+      JVC_AI_EMBEDDING_INPUT_PRICE: invalidEmbedding ? "" : "0.01",
       JVC_AI_DECISION_REPORTS: "disabled",
       JVC_AI_OPERATIONS:
         "type,lujvo,gismu-sources,cmavo-class,definition,places-glosses",
@@ -266,9 +273,12 @@ try {
     assert.equal(disabled.features.assistance, false);
     assert.equal((await api(index, "/assist", {})).status, 503);
     await stop(index);
-    await start(index);
+    // Invalid embedding fields must leave both hosts' generation jobs available.
+    await start(index, true, true);
     const capabilities: any = await (await api(index, "/capabilities")).json();
     assert.equal(capabilities.features.assistance, true);
+    assert.equal(capabilities.features.semantic_search, false);
+    assert.deepEqual(capabilities.embedding_profiles, []);
     assert.equal(JSON.stringify(capabilities).includes(inferenceKey), false);
     assert.equal(JSON.stringify(capabilities).includes(inferenceUrl), false);
     const privateSession = await api(index, "/session");
@@ -371,6 +381,11 @@ try {
       receipts[index] = receipt;
       await stop(index);
       await start(index);
+      assert.deepEqual(
+        ((await (await api(index, "/capabilities")).json()) as any)
+          .assistance_profiles,
+        capabilities.assistance_profiles,
+      );
       const retry = await api(index, "/events", entry);
       assert.equal(retry.status, 200);
       assert.deepEqual(
@@ -741,7 +756,7 @@ try {
       status: "passed",
       adapters: indexes.map((index) => (index === 0 ? "node" : "worker")),
       checks:
-        "Node/Workers mocked inference, disabled inference, session and CSRF, retry checks, secret and encrypted-reasoning redaction, log acknowledgment, admission, late body, exact old snapshot, duplicate retry, process restart, strict JSON, shared snapshot, same-origin writes, bounded snapshot expiry and restart, package_versions, records, identities and activity reads, 404 suffix, 410 snapshot, version 2 package bytes and parts, both calculation profiles",
+        "Node/Workers mocked inference with invalid embedding settings, disabled inference, unchanged generation profiles after valid embedding settings return, session and CSRF, retry checks, secret and encrypted-reasoning redaction, log acknowledgment, admission, late body, exact old snapshot, duplicate retry, process restart, strict JSON, shared snapshot, same-origin writes, bounded snapshot expiry and restart, package_versions, records, identities and activity reads, 404 suffix, 410 snapshot, version 2 package bytes and parts, both calculation profiles",
       directory,
     }),
   );

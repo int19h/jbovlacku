@@ -7,6 +7,7 @@ import {
   contentHash,
   utf8,
   evaluate,
+  interpretDefinition,
 } from "../../core/src/index.ts";
 import {
   importCapture,
@@ -105,7 +106,8 @@ test("literal attributed imports and selected views pass the shared state evalua
     "source-id",
   );
   assert.deepEqual(body.text, [[rows()[0].definition]]);
-  assert.equal(body.frame, null);
+  assert.ok(!Object.hasOwn(body, "frame"));
+  assert.equal(interpretDefinition<any>(body).frame, null);
   assert.equal(body.license.expression, "unknown");
   assert.deepEqual(body.legacy.original.score, { $source_number: "100001.0" });
   assert.deepEqual(body.legacy.conversion.mappings, []);
@@ -303,7 +305,8 @@ test("changed text with omitted notes labels unavailable notes in the new public
   delete altered[0].notes;
   const result = capture(altered, first.journal);
   const body = result.journal.entries["4"].versions.at(-1)!.carrier.body;
-  assert.deepEqual(body.notes, []);
+  assert.ok(!Object.hasOwn(body, "notes"));
+  assert.deepEqual(interpretDefinition<any>(body).notes, []);
   assert.deepEqual(result.journal.entries["4"].baseline.notes, {
     unknown: true,
   });

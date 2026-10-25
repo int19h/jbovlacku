@@ -149,6 +149,7 @@ export const lexicalKinds: LexicalKind[] = [
   "letteral",
   "other",
 ];
+/** Interpreted definition content. Retained signed JSON can omit optional fields. */
 export interface DefinitionBody {
   word: WordObject;
   language: string;

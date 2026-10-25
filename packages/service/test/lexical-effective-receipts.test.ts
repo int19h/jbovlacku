@@ -9,8 +9,10 @@ import {
   contentHash,
   identityFromSeed,
   initializeCore,
+  interpretDefinition,
   prepareSelection,
   rafsiPairId,
+  signHeader,
   utf8,
   wordId,
 } from "../../core/src/index.ts";
@@ -203,6 +205,156 @@ function signedTransfer(previous: string[] = []) {
     null,
   );
 }
+
+test("definition defaults compose with receipt filtering across package deltas and checkpoint restore", async () => {
+  let checkpoint: ServiceCheckpoint | undefined;
+  let restores = 0;
+  const errors: unknown[] = [];
+  const { view, admit, snapshot, entries, wordRead, read, restart, objects } =
+    await fixture({
+      coreVersion: "defaults-effective-receipts-v2",
+      checkpointIntervalMs: 0,
+      checkpoints: {
+        async load() {
+          restores++;
+          return checkpoint ? structuredClone(checkpoint) : null;
+        },
+        async save(_binding, value) {
+          checkpoint = structuredClone(value);
+        },
+      },
+      reportError: (error) => errors.push(error),
+    });
+  const sparse = {
+    word,
+    language: "en",
+    text: [["A traveler goes somewhere by moving."]],
+    classification: { kind: "gismu" },
+    license: { expression: "CC0-1.0" },
+  };
+  const definition = (
+    body: unknown,
+    nonce: string,
+    previous: string[] = [],
+    seed = publisher,
+  ) =>
+    createEvent(
+      seed,
+      previous,
+      nonce,
+      {
+        kind: "definition.publish",
+        word: wordId(word),
+        language: "en",
+        parents: [],
+        origin: "native",
+      },
+      body,
+    );
+  const retained = definition(sparse, "1".repeat(32));
+  const full = interpretDefinition(sparse);
+  const fullBytes = utf8(canonicalize(utf8(JSON.stringify(full))));
+  const excluded = {
+    envelope: signHeader(publisher, {
+      ...retained.envelope.header,
+      nonce: "2".repeat(32),
+      content: { hash: contentHash(fullBytes), bytes: fullBytes.length },
+    }),
+    body: full,
+  };
+  const publications = [retained, excluded];
+  const verify = async (id: string, visible: string[]) => {
+    const expected = visible.toSorted();
+    for (const version of [1, 2] as const) {
+      const packageEntries = await entries(id, version);
+      assert.deepEqual(
+        packageEntries.map((entry) => entry.event),
+        expected,
+      );
+      for (const value of packageEntries) {
+        const entry = value as Record<string, unknown> & { event: string };
+        assert.deepEqual(entry.glosses, []);
+        assert.deepEqual(entry.classification, { kind: "gismu", selmaho: [] });
+        assert.equal(
+          entry.body,
+          publications.find(
+            (publication) => publication.envelope.id === entry.event,
+          )!.envelope.header.content!.hash,
+        );
+        if (version === 2) {
+          assert.equal(entry.notes, false);
+          assert.equal(entry.attribution, null);
+          assert.deepEqual(entry.rafsi, []);
+        }
+      }
+    }
+    const result = await wordRead(id);
+    assert.deepEqual(result.definitions, expected);
+    assert.deepEqual(
+      result.scores.map((score: { target: string }) => score.target).sort(),
+      expected,
+    );
+    assert.deepEqual(result.layers.flat().sort(), expected);
+    assert.deepEqual(result.unavailable_scores, []);
+  };
+  await admit(view, ...publications);
+  const prior = await snapshot();
+  await verify(
+    prior,
+    publications.map((publication) => publication.envelope.id),
+  );
+
+  // A lifecycle-only delta changes membership while publication bytes stay the same.
+  const transfer = signedTransfer([retained.envelope.id]);
+  await admit(transfer);
+  const transferred = await snapshot();
+  await verify(transferred, [retained.envelope.id]);
+  const postTransfer = definition(sparse, "3".repeat(32), [
+    transfer.envelope.id,
+  ]);
+  publications.push(postTransfer);
+  await admit(postTransfer);
+  await verify(await snapshot(), [retained.envelope.id]);
+  const independent = definition(
+    sparse,
+    "4".repeat(32),
+    [],
+    new Uint8Array(32).fill(36),
+  );
+  publications.push(independent);
+  await admit(independent);
+  const current = await snapshot();
+  const visible = [retained.envelope.id, independent.envelope.id];
+  await verify(current, visible);
+  assert.ok(checkpoint);
+  await restart();
+  assert.equal(restores, 1);
+  assert.deepEqual(errors, []);
+  await verify(current, visible);
+  await verify(transferred, [retained.envelope.id]);
+  await verify(prior, [retained.envelope.id, excluded.envelope.id]);
+  for (const publication of publications) {
+    const hash = publication.envelope.header.content!.hash;
+    assert.deepEqual(
+      await read(`/bodies/${hash}?snapshot=${current}`),
+      publication.body,
+    );
+    const stored = await objects.get(hash);
+    assert.ok(stored);
+    assert.deepEqual(
+      new Uint8Array(stored),
+      utf8(canonicalize(utf8(JSON.stringify(publication.body)))),
+    );
+  }
+  const records = await read(`/records?snapshot=${current}`);
+  for (const publication of publications)
+    assert.deepEqual(
+      records.items.find(
+        (item: { id: string }) => item.id === publication.envelope.id,
+      ).body,
+      publication.body,
+    );
+});
 
 test("word reads hide inert definition targets across response fields and retain effective deprecated definitions", async () => {
   const { view, admit, snapshot, wordRead } = await fixture();

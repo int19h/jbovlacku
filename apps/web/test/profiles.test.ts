@@ -358,7 +358,9 @@ test("an unknown profile or a resource failure leaves scores unavailable without
     const { getWord } = await import(String("/src/data/api.ts"));
     return (await getWord(wordId, { fresh: true })).definitions;
   }, f.words.dunda);
-  expect(eventOrder).toEqual([f.definitions.dunda1, f.definitions.dunda2]);
+  expect(eventOrder).toEqual(
+    [f.definitions.dunda1, f.definitions.dunda2].sort(),
+  );
   const shownOrder = await page
     .locator("article.definition a[href^='/definition/']")
     .evaluateAll((links) =>

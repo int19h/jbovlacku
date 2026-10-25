@@ -38,6 +38,7 @@ import {
   restoreHostEvaluationSession,
   utf8,
   inspectHostStoredBody,
+  interpretDefinition,
   type Evaluation,
   type EvaluationRequest,
 } from "../../core/src/index.ts";
@@ -177,7 +178,9 @@ export class DictionaryService {
             );
           definitions.push({
             event,
-            body: JSON.parse(new TextDecoder().decode(bytes)),
+            body: interpretDefinition(
+              JSON.parse(new TextDecoder().decode(bytes)),
+            ),
           });
         }
         return definitions;

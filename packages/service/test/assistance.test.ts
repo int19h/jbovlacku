@@ -2919,3 +2919,121 @@ test("private job delivery preserves deeply nested provider metadata without rec
     secret: "[redacted]",
   });
 });
+
+test("assistance interprets sparse draft and signed context values without changing originals", async () => {
+  const body = {
+    word: { language: "jbo" as const, spelling: "broda" },
+    language: "en",
+    text: [["A sparse context definition."]],
+    frame: {
+      role: "predicate",
+      arity: { mode: "fixed", count: 1 },
+      places: [{ index: 1 }],
+    },
+    classification: { kind: "gismu" },
+    license: { expression: "CC0-1.0" },
+  };
+  const raw = utf8(canonicalize(utf8(JSON.stringify(body))));
+  const seed = new Uint8Array(32).fill(93);
+  const envelope = signHeader(seed, {
+    version: 1,
+    issuer: identityFromSeed(seed),
+    previous: [],
+    nonce: "d".repeat(32),
+    action: {
+      kind: "definition.publish",
+      word: wordId(body.word),
+      language: "en",
+      parents: [],
+      origin: "native",
+    },
+    content: { hash: contentHash(raw), bytes: raw.length },
+  });
+  const envelopeBytes = utf8(canonicalize(utf8(JSON.stringify(envelope))));
+  const envelopeHash = contentHash(envelopeBytes);
+  const objects = new Map([
+    [envelopeHash, envelopeBytes],
+    [envelope.header.content.hash, raw],
+  ]);
+  const state = emptyState();
+  state.events[envelope.id] = {
+    envelope_hash: envelopeHash,
+    body_hash: envelope.header.content.hash,
+    header: envelope.header,
+    signature: [],
+    position: 1,
+  };
+  let providerInput: any;
+  const instance = new DictionaryService(
+    { get: async (hash) => objects.get(hash) ?? null, put: async () => {} },
+    {
+      load: async () => state,
+      getSnapshot: async () => null,
+      compareAndSwap: async () => true,
+    },
+    {
+      serverId: "sparse-context",
+      policyUrl: "https://example.test/policy",
+      assistance: {
+        provider: makeConfig({
+          fetch: queue(
+            [completion({ word_type: "gismu", reason: "A test root." })],
+            (request) => {
+              providerInput = JSON.parse(
+                request.messages.find((message: any) => message.role === "user")
+                  .content,
+              );
+            },
+          ),
+        }),
+      },
+    },
+  );
+  const request = draft("type", {
+    word_type: "gismu",
+    classification: { kind: "gismu" },
+    frame: body.frame,
+    glosses: [{ language: "en", text: "test" }],
+    formation: {
+      method: "unknown",
+      sources: [{ language: "en", word: "test" }],
+    },
+  });
+  request.context = [envelope.id];
+  const originalRequest = structuredClone(request);
+  const parsed = parseAssistRequest(request);
+  assert.deepEqual(parsed.current.classification!.selmaho, []);
+  assert.equal(parsed.current.formation!.sources[0].word_ipa, null);
+  assert.equal((parsed.current.glosses[0] as any).sense, null);
+  assert.deepEqual(request, originalRequest);
+  const headers = await session(instance);
+  const started = await instance.fetch(
+    privateRequest("/assist", headers, request),
+  );
+  assert.equal(started.status, 202, await started.clone().text());
+  const done = await poll(
+    instance,
+    ((await started.json()) as any).job,
+    headers,
+  );
+  assert.equal(done.state, "completed");
+  assert.deepEqual(providerInput.current, parsed.current);
+  const context = providerInput.definitions[0];
+  assert.equal(context.event, envelope.id);
+  assert.deepEqual(context.body.notes, []);
+  assert.deepEqual(context.body.classification.selmaho, []);
+  assert.deepEqual(context.body.frame.places[0].description, []);
+  assert.deepEqual(context.body.frame.places[0].type_hints, []);
+  assert.equal(context.body.frame.tail, null);
+  assert.deepEqual(
+    JSON.parse(done.result.log.exchanges[0].request),
+    providerInput,
+  );
+  assert.deepEqual(objects.get(envelope.header.content.hash), raw);
+  assert.deepEqual(JSON.parse(new TextDecoder().decode(raw)), body);
+  for (const invalid of [null, {}, "wrong"]) {
+    const wrong = structuredClone(request);
+    wrong.current.frame!.places[0].glosses = invalid;
+    assert.throws(() => parseAssistRequest(wrong), /definition schema/);
+  }
+});

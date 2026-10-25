@@ -318,7 +318,7 @@ for (const aiIndex of [0, 1]) {
   });
 }
 
-test("new null Said values stay omitted in rows, formation bodies and requests", () => {
+test("new unknown pronunciations keep raw absence and use null in interpreted currents", () => {
   const draft = example();
   const row = alternativeSourceRow(draft.gismu!.rows[0]);
   Object.assign(row, { word: "volume", input: "volum" });
@@ -332,16 +332,10 @@ test("new null Said values stay omitted in rows, formation bodies and requests",
     ),
     false,
   );
+  assert.equal(currentDraft(draft).formation!.sources[0].word_ipa, null);
   assert.equal(
-    Object.hasOwn(currentDraft(draft).formation!.sources[0], "word_ipa"),
-    false,
-  );
-  assert.equal(
-    Object.hasOwn(
-      sourceCurrent(draft, row.id!).formation!.sources[0],
-      "word_ipa",
-    ),
-    false,
+    sourceCurrent(draft, row.id!).formation!.sources[0].word_ipa,
+    null,
   );
   draft.gismu = null;
   draft.formation!.sources[0].word_ipa = null;
@@ -354,10 +348,7 @@ test("new null Said values stay omitted in rows, formation bodies and requests",
     ),
     false,
   );
-  assert.equal(
-    Object.hasOwn(currentDraft(draft).formation!.sources[0], "word_ipa"),
-    false,
-  );
+  assert.equal(currentDraft(draft).formation!.sources[0].word_ipa, null);
 });
 
 test("signed null Said survives reload, reordered sources, Revise and requests without private metadata", () => {
@@ -385,8 +376,19 @@ test("signed null Said survives reload, reordered sources, Revise and requests w
     for (const source of sources)
       assert.equal(Object.hasOwn(source, "wordIpaNullOriginal"), false);
   };
+  const sameCurrent = (sources: FormationSource[]) => {
+    assert.deepEqual(
+      sources,
+      published.etymology.formation!.sources.map((source) => ({
+        ...source,
+        word_ipa: source.word_ipa ?? null,
+      })),
+    );
+    for (const source of sources)
+      assert.equal(Object.hasOwn(source, "wordIpaNullOriginal"), false);
+  };
   sameEvidence(published.etymology.formation!.sources);
-  sameEvidence(currentDraft(loaded).formation!.sources);
+  sameCurrent(currentDraft(loaded).formation!.sources);
   const revised = normalizeDraft(
     JSON.parse(
       JSON.stringify(
@@ -396,10 +398,10 @@ test("signed null Said survives reload, reordered sources, Revise and requests w
   );
   assert.equal(revised.gismu, null);
   sameEvidence(draftToBody(revised).body!.etymology.formation!.sources);
-  sameEvidence(currentDraft(revised).formation!.sources);
+  sameCurrent(currentDraft(revised).formation!.sources);
   revised.kind = null;
   revised.spelling = "";
-  sameEvidence(currentDraft(revised).formation!.sources);
+  sameCurrent(currentDraft(revised).formation!.sources);
 });
 
 test("new Said and Clear discard the private signed-null presence and undo restores it", () => {

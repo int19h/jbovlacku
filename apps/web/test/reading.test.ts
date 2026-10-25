@@ -1482,3 +1482,118 @@ test.describe("touch input", () => {
     }
   });
 });
+
+test("signed record disclosures retain each body's original omitted or explicit fields", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const publications = await page.evaluate(async (path) => {
+    const core = await import(path);
+    const seed = crypto.getRandomValues(new Uint8Array(32));
+    const minimal = {
+      word: { language: "jbo", spelling: "brode" },
+      language: "en",
+      text: [["Definition defaults disclosure fixture."]],
+      classification: { kind: "gismu" },
+      frame: {
+        role: "predicate",
+        arity: { mode: "context" },
+        places: [{ index: 1 }],
+      },
+      etymology: {
+        formation: {
+          method: "unknown",
+          sources: [{ language: "en", word: "test" }],
+        },
+      },
+      license: { expression: "CC0-1.0" },
+    };
+    const bodies = [minimal, core.interpretDefinition(minimal)];
+    const result = [];
+    let previous: string[] = [];
+    for (const [index, body] of bodies.entries()) {
+      const bytes = core.utf8(
+        core.canonicalize(core.utf8(JSON.stringify(body))),
+      );
+      const header = {
+        version: 1,
+        issuer: core.identityFromSeed(seed),
+        previous,
+        nonce: String(index + 4).repeat(32),
+        action: {
+          kind: "definition.publish",
+          word: core.wordId(minimal.word),
+          language: "en",
+          parents: [],
+          origin: "native",
+        },
+        content: { hash: core.contentHash(bytes), bytes: bytes.length },
+      };
+      const envelope = core.signHeader(seed, header);
+      const response = await fetch("/api/v1/events", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ envelope, body }),
+      });
+      if (!response.ok) throw new Error(await response.text());
+      result.push({
+        id: envelope.id,
+        body,
+        hash: header.content.hash,
+        bytes: header.content.bytes,
+      });
+      previous = [envelope.id];
+    }
+    return result;
+  }, corePath);
+  expect(publications[0].id).not.toBe(publications[1].id);
+  expect(publications[0].hash).not.toBe(publications[1].hash);
+  for (const publication of publications) {
+    await page.goto(`/definition/${encodeURIComponent(publication.id)}`);
+    await expect(page.locator("article.definition")).toContainText(
+      "Definition defaults disclosure fixture.",
+    );
+    const disclosure = page.locator("article.definition details", {
+      has: page.locator("summary", { hasText: /^Signed record$/ }),
+    });
+    await disclosure.locator("summary").click();
+    const displayed = JSON.parse(
+      await disclosure.locator("pre.json").innerText(),
+    );
+    expect(displayed.envelope.id).toBe(publication.id);
+    expect(displayed.body).toEqual(publication.body);
+    const inspected = await page.evaluate(
+      async ({ path, displayed }) => {
+        const core = await import(path);
+        const bytes = core.utf8(
+          core.canonicalize(core.utf8(JSON.stringify(displayed.body))),
+        );
+        return {
+          hash: core.contentHash(bytes),
+          bytes: bytes.length,
+          availability: core.inspectBody(
+            core.utf8(JSON.stringify(displayed.envelope)),
+            bytes,
+          ).availability,
+        };
+      },
+      { path: corePath, displayed },
+    );
+    expect(inspected).toEqual({
+      hash: publication.hash,
+      bytes: publication.bytes,
+      availability: "valid",
+    });
+  }
+  await page.goto(`/definition/${encodeURIComponent(publications[0].id)}`);
+  await page.getByRole("link", { name: "Revise", exact: true }).click();
+  await expect(
+    page.getByRole("textbox", { name: "Definition text" }),
+  ).toHaveValue("Definition defaults disclosure fixture.");
+  await expect(page.getByLabel("Description for place 1")).toHaveValue("");
+  await page.reload();
+  await expect(
+    page.getByRole("textbox", { name: "Definition text" }),
+  ).toHaveValue("Definition defaults disclosure fixture.");
+  await expect(page.getByLabel("Description for place 1")).toHaveValue("");
+});
