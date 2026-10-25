@@ -20,6 +20,7 @@ Readers and editors apply defaults to separate interpreted values. Stored bodies
 New definitions omit optional fields with default values. Required fields and imported source evidence remain required.
 The signed lexical kind for fu'ivla is `fuhivla`. The browser displays "fu'ivla".
 The validator rejects the earlier `fuivla` label without an alias.
+A new version of each private projection forces backfill of stored validation results under the current schema.
 Formation sources accept an omitted or null `word_ipa`. They reject `stem` and `ipa`, including null and empty values.
 
 The shared core accepts `entity`, `mass`, and `tuple` as retired tags in signed version 1 bodies.

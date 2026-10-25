@@ -294,7 +294,9 @@ Cold evaluation and checkpoint restore fill the envelope cache from these privat
 The first admission after a restart or Worker eviction needs no retained envelope reads.
 
 
-Only an extraction format change requires another projection of existing data.
+An extraction format or body-validation change requires another projection of existing data.
+Compact extraction version 5 and semantic extraction version 2 apply the `fuhivla` lexical kind.
+Earlier derived rows require backfill before reuse. Original signed records remain unchanged.
 Missing or older compact records trigger a parse-only backfill from private original bytes.
 Backfill does not repeat signature checks, body hashing, or canonical JSON checks.
 It preserves invalid body schema diagnostics. It commits at most 256 rows per batch and reads at most 16 records at once.
