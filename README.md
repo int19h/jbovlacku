@@ -95,11 +95,18 @@ Unknown source fields stay blank. Authors can link every source to save compound
 A changed or cleared typed spelling restores ordinary builder rows. A generated replacement reopens with editable rows.
 A replacement typed lujvo starts fresh analysis, including a return to an earlier spelling before the builder reopens.
 A private origin marker distinguishes typed analysis from ordinary rafsi locks. Meaning visits and evidence removal preserve ordinary row editing.
+
 Saved rows with unknown origin stay editable and keep their signed version, boundaries, and matching joins.
 Spelling corrections preserve restored joins and compatible author-linked sources, exact definitions, and claims.
+Restored older profiles preserve accepted case, commas, and apostrophe variants after an exact match with the core construction.
+Released restoration stays released through reopening, reload, and rafsi relocking.
+
+Fresh typed analysis uses matching signed or restored profile evidence instead of a private ordinary profile choice.
+AI component acceptance creates clean ordinary rows. Conditional Undo restores prior construction and preserves later author edits.
+
 A [state model](docs/typed-headword-state.md) defines the shared transitions and their invariants.
 Seeded event sequences exercise those transitions with typed, legacy, and published-revision drafts.
-Restored older profiles preserve accepted case, commas, and apostrophe variants after an exact match with the core construction.
+The event model and seeded sequences include AI apply and Undo, gismu acceptance, source controls, and all rafsi choices.
 
 Unconfirmed type detection follows spelling corrections after confirmation of any evidence loss.
 Forward wizard links and direct Form or builder entry confirm the selected type. Cancellation keeps the previous type and evidence.

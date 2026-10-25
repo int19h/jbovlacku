@@ -278,6 +278,9 @@ Forward step links, the full-editor link, and direct Form or builder entry confi
 
 A changed or cleared spelling exits the previous typed-lujvo mode.
 A replacement lujvo starts a fresh analysis, even when the author restores an earlier spelling before reopening the builder.
+Fresh analysis uses the morphology profile from matching signed or restored evidence.
+A private ordinary profile choice does not change that typed profile.
+
 That analysis preserves author-linked sources, exact definitions, and claims for compatible rafsi.
 Matching compound evidence supplies missing sources before dictionary suggestions do.
 The [headword state model](typed-headword-state.md) defines the private fields, events, and invariants.
@@ -291,8 +294,11 @@ For a typed lujvo, analysis supplies one component sequence.
 When a rafsi has several known source assignments, the author chooses its intended source word.
 A missing source stays blank. The author must link every source to save compound metadata.
 “Continue without compound metadata” preserves the spelling and saves no compound attribution.
+
 Every rafsi locks to its exact typed form, including full forms. Every boundary locks to its exact typed join, including optional hyphens.
 The only candidate is the typed spelling. The builder links source words and exact definitions without changing that spelling.
+Fixed typed layout requires an exact construction under the selected evidence profile.
+If a historical profile cannot construct that spelling, ordinary profile controls remain available.
 
 A spelling accepted from the ordinary builder keeps editable component rows when the builder reopens.
 An explicit private marker identifies rows that typed analysis created. Rafsi locks and Meaning edits never create that marker.
@@ -303,8 +309,17 @@ On first restoration without compound metadata, saved joins require matching spe
 After restoration, joins and the exact spelling belong to their original rows, rafsi, and morphology profile.
 A spelling edit or removal of metadata keeps that association.
 A corrected headword can therefore recover its exact candidate, including case, commas, framing periods, and optional joins.
+
 Changing those rows, their order, their rafsi, or their morphology profile returns restored construction to automatic choices.
+That release persists through later builder visits and reloads.
+It remains released if the author restores an earlier lock or replaces rows with identical rafsi.
 The builder asks before an accepted candidate replaces a different entered headword.
+
+Accepted AI component suggestions create ordinary editable rows without inherited typed or restored construction.
+A suggested lujvo spelling uses ordinary selection semantics.
+Undo restores the prior rows and their construction while the affected fields still match the accepted suggestion.
+It preserves later author edits under the same conditional Undo rules.
+Gismu acceptance also updates headword state before it binds generation evidence.
 
 The typed path must reproduce every valid analyzed lujvo byte for byte, including extended `'y'` joins and irregular forms.
 The gismu and lujvo builders ask before replacing any spelling that the author typed.

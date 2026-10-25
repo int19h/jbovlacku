@@ -22,6 +22,7 @@ Each component keeps its stable `id`, source `spelling`, `kind`, selected `defin
 `joins` keeps explicit boundaries. `restoredJoinParts` binds restored ordinary joins to row IDs and locks.
 `restoredSpelling` keeps the exact bytes for those rows. `restoredProfile` binds them to their morphology version.
 `restoredReleased` records a released construction. Reopening, relocking, replacing rows, and reloading cannot restore that construction again.
+
 `restoredEvidence` keeps the spelling and profile identity after release or metadata removal. It does not authorize restored joins.
 `selected` keeps a candidate choice. `acknowledged` keeps reviews of candidate conflicts.
 
@@ -43,6 +44,7 @@ Opening the lujvo builder reconciles its rows with the headword and retained com
 Rows for their associated ordinary spelling stay editable, even during a pending spelling edit.
 Entering a different valid typed lujvo can request fresh typed analysis at the next builder visit.
 An unmatched ordinary headword does not discard row-associated joins.
+
 Legacy rows gain row-associated joins only after a complete matching reading confirms their locks and boundaries.
 Published revisions without rows recover sources, locks, profile, and exact boundaries from their evidence.
 
@@ -51,6 +53,7 @@ Fresh analysis uses matching signed metadata first, then matching `restoredEvide
 An ordinary profile choice never supplies the profile for fresh typed analysis.
 Supported typed rows have one exact candidate. Their profile controls stay hidden and disabled.
 A profile event cannot change their fixed reading.
+
 If a historical constructor cannot rebuild the reading, the rows stay ordinary and the profile controls stay available.
 Compatible old rows keep author-linked sources, definitions, claims, and IDs.
 Exact locked parts take precedence. An unlocked source can match an existing claim, a recognized whole word, or a gismu stem.
@@ -64,6 +67,7 @@ A changed part receives a new row. Dictionary order never chooses an ambiguous s
 Dictionary Add and Add as entered append ordinary rows. Remove deletes a row. Move changes the row order.
 These events, row replacement, and a changed rafsi release restored joins and exact spelling before construction.
 Rafsi controls include automatic, the current lock again, and a different lock. Selecting the same lock preserves restoration.
+
 Clearing a lock and then restoring it does not undo a release.
 The release persists for every morphology profile through navigation and reload.
 
@@ -84,6 +88,7 @@ Accepting an AI spelling alone uses the manual spelling transition.
 Accepting Suggest components or Suggest a lujvo creates fresh ordinary rows under the current ordinary profile.
 The new rows have no old joins, restoration snapshot, or typed binding. Their construction starts with automatic joins.
 A supplied spelling records an ordinary selection. Without one, the current headword stays associated with the suggested ordinary rows.
+
 Spelling changes clear publication reviews and mark retained annotations for review. Compound evidence clears only through this accepted action.
 Proposal order does not change these results.
 
@@ -92,6 +97,7 @@ The undo snapshot includes rows, joins, restoration markers, source choices, spe
 Reload preserves the snapshot. Later unrelated author edits survive Undo.
 If later row or profile edits prevent a full restoration, Undo releases incompatible restored construction.
 If later edits invalidate restored typed rows, Undo exits typed mode before rebuilding.
+
 A later ordinary profile choice also keeps Undo in ordinary mode, even when that profile can rebuild the old spelling.
 The old typed profile remains separate evidence for future fresh analysis.
 
@@ -139,6 +145,7 @@ This restoration requires a construction that the saved profile supports.
 The historical CLL constructor cannot restore optional joins that it does not generate, even when its analyzer accepts them.
 For example, it analyzes `SAI,rZBA` but constructs `saizba` from `sai` and `zba`.
 An ordinary restoration reports that mismatch instead of presenting a changed spelling as an exact restoration.
+
 An unsupported typed reading returns to ordinary construction with profile controls available.
 Its automatic candidate does not replace the headword until the author confirms Use.
 The historical CLL and extended version 2 profiles reject framing dots, so their restored spellings cannot contain framing dots.
