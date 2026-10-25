@@ -1451,6 +1451,98 @@ fn pending_cutoff_keeps_explicit_view_adoption_and_ordinary_incomplete_content_r
     );
 }
 
+fn assert_resolved_exclusion_survives_pending_cutoff(transfer: bool) {
+    for claim_excluded in [false, true] {
+        let mut f = native_rafsi_fixture();
+        let (publication, claim, deprecated) = if claim_excluded {
+            let (claim, _) = rafsi(&mut f, 3);
+            native(&mut f, 4);
+            let (deprecated, _) = rafsi(&mut f, 5);
+            (claim.clone(), claim, deprecated)
+        } else {
+            let publication = native(&mut f, 3);
+            let (claim, _) = rafsi(&mut f, 4);
+            (publication, claim, native(&mut f, 5))
+        };
+        f.event(
+            5,
+            vec![deprecated.clone()],
+            json!({"kind":"status.set","target":deprecated,"value":"deprecated"}),
+            None,
+        );
+        if transfer {
+            f.event(
+                3,
+                vec![],
+                json!({"kind":"identity.transfer","successor":key(6)}),
+                None,
+            );
+        } else {
+            f.compromise(3, vec![], vec![]);
+        }
+        for pending in [false, true] {
+            if pending {
+                f.compromise(3, vec![fake("jve1:")], vec![fake("jve1:")]);
+            }
+            let result = evaluate_observed(&f.input);
+            let receipt = &result.receipts[&publication];
+            assert_eq!(receipt.interpretation, jvc_state::Interpretation::Inert);
+            assert!(receipt.reasons.contains("outside_retained_history"));
+            assert!(!receipt.reasons.contains("cutoff_pending"));
+            assert_eq!(
+                result.publications[&claim].eligible,
+                jvc_state::Eligibility::Inactive
+            );
+        }
+    }
+}
+
+#[test]
+fn resolved_exclusion_from_complete_cutoff_survives_a_pending_cutoff() {
+    assert_resolved_exclusion_survives_pending_cutoff(false);
+}
+
+#[test]
+fn resolved_exclusion_from_transfer_survives_a_pending_cutoff() {
+    assert_resolved_exclusion_survives_pending_cutoff(true);
+}
+
+#[test]
+fn incomplete_transfer_does_not_make_a_pending_cutoff_publication_certainly_excluded() {
+    let mut f = native_rafsi_fixture();
+    let (claim, _) = rafsi(&mut f, 3);
+    native(&mut f, 4);
+    let (deprecated, _) = rafsi(&mut f, 5);
+    f.event(
+        5,
+        vec![deprecated.clone()],
+        json!({"kind":"status.set","target":deprecated,"value":"deprecated"}),
+        None,
+    );
+    f.event(
+        3,
+        vec![fake("jve1:")],
+        json!({"kind":"identity.transfer","successor":key(6)}),
+        None,
+    );
+    f.compromise(3, vec![fake("jve1:")], vec![fake("jve1:")]);
+    let result = evaluate_observed(&f.input);
+    assert_eq!(
+        result.receipts[&claim].interpretation,
+        jvc_state::Interpretation::Suspended
+    );
+    assert!(result.receipts[&claim].reasons.contains("cutoff_pending"));
+    assert!(
+        !result.receipts[&claim]
+            .reasons
+            .contains("outside_retained_history")
+    );
+    assert_eq!(
+        result.publications[&claim].eligible,
+        jvc_state::Eligibility::Unknown
+    );
+}
+
 #[test]
 fn rafsi_gate_ignores_inert_definitions_without_losing_missing_definition_uncertainty() {
     for deprecated in [false, true] {

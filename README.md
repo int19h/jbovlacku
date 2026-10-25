@@ -87,7 +87,8 @@ Remote search includes them through its retired-results filter and shows each pu
 Reads pinned to an earlier retained snapshot use that snapshot's state. Word pages and remote searches also use their requested view.
 Core definition rankings exclude definitions without effective receipts.
 Rafsi eligibility uses effective publication evidence and preserves missing-data uncertainty.
-Pending compromise cutoffs suspend receipts for definitions and rafsi claims. Those publications do not prove an inactive rafsi assignment.
+Resolved cutoffs and transfers keep their publication exclusions when another cutoff is pending.
+Otherwise, pending compromise cutoffs suspend definition and rafsi receipts. Suspended publications do not prove an inactive rafsi assignment.
 When evaluation reaches a resource limit, the manifest keeps raw synchronization and signed view inspection available and marks package downloads unavailable.
 The browser does not load or save an unconfigured server view as a signed policy.
 The lujvo builder says whether a candidate spelling is taken in the local package and on the server.

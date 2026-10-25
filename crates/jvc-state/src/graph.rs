@@ -671,6 +671,21 @@ impl Graph {
     pub fn suspended(&self, key: &str) -> bool {
         self.lifecycle.suspended.contains_key(&self.actor(key))
     }
+    pub fn excluded_by_resolved(&self, id: &str) -> bool {
+        let Some(node) = self.nodes.get(id) else {
+            return false;
+        };
+        self.transfers.get(&node.issuer).is_some_and(|transfers| {
+            transfers.iter().any(|transfer| {
+                let history = &self.own[transfer];
+                history.complete() && (transfer == id || !history.ids.contains(id))
+            })
+        }) || self.cutoffs.get(&node.issuer).is_some_and(|cutoffs| {
+            cutoffs
+                .iter()
+                .any(|cutoff| cutoff.complete() && !cutoff.ids.contains(id))
+        })
+    }
     pub fn retained(&self, id: &str) -> bool {
         let Some(node) = self.nodes.get(id) else {
             return false;

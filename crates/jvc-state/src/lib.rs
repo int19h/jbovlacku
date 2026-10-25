@@ -345,6 +345,11 @@ fn evaluate_graph(input: &EvaluationOptions, graph: &graph::Graph) -> Evaluation
         } else if !graph.own_complete(id) {
             reasons.insert("own_history_pending".into());
             Interpretation::Pending
+        } else if matches!(node.kind.as_str(), "definition.publish" | "rafsi.publish")
+            && graph.excluded_by_resolved(id)
+        {
+            reasons.insert("outside_retained_history".into());
+            Interpretation::Inert
         } else if graph.pending_cutoffs.contains(&node.issuer)
             && matches!(node.kind.as_str(), "definition.publish" | "rafsi.publish")
         {
