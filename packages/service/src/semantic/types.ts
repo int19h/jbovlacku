@@ -8,8 +8,8 @@ export interface EmbeddingProfile {
   epoch: string;
   dimension: number;
   encoding: "f32le";
-  normalization: "unit-l2" | "none";
-  distance: "cosine" | "dot";
+  normalization: "unit-l2";
+  distance: "cosine";
   document: InputRecipe;
   query: InputRecipe;
   parameters: Record<string, unknown>;

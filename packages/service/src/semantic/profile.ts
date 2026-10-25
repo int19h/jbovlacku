@@ -85,6 +85,11 @@ const exactFields = (
 const nonempty = (value: unknown): value is string =>
   typeof value === "string" && value.length > 0 && validUnicode(value);
 const nullableText = (value: unknown) => value === null || nonempty(value);
+const validInputLimit = (value: unknown): value is number =>
+  typeof value === "number" &&
+  Number.isInteger(value) &&
+  value >= 1 &&
+  value <= MAX_INPUT_BYTES;
 const versioned = (value: unknown) =>
   nonempty(value) && /^[a-z0-9][a-z0-9-]*-v[1-9][0-9]*$/.test(value);
 
@@ -144,8 +149,8 @@ export function validateProfile(value: unknown): EmbeddingProfile {
     (value.dimension as number) < 1 ||
     (value.dimension as number) > 65536 ||
     value.encoding !== "f32le" ||
-    !["unit-l2", "none"].includes(value.normalization as string) ||
-    !["cosine", "dot"].includes(value.distance as string) ||
+    value.normalization !== "unit-l2" ||
+    value.distance !== "cosine" ||
     !validRecipe(value.document) ||
     !validRecipe(value.query) ||
     !Array.isArray(value.artifacts) ||
@@ -163,7 +168,8 @@ export function validateProfile(value: unknown): EmbeddingProfile {
         nonempty(value.runtime.version))
     ) ||
     !object(value.parameters) ||
-    !jsonValue(value.parameters)
+    !jsonValue(value.parameters) ||
+    !validInputLimit(value.parameters.maximum_input_bytes)
   )
     throw new SemanticError(
       400,
@@ -197,6 +203,7 @@ export function validUnicode(text: string): boolean {
 }
 
 function prefixedInput(
+  profile: EmbeddingProfile,
   recipe: InputRecipe,
   name: string,
   text: string,
@@ -214,12 +221,19 @@ function prefixedInput(
       "recipe",
       "The input recipe is unsupported or invalid.",
     );
+  const limit = profile.parameters.maximum_input_bytes;
+  if (!validInputLimit(limit))
+    throw new SemanticError(
+      400,
+      "profile",
+      "The profile input byte limit is invalid.",
+    );
   const bytes = utf8(recipe.prefix + text);
-  if (bytes.length > MAX_INPUT_BYTES)
+  if (bytes.length > limit)
     throw new SemanticError(
       413,
       "input_limit",
-      "The profile accepts at most 4096 prefixed input bytes.",
+      `The profile accepts at most ${limit} prefixed input bytes.`,
     );
   return bytes;
 }
@@ -230,7 +244,7 @@ export function queryInput(
 ): Uint8Array {
   if (typeof query !== "string" || !validUnicode(query) || query.length === 0)
     throw new SemanticError(400, "query", "The query must contain valid text.");
-  return prefixedInput(profile.query, QUERY_RECIPE, query);
+  return prefixedInput(profile, profile.query, QUERY_RECIPE, query);
 }
 
 /** The caller supplies an authenticated definition. Defaults never change its signed bytes. */
@@ -259,6 +273,7 @@ export function documentInput(
     places: frame === null ? [] : frame.places,
   });
   return prefixedInput(
+    profile,
     profile.document,
     DOCUMENT_RECIPE,
     new TextDecoder().decode(bytes),

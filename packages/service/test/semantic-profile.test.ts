@@ -84,7 +84,14 @@ test("portable profile parsing rejects invalid schemas, Unicode, and non-JSON va
     { ...profile, parameters: { value: new Date() } },
   );
   for (const value of invalid) assert.throws(() => profileId(value));
-  assert.throws(() => parseProfile(utf8('{"version":1,"version":1}')));
+  const valid = new TextDecoder().decode(canonicalBytes(profile));
+  assert.deepEqual(parseProfile(utf8(valid)), profile);
+  const duplicate = valid.replace(
+    '"artifacts":[]',
+    '"artifacts":[],"artifacts":[]',
+  );
+  assert.notEqual(duplicate, valid);
+  assert.throws(() => parseProfile(utf8(duplicate)));
   assert.throws(() => parseProfile(Uint8Array.of(0xff)));
   assert.throws(() => parseProfile(new Uint8Array(65537)), /64 KiB/);
 });
@@ -121,7 +128,11 @@ test("application profiles create fresh epochs and hash the entire canonical dec
   for (const epoch of ["", "A".repeat(32), "a".repeat(31), "g".repeat(32)])
     assert.throws(() => createQwenProfile(epoch), /epoch/);
   assert.throws(
-    () => profileId({ ...stable, parameters: { large: "x".repeat(65536) } }),
+    () =>
+      profileId({
+        ...stable,
+        parameters: { ...stable.parameters, large: "x".repeat(65536) },
+      }),
     /64 KiB/,
   );
 });
@@ -271,4 +282,33 @@ test("document inputs reject malformed Unicode, invalid present fields, and over
       }),
     /4096/,
   );
+});
+
+test("recipes enforce the profile byte limit including prefixes and reject unsupported codecs", () => {
+  const profile = createQwenProfile();
+  profile.query.prefix = "Q:";
+  profile.document.prefix = "D:";
+  profile.parameters.maximum_input_bytes = 16;
+  assert.equal(queryInput(profile, "x".repeat(14)).length, 16);
+  assert.throws(() => queryInput(profile, "x".repeat(15)), /16/);
+  assert.throws(() => documentInput(profile, definition()), /16/);
+  const documentLength = documentInput(
+    createQwenProfile(),
+    definition(),
+  ).length;
+  profile.parameters.maximum_input_bytes = documentLength + 2;
+  assert.equal(documentInput(profile, definition()).length, documentLength + 2);
+  profile.parameters.maximum_input_bytes = documentLength + 1;
+  assert.throws(() => documentInput(profile, definition()));
+  for (const limit of [undefined, null, 0, -1, 1.5, 4097, "16", NaN]) {
+    const invalid = {
+      ...profile,
+      parameters: { ...profile.parameters, maximum_input_bytes: limit },
+    };
+    assert.throws(() => validateProfile(invalid));
+    assert.throws(() => queryInput(invalid, "x"));
+    assert.throws(() => documentInput(invalid, definition()));
+  }
+  assert.throws(() => validateProfile({ ...profile, normalization: "none" }));
+  assert.throws(() => validateProfile({ ...profile, distance: "dot" }));
 });
