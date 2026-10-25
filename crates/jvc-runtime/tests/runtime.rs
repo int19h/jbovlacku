@@ -1167,6 +1167,27 @@ fn host_record_projection_matches_its_versioned_golden_digest() {
         )
         .unwrap();
         let value: Value = serde_json::from_slice(&compact).unwrap();
+        let options = canonical_value(
+            &json!({"selected_view":"jve1:".to_owned()+&"0".repeat(64),"import_selections":{}}),
+        )
+        .unwrap();
+        let mut builder = jvc_runtime::EvaluationSessionBuilder::new(&options).unwrap();
+        builder.add_host_verified_record(&compact).unwrap();
+        if value["package"]["kind"] == "definition.publish" && value["body_status"] == "present" {
+            let original: Value = serde_json::from_str(input.body.as_ref().unwrap()).unwrap();
+            assert_eq!(
+                value["semantic"]["body"],
+                jvc_core::interpret_definition(&original)
+            );
+            assert_eq!(value["semantic"]["body"]["legacy"], original["legacy"]);
+            assert_eq!(
+                value["semantic"]["body_hash"],
+                value["package"]["body_hash"]
+            );
+            assert_eq!(value["semantic"]["id"], value["id"]);
+        } else {
+            assert!(value["semantic"].is_null());
+        }
         statuses.insert(value["body_status"].as_str().unwrap().to_owned());
         actions.insert(value["state"]["node"]["kind"].as_str().unwrap().to_owned());
         if !value["package"].is_null() {
@@ -1236,8 +1257,13 @@ fn sparse_definition_projection_applies_defaults_after_original_validation() {
         &jvc_runtime::extract_host_record_bytes(envelope, Some(body)).unwrap(),
     )
     .unwrap();
-    assert_eq!(host["version"], 2);
+    assert_eq!(host["version"], jvc_runtime::HOST_RECORD_VERSION);
     assert_eq!(host["package"], verified);
+    assert_eq!(
+        host["semantic"]["body"],
+        jvc_core::interpret_definition(&raw)
+    );
+    assert_eq!(host["semantic"]["body_hash"], verified["body_hash"]);
     assert_eq!(verified["body"]["glosses"], json!([]));
     assert_eq!(verified["body"]["notes"], json!([]));
     assert_eq!(verified["body"]["classification"]["selmaho"], json!([]));
@@ -1253,6 +1279,7 @@ fn sparse_definition_projection_applies_defaults_after_original_validation() {
     .unwrap();
     assert_eq!(bad["body_status"], "invalid");
     assert!(bad["package"]["body"].is_null());
+    assert!(bad["semantic"].is_null());
     let explicit = fixture.event(9, json!({"kind":"definition.publish","word":fixture.word,"language":"en","parents":[],"origin":"native"}), Some(jvc_core::interpret_definition(&raw)));
     assert_ne!(id, explicit);
     fixture.view("simple-routes-bounds-v1", &[9], 1000);

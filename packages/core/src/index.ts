@@ -262,6 +262,8 @@ export interface HostVerifiedRecord {
   id: string;
   state: unknown;
   package: EvaluationPackageRecord | null;
+  /** Complete interpreted definition evidence. This field stays in private host storage. */
+  semantic: (EvaluationPackageRecord & { kind: "definition.publish" }) | null;
   body_status: "none" | "missing" | "present" | "invalid";
   action_valid: boolean;
 }

@@ -33,6 +33,8 @@ import {
   prepareAdmission,
 } from "../../core/src/index.ts";
 import type { ObjectStore } from "../src/storage.ts";
+import { createQwenProfile } from "../src/semantic/profile.ts";
+import { semanticDocument } from "../src/semantic/records.ts";
 
 before(async () =>
   initializeCore(
@@ -688,7 +690,7 @@ test("malformed current-version rows report their event and repair once without 
   }
 });
 
-test("version 1 definition rows backfill interpreted defaults without changing stored signed bodies", async () => {
+test("older definition rows backfill semantic evidence and defaults without changing signed bodies", async () => {
   const f = await fixture();
   try {
     const body = {
@@ -716,7 +718,7 @@ test("version 1 definition rows backfill interpreted defaults without changing s
     const originalEnvelope = f.bytes.get(event.envelope_hash)!.slice();
     const originalBody = f.bytes.get(event.body_hash!)!.slice();
     const db = new DatabaseSync(f.path);
-    db.exec("UPDATE verified_records SET version=1");
+    db.exec("UPDATE verified_records SET version=2");
     db.close();
     assert.equal(await backfillVerifiedRecords(f.coordinator, f.objects), 1);
     const compact = compactRecord(
@@ -727,7 +729,7 @@ test("version 1 definition rows backfill interpreted defaults without changing s
         event,
       ),
     );
-    assert.equal(compact.version, 2);
+    assert.equal(compact.version, hostRecordVersion());
     assert.equal(compact.body_status, "present");
     assert.deepEqual(compact.package!.body!.glosses, []);
     assert.deepEqual(compact.package!.body!.classification, {
@@ -735,6 +737,20 @@ test("version 1 definition rows backfill interpreted defaults without changing s
       selmaho: [],
     });
     assert.deepEqual(compact.package!.body!.notes, []);
+    assert.deepEqual(compact.semantic!.body, {
+      ...body,
+      classification: { kind: "gismu", selmaho: [] },
+      frame: null,
+      glosses: [],
+      operands: [],
+      notes: [],
+      etymology: { text: [], formation: null, compound: null },
+      examples: [],
+      labels: [],
+      sources: [],
+      license: { expression: "CC0-1.0", url: null, attribution: "" },
+      legacy: null,
+    });
     assert.equal(compact.package!.body_hash, event.body_hash);
     assert.deepEqual(f.bytes.get(event.envelope_hash), originalEnvelope);
     assert.deepEqual(f.bytes.get(event.body_hash!), originalBody);
@@ -743,6 +759,152 @@ test("version 1 definition rows backfill interpreted defaults without changing s
     assert.equal(await backfillVerifiedRecords(f.coordinator, f.objects), 0);
     assert.deepEqual(f.reads, []);
   } finally {
+    f.coordinator.close();
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
+test("late definition bodies create semantic inputs only for the new exact body mapping", async () => {
+  const f = await fixture();
+  try {
+    const profile = createQwenProfile();
+    const body = {
+      word: { language: "jbo" as const, spelling: "broda" },
+      language: "en",
+      text: [["Literal $x_{1}$ and unmatched $a+b."]],
+      classification: { kind: "gismu" },
+      license: { expression: "CC0-1.0" },
+    };
+    const publication = createEvent(
+      seed,
+      [],
+      "f".repeat(32),
+      {
+        kind: "definition.publish",
+        word: wordId(body.word),
+        language: "en",
+        parents: [],
+        origin: "native",
+      },
+      body,
+    );
+    await f.service.admitMany([
+      utf8(JSON.stringify({ ...publication, body: null })),
+    ]);
+    const id = publication.envelope.id;
+    const missing = (await f.coordinator.load()).events[id];
+    const before = await readVerifiedRecord(
+      f.coordinator,
+      f.objects,
+      id,
+      missing,
+    );
+    assert.equal(semanticDocument(profile, before), null);
+    await f.service.admitMany([utf8(JSON.stringify(publication))]);
+    const present = (await f.coordinator.load()).events[id];
+    const after = await readVerifiedRecord(
+      f.coordinator,
+      f.objects,
+      id,
+      present,
+    );
+    const document = semanticDocument(profile, after)!;
+    assert.equal(document.body, publication.envelope.header.content!.hash);
+    assert.deepEqual(document.definition.text, body.text);
+    assert.deepEqual(document.definition.frame, null);
+    assert.equal(
+      semanticDocument(
+        profile,
+        await readVerifiedRecord(f.coordinator, f.objects, id, missing),
+      ),
+      null,
+    );
+    assert.notEqual(before.body_hash, after.body_hash);
+    f.reads.length = 0;
+    assert.equal(await backfillVerifiedRecords(f.coordinator, f.objects), 0);
+    assert.deepEqual(f.reads, []);
+  } finally {
+    f.coordinator.close();
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
+test("damaged current semantic projections repair once from private original bytes", async () => {
+  const f = await fixture();
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    const body = {
+      word: { language: "jbo" as const, spelling: "broda" },
+      language: "en",
+      text: [["A sparse definition."]],
+      classification: { kind: "gismu" },
+      license: { expression: "CC0-1.0" },
+    };
+    const publication = createEvent(
+      seed,
+      [],
+      "d".repeat(32),
+      {
+        kind: "definition.publish",
+        word: wordId(body.word),
+        language: "en",
+        parents: [],
+        origin: "native",
+      },
+      body,
+    );
+    await f.service.admitMany([utf8(JSON.stringify(publication))]);
+    const id = publication.envelope.id;
+    const event = (await f.coordinator.load()).events[id];
+    const expected = await readVerifiedRecord(
+      f.coordinator,
+      f.objects,
+      id,
+      event,
+    );
+    const db = new DatabaseSync(f.path);
+    const mutations = [
+      (value: any) => delete value.semantic,
+      (value: any) => (value.semantic = "broken"),
+      (value: any) => (value.semantic = null),
+      (value: any) => (value.semantic.body = null),
+      (value: any) => (value.semantic.body.glosses = null),
+      (value: any) => (value.semantic.body.frame = { places: null }),
+      (value: any) => (value.semantic.body_hash = "sha256:" + "0".repeat(64)),
+      (value: any) => (value.semantic.unexpected = true),
+    ];
+    for (const mutate of mutations) {
+      const compact = JSON.parse(expected.compact);
+      mutate(compact);
+      db.prepare("UPDATE verified_records SET compact=?").run(
+        JSON.stringify(compact),
+      );
+      const repaired = await readVerifiedRecord(
+        f.coordinator,
+        f.objects,
+        id,
+        event,
+      );
+      assert.equal(repaired.compact, expected.compact);
+      f.reads.length = 0;
+      assert.deepEqual(
+        await readVerifiedRecord(f.coordinator, f.objects, id, event),
+        expected,
+      );
+      assert.deepEqual(f.reads, []);
+    }
+    assert.equal(
+      verifiedRecordStatistics(f.coordinator).decode_failed,
+      mutations.length,
+    );
+    assert.equal(
+      verifiedRecordStatistics(f.coordinator).backfilled,
+      mutations.length,
+    );
+    db.close();
+  } finally {
+    console.warn = warn;
     f.coordinator.close();
     await rm(f.directory, { recursive: true, force: true });
   }

@@ -785,8 +785,45 @@ fn search_projection(
     };
     json!({"id":id,"issuer":header.issuer,"kind":kind,"word":header.action["word"],"body_hash":header.content.as_ref().map(|c| &c.hash),"body":body})
 }
+/// Retain complete authenticated evidence privately, apart from the lexical package.
+fn semantic_projection(
+    id: &str,
+    header: &jvc_core::Header,
+    availability: &jvc_core::BodyAvailability,
+) -> Option<SemanticProjection> {
+    if header.action["kind"] != "definition.publish" {
+        return None;
+    }
+    let jvc_core::BodyAvailability::Valid { body } = availability else {
+        return None;
+    };
+    let body = jvc_core::interpret_definition(body);
+    Some(SemanticProjection {
+        id: id.into(),
+        issuer: header.issuer.clone(),
+        kind: "definition.publish".into(),
+        word: header.action["word"].as_str().unwrap_or_default().into(),
+        body_hash: header.content.as_ref().unwrap().hash.clone(),
+        body,
+    })
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SemanticProjection {
+    id: String,
+    issuer: String,
+    kind: String,
+    word: String,
+    body_hash: String,
+    body: Value,
+}
+fn required_semantic<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<SemanticProjection>, D::Error> {
+    Option::deserialize(deserializer)
+}
 // Versioned golden files in tests/fixtures are immutable. A projection change needs a new version.
-pub const HOST_RECORD_VERSION: u32 = 2;
+pub const HOST_RECORD_VERSION: u32 = 3;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct HostRecord {
@@ -794,6 +831,8 @@ struct HostRecord {
     id: String,
     state: jvc_state::HostVerifiedRecord,
     package: Value,
+    #[serde(deserialize_with = "required_semantic")]
+    semantic: Option<SemanticProjection>,
     body_status: String,
     action_valid: bool,
 }
@@ -809,17 +848,23 @@ pub fn extract_host_record_bytes(envelope: &[u8], body: Option<&[u8]>) -> Result
         jvc_core::BodyAvailability::Invalid { .. } => "invalid",
     }
     .into();
-    let (state, package) = jvc_state::HostVerifiedRecord::extract_with(
+    let (state, (package, semantic)) = jvc_state::HostVerifiedRecord::extract_with(
         &event.id,
         &event.header,
         availability,
-        |availability| search_projection(&event.id, &event.header, availability),
+        |availability| {
+            (
+                search_projection(&event.id, &event.header, availability),
+                semantic_projection(&event.id, &event.header, availability),
+            )
+        },
     );
     serde_json::to_vec(&HostRecord {
         version: HOST_RECORD_VERSION,
         id: event.id,
         state,
         package,
+        semantic,
         body_status,
         action_valid: jvc_core::validate_action(&event.header).is_ok(),
     })
@@ -860,6 +905,57 @@ fn decode_host_record(bytes: &[u8]) -> Result<HostRecord> {
             "host_record",
             "extraction version or event ID does not match",
         ));
+    }
+    let expected = record.action_valid
+        && record.body_status == "present"
+        && record.package["kind"] == "definition.publish";
+    if expected != record.semantic.is_some() {
+        return Err(Error::new(
+            "host_record",
+            "semantic projection availability does not match",
+        ));
+    }
+    if let Some(semantic) = &record.semantic {
+        let body = &semantic.body;
+        let frame_valid = body["frame"].is_null()
+            || (body["frame"].is_object() && body["frame"]["places"].is_array());
+        // Decode the derived schema without authenticating or validating original bodies again.
+        let valid = semantic.id == record.id
+            && semantic.kind == "definition.publish"
+            && record.package["id"] == semantic.id
+            && record.package["issuer"] == semantic.issuer
+            && record.package["word"] == semantic.word
+            && record.package["body_hash"] == semantic.body_hash
+            && body.is_object()
+            && body.get("frame").is_some()
+            && body.get("legacy").is_some()
+            && frame_valid
+            && body["language"].is_string()
+            && ["word", "classification", "etymology", "license"]
+                .iter()
+                .all(|key| body[key].is_object())
+            && (body["legacy"].is_null() || body["legacy"].is_object())
+            && [
+                "text", "glosses", "notes", "operands", "examples", "labels", "sources",
+            ]
+            .iter()
+            .all(|key| body[key].is_array())
+            && [
+                "word",
+                "language",
+                "text",
+                "glosses",
+                "classification",
+                "notes",
+            ]
+            .iter()
+            .all(|key| body[key] == record.package["body"][key]);
+        if !valid {
+            return Err(Error::new(
+                "host_record",
+                "semantic projection fields do not match their record",
+            ));
+        }
     }
     Ok(record)
 }

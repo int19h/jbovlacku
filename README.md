@@ -128,6 +128,10 @@ Interrupted operations retain unknown-cost charges after restart. Errors after r
 Completed operator batches with known costs share hourly ledger rows, while recent diagnostics retain their individual charges.
 Mocked capacity tests cover two 59,129-input index runs, 8,192 assistance history rows, and a subsequent generation job.
 Mocked tests cover provider validation, caller departure, unknown charges, deadlines, and interrupted reservations after restart.
+The host can create fresh application profiles and derive bounded `definition-json-v1` and `literal-query-v1` inputs.
+Private compact records retain complete interpreted definition evidence and bind each input to its original event and body hash.
+Recipe inputs preserve literal imported markers and mathematics. They exclude top-level notes, etymology, and import evidence.
+Vector codecs check dimensions, finite values, little-endian float32 encoding, and unit norm. Only provider output receives normalization.
 Semantic storage, search routes, indexing, and query caching remain unfinished. The semantic capability stays disabled.
 A discarded result returns a clear status. Spending failures distinguish pending costs, timed limits, and requests that cannot fit.
 The default spending share admits every enabled operation at each reasoning effort, with decision reports enabled or disabled.
