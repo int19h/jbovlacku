@@ -527,9 +527,10 @@ export function prepareLujvoBuilder(
     else {
       // Historical analyzers can accept joins their constructor cannot produce.
       // Keep ordinary controls available so the author can choose another profile.
-      state.profile = analysisProfile;
-      delete state.profileChosen;
-      state.ordinarySpelling = spelling;
+      state.components = next.components;
+      if (!state.profileChosen) state.profile = analysisProfile;
+      // Missing dictionary sources can become available on the next visit.
+      state.ordinarySpelling = linkedSources(next) ? spelling : "";
       state.restoredReleased = true;
       delete state.joins;
       delete state.restoredJoinParts;
