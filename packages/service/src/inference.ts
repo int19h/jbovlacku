@@ -462,23 +462,7 @@ export function schemaFor(spec: TaskCase): JsonObject {
       ),
     );
   if (spec.task === "sources") return shapes.sources;
-  if (spec.task === "type")
-    return obj({
-      word_type: {
-        type: "string",
-        enum: [
-          "gismu",
-          "lujvo",
-          "cmavo",
-          "fuhivla",
-          "cmevla",
-          "compound",
-          "letteral",
-          "other",
-        ],
-      },
-      reason: str,
-    });
+  if (spec.task === "type") return shapes.type;
   if (spec.task === "components")
     return obj({
       components: {
@@ -519,11 +503,17 @@ function shapeProblems(
   if (!types.includes(type))
     return [`${path} must have type ${types.join(" or ")}.`];
   const problems: string[] = [];
+  if (
+    typeof value === "string" &&
+    schema.maxLength !== undefined &&
+    Array.from(value).length > schema.maxLength
+  )
+    problems.push(`${path} must be at most ${schema.maxLength} characters.`);
   if (schema.enum && !schema.enum.includes(value))
     problems.push(`${path} must be one of ${schema.enum.join(", ")}.`);
   if (
     typeof value === "string" &&
-    value.trim().length < (schema.minLength ?? 0)
+    Array.from(value).length < (schema.minLength ?? 0)
   )
     problems.push(`${path} must be nonempty text.`);
   if (isObject(value)) {
@@ -709,6 +699,13 @@ export interface ExchangeLog {
   attempts: AttemptLog[];
 }
 export interface InferenceLog {
+  related?: {
+    method: "lexical";
+    query_words: string[];
+    snapshot: string | null;
+    events: string[];
+  };
+  morphology?: { id: string; version: string };
   operation: string;
   model: string;
   reasoning_effort: string;

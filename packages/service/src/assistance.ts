@@ -28,6 +28,7 @@ import {
   type TaskCase,
 } from "./inference.ts";
 import { promptFiles } from "./prompt-bundle.ts";
+import { nearbyQuery } from "./nearby.ts";
 import {
   prepareEmbedding,
   requestEmbedding,
@@ -65,7 +66,27 @@ export interface ContextDefinition {
   event: string;
   body: Data;
 }
+export interface TypeDictionary {
+  snapshot: string | null;
+  query_words: string[];
+  related: {
+    event: string;
+    word: string;
+    kind: string;
+    definition: string;
+    truncated?: true;
+  }[];
+  /** Exact spellings from real entries in this job's snapshot. */
+  entries: Map<string, string>;
+}
+export interface ExistingWord {
+  word: string;
+  event: string;
+  conversion: "se" | "te" | "ve" | "xe" | null;
+  revised_definition: string | null;
+}
 export interface AssistResult {
+  existing?: ExistingWord | null;
   operation: Operation;
   draft_revision: string;
   proposals: { path: string; value: unknown }[];
@@ -455,6 +476,117 @@ function caseText(
     definitions: context,
   });
 }
+const promptKind = (kind: unknown) => (kind === "fuhivla" ? "fuivla" : kind);
+const appKind = (kind: string) => (kind === "fuivla" ? "fuhivla" : kind);
+const typeLabel = (kind: string) =>
+  kind === "fuivla" ? "fu'ivla" : kind === "compound" ? "compound cmavo" : kind;
+/** Compound parts come only from the application's morphology API. */
+export function typeSpellingFields(analysis: {
+  kind: string;
+  parts?: string[];
+}) {
+  if (analysis.kind === "compound")
+    return analysis.parts && analysis.parts.length >= 2
+      ? { spelling_form: "compound", spelling_parts: analysis.parts }
+      : { spelling_form: "unknown" };
+  return { spelling_form: promptKind(analysis.kind) };
+}
+/** The frozen prompt uses fuivla. Signed records use fuhivla. */
+function typeCase(
+  request: AssistRequest,
+  context: ContextDefinition[],
+  dictionary: TypeDictionary,
+) {
+  const current = structuredClone(request.current);
+  current.word_type = promptKind(current.word_type) as string | null;
+  if (current.classification)
+    current.classification.kind = promptKind(current.classification.kind);
+  const input: Data = {
+    meaning: request.meaning,
+    language: request.language,
+    current,
+    definitions: context.map((entry) => ({
+      ...entry,
+      body: {
+        ...entry.body,
+        classification: {
+          ...entry.body.classification,
+          kind: promptKind(entry.body.classification.kind),
+        },
+      },
+    })),
+    related: dictionary.related.map(({ event, kind, ...entry }, index) => ({
+      ref: `r${index + 1}`,
+      ...entry,
+      kind: promptKind(kind),
+    })),
+  };
+  let morphology: { id: string; version: string } | undefined;
+  if (request.current.spelling?.trim()) {
+    try {
+      const analysis = analyzeWord("extended", request.current.spelling);
+      morphology = analysis.morphology;
+      Object.assign(input, typeSpellingFields(analysis));
+    } catch {
+      input.spelling_form = "unknown";
+    }
+  }
+  return { input, morphology };
+}
+function checkType(
+  answer: Data,
+  spellingForm: unknown,
+  supplied: Map<string, { event: string; word: string }>,
+  dictionary: TypeDictionary,
+): string[] {
+  const problems: string[] = [];
+  if (answer.alternative !== null && answer.alternative === answer.word_type)
+    problems.push("alternative must differ from word_type.");
+  if (
+    answer.word_type === null &&
+    (answer.alternative !== null || answer.existing !== null)
+  )
+    problems.push(
+      "A null word_type has no alternative and no existing word. Set alternative, alternative_reason and existing to null.",
+    );
+  if ((answer.alternative === null) !== (answer.alternative_reason === null))
+    problems.push(
+      "When alternative is a type, give alternative_reason. Otherwise set both to null.",
+    );
+  if (!answer.reason.trim()) problems.push("Write a reason.");
+  if (
+    typeof answer.alternative_reason === "string" &&
+    !answer.alternative_reason.trim()
+  )
+    problems.push(
+      "Write alternative_reason, or set alternative and alternative_reason to null.",
+    );
+  if (answer.existing) {
+    const entry = supplied.get(answer.existing.ref);
+    if (!entry || entry.word !== answer.existing.word)
+      problems.push(
+        "existing.ref must name a supplied entry, and existing.word must be its word. Name only a word that related or definitions shows, or set existing to null.",
+      );
+    if (!entry || dictionary.entries.get(entry.event) !== answer.existing.word)
+      problems.push(
+        "existing.word is not a dictionary entry. Name only a word that related or definitions shows, or set existing to null.",
+      );
+    if (
+      typeof answer.existing.revised_definition === "string" &&
+      !answer.existing.revised_definition.trim()
+    )
+      problems.push("Write the revised definition, or set it to null.");
+  }
+  if (
+    ["cmavo", "compound"].includes(answer.word_type) &&
+    ["cmavo", "compound"].includes(spellingForm as string) &&
+    answer.word_type !== spellingForm
+  )
+    problems.push(
+      "The application's analysis of the spelling decides between cmavo and compound. Use the type that spelling_form shows.",
+    );
+  return problems;
+}
 function validateProposedFrame(
   request: AssistRequest,
   frame: Data,
@@ -538,7 +670,22 @@ export function estimateAssistanceCost(
   context: ContextDefinition[],
   config: ProviderConfig,
 ): number {
-  const input = caseText(request, context);
+  // Reserve every related slot, including JSON escaping and maximum word bytes.
+  const input =
+    request.operation === "type"
+      ? JSON.stringify({
+          ...JSON.parse(caseText(request, context)),
+          related: Array.from({ length: 30 }, (_, i) => ({
+            ref: `r${i + 1}`,
+            word: "w".repeat(256),
+            kind: "compound",
+            definition: "\u0000".repeat(500),
+            truncated: true,
+          })),
+          spelling_form: "compound",
+          spelling_parts: Array(256).fill("\u0000"),
+        })
+      : caseText(request, context);
   const cases: { spec: TaskCase; extra?: number }[] = [];
   if (request.operation === "places-glosses") {
     const generated = request.current.frame === null;
@@ -671,6 +818,12 @@ export async function runAssistance(
   signal: AbortSignal,
   log: InferenceLog,
   progress: (task: Task, attempt: number) => void,
+  typeDictionary: TypeDictionary = {
+    snapshot: null,
+    query_words: nearbyQuery(request.meaning),
+    related: [],
+    entries: new Map(),
+  },
 ): Promise<AssistResult> {
   checkComponentContext(request, context);
   if (
@@ -686,10 +839,42 @@ export async function runAssistance(
   const input = caseText(request, context);
   const proposals: AssistResult["proposals"] = [];
   const explanations: string[] = [];
+  let existing: ExistingWord | null = null;
   if (request.operation === "type") {
-    const answer = await runner.run({ task: "type", input });
-    proposals.push({ path: "/word_type", value: answer.word_type });
+    const type = typeCase(request, context, typeDictionary);
+    log.related = {
+      method: "lexical",
+      query_words: typeDictionary.query_words,
+      snapshot: typeDictionary.snapshot,
+      events: typeDictionary.related.map((entry) => entry.event),
+    };
+    if (type.morphology) log.morphology = type.morphology;
+    const supplied = new Map(
+      context.map((entry) => [
+        entry.event,
+        { event: entry.event, word: entry.body.word.spelling },
+      ]),
+    );
+    typeDictionary.related.forEach((entry, index) =>
+      supplied.set(`r${index + 1}`, entry),
+    );
+    const answer = await runner.run({
+      task: "type",
+      input: JSON.stringify(type.input),
+      check: (answer) =>
+        checkType(answer, type.input.spelling_form, supplied, typeDictionary),
+    });
+    if (answer.word_type !== null)
+      proposals.push({ path: "/word_type", value: appKind(answer.word_type) });
     explanations.push(answer.reason);
+    if (answer.alternative !== null)
+      explanations.push(
+        `Also possible: ${typeLabel(answer.alternative)}. ${answer.alternative_reason}`,
+      );
+    if (answer.existing) {
+      const { ref, ...rest } = answer.existing;
+      existing = { ...rest, event: supplied.get(ref)!.event } as ExistingWord;
+    }
   } else if (request.operation === "cmavo-class") {
     const answer = await runner.run({
       task: "cmavo-class",
@@ -1022,6 +1207,7 @@ export async function runAssistance(
   }
   signal.throwIfAborted();
   return {
+    ...(request.operation === "type" ? { existing } : {}),
     operation: request.operation,
     draft_revision: request.draft_revision,
     proposals,
@@ -1115,6 +1301,11 @@ export class AssistanceService {
     private options: AssistanceOptions,
     private server: string,
     private context: (events: string[]) => Promise<ContextDefinition[]>,
+    private typeDictionary?: (
+      request: AssistRequest,
+      context: ContextDefinition[],
+      signal: AbortSignal,
+    ) => Promise<TypeDictionary>,
   ) {}
   /** Detaching a caller never cancels or repeats an admitted provider request. */
   async embed(
@@ -2347,6 +2538,11 @@ export class AssistanceService {
       log = newLog(request.operation, config, await this.version);
       signal.throwIfAborted();
       job.state = "running";
+      const dictionary =
+        request.operation === "type"
+          ? await this.typeDictionary?.(request, context, signal)
+          : undefined;
+      signal.throwIfAborted();
       job.result = await runAssistance(
         request,
         config,
@@ -2356,6 +2552,7 @@ export class AssistanceService {
         (task, attempt) => {
           job.progress = { task, attempt, max_attempts: 3 };
         },
+        dictionary,
       );
       signal.throwIfAborted();
       job.state = "completed";

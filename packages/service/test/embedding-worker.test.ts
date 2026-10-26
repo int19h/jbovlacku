@@ -48,6 +48,9 @@ test(
                         name: "submit_answer",
                         arguments: JSON.stringify({
                           word_type: "gismu",
+                          alternative: null,
+                          alternative_reason: null,
+                          existing: null,
                           reason: "Root.",
                         }),
                       },
@@ -133,6 +136,9 @@ test(
         ).json()) as any;
         assert.deepEqual(generation.answer, {
           word_type: "gismu",
+          alternative: null,
+          alternative_reason: null,
+          existing: null,
           reason: "Root.",
         });
         assert.equal(generation.embedding, false);

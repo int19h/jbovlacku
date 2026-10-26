@@ -92,6 +92,18 @@ const frame = {
   constraints: [],
 };
 function completion(answer: unknown, extra: Record<string, any> = {}) {
+  if (
+    answer &&
+    typeof answer === "object" &&
+    "word_type" in answer &&
+    !Object.hasOwn(answer, "alternative")
+  )
+    answer = {
+      alternative: null,
+      alternative_reason: null,
+      existing: null,
+      ...answer,
+    };
   return {
     model: "mock-model",
     provider: "mock-route",
@@ -2303,7 +2315,10 @@ test("admission extends session through the advertised job lifetime", async (t) 
     ) >= 2,
   );
   t.mock.timers.tick(60);
-  assert.equal((await poll(instance, accepted.job, headers)).state, "completed");
+  assert.equal(
+    (await poll(instance, accepted.job, headers)).state,
+    "completed",
+  );
   const result = await instance.fetch(
     privateRequest(`/jobs/${accepted.job}`, headers),
   );
@@ -3040,18 +3055,18 @@ test("assistance interprets sparse draft and signed context values without chang
   }
 });
 
-test("type inference accepts fuhivla and corrects the retired label", async () => {
+test("the frozen type answer uses fuivla and rejects the app label", async () => {
   const { runner: inference, log } = await runner(
     queue([
-      completion({ word_type: "fuivla", reason: "A borrowing fits." }),
       completion({ word_type: "fuhivla", reason: "A borrowing fits." }),
+      completion({ word_type: "fuivla", reason: "A borrowing fits." }),
     ]),
   );
   const answer = await inference.run({
     task: "type",
     input: "A borrowed word.",
   });
-  assert.equal(answer.word_type, "fuhivla");
+  assert.equal(answer.word_type, "fuivla");
   assert.equal(log.corrections, 1);
 });
 
@@ -3072,4 +3087,453 @@ test("assistance drafts accept fuhivla without a legacy alias", () => {
       ),
     );
   }
+});
+
+const typeAnswer = (patch: Record<string, unknown> = {}) => ({
+  word_type: "lujvo",
+  alternative: null,
+  reason: "A described thing.",
+  alternative_reason: null,
+  existing: null,
+  ...patch,
+});
+const suppliedEvent = `jve1:${"a".repeat(64)}`;
+const suppliedDictionary = () => ({
+  snapshot: `sha256:${"b".repeat(64)}`,
+  query_words: ["bowl"],
+  related: [
+    {
+      event: suppliedEvent,
+      word: "bolva",
+      kind: "gismu",
+      definition: "A bowl.",
+    },
+  ],
+  entries: new Map([[suppliedEvent, "bolva"]]),
+});
+test("type checks return exact feedback and accept corrections", async () => {
+  const existing = {
+    word: "bolva",
+    ref: "r1",
+    conversion: null,
+    revised_definition: null,
+  };
+  const rows: [Record<string, unknown>, string, boolean?][] = [
+    [
+      { alternative: "lujvo", alternative_reason: "Another reading." },
+      "alternative must differ from word_type.",
+    ],
+    [
+      { word_type: null, existing },
+      "A null word_type has no alternative and no existing word. Set alternative, alternative_reason and existing to null.",
+    ],
+    [
+      { alternative: "fuivla" },
+      "When alternative is a type, give alternative_reason. Otherwise set both to null.",
+    ],
+    [{ reason: " \t " }, "Write a reason."],
+    [
+      { alternative: "fuivla", alternative_reason: "\n " },
+      "Write alternative_reason, or set alternative and alternative_reason to null.",
+    ],
+    [
+      { existing: { ...existing, ref: "r2" } },
+      "existing.ref must name a supplied entry, and existing.word must be its word. Name only a word that related or definitions shows, or set existing to null.",
+    ],
+    [
+      { existing: { ...existing, word: "citka" } },
+      "existing.ref must name a supplied entry, and existing.word must be its word. Name only a word that related or definitions shows, or set existing to null.",
+    ],
+    [
+      { existing },
+      "existing.word is not a dictionary entry. Name only a word that related or definitions shows, or set existing to null.",
+      true,
+    ],
+    [
+      { existing: { ...existing, revised_definition: "\t " } },
+      "Write the revised definition, or set it to null.",
+    ],
+    [
+      { word_type: "compound" },
+      "The application's analysis of the spelling decides between cmavo and compound. Use the type that spelling_form shows.",
+    ],
+  ];
+  for (const [patch, problem, missing] of rows) {
+    const dictionary = suppliedDictionary();
+    if (missing) dictionary.entries.clear();
+    const request = draft("type", { spelling: "ui" });
+    const config = makeConfig({
+      fetch: queue(
+        [completion(typeAnswer(patch)), completion(typeAnswer())],
+        (body, turn) => {
+          if (turn)
+            assert.ok(body.messages.at(-1).content.includes(problem), problem);
+        },
+      ),
+    });
+    const log = newLog("type", config, await promptVersion());
+    const result = await runAssistance(
+      request,
+      config,
+      [],
+      AbortSignal.timeout(3000),
+      log,
+      () => {},
+      dictionary,
+    );
+    assert.equal(result.proposals[0].value, "lujvo");
+    assert.ok(
+      log.exchanges[0].attempts[0].check.problems.includes(problem),
+      problem,
+    );
+    assert.equal(log.corrections, 1);
+  }
+});
+test("type schema enforces required fields, enums, and Unicode code point limits", () => {
+  const spec: TaskCase = { task: "type", input: "" };
+  const caps: [string, number][] = [
+    ["reason", 400],
+    ["alternative_reason", 200],
+  ];
+  for (const [field, cap] of caps) {
+    assert.deepEqual(
+      checkAnswer(spec, typeAnswer({ [field]: "😀".repeat(cap) })),
+      [],
+    );
+    assert.ok(
+      checkAnswer(spec, typeAnswer({ [field]: "😀".repeat(cap + 1) })).includes(
+        `answer.${field} must be at most ${cap} characters.`,
+      ),
+    );
+  }
+  for (const [field, cap] of [
+    ["word", 64],
+    ["ref", 128],
+    ["revised_definition", 600],
+  ] as const) {
+    const existing: Record<string, unknown> = {
+      word: "bowl",
+      ref: "r1",
+      conversion: null,
+      revised_definition: null,
+      [field]: "😀".repeat(cap),
+    };
+    assert.deepEqual(checkAnswer(spec, typeAnswer({ existing })), []);
+    existing[field] = "😀".repeat(cap + 1);
+    assert.ok(
+      checkAnswer(spec, typeAnswer({ existing })).includes(
+        `answer.existing.${field} must be at most ${cap} characters.`,
+      ),
+    );
+  }
+  for (const existing of [
+    { word: "bowl", ref: null, conversion: null, revised_definition: null },
+    { word: "bowl", ref: "r1", conversion: "sei", revised_definition: null },
+  ])
+    assert.ok(checkAnswer(spec, typeAnswer({ existing })).length);
+  for (const key of Object.keys(typeAnswer())) {
+    const answer: any = typeAnswer();
+    delete answer[key];
+    assert.ok(checkAnswer(spec, answer).includes(`answer.${key} is missing.`));
+  }
+  assert.ok(checkAnswer(spec, typeAnswer({ extra: true })).length);
+});
+test("null type asks a question without a proposal and alternatives use display names", async () => {
+  for (const answer of [
+    typeAnswer({ word_type: null, reason: "What does it name?" }),
+    typeAnswer({
+      word_type: "gismu",
+      alternative: "fuivla",
+      alternative_reason: "Use a known name.",
+    }),
+  ]) {
+    const config = makeConfig({ fetch: queue([completion(answer)]) });
+    const result = await runAssistance(
+      draft(),
+      config,
+      [],
+      AbortSignal.timeout(2000),
+      newLog("type", config, await promptVersion()),
+      () => {},
+    );
+    if (answer.word_type === null) assert.deepEqual(result.proposals, []);
+    else
+      assert.match(
+        result.explanation,
+        /Also possible: fu'ivla\. Use a known name\./,
+      );
+  }
+});
+test("existing refs resolve to events for related records and selected definitions with conversions", async () => {
+  for (const ref of ["r1", suppliedEvent]) {
+    const context: ContextDefinition[] = [
+      {
+        event: suppliedEvent,
+        body: {
+          word: { language: "jbo", spelling: "bolva" },
+          classification: { kind: "gismu" },
+        },
+      },
+    ];
+    const answer = typeAnswer({
+      existing: {
+        word: "bolva",
+        ref,
+        conversion: "te",
+        revised_definition: "A better bowl definition.",
+      },
+    });
+    const config = makeConfig({ fetch: queue([completion(answer)]) });
+    const result = await runAssistance(
+      draft(),
+      config,
+      context,
+      AbortSignal.timeout(2000),
+      newLog("type", config, await promptVersion()),
+      () => {},
+      suppliedDictionary(),
+    );
+    assert.deepEqual(result.existing, {
+      word: "bolva",
+      event: suppliedEvent,
+      conversion: "te",
+      revised_definition: "A better bowl definition.",
+    });
+    assert.equal(Object.hasOwn(result.existing!, "ref"), false);
+  }
+});
+test("type spelling analysis and kind translation stay inside the type request", async () => {
+  for (const spelling of [null, "ui", "broda", "a phrase"]) {
+    let seen: any;
+    const config = makeConfig({
+      fetch: queue(
+        [completion(typeAnswer({ word_type: "fuivla" }))],
+        (body) => {
+          seen = JSON.parse(body.messages[1].content);
+        },
+      ),
+    });
+    const request = draft("type", {
+      spelling,
+      word_type: "fuhivla",
+      classification: { kind: "fuhivla", selmaho: [] },
+    });
+    const log = newLog("type", config, await promptVersion());
+    const result = await runAssistance(
+      request,
+      config,
+      [],
+      AbortSignal.timeout(2000),
+      log,
+      () => {},
+    );
+    assert.equal(result.proposals[0].value, "fuhivla");
+    assert.equal(seen.current.word_type, "fuivla");
+    assert.equal(seen.current.classification.kind, "fuivla");
+    if (spelling === null)
+      assert.equal(Object.hasOwn(seen, "spelling_form"), false);
+    else
+      assert.equal(
+        seen.spelling_form,
+        spelling === "ui"
+          ? "cmavo"
+          : spelling === "broda"
+            ? "gismu"
+            : "unknown",
+      );
+    if (spelling && spelling !== "a phrase") assert.ok(log.morphology?.version);
+    assert.deepEqual(seen.related, []);
+    assert.equal(request.current.word_type, "fuhivla");
+  }
+});
+
+test("server type retrieval pins its snapshot and applies exact word priority, caps and exclusions", async () => {
+  const { nearbyQuery } = await import("../src/nearby.ts");
+  const seed = new Uint8Array(32).fill(173);
+  let nonce = 0;
+  const event = (action: any, body: unknown) =>
+    createEvent(
+      seed,
+      [],
+      (++nonce).toString(16).padStart(32, "0"),
+      action,
+      body,
+    );
+  const records: any[] = [];
+  const add = (spelling: string, text: string, language = "en") => {
+    const word = { language: "jbo" as const, spelling };
+    const record = event(
+      {
+        kind: "definition.publish",
+        word: wordId(word),
+        language,
+        parents: [],
+        origin: "native",
+      },
+      {
+        word,
+        language,
+        text: [[text]],
+        notes: [["Do not include these notes."]],
+        classification: { kind: "gismu" },
+        license: { expression: "CC0-1.0" },
+      },
+    );
+    records.push(record);
+    return record;
+  };
+  const exact = add("brodu", "An exact spelling with no query match.");
+  add("brodu", "thin bowl second exact sense");
+  const selected = add("broda", "thin bowl selected context");
+  const retired = add("brode", "thin bowl retired");
+  add("brodi", "thin bowl wrong language", "fr");
+  const long = add("brodo", "thin bowl wide vessel " + "😀".repeat(501));
+  for (let i = 0; i < 35; i++) add(`synthetic${i}`, "thin bowl wide vessel");
+  records.push(
+    event(
+      { kind: "status.set", target: retired.envelope.id, value: "deprecated" },
+      null,
+    ),
+  );
+  const view = event(
+    { kind: "view.publish", parents: [] },
+    {
+      name: "Synthetic type view",
+      description: [],
+      roots: [],
+      rafsi_threshold: { numerator: 1, denominator: 1 },
+      H: { numerator: 3, denominator: 1 },
+      alpha: { numerator: 1, denominator: 2 },
+      excluded: [],
+      calculation: "simple-routes-bounds-v1",
+      work: 1000,
+      import_sets: [],
+      account_witnesses: [],
+      account_authority: false,
+      notes: [],
+    },
+  );
+  records.push(view);
+  let state = emptyState();
+  const snapshots = new Map<string, any>();
+  const objects = new Map<string, Uint8Array>();
+  let providerInput: any;
+  const instance = new DictionaryService(
+    {
+      get: async (hash) => objects.get(hash) ?? null,
+      put: async (hash, bytes) => {
+        objects.set(hash, bytes);
+      },
+    },
+    {
+      load: async () => state,
+      getSnapshot: async (id) => snapshots.get(id) ?? null,
+      compareAndSwap: async (revision, next, snapshot) => {
+        if (state.revision !== revision) return false;
+        state = next;
+        if (snapshot) snapshots.set(snapshot.snapshot, snapshot);
+        return true;
+      },
+    },
+    {
+      serverId: "type-search",
+      policyUrl: "https://example.test/policy",
+      selectedView: view.envelope.id,
+      assistance: {
+        provider: makeConfig({
+          fetch: queue(
+            [
+              completion(
+                typeAnswer({
+                  existing: {
+                    word: "brodu",
+                    ref: "r1",
+                    conversion: null,
+                    revised_definition: null,
+                  },
+                }),
+              ),
+            ],
+            (body) => {
+              providerInput = JSON.parse(body.messages[1].content);
+            },
+          ),
+        }),
+      },
+    },
+  );
+  await instance.admitMany(
+    records.map((record) => utf8(JSON.stringify(record))),
+  );
+  const request = draft("type", { spelling: "brodu" });
+  request.meaning = "$x_1$ thin, $x_{2}$ bowl; wide! vessel";
+  request.context = [selected.envelope.id];
+  const headers = await session(instance);
+  const started = await instance.fetch(
+    privateRequest("/assist", headers, request),
+  );
+  assert.equal(started.status, 202, await started.clone().text());
+  const done = await poll(
+    instance,
+    ((await started.json()) as any).job,
+    headers,
+  );
+  assert.equal(done.state, "completed", JSON.stringify(done.error));
+  assert.equal(providerInput.related[0].word, "brodu");
+  assert.equal(
+    providerInput.related[0].definition,
+    "An exact spelling with no query match.",
+  );
+  assert.equal(providerInput.related.length, 30);
+  assert.equal(
+    new Set(providerInput.related.map((entry: any) => entry.word)).size,
+    30,
+  );
+  assert.ok(
+    !providerInput.related.some((entry: any) =>
+      ["broda", "brode", "brodi"].includes(entry.word),
+    ),
+  );
+  const truncated = providerInput.related.find(
+    (entry: any) => entry.word === "brodo",
+  );
+  assert.equal(truncated.truncated, true);
+  assert.equal(Array.from(truncated.definition).length, 500);
+  assert.ok(
+    !providerInput.related.some((entry: any) =>
+      entry.definition.includes("these notes"),
+    ),
+  );
+  assert.ok(
+    providerInput.related.every(
+      (entry: any, index: number) =>
+        entry.ref === `r${index + 1}` && !Object.hasOwn(entry, "event"),
+    ),
+  );
+  assert.deepEqual(
+    done.result.log.related.query_words,
+    nearbyQuery(request.meaning),
+  );
+  assert.equal(done.result.log.related.events[0], exact.envelope.id);
+  assert.equal(done.result.log.related.events.length, 30);
+  assert.equal(done.result.existing.event, exact.envelope.id);
+  const manifest = (await (
+    await instance.fetch(new Request("http://localhost/api/v1/manifest"))
+  ).json()) as any;
+  assert.equal(done.result.log.related.snapshot, manifest.snapshot);
+  assert.equal(providerInput.meaning, request.meaning);
+});
+
+test("type compound request fields use only parts supplied by the morphology API", async () => {
+  const { typeSpellingFields } = await import("../src/assistance.ts");
+  assert.deepEqual(
+    typeSpellingFields({ kind: "compound", parts: ["tai", ".a"] }),
+    { spelling_form: "compound", spelling_parts: ["tai", ".a"] },
+  );
+  assert.deepEqual(typeSpellingFields({ kind: "compound" }), {
+    spelling_form: "unknown",
+  });
+  assert.deepEqual(typeSpellingFields({ kind: "cmavo" }), {
+    spelling_form: "cmavo",
+  });
 });

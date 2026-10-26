@@ -21,7 +21,10 @@ import {
   AssistanceError,
   type AssistanceOptions,
   type ContextDefinition,
+  type AssistRequest,
+  type TypeDictionary,
 } from "./assistance.ts";
+import { nearbyQuery, rankNearby } from "./nearby.ts";
 import {
   checkpointBindingKey,
   type CheckpointBinding,
@@ -191,7 +194,111 @@ export class DictionaryService {
         }
         return definitions;
       },
+      (request, context, signal) =>
+        this.typeDictionary(request, context, signal),
     );
+  }
+  /** Replace lexical retrieval here when an available semantic route is disclosed. */
+  private async typeDictionary(
+    request: AssistRequest,
+    context: ContextDefinition[],
+    signal: AbortSignal,
+  ): Promise<TypeDictionary> {
+    const snapshot = await this.interpretedSnapshot(null);
+    const packages = await this.packages(snapshot);
+    const query_words = nearbyQuery(request.meaning);
+    const entries = new Map(
+      packages.entries.map((entry) => [entry.event, entry.word.spelling]),
+    );
+    const result: TypeDictionary = {
+      snapshot: snapshot.snapshot,
+      query_words,
+      related: [],
+      entries,
+    };
+    if (packages.effectiveDefinitions === null || !packages.entries.length)
+      return result;
+    const view = this.options.selectedView ?? zeroView;
+    const evaluation = await this.evaluation(snapshot, view);
+    if (!evaluation.available) return result;
+    const active = (event: string) => {
+      const publication = evaluation.publications[event];
+      return (
+        publication?.eligible === "eligible" &&
+        publication.status === "active" &&
+        evaluation.receipts[event]?.interpretation === "effective"
+      );
+    };
+    const byEvent = new Map(
+      packages.entries.map((entry) => [entry.event, entry]),
+    );
+    const exact = request.current.spelling?.trim()
+      ? packages.entries
+          .filter(
+            (entry) =>
+              entry.word.spelling === request.current.spelling &&
+              entry.language === request.language &&
+              active(entry.event),
+          )
+          .sort((a, b) => (a.event < b.event ? -1 : a.event > b.event ? 1 : 0))
+          .slice(0, 3)
+      : [];
+    const searches: {
+      word_id: string;
+      definitions: string[];
+      preview: { event: string };
+    }[][] = [];
+    for (const query of query_words) {
+      const hits: (typeof searches)[number] = [];
+      let after: string | null = null;
+      do {
+        signal.throwIfAborted();
+        const url = new URL("http://dictionary.local/api/v1/search");
+        url.search = new URLSearchParams({
+          q: query,
+          language: request.language,
+          snapshot: snapshot.snapshot,
+          limit: "100",
+          ...(after ? { after } : {}),
+        }).toString();
+        const response = await this.route(new Request(url), "local");
+        if (!response.ok)
+          throw new AssistanceError(
+            503,
+            "context",
+            "Related dictionary search is unavailable.",
+          );
+        const page = (await response.json()) as {
+          hits: (typeof searches)[number];
+          next: string | null;
+        };
+        hits.push(...page.hits);
+        after = page.next;
+      } while (after);
+      searches.push(hits);
+    }
+    const ordered = [
+      ...exact,
+      ...rankNearby(searches)
+        .map((hit) => byEvent.get(hit.preview.event)!)
+        .filter(Boolean),
+    ];
+    const supplied = new Set(context.map((entry) => entry.event));
+    const words = new Set<string>();
+    for (const entry of ordered) {
+      if (result.related.length === 30) break;
+      if (supplied.has(entry.event) || words.has(entry.word.spelling)) continue;
+      words.add(entry.word.spelling);
+      const characters = Array.from(entry.plain_text);
+      result.related.push({
+        event: entry.event,
+        word: entry.word.spelling,
+        kind: (entry.classification as { kind: string }).kind,
+        definition: characters.slice(0, 500).join(""),
+        ...(characters.length > 500 ? { truncated: true as const } : {}),
+      });
+    }
+    return result;
   }
   private canonicalEnvelopes = new Map<string, string>();
   private importSelections = new Map<string, string[]>();

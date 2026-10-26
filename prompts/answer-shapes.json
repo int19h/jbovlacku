@@ -128,6 +128,112 @@
         "note"
       ],
       "additionalProperties": false
+    },
+    "type": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "word_type",
+        "alternative",
+        "reason",
+        "alternative_reason",
+        "existing"
+      ],
+      "properties": {
+        "word_type": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "gismu",
+            "lujvo",
+            "cmavo",
+            "fuivla",
+            "cmevla",
+            "compound",
+            "letteral",
+            "other",
+            null
+          ]
+        },
+        "alternative": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "gismu",
+            "lujvo",
+            "cmavo",
+            "fuivla",
+            "cmevla",
+            "compound",
+            "letteral",
+            "other",
+            null
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 400
+        },
+        "alternative_reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "existing": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "required": [
+            "word",
+            "ref",
+            "conversion",
+            "revised_definition"
+          ],
+          "properties": {
+            "word": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "ref": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "conversion": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "enum": [
+                "se",
+                "te",
+                "ve",
+                "xe",
+                null
+              ]
+            },
+            "revised_definition": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "minLength": 1,
+              "maxLength": 600
+            }
+          }
+        }
+      }
     }
   }
 }
