@@ -219,10 +219,7 @@ test("CLL examples and version 2 have independent expectations", () => {
   }
   const evidence = JSON.parse(
     readFileSync(
-      new URL(
-        "../evidence/typed-lujvo.json",
-        import.meta.url,
-      ),
+      new URL("../evidence/typed-lujvo.json", import.meta.url),
       "utf8",
     ),
   );
@@ -647,10 +644,7 @@ test("recognition and score inputs have fixed byte and token bounds", () => {
 test("retained reference parses keep profile-specific results", () => {
   const evidence = JSON.parse(
     readFileSync(
-      new URL(
-        "../evidence/word-parses.json",
-        import.meta.url,
-      ),
+      new URL("../evidence/word-parses.json", import.meta.url),
       "utf8",
     ),
   );
