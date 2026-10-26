@@ -2631,6 +2631,7 @@ test("an unversioned draft converts legacy deep logs before its first storage cl
     const app: any = {
       session: { storageAvailable: true },
       store: {
+        savedDrafts: async () => [],
         get: async () => legacy,
         saveDraft: async (_key: string, value: any) => {
           const saved = structuredClone(value);
@@ -4040,9 +4041,21 @@ test("publishing an AI-created revision keeps earlier draft recovery without a c
     .locator("aside")
     .getByRole("button", { name: "Publish", exact: true });
   await expect(publish).toBeEnabled();
+  // Save the signed revision locally without changing the shared dictionary fixture.
+  await page.route("**/api/v1/events", (route) => route.abort("failed"));
   await publish.click();
   await acceptFirstSignature(page);
-  await expect(page).toHaveURL(/\/word\//);
+  await expect(
+    page.getByRole("region", { name: "Saved publication", exact: true }),
+  ).toContainText("Saved. Not delivered yet.");
+  const publication = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const records = await new LocalStore().list("outbox");
+    return records
+      .map((item: any) => JSON.parse(item.transport).envelope.header.action)
+      .find((action: any) => action.kind === "definition.publish");
+  });
+  expect(publication.parents).toEqual([fixture().definitions.cukta1]);
   expect(await stored(page)).toBeUndefined();
   await page.getByRole("link", { name: "Add a word", exact: true }).click();
   await expect(
