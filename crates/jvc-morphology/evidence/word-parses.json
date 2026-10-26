@@ -104,7 +104,7 @@
     },
     {
       "word": "gimspageti",
-      "jbotci_kind": "fuivla",
+      "jbotci_kind": "fuhivla",
       "jbotci_tokens": [],
       "cll-ebnf": {
         "ok": true,
@@ -233,7 +233,7 @@
     },
     {
       "word": "ismu",
-      "jbotci_kind": "fuivla",
+      "jbotci_kind": "fuhivla",
       "jbotci_tokens": [],
       "cll-ebnf": {
         "ok": false,
@@ -358,7 +358,7 @@
     },
     {
       "word": "sakrsakrsakrsakrsakrsakrsakrsakrsakli",
-      "jbotci_kind": "fuivla",
+      "jbotci_kind": "fuhivla",
       "jbotci_tokens": [],
       "cll-ebnf": {
         "ok": true,

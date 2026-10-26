@@ -1,3 +1,4 @@
+import { kindLabel } from "../../model/types.ts";
 import {
   detectWord,
   typedWord,
@@ -319,7 +320,7 @@ export async function lujvoPage(
       const item = el("li", { class: "similar-item" });
       item.append(
         el("span", { class: "hw", lang: "jbo", text: hit.word.spelling }),
-        text(` ${kind}`, "meta"),
+        text(` ${kindLabel(kind)}`, "meta"),
         text(
           ` · ${entry.glosses.map((g) => g.text).join(", ") || entry.plain_text.slice(0, 60)}`,
           "meta",
@@ -374,8 +375,8 @@ export async function lujvoPage(
     ) {
       const item = el("li", { class: "similar-item" });
       const kind =
-        analysis.kind === "fuivla"
-          ? "fuivla"
+        analysis.kind === "fuhivla"
+          ? "fuhivla"
           : analysis.kind === "gismu"
             ? "gismu"
             : analysis.kind === "lujvo"
@@ -387,7 +388,7 @@ export async function lujvoPage(
                   : "other";
       item.append(
         el("span", { class: "hw", lang: "jbo", text: analysis.normalized }),
-        text(` ${kind}, not in the local package`, "meta"),
+        text(` ${kindLabel(kind)}, not in the local package`, "meta"),
         analysis.diagnostics.length
           ? text(` · ${analysis.diagnostics[0]}`, "meta")
           : text(""),
@@ -579,7 +580,7 @@ export async function lujvoPage(
           style: "font-size:18px",
           text: component.spelling,
         }),
-        text(` ${component.kind}`, "meta"),
+        text(` ${kindLabel(component.kind)}`, "meta"),
       );
       if (component.gloss) name.append(text(` ${component.gloss}`, "meta"));
       if (component.definitions?.length) {

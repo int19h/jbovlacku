@@ -130,7 +130,7 @@ const lexicalKinds = [
   "gismu",
   "lujvo",
   "cmavo",
-  "fuivla",
+  "fuhivla",
   "cmevla",
   "compound",
   "letteral",

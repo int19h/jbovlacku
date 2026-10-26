@@ -135,9 +135,9 @@ test("semantic extraction requires the current schema and exact event/body bindi
   const record = project(
     inputs.find((input) => input.name === "native-definition")!,
   );
-  assert.equal(semanticProjectionVersion(), 1);
+  assert.equal(semanticProjectionVersion(), 2);
   assert.throws(
-    () => semanticDocument(profile, { ...record, version: 2 }),
+    () => semanticDocument(profile, { ...record, version: 1 }),
     /binding/,
   );
   assert.throws(
@@ -153,7 +153,7 @@ test("semantic extraction requires the current schema and exact event/body bindi
       }),
     /binding/,
   );
-  for (const oldVersion of [0, 2]) {
+  for (const oldVersion of [0, 1]) {
     const compact = JSON.parse(record.projection);
     compact.version = oldVersion;
     assert.throws(() => checkHostSemanticRecord(JSON.stringify(compact)));

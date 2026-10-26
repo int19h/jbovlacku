@@ -102,14 +102,12 @@ for (const word of [...positives, ...negatives, ...otherWords]) {
   if (single) visit(forms.tree);
   const kind = !single
     ? "unknown"
-    : rule === "fuhivla"
-      ? "fuivla"
-      : (rule ??
-        (lexical[0].tags.has("CMEVLA")
-          ? "cmevla"
-          : lexical[0].tags.has("Cmavo")
-            ? "cmavo"
-            : "unknown"));
+    : (rule ??
+      (lexical[0].tags.has("CMEVLA")
+        ? "cmevla"
+        : lexical[0].tags.has("Cmavo")
+          ? "cmavo"
+          : "unknown"));
   const analysis = detectWord(word);
   let rebuilt: string | null = null;
   if (positives.includes(word)) {

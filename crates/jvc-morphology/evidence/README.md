@@ -17,3 +17,7 @@ The Ilmen 8 README credits its eight-language configuration to Ilmen. It states 
 The recognizer port retains the parsing functions needed for word recognition and lujvo part ranges. It removes contract macros and external diagnostic types. It replaces the UI and CAI lookup with their pinned indicator table. It adds work accounting to functions that share the recognition cache. The port uses the CLL consonant-pair table and refuses `mz`, which jbotci accepts as an experimental relaxation. The notices for the source are in [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md).
 
 This evidence records representative cases. It does not establish full equivalence between the two reference grammars or between either grammar and Jbovlacku. For example, the CLL lujvo profile restricts components, while general fu'ivla recognition follows the pinned jbotci rules.
+
+`cross-check.rs` writes Jbovlacku's label `fuhivla` for jbotci's `WordKind::Fuhivla` kind.
+`word-parses.json` and `typed-lujvo.json` use that derived label.
+The parser results, tokens, source revisions, and gencmu tree rules stay unchanged.

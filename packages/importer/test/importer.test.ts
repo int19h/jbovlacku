@@ -985,3 +985,23 @@ test("r3 N2 filtering preserves escaped source object key order", () => {
     false,
   );
 });
+
+test("REST imports map the source fu'ivla label to fuhivla", () => {
+  const row: Record<string, any> = {
+    ...rows()[0],
+    valsiword: "leksiko",
+    type_name: "fu'ivla",
+  };
+  const bytes = utf8(JSON.stringify({ definitions: [row] }));
+  const result = importCapture({
+    sourceBytes: bytes,
+    manifest: { ...manifest, sha256: contentHash(bytes), expected_rows: 1 },
+    seed,
+    roots: [],
+  });
+  assert.equal(result.report.added, 1);
+  const body =
+    result.journal.entries[String(row.definitionid)].versions[0].carrier.body;
+  assert.equal(body.classification.kind, "fuhivla");
+  assert.equal(body.legacy.original.type_name, "fu'ivla");
+});

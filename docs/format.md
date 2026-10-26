@@ -390,7 +390,7 @@ For an optional field, the last column gives its meaning when absent. Explicit e
 | `legacy` | Null, or the import provenance below. | `null` for native publications. Required for imports. |
 
 A lexical kind is an author's classification, not a morphology admission rule.
-The permitted labels are `gismu`, `cmavo`, `lujvo`, `fuivla`, `cmevla`, `compound`, `letteral`, and `other`.
+The permitted labels are `gismu`, `cmavo`, `lujvo`, `fuhivla`, `cmevla`, `compound`, `letteral`, and `other`.
 Experimental and obsolete status belongs in labels. Import mappings retain the original classification in legacy source fields.
 A selmaho is a Lojban grammatical class. Preserve its spelling, including experimental markers.
 

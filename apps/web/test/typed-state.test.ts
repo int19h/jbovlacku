@@ -790,8 +790,8 @@ for (const accept of [false, true])
         };
       })
       .toEqual({
-        kind: accept ? "fuivla" : "gismu",
-        auto: accept ? "fuivla" : "gismu",
+        kind: accept ? "fuhivla" : "gismu",
+        auto: accept ? "fuhivla" : "gismu",
         formation: !accept,
         review: !accept,
       });

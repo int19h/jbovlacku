@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { readFile } from "node:fs/promises";
-import { fixture } from "./helpers.ts";
+import { fixture, expectKindSpelling } from "./helpers.ts";
 test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: "ignoreErrors" });
 });
@@ -188,6 +188,7 @@ function proposals(body: any): any[] {
   return [];
 }
 interface MockOptions {
+  wordType?: string;
   lujvoProposals?: any[];
   deepLog?: boolean;
   delay?: boolean;
@@ -255,6 +256,8 @@ async function mockAssistant(page: Page, options: MockOptions = {}) {
       usage: { input_tokens: 30, output_tokens: 20 },
       log: options.log ?? log,
     };
+    if (body.operation === "type" && options.wordType)
+      result.proposals = [{ path: "/word_type", value: options.wordType }];
     if (body.operation === "gismu-sources" && options.sourceEdits)
       result.proposals = [
         {
@@ -3402,4 +3405,21 @@ test("R8 component-only AI preserves the typed headword and later Use asks befor
     'Replace the typed spelling "sanzbax" with "ckusni"?',
   );
   expect((await stored(page)).spelling).toBe("sanzbax");
+});
+
+test("type suggestions display fu'ivla and apply fuhivla", async ({ page }) => {
+  await mockAssistant(page, { wordType: "fuhivla" });
+  await draft(page);
+  await page
+    .getByRole("button", { name: "Recommend a type", exact: true })
+    .click();
+  await allow(page);
+  const panel = page.getByRole("region", {
+    name: "Recommend a type suggestion",
+  });
+  await expect(panel).toContainText("fu'ivla");
+  await expectKindSpelling(page);
+  await panel.getByRole("button", { name: "Use this", exact: true }).click();
+  await expect(page.getByRole("radio", { name: /^fu'ivla/ })).toBeChecked();
+  await expect.poll(async () => (await stored(page)).kind).toBe("fuhivla");
 });

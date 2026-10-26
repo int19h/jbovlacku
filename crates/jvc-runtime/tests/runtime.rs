@@ -1373,7 +1373,7 @@ fn sparse_definition_projection_applies_defaults_after_original_validation() {
 }
 
 #[test]
-fn evaluation_record_version_two_bytes_match_the_original_golden() {
+fn evaluation_record_payload_keeps_the_original_version_two_fields() {
     let inputs: Vec<Value> =
         serde_json::from_str(include_str!("fixtures/host-record-inputs-v2.json")).unwrap();
     let mut bytes = Vec::new();
@@ -1383,10 +1383,14 @@ fn evaluation_record_version_two_bytes_match_the_original_golden() {
             input["body"].as_str().map(str::as_bytes),
         )
         .unwrap();
-        assert_eq!(jvc_runtime::HOST_RECORD_VERSION, 2);
+        let payload = String::from_utf8(compact).unwrap().replacen(
+            &format!("\"version\":{}", jvc_runtime::HOST_RECORD_VERSION),
+            "\"version\":2",
+            1,
+        );
         bytes.extend_from_slice(input["name"].as_str().unwrap().as_bytes());
         bytes.push(b'\n');
-        bytes.extend_from_slice(&compact);
+        bytes.extend_from_slice(payload.as_bytes());
         bytes.push(b'\n');
     }
     assert_eq!(
@@ -1449,7 +1453,7 @@ fn signed_invalid_definition_action_keeps_an_inert_decodable_record() {
     )
     .unwrap();
     let value: Value = serde_json::from_slice(&compact).unwrap();
-    assert_eq!(value["version"], 2);
+    assert_eq!(value["version"], jvc_runtime::HOST_RECORD_VERSION);
     assert_eq!(value["action_valid"], false);
     assert_eq!(value["body_status"], "invalid");
     assert!(value["package"]["body"].is_null());

@@ -8,7 +8,7 @@ fn main() {
         println!("{word}: jbotci={jb:?} parts={jb_parts:?}");
         let kind=match &jb {
             Ok(items) if items.len()==1 => match items[0].bare_word() { Some(w) => match w.kind() {
-                jbotci_morphology::WordKind::Gismu=>"gismu",jbotci_morphology::WordKind::Lujvo=>"lujvo",jbotci_morphology::WordKind::Fuhivla=>"fuivla",jbotci_morphology::WordKind::Cmavo=>"cmavo",jbotci_morphology::WordKind::Cmevla=>"cmevla",
+                jbotci_morphology::WordKind::Gismu=>"gismu",jbotci_morphology::WordKind::Lujvo=>"lujvo",jbotci_morphology::WordKind::Fuhivla=>"fuhivla",jbotci_morphology::WordKind::Cmavo=>"cmavo",jbotci_morphology::WordKind::Cmevla=>"cmevla",
             }, _=>"unknown" }, _=>"unknown"
         };
         let tokens=jb_parts.as_ref().map(|ps|ps.iter().map(|p|p.phonemes().as_str().chars().map(|c|match c {'á'=>'a','é'=>'e','í'|'ĭ'=>'i','ó'=>'o','ú'|'ŭ'=>'u','ý'=>'y',_=>c}).collect::<String>()).collect::<Vec<_>>()).unwrap_or_default();

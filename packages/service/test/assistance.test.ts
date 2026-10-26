@@ -3039,3 +3039,37 @@ test("assistance interprets sparse draft and signed context values without chang
     assert.throws(() => parseAssistRequest(wrong), /definition schema/);
   }
 });
+
+test("type inference accepts fuhivla and corrects the retired label", async () => {
+  const { runner: inference, log } = await runner(
+    queue([
+      completion({ word_type: "fuivla", reason: "A borrowing fits." }),
+      completion({ word_type: "fuhivla", reason: "A borrowing fits." }),
+    ]),
+  );
+  const answer = await inference.run({
+    task: "type",
+    input: "A borrowed word.",
+  });
+  assert.equal(answer.word_type, "fuhivla");
+  assert.equal(log.corrections, 1);
+});
+
+test("assistance drafts accept fuhivla without a legacy alias", () => {
+  const current = {
+    word_type: "fuhivla",
+    classification: { kind: "fuhivla", selmaho: [] },
+  };
+  assert.equal(
+    parseAssistRequest(draft("type", current)).current.word_type,
+    "fuhivla",
+  );
+  for (const kind of ["fuivla", "fu'ivla"]) {
+    assert.throws(() => parseAssistRequest(draft("type", { word_type: kind })));
+    assert.throws(() =>
+      parseAssistRequest(
+        draft("type", { classification: { kind, selmaho: [] } }),
+      ),
+    );
+  }
+});

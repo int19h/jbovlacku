@@ -1,7 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { fixture } from "./helpers.ts";
+import { fixture, expectKindSpelling } from "./helpers.ts";
 import type { RafsiInventoryClaim } from "../../../packages/core/src/index.ts";
 
 function claimCheckboxName(spelling: string): RegExp {
@@ -651,4 +651,26 @@ test("source Remove names stay unique for alternatives and empty language rows",
     );
   expect(names.every((name) => name && name.trim())).toBe(true);
   expect(new Set(names).size).toBe(names.length);
+});
+
+test("the component picker shows fu'ivla and stores fuhivla", async ({
+  page,
+}) => {
+  await startDraft(page, "lujvo");
+  await page.getByLabel("Add a part").fill("leksiko");
+  const matches = page.getByRole("list", { name: "Matching words" });
+  await expect(matches).toContainText("fu'ivla, not in the local package");
+  await expectKindSpelling(page);
+  await matches
+    .getByRole("button", { name: "Add leksiko as entered", exact: true })
+    .click();
+  const components = page.getByRole("list", {
+    name: "Components",
+    exact: true,
+  });
+  await expect(components).toContainText("fu'ivla");
+  await expectKindSpelling(page);
+  await expect
+    .poll(async () => (await currentDraft(page)).lujvo.components[0]?.kind)
+    .toBe("fuhivla");
 });
