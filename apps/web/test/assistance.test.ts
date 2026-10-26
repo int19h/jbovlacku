@@ -1,6 +1,11 @@
 import { test, expect, type Page } from "@playwright/test";
 import { readFile } from "node:fs/promises";
-import { fixture, expectKindSpelling } from "./helpers.ts";
+import {
+  fixture,
+  expectKindSpelling,
+  createIdentity,
+  acceptFirstSignature,
+} from "./helpers.ts";
 test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: "ignoreErrors" });
 });
@@ -3918,4 +3923,248 @@ test("saved draft switches refuse stale writers and roll back failed replacement
   expect(result.keys.filter((key: string) => key.startsWith("saved:"))).toEqual(
     [],
   );
+});
+
+async function earlierSavedDraft(page: Page, revise = false) {
+  await mockAssistant(page, {
+    existing: {
+      word: "cukta",
+      event: fixture().definitions.cukta1,
+      conversion: null,
+      revised_definition: revise
+        ? "A revised synthetic book definition."
+        : null,
+    },
+  });
+  await draft(page, { notes: "Earlier private notes." });
+  const original = await stored(page);
+  await page
+    .getByRole("button", { name: "Recommend a type", exact: true })
+    .click();
+  await allow(page);
+  await page
+    .getByRole("button", {
+      name: revise ? "Revise this one" : "Add a definition",
+      exact: true,
+    })
+    .click();
+  await expect.poll(async () => (await stored(page)).spelling).toBe("cukta");
+  return original;
+}
+
+for (const path of ["replacement", "discard", "ordinary revise"] as const) {
+  test(`saved drafts remain reachable after current ${path}`, async ({
+    page,
+  }) => {
+    const original = await earlierSavedDraft(page);
+    if (path === "replacement") {
+      await page.goto("/new/meaning?word=brode");
+      await page
+        .getByRole("button", { name: 'Start "brode" instead', exact: true })
+        .click();
+      await expect
+        .poll(async () => (await stored(page)).spelling)
+        .toBe("brode");
+    } else if (path === "discard") {
+      await page.goto("/new/meaning");
+      page.once("dialog", (dialog) => dialog.accept());
+      await page
+        .getByRole("button", { name: "Discard draft", exact: true })
+        .click();
+      await expect(page).toHaveURL(/\/$/);
+      expect(await stored(page)).toBeUndefined();
+      await page.goto("/new/meaning");
+      await expect(
+        page.getByRole("heading", { name: "Saved drafts", exact: true }),
+      ).toBeVisible();
+      expect(await stored(page)).toBeUndefined();
+    } else {
+      await page
+        .getByRole("region", { name: "Existing word", exact: true })
+        .getByRole("link", { name: "cukta", exact: true })
+        .click();
+      page.once("dialog", (dialog) => dialog.accept());
+      await page
+        .locator(
+          `a[href="/new/editor?revise=${encodeURIComponent(fixture().definitions.cukta2)}"]`,
+        )
+        .filter({ hasText: /^Revise$/ })
+        .click();
+      await expect
+        .poll(async () => (await stored(page)).parents[0])
+        .toBe(fixture().definitions.cukta2);
+    }
+    await page.reload();
+    await page
+      .getByRole("link", { name: "Return to the saved draft", exact: true })
+      .click();
+    await expect
+      .poll(async () => (await stored(page))?.spelling)
+      .toBe(original.spelling);
+    expect((await stored(page)).notes).toEqual(original.notes);
+    const state = await page.evaluate(async () => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const store = new LocalStore();
+      return {
+        index: await store.savedDrafts(),
+        rows: (await store.keys("drafts")).filter((key: string) =>
+          key.startsWith("saved:"),
+        ),
+      };
+    });
+    expect(state.rows).toHaveLength(path === "discard" ? 0 : 1);
+    expect(state.index.map((entry: any) => entry.key)).toEqual(state.rows);
+  });
+}
+
+test("publishing an AI-created revision keeps earlier draft recovery without a current row", async ({
+  page,
+}) => {
+  const original = await earlierSavedDraft(page, true);
+  await page
+    .getByRole("region", { name: "Rewrite definition suggestion" })
+    .getByRole("button", { name: "Use this", exact: true })
+    .click();
+  await createIdentity(page);
+  await page.getByRole("link", { name: "Add a word", exact: true }).click();
+  await page
+    .getByRole("link", { name: "Skip to the full editor", exact: true })
+    .click();
+  const approve = page.getByRole("button", {
+    name: "Approve the numbering",
+    exact: true,
+  });
+  if (await approve.isVisible()) await approve.click();
+  await page.getByRole("button", { name: "Review", exact: true }).click();
+  const publish = page
+    .locator("aside")
+    .getByRole("button", { name: "Publish", exact: true });
+  await expect(publish).toBeEnabled();
+  await publish.click();
+  await acceptFirstSignature(page);
+  await expect(page).toHaveURL(/\/word\//);
+  expect(await stored(page)).toBeUndefined();
+  await page.getByRole("link", { name: "Add a word", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Saved drafts", exact: true }),
+  ).toBeVisible();
+  expect(await stored(page)).toBeUndefined();
+  await page
+    .getByRole("link", { name: "Return to the saved draft", exact: true })
+    .click();
+  await expect
+    .poll(async () => (await stored(page))?.spelling)
+    .toBe(original.spelling);
+  expect((await stored(page)).notes).toEqual(original.notes);
+  const state = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore();
+    return {
+      index: await store.savedDrafts(),
+      rows: (await store.keys("drafts")).filter((key: string) =>
+        key.startsWith("saved:"),
+      ),
+    };
+  });
+  expect(state.rows).toEqual([]);
+  expect(state.index).toEqual([]);
+});
+
+test("orphan saved rows migrate without current and Export drafts excludes only index metadata", async ({
+  page,
+}) => {
+  await page.goto("/search");
+  const key = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { newDraft } = await import(String("/src/model/draft.ts"));
+    const store = new LocalStore();
+    const key = `saved:${crypto.randomUUID()}`;
+    await store.put(
+      "drafts",
+      key,
+      newDraft({
+        spelling: "broda",
+        meaning: "An orphan meaning.",
+        notes: "An orphan note.",
+      }),
+    );
+    return key;
+  });
+  await page.goto("/new/meaning");
+  await expect(
+    page.getByRole("heading", { name: "Saved drafts", exact: true }),
+  ).toBeVisible();
+  expect(await stored(page)).toBeUndefined();
+  const index = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    return new LocalStore().get("drafts", "saved-index");
+  });
+  expect(index.entries).toEqual([{ key, label: "broda" }]);
+  const atomic = await page.evaluate(async (key) => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { newDraft } = await import(String("/src/model/draft.ts"));
+    const store = new LocalStore();
+    let failure = "",
+      conflict = "";
+    const put = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function (value: any, key?: IDBValidKey) {
+      if (this.name === "drafts" && key === "current")
+        throw new Error("Injected absent resume failure.");
+      return put.call(this, value, key!);
+    };
+    try {
+      await store.switchDraft(null, { resume: key });
+    } catch (error) {
+      failure = (error as Error).message;
+    } finally {
+      IDBObjectStore.prototype.put = put;
+    }
+    const other = newDraft({ spelling: "brode" });
+    await store.saveDraft("current", other, "absent");
+    try {
+      await store.switchDraft(null, { resume: key });
+    } catch (error) {
+      conflict = (error as { kind: string }).kind;
+    }
+    await store.deleteDraft("current", { revision: other.revision });
+    return {
+      failure,
+      conflict,
+      current: await store.get("drafts", "current"),
+      index: await store.savedDrafts(),
+      saved: await store.get("drafts", key),
+    };
+  }, key);
+  expect(atomic.failure).toBe("Injected absent resume failure.");
+  expect(atomic.conflict).toBe("changed");
+  expect(atomic.current).toBeUndefined();
+  expect(atomic.index).toEqual([{ key, label: "broda" }]);
+  expect(atomic.saved.spelling).toBe("broda");
+  await page
+    .getByRole("link", { name: "Return to the saved draft", exact: true })
+    .click();
+  await expect.poll(async () => (await stored(page))?.spelling).toBe("broda");
+  expect((await stored(page)).notes).toEqual([["An orphan note."]]);
+  await page.goto("/search");
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore();
+    await store.put("drafts", "current", {
+      word: "legacy-word",
+      text: "A raw legacy draft.",
+    });
+  });
+  await page.goto("/preferences");
+  const downloaded = page.waitForEvent("download");
+  await page
+    .getByRole("button", { name: "Export drafts", exact: true })
+    .click();
+  const rows = JSON.parse(
+    await readFile((await (await downloaded).path())!, "utf8"),
+  );
+  expect(rows).toContainEqual({
+    word: "legacy-word",
+    text: "A raw legacy draft.",
+  });
+  expect(rows.some((row: any) => row.kind === "saved-drafts")).toBe(false);
 });

@@ -296,7 +296,12 @@ That action opens the existing word page and shows the converted form. It create
 A conversion with an improved definition also offers Revise this one for the existing word in its own place order.
 Adding or revising saves the previous draft separately and offers Return to the saved draft.
 Add a definition copies every current field and uses the Step 1 spelling-change action. It preserves notes, places, glosses, sources, and evidence for review.
-Saved-draft links stay in private draft data through every wizard route and reload.
+An independent private `saved-index` row holds saved-draft links through every wizard route and reload.
+Current drafts hold a display copy only. Publication, replacement, discard, and ordinary revisions preserve the independent index in their transaction.
+Without a current draft, Meaning shows the saved links and an explicit Start a new definition action.
+Resuming in that state consumes the saved row without creating a blank archive. It requires that no other tab started a current draft.
+The first index read migrates earlier `saved:` rows, including orphaned rows with no current draft or backlink.
+Export drafts excludes the tagged index metadata and preserves earlier draft export formats.
 Returning also saves the draft that it leaves and consumes the restored saved row in one transaction.
 Other saved drafts remain linked. A failed or conflicting switch leaves every stored draft unchanged.
 No existing-word action publishes content.

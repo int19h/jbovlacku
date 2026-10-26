@@ -31,6 +31,7 @@ import {
   loadDraft,
   startDraft,
   stepBar,
+  savedDraftLinks,
   discardDraft,
   DraftConflictError,
   convertLegacyDraft,
@@ -86,6 +87,29 @@ export async function meaningPage(
   const requestedWord = params.get("word")?.normalize("NFC") ?? null;
   const requestedMeaning = params.get("meaning") ?? null;
   const requestedLanguage = params.get("lang") ?? null;
+  if (!draft && !requestedWord && !requestedMeaning) {
+    const saved = await app.store.savedDrafts();
+    if (!context.live()) return;
+    if (saved.length) {
+      main.append(
+        el("h1", { class: "page", text: "Saved drafts" }),
+        savedDraftLinks(saved),
+        button(
+          "Start a new definition",
+          async () => {
+            await startDraft(
+              app,
+              { language: app.session.preferences.definitionLanguage },
+              "absent",
+            );
+            navigate("/new/meaning");
+          },
+          { class: "btn" },
+        ),
+      );
+      return;
+    }
+  }
   if (!context.live()) return;
   // A link that names a different word than the saved draft asks before replacing it.
   const conflict =

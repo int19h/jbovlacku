@@ -206,7 +206,7 @@ export interface DraftFormation extends Omit<Formation, "sources"> {
   sources: DraftFormationSource[];
 }
 export interface Draft {
-  /** Other local drafts remain reachable through every wizard route. */
+  /** A display copy of the independent saved index. Older drafts keep this for migration. */
   savedDrafts?: { key: string; label: string }[];
   /** The ordinary revision notice waits until the editor first shows it. */
   revisionNotice?: string[];

@@ -216,6 +216,13 @@ const stores = [
   "records",
   "selections",
 ];
+export interface SavedDraftIndex {
+  kind: "saved-drafts";
+  version: 1;
+  entries: { key: string; label: string }[];
+}
+const savedDraftKey = (key: unknown): key is string =>
+  typeof key === "string" && /^saved:[0-9a-f-]{36}$/.test(key);
 export class LocalStore {
   /** The open database. Lifecycle transactions span several stores. */
   readonly database: Promise<IDBDatabase>;
@@ -420,7 +427,7 @@ export class LocalStore {
         typeof expected === "object"
           ? drafts.get(`published:${expected.revision}`)
           : null;
-      let remaining = published ? 2 : 1;
+      let remaining = (published ? 2 : 1) + (key === "current" ? 1 : 0);
       const proceed = () => {
         if (--remaining) return;
         const stored = current.result as { revision?: string } | undefined;
@@ -442,6 +449,7 @@ export class LocalStore {
       };
       current.onsuccess = proceed;
       if (published) published.onsuccess = proceed;
+      if (key === "current") this.readSavedIndex(drafts, () => proceed());
       tx.oncomplete = () => resolve();
       tx.onabort = () =>
         reject(
@@ -452,9 +460,73 @@ export class LocalStore {
       tx.onerror = () => {};
     });
   }
+  /** Migrate earlier saved rows once, including rows whose old current draft is gone. */
+  private readSavedIndex(
+    drafts: IDBObjectStore,
+    done: (index: SavedDraftIndex) => void,
+  ) {
+    const request = drafts.get("saved-index");
+    request.onsuccess = () => {
+      const index = request.result as SavedDraftIndex | undefined;
+      if (
+        index?.kind === "saved-drafts" &&
+        index.version === 1 &&
+        Array.isArray(index.entries)
+      ) {
+        done(index);
+        return;
+      }
+      const found = new Map<string, string>();
+      let earlier: Draft["savedDrafts"] = [];
+      const cursor = drafts.openCursor();
+      cursor.onsuccess = () => {
+        const row = cursor.result;
+        if (row) {
+          const value = row.value as Draft;
+          if (row.key === "current" && value?.version === 2)
+            earlier = value.savedDrafts ?? [];
+          if (
+            savedDraftKey(row.key) &&
+            value?.version === 2 &&
+            typeof value.revision === "string"
+          )
+            found.set(row.key, value.spelling || "a new word");
+          row.continue();
+          return;
+        }
+        const keys = [
+          ...new Set([
+            ...(earlier ?? []).map((entry) => entry.key),
+            ...found.keys(),
+          ]),
+        ].filter((key) => found.has(key));
+        const migrated: SavedDraftIndex = {
+          kind: "saved-drafts",
+          version: 1,
+          entries: keys.map((key) => ({ key, label: found.get(key)! })),
+        };
+        drafts.put(migrated, "saved-index");
+        done(migrated);
+      };
+    };
+  }
+  async savedDrafts(): Promise<SavedDraftIndex["entries"]> {
+    const db = await this.database;
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction("drafts", "readwrite");
+      let entries: SavedDraftIndex["entries"] = [];
+      this.readSavedIndex(tx.objectStore("drafts"), (index) => {
+        entries = index.entries;
+      });
+      tx.oncomplete = () => resolve(entries);
+      tx.onabort = () =>
+        reject(tx.error ?? new Error("The saved draft list is unavailable."));
+      tx.onerror = () => {};
+    });
+  }
   /** Switch drafts and their saved links in one transaction. A resume consumes its row. */
   async switchDraft(
-    currentRevision: string,
+    currentRevision: string | null,
     replacement: Draft | { resume: string },
   ): Promise<Draft> {
     if (
@@ -471,12 +543,17 @@ export class LocalStore {
       const current = drafts.get("current");
       const resumed =
         "resume" in replacement ? drafts.get(replacement.resume) : null;
-      let remaining = resumed ? 2 : 1;
+      let index: SavedDraftIndex;
+      let remaining = (resumed ? 2 : 1) + 1;
       const proceed = () => {
         if (--remaining) return;
         try {
           const previous = current.result as Draft | undefined;
-          if (!previous || previous.revision !== currentRevision)
+          if (
+            currentRevision === null
+              ? !!previous
+              : !previous || previous.revision !== currentRevision
+          )
             throw new DraftConflictError(
               previous ? "changed" : "removed",
               previous?.revision ?? null,
@@ -486,22 +563,24 @@ export class LocalStore {
             consumed &&
             (!(resumed?.result as Draft | undefined) ||
               resumed?.result.version !== 2 ||
-              !previous.savedDrafts?.some((entry) => entry.key === consumed))
+              !index.entries.some((entry) => entry.key === consumed))
           )
             throw new Error("The saved draft is unavailable.");
           next = structuredClone(
             consumed ? (resumed!.result as Draft) : (replacement as Draft),
           );
-          const savedKey = `saved:${crypto.randomUUID()}`;
-          next.savedDrafts = [
-            ...(previous.savedDrafts ?? []).filter(
-              (entry) => entry.key !== consumed,
-            ),
-            { key: savedKey, label: previous.spelling || "a new word" },
+          const savedKey = previous ? `saved:${crypto.randomUUID()}` : null;
+          index.entries = [
+            ...index.entries.filter((entry) => entry.key !== consumed),
+            ...(previous && savedKey
+              ? [{ key: savedKey, label: previous.spelling || "a new word" }]
+              : []),
           ];
+          next.savedDrafts = index.entries;
           next.revision = crypto.randomUUID();
           next.updatedAt = Date.now();
-          drafts.add(previous, savedKey);
+          if (previous && savedKey) drafts.add(previous, savedKey);
+          drafts.put(index, "saved-index");
           drafts.put(next, "current");
           if (consumed) drafts.delete(consumed);
         } catch (error) {
@@ -511,6 +590,10 @@ export class LocalStore {
       };
       current.onsuccess = proceed;
       if (resumed) resumed.onsuccess = proceed;
+      this.readSavedIndex(drafts, (value) => {
+        index = value;
+        proceed();
+      });
       tx.oncomplete = () => resolve(next);
       tx.onabort = () =>
         reject(
@@ -543,7 +626,9 @@ export class LocalStore {
       const drafts = tx.objectStore("drafts");
       let failure: Error | undefined;
       const current = drafts.get(key);
-      current.onsuccess = () => {
+      let remaining = key === "current" ? 2 : 1;
+      const proceed = () => {
+        if (--remaining) return;
         const stored = current.result as { revision?: string } | undefined;
         if (JSON.stringify(stored) !== expected) {
           failure = new DraftConflictError(
@@ -556,6 +641,8 @@ export class LocalStore {
         if (next === null) drafts.delete(key);
         else drafts.put(next, key);
       };
+      current.onsuccess = proceed;
+      if (key === "current") this.readSavedIndex(drafts, () => proceed());
       tx.oncomplete = () => resolve();
       tx.onabort = () =>
         reject(
@@ -576,7 +663,9 @@ export class LocalStore {
       const drafts = tx.objectStore("drafts");
       let failure: Error | undefined;
       const current = drafts.get(key);
-      current.onsuccess = () => {
+      let remaining = key === "current" ? 2 : 1;
+      const proceed = () => {
+        if (--remaining) return;
         const stored = current.result as { revision?: string } | undefined;
         if (!stored) return;
         if (stored.revision !== expected.revision) {
@@ -586,6 +675,8 @@ export class LocalStore {
         }
         drafts.delete(key);
       };
+      current.onsuccess = proceed;
+      if (key === "current") this.readSavedIndex(drafts, () => proceed());
       tx.oncomplete = () => resolve();
       tx.onabort = () =>
         reject(
@@ -759,7 +850,7 @@ export class LocalStore {
         : null;
       const knownTransfer = keys.get(`transfer-known:${identity}`);
       const discarded = discardedPredecessorReads(keys, predecessors);
-      let remaining = 4 + (publication ? 2 : 0) + discarded.length;
+      let remaining = 4 + (publication ? 3 : 0) + discarded.length;
       const proceed = () => {
         if (--remaining) return;
         if (discarded.some((request) => request.result)) {
@@ -824,6 +915,7 @@ export class LocalStore {
           identity,
         );
       };
+      if (publication) this.readSavedIndex(drafts, () => proceed());
       for (const request of discarded) request.onsuccess = proceed;
       knownTransfer.onsuccess = proceed;
       retired.onsuccess = proceed;

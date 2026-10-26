@@ -100,13 +100,17 @@ export async function loadDraft(
   if (!app.session.storageAvailable) return null;
   legacyDraft = null;
   try {
+    let savedDrafts = await app.store.savedDrafts();
     const resume = new URL(location.href).searchParams.get("resume");
     if (resume && /^saved:[0-9a-f-]{36}$/.test(resume)) {
       const saved = await app.store.get<Draft>("drafts", resume);
       if (saved?.version === 2) {
         const current = await app.store.get<Draft>("drafts", DRAFT_KEY);
-        if (!current) throw new Error("The current draft is unavailable.");
-        await app.store.switchDraft(current.revision, { resume });
+        const restored = await app.store.switchDraft(
+          current?.revision ?? null,
+          { resume },
+        );
+        savedDrafts = restored.savedDrafts ?? [];
         const url = new URL(location.href);
         url.searchParams.delete("resume");
         history.replaceState(history.state, "", url);
@@ -119,6 +123,7 @@ export async function loadDraft(
       return null;
     }
     if (stored && stored.version === 2) {
+      stored.savedDrafts = savedDrafts;
       stored.lujvo ??= null;
       stored.gismu ??= null;
       if (!stored.revision) {
@@ -443,17 +448,25 @@ export function stepBar(draft: Draft, current: number): HTMLElement {
     link("Skip to the full editor", "/new/editor", { class: "meta step-skip" }),
   );
   bar.append(inner);
-  for (const [index, saved] of (draft.savedDrafts ?? []).entries())
-    bar.append(
+  bar.append(savedDraftLinks(draft.savedDrafts ?? []));
+  return bar;
+}
+/** The independent saved index also supplies links when there is no current draft. */
+export function savedDraftLinks(
+  entries: NonNullable<Draft["savedDrafts"]>,
+): HTMLElement {
+  const links = el("div", { class: "saved-drafts" });
+  for (const [index, saved] of entries.entries())
+    links.append(
       link(
-        index === (draft.savedDrafts?.length ?? 0) - 1
+        index === entries.length - 1
           ? "Return to the saved draft"
           : `Open saved draft: ${saved.label}`,
         `/new/meaning?resume=${encodeURIComponent(saved.key)}`,
         { class: "touch-link" },
       ),
     );
-  return bar;
+  return links;
 }
 export interface ActionBarOptions {
   back?: { label: string; href: string } | null;
@@ -501,6 +514,7 @@ export async function startDraft(
   pendingSaver?.detach();
   const draft = newDraft(patch);
   await app.store.saveDraft(DRAFT_KEY, draft, expected);
+  draft.savedDrafts = await app.store.savedDrafts();
   return draft;
 }
 /**
