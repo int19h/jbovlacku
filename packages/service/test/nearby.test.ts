@@ -24,3 +24,26 @@ test("nearby rank counts words, then summed positions, then word ID", () => {
   );
   assert.deepEqual(rankNearby([[b, a, a], [a]]), [a, b]);
 });
+
+test("nearby cleanup keeps inner apostrophes and whole words that contain place-like text", () => {
+  assert.deepEqual(nearbyQuery("the cu'i midpoint of i'e"), [
+    "the",
+    "cu'i",
+    "midpoint",
+    "i'e",
+  ]);
+  assert.deepEqual(nearbyQuery("mi nelci lo ka'e se citka"), [
+    "nelci",
+    "ka'e",
+    "citka",
+  ]);
+  assert.deepEqual(nearbyQuery("x1 is a box1 of max2 items"), [
+    "box1",
+    "max2",
+    "items",
+  ]);
+  assert.deepEqual(
+    nearbyQuery("$x_1$ (cu'i), \"i'e\" 4x4 x_2 x_{3} thin-walled"),
+    ["cu'i", "i'e", "4x4", "thin-walled"],
+  );
+});

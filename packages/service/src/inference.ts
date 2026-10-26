@@ -717,7 +717,8 @@ export interface ExchangeLog {
 }
 export interface InferenceLog {
   related?: {
-    method: "lexical";
+    method: "lexical" | "semantic" | "none";
+    profile?: string;
     query_words: string[];
     snapshot: string | null;
     events: string[];

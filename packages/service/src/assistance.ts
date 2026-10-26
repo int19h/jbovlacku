@@ -28,7 +28,6 @@ import {
   type TaskCase,
 } from "./inference.ts";
 import { promptFiles } from "./prompt-bundle.ts";
-import { nearbyQuery } from "./nearby.ts";
 import {
   prepareEmbedding,
   requestEmbedding,
@@ -67,6 +66,8 @@ export interface ContextDefinition {
   body: Data;
 }
 export interface TypeDictionary {
+  method: "lexical" | "semantic" | "none";
+  profile?: string;
   snapshot: string | null;
   query_words: string[];
   related: {
@@ -819,8 +820,9 @@ export async function runAssistance(
   log: InferenceLog,
   progress: (task: Task, attempt: number) => void,
   typeDictionary: TypeDictionary = {
+    method: "none",
     snapshot: null,
-    query_words: nearbyQuery(request.meaning),
+    query_words: [],
     related: [],
     entries: new Map(),
   },
@@ -843,7 +845,8 @@ export async function runAssistance(
   if (request.operation === "type") {
     const type = typeCase(request, context, typeDictionary);
     log.related = {
-      method: "lexical",
+      method: typeDictionary.method,
+      ...(typeDictionary.profile ? { profile: typeDictionary.profile } : {}),
       query_words: typeDictionary.query_words,
       snapshot: typeDictionary.snapshot,
       events: typeDictionary.related.map((entry) => entry.event),

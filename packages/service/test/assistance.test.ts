@@ -3099,6 +3099,7 @@ const typeAnswer = (patch: Record<string, unknown> = {}) => ({
 });
 const suppliedEvent = `jve1:${"a".repeat(64)}`;
 const suppliedDictionary = () => ({
+  method: "lexical" as const,
   snapshot: `sha256:${"b".repeat(64)}`,
   query_words: ["bowl"],
   related: [
@@ -3347,182 +3348,236 @@ test("type spelling analysis and kind translation stay inside the type request",
   }
 });
 
-test("server type retrieval pins its snapshot and applies exact word priority, caps and exclusions", async () => {
-  const { nearbyQuery } = await import("../src/nearby.ts");
-  const seed = new Uint8Array(32).fill(173);
-  let nonce = 0;
-  const event = (action: any, body: unknown) =>
-    createEvent(
-      seed,
-      [],
-      (++nonce).toString(16).padStart(32, "0"),
-      action,
-      body,
+for (const typed of ["brodu", "bródu"])
+  test(`server type retrieval pins its snapshot and applies exact word priority, caps and exclusions (${typed})`, async () => {
+    const { nearbyQuery } = await import("../src/nearby.ts");
+    const seed = new Uint8Array(32).fill(173);
+    let nonce = 0;
+    const event = (action: any, body: unknown) =>
+      createEvent(
+        seed,
+        [],
+        (++nonce).toString(16).padStart(32, "0"),
+        action,
+        body,
+      );
+    const records: any[] = [];
+    const add = (spelling: string, text: string, language = "en") => {
+      const word = { language: "jbo" as const, spelling };
+      const record = event(
+        {
+          kind: "definition.publish",
+          word: wordId(word),
+          language,
+          parents: [],
+          origin: "native",
+        },
+        {
+          word,
+          language,
+          text: [[text]],
+          notes: [["Do not include these notes."]],
+          classification: { kind: "gismu" },
+          license: { expression: "CC0-1.0" },
+        },
+      );
+      records.push(record);
+      return record;
+    };
+    const senses = [
+      add(typed, "An exact spelling with no query match."),
+      add(typed, "thin bowl second exact sense"),
+      add(typed, "thin bowl wide vessel third sense"),
+      add(typed, "thin fourth sense"),
+    ];
+    // Endorse the largest hash so that the ordinary editorial layer decides first.
+    const exact = [...senses].sort((a, b) =>
+      b.envelope.id.localeCompare(a.envelope.id),
+    )[0];
+    records.push(
+      event(
+        { kind: "judgment.set", target: exact.envelope.id, value: "bless" },
+        null,
+      ),
     );
-  const records: any[] = [];
-  const add = (spelling: string, text: string, language = "en") => {
-    const word = { language: "jbo" as const, spelling };
-    const record = event(
+    const selected = add("broda", "thin bowl selected context");
+    const retired = add("brode", "thin bowl retired");
+    add("brodi", "thin bowl wrong language", "fr");
+    const long = add("brodo", "thin bowl wide vessel " + "😀".repeat(501));
+    for (let i = 0; i < 35; i++) add(`synthetic${i}`, "thin bowl wide vessel");
+    records.push(
+      event(
+        {
+          kind: "status.set",
+          target: retired.envelope.id,
+          value: "deprecated",
+        },
+        null,
+      ),
+    );
+    const view = event(
+      { kind: "view.publish", parents: [] },
       {
-        kind: "definition.publish",
-        word: wordId(word),
-        language,
-        parents: [],
-        origin: "native",
-      },
-      {
-        word,
-        language,
-        text: [[text]],
-        notes: [["Do not include these notes."]],
-        classification: { kind: "gismu" },
-        license: { expression: "CC0-1.0" },
+        name: "Synthetic type view",
+        description: [],
+        roots: [
+          {
+            identity: identityFromSeed(seed),
+            q: { numerator: 1, denominator: 1 },
+          },
+        ],
+        rafsi_threshold: { numerator: 1, denominator: 1 },
+        H: { numerator: 3, denominator: 1 },
+        alpha: { numerator: 1, denominator: 2 },
+        excluded: [],
+        calculation: "simple-routes-bounds-v1",
+        work: 1000,
+        import_sets: [],
+        account_witnesses: [],
+        account_authority: false,
+        notes: [],
       },
     );
-    records.push(record);
-    return record;
-  };
-  const exact = add("brodu", "An exact spelling with no query match.");
-  add("brodu", "thin bowl second exact sense");
-  const selected = add("broda", "thin bowl selected context");
-  const retired = add("brode", "thin bowl retired");
-  add("brodi", "thin bowl wrong language", "fr");
-  const long = add("brodo", "thin bowl wide vessel " + "😀".repeat(501));
-  for (let i = 0; i < 35; i++) add(`synthetic${i}`, "thin bowl wide vessel");
-  records.push(
-    event(
-      { kind: "status.set", target: retired.envelope.id, value: "deprecated" },
-      null,
-    ),
-  );
-  const view = event(
-    { kind: "view.publish", parents: [] },
-    {
-      name: "Synthetic type view",
-      description: [],
-      roots: [],
-      rafsi_threshold: { numerator: 1, denominator: 1 },
-      H: { numerator: 3, denominator: 1 },
-      alpha: { numerator: 1, denominator: 2 },
-      excluded: [],
-      calculation: "simple-routes-bounds-v1",
-      work: 1000,
-      import_sets: [],
-      account_witnesses: [],
-      account_authority: false,
-      notes: [],
-    },
-  );
-  records.push(view);
-  let state = emptyState();
-  const snapshots = new Map<string, any>();
-  const objects = new Map<string, Uint8Array>();
-  let providerInput: any;
-  const instance = new DictionaryService(
-    {
-      get: async (hash) => objects.get(hash) ?? null,
-      put: async (hash, bytes) => {
-        objects.set(hash, bytes);
+    records.push(view);
+    let state = emptyState();
+    const snapshots = new Map<string, any>();
+    const objects = new Map<string, Uint8Array>();
+    let providerInput: any;
+    const instance = new DictionaryService(
+      {
+        get: async (hash) => objects.get(hash) ?? null,
+        put: async (hash, bytes) => {
+          objects.set(hash, bytes);
+        },
       },
-    },
-    {
-      load: async () => state,
-      getSnapshot: async (id) => snapshots.get(id) ?? null,
-      compareAndSwap: async (revision, next, snapshot) => {
-        if (state.revision !== revision) return false;
-        state = next;
-        if (snapshot) snapshots.set(snapshot.snapshot, snapshot);
-        return true;
+      {
+        load: async () => state,
+        getSnapshot: async (id) => snapshots.get(id) ?? null,
+        compareAndSwap: async (revision, next, snapshot) => {
+          if (state.revision !== revision) return false;
+          state = next;
+          if (snapshot) snapshots.set(snapshot.snapshot, snapshot);
+          return true;
+        },
       },
-    },
-    {
-      serverId: "type-search",
-      policyUrl: "https://example.test/policy",
-      selectedView: view.envelope.id,
-      assistance: {
-        provider: makeConfig({
-          fetch: queue(
-            [
-              completion(
-                typeAnswer({
-                  existing: {
-                    word: "brodu",
-                    ref: "r1",
-                    conversion: null,
-                    revised_definition: null,
-                  },
-                }),
-              ),
-            ],
-            (body) => {
-              providerInput = JSON.parse(body.messages[1].content);
-            },
-          ),
-        }),
+      {
+        serverId: "type-search",
+        policyUrl: "https://example.test/policy",
+        selectedView: view.envelope.id,
+        assistance: {
+          provider: makeConfig({
+            fetch: queue(
+              [
+                completion(
+                  typeAnswer({
+                    existing: {
+                      word: typed,
+                      ref: "r1",
+                      conversion: null,
+                      revised_definition: null,
+                    },
+                  }),
+                ),
+                completion(typeAnswer()),
+              ],
+              (body) => {
+                providerInput = JSON.parse(body.messages[1].content);
+              },
+            ),
+          }),
+        },
       },
-    },
-  );
-  await instance.admitMany(
-    records.map((record) => utf8(JSON.stringify(record))),
-  );
-  const request = draft("type", { spelling: "brodu" });
-  request.meaning = "$x_1$ thin, $x_{2}$ bowl; wide! vessel";
-  request.context = [selected.envelope.id];
-  const headers = await session(instance);
-  const started = await instance.fetch(
-    privateRequest("/assist", headers, request),
-  );
-  assert.equal(started.status, 202, await started.clone().text());
-  const done = await poll(
-    instance,
-    ((await started.json()) as any).job,
-    headers,
-  );
-  assert.equal(done.state, "completed", JSON.stringify(done.error));
-  assert.equal(providerInput.related[0].word, "brodu");
-  assert.equal(
-    providerInput.related[0].definition,
-    "An exact spelling with no query match.",
-  );
-  assert.equal(providerInput.related.length, 30);
-  assert.equal(
-    new Set(providerInput.related.map((entry: any) => entry.word)).size,
-    30,
-  );
-  assert.ok(
-    !providerInput.related.some((entry: any) =>
-      ["broda", "brode", "brodi"].includes(entry.word),
-    ),
-  );
-  const truncated = providerInput.related.find(
-    (entry: any) => entry.word === "brodo",
-  );
-  assert.equal(truncated.truncated, true);
-  assert.equal(Array.from(truncated.definition).length, 500);
-  assert.ok(
-    !providerInput.related.some((entry: any) =>
-      entry.definition.includes("these notes"),
-    ),
-  );
-  assert.ok(
-    providerInput.related.every(
-      (entry: any, index: number) =>
-        entry.ref === `r${index + 1}` && !Object.hasOwn(entry, "event"),
-    ),
-  );
-  assert.deepEqual(
-    done.result.log.related.query_words,
-    nearbyQuery(request.meaning),
-  );
-  assert.equal(done.result.log.related.events[0], exact.envelope.id);
-  assert.equal(done.result.log.related.events.length, 30);
-  assert.equal(done.result.existing.event, exact.envelope.id);
-  const manifest = (await (
-    await instance.fetch(new Request("http://localhost/api/v1/manifest"))
-  ).json()) as any;
-  assert.equal(done.result.log.related.snapshot, manifest.snapshot);
-  assert.equal(providerInput.meaning, request.meaning);
-});
+    );
+    await instance.admitMany(
+      records.map((record) => utf8(JSON.stringify(record))),
+    );
+    const request = draft("type", { spelling: ` ${typed.normalize("NFD")}  ` });
+    request.meaning = "$x_1$ thin, $x_{2}$ bowl; wide! vessel";
+    request.context = [selected.envelope.id];
+    const headers = await session(instance);
+    const started = await instance.fetch(
+      privateRequest("/assist", headers, request),
+    );
+    assert.equal(started.status, 202, await started.clone().text());
+    const job = ((await started.json()) as any).job;
+    const done = await poll(instance, job, headers);
+    assert.equal(done.state, "completed", JSON.stringify(done.error));
+    assert.equal(providerInput.related[0].word, typed);
+    assert.equal(
+      providerInput.related[0].definition,
+      (exact.body as any).text[0][0],
+    );
+    assert.equal(
+      providerInput.current.spelling,
+      ` ${typed.normalize("NFD")}  `,
+    );
+    assert.equal(
+      providerInput.related.filter((entry: any) => entry.word === typed).length,
+      3,
+    );
+    assert.equal(providerInput.related.length, 30);
+    assert.equal(
+      new Set(providerInput.related.map((entry: any) => entry.word)).size,
+      28,
+    );
+    assert.ok(
+      !providerInput.related.some((entry: any) =>
+        ["broda", "brode", "brodi"].includes(entry.word),
+      ),
+    );
+    const truncated = providerInput.related.find(
+      (entry: any) => entry.word === "brodo",
+    );
+    assert.equal(truncated.truncated, true);
+    assert.equal(Array.from(truncated.definition).length, 500);
+    assert.ok(
+      !providerInput.related.some((entry: any) =>
+        entry.definition.includes("these notes"),
+      ),
+    );
+    assert.ok(
+      providerInput.related.every(
+        (entry: any, index: number) =>
+          entry.ref === `r${index + 1}` && !Object.hasOwn(entry, "event"),
+      ),
+    );
+    assert.deepEqual(
+      done.result.log.related.query_words,
+      nearbyQuery(request.meaning),
+    );
+    assert.equal(done.result.log.related.method, "lexical");
+    assert.equal(done.result.log.related.events[0], exact.envelope.id);
+    assert.notEqual(
+      exact.envelope.id,
+      [...senses].sort((a, b) => a.envelope.id.localeCompare(b.envelope.id))[0]
+        .envelope.id,
+    );
+    assert.equal(done.result.log.related.events.length, 30);
+    assert.equal(done.result.existing.event, exact.envelope.id);
+    const manifest = (await (
+      await instance.fetch(new Request("http://localhost/api/v1/manifest"))
+    ).json()) as any;
+    assert.equal(done.result.log.related.snapshot, manifest.snapshot);
+    assert.equal(providerInput.meaning, request.meaning);
+    await instance.fetch(
+      privateRequest(`/jobs/${job}`, headers, undefined, "DELETE"),
+    );
+    const emptyQuery = draft();
+    emptyQuery.meaning = "x1";
+    const second = await instance.fetch(
+      privateRequest("/assist", headers, emptyQuery),
+    );
+    assert.equal(second.status, 202);
+    const noSearch = await poll(
+      instance,
+      ((await second.json()) as any).job,
+      headers,
+    );
+    assert.equal(noSearch.state, "completed", JSON.stringify(noSearch.error));
+    assert.equal(noSearch.result.log.related.method, "none");
+    assert.deepEqual(noSearch.result.log.related.query_words, []);
+    assert.deepEqual(noSearch.result.log.related.events, []);
+  });
 
 test("type compound request fields use only parts supplied by the morphology API", async () => {
   const { typeSpellingFields } = await import("../src/assistance.ts");
@@ -3536,4 +3591,39 @@ test("type compound request fields use only parts supplied by the morphology API
   assert.deepEqual(typeSpellingFields({ kind: "cmavo" }), {
     spelling_form: "cmavo",
   });
+});
+
+test("type retrieval logs preserve none, lexical, and semantic profile provenance", async () => {
+  for (const method of ["none", "lexical", "semantic"] as const) {
+    const config = makeConfig({ fetch: queue([completion(typeAnswer())]) });
+    const log = newLog("type", config, await promptVersion());
+    const dictionary =
+      method === "none"
+        ? undefined
+        : {
+            ...suppliedDictionary(),
+            method,
+            query_words: method === "lexical" ? ["bowl"] : [],
+            ...(method === "semantic"
+              ? { profile: `sha256:${"c".repeat(64)}` }
+              : {}),
+          };
+    const result = await runAssistance(
+      draft(),
+      config,
+      [],
+      AbortSignal.timeout(2000),
+      log,
+      () => {},
+      dictionary,
+    );
+    assert.equal(result.log.related!.method, method);
+    assert.deepEqual(
+      result.log.related!.query_words,
+      method === "lexical" ? ["bowl"] : [],
+    );
+    if (method === "semantic")
+      assert.equal(result.log.related!.profile, `sha256:${"c".repeat(64)}`);
+    else assert.equal(Object.hasOwn(result.log.related!, "profile"), false);
+  }
 });

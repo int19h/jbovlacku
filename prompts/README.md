@@ -52,11 +52,18 @@ Every request uses `tool_choice: "auto"`, which the tested provider requires.
 The application still accepts only one valid `submit_answer` call. A missing call receives correction instructions within the same three-answer limit.
 
 Only the type request adds `related` definitions that the server finds from the original meaning in its current dictionary snapshot.
-Exact typed spelling matches come first. The lexical fallback uses up to six distinct cleaned meaning words and keeps at most 30 different spellings.
-It removes place marks and punctuation before searching. Equal query counts use summed search positions, then word ID.
+Up to three exact typed spelling definitions come first after trimming and NFC normalization.
+Ordinary editorial layers decide their order when available. Ties use meaning relevance, then event ID.
+For relevance, an exact gloss match counts three, a gloss prefix two, and a definition-text match one for each query word.
+The lexical fallback uses up to six distinct meaning words. It removes whole-token place marks and punctuation at token ends and keeps inner apostrophes.
+Each query scans the dictionary once with the ordinary search match tiers and order.
+Equal query counts use summed search positions, then word ID.
+Exact senses keep separate records. Later hits omit duplicate spellings. The whole list contains at most 30 records.
 Each related record has a short ref, spelling, type, and at most 500 Unicode code points of definition text.
 A cut definition has `truncated: true`. Selected context events do not appear again.
-The log records the snapshot, query words, and exact events. It also records the morphology identifier and version for a successful spelling analysis.
+The log records the snapshot and exact events. Retrieval metadata carries `method`: `lexical`, `semantic`, or `none`.
+Lexical retrieval records query words. Semantic retrieval records `profile`. A missing hook or unavailable dictionary records `none`.
+The log also records the morphology identifier and version for a successful spelling analysis.
 The request adds `spelling_form` when a spelling is present. Other task requests stay unchanged.
 Type runs currently have no dictionary lookup tools. The shared system prompt keeps its no-lookup sentence.
 

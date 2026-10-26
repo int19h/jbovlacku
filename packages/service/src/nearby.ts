@@ -3,10 +3,15 @@ export function nearbyQuery(meaning: string): string[] {
   return [
     ...new Set(
       meaning
-        .replace(/\$?x_?\{?\d+\}?\$?|\{place\s+\d+\}|[①-⑳]/giu, " ")
+        .replace(
+          /(?<![\p{L}\p{N}])(?:\$?x_?\{?\d+\}?\$?|\{place\s+\d+\}|[①-⑳])(?![\p{L}\p{N}])/giu,
+          " ",
+        )
         .split(/\s+/u)
         .map((word) =>
-          word.replace(/[^\p{L}\p{N}]/gu, "").toLocaleLowerCase("en"),
+          word
+            .replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "")
+            .toLocaleLowerCase("en"),
         )
         .filter((word) => Array.from(word).length > 2),
     ),
