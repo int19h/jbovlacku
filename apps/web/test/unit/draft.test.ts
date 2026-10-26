@@ -25,6 +25,7 @@ import {
 import {
   draftFromBody,
   draftToBody,
+  declaredPlaceCount,
   editorText,
   editorToRichText,
   literalize,
@@ -32,6 +33,7 @@ import {
   newPlace,
   normalizeDraft,
   numberPlaceholders,
+  placeholderCount,
   referenceFields,
   remapPlaces,
   rewriteReferences,
@@ -42,7 +44,11 @@ import {
   LENSISKU_RIGHTS_REFERENCE,
 } from "../../src/model/draft.ts";
 import { textToRichText, richTextToText } from "../../src/model/richtext.ts";
-import type { FormationSource, TypeHint } from "../../src/model/types.ts";
+import {
+  lexicalKinds,
+  type FormationSource,
+  type TypeHint,
+} from "../../src/model/types.ts";
 
 before(async () =>
   initializeCore(
@@ -319,6 +325,196 @@ test("placeholders become numbered places only through explicit numbering", () =
   assert.equal(count, 3);
   assert.equal(text, "① reads ② in ③");
   assert.equal(richTextToText(editorToRichText(text, true)), "① reads ② in ③");
+});
+
+test("each semicolon part restarts numbering and reports its used places", () => {
+  const meaning =
+    "___ seemingly has property ___; ___ seems to have property ___ but actually does not";
+  const proposal = numberPlaceholders(meaning);
+  assert.equal(
+    proposal.text,
+    "① seemingly has property ②; ① seems to have property ② but actually does not",
+  );
+  assert.equal(proposal.count, 2);
+  assert.equal(placeholderCount(meaning), 2);
+  assert.deepEqual(proposal.parts, [
+    { text: "① seemingly has property ②", places: [1, 2] },
+    {
+      text: " ① seems to have property ② but actually does not",
+      places: [1, 2],
+    },
+  ]);
+});
+
+test("explicit places reserve numbers before and after blanks within each part", () => {
+  const proposal = numberPlaceholders(
+    "___ before ① and ___ then ③ and ③; ② meets ___ and {place 4} then ___",
+  );
+  assert.equal(
+    proposal.text,
+    "② before ① and ④ then ③ and ③; ② meets ① and {place 4} then ③",
+  );
+  assert.equal(proposal.count, 4);
+  assert.deepEqual(
+    proposal.parts.map((part) => part.places),
+    [
+      [1, 2, 3, 4],
+      [1, 2, 3, 4],
+    ],
+  );
+  assert.equal(placeholderCount("⑰ and ⑰; ①"), 17);
+  assert.equal(placeholderCount("①; {place 24}; ③ and ②"), 24);
+});
+
+test("only a backslash immediately before a circled numeral escapes it in meaning", () => {
+  const meaning = String.raw`\① \{place 4} \\① \___ ___`;
+  const proposal = numberPlaceholders(meaning);
+  assert.equal(proposal.count, 4);
+  assert.deepEqual(proposal.parts[0].places, [1, 2, 4]);
+  assert.deepEqual(editorToRichText(proposal.text, true), [
+    ["① \\", 4, " \\① \\", 1, " ", 2],
+  ]);
+  assert.equal(placeholderCount(String.raw`\⑳ \{place 30}`), 30);
+});
+
+test("markup-looking meaning stays literal while every semicolon restarts numbering", () => {
+  const meaning = "___ `④; ___` [[cukta|③; ___]] {operand x} {place 5}";
+  const proposal = numberPlaceholders(meaning);
+  assert.equal(proposal.count, 5);
+  assert.equal(proposal.parts.length, 3);
+  assert.deepEqual(
+    proposal.parts.map((part) => part.places),
+    [
+      [1, 4],
+      [1, 3],
+      [1, 5],
+    ],
+  );
+  assert.deepEqual(editorToRichText(proposal.text, true), [
+    [1, " `", 4, "; ", 1, "` [[cukta|", 3, "; ", 1, "]] {operand x} ", 5],
+  ]);
+});
+
+test("meaning preserves backslashes before literal token syntax and explicit place tokens", () => {
+  const meaning = String.raw`\`___\` \[[cukta]] \{operand x} \① \{place 6}`;
+  const proposal = numberPlaceholders(meaning);
+  assert.equal(proposal.count, 6);
+  assert.deepEqual(editorToRichText(proposal.text, true), [
+    ["\\`", 1, "\\` \\[[cukta]] \\{operand x} ① \\", 6],
+  ]);
+});
+
+test("adopting meaning preserves paths, regular expressions, and the original meaning", () => {
+  const prefix = String.raw`regex \[a-z] and C:\\share, \`code\`, \{brace}, \{operand x}, \\ `;
+  const originalMeaning = `${prefix}\\___ and \\{place 4}`;
+  const draft = newDraft({ meaning: originalMeaning });
+  const proposal = numberPlaceholders(draft.meaning);
+  draft.text = editorToRichText(proposal.text, true);
+  assert.equal(proposal.count, 4);
+  assert.deepEqual(draft.text, [[`${prefix}\\`, 1, " and \\", 4]]);
+  assert.equal(richTextToText(draft.text), `${prefix}\\① and \\④`);
+  assert.equal(draft.meaning, originalMeaning);
+  const reloaded = normalizeDraft(JSON.parse(JSON.stringify(draft)));
+  assert.deepEqual(reloaded.text, draft.text);
+  assert.equal(reloaded.meaning, originalMeaning);
+});
+
+test("each run before a circled numeral consumes only its final escape backslash", () => {
+  for (let count = 0; count <= 4; count++) {
+    const backslashes = "\\".repeat(count);
+    const originalMeaning = `${backslashes}⑳; ___`;
+    const proposal = numberPlaceholders(originalMeaning);
+    const expected =
+      count === 0 ? [[20, "; ", 1]] : [[`${"\\".repeat(count - 1)}⑳; `, 1]];
+    assert.deepEqual(editorToRichText(proposal.text, true), expected);
+    assert.equal(
+      richTextToText(editorToRichText(proposal.text, true)),
+      `${"\\".repeat(Math.max(0, count - 1))}⑳; ①`,
+    );
+    assert.equal(proposal.count, count === 0 ? 20 : 1);
+    assert.deepEqual(
+      proposal.parts.map((part) => part.places),
+      [count === 0 ? [20] : [], [1]],
+    );
+  }
+});
+
+test("numbering uses explicit tokens above twenty and retains empty parts", () => {
+  const meaning = `${Array(21).fill("___").join(" ")};___;;`;
+  const proposal = numberPlaceholders(meaning);
+  assert.equal(proposal.count, 21);
+  assert.equal(proposal.parts[0].text.endsWith("⑳ {place 21}"), true);
+  assert.deepEqual(proposal.parts.slice(1), [
+    { text: "①", places: [1] },
+    { text: "", places: [] },
+    { text: "", places: [] },
+  ]);
+  assert.equal(placeholderCount("plain prose; more prose"), 0);
+  assert.deepEqual(numberPlaceholders("").parts, [{ text: "", places: [] }]);
+});
+
+test("numbering preserves paragraphs and keeps markup-looking prose literal", () => {
+  const proposal = numberPlaceholders("`①\n\n③`; ___ [[cukta|\n\n⑳]]");
+  assert.equal(proposal.count, 20);
+  assert.deepEqual(
+    proposal.parts.map((part) => part.places),
+    [
+      [1, 3],
+      [1, 20],
+    ],
+  );
+  assert.deepEqual(editorToRichText(proposal.text, true), [
+    ["`", 1],
+    [3, "`; ", 1, " [[cukta|"],
+    [20, "]]"],
+  ]);
+});
+
+test("declared place counts follow the frame for every word kind", () => {
+  for (const kind of lexicalKinds) {
+    const draft = newDraft({
+      kind,
+      places: [newPlace(1), newPlace(20), newPlace(200)],
+      operands: [
+        { id: "x", category: "bridi", description: [], minimum: 1, maximum: 1 },
+      ],
+      tail: { description: [], kind: "unspecified", hint: null },
+    });
+    assert.equal(declaredPlaceCount(draft), 0, kind);
+    draft.frameMode = "fixed";
+    assert.equal(declaredPlaceCount(draft), 3, kind);
+    draft.frameMode = "context";
+    assert.equal(declaredPlaceCount(draft), 3, kind);
+    draft.frameMode = "variadic";
+    assert.equal(declaredPlaceCount(draft), 4, kind);
+    draft.tail = null;
+    assert.equal(declaredPlaceCount(draft), 3, kind);
+    draft.places = [];
+    draft.frameMode = "fixed";
+    assert.equal(declaredPlaceCount(draft), 0, kind);
+  }
+});
+
+test("hiding the place-count note remains private and survives draft reload", () => {
+  assert.equal(Boolean(newDraft().placeCountNoteHidden), false);
+  const draft = newDraft({
+    kind: "gismu",
+    spelling: "broda",
+    text: "① describes the relation.",
+    frameMode: "fixed",
+    places: Array.from({ length: 6 }, (_, index) => newPlace(index + 1)),
+    numberingApproved: true,
+  });
+  const before = draftToBody(draft);
+  assert.ok(before.body);
+  draft.placeCountNoteHidden = true;
+  const after = draftToBody(draft);
+  assert.deepEqual(after.body, before.body);
+  assert.deepEqual(after.problems, before.problems);
+  assert.equal(
+    normalizeDraft(JSON.parse(JSON.stringify(draft))).placeCountNoteHidden,
+    true,
+  );
 });
 
 test("builder metadata for a chosen lujvo and a generated gismu satisfies the body rules", () => {
@@ -2301,12 +2497,13 @@ test("an undone literal edit keeps removed and renumbered references after reloa
   assert.equal("literalModeRestore" in built.body!, false);
 });
 
-test("numbering meaning placeholders preserves all other literal characters", () => {
+test("numbering meaning placeholders preserves other literal characters", () => {
   const meaning =
     "___ is C:\\temp `x` [[cukta]] {place 5} {operand x} ② of ___";
   const proposal = numberPlaceholders(meaning);
+  assert.equal(proposal.count, 5);
   assert.deepEqual(editorToRichText(proposal.text, true), [
-    [1, " is C:\\temp `x` [[cukta]] {place 5} {operand x} ② of ", 2],
+    [1, " is C:\\temp `x` [[cukta]] ", 5, " {operand x} ", 2, " of ", 3],
   ]);
 });
 

@@ -210,6 +210,10 @@ The best match offers “Add a definition” and “Revise this one.” Other ma
 The author can continue despite every match. The bottom action area shows “Saved in this browser” and “New word.”
 Underscores remain draft placeholders until the author approves their numbering.
 The original meaning remains separate from later editable definition prose.
+Each semicolon restarts blank numbering at 1. The displayed count is the highest place number in any part.
+Unescaped circled numerals and `{place N}` reserve explicit numbers within each part. Blanks take the free numbers in order.
+Only a backslash before a circled character acts as an escape in Meaning. All other backslashes stay as typed.
+The count reports places rather than occurrences.
 
 ## Type screen, step 2
 
@@ -298,6 +302,15 @@ The definition uses an actual accessible rich-text editor, with Place insertion,
 Glosses appear as removable chips with an add field. Every removal target meets the 44px rule.
 Place rows show Description, Gloss, Kind of thing, and From, followed by “Add a place.”
 Repeated field labels include the place number in their accessible names.
+Before numbering approval, show each semicolon-separated part with its numbered preview and the places that it uses.
+Keep this breakdown beside the numbering action, including after the author uses the proposed definition.
+
+The Places step and the full editor show a note above three declared places, for every word type.
+Count each declared numbered place and count a repeating tail once. Null frames and constructed-predicate operands do not count.
+Use the exact heading, text, and “More about places” help in the [frontend specification](frontend.md#step-4-places-glosses-and-supporting-fields).
+The firmer text starts at six places. The note never blocks Next or Publish and requires no acknowledgment.
+Offer “Hide for this draft” with a 44px touch target. Keep that choice in the local draft only, outside signed records.
+Use the warning colors and a named disclosure for the help. Keep the text readable at 360 CSS pixels.
 
 | Arity control | Format representation | Required behavior |
 | --- | --- | --- |

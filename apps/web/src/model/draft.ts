@@ -274,6 +274,8 @@ export interface Draft {
   review: string[];
   /** Whether the author approved the current place numbering. */
   numberingApproved: boolean;
+  /** Hides the place-count note for this local draft only. */
+  placeCountNoteHidden?: boolean;
   /** Draft-only values for unchanged fields during a literal-mode cycle. */
   literalModeRestore?: Record<string, LiteralModeSnapshot>;
 }
@@ -594,23 +596,78 @@ export function normalizeDraft(stored: Draft): Draft {
 export function renumber(places: DraftPlace[]): DraftPlace[] {
   return places.map((place, i) => ({ ...place, index: i + 1 }));
 }
-/** Underscore spans in the meaning text, which the author can number later. */
+/** The highest place number used by the proposed numbering in any part. */
 export function placeholderCount(meaning: string): number {
-  return (meaning.match(/_{2,}/g) ?? []).length;
+  return numberPlaceholders(meaning).count;
 }
-/** Turns `___` placeholders into circled numerals in order. The author approves the numbering. */
+export interface NumberingPart {
+  /** This part in the structured editor's text form, without its separator. */
+  text: string;
+  /** The distinct place numbers used in this part, in numeric order. */
+  places: number[];
+}
+/** Proposes numbering within each semicolon part. The author approves it. */
 export function numberPlaceholders(meaning: string): {
   text: string;
   count: number;
+  parts: NumberingPart[];
 } {
-  let count = 0;
-  const text = escapeLiteral(meaning).replace(/_{2,}/g, () => {
-    count++;
-    return count <= 20
-      ? String.fromCodePoint(0x245f + count)
-      : `{place ${count}}`;
+  type Segment = { text: string; place?: number; blank?: boolean };
+  const segments: Segment[][] = [[]];
+  const append = (segment: Segment) => segments.at(-1)!.push(segment);
+  // Only a backslash immediately before a circled numeral escapes it in
+  // Meaning. All other backslashes stay literal, including before braces.
+  const tokens = /\\([①-⑳])|([①-⑳])|\{place (\d{1,5})\}|(;)|(_{2,})/gu;
+  let index = 0;
+  for (const match of meaning.matchAll(tokens)) {
+    append({ text: escapeLiteral(meaning.slice(index, match.index)) });
+    const [, escaped, circled, placeNumber, separator, blank] = match;
+    if (escaped !== undefined) append({ text: escapeLiteral(escaped) });
+    else if (separator) segments.push([]);
+    else if (blank) append({ text: "", blank: true });
+    else
+      append({
+        text: match[0],
+        place: circled ? circled.codePointAt(0)! - 0x245f : Number(placeNumber),
+      });
+    index = match.index! + match[0].length;
+  }
+  append({ text: escapeLiteral(meaning.slice(index)) });
+  const parts = segments.map((part): NumberingPart => {
+    const used = new Set(
+      part.flatMap((segment) =>
+        segment.place === undefined ? [] : [segment.place],
+      ),
+    );
+    let next = 1;
+    const text = part
+      .map((segment) => {
+        if (!segment.blank) return segment.text;
+        while (used.has(next)) next++;
+        used.add(next);
+        return referencePlace(next++);
+      })
+      .join("");
+    return { text, places: [...used].sort((a, b) => a - b) };
   });
-  return { text, count };
+  return {
+    text: parts.map((part) => part.text).join(";"),
+    count: parts.reduce(
+      (highest, part) => Math.max(highest, part.places.at(-1) ?? 0),
+      0,
+    ),
+    parts,
+  };
+}
+/** Counts declared predicate places, with one place for a repeating tail. */
+export function declaredPlaceCount(
+  draft: Pick<Draft, "frameMode" | "places" | "tail">,
+): number {
+  if (draft.frameMode === "none") return 0;
+  return (
+    draft.places.length +
+    (draft.frameMode === "variadic" && draft.tail !== null ? 1 : 0)
+  );
 }
 export interface DraftProblem {
   field: string;

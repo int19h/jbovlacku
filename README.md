@@ -78,6 +78,11 @@ The [importer guide](packages/importer/README.md) describes its input, journal, 
 
 The guided wizard has five steps: Meaning, Type, Form, Places, and Publish. The full editor opens every field section and permits manual headword and type entry.
 Manual authoring works without AI. Publish signs the definition, a separate author blessing, selected rafsi claims, and their pair blessings as one locally persisted group.
+Meaning placeholders restart at 1 after each semicolon. Explicit circled numbers and `{place N}` reserve their numbers within each part.
+Blanks take the free numbers in order. The count is the highest place number, and the Places step previews each part before approval.
+Meaning treats only a backslash before a circled numeral as an escape. It preserves every other backslash.
+The Places step and the full editor offer hideable advice above three declared places, with firmer text above five.
+A repeating tail counts once. The advice applies to every word type and never blocks publication or enters signed records.
 Revise copies a publication into a new draft with its exact parent and keeps every field: links, code, operands, literal circled characters, every gloss with its language and sense, every derivation, and the frame role. The page names the only changes a native revision makes. A revision of imported text cites the imported publication and copies the source-rights reference once.
 Each rich text field of a draft holds its exact value, and only an edit of that field parses text, so an untouched field never changes. In structured editing every rich text node has a text form, and a backslash keeps a circled numeral or a token character literal. Pasted circled numbers stay literal unless the author chooses references. Removing a place keeps the referent of every other reference. The shared core checks the finished body before Publish is enabled, and every blocking problem names its field.
 A draft saved by the earlier prototype opens a choice to export it, convert it into a wizard draft, or discard it. The old license and attribution fields stay in the export only, because new definitions publish under CC0 1.0.
