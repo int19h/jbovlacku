@@ -3505,7 +3505,33 @@ test("type existing word adds a definition while the original draft stays saved"
     },
   };
   await mockAssistant(page, options);
-  await draft(page, { formNotes: "Original evidence." });
+  await draft(page, {
+    formNotes: "Original evidence.",
+    notes: "Keep authored notes.",
+    glosses: [{ language: "en", text: "draft gloss", sense: "meaning" }],
+    sources: [
+      {
+        label: "Draft source",
+        url: "https://example.test/source",
+        event: null,
+        locator: null,
+      },
+    ],
+    labels: ["draft-label"],
+    frameMode: "fixed",
+    places: [
+      {
+        index: 1,
+        description: "Keep this place.",
+        glosses: [],
+        kind: "unspecified",
+        hint: null,
+        defaults: [],
+        constraints: [],
+        derivations: [],
+      },
+    ],
+  });
   const before = await stored(page);
   await page
     .getByRole("button", { name: "Recommend a type", exact: true })
@@ -3520,13 +3546,70 @@ test("type existing word adds a definition while the original draft stays saved"
   await panel
     .getByRole("button", { name: "Add a definition", exact: true })
     .click();
-  await expect(page).toHaveURL(/\/new\/type\?savedDraft=/);
-  expect((await stored(page)).spelling).toBe("cukta");
+  await expect(page).toHaveURL(/\/new\/type$/);
+  await expect.poll(async () => (await stored(page)).spelling).toBe("cukta");
   expect((await stored(page)).parents).toEqual([]);
+  const added = await stored(page);
+  for (const field of [
+    "meaning",
+    "text",
+    "kind",
+    "language",
+    "notes",
+    "formNotes",
+    "glosses",
+    "sources",
+    "places",
+    "frameMode",
+    "labels",
+  ])
+    expect(added[field]).toEqual(before[field]);
+  expect(added.review).toContain("spelling");
+  const savedRows = () =>
+    page.evaluate(async () => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      return (await new LocalStore().keys("drafts")).filter((key: string) =>
+        key.startsWith("saved:"),
+      );
+    });
+  expect(await savedRows()).toHaveLength(1);
+  await page
+    .getByRole("button", { name: "Continue to places", exact: true })
+    .click();
+  await expect(page).toHaveURL(/\/new\/places$/);
+  await expect(
+    page.getByRole("link", { name: "Return to the saved draft" }),
+  ).toBeVisible();
+  await page.getByRole("link", { name: "Skip to the full editor" }).click();
+  await page.reload();
   await page.getByRole("link", { name: "Return to the saved draft" }).click();
   await expect(page).toHaveURL(/\/new\/meaning/);
   expect((await stored(page)).spelling).toBe(before.spelling);
   expect((await stored(page)).formNotes).toBe("Original evidence.");
+  expect(await savedRows()).toHaveLength(1);
+  for (const path of [
+    "/new/type",
+    "/new/form",
+    "/new/places",
+    "/new/editor",
+    "/new/publish",
+    "/new/meaning",
+  ]) {
+    await page.goto(path);
+    await expect(
+      page.getByRole("link", { name: "Return to the saved draft" }),
+    ).toBeVisible();
+  }
+  await page.getByRole("link", { name: "Return to the saved draft" }).click();
+  await expect(page).toHaveURL(/\/new\/meaning/);
+  await expect.poll(async () => (await stored(page)).spelling).toBe("cukta");
+  expect(await savedRows()).toHaveLength(1);
+  await page.reload();
+  await page.getByRole("link", { name: "Return to the saved draft" }).click();
+  await expect
+    .poll(async () => (await stored(page)).spelling)
+    .toBe(before.spelling);
+  expect(await savedRows()).toHaveLength(1);
 });
 
 for (const conversion of [null, "te"]) {
@@ -3560,7 +3643,7 @@ for (const conversion of [null, "te"]) {
     await panel
       .getByRole("button", { name: "Revise this one", exact: true })
       .click();
-    await expect(page).toHaveURL(/\/new\/editor\?savedDraft=/);
+    await expect(page).toHaveURL(/\/new\/editor$/);
     const revision = await stored(page);
     expect(revision.parents).toEqual([fixture().definitions.cukta1]);
     const revisionPanel = page.getByRole("region", {
@@ -3669,4 +3752,170 @@ test("type disclosure mentions public definitions without expanding remembered c
     page.getByRole("region", { name: "Recommend a type suggestion" }),
   ).toBeVisible();
   expect(mock.calls).toHaveLength(2);
+});
+
+test("type imported revision shows the same license and origin notice as ordinary Revise", async ({
+  page,
+}) => {
+  const event = fixture().definitions.imported;
+  await page.goto(`/new/editor?revise=${encodeURIComponent(event)}`);
+  const notice = page
+    .locator("main p.notice")
+    .filter({ hasText: "This draft copies every field" });
+  await expect(notice).toBeVisible();
+  const ordinary = await notice.textContent();
+  const word = (await stored(page)).spelling;
+  expect(ordinary).toContain("CC0 1.0");
+  expect(ordinary).toContain("the imported legacy record");
+  expect(ordinary).toContain("the origin, from imported to native");
+  await mockAssistant(page, {
+    existing: {
+      word,
+      event,
+      conversion: null,
+      revised_definition: "An improved imported definition.",
+    },
+  });
+  await draft(page);
+  await page
+    .getByRole("button", { name: "Recommend a type", exact: true })
+    .click();
+  await allow(page);
+  await page
+    .getByRole("button", { name: "Revise this one", exact: true })
+    .click();
+  await expect(page).toHaveURL(/\/new\/editor$/);
+  await expect(notice).toHaveText(ordinary!);
+  const revised = await stored(page);
+  expect(revised.parents).toEqual([event]);
+  const body = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { draftToBody } = await import(String("/src/model/draft.ts"));
+    return draftToBody(await new LocalStore().get("drafts", "current")).body;
+  });
+  expect(body.license.expression).toBe("CC0-1.0");
+  expect(body.legacy).toBeNull();
+});
+
+for (const action of ["add", "revise", "conversion"] as const) {
+  test(`accepted type keeps its existing word ${action} action through reload`, async ({
+    page,
+  }) => {
+    const existing = {
+      word: "cukta",
+      event: fixture().definitions.cukta1,
+      conversion: action === "conversion" ? "te" : null,
+      revised_definition:
+        action === "revise" ? "An improved synthetic definition." : null,
+    };
+    await mockAssistant(page, { wordType: "gismu", existing });
+    await draft(page);
+    await page
+      .getByRole("button", { name: "Recommend a type", exact: true })
+      .click();
+    await allow(page);
+    await page
+      .getByRole("region", { name: "Recommend a type suggestion" })
+      .getByRole("button", { name: "Use this", exact: true })
+      .click();
+    await expect(
+      page.getByRole("button", { name: "Undo Recommend a type", exact: true }),
+    ).toBeVisible();
+    await page.reload();
+    const block = page.getByRole("region", {
+      name: "Existing word",
+      exact: true,
+    });
+    await expect(
+      block.getByRole("link", { name: "cukta", exact: true }),
+    ).toBeVisible();
+    const label =
+      action === "add"
+        ? "Add a definition"
+        : action === "revise"
+          ? "Revise this one"
+          : "Use te cukta";
+    await block.getByRole("button", { name: label, exact: true }).click();
+    if (action === "conversion")
+      await expect(page).toHaveURL(/\/word\/cukta\?lang=en&conversion=te/);
+    else if (action === "revise") {
+      await expect(page).toHaveURL(/\/new\/editor$/);
+      expect((await stored(page)).parents).toEqual([existing.event]);
+    } else {
+      await expect
+        .poll(async () => (await stored(page)).spelling)
+        .toBe("cukta");
+      await expect(page).toHaveURL(/\/new\/type$/);
+    }
+  });
+}
+
+test("saved draft switches refuse stale writers and roll back failed replacements without orphan rows", async ({
+  page,
+}) => {
+  await draft(page);
+  await page.goto("/search");
+  const result = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { newDraft } = await import(String("/src/model/draft.ts"));
+    const store = new LocalStore();
+    const original = await store.get("drafts", "current");
+    let conflict = "",
+      failure = "",
+      missing = "",
+      invalid = "";
+    try {
+      await store.switchDraft(
+        "stale-revision",
+        newDraft({ spelling: "cukta" }),
+      );
+    } catch (error) {
+      conflict = (error as { kind: string }).kind;
+    }
+    const put = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function (value: any, key?: IDBValidKey) {
+      if (this.name === "drafts" && key === "current")
+        throw new Error("Injected replacement failure.");
+      return put.call(this, value, key!);
+    };
+    try {
+      await store.switchDraft(
+        original.revision,
+        newDraft({ spelling: "cukta" }),
+      );
+    } catch (error) {
+      failure = (error as Error).message;
+    } finally {
+      IDBObjectStore.prototype.put = put;
+    }
+    try {
+      await store.switchDraft(original.revision, {
+        resume: `saved:${crypto.randomUUID()}`,
+      });
+    } catch (error) {
+      missing = (error as Error).message;
+    }
+    try {
+      await store.switchDraft(original.revision, { resume: "current" });
+    } catch (error) {
+      invalid = (error as Error).message;
+    }
+    return {
+      invalid,
+      original,
+      after: await store.get("drafts", "current"),
+      keys: await store.keys("drafts"),
+      conflict,
+      failure,
+      missing,
+    };
+  });
+  expect(result.conflict).toBe("changed");
+  expect(result.failure).toBe("Injected replacement failure.");
+  expect(result.missing).toBe("The saved draft is unavailable.");
+  expect(result.invalid).toBe("The saved draft is unavailable.");
+  expect(result.after).toEqual(result.original);
+  expect(result.keys.filter((key: string) => key.startsWith("saved:"))).toEqual(
+    [],
+  );
 });

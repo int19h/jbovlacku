@@ -1,4 +1,5 @@
 import { kindLabel } from "../model/types.ts";
+import { changeTypedWord } from "../model/typed-headword.ts";
 /** Optional assistance. Provider data is inert, private, and separate from publication. */
 import {
   button,
@@ -48,7 +49,7 @@ import { richTextToText, renderRichText } from "../model/richtext.ts";
 import {
   draftFromBody,
   editorToRichText,
-  newDraft,
+  revisionChanges,
   type Draft,
 } from "../model/draft.ts";
 import {
@@ -56,11 +57,7 @@ import {
   sourceNotes,
   type GismuRowState,
 } from "../model/builders.ts";
-import {
-  confirmKindChange,
-  DRAFT_KEY,
-  type DraftSaver,
-} from "../pages/wizard/common.ts";
+import { confirmKindChange, type DraftSaver } from "../pages/wizard/common.ts";
 
 export interface AssistanceProfile {
   id: string;
@@ -768,6 +765,118 @@ export function assistanceAction(
     }
     return section;
   }
+  function existingWordBlock(r: AssistanceRecord): HTMLElement | null {
+    const result = r.result;
+    if (result?.operation !== "type" || !result.existing) return null;
+    const existing = result.existing;
+    const block = el(
+      "section",
+      { class: "ai-existing", "aria-label": "Existing word" },
+      p("Existing word: "),
+      link(existing.word, routes.word(existing.word, draft.language), {
+        lang: "jbo",
+        class: "hw",
+      }),
+    );
+    const converted = existing.conversion
+      ? `${existing.conversion} ${existing.word}`
+      : null;
+    if (converted) block.append(p(converted));
+    const startExistingDraft = async (revise: boolean) => {
+      try {
+        if (!(await saver.flush()) || !context.live()) return;
+        const publication = await loadDefinition(existing.event);
+        if (!context.live()) return;
+        if (
+          !publication.body ||
+          publication.body.word.spelling !== existing.word
+        )
+          throw new Error("The existing definition is unavailable.");
+        const origin =
+          publication.envelope.header.action.origin === "import"
+            ? "import"
+            : "native";
+        const replacement = revise
+          ? draftFromBody(
+              publication.body,
+              existing.event,
+              origin,
+              publication.rawBody,
+            )
+          : structuredClone(draft);
+        if (revise)
+          replacement.revisionNotice = revisionChanges(
+            publication.body,
+            origin,
+          );
+        else changeTypedWord(replacement, existing.word);
+        if (revise) {
+          const proposed: Suggestion = {
+            ...result,
+            operation: "definition",
+            existing: undefined,
+            proposals: [
+              {
+                path: "/text",
+                value: editorToRichText(
+                  existing.revised_definition!,
+                  replacement.structured,
+                ),
+              },
+            ],
+            explanation:
+              "Review the proposed definition. Use this applies it with undo.",
+          };
+          storeAssistanceRecord(replacement, {
+            ...r,
+            id: crypto.randomUUID(),
+            key: "definition",
+            label: "Rewrite definition",
+            operation: "definition",
+            fingerprint: draftFingerprint(replacement),
+            requested: currentDraft(replacement),
+            result: proposed,
+            state: "done",
+            patches: undefined,
+            before: undefined,
+            after: undefined,
+          });
+        }
+        await app.store.switchDraft(draft.revision, replacement);
+        saver.detach();
+        navigate(revise ? "/new/editor" : "/new/type");
+      } catch (error) {
+        app.announce(describe(error));
+      }
+    };
+    if (converted)
+      block.append(
+        button(
+          `Use ${converted}`,
+          async () => {
+            if (await saver.flush())
+              navigate(
+                `${routes.word(existing.word, draft.language)}&conversion=${existing.conversion}`,
+              );
+          },
+          { class: "btn" },
+        ),
+      );
+    else if (existing.revised_definition === null)
+      block.append(
+        button("Add a definition", () => void startExistingDraft(false), {
+          class: "btn",
+        }),
+      );
+    if (existing.revised_definition !== null)
+      block.append(
+        p(existing.revised_definition),
+        button("Revise this one", () => void startExistingDraft(true), {
+          class: "btn",
+        }),
+      );
+    return block;
+  }
   function renderAccepted(r: AssistanceRecord) {
     content.append(
       el(
@@ -802,6 +911,8 @@ export function assistanceAction(
         ),
       ),
     );
+    const block = existingWordBlock(r);
+    if (block) content.append(block);
   }
   function renderOtherMappingUndos(result?: Suggestion) {
     const frame = result
@@ -948,121 +1059,8 @@ export function assistanceAction(
         "meta",
       ),
     );
-    if (result.operation === "type" && result.existing) {
-      const existing = result.existing;
-      const block = el(
-        "section",
-        { class: "ai-existing", "aria-label": "Existing word" },
-        p("Existing word: "),
-        link(existing.word, routes.word(existing.word, draft.language), {
-          lang: "jbo",
-          class: "hw",
-        }),
-      );
-      const converted = existing.conversion
-        ? `${existing.conversion} ${existing.word}`
-        : null;
-      if (converted) block.append(p(converted));
-      const startExistingDraft = async (revise: boolean) => {
-        try {
-          if (!(await saver.flush()) || !context.live()) return;
-          const publication = await loadDefinition(existing.event);
-          if (!context.live()) return;
-          if (
-            !publication.body ||
-            publication.body.word.spelling !== existing.word
-          )
-            throw new Error("The existing definition is unavailable.");
-          const savedKey = `saved:${crypto.randomUUID()}`;
-          await app.store.saveDraft(savedKey, structuredClone(draft), "absent");
-          const replacement = revise
-            ? draftFromBody(
-                publication.body,
-                existing.event,
-                publication.envelope.header.action.origin === "import"
-                  ? "import"
-                  : "native",
-                publication.rawBody,
-              )
-            : newDraft({
-                spelling: existing.word,
-                language: publication.body.language,
-                kind: publication.body.classification.kind,
-                meaning: draft.meaning,
-                text: draft.text,
-                step: 2,
-              });
-          if (revise) {
-            const proposed: Suggestion = {
-              ...result,
-              operation: "definition",
-              existing: undefined,
-              proposals: [
-                {
-                  path: "/text",
-                  value: editorToRichText(
-                    existing.revised_definition!,
-                    replacement.structured,
-                  ),
-                },
-              ],
-              explanation:
-                "Review the proposed definition. Use this applies it with undo.",
-            };
-            storeAssistanceRecord(replacement, {
-              ...r,
-              id: crypto.randomUUID(),
-              key: "definition",
-              label: "Rewrite definition",
-              operation: "definition",
-              fingerprint: draftFingerprint(replacement),
-              requested: currentDraft(replacement),
-              result: proposed,
-              state: "done",
-              patches: undefined,
-              before: undefined,
-              after: undefined,
-            });
-          }
-          await app.store.saveDraft(DRAFT_KEY, replacement, {
-            revision: draft.revision,
-          });
-          saver.detach();
-          navigate(
-            `${revise ? "/new/editor" : "/new/type"}?savedDraft=${encodeURIComponent(savedKey)}`,
-          );
-        } catch (error) {
-          app.announce(describe(error));
-        }
-      };
-      if (converted)
-        block.append(
-          button(
-            `Use ${converted}`,
-            async () => {
-              if (await saver.flush())
-                navigate(
-                  `${routes.word(existing.word, draft.language)}&conversion=${existing.conversion}`,
-                );
-            },
-            { class: "btn" },
-          ),
-        );
-      else if (existing.revised_definition === null)
-        block.append(
-          button("Add a definition", () => void startExistingDraft(false), {
-            class: "btn",
-          }),
-        );
-      if (existing.revised_definition !== null)
-        block.append(
-          p(existing.revised_definition),
-          button("Revise this one", () => void startExistingDraft(true), {
-            class: "btn",
-          }),
-        );
-      panel.append(block);
-    }
+    const existingBlock = existingWordBlock(r);
+    if (existingBlock) panel.append(existingBlock);
     const stale = draftFingerprint(draft) !== r.fingerprint;
     let reviewed = !stale;
     let reviewedFingerprint = draftFingerprint(draft);

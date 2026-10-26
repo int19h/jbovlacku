@@ -12,6 +12,7 @@ import {
   DISCARDED_PREDECESSOR,
 } from "./outbox-graph.ts";
 import type { Envelope, Transport } from "../model/types.ts";
+import type { Draft } from "../model/draft.ts";
 
 export interface KeyBackup {
   format: "jbovlacku-key-backup";
@@ -447,6 +448,75 @@ export class LocalStore {
           failure ??
             tx.error ??
             new Error("Local storage did not save this change."),
+        );
+      tx.onerror = () => {};
+    });
+  }
+  /** Switch drafts and their saved links in one transaction. A resume consumes its row. */
+  async switchDraft(
+    currentRevision: string,
+    replacement: Draft | { resume: string },
+  ): Promise<Draft> {
+    if (
+      "resume" in replacement &&
+      !/^saved:[0-9a-f-]{36}$/.test(replacement.resume)
+    )
+      throw new Error("The saved draft is unavailable.");
+    const db = await this.database;
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction("drafts", "readwrite");
+      const drafts = tx.objectStore("drafts");
+      let failure: unknown;
+      let next: Draft;
+      const current = drafts.get("current");
+      const resumed =
+        "resume" in replacement ? drafts.get(replacement.resume) : null;
+      let remaining = resumed ? 2 : 1;
+      const proceed = () => {
+        if (--remaining) return;
+        try {
+          const previous = current.result as Draft | undefined;
+          if (!previous || previous.revision !== currentRevision)
+            throw new DraftConflictError(
+              previous ? "changed" : "removed",
+              previous?.revision ?? null,
+            );
+          const consumed = "resume" in replacement ? replacement.resume : null;
+          if (
+            consumed &&
+            (!(resumed?.result as Draft | undefined) ||
+              resumed?.result.version !== 2 ||
+              !previous.savedDrafts?.some((entry) => entry.key === consumed))
+          )
+            throw new Error("The saved draft is unavailable.");
+          next = structuredClone(
+            consumed ? (resumed!.result as Draft) : (replacement as Draft),
+          );
+          const savedKey = `saved:${crypto.randomUUID()}`;
+          next.savedDrafts = [
+            ...(previous.savedDrafts ?? []).filter(
+              (entry) => entry.key !== consumed,
+            ),
+            { key: savedKey, label: previous.spelling || "a new word" },
+          ];
+          next.revision = crypto.randomUUID();
+          next.updatedAt = Date.now();
+          drafts.add(previous, savedKey);
+          drafts.put(next, "current");
+          if (consumed) drafts.delete(consumed);
+        } catch (error) {
+          failure = error;
+          tx.abort();
+        }
+      };
+      current.onsuccess = proceed;
+      if (resumed) resumed.onsuccess = proceed;
+      tx.oncomplete = () => resolve(next);
+      tx.onabort = () =>
+        reject(
+          failure ??
+            tx.error ??
+            new Error("Local storage did not switch drafts."),
         );
       tx.onerror = () => {};
     });

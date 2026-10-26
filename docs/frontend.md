@@ -273,23 +273,35 @@ When the meaning gives too little information, the suggestion asks one question 
 That question keeps the selected card and every formation field.
 
 The server finds related public definitions inside the type job from the original meaning, independently of Step 1 searches.
-The lexical fallback uses up to six distinct query words after it removes place marks and punctuation.
+The lexical fallback uses up to six distinct query words. It removes whole-token place marks and punctuation at token ends and keeps inner apostrophes.
 It ranks words by matching query count, then summed search positions, then stable word ID.
-Current definitions of the exact typed spelling come first. The list excludes selected context events and duplicate spellings and holds at most 30 entries.
+Each query scans the dictionary once with the same match tiers and order as ordinary lexical search.
+Up to three current definitions of the trimmed, NFC-normalized typed spelling come first.
+They follow ordinary editorial layers when available. Within one layer, exact gloss matches count three, gloss prefixes two, and definition-text matches one.
+The sum over query words decides relevance. Equal relevance uses stable event ID order.
+These exact senses keep separate records. Later lexical hits omit their spellings and every other duplicate spelling.
+The list excludes selected context events and holds at most 30 records in total.
 Each entry supplies its type and definition text without notes. A definition above 500 Unicode code points is cut and marked as truncated.
-The inference log records the snapshot, query words, and exact events in list order.
+The inference log records the snapshot and exact events in list order.
+It records lexical retrieval with its query words, semantic retrieval with its profile ID, or none when no search runs.
 The service sends its own spelling analysis when a spelling is present and records the morphology version in the log.
 The type prompt retains its approved `fuivla` identifier. The service translates between it and the app's `fuhivla` identifier at the type boundary.
 
 An existing-word block links to the word and offers Add a definition when the current definition fits.
 An improved definition appears with Revise this one. This action creates a local revision with the exact publication as its parent.
+The editor shows the same notice as ordinary Revise about changes to CC0, imported legacy content, and native origin.
 The improved text starts as a separate suggestion. Use this applies it with persistent Undo.
 For a conversion, such as `te vecnu`, the block offers Use te vecnu instead of Add a definition.
 That action opens the existing word page and shows the converted form. It creates no draft or publication.
 A conversion with an improved definition also offers Revise this one for the existing word in its own place order.
 Adding or revising saves the previous draft separately and offers Return to the saved draft.
-Returning also saves the draft that it leaves. No existing-word action publishes content.
+Add a definition copies every current field and uses the Step 1 spelling-change action. It preserves notes, places, glosses, sources, and evidence for review.
+Saved-draft links stay in private draft data through every wizard route and reload.
+Returning also saves the draft that it leaves and consumes the restored saved row in one transaction.
+Other saved drafts remain linked. A failed or conflicting switch leaves every stored draft unchanged.
+No existing-word action publishes content.
 Use this for the proposed type remains available so that the author can continue with a new word.
+After type acceptance and reload, the existing-word block and its actions remain available beside Undo.
 A typed spelling preselects its detected type. The author confirms it with one action or selects another type.
 Word form alone cannot distinguish cmavo, compound cmavo, letterals, and experimental classifications.
 Unknown analysis shows its diagnostics and permits an experimental type.

@@ -111,8 +111,17 @@ export interface AssistanceData {
 
 /** Revision changes from saving do not make an otherwise unchanged suggestion stale. */
 export function draftFingerprint(draft: Draft): string {
-  const { revision, updatedAt, ai, retainedWordIpaNullSources, ...fields } =
-    draft;
+  const {
+    revision,
+    updatedAt,
+    ai,
+    retainedWordIpaNullSources,
+    savedDrafts,
+    revisionNotice,
+    ...fields
+  } = draft;
+  void savedDrafts;
+  void revisionNotice;
   void revision;
   void updatedAt;
   void ai;

@@ -170,6 +170,12 @@ Type suggestions can ask one question without changing the selected type, or nam
 The server finds up to 30 related public definitions through lexical search and checks existing-word suggestions against the same snapshot.
 An existing-word suggestion can start an additional definition or a revision with an improved definition and undo.
 Both actions preserve the earlier draft. A place conversion opens the existing word page with its converted form and creates no publication.
+Adding a definition preserves every current field and marks spelling-dependent evidence for review.
+Revision actions show the ordinary notice about license and origin changes. Their exact parent and improved text keep the usual acceptance and undo flow.
+Saved-draft links survive wizard navigation and reload. Atomic returns consume the restored row and keep all other saved drafts reachable.
+Existing-word actions also remain available after type acceptance.
+Related retrieval keeps up to three exact-spelling senses in editorial order and scans each lexical query once.
+Query cleanup keeps inner apostrophes. Logs distinguish lexical, semantic-profile, and absent retrieval.
 Related public definitions do not expand remembered consent. Semantic retrieval for type suggestions remains pending.
 Compound spelling parts also await the shared word analysis API. Type requests currently send only the forms that `analyzeWord` supplies.
 Source acceptance replaces earlier AI notes and preserves authored notes. A changed suggested word requires review of retained source evidence.
