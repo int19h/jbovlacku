@@ -166,6 +166,11 @@ The [morphology profiles](docs/morphology.md) name the rules and versions that t
 
 Optional AI assistance offers suggestions for type, components, lujvo, cmavo class, source words, definition text, places, and glosses.
 The browser asks for consent before it sends draft fields. Suggestions need manual acceptance and support undo.
+Type suggestions can ask one question without changing the selected type, or name another possible type with its own reason.
+The server finds up to 30 related public definitions through lexical search and checks existing-word suggestions against the same snapshot.
+An existing-word suggestion can start an additional definition or a revision with an improved definition and undo.
+Both actions preserve the earlier draft. A place conversion opens the existing word page with its converted form and creates no publication.
+Related public definitions do not expand remembered consent. Semantic retrieval for type suggestions remains pending.
 Source acceptance replaces earlier AI notes and preserves authored notes. A changed suggested word requires review of retained source evidence.
 Marked fields stay read-only until Keep or Clear. A type change that removes the formation also removes its review marks.
 Explicit evidence removal keeps the marks for reused source values. Undo restores required marks with returned values and preserves later review choices.

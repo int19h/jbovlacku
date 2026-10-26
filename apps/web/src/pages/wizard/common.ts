@@ -100,6 +100,27 @@ export async function loadDraft(
   if (!app.session.storageAvailable) return null;
   legacyDraft = null;
   try {
+    const resume = new URL(location.href).searchParams.get("resume");
+    if (resume && /^saved:[0-9a-f-]{36}$/.test(resume)) {
+      const saved = await app.store.get<Draft>("drafts", resume);
+      if (saved?.version === 2) {
+        const current = await app.store.get<Draft>("drafts", DRAFT_KEY);
+        if (current)
+          await app.store.saveDraft(
+            `saved:${crypto.randomUUID()}`,
+            current,
+            "absent",
+          );
+        await app.store.saveDraft(
+          DRAFT_KEY,
+          saved,
+          current ? { revision: current.revision } : "absent",
+        );
+        const url = new URL(location.href);
+        url.searchParams.delete("resume");
+        history.replaceState(history.state, "", url);
+      }
+    }
     const stored = await app.store.get<Draft>("drafts", DRAFT_KEY);
     if (stored && stored.version !== 2) {
       // An old draft stays untouched. The meaning page offers export, conversion, or discard.
@@ -431,6 +452,15 @@ export function stepBar(draft: Draft, current: number): HTMLElement {
     link("Skip to the full editor", "/new/editor", { class: "meta step-skip" }),
   );
   bar.append(inner);
+  const savedKey = new URL(location.href).searchParams.get("savedDraft");
+  if (savedKey && /^saved:[0-9a-f-]{36}$/.test(savedKey))
+    bar.append(
+      link(
+        "Return to the saved draft",
+        `/new/meaning?resume=${encodeURIComponent(savedKey)}`,
+        { class: "touch-link" },
+      ),
+    );
   return bar;
 }
 export interface ActionBarOptions {

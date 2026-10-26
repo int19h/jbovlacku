@@ -116,6 +116,9 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
   const head = el("div", { class: "word-head" });
   const h1 = el("h1", { lang: "jbo", text: spelling });
   head.append(h1);
+  const conversion = route.params.get("conversion");
+  if (conversion && ["se", "te", "ve", "xe"].includes(conversion))
+    head.append(p(`${conversion} ${spelling}`, "hw"));
   const zb =
     app.session.preferences.orthography === "zbalermorna"
       ? zbalermorna(spelling)

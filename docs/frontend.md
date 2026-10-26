@@ -264,8 +264,32 @@ Remote draft searches use POST bodies, not draft text embedded in navigable URLs
 
 ### Step 2: word type
 
-Ask which word type the author wants. Explain gismu, lujvo, cmavo, fu'ivla, cmevla, and other with short examples.
+Ask which word type the author wants. Explain all eight types: gismu, lujvo, cmavo, fu'ivla, cmevla, compound cmavo, letteral, and other.
+Other covers a fixed phrase or another form. The Other card exposes compound cmavo and letteral as separate choices.
 “Recommend a type” is an optional AI action. Its result includes a short explanation and does not select the type without acceptance.
+The explanation uses the language of the meaning. A meaning in Lojban gets an English explanation.
+A second possible type has its own reason after “Also possible: TYPE.” Acceptance applies only the main type.
+When the meaning gives too little information, the suggestion asks one question and offers Try again without Use this.
+That question keeps the selected card and every formation field.
+
+The server finds related public definitions inside the type job from the original meaning, independently of Step 1 searches.
+The lexical fallback uses up to six distinct query words after it removes place marks and punctuation.
+It ranks words by matching query count, then summed search positions, then stable word ID.
+Current definitions of the exact typed spelling come first. The list excludes selected context events and duplicate spellings and holds at most 30 entries.
+Each entry supplies its type and definition text without notes. A definition above 500 Unicode code points is cut and marked as truncated.
+The inference log records the snapshot, query words, and exact events in list order.
+The service sends its own spelling analysis when a spelling is present and records the morphology version in the log.
+The type prompt retains its approved `fuivla` identifier. The service translates between it and the app's `fuhivla` identifier at the type boundary.
+
+An existing-word block links to the word and offers Add a definition when the current definition fits.
+An improved definition appears with Revise this one. This action creates a local revision with the exact publication as its parent.
+The improved text starts as a separate suggestion. Use this applies it with persistent Undo.
+For a conversion, such as `te vecnu`, the block offers Use te vecnu instead of Add a definition.
+That action opens the existing word page and shows the converted form. It creates no draft or publication.
+A conversion with an improved definition also offers Revise this one for the existing word in its own place order.
+Adding or revising saves the previous draft separately and offers Return to the saved draft.
+Returning also saves the draft that it leaves. No existing-word action publishes content.
+Use this for the proposed type remains available so that the author can continue with a new word.
 A typed spelling preselects its detected type. The author confirms it with one action or selects another type.
 Word form alone cannot distinguish cmavo, compound cmavo, letterals, and experimental classifications.
 Unknown analysis shows its diagnostics and permits an experimental type.
@@ -1594,6 +1618,10 @@ Public clients cannot turn an inference request into an arbitrary outbound URL f
 The first AI request shows one consent dialog for the selected provider and its declared tasks and data scope.
 The dialog names the server, provider, and fields sent. A broad scope is permitted only when the dialog declares it explicitly.
 Remembered consent applies only to that provider and scope. A new provider or expanded scope requires a new disclosure.
+Related public dictionary definitions and analysis of an already supplied spelling do not expand that scope.
+The dialog mentions those public definitions in a fixed line outside its remembered scope.
+A new embedding route that receives the original meaning requires a new disclosure unless the current statement already names it.
+Type jobs use lexical retrieval until a query-available semantic route is named in that statement.
 Every suggestion request requires an explicit action. Enabling a provider never uploads private drafts passively.
 After consent, buttons use a small “AI” tag without repeated provider text.
 Suggestions appear in a quiet panel with “Use this” and “Dismiss.” Accepted text becomes ordinary draft text with undo.
@@ -1650,13 +1678,17 @@ The total uncompressed request limit is 256 KiB. The server also enforces task-s
 A request body that does not arrive within ten seconds returns HTTP 408 with code `request_timeout`.
 
 A completed suggestion contains operation, draft_revision, proposals, explanation, provenance, usage, and log.
+For type results, `existing` is null or contains `word`, exact `event`, nullable `conversion`, and nullable `revised_definition`.
+Conversion is `se`, `te`, `ve`, or `xe`. Short related refs stay in the private exchange log and never replace the resolved result event.
+A null type has an empty proposals array. Other operations still require proposals.
 Each proposal contains path and value. Path is a JSON Pointer into current, restricted by the operation's allowlist below.
 Explanation is literal text. Provenance contains provider, model, revision, recipe, and seed. The reference service returns null for revision and seed.
 `revision` is a string or null. `seed` is a safe integer or null.
 
 Usage contains input_tokens and output_tokens. Each count is a nonnegative integer or null when unavailable.
 Reasons for proposed field edits travel inside proposal values. Panel-only reasons travel in the accepted tool arguments described below.
-Type alternatives use `type_hints.note` paragraphs with `type: reason`. Derivations keep the full kind prefix in `explanation`.
+Place type alternatives use `type_hints.note` paragraphs with `type: reason`. Derivations keep the full kind prefix in `explanation`.
+Word type alternatives appear as an additional line in `explanation`, with the display type and its own reason.
 
 Proposed source `notes` contain only the new selected sense and note with `Sense: ` and `Note: ` prefixes.
 Proposals never target identity, signatures, publication status, trust records, source ownership, or delivery state.

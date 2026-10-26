@@ -188,6 +188,14 @@ function proposals(body: any): any[] {
   return [];
 }
 interface MockOptions {
+  nullType?: boolean;
+  existing?: {
+    word: string;
+    event: string;
+    conversion: string | null;
+    revised_definition: string | null;
+  };
+  explanation?: string;
   wordType?: string;
   lujvoProposals?: any[];
   deepLog?: boolean;
@@ -258,6 +266,11 @@ async function mockAssistant(page: Page, options: MockOptions = {}) {
     };
     if (body.operation === "type" && options.wordType)
       result.proposals = [{ path: "/word_type", value: options.wordType }];
+    if (body.operation === "type") {
+      if (options.nullType) result.proposals = [];
+      if (options.existing) result.existing = options.existing;
+      if (options.explanation) result.explanation = options.explanation;
+    }
     if (body.operation === "gismu-sources" && options.sourceEdits)
       result.proposals = [
         {
@@ -3422,4 +3435,238 @@ test("type suggestions display fu'ivla and apply fuhivla", async ({ page }) => {
   await panel.getByRole("button", { name: "Use this", exact: true }).click();
   await expect(page.getByRole("radio", { name: /^fu'ivla/ })).toBeChecked();
   await expect.poll(async () => (await stored(page)).kind).toBe("fuhivla");
+});
+
+test("null type keeps the current card and formation, asks a question and permits retry", async ({
+  page,
+}) => {
+  const options: MockOptions = {
+    nullType: true,
+    explanation: "Does this word name a person or a thing?",
+  };
+  const mock = await mockAssistant(page, options);
+  await draft(page, {
+    formation: {
+      method: "unknown",
+      sources: [],
+      algorithm: null,
+      weights_profile: null,
+      generated: null,
+      selected_score: null,
+      selected_rank: null,
+      selection_reason: [],
+      candidates: [],
+      conflicts: [],
+    },
+    formNotes: "Keep my evidence.",
+  });
+  const before = await stored(page);
+  await page
+    .getByRole("button", { name: "Recommend a type", exact: true })
+    .click();
+  await allow(page);
+  const panel = page.getByRole("region", {
+    name: "Recommend a type suggestion",
+  });
+  await expect(panel).toContainText(options.explanation!);
+  await expect(
+    panel.getByRole("button", { name: "Use this", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    panel.getByRole("button", { name: "Try again", exact: true }),
+  ).toBeVisible();
+  expect((await stored(page)).kind).toBe(before.kind);
+  expect((await stored(page)).formation).toEqual(before.formation);
+  await page.reload();
+  await expect(panel).toContainText(options.explanation!);
+  options.nullType = false;
+  options.explanation =
+    "A described thing.\n\nAlso possible: fu'ivla. Use a known name.";
+  await panel.getByRole("button", { name: "Try again", exact: true }).click();
+  await expect(panel).toContainText(
+    "Also possible: fu'ivla. Use a known name.",
+  );
+  await expect(
+    page.getByRole("dialog", { name: "Before using AI assistance" }),
+  ).toHaveCount(0);
+  expect(mock.calls).toHaveLength(2);
+  expect(mock.calls[0]).not.toHaveProperty("related");
+});
+
+test("type existing word adds a definition while the original draft stays saved", async ({
+  page,
+}) => {
+  const options: MockOptions = {
+    existing: {
+      word: "cukta",
+      event: fixture().definitions.cukta1,
+      conversion: null,
+      revised_definition: null,
+    },
+  };
+  await mockAssistant(page, options);
+  await draft(page, { formNotes: "Original evidence." });
+  const before = await stored(page);
+  await page
+    .getByRole("button", { name: "Recommend a type", exact: true })
+    .click();
+  await allow(page);
+  const panel = page.getByRole("region", {
+    name: "Recommend a type suggestion",
+  });
+  await expect(
+    panel.getByRole("link", { name: "cukta", exact: true }),
+  ).toHaveAttribute("href", /word\/cukta/);
+  await panel
+    .getByRole("button", { name: "Add a definition", exact: true })
+    .click();
+  await expect(page).toHaveURL(/\/new\/type\?savedDraft=/);
+  expect((await stored(page)).spelling).toBe("cukta");
+  expect((await stored(page)).parents).toEqual([]);
+  await page.getByRole("link", { name: "Return to the saved draft" }).click();
+  await expect(page).toHaveURL(/\/new\/meaning/);
+  expect((await stored(page)).spelling).toBe(before.spelling);
+  expect((await stored(page)).formNotes).toBe("Original evidence.");
+});
+
+for (const conversion of [null, "te"]) {
+  test(`type existing revision keeps the exact parent and supports acceptance and undo (${conversion ?? "no conversion"})`, async ({
+    page,
+  }) => {
+    const proposed = "① is an improved synthetic book definition.";
+    const options: MockOptions = {
+      existing: {
+        word: "cukta",
+        event: fixture().definitions.cukta1,
+        conversion,
+        revised_definition: proposed,
+      },
+    };
+    await mockAssistant(page, options);
+    await draft(page);
+    const before = await stored(page);
+    await page
+      .getByRole("button", { name: "Recommend a type", exact: true })
+      .click();
+    await allow(page);
+    const panel = page.getByRole("region", {
+      name: "Recommend a type suggestion",
+    });
+    await expect(panel).toContainText(proposed);
+    if (conversion)
+      await expect(
+        panel.getByRole("button", { name: "Use te cukta", exact: true }),
+      ).toBeVisible();
+    await panel
+      .getByRole("button", { name: "Revise this one", exact: true })
+      .click();
+    await expect(page).toHaveURL(/\/new\/editor\?savedDraft=/);
+    const revision = await stored(page);
+    expect(revision.parents).toEqual([fixture().definitions.cukta1]);
+    const revisionPanel = page.getByRole("region", {
+      name: "Rewrite definition suggestion",
+    });
+    await expect(revisionPanel).toContainText(
+      "improved synthetic book definition",
+    );
+    await revisionPanel
+      .getByRole("button", { name: "Use this", exact: true })
+      .click();
+    expect((await stored(page)).text).toEqual([
+      [1, " is an improved synthetic book definition."],
+    ]);
+    await page.reload();
+    await page
+      .getByRole("button", { name: "Undo Rewrite definition", exact: true })
+      .click();
+    expect((await stored(page)).text).toEqual(revision.text);
+    expect((await stored(page)).parents).toEqual(revision.parents);
+    await page.getByRole("link", { name: "Return to the saved draft" }).click();
+    await expect(page).toHaveURL(/\/new\/meaning/);
+    expect((await stored(page)).text).toEqual(before.text);
+    expect((await stored(page)).spelling).toBe(before.spelling);
+  });
+}
+
+test("type place conversion opens the existing word and creates no draft", async ({
+  page,
+}) => {
+  const options: MockOptions = {
+    existing: {
+      word: "cukta",
+      event: fixture().definitions.cukta1,
+      conversion: "te",
+      revised_definition: null,
+    },
+  };
+  await mockAssistant(page, options);
+  await draft(page);
+  await page
+    .getByRole("button", { name: "Recommend a type", exact: true })
+    .click();
+  await allow(page);
+  const before = await stored(page);
+  const panel = page.getByRole("region", {
+    name: "Recommend a type suggestion",
+  });
+  await expect(
+    panel.getByRole("button", { name: "Add a definition", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    panel.getByRole("button", { name: "Revise this one", exact: true }),
+  ).toHaveCount(0);
+  await panel
+    .getByRole("button", { name: "Use te cukta", exact: true })
+    .click();
+  await expect(page).toHaveURL(/\/word\/cukta\?lang=en&conversion=te/);
+  await expect(page.getByText("te cukta", { exact: true })).toBeVisible();
+  const after = await stored(page);
+  for (const field of [
+    "createdAt",
+    "spelling",
+    "kind",
+    "text",
+    "formation",
+    "compound",
+    "parents",
+  ])
+    expect(after[field]).toEqual(before[field]);
+});
+
+test("type disclosure mentions public definitions without expanding remembered consent", async ({
+  page,
+}) => {
+  const mock = await mockAssistant(page);
+  await draft(page);
+  await page
+    .getByRole("button", { name: "Recommend a type", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog", {
+    name: "Before using AI assistance",
+  });
+  await expect(dialog).toContainText(
+    "Type suggestions can also send public dictionary definitions that the server finds for your meaning.",
+  );
+  await allow(page);
+  await expect(
+    page.getByRole("region", { name: "Recommend a type suggestion" }),
+  ).toBeVisible();
+  const consent = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    return (await new LocalStore().get("prefs", "preferences"))
+      ?.aiConsents?.[0];
+  });
+  expect(consent.dataScope).not.toContain("related public definitions");
+  expect(JSON.parse(consent.scope).disclosure).toBe(
+    "Send the draft fields and selected definitions.",
+  );
+  await page.reload();
+  await page.getByRole("button", { name: "Dismiss", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Recommend a type", exact: true })
+    .click();
+  await expect(
+    page.getByRole("region", { name: "Recommend a type suggestion" }),
+  ).toBeVisible();
+  expect(mock.calls).toHaveLength(2);
 });

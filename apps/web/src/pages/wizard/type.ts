@@ -63,14 +63,14 @@ const cards: {
   {
     kind: "other",
     title: "Other",
-    explanation: "Letteral, compound cmavo, experimental form.",
+    explanation: "Fixed phrase or another word type.",
     example: "",
   },
 ];
 const otherKinds: { kind: LexicalKind; label: string }[] = [
   { kind: "compound", label: "compound cmavo" },
   { kind: "letteral", label: "letteral" },
-  { kind: "other", label: "other experimental form" },
+  { kind: "other", label: "other fixed phrase or form" },
 ];
 export function nextActionLabel(kind: LexicalKind | null): string {
   switch (kind) {

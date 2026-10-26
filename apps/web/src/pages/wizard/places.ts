@@ -507,6 +507,14 @@ export async function placesPage(
     }),
   );
   main.append(headline);
+  if (draft.ai?.records.some((record) => record.key === "definition"))
+    main.append(
+      assistanceAction(app, draft, saver, context, {
+        key: "definition",
+        label: "Rewrite definition",
+        operation: "definition",
+      }),
+    );
   if (draft.parents.length)
     main.append(
       el(
