@@ -102,7 +102,7 @@ test("cmavo clusters split by morphology and preserve hesitation words", () => {
     draft.kind = "cmavo";
     assert.equal(wordFormFeedback(draft).blocking, true);
   }
-  for (const spelling of ["y", "yyy", "ie'o"])
+  for (const spelling of ["y", "yyy", "ie'o", "y'y", "y'e"])
     assert.equal(detectWord(spelling).kind, "cmavo");
 });
 test("accepted CgV forms show the exact BPFK warning without blocking", () => {

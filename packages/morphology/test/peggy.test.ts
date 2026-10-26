@@ -49,6 +49,17 @@ test("one-word headwords allow framing periods but do not discard other pause ma
   }
   roundtrip(".SAI,rZBA.");
 });
+
+test("a pure y run does not take the start of an apostrophe-linked cmavo", () => {
+  for (const spelling of ["y'y", "y'e", "y'y'y"]) {
+    const analysis = analyzeWord("extended-v4", spelling);
+    assert.equal(analysis.kind, "cmavo", spelling);
+    assert.deepEqual(
+      analysis.words?.map((word) => word.text),
+      [spelling],
+    );
+  }
+});
 interface FixtureWord {
   text: string;
   kind: string;

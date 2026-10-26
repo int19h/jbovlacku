@@ -29,7 +29,7 @@ cmavo = expr:(!cmevla !CVCy_lujvo cmavo_form &post_word) { return node("cmavo", 
 
 CVCy_lujvo = expr:(CVC_rafsi y h? initial_rafsi* brivla_core / stressed_CVC_rafsi y short_final_rafsi) { return null; }
 
-cmavo_form = expr:(y+ !y / !h !cluster onset (cmavo_nucleus h)* cmavo_last / digit) { return null; }
+cmavo_form = expr:(y+ !y !h / !h !cluster onset (cmavo_nucleus h)* cmavo_last / digit) { return null; }
 
 brivla = expr:(!cmavo !slihykru initial_rafsi* brivla_core) { return node("brivla", location(), expr); }
 

@@ -41,6 +41,7 @@ It makes no general validity claim about the form.
 Two or more cmavo form a compound cmavo. Mixed word sequences remain unknown as dictionary headwords.
 For example, `y bu` is a compound cmavo, while `broda zei brode` remains three words.
 A `y` inside a lujvo stays inside that word.
+A pure `y` run cannot take the start of a cmavo such as `y'y` or `y'e`.
 One-word headwords permit one leading and one trailing framing period.
 Other surrounding pause material remains visible in word spans, but it does not become a valid one-word headword.
 

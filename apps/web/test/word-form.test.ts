@@ -32,6 +32,7 @@ test("the full editor checks every selected kind immediately as spelling and typ
     ["lujvo", "ckusni", "lujvo"],
     ["fuhivla", "leksiko", "fu'ivla"],
     ["cmavo", "lo", "cmavo"],
+    ["cmavo", "y'y", "cmavo"],
     ["cmevla", ".lojban.", "cmevla"],
     ["compound", "taia", "compound"],
   ]) {
