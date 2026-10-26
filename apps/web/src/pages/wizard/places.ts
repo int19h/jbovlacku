@@ -1,3 +1,4 @@
+import { kindLabel } from "../../model/types.ts";
 import { changeTypedWord } from "../../model/typed-headword.ts";
 import { hintLabel, mappingKind } from "../../model/assistance.ts";
 import {
@@ -445,7 +446,7 @@ export async function placesPage(
   const kindTag = el("span", {
     class: "meta",
     style: "font-size:15px",
-    text: `${draft.kind ?? "type not chosen"} · ${draft.language}`,
+    text: `${kindLabel(draft.kind ?? "type not chosen")} · ${draft.language}`,
   });
   headline.append(
     h1,
@@ -501,7 +502,7 @@ export async function placesPage(
         { value: "", label: "choose" },
         ...lexicalKinds.map((k) => ({
           value: k,
-          label: k === "fuhivla" ? "fu'ivla" : k,
+          label: kindLabel(k),
         })),
       ],
       value: draft.kind ?? "",
@@ -513,7 +514,7 @@ export async function placesPage(
         kind.input.value = draft.kind ?? "";
         return;
       }
-      kindTag.textContent = `${draft.kind ?? "type not chosen"} · ${draft.language}`;
+      kindTag.textContent = `${kindLabel(draft.kind ?? "type not chosen")} · ${draft.language}`;
       saver.touch();
       refreshPreview();
     });
@@ -529,7 +530,7 @@ export async function placesPage(
       )
         draft.review = [...new Set([...draft.review, "language"])];
       draft.language = language.input.value.trim();
-      kindTag.textContent = `${draft.kind ?? "type not chosen"} · ${draft.language}`;
+      kindTag.textContent = `${kindLabel(draft.kind ?? "type not chosen")} · ${draft.language}`;
       saver.touch();
     });
     const selmaho = field("selma'o", {

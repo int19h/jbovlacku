@@ -1,3 +1,4 @@
+import { kindLabel } from "../model/types.ts";
 /**
  * Search results. The header holds the query. The page shows a count line,
  * the definition-language select, and compact three-line rows.
@@ -535,8 +536,7 @@ function hitRow(
   const rafsiSpan = el("span", { class: "rafsi", lang: "jbo" });
   rafsiSpan.hidden = true;
   line1.append(rafsiSpan);
-  if (kind && kind !== "unknown")
-    line1.append(text(kind === "fuhivla" ? "fu'ivla" : kind, "meta"));
+  if (kind && kind !== "unknown") line1.append(text(kindLabel(kind), "meta"));
   if (hit.preview && hit.preview.status !== "active")
     line1.append(
       el("span", {

@@ -1,3 +1,4 @@
+import { kindLabel } from "../../model/types.ts";
 import { detectWord } from "../../model/typed-headword.ts";
 /**
  * Step 5: preview, known conflicts, the publication panel, and the signed
@@ -196,7 +197,7 @@ export async function publishPage(
             text: body.word.spelling,
           }),
           text(
-            `${body.classification.kind === "fuhivla" ? "fu'ivla" : body.classification.kind}${body.classification.selmaho.length ? ` ${body.classification.selmaho.join(", ")}` : ""} · ${body.language}`,
+            `${kindLabel(body.classification.kind)}${body.classification.selmaho.length ? ` ${body.classification.selmaho.join(", ")}` : ""} · ${body.language}`,
             "meta",
           ),
         ),

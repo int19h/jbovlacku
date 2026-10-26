@@ -1,6 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 import {
   createIdentity,
+  expectKindSpelling,
   acceptFirstSignature,
   corePath,
   PASSPHRASE,
@@ -1060,11 +1061,12 @@ test("fu'ivla publication signs fuhivla and keeps the visible spelling", async (
   await expect(page.getByRole("radio", { name: /^fu'ivla/ })).toBeChecked();
   await page.getByRole("button", { name: "Continue to places" }).click();
   await expect.poll(async () => (await draft(page)).kind).toBe("fuhivla");
+  await expectKindSpelling(page);
   await page
     .getByLabel("Definition text", { exact: true })
     .fill("A synthetic borrowing definition.");
   await page.getByRole("button", { name: "Review", exact: true }).click();
-  await expect(page.locator("main")).toContainText("fu'ivla");
+  await expectKindSpelling(page);
   await page
     .locator("aside")
     .getByRole("button", { name: "Publish", exact: true })
@@ -1076,7 +1078,7 @@ test("fu'ivla publication signs fuhivla and keeps the visible spelling", async (
   }
   await acceptFirstSignature(page);
   await expect(page).toHaveURL(/\/word\//);
-  await expect(page.locator("main")).toContainText("fu'ivla");
+  await expectKindSpelling(page);
   const published = await page.evaluate(async () => {
     const { LocalStore } = await import(String("/src/data/store.ts"));
     const rows: any[] = await new LocalStore().list("outbox");

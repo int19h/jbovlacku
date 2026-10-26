@@ -1,7 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { fixture } from "./helpers.ts";
+import { fixture, expectKindSpelling } from "./helpers.ts";
 import type { RafsiInventoryClaim } from "../../../packages/core/src/index.ts";
 
 function claimCheckboxName(spelling: string): RegExp {
@@ -660,7 +660,7 @@ test("the component picker shows fu'ivla and stores fuhivla", async ({
   await page.getByLabel("Add a part").fill("leksiko");
   const matches = page.getByRole("list", { name: "Matching words" });
   await expect(matches).toContainText("fu'ivla, not in the local package");
-  await expect(matches).not.toContainText("fuhivla");
+  await expectKindSpelling(page);
   await matches
     .getByRole("button", { name: "Add leksiko as entered", exact: true })
     .click();
@@ -669,7 +669,7 @@ test("the component picker shows fu'ivla and stores fuhivla", async ({
     exact: true,
   });
   await expect(components).toContainText("fu'ivla");
-  await expect(components).not.toContainText("fuhivla");
+  await expectKindSpelling(page);
   await expect
     .poll(async () => (await currentDraft(page)).lujvo.components[0]?.kind)
     .toBe("fuhivla");

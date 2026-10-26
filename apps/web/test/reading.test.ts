@@ -1,5 +1,10 @@
 import { test, expect, type Page } from "@playwright/test";
-import { corePath, fixture, fingerprintText } from "./helpers.ts";
+import {
+  corePath,
+  fixture,
+  fingerprintText,
+  expectKindSpelling,
+} from "./helpers.ts";
 
 /**
  * Opens the Source disclosure of the definition on the page by its exact
@@ -1617,5 +1622,5 @@ test("revision comparisons display fu'ivla for the fuhivla classification", asyn
   const changes = page.getByRole("region", { name: "Changed fields" });
   await expect(changes).toContainText("Type");
   await expect(changes).toContainText("fu'ivla");
-  await expect(changes).not.toContainText("fuhivla");
+  await expectKindSpelling(page);
 });

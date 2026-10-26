@@ -1,3 +1,4 @@
+import { kindLabel } from "../../model/types.ts";
 import { detectWord, typedWord } from "../../model/typed-headword.ts";
 import {
   cachedPackage,
@@ -43,7 +44,7 @@ const cards: {
   },
   {
     kind: "fuhivla",
-    title: "fu'ivla",
+    title: kindLabel("fuhivla"),
     explanation: "Borrowed word.",
     example: "leksiko",
   },
@@ -153,7 +154,7 @@ export async function typePage(
   if (analysis) {
     detection.append(
       p(
-        `Detected form: ${analysis.kind === "fuhivla" ? "fu'ivla" : analysis.kind}. You can choose another kind.`,
+        `Detected form: ${kindLabel(analysis.kind)}. You can choose another kind.`,
         "small",
       ),
     );

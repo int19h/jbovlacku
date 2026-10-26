@@ -1,3 +1,4 @@
+import { kindLabel } from "../model/types.ts";
 /** Optional assistance. Provider data is inert, private, and separate from publication. */
 import {
   button,
@@ -741,8 +742,8 @@ export function assistanceAction(
           el("pre", {
             text:
               typeof proposal.value === "string"
-                ? proposal.path === "/word_type" && proposal.value === "fuhivla"
-                  ? "fu'ivla"
+                ? proposal.path === "/word_type"
+                  ? kindLabel(proposal.value)
                   : proposal.value
                 : json(proposal.value),
           }),

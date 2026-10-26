@@ -1,3 +1,4 @@
+import { kindLabel } from "../../model/types.ts";
 import {
   clearWordEvidence,
   selectWordKind,
@@ -508,7 +509,7 @@ export function confirmKindChange(
   const dropping = formationFieldsFor(kind, draft);
   if (dropping.length && draft.kind !== kind) {
     const ok = confirm(
-      `Changing the type to ${kind ?? "none"} no longer uses: ${dropping.join(", ")}. Remove those fields? The prose and annotations stay.`,
+      `Changing the type to ${kindLabel(kind ?? "none")} no longer uses: ${dropping.join(", ")}. Remove those fields? The prose and annotations stay.`,
     );
     if (!ok) return false;
   }

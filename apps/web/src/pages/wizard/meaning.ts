@@ -1,3 +1,4 @@
+import { kindLabel } from "../../model/types.ts";
 import { wordId } from "../../../../../packages/core/src/browser.ts";
 import {
   changeTypedWord,
@@ -282,10 +283,7 @@ export async function meaningPage(
     if (!spelling) return;
     const analysis = detectWord(spelling);
     typedStatus.append(
-      p(
-        `Detected form: ${analysis.kind === "fuhivla" ? "fu'ivla" : analysis.kind}.`,
-        "small",
-      ),
+      p(`Detected form: ${kindLabel(analysis.kind)}.`, "small"),
     );
     for (const diagnostic of analysis.diagnostics)
       typedStatus.append(p(diagnostic, "meta"));
@@ -589,7 +587,7 @@ export async function meaningPage(
           routes.word(hit.word.spelling, draft.language),
           { class: "hw", lang: "jbo" },
         ),
-        text(hit.preview?.word_kind ?? "", "meta"),
+        text(kindLabel(hit.preview?.word_kind ?? ""), "meta"),
       );
       const preview = el("span", { style: "flex-basis:100%" });
       for (const part of (hit.preview?.plain_text ?? "").split(/([①-⑳])/u)) {
@@ -771,7 +769,12 @@ function renderLegacyDraft(
     details.append(
       el("dt", { text: label }),
       el("dd", {
-        text: value.length > 400 ? `${value.slice(0, 400)}…` : value,
+        text:
+          key === "kind"
+            ? kindLabel(value)
+            : value.length > 400
+              ? `${value.slice(0, 400)}…`
+              : value,
       }),
     );
   }

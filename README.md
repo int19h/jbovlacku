@@ -18,7 +18,8 @@ Native and WebAssembly builds share the format rules. The TypeScript application
 The definition validator accepts omitted [optional definition fields](docs/format.md#absent-fields-and-compatibility) and their explicit default values.
 Readers and editors apply defaults to separate interpreted values. Stored bodies, exports, hashes, signatures, and event IDs retain the original signed content.
 New definitions omit optional fields with default values. Required fields and imported source evidence remain required.
-The signed lexical kind for fu'ivla is `fuhivla`. The browser displays "fu'ivla".
+The signed lexical kind for fu'ivla is `fuhivla`. The browser uses one shared label helper to display "fu'ivla".
+Raw JSON inspectors retain the signed label.
 The validator rejects the earlier `fuivla` label without an alias.
 A new version of each private projection forces backfill of stored validation results under the current schema.
 Formation sources accept an omitted or null `word_ipa`. They reject `stem` and `ipa`, including null and empty values.

@@ -1,3 +1,4 @@
+import { kindLabel } from "../../model/types.ts";
 import {
   changeTypedWord,
   detectWord,
@@ -123,7 +124,7 @@ export async function formPage(route: Route, context: RenderContext, app: App) {
   const detection = el("p", { class: "small", role: "status" });
   const renderDetection = () => {
     const analysis = detectWord(draft.spelling);
-    detection.textContent = `Detected form: ${analysis.kind}. ${analysis.diagnostics.join(" ")}`;
+    detection.textContent = `Detected form: ${kindLabel(analysis.kind)}. ${analysis.diagnostics.join(" ")}`;
   };
   renderDetection();
   section.append(detection);
