@@ -42,6 +42,13 @@ test("the full editor checks every selected kind immediately as spelling and typ
     await headword.fill("zzzz");
     await expect(status(page)).toContainText("does not match");
   }
+  await kind.selectOption("lujvo");
+  for (const word of ["sairzba!", "..sairzba.."]) {
+    await headword.fill(word);
+    await expect(status(page)).toContainText("does not match");
+  }
+  await headword.fill(".sairzba.");
+  await expect(status(page)).not.toContainText("does not match");
 });
 test("manual Form updates its warning and permits an explicit experimental classification", async ({
   page,

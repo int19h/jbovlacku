@@ -126,7 +126,7 @@ export function analyzePeggyWord(original: string): WordAnalysis {
     analysis.diagnostics = [
       ...new Set(words.flatMap((word) => word.diagnostics)),
     ];
-    if (words.length === 1) {
+    if (words.length === 1 && words[0].text === analysis.normalized) {
       analysis.kind = words[0].kind;
       if (analysis.kind === "lujvo") {
         const tokens = componentTokens(nodes[0], analysis.normalized);

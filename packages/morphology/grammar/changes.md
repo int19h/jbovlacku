@@ -41,6 +41,8 @@ It makes no general validity claim about the form.
 Two or more cmavo form a compound cmavo. Mixed word sequences remain unknown as dictionary headwords.
 For example, `y bu` is a compound cmavo, while `broda zei brode` remains three words.
 A `y` inside a lujvo stays inside that word.
+One-word headwords permit one leading and one trailing framing period.
+Other surrounding pause material remains visible in word spans, but it does not become a valid one-word headword.
 
 Peggy counts every rule entry, including failed branches and cached calls. One analysis permits 50,000 entries and 128 original input bytes.
 Exhaustion discards the complete result. Builders also charge these entries to their shared recognition budget.

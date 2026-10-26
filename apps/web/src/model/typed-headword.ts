@@ -399,6 +399,10 @@ export function prepareLujvoBuilder(
   const legacyTypedRows = !!state.typed && !state.typedOrigin;
   const legacyTypedIdentity =
     legacyTypedRows && typedWord(state.typed ?? "") === spelling;
+  const retainedCompound =
+    draft.compound && draft.evidenceForm === spelling ? draft.compound : null;
+  if (legacyTypedIdentity && retainedCompound && !state.profileChosen)
+    state.profile = morphologyProfile(retainedCompound.morphology);
   if (
     !state.typedOrigin &&
     state.components.length &&
@@ -416,8 +420,6 @@ export function prepareLujvoBuilder(
         : legacyTypedIdentity && !!matchingJoinedReading(state, spelling),
     );
 
-  const retainedCompound =
-    draft.compound && draft.evidenceForm === spelling ? draft.compound : null;
   if (retainedCompound) {
     const signedProfile = morphologyProfile(retainedCompound.morphology);
     rememberLujvoEvidence(state, spelling, signedProfile, true);

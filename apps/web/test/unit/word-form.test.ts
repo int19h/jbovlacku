@@ -118,6 +118,11 @@ test("accepted CgV forms show the exact BPFK warning without blocking", () => {
     );
   }
 });
+
+test("the Peggy headword check does not remove a second pair of framing periods", () => {
+  assert.equal(detectWord("..sairzba..").kind, "unknown");
+  assert.equal(detectWord(".sairzba.").kind, "lujvo");
+});
 test("historical compound evidence and typed restoration keep their profile", () => {
   const draft = newDraft({
     kind: "lujvo",

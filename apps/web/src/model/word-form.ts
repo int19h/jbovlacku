@@ -13,7 +13,7 @@ export function detectWord(
   const word = spelling.trim().normalize("NFC");
   const analysis = analyzeWord(profile, word);
   if (
-    supportsJoins(profile) &&
+    profile === "extended" &&
     analysis.kind === "unknown" &&
     /^\.|\.$/.test(word)
   ) {

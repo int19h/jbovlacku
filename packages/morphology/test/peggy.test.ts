@@ -40,6 +40,15 @@ test("Peggy counts original input bytes before it removes presentation character
     /word bytes is 129, above the limit of 128/,
   );
 });
+
+test("one-word headwords allow framing periods but do not discard other pause material", () => {
+  for (const spelling of ["sairzba!", "sairzba?", "..sairzba..", "sairzba ."]) {
+    const analysis = analyzeWord("extended-v4", spelling);
+    assert.equal(analysis.kind, "unknown", spelling);
+    assert.deepEqual(analysis.readings, [], spelling);
+  }
+  roundtrip(".SAI,rZBA.");
+});
 interface FixtureWord {
   text: string;
   kind: string;
