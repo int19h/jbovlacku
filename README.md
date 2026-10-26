@@ -171,6 +171,7 @@ The server finds up to 30 related public definitions through lexical search and 
 An existing-word suggestion can start an additional definition or a revision with an improved definition and undo.
 Both actions preserve the earlier draft. A place conversion opens the existing word page with its converted form and creates no publication.
 Related public definitions do not expand remembered consent. Semantic retrieval for type suggestions remains pending.
+Compound spelling parts also await the shared word analysis API. Type requests currently send only the forms that `analyzeWord` supplies.
 Source acceptance replaces earlier AI notes and preserves authored notes. A changed suggested word requires review of retained source evidence.
 Marked fields stay read-only until Keep or Clear. A type change that removes the formation also removes its review marks.
 Explicit evidence removal keeps the marks for reused source values. Undo restores required marks with returned values and preserves later review choices.

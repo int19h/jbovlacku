@@ -496,6 +496,7 @@ function shapeProblems(
   schema: JsonObject,
   value: unknown,
   path = "answer",
+  trimMinimum = true,
 ): string[] {
   const types = Array.isArray(schema.type) ? schema.type : [schema.type];
   const type =
@@ -513,7 +514,8 @@ function shapeProblems(
     problems.push(`${path} must be one of ${schema.enum.join(", ")}.`);
   if (
     typeof value === "string" &&
-    Array.from(value).length < (schema.minLength ?? 0)
+    Array.from(trimMinimum ? value.trim() : value).length <
+      (schema.minLength ?? 0)
   )
     problems.push(`${path} must be nonempty text.`);
   if (isObject(value)) {
@@ -535,7 +537,12 @@ function shapeProblems(
       if (problems.length >= 32) break;
       if (Object.hasOwn(properties, key))
         problems.push(
-          ...shapeProblems(properties[key], child, `${path}.${key}`),
+          ...shapeProblems(
+            properties[key],
+            child,
+            `${path}.${key}`,
+            trimMinimum,
+          ),
         );
     }
   }
@@ -548,13 +555,23 @@ function shapeProblems(
       return [`${path} has an invalid number of entries.`];
     for (let index = 0; index < value.length && problems.length < 32; index++)
       problems.push(
-        ...shapeProblems(schema.items, value[index], `${path}[${index}]`),
+        ...shapeProblems(
+          schema.items,
+          value[index],
+          `${path}[${index}]`,
+          trimMinimum,
+        ),
       );
   }
   return problems.slice(0, 32);
 }
 export function checkAnswer(spec: TaskCase, value: unknown): string[] {
-  const problems = shapeProblems(schemaFor(spec), value);
+  const problems = shapeProblems(
+    schemaFor(spec),
+    value,
+    "answer",
+    spec.task !== "type",
+  );
   if (problems.length || !isObject(value)) return problems;
   if (spec.task === "glosses") {
     for (const [key, row] of Object.entries(value)) {
