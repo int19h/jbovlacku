@@ -3,10 +3,43 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { analyzeWord, buildLujvo, morphologyProfile } from "../src/index.ts";
 import type { LujvoRequest, WordAnalysis } from "../src/types.ts";
+import { BuilderError } from "../src/errors.ts";
+import { recognizeWords } from "../src/recognize.ts";
 
 const warning = "This form is not valid under the current BPFK morphology.";
 const morphologyId =
   "https://github.com/int19h/jbovlacku/blob/main/docs/morphology.md#extended-lujvo";
+
+test("Peggy exhaustion discards a parse even after an earlier word succeeds", () => {
+  const input = "broda ckusni";
+  const complete = recognizeWords(input);
+  assert.deepEqual(
+    complete.words.map((word) => word.text),
+    ["broda", "ckusni"],
+  );
+  assert.deepEqual(recognizeWords(input, complete.spent), complete);
+  assert.throws(
+    () => recognizeWords(input, complete.spent - 1),
+    (error: unknown) =>
+      error instanceof BuilderError &&
+      error.failure.kind === "resource-limit" &&
+      error.failure.measure === "recognition work" &&
+      error.failure.value === complete.spent &&
+      error.failure.limit === complete.spent - 1,
+  );
+});
+
+test("Peggy counts original input bytes before it removes presentation characters", () => {
+  const oversized = "broda" + ",".repeat(124);
+  const analysis = analyzeWord("extended-v4", oversized);
+  assert.equal(analysis.kind, "unknown");
+  assert.equal(analysis.normalized, null);
+  assert.deepEqual(analysis.words, []);
+  assert.match(
+    analysis.diagnostics[0],
+    /word bytes is 129, above the limit of 128/,
+  );
+});
 interface FixtureWord {
   text: string;
   kind: string;
