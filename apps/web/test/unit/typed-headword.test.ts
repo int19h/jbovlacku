@@ -84,6 +84,7 @@ test("all typed lujvo hydrate exact locks and reproduce their spelling", () => {
 test("stored morphology selects the actual version and rejects unknown evidence", () => {
   const id =
     "https://github.com/int19h/jbovlacku/blob/main/docs/morphology.md#extended-lujvo";
+  assert.equal(morphologyProfile({ id, version: "4" }), "extended-v4");
   const profile = morphologyProfile({ id, version: "2" });
   assert.equal(profile, "extended-v2");
   const analysis = awaitlessAnalyze(profile, "ckusni'ybroda");
@@ -103,7 +104,7 @@ test("stored morphology selects the actual version and rejects unknown evidence"
   assert.equal(rebuilt.morphology.version, "2");
   assert.equal(rebuilt.candidates[0].spelling, "ckusni'ybroda");
   assert.throws(
-    () => morphologyProfile({ id, version: "4" }),
+    () => morphologyProfile({ id, version: "5" }),
     /Unsupported morphology/,
   );
 });

@@ -791,9 +791,9 @@ export async function runAssistance(
             nextIndex = index + 1;
           }
           const result = buildLujvo({
-            profile: "extended",
+            profile: "extended-v4",
             components: components.map((component: Data, index: number) => {
-              const analysis = analyzeWord("extended", component.spelling);
+              const analysis = analyzeWord("extended-v4", component.spelling);
               const fixed = fixedByIndex.get(index);
               return {
                 id: String(index),

@@ -375,8 +375,10 @@ export function applyProposals(draft: Draft, result: Suggestion) {
         const components = compound.components.map((c) => ({
           id: componentId(),
           spelling: c.word.spelling,
-          kind: analyzeWord(draft.lujvo?.profile ?? "cll", c.word.spelling)
-            .kind,
+          kind: analyzeWord(
+            draft.lujvo?.profile ?? "extended-v4",
+            c.word.spelling,
+          ).kind,
           definition: c.definition,
           gloss: "",
           claims: c.rafsi
@@ -385,7 +387,7 @@ export function applyProposals(draft: Draft, result: Suggestion) {
           locked: c.rafsi || null,
         }));
         const built = buildLujvo({
-          profile: draft.lujvo?.profile ?? "cll",
+          profile: draft.lujvo?.profile ?? "extended-v4",
           components,
           inventory: { snapshot: null, claims: [] },
           limits: { choice_product: 20000, results: 64 },
@@ -399,7 +401,7 @@ export function applyProposals(draft: Draft, result: Suggestion) {
           );
         draft.lujvo = {
           ...newLujvoState(),
-          profile: draft.lujvo?.profile ?? "cll",
+          profile: draft.lujvo?.profile ?? "extended-v4",
           ...(draft.lujvo?.restoredEvidenceHistory
             ? {
                 restoredEvidenceHistory: structuredClone(

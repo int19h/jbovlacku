@@ -34,17 +34,10 @@ import {
   type LujvoState,
 } from "./builders.ts";
 
-export const typedWord = (spelling: string) => spelling.trim().normalize("NFC");
-export function detectWord(spelling: string) {
-  const word = typedWord(spelling);
-  const analysis = analyzeWord("extended", word);
-  if (analysis.kind === "unknown" && /^\.|\.$/.test(word)) {
-    const framed = analyzeWord("extended", word.replace(/^\.|\.$/g, ""));
-    if (framed.kind !== "unknown") return { ...framed, original: word };
-  }
-  return analysis;
-}
+import { detectWord, supportsJoins } from "./word-form.ts";
+export { detectWord } from "./word-form.ts";
 
+export const typedWord = (spelling: string) => spelling.trim().normalize("NFC");
 /** Keep authored fields and flag evidence and annotations after a spelling edit. */
 export function changeTypedWord(draft: Draft, spelling: string) {
   const previousSpelling = typedWord(draft.spelling);
@@ -221,10 +214,7 @@ export function useManualForm(draft: Draft) {
 
 function matchingJoinedReading(state: LujvoState, spelling: string) {
   if (!spelling) return undefined;
-  const analysis =
-    state.profile === "extended"
-      ? detectWord(spelling)
-      : analyzeWord(state.profile, spelling);
+  const analysis = detectWord(spelling, state.profile);
   return analysis.readings.find(
     (parts) =>
       parts.length === state.components.length &&
@@ -282,10 +272,7 @@ export function reconcileLujvoUndo(draft: Draft, original?: LujvoState | null) {
 
 function matchingLockedReading(state: LujvoState, spelling: string) {
   if (!spelling) return undefined;
-  const analysis =
-    state.profile === "extended"
-      ? detectWord(spelling)
-      : analyzeWord(state.profile, spelling);
+  const analysis = detectWord(spelling, state.profile);
   return analysis.readings.find(
     (parts) =>
       parts.length === state.components.length &&
@@ -297,11 +284,12 @@ function matchingLockedReading(state: LujvoState, spelling: string) {
 
 function signedComponent(
   component: Compound["components"][number],
+  profile: MorphologyProfile,
 ): LujvoComponentState {
   return {
     id: componentId(),
     spelling: component.word.spelling,
-    kind: detectWord(component.word.spelling).kind,
+    kind: detectWord(component.word.spelling, profile).kind,
     definition: component.definition,
     claims: [
       {
@@ -365,7 +353,10 @@ function retainSources(
         : { ...old, locked: component.locked };
     const signed = compound?.components[index];
     if (signed?.rafsi === component.locked)
-      return { ...signedComponent(signed), ...(old ? { id: old.id } : {}) };
+      return {
+        ...signedComponent(signed, profile),
+        ...(old ? { id: old.id } : {}),
+      };
     if (authoredExact.length > 1 || fallback.length > 1)
       return {
         ...component,
@@ -459,7 +450,9 @@ export function prepareLujvoBuilder(
     reconcileLujvoRows(state);
     if (hydrate)
       state.components = retainSources(
-        retainedCompound.components.map(signedComponent),
+        retainedCompound.components.map((component) =>
+          signedComponent(component, profile),
+        ),
         state.components,
         retainedCompound,
         profile,
@@ -473,12 +466,12 @@ export function prepareLujvoBuilder(
     if (state.typedOrigin && (!typedIdentity || !retainedLocks))
       leaveTypedMode(state, false);
     if (
-      profile === "extended" &&
+      supportsJoins(profile) &&
       retainedLocks &&
       !state.restoredReleased &&
       (hydrate || state.typedOrigin || legacyTypedIdentity)
     ) {
-      const parts = detectWord(spelling).readings.find(
+      const parts = detectWord(spelling, profile).readings.find(
         (parts) =>
           parts.length === state.components.length &&
           parts.every(
@@ -495,12 +488,8 @@ export function prepareLujvoBuilder(
   )?.profile;
   const analysisProfile = retainedCompound
     ? morphologyProfile(retainedCompound.morphology)
-    : (savedProfile ?? "extended");
-  const analysis = typedIdentity
-    ? analysisProfile === "extended"
-      ? detectWord(spelling)
-      : analyzeWord(analysisProfile, spelling)
-    : null;
+    : (savedProfile ?? "extended-v4");
+  const analysis = typedIdentity ? detectWord(spelling, analysisProfile) : null;
   if (
     (!retainedCompound || state.ordinarySpelling === "") &&
     state.ordinarySpelling !== spelling &&
@@ -546,12 +535,11 @@ export function prepareLujvoBuilder(
   if (
     !state.typedOrigin &&
     !state.restoredReleased &&
-    (state.joins || (state.profile !== "extended" && !state.profileChosen))
+    (state.joins || (!supportsJoins(state.profile) && !state.profileChosen))
   ) {
-    const matches =
-      state.profile === "extended"
-        ? matchingJoinedReading
-        : matchingLockedReading;
+    const matches = supportsJoins(state.profile)
+      ? matchingJoinedReading
+      : matchingLockedReading;
     const associated = [spelling, state.ordinarySpelling ?? ""].find((word) =>
       matches(state, word),
     );
@@ -671,7 +659,7 @@ export function typedLujvoState(
   spelling: string,
   parts: RecoveredPart[],
   cached: CachedPackage | null,
-  profile: MorphologyProfile = "extended",
+  profile: MorphologyProfile = "extended-v4",
 ) {
   return {
     ...newLujvoState(),
@@ -704,13 +692,12 @@ export function typedLujvoRequest(state: import("./builders.ts").LujvoState) {
   return {
     profile: state.profile,
     components: state.components,
-    joins: state.profile === "extended" ? state.joins : undefined,
-    spelling:
-      state.profile === "extended"
-        ? state.typedOrigin
-          ? state.typed
-          : state.restoredSpelling
-        : undefined,
+    joins: supportsJoins(state.profile) ? state.joins : undefined,
+    spelling: supportsJoins(state.profile)
+      ? state.typedOrigin
+        ? state.typed
+        : state.restoredSpelling
+      : undefined,
   };
 }
 /** Keep exact presentation after older profiles validate the same normalized construction. */
@@ -726,7 +713,7 @@ export function buildLujvoState(
 ): LujvoResult {
   const result = buildLujvo({ ...typedLujvoRequest(state), ...options });
   const spelling = state.typedOrigin ? state.typed : state.restoredSpelling;
-  if (!spelling || state.profile === "extended") return result;
+  if (!spelling || supportsJoins(state.profile)) return result;
   const analysis = analyzeWord(state.profile, spelling);
   const exact = result.candidates.find(
     (candidate) =>

@@ -1,3 +1,4 @@
+import { wordFormStatus } from "../../components/word-form-feedback.ts";
 import { kindLabel } from "../../model/types.ts";
 import { changeTypedWord } from "../../model/typed-headword.ts";
 import { placeCountNote } from "../../components/place-count-note.ts";
@@ -530,6 +531,13 @@ export async function placesPage(
         "notice",
       ),
     );
+  let syncLabels = () => {};
+  const formStatus = wordFormStatus(draft, () => {
+    syncLabels();
+    saver.touch();
+    refreshPreview();
+  });
+  main.addEventListener("assist-change", formStatus.refresh);
   // Headword and type, in the full editor.
   if (full) {
     const identity = el("div", {
@@ -544,7 +552,9 @@ export async function placesPage(
     spelling.input.addEventListener("input", () => {
       changeTypedWord(draft, spelling.input.value);
       h1.textContent = draft.spelling || "Full editor";
+      formStatus.refresh();
       saver.touch();
+      refreshPreview();
     });
     const kind = field("Type", {
       options: [
@@ -564,6 +574,7 @@ export async function placesPage(
         return;
       }
       kindTag.textContent = `${kindLabel(draft.kind ?? "type not chosen")} · ${draft.language}`;
+      formStatus.refresh();
       saver.touch();
       refreshPreview();
     });
@@ -598,7 +609,7 @@ export async function placesPage(
       f.wrapper.style.flex = "1 1 160px";
       identity.append(f.wrapper);
     }
-    main.append(identity);
+    main.append(identity, formStatus.wrapper);
   }
   // Definition editor.
   const defSection = el("section", {
@@ -1950,12 +1961,17 @@ export async function placesPage(
         wrapperClass: "",
         hint: "Comma-separated. Labels have no ranking effect. Experimental or obsolete status belongs here.",
       });
+      syncLabels = () => {
+        labels.input.value = draft.labels.join(", ");
+      };
       labels.input.addEventListener("input", () => {
         draft.labels = labels.input.value
           .split(",")
           .map((l) => l.trim())
           .filter(Boolean);
+        formStatus.refresh();
         saver.touch();
+        refreshPreview();
       });
       return labels.wrapper;
     });

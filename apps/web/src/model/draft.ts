@@ -22,6 +22,7 @@ import {
   richTextToText,
   textToRichText,
 } from "./richtext.ts";
+import { wordFormFeedback } from "./word-form.ts";
 import { placeGlyph } from "../lib/format.ts";
 import { cloneAssistance } from "./assistance.ts";
 import {
@@ -1819,6 +1820,15 @@ export function draftToBody(input: Draft): {
       message: "The word type is not a permitted lexical kind.",
       blocking: true,
     });
+  if (spelling && draft.kind && lexicalKinds.includes(draft.kind)) {
+    const feedback = wordFormFeedback(draft);
+    if (feedback.mismatch)
+      problems.push({
+        field: "kind",
+        message: feedback.message,
+        blocking: feedback.blocking,
+      });
+  }
   if (!language(draft.language))
     problems.push({
       field: "language",

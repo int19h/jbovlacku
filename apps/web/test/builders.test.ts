@@ -234,7 +234,7 @@ test("the extended profile joins whole-word parts that CLL rules reject", async 
     /The server has no definition of fulty'ismu (now|in snapshot [0-9a-f]{12}…)\./,
   );
   // With the rafsi claim ful, the builder makes fuly'ismu. The pinned jbotci
-  // lineage reads it back as ful, y', ismu (crates/jvc-morphology/evidence/word-parses.json).
+  // lineage reads it back as ful, y', ismu (packages/morphology/evidence/word-parses.json).
   await page.getByLabel("Other rafsi you know").nth(0).fill("ful");
   await page.getByLabel("Other rafsi you know").nth(0).press("Tab");
   await expect(result).toContainText("fuly'ismu");
@@ -410,25 +410,22 @@ test("a custom profile needs a positive weight and an unfinished row never gets 
 });
 
 for (const measure of ["recognition work", "build recognition work"]) {
-  test(`the wizard limits lock advice to shared build work for ${measure} from WebAssembly`, async ({
+  test(`the wizard limits lock advice to shared build work for ${measure} from TypeScript`, async ({
     page,
   }) => {
     const originalPath = fileURLToPath(
-      new URL(
-        "../../../packages/core/generated/jvc_runtime.js",
-        import.meta.url,
-      ),
+      new URL("../../../packages/morphology/src/index.ts", import.meta.url),
     );
     const runtimePaths = new Set([
       `/@fs${originalPath}`,
       `/@fs${realpathSync(originalPath)}`,
-      "/packages/core/generated/jvc_runtime.js",
+      "/packages/morphology/src/index.ts",
     ]);
     let interceptions = 0;
     let replacements = 0;
     await page.route(
       (url) =>
-        url.pathname.endsWith("/jvc_runtime.js") &&
+        url.pathname.endsWith("/packages/morphology/src/index.ts") &&
         runtimePaths.has(url.pathname),
       async (route) => {
         const response = await route.fetch();
@@ -440,12 +437,16 @@ for (const measure of ["recognition work", "build recognition work"]) {
         });
         interceptions++;
         const original = await response.text();
-        const marker = "export function build_lujvo(bytes) {";
+        const marker = "function buildLujvo(request) {";
         expect(original).toContain(marker);
-        const body = original.replace(
-          marker,
-          `${marker} throw ${JSON.stringify(failure)};`,
-        );
+        const errorModule = new URL("./errors.ts", route.request().url())
+          .pathname;
+        const body =
+          `import { BuilderError as ForcedBuilderError } from ${JSON.stringify(errorModule)};\n` +
+          original.replace(
+            marker,
+            `${marker} throw new ForcedBuilderError(${failure});`,
+          );
         expect(body).not.toBe(original);
         replacements++;
         await route.fulfill({ response, body });
@@ -537,6 +538,7 @@ test("single-word recognition gives no component-lock or result-count advice", a
   page,
 }) => {
   await startDraft(page, "lujvo");
+  await page.getByRole("radio", { name: "CLL rules", exact: true }).check();
   await page.getByLabel("Add a part").fill("tca".repeat(40));
   const matches = page.getByRole("list", { name: "Matching words" });
   await expect(matches).toContainText(

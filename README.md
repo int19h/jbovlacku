@@ -142,8 +142,8 @@ Forward wizard links and direct Form or builder entry confirm the selected type.
 A confirmed type stays selected, and completed type review clears its notice.
 
 New lujvo builders use the extended profile. Manual boundary controls for a generated spelling remain a target change.
-The CLL profile retains required-only construction and version 2. New extended construction and recognition use version 3.
-Saved extended version 2 records reopen with their original rules and component boundaries. Unknown versions stay unsupported.
+The CLL profile retains required-only construction and version 2. New extended construction and recognition use version 4.
+Saved extended versions 2 and 3 reopen with their original rules and component boundaries. Unknown versions stay unsupported.
 The extended profile permits `mz`, consonantal-syllable borrowings, and the experimental rafsi rules. The CLL and extended version 2 profiles retain their earlier rules.
 Source-language evidence scores a normalized gismu while its headword and evidence binding keep the typed bytes.
 The gismu generator offers the CLL 1987, CLL 1995, and Ilmen presets with pinned sources, custom weights, exact scores, tied ranks, per-language contributions, root and rafsi conflicts, and manual forms without fabricated evidence.
@@ -163,6 +163,14 @@ Changes to scoring inputs block publication until the author selects the form ag
 Unrelated suggestions remain usable, and pending calculations cannot attach an older score to new inputs.
 Reopening a signed source with a null algorithm input preserves that evidence.
 The [morphology profiles](docs/morphology.md) name the rules and versions that the metadata records.
+Word recognition, segmentation, lujvo construction, and gismu generation run in TypeScript without WebAssembly initialization.
+New authoring uses a committed Peggy grammar and generated parser. The earlier profiles retain their exact recognizer in TypeScript.
+The parser reads `y`, pure `y` runs, and `ie'o` as ordinary cmavo. It splits compound cmavo without dictionary matching.
+For example, `taia` is `tai .a`, and `i'ecu'i` is `i'e cu'i`. Magic words do not execute word operations.
+Accepted CgV names and borrowings carry a warning about current BPFK morphology from the same parse.
+The Form, Type, and full editor screens report selected-kind mismatches as the author types.
+A mismatch blocks client signing unless the author selects a matching type, Other, or an explicit experimental classification.
+Dictionary admission keeps word shape outside record validity.
 
 Optional AI assistance offers suggestions for type, components, lujvo, cmavo class, source words, definition text, places, and glosses.
 The browser asks for consent before it sends draft fields. Suggestions need manual acceptance and support undo.

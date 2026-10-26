@@ -333,7 +333,7 @@ export interface GismuState {
   window: number;
 }
 export const newLujvoState = (): LujvoState => ({
-  profile: "extended",
+  profile: "extended-v4",
   components: [],
   selected: null,
   acknowledged: [],

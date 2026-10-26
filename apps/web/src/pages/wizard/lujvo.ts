@@ -164,6 +164,8 @@ export async function lujvoPage(
   }
   if (state.profile === "extended-v2")
     section.append(p("Saved morphology: extended version 2.", "meta"));
+  if (state.profile === "extended")
+    section.append(p("Saved morphology: extended version 3.", "meta"));
   // Profile.
   const profileGroup = el("div", {
     class: "seg",
@@ -175,7 +177,10 @@ export async function lujvoPage(
       ? [["extended-v2", "Extended version 2 (saved record)"]]
       : []),
     ["cll", "CLL rules"],
-    ["extended", "Extended: whole-word parts"],
+    ...(state.profile === "extended"
+      ? [["extended", "Extended version 3 (saved record)"]]
+      : []),
+    ["extended-v4", "Extended: whole-word parts"],
   ] as const) {
     const input = el("input", { type: "radio", name: "profile", value });
     input.checked = state.profile === value;
