@@ -240,7 +240,9 @@ The app preserves this original meaning draft separately from the current editab
 Each `;` restarts placeholder numbering at 1. The place count is the highest number used in any part.
 Unescaped circled numerals `①` through `⑳` and `{place N}` name explicit place numbers.
 Within each part, blanks take the free numbers in order, including when explicit numbers appear after the blanks.
-A backslash before a circled numeral keeps it literal, as in the structured editor.
+Only a backslash before a circled numeral is an escape in Meaning. It keeps that numeral literal.
+Every other backslash stays as typed, including doubled backslashes and backslashes before brackets, braces, or backticks.
+A backslash before `{place N}` stays literal and does not escape that place reference.
 The “N placeholders found” message reports places, rather than placeholder occurrences.
 Before approval on the Places step, the author sees each part and the places that it uses.
 
@@ -537,8 +539,11 @@ Examples include BAI tags sepi'o, ma'e, and bau, and fi'o with any selbri.
 The help gives bamri as a good four-place example: x1 buys x2 from x3 for price x4.
 
 “Suggest places and glosses” is an optional AI action based on the current meaning, word form, component evidence, and existing draft annotations.
-The AI proposes only places that every use implies and offers modal tags for other details.
-It gives a reason for each place after the third. It names only Lojban words that the request supplies.
+The AI keeps every explicit participant with its number and order. It proposes additional places only when every use implies them.
+If an explicit participant fails that test, the AI keeps it and flags the doubt in `reason`.
+It puts modal tag offers and reasons for each place after the third in `reason`, outside place descriptions and definition text.
+When the request supplies no tag name, the AI describes the detail and says that a modal tag can add it.
+It names only Lojban words and tags that the request supplies.
 The result proposes typed fields and identifies unresolved mappings. The author reviews the rendered text and table before accepting changes.
 The definition of the whole word decides the meaning and the types. Component definitions only identify which role a place plays. Any word form that follows the selected morphology rules is accepted, including lower-scoring rafsi and optional hyphens.
 A type suggestion gives one to three alternatives for a place, each with a short reason. A line under the row lists each alternative and its reason. `unclear` means that the definition does not describe the place. An empty hint then reads “unspecified”. An existing hint stays unchanged.

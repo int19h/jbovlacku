@@ -212,7 +212,8 @@ Underscores remain draft placeholders until the author approves their numbering.
 The original meaning remains separate from later editable definition prose.
 Each semicolon restarts blank numbering at 1. The displayed count is the highest place number in any part.
 Unescaped circled numerals and `{place N}` reserve explicit numbers within each part. Blanks take the free numbers in order.
-Escaped circled characters remain literal. The count reports places rather than occurrences.
+Only a backslash before a circled character acts as an escape in Meaning. All other backslashes stay as typed.
+The count reports places rather than occurrences.
 
 ## Type screen, step 2
 

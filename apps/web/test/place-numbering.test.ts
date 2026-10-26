@@ -72,8 +72,12 @@ test("semicolon parts restart blank numbering before approval and preserve the s
   ).toBeVisible();
   await page.getByRole("link", { name: /^Places\b/ }).click();
   await expect(parts(page).getByRole("listitem")).toHaveCount(2);
-  await expect(parts(page)).toContainText("Part 1: places 1, 2");
-  await expect(parts(page)).toContainText("Part 2: places 1, 2");
+  await expect(
+    parts(page).getByRole("listitem").nth(0).locator("p.meta"),
+  ).toHaveText("Part 1: places 1, 2");
+  await expect(
+    parts(page).getByRole("listitem").nth(1).locator("p.meta"),
+  ).toHaveText("Part 2: places 1, 2");
   await page
     .getByRole("button", { name: "Use the meaning with numbered places" })
     .click();
@@ -86,7 +90,9 @@ test("semicolon parts restart blank numbering before approval and preserve the s
   await expect(
     page.getByLabel("Description for place 3", { exact: true }),
   ).toHaveCount(0);
-  await expect(parts(page)).toContainText("Part 2: places 1, 2");
+  await expect(
+    parts(page).getByRole("listitem").nth(1).locator("p.meta"),
+  ).toHaveText("Part 2: places 1, 2");
   await page.getByRole("button", { name: "Approve the numbering" }).click();
   await page.getByRole("button", { name: "Review", exact: true }).click();
   await expect(
@@ -140,8 +146,12 @@ test("explicit numbers reserve places per part and escaped numbers stay literal"
     page.getByText("4 placeholders found.", { exact: false }),
   ).toBeVisible();
   await page.getByRole("link", { name: /^Places\b/ }).click();
-  await expect(parts(page)).toContainText("Part 1: places 1, 2, 3");
-  await expect(parts(page)).toContainText("Part 2: places 1, 4");
+  await expect(
+    parts(page).getByRole("listitem").nth(0).locator("p.meta"),
+  ).toHaveText("Part 1: places 1, 2, 3");
+  await expect(
+    parts(page).getByRole("listitem").nth(1).locator("p.meta"),
+  ).toHaveText("Part 2: places 1, 4");
   await page
     .getByRole("button", { name: "Use the meaning with numbered places" })
     .click();
@@ -154,8 +164,12 @@ test("explicit numbers reserve places per part and escaped numbers stay literal"
   ).toHaveCount(2);
   // The breakdown follows edits to the definition before approval.
   await page.getByLabel("Definition text").fill("① sees ②; ③ stays with ④");
-  await expect(parts(page)).toContainText("Part 1: places 1, 2");
-  await expect(parts(page)).toContainText("Part 2: places 3, 4");
+  await expect(
+    parts(page).getByRole("listitem").nth(0).locator("p.meta"),
+  ).toHaveText("Part 1: places 1, 2");
+  await expect(
+    parts(page).getByRole("listitem").nth(1).locator("p.meta"),
+  ).toHaveText("Part 2: places 3, 4");
 });
 
 test("places above twenty use the explicit editor token", async ({ page }) => {
@@ -374,8 +388,12 @@ test("edited code, links, and escaped glyphs do not add places to the breakdown"
     .getByLabel("Definition text")
     .fill(String.raw`① sees \③ with ` + "`④; literal` [[cukta|⑤; literal]]; ②");
   await expect(parts(page).getByRole("listitem")).toHaveCount(2);
-  await expect(parts(page)).toContainText("Part 1: places 1");
-  await expect(parts(page)).toContainText("Part 2: places 2");
+  await expect(
+    parts(page).getByRole("listitem").nth(0).locator("p.meta"),
+  ).toHaveText("Part 1: places 1");
+  await expect(
+    parts(page).getByRole("listitem").nth(1).locator("p.meta"),
+  ).toHaveText("Part 2: places 2");
 });
 
 test("an excessive explicit number keeps the editor within the frame limit", async ({
@@ -393,4 +411,37 @@ test("an excessive explicit number keeps the editor within the frame limit", asy
   ).toContainText(
     "Place 65535 is referenced in the definition but not declared.",
   );
+});
+
+test("Meaning preserves every noncircled backslash when the author uses its text", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const prefix =
+    String.raw`regex \[a-z] and C:\\share and \{operand x} ` + "\\`code\\` ";
+  const meaning = prefix + String.raw`___; \{place 4} and \① beside ___`;
+  await seed(page, { meaning });
+  await page.goto("/new/meaning");
+  await expect(
+    page.getByText("Every other backslash stays as typed.", { exact: false }),
+  ).toBeVisible();
+  await page.getByRole("link", { name: /^Places\b/ }).click();
+  await expect(parts(page).locator("p.meta")).toHaveText([
+    "Part 1: places 1",
+    "Part 2: places 1, 4",
+  ]);
+  await page
+    .getByRole("button", { name: "Use the meaning with numbered places" })
+    .click();
+  await expect(page.getByText("Saved in this browser")).toBeVisible();
+  const saved = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    return new LocalStore().get("drafts", "current");
+  });
+  expect(saved.meaning).toBe(meaning);
+  expect(saved.text).toEqual([[prefix, 1, "; \\", 4, " and ① beside ", 1]]);
+  await page.getByRole("link", { name: /^Meaning\b/ }).click();
+  await expect(
+    page.getByRole("textbox", { name: "Meaning", exact: true }),
+  ).toHaveValue(meaning);
 });

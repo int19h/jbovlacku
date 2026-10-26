@@ -366,15 +366,15 @@ test("explicit places reserve numbers before and after blanks within each part",
   assert.equal(placeholderCount("①; {place 24}; ③ and ②"), 24);
 });
 
-test("numbering follows editor escapes and preserves ordinary backslashes", () => {
+test("only a backslash immediately before a circled numeral escapes it in meaning", () => {
   const meaning = String.raw`\① \{place 4} \\① \___ ___`;
   const proposal = numberPlaceholders(meaning);
-  assert.equal(proposal.count, 3);
-  assert.deepEqual(proposal.parts[0].places, [1, 2, 3]);
+  assert.equal(proposal.count, 4);
+  assert.deepEqual(proposal.parts[0].places, [1, 2, 4]);
   assert.deepEqual(editorToRichText(proposal.text, true), [
-    ["① {place 4} \\", 1, " \\", 2, " ", 3],
+    ["① \\", 4, " \\① \\", 1, " ", 2],
   ]);
-  assert.equal(placeholderCount(String.raw`\⑳ \{place 30}`), 0);
+  assert.equal(placeholderCount(String.raw`\⑳ \{place 30}`), 30);
 });
 
 test("markup-looking meaning stays literal while every semicolon restarts numbering", () => {
@@ -395,13 +395,48 @@ test("markup-looking meaning stays literal while every semicolon restarts number
   ]);
 });
 
-test("meaning uses editor escapes while other token syntax remains literal", () => {
+test("meaning preserves backslashes before literal token syntax and explicit place tokens", () => {
   const meaning = String.raw`\`___\` \[[cukta]] \{operand x} \① \{place 6}`;
   const proposal = numberPlaceholders(meaning);
-  assert.equal(proposal.count, 1);
+  assert.equal(proposal.count, 6);
   assert.deepEqual(editorToRichText(proposal.text, true), [
-    ["`", 1, "` [[cukta]] {operand x} ① {place 6}"],
+    ["\\`", 1, "\\` \\[[cukta]] \\{operand x} ① \\", 6],
   ]);
+});
+
+test("adopting meaning preserves paths, regular expressions, and the original meaning", () => {
+  const prefix = String.raw`regex \[a-z] and C:\\share, \`code\`, \{brace}, \{operand x}, \\ `;
+  const originalMeaning = `${prefix}\\___ and \\{place 4}`;
+  const draft = newDraft({ meaning: originalMeaning });
+  const proposal = numberPlaceholders(draft.meaning);
+  draft.text = editorToRichText(proposal.text, true);
+  assert.equal(proposal.count, 4);
+  assert.deepEqual(draft.text, [[`${prefix}\\`, 1, " and \\", 4]]);
+  assert.equal(richTextToText(draft.text), `${prefix}\\① and \\④`);
+  assert.equal(draft.meaning, originalMeaning);
+  const reloaded = normalizeDraft(JSON.parse(JSON.stringify(draft)));
+  assert.deepEqual(reloaded.text, draft.text);
+  assert.equal(reloaded.meaning, originalMeaning);
+});
+
+test("each run before a circled numeral consumes only its final escape backslash", () => {
+  for (let count = 0; count <= 4; count++) {
+    const backslashes = "\\".repeat(count);
+    const originalMeaning = `${backslashes}⑳; ___`;
+    const proposal = numberPlaceholders(originalMeaning);
+    const expected =
+      count === 0 ? [[20, "; ", 1]] : [[`${"\\".repeat(count - 1)}⑳; `, 1]];
+    assert.deepEqual(editorToRichText(proposal.text, true), expected);
+    assert.equal(
+      richTextToText(editorToRichText(proposal.text, true)),
+      `${"\\".repeat(Math.max(0, count - 1))}⑳; ①`,
+    );
+    assert.equal(proposal.count, count === 0 ? 20 : 1);
+    assert.deepEqual(
+      proposal.parts.map((part) => part.places),
+      [count === 0 ? [20] : [], [1]],
+    );
+  }
 });
 
 test("numbering uses explicit tokens above twenty and retains empty parts", () => {

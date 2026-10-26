@@ -615,9 +615,9 @@ export function numberPlaceholders(meaning: string): {
   type Segment = { text: string; place?: number; blank?: boolean };
   const segments: Segment[][] = [[]];
   const append = (segment: Segment) => segments.at(-1)!.push(segment);
-  // Meaning borrows the editor's escapes and place markers. All other
-  // syntax stays literal, and every semicolon starts a new part.
-  const tokens = /\\([\\`[{①-⑳])|([①-⑳])|\{place (\d{1,5})\}|(;)|(_{2,})/gu;
+  // Only a backslash immediately before a circled numeral escapes it in
+  // Meaning. All other backslashes stay literal, including before braces.
+  const tokens = /\\([①-⑳])|([①-⑳])|\{place (\d{1,5})\}|(;)|(_{2,})/gu;
   let index = 0;
   for (const match of meaning.matchAll(tokens)) {
     append({ text: escapeLiteral(meaning.slice(index, match.index)) });

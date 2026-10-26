@@ -80,6 +80,7 @@ The guided wizard has five steps: Meaning, Type, Form, Places, and Publish. The 
 Manual authoring works without AI. Publish signs the definition, a separate author blessing, selected rafsi claims, and their pair blessings as one locally persisted group.
 Meaning placeholders restart at 1 after each semicolon. Explicit circled numbers and `{place N}` reserve their numbers within each part.
 Blanks take the free numbers in order. The count is the highest place number, and the Places step previews each part before approval.
+Meaning treats only a backslash before a circled numeral as an escape. It preserves every other backslash.
 The Places step and the full editor offer hideable advice above three declared places, with firmer text above five.
 A repeating tail counts once. The advice applies to every word type and never blocks publication or enters signed records.
 Revise copies a publication into a new draft with its exact parent and keeps every field: links, code, operands, literal circled characters, every gloss with its language and sense, every derivation, and the frame role. The page names the only changes a native revision makes. A revision of imported text cites the imported publication and copies the source-rights reference once.
