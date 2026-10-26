@@ -18,6 +18,6 @@ The recognizer port retains the parsing functions needed for word recognition an
 
 This evidence records representative cases. It does not establish full equivalence between the two reference grammars or between either grammar and Jbovlacku. For example, the CLL lujvo profile restricts components, while general fu'ivla recognition follows the pinned jbotci rules.
 
-`word-parses.json` and `cross-check.rs` retain the archived jbotci label `fuivla` as external evidence.
-The comparison test translates that label to `fuhivla`. Active classifications use `fuhivla`.
-`typed-lujvo.json` uses the current label for its derived classification. Its gencmu tree rules remain unchanged.
+`cross-check.rs` writes Jbovlacku's label `fuhivla` for jbotci's `WordKind::Fuhivla` kind.
+`word-parses.json` and `typed-lujvo.json` use that derived label.
+The parser results, tokens, source revisions, and gencmu tree rules stay unchanged.

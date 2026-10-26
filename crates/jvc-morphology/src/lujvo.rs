@@ -2196,9 +2196,6 @@ mod tests {
             for (name, profile) in [("cll-ebnf", Profile::Cll), ("bpfk", Profile::Extended)] {
                 let expected = if case["jbotci_kind"] == "lujvo" && case[name]["ok"] == false {
                     "unknown"
-                } else if case["jbotci_kind"] == "fuivla" {
-                    // Preserve the archived label and compare its current spelling.
-                    "fuhivla"
                 } else {
                     case["jbotci_kind"].as_str().unwrap()
                 };
