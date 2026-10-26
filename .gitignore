@@ -14,3 +14,7 @@ test-results/
 *.db
 *.db-shm
 *.db-wal
+
+# Local workspace links can point at external build storage.
+/node_modules
+/.cache

@@ -17,7 +17,7 @@ const destination = join(output, "notices");
 const sources = [
   ["docs/dependencies.md", "dependencies.md"],
   ["docs/third-party-notices.md", "third-party-notices.md"],
-  ["crates/jvc-morphology/THIRD-PARTY-NOTICES.md", "morphology-notices.md"],
+  ["packages/morphology/THIRD-PARTY-NOTICES.md", "morphology-notices.md"],
   [
     "packages/core/generated/rust-standard-library-notices.html",
     "rust-standard-library-notices.html",

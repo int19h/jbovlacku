@@ -1,0 +1,1228 @@
+{
+  "reference": "https://github.com/int19h/gencmu",
+  "revision": "0b3da7d2ec2f727a6730d77c775f88214a7ffc89",
+  "dialect": "experimental",
+  "scope": "Word boundaries and classes only. Source syntax, erasure, quotation, and magic-word behavior are not imported.",
+  "classifications": "Class names are derived from grammars/words/experimental.md and the base shape rules. Source corpus words pin boundaries, not lexical class labels.",
+  "sources": {
+    "grammars/words/experimental.md": "c6e9056abdc8a3815243f043d425c083a0cfb477db077b734c59c91d8bf70ec6",
+    "grammars/words/bpfk.md": "c2c71263e240ad1977de09793ed427166431a7153567b16eeb560f0a6ee732df",
+    "grammars/words/shapes.md": "3efcbd214c7a68b8ab6dc1802826c507724b35dc7c764960f4d2319e2031cc7b",
+    "grammars/words/forms.md": "1843ae3eb32dc3cafcb518342f94cb0e8d222f3ef5a072a553b31d4bca9c67f9",
+    "tests/corpus/cgv-rafsi-guard.jsonl": "2aa08ea82cafd603304430f1ba49554d3851e380b252df468af0edfb018f6315",
+    "tests/corpus/cgv-onset-slots.jsonl": "c9e66733b8f21f0339fd9818b88f970f194c09ce604f7a338727d9d9b8d0aba7",
+    "tests/corpus/borrowing-late-cluster.jsonl": "93cab4221455623994efb895257f97dd286c15b872b194edb392b3d5d27968ba",
+    "tests/corpus/experimental-cgv.jsonl": "88c8b536c8c88c6d558dce0563a3a78e599b459e0c0e13a1c10622e8483f25dd",
+    "tests/corpus/experimental-fixes.jsonl": "c833a0109d092015220d5c43516bdfc245254e233ba8409f600635db1179428d",
+    "tests/corpus/experimental-fr4-w3.jsonl": "491c2d71688e55b67b362f7bfd67b76289cff91848b09635529fb7eaae75b6d6",
+    "tests/corpus/adhoc.jsonl": "abe3c2d12e20e780014ba4507c90a83c380bf77d21a91e2a1b045cb02ae64da4"
+  },
+  "brief_overrides": [
+    {
+      "input": "taia",
+      "source_words": ["ta", "ia"],
+      "expected_words": ["tai", "a"],
+      "reason": "The task brief explicitly chooses the longest particle nucleus."
+    },
+    {
+      "input": "y / yyy / ie'o",
+      "expected_kind": "cmavo",
+      "reason": "The task brief keeps hesitation-shaped forms as ordinary cmavo."
+    },
+    {
+      "input": "y bu",
+      "expected_words": ["y", "bu"],
+      "expected_kind": "compound",
+      "reason": "The task brief uses word morphology without BU composition."
+    }
+  ],
+  "cases": [
+    {
+      "id": "review-r3.astra1.lanruage",
+      "source_file": "tests/corpus/cgv-rafsi-guard.jsonl",
+      "source_text": "lanruage",
+      "source_dialect": "experimental",
+      "source_expect": "accept",
+      "source_words": ["lanruage"],
+      "input": "lanruage",
+      "expected": {
+        "kind": "fuhivla",
+        "words": [
+          {
+            "text": "lanruage",
+            "kind": "fuhivla",
+            "cgv_warning": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "review-r3.astra1.lanriago",
+      "source_file": "tests/corpus/cgv-rafsi-guard.jsonl",
+      "source_text": "lanriago",
+      "source_dialect": "experimental",
+      "source_expect": "accept",
+      "source_words": ["lanriago"],
+      "input": "lanriago",
+      "expected": {
+        "kind": "fuhivla",
+        "words": [
+          {
+            "text": "lanriago",
+            "kind": "fuhivla",
+            "cgv_warning": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "review-r3.astra1.blaruage",
+      "source_file": "tests/corpus/cgv-rafsi-guard.jsonl",
+      "source_text": "blaruage",
+      "source_dialect": "experimental",
+      "source_expect": "accept",
+      "source_words": ["blaruage"],
+      "input": "blaruage",
+      "expected": {
+        "kind": "fuhivla",
+        "words": [
+          {
+            "text": "blaruage",
+            "kind": "fuhivla",
+            "cgv_warning": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "review-r3.astra1.language",
+      "source_file": "tests/corpus/cgv-rafsi-guard.jsonl",
+      "source_text": "language",
+      "source_dialect": "experimental",
+      "source_expect": "reject",
+      "source_words": [],
+      "input": "language",
+      "expected": {
+        "kind": "unknown",
+        "words": []
+      }
+    },
+    {
+      "id": "review-r3.astra1.mlaxua",
+      "source_file": "tests/corpus/cgv-rafsi-guard.jsonl",
+      "source_text": "mlaxua",
+      "source_dialect": "experimental",
+      "source_expect": "reject",
+      "source_words": [],
+      "input": "mlaxua",
+      "expected": {
+        "kind": "unknown",
+        "words": []
+      }
+    },
+    {
+      "id": "review-r3.astra1.lanluage",
+      "source_file": "tests/corpus/cgv-rafsi-guard.jsonl",
+      "source_text": "lanluage",
+      "source_dialect": "experimental",
+      "source_expect": "reject",
+      "source_words": [],
+      "input": "lanluage",
+      "expected": {
+        "kind": "unknown",
+        "words": []
+      }
+    },
+    {
+      "id": "review-r3.astra1.blaluage",
+      "source_file": "tests/corpus/cgv-rafsi-guard.jsonl",
+      "source_text": "blaluage",
+      "source_dialect": "experimental",
+      "source_expect": "reject",
+      "source_words": [],
+      "input": "blaluage",
+      "expected": {
+        "kind": "unknown",
+        "words": []
+      }
+    },
+    {
+      "id": "review-r3.opus1.late-cluster",
+      "source_file": "tests/corpus/borrowing-late-cluster.jsonl",
+      "source_text": "puamamakla",
+      "source_dialect": "experimental",
+      "source_expect": "accept",
+      "source_words": ["puamamakla"],
+      "input": "puamamakla",
+      "expected": {
+        "kind": "fuhivla",
+        "words": [
+          {
+            "text": "puamamakla",
+            "kind": "fuhivla",
+            "cgv_warning": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "cgv-slot.experimental.spagetiybroda",
+      "source_file": "tests/corpus/cgv-onset-slots.jsonl",
+      "source_text": "spagetiybroda",
+      "source_dialect": "experimental",
+      "source_expect": "reject",
+      "source_words": [],
+      "input": "spagetiybroda",
+      "expected": {
+        "kind": "unknown",
+        "words": []
+      }
+    },
+    {
+      "id": "cgv-slot.experimental.spagekuybroda",
+      "source_file": "tests/corpus/cgv-onset-slots.jsonl",
+      "source_text": "spagekuybroda",
+      "source_dialect": "experimental",
+      "source_expect": "reject",
+      "source_words": [],
+      "input": "spagekuybroda",
+      "expected": {
+        "kind": "unknown",
+        "words": []
+      }
+    },
+    {
+      "id": "cgv-slot.experimental.atkiybroda",
+      "source_file": "tests/corpus/cgv-onset-slots.jsonl",
+      "source_text": "atkiybroda",
+      "source_dialect": "experimental",
+      "source_expect": "reject",
+      "source_words": [],
+      "input": "atkiybroda",
+      "expected": {
+        "kind": "unknown",
+        "words": []
+      }
+    },
+    {
+      "id": "cgv-slot.experimental.spagetiykla",
+      "source_file": "tests/corpus/cgv-onset-slots.jsonl",
+      "source_text": "spagetiykla",
+      "source_dialect": "experimental",
+      "source_expect": "reject",
+      "source_words": [],
+      "input": "spagetiykla",
+      "expected": {
+        "kind": "unknown",
+        "words": []
+      }
+    },
+    {
+      "id": "cgv-slot.experimental.spagekuykla",
+      "source_file": "tests/corpus/cgv-onset-slots.jsonl",
+      "source_text": "spagekuykla",
+      "source_dialect": "experimental",
+      "source_expect": "reject",
+      "source_words": [],
+      "input": "spagekuykla",
+      "expected": {
+        "kind": "unknown",
+        "words": []
+      }
+    },
+    {
+      "id": "cgv-slot.experimental.akuila",
+      "source_file": "tests/corpus/cgv-onset-slots.jsonl",
+      "source_text": "akuila",
+      "source_dialect": "experimental",
+      "source_expect": "reject",
+      "source_words": [],
+      "input": "akuila",
+      "expected": {
+        "kind": "unknown",
+        "words": []
+      }
+    },
+    {
+      "id": "cgv-slot.experimental.kuilama",
+      "source_file": "tests/corpus/cgv-onset-slots.jsonl",
+      "source_text": "kuilama",
+      "source_dialect": "experimental",
+      "source_expect": "reject",
+      "source_words": [],
+      "input": "kuilama",
+      "expected": {
+        "kind": "unknown",
+        "words": []
+      }
+    },
+    {
+      "id": "cgv-slot.experimental.niys",
+      "source_file": "tests/corpus/cgv-onset-slots.jsonl",
+      "source_text": "la .niys.",
+      "source_dialect": "experimental",
+      "source_expect": "accept",
+      "source_words": ["la", "niys"],
+      "input": ".niys.",
+      "expected": {
+        "kind": "cmevla",
+        "words": [
+          {
+            "text": "niys",
+            "kind": "cmevla",
+            "cgv_warning": true
+          }
+        ]
+      },
+      "transform": "Select the name from source words. Keep framing periods. No syntax expectation is imported."
+    },
+    {
+      "id": "cgv-slot.experimental.kuys",
+      "source_file": "tests/corpus/cgv-onset-slots.jsonl",
+      "source_text": "la .kuys.",
+      "source_dialect": "experimental",
+      "source_expect": "accept",
+      "source_words": ["la", "kuys"],
+      "input": ".kuys.",
+      "expected": {
+        "kind": "cmevla",
+        "words": [
+          {
+            "text": "kuys",
+            "kind": "cmevla",
+            "cgv_warning": true
+          }
+        ]
+      },
+      "transform": "Select the name from source words. Keep framing periods. No syntax expectation is imported."
+    },
+    {
+      "id": "i214.experimental.0",
+      "source_file": "tests/corpus/experimental-cgv.jsonl",
+      "source_text": "la .lidias.",
+      "source_dialect": "experimental",
+      "source_expect": "accept",
+      "source_words": ["la", "lidias"],
+      "input": ".lidias.",
+      "expected": {
+        "kind": "cmevla",
+        "words": [
+          {
+            "text": "lidias",
+            "kind": "cmevla",
+            "cgv_warning": true
+          }
+        ]
+      },
+      "transform": "Select the name from source words. Keep framing periods. No syntax expectation is imported."
+    },
+    {
+      "id": "i214.experimental.1",
+      "source_file": "tests/corpus/experimental-cgv.jsonl",
+      "source_text": ".mariam.",
+      "source_dialect": "experimental",
+      "source_expect": "accept",
+      "source_words": ["mariam"],
+      "input": ".mariam.",
+      "expected": {
+        "kind": "cmevla",
+        "words": [
+          {
+            "text": "mariam",
+            "kind": "cmevla",
+            "cgv_warning": true
+          }
+        ]
+      },
+      "transform": "Select the name from source words. Keep framing periods. No syntax expectation is imported."
+    },
+    {
+      "id": "i214.experimental.2",
+      "source_file": "tests/corpus/experimental-cgv.jsonl",
+      "source_text": "la .sferies.",
+      "source_dialect": "experimental",
+      "source_expect": "accept",
+      "source_words": ["la", "sferies"],
+      "input": ".sferies.",
+      "expected": {
+        "kind": "cmevla",
+        "words": [
+          {
+            "text": "sferies",
+            "kind": "cmevla",
+            "cgv_warning": true
+          }
+        ]
+      },
+      "transform": "Select the name from source words. Keep framing periods. No syntax expectation is imported."
+    },
+    {
+      "id": "i214.experimental.3",
+      "source_file": "tests/corpus/experimental-cgv.jsonl",
+      "source_text": "la .ojibues.",
+      "source_dialect": "experimental",
+      "source_expect": "accept",
+      "source_words": ["la", "ojibues"],
+      "input": ".ojibues.",
+      "expected": {
+        "kind": "cmevla",
+        "words": [
+          {
+            "text": "ojibues",
+            "kind": "cmevla",
+            "cgv_warning": true
+          }
+        ]
+      },
+      "transform": "Select the name from source words. Keep framing periods. No syntax expectation is imported."
+    },
+    {
+      "id": "i214.experimental.4",
+      "source_file": "tests/corpus/experimental-cgv.jsonl",
+      "source_text": "atkuila",
+      "source_dialect": "experimental",
+      "source_expect": "accept",
+      "source_words": ["atkuila"],
+      "input": "atkuila",
+      "expected": {
+        "kind": "fuhivla",
+        "words": [
+          {
+            "text": "atkuila",
+            "kind": "fuhivla",
+            "cgv_warning": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "i214.experimental.5",
+      "source_file": "tests/corpus/experimental-cgv.jsonl",
+      "source_text": "zgiaca'a",
+      "source_dialect": "experimental",
+      "source_expect": "accept",
+      "source_words": ["zgiaca'a"],
+      "input": "zgiaca'a",
+      "expected": {
+        "kind": "fuhivla",
+        "words": [
+          {
+            "text": "zgiaca'a",
+            "kind": "fuhivla",
+            "cgv_warning": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "i214.experimental.6",
+      "source_file": "tests/corpus/experimental-cgv.jsonl",
+      "source_text": "language",
+      "source_dialect": "experimental",
+      "source_expect": "reject",
+      "source_words": [],
+      "input": "language",
+      "expected": {
+        "kind": "unknown",
+        "words": []
+      }
+    },
+    {
+      "id": "i214.experimental.7",
+      "source_file": "tests/corpus/experimental-cgv.jsonl",
+      "source_text": "mia",
+      "source_dialect": "experimental",
+      "source_expect": "reject",
+      "source_words": [],
+      "input": "mia",
+      "expected": {
+        "kind": "unknown",
+        "words": []
+      }
+    },
+    {
+      "id": "i214.experimental.8",
+      "source_file": "tests/corpus/experimental-cgv.jsonl",
+      "source_text": "broda",
+      "source_dialect": "experimental",
+      "source_expect": "accept",
+      "source_words": ["broda"],
+      "input": "broda",
+      "expected": {
+        "kind": "gismu",
+        "words": [
+          {
+            "text": "broda",
+            "kind": "gismu",
+            "cgv_warning": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "i214.experimental.extra.0",
+      "source_file": "tests/corpus/experimental-cgv.jsonl",
+      "source_text": "atku,ila",
+      "source_dialect": "experimental",
+      "source_expect": "accept",
+      "source_words": ["atkuila"],
+      "input": "atku,ila",
+      "expected": {
+        "kind": "fuhivla",
+        "words": [
+          {
+            "text": "atkuila",
+            "kind": "fuhivla",
+            "cgv_warning": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "i214.experimental.extra.1",
+      "source_file": "tests/corpus/experimental-cgv.jsonl",
+      "source_text": "skamruebe",
+      "source_dialect": "experimental",
+      "source_expect": "accept",
+      "source_words": ["skamruebe"],
+      "input": "skamruebe",
+      "expected": {
+        "kind": "fuhivla",
+        "words": [
+          {
+            "text": "skamruebe",
+            "kind": "fuhivla",
+            "cgv_warning": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "i214.experimental.extra.2",
+      "source_file": "tests/corpus/experimental-cgv.jsonl",
+      "source_text": "samxruebe",
+      "source_dialect": "experimental",
+      "source_expect": "accept",
+      "source_words": ["samxruebe"],
+      "input": "samxruebe",
+      "expected": {
+        "kind": "fuhivla",
+        "words": [
+          {
+            "text": "samxruebe",
+            "kind": "fuhivla",
+            "cgv_warning": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "i214.experimental.extra.3",
+      "source_file": "tests/corpus/experimental-cgv.jsonl",
+      "source_text": "patriarko",
+      "source_dialect": "experimental",
+      "source_expect": "accept",
+      "source_words": ["pa", "triarko"],
+      "input": "patriarko",
+      "expected": {
+        "kind": "unknown",
+        "words": [
+          {
+            "text": "pa",
+            "kind": "cmavo",
+            "cgv_warning": false
+          },
+          {
+            "text": "triarko",
+            "kind": "fuhivla",
+            "cgv_warning": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "i214.experimental.extra.4",
+      "source_file": "tests/corpus/experimental-cgv.jsonl",
+      "source_text": "cipnrxakuila",
+      "source_dialect": "experimental",
+      "source_expect": "accept",
+      "source_words": ["cipnrxakuila"],
+      "input": "cipnrxakuila",
+      "expected": {
+        "kind": "fuhivla",
+        "words": [
+          {
+            "text": "cipnrxakuila",
+            "kind": "fuhivla",
+            "cgv_warning": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "i214.experimental.extra.6",
+      "source_file": "tests/corpus/experimental-cgv.jsonl",
+      "source_text": "lan,guage",
+      "source_dialect": "experimental",
+      "source_expect": "reject",
+      "source_words": [],
+      "input": "lan,guage",
+      "expected": {
+        "kind": "unknown",
+        "words": []
+      }
+    },
+    {
+      "id": "i214.experimental.extra.8",
+      "source_file": "tests/corpus/experimental-cgv.jsonl",
+      "source_text": "tosmabru",
+      "source_dialect": "experimental",
+      "source_expect": "accept",
+      "source_words": ["to", "smabru"],
+      "input": "tosmabru",
+      "expected": {
+        "kind": "unknown",
+        "words": [
+          {
+            "text": "to",
+            "kind": "cmavo",
+            "cgv_warning": false
+          },
+          {
+            "text": "smabru",
+            "kind": "lujvo",
+            "cgv_warning": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "i214.experimental.extra.9",
+      "source_file": "tests/corpus/experimental-cgv.jsonl",
+      "source_text": "tosymabru",
+      "source_dialect": "experimental",
+      "source_expect": "accept",
+      "source_words": ["tosymabru"],
+      "input": "tosymabru",
+      "expected": {
+        "kind": "lujvo",
+        "words": [
+          {
+            "text": "tosymabru",
+            "kind": "lujvo",
+            "cgv_warning": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "i214.experimental.extra.10",
+      "source_file": "tests/corpus/experimental-cgv.jsonl",
+      "source_text": "mi atkuila",
+      "source_dialect": "experimental",
+      "source_expect": "accept",
+      "source_words": ["mi", "atkuila"],
+      "input": "mi atkuila",
+      "expected": {
+        "kind": "unknown",
+        "words": [
+          {
+            "text": "mi",
+            "kind": "cmavo",
+            "cgv_warning": false
+          },
+          {
+            "text": "atkuila",
+            "kind": "fuhivla",
+            "cgv_warning": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "i127.experimental.plain-borrowing-apostrophe",
+      "source_file": "tests/corpus/experimental-fixes.jsonl",
+      "source_text": "spageti'ybroda",
+      "source_dialect": "experimental",
+      "source_expect": "accept",
+      "source_words": ["spageti'ybroda"],
+      "input": "spageti'ybroda",
+      "expected": {
+        "kind": "lujvo",
+        "words": [
+          {
+            "text": "spageti'ybroda",
+            "kind": "lujvo",
+            "cgv_warning": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "i127.experimental.stressed-borrowing-apostrophe",
+      "source_file": "tests/corpus/experimental-fixes.jsonl",
+      "source_text": "spageti'ykla",
+      "source_dialect": "experimental",
+      "source_expect": "accept",
+      "source_words": ["spageti'ykla"],
+      "input": "spageti'ykla",
+      "expected": {
+        "kind": "lujvo",
+        "words": [
+          {
+            "text": "spageti'ykla",
+            "kind": "lujvo",
+            "cgv_warning": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "adhoc.experimental.fr4-w3.9",
+      "source_file": "tests/corpus/experimental-fr4-w3.jsonl",
+      "source_text": "bla'ykla",
+      "source_dialect": "experimental",
+      "source_expect": "reject",
+      "source_words": [],
+      "input": "bla'ykla",
+      "expected": {
+        "kind": "unknown",
+        "words": []
+      }
+    },
+    {
+      "id": "adhoc.experimental.fr4-w3.10",
+      "source_file": "tests/corpus/experimental-fr4-w3.jsonl",
+      "source_text": "bla'ykuiska",
+      "source_dialect": "experimental",
+      "source_expect": "reject",
+      "source_words": [],
+      "input": "bla'ykuiska",
+      "expected": {
+        "kind": "unknown",
+        "words": []
+      }
+    },
+    {
+      "id": "adhoc.experimental.fr4-w3.11",
+      "source_file": "tests/corpus/experimental-fr4-w3.jsonl",
+      "source_text": "kla'ykuiska",
+      "source_dialect": "experimental",
+      "source_expect": "reject",
+      "source_words": [],
+      "input": "kla'ykuiska",
+      "expected": {
+        "kind": "unknown",
+        "words": []
+      }
+    },
+    {
+      "id": "adhoc.experimental.fr4-w3.12",
+      "source_file": "tests/corpus/experimental-fr4-w3.jsonl",
+      "source_text": "bla'ytcuiska",
+      "source_dialect": "experimental",
+      "source_expect": "reject",
+      "source_words": [],
+      "input": "bla'ytcuiska",
+      "expected": {
+        "kind": "unknown",
+        "words": []
+      }
+    },
+    {
+      "id": "adhoc.experimental.fr4-w3.20",
+      "source_file": "tests/corpus/experimental-fr4-w3.jsonl",
+      "source_text": "lanstia",
+      "source_dialect": "experimental",
+      "source_expect": "accept",
+      "source_words": ["lanstia"],
+      "input": "lanstia",
+      "expected": {
+        "kind": "fuhivla",
+        "words": [
+          {
+            "text": "lanstia",
+            "kind": "fuhivla",
+            "cgv_warning": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "adhoc.experimental.fr4-w3.21",
+      "source_file": "tests/corpus/experimental-fr4-w3.jsonl",
+      "source_text": "baltcuiska",
+      "source_dialect": "experimental",
+      "source_expect": "accept",
+      "source_words": ["baltcuiska"],
+      "input": "baltcuiska",
+      "expected": {
+        "kind": "fuhivla",
+        "words": [
+          {
+            "text": "baltcuiska",
+            "kind": "fuhivla",
+            "cgv_warning": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "adhoc.experimental.fr4-w3.22",
+      "source_file": "tests/corpus/experimental-fr4-w3.jsonl",
+      "source_text": "baistia",
+      "source_dialect": "experimental",
+      "source_expect": "accept",
+      "source_words": ["baistia"],
+      "input": "baistia",
+      "expected": {
+        "kind": "fuhivla",
+        "words": [
+          {
+            "text": "baistia",
+            "kind": "fuhivla",
+            "cgv_warning": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "adhoc.experimental.fr4-w3.23",
+      "source_file": "tests/corpus/experimental-fr4-w3.jsonl",
+      "source_text": "bailanguaska",
+      "source_dialect": "experimental",
+      "source_expect": "accept",
+      "source_words": ["bailanguaska"],
+      "input": "bailanguaska",
+      "expected": {
+        "kind": "fuhivla",
+        "words": [
+          {
+            "text": "bailanguaska",
+            "kind": "fuhivla",
+            "cgv_warning": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "adhoc.experimental.fr4-w3.24",
+      "source_file": "tests/corpus/experimental-fr4-w3.jsonl",
+      "source_text": "ie'o",
+      "source_dialect": "experimental",
+      "source_expect": "accept",
+      "source_words": [],
+      "input": "ie'o",
+      "expected": {
+        "kind": "cmavo",
+        "words": [
+          {
+            "text": "ie'o",
+            "kind": "cmavo",
+            "cgv_warning": false
+          }
+        ]
+      },
+      "brief_override": "The task brief makes hesitation-shaped words ordinary cmavo. The source words stage drops this form."
+    },
+    {
+      "id": "adhoc.morphology.mz-warning.mz-warning-accepts-cmevla-name",
+      "source_file": "tests/corpus/adhoc.jsonl",
+      "source_text": "la djeimz.",
+      "source_dialect": "experimental",
+      "source_expect": "accept",
+      "source_words": ["la", "djeimz"],
+      "input": ".djeimz.",
+      "expected": {
+        "kind": "cmevla",
+        "words": [
+          {
+            "text": "djeimz",
+            "kind": "cmevla",
+            "cgv_warning": false
+          }
+        ]
+      },
+      "transform": "Select the name from source words. Keep framing periods. No syntax expectation is imported."
+    },
+    {
+      "id": "adhoc.camxes-exp.word-forms.hy-rafsi-after-rafsi.experimental",
+      "source_file": "tests/corpus/adhoc.jsonl",
+      "source_text": "kerlybai'ybroda",
+      "source_dialect": "experimental",
+      "source_expect": "accept",
+      "source_words": ["kerlybai'ybroda"],
+      "input": "kerlybai'ybroda",
+      "expected": {
+        "kind": "lujvo",
+        "words": [
+          {
+            "text": "kerlybai'ybroda",
+            "kind": "lujvo",
+            "cgv_warning": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "adhoc.camxes-exp.word-forms.ccv-hy-rafsi-after-rafsi.experimental",
+      "source_file": "tests/corpus/adhoc.jsonl",
+      "source_text": "kerlybla'ykla",
+      "source_dialect": "experimental",
+      "source_expect": "accept",
+      "source_words": ["kerlybla'ykla"],
+      "input": "kerlybla'ykla",
+      "expected": {
+        "kind": "lujvo",
+        "words": [
+          {
+            "text": "kerlybla'ykla",
+            "kind": "lujvo",
+            "cgv_warning": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "adhoc.camxes-exp.word-forms.slihykru.experimental",
+      "source_file": "tests/corpus/adhoc.jsonl",
+      "source_text": "bla'ykla",
+      "source_dialect": "experimental",
+      "source_expect": "reject",
+      "source_words": [],
+      "input": "bla'ykla",
+      "expected": {
+        "kind": "unknown",
+        "words": []
+      }
+    },
+    {
+      "id": "adhoc.camxes-exp.word-forms.long-rafsi-hy-rafsi.experimental",
+      "source_file": "tests/corpus/adhoc.jsonl",
+      "source_text": "klama'ybroda",
+      "source_dialect": "experimental",
+      "source_expect": "accept",
+      "source_words": ["klama'ybroda"],
+      "input": "klama'ybroda",
+      "expected": {
+        "kind": "lujvo",
+        "words": [
+          {
+            "text": "klama'ybroda",
+            "kind": "lujvo",
+            "cgv_warning": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "adhoc.camxes-exp.word-forms.fuhivla-rafsi-apostrophe-onset.experimental",
+      "source_file": "tests/corpus/adhoc.jsonl",
+      "source_text": "kerlyfa'u'yiismu",
+      "source_dialect": "experimental",
+      "source_expect": "accept",
+      "source_words": ["kerlyfa'u'yiismu"],
+      "input": "kerlyfa'u'yiismu",
+      "expected": {
+        "kind": "lujvo",
+        "words": [
+          {
+            "text": "kerlyfa'u'yiismu",
+            "kind": "lujvo",
+            "cgv_warning": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "adhoc.camxes-exp.word-forms.mz-in-gismu.experimental",
+      "source_file": "tests/corpus/adhoc.jsonl",
+      "source_text": "kamzi",
+      "source_dialect": "experimental",
+      "source_expect": "accept",
+      "source_words": ["kamzi"],
+      "input": "kamzi",
+      "expected": {
+        "kind": "gismu",
+        "words": [
+          {
+            "text": "kamzi",
+            "kind": "gismu",
+            "cgv_warning": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "adhoc.camxes-exp.word-forms.mz-in-lujvo.experimental",
+      "source_file": "tests/corpus/adhoc.jsonl",
+      "source_text": "bamzda",
+      "source_dialect": "experimental",
+      "source_expect": "accept",
+      "source_words": ["bamzda"],
+      "input": "bamzda",
+      "expected": {
+        "kind": "lujvo",
+        "words": [
+          {
+            "text": "bamzda",
+            "kind": "lujvo",
+            "cgv_warning": false
+          }
+        ]
+      }
+    }
+  ],
+  "excluded_source_cases": [
+    {
+      "source_file": "tests/corpus/experimental-cgv.jsonl",
+      "case_id": "i214.experimental.extra.5",
+      "input": "atkwila",
+      "reason": "The source uses glide-letter spelling. This wrapper accepts Latin phoneme spelling only."
+    },
+    {
+      "source_file": "tests/corpus/experimental-cgv.jsonl",
+      "case_id": "i214.experimental.extra.7",
+      "input": "lanwage",
+      "reason": "The source uses glide-letter spelling. This wrapper accepts Latin phoneme spelling only."
+    },
+    {
+      "source_file": "tests/corpus/experimental-fr4-w3.jsonl",
+      "case_id": "adhoc.experimental.fr4-w3.13",
+      "input": "koʼ́a",
+      "reason": "The source tests an alternate orthography or phoneme marks outside the current Latin phoneme wrapper."
+    },
+    {
+      "source_file": "tests/corpus/experimental-fr4-w3.jsonl",
+      "case_id": "adhoc.experimental.fr4-w3.14",
+      "input": "koʼ̣a",
+      "reason": "The source tests an alternate orthography or phoneme marks outside the current Latin phoneme wrapper."
+    },
+    {
+      "source_file": "tests/corpus/experimental-fr4-w3.jsonl",
+      "case_id": "adhoc.experimental.fr4-w3.15",
+      "input": "koh́a",
+      "reason": "The source tests an alternate orthography or phoneme marks outside the current Latin phoneme wrapper."
+    },
+    {
+      "source_file": "tests/corpus/experimental-fr4-w3.jsonl",
+      "case_id": "adhoc.experimental.fr4-w3.16",
+      "input": "ß'ӏ",
+      "reason": "The source tests an alternate orthography or phoneme marks outside the current Latin phoneme wrapper."
+    },
+    {
+      "source_file": "tests/corpus/experimental-fr4-w3.jsonl",
+      "case_id": "adhoc.experimental.fr4-w3.17",
+      "input": "mi'ӏ",
+      "reason": "The source tests an alternate orthography or phoneme marks outside the current Latin phoneme wrapper."
+    },
+    {
+      "source_file": "tests/corpus/experimental-fr4-w3.jsonl",
+      "case_id": "adhoc.experimental.fr4-w3.18",
+      "input": "ӏ'mi",
+      "reason": "The source tests an alternate orthography or phoneme marks outside the current Latin phoneme wrapper."
+    },
+    {
+      "source_file": "tests/corpus/experimental-fr4-w3.jsonl",
+      "case_id": "adhoc.experimental.fr4-w3.19",
+      "input": "ß'.",
+      "reason": "The source tests an alternate orthography or phoneme marks outside the current Latin phoneme wrapper."
+    }
+  ],
+  "retained_typed_lujvo": {
+    "source_file": "crates/jvc-morphology/evidence/typed-lujvo.json",
+    "source_sha256": "3b02bc062f0f5229277f09eb5aed7a51fb20a32b31b5a51485f2f30b6803ed32",
+    "reference": "https://github.com/int19h/gencmu",
+    "revision": "98417655a407566f50ed491cf8074f0c55ddce64",
+    "cases": [
+      {
+        "word": "ckusni",
+        "kind": "lujvo"
+      },
+      {
+        "word": "cuktysinxa",
+        "kind": "lujvo"
+      },
+      {
+        "word": "sairzba",
+        "kind": "lujvo"
+      },
+      {
+        "word": "bangu'y'ismu",
+        "kind": "lujvo"
+      },
+      {
+        "word": "sakrsakysakli",
+        "kind": "lujvo"
+      },
+      {
+        "word": "spageti'ybroda",
+        "kind": "lujvo"
+      },
+      {
+        "word": "spageti'ykla",
+        "kind": "lujvo"
+      },
+      {
+        "word": "kerlybai'ybroda",
+        "kind": "lujvo"
+      },
+      {
+        "word": "kerlybla'ykla",
+        "kind": "lujvo"
+      },
+      {
+        "word": "klama'ybroda",
+        "kind": "lujvo"
+      },
+      {
+        "word": "spageiybroda",
+        "kind": "lujvo"
+      },
+      {
+        "word": "aktyiismu",
+        "kind": "lujvo"
+      },
+      {
+        "word": "kerlyfa'u'yiismu",
+        "kind": "lujvo"
+      },
+      {
+        "word": "sakli'ybroda",
+        "kind": "lujvo"
+      },
+      {
+        "word": "gismu'ybroda",
+        "kind": "lujvo"
+      },
+      {
+        "word": "ixla'ybroda",
+        "kind": "lujvo"
+      },
+      {
+        "word": "uspi'ybe'a",
+        "kind": "lujvo"
+      },
+      {
+        "word": "baibla'ykla",
+        "kind": "lujvo"
+      },
+      {
+        "word": "bai'ybla'ykla",
+        "kind": "lujvo"
+      },
+      {
+        "word": "saibla'ykla",
+        "kind": "lujvo"
+      },
+      {
+        "word": "islenskygu'e",
+        "kind": "lujvo"
+      },
+      {
+        "word": "islenskybroda",
+        "kind": "lujvo"
+      },
+      {
+        "word": "ibalskybroda",
+        "kind": "lujvo"
+      },
+      {
+        "word": "kerlyxambrga",
+        "kind": "lujvo"
+      },
+      {
+        "word": "cuktybangrtai",
+        "kind": "lujvo"
+      },
+      {
+        "word": "bangu'ybangrtai",
+        "kind": "lujvo"
+      },
+      {
+        "word": "bla'ykla",
+        "kind": "unknown"
+      },
+      {
+        "word": "bla'ykuiska",
+        "kind": "unknown"
+      },
+      {
+        "word": "kla'ykuiska",
+        "kind": "unknown"
+      },
+      {
+        "word": "bla'ytcuiska",
+        "kind": "unknown"
+      },
+      {
+        "word": "spagetiybroda",
+        "kind": "unknown"
+      },
+      {
+        "word": "spagekuykla",
+        "kind": "unknown"
+      },
+      {
+        "word": "balskybroda",
+        "kind": "unknown"
+      },
+      {
+        "word": "lenskybroda",
+        "kind": "unknown"
+      },
+      {
+        "word": "tenskybroda",
+        "kind": "unknown"
+      },
+      {
+        "word": "bangrybroda",
+        "kind": "unknown"
+      },
+      {
+        "word": "barklysakli",
+        "kind": "unknown"
+      },
+      {
+        "word": "balskykla",
+        "kind": "unknown"
+      },
+      {
+        "word": "kamzi",
+        "kind": "gismu"
+      },
+      {
+        "word": "bamzda",
+        "kind": "lujvo"
+      },
+      {
+        "word": ".djeimz.",
+        "kind": "cmevla"
+      },
+      {
+        "word": "bangrtai",
+        "kind": "fuhivla"
+      },
+      {
+        "word": "xambrga",
+        "kind": "fuhivla"
+      },
+      {
+        "word": "cmagnitude",
+        "kind": "fuhivla"
+      },
+      {
+        "word": "depsnce",
+        "kind": "fuhivla"
+      },
+      {
+        "word": "regnaftngi",
+        "kind": "fuhivla"
+      },
+      {
+        "word": "sparnribia",
+        "kind": "fuhivla"
+      }
+    ]
+  }
+}

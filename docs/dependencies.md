@@ -29,7 +29,9 @@ The notices use each package's local license, copyright, and notice files withou
 Identical files share one text block. Each block lists every corresponding source package and file.
 The SHA-256 digest identifies the original UTF-8 text. A dependency change requires a new inventory and the matching source notices.
 
-`crates/jvc-morphology` ports word-form rules from jbotci under the MIT License. Its `THIRD-PARTY-NOTICES.md` keeps that notice and the preset citations. The crate adds no new external package to `Cargo.lock`. Both build outputs retain the exact notice as `notices/morphology-notices.md`. The container also retains it as `/app/docs/morphology-notices.md`.
+`packages/morphology` ports word-form rules from jbotci under the MIT License. Its `THIRD-PARTY-NOTICES.md` keeps that notice and the preset citations.
+It also retains the MIT notices for ilmentufa and gencmu, which supply the Peggy grammar and reference rules.
+Morphology adds no Rust dependency. Peggy 5.1.1 compiles the committed grammar into the committed parser. Both build outputs retain the exact notice as `notices/morphology-notices.md`. The container also retains it as `/app/docs/morphology-notices.md`.
 
 The Rust standard library also contributes code outside `Cargo.lock`.
 Its toolchain provides `share/doc/rust/COPYRIGHT-library.html` under the path from `rustc --print sysroot`.
@@ -55,6 +57,7 @@ The root manifest selects these direct npm packages:
 | `@types/node`               | 24.10.1      | MIT               | Node.js type declarations.                            |
 | `esbuild`                   | 0.28.1       | MIT               | Standalone server bundle.                             |
 | `jose`                      | 6.1.3        | MIT               | Browser key backup encryption.                        |
+| `peggy`                     | 5.1.1        | MIT               | Word grammar compiler.                                |
 | `prettier`                  | 3.7.4        | MIT               | Source formatting.                                    |
 | `tsx`                       | 4.20.6       | MIT               | TypeScript execution for local development and tests. |
 | `typescript`                | 5.9.3        | Apache-2.0        | Type analysis.                                        |
