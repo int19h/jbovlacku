@@ -329,6 +329,7 @@ Admission requires canonical base64, so this reconstruction preserves every sign
 Cold evaluation and checkpoint restore fill the envelope cache from these private fields.
 The first admission after a restart or Worker eviction needs no retained envelope reads.
 
+
 An extraction format or body-validation change requires another projection of existing data.
 Compact extraction version 5 and semantic extraction version 2 apply the `fuhivla` lexical kind.
 Earlier derived rows require backfill before reuse. Original signed records remain unchanged.
@@ -344,6 +345,7 @@ A stored projection that fails the extraction decoder emits `verified_record_dec
 The server rebuilds that row from trusted original bytes and replaces the derived projection without another signature or body hash check.
 `verifiedRecordStatistics` exposes missing-row, decode-failure, and backfill counts for tests and diagnostic callers.
 Tests inspect committed rows directly before evaluation so automatic backfill cannot hide an admission defect.
+
 
 To complete backfill before startup, stop the service for that data directory and run this command:
 
@@ -412,13 +414,13 @@ They use the existing data directory in place, the default Node heap configurati
 The server, worker, and Wasm artifacts at reviewed revision `fedfec3` match those measured at `b6c0354`.
 The repaired host measurement uses revision `5aefd15`.
 
-| Measurement                       | Reviewed host, `b6c0354` | Repaired host, `5aefd15` |
-| --------------------------------- | -----------------------: | -----------------------: |
-| Checkpoint recovery               |                  22.68 s |                   7.07 s |
-| Trust choice visible              |                  30.37 s |                   8.38 s |
-| Native publication visible        |                  46.71 s |                   9.53 s |
-| Judgment visible                  |                  35.51 s |                   5.39 s |
-| Peak process memory during writes |                 4.25 GiB |                 3.94 GiB |
+| Measurement | Reviewed host, `b6c0354` | Repaired host, `5aefd15` |
+| --- | ---: | ---: |
+| Checkpoint recovery | 22.68 s | 7.07 s |
+| Trust choice visible | 30.37 s | 8.38 s |
+| Native publication visible | 46.71 s | 9.53 s |
+| Judgment visible | 35.51 s | 5.39 s |
+| Peak process memory during writes | 4.25 GiB | 3.94 GiB |
 
 A second restart of the reviewed artifacts took 29.33 seconds.
 The repaired core changed its digest, so its first recovery authenticated original records instead of restoring the incompatible checkpoint.
@@ -652,7 +654,7 @@ Both local adapters accept these variables:
 | `JVC_AI_OUTPUT_PRICE`              | Model output price in USD per million tokens. The default is 0.20.                                                                                                   |
 | `JVC_AI_EMBEDDING_MODEL`           | Embedding model. The adapter permits only `qwen/qwen3-embedding-8b`, which is the default.                                                                           |
 | `JVC_AI_EMBEDDING_PROVIDER_ROUTE`  | Embedding route. The adapter permits only `nebius`, which is the default.                                                                                            |
-| `JVC_AI_EMBEDDING_INPUT_PRICE`     | Embedding input price in USD per million tokens. The default is 0.01.                                                                                                |
+| `JVC_AI_EMBEDDING_INPUT_PRICE`     | Embedding input price in USD per million tokens. The default is 0.01.                                                                                               |
 | `JVC_AI_HOURLY_BUDGET_USD`         | Server spending limit for the past hour. The default is 32 USD.                                                                                                      |
 | `JVC_AI_DAILY_BUDGET_USD`          | Server spending limit for the past day. The default is 160 USD.                                                                                                      |
 | `JVC_AI_NETWORK_HOURLY_BUDGET_USD` | Hourly allowance for each network. The default is one quarter of the configured server hourly limit.                                                                 |

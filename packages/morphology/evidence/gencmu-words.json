@@ -1030,7 +1030,7 @@
     }
   ],
   "retained_typed_lujvo": {
-    "source_file": "crates/jvc-morphology/evidence/typed-lujvo.json",
+    "source_file": "packages/morphology/evidence/typed-lujvo.json",
     "source_sha256": "3b02bc062f0f5229277f09eb5aed7a51fb20a32b31b5a51485f2f30b6803ed32",
     "reference": "https://github.com/int19h/gencmu",
     "revision": "98417655a407566f50ed491cf8074f0c55ddce64",

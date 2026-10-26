@@ -440,5 +440,10 @@ export const canonicalizeStorageWrapper = (bytes: Uint8Array): string =>
 /** Word tools use TypeScript independently of WebAssembly initialization. */
 export type * from "../../morphology/src/types.ts";
 export {
-  morphologyProfile, BuilderError, builderPresets, analyzeWord, buildLujvo, generateGismu,
+  morphologyProfile,
+  BuilderError,
+  builderPresets,
+  analyzeWord,
+  buildLujvo,
+  generateGismu,
 } from "../../morphology/src/index.ts";

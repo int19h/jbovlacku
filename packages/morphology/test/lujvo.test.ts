@@ -220,7 +220,7 @@ test("CLL examples and version 2 have independent expectations", () => {
   const evidence = JSON.parse(
     readFileSync(
       new URL(
-        "../../../crates/jvc-morphology/evidence/typed-lujvo.json",
+        "../evidence/typed-lujvo.json",
         import.meta.url,
       ),
       "utf8",
@@ -648,7 +648,7 @@ test("retained reference parses keep profile-specific results", () => {
   const evidence = JSON.parse(
     readFileSync(
       new URL(
-        "../../../crates/jvc-morphology/evidence/word-parses.json",
+        "../evidence/word-parses.json",
         import.meta.url,
       ),
       "utf8",
