@@ -47,3 +47,19 @@ test("nearby cleanup keeps inner apostrophes and whole words that contain place-
     ["cu'i", "i'e", "4x4", "thin-walled"],
   );
 });
+
+test("circled and braced place markers separate adjacent words", () => {
+  assert.deepEqual(nearbyQuery("①eats ②"), ["eats"]);
+  assert.deepEqual(nearbyQuery("x₁ bowl ①bowl"), ["bowl"]);
+  assert.deepEqual(nearbyQuery("before{place 2}after ⑳thin"), [
+    "before",
+    "after",
+    "thin",
+  ]);
+  assert.deepEqual(nearbyQuery("box1 max2 4x4 cu'i x1"), [
+    "box1",
+    "max2",
+    "4x4",
+    "cu'i",
+  ]);
+});
