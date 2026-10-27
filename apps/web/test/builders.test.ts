@@ -1,7 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { fixture } from "./helpers.ts";
+import { fixture, expectKindSpelling } from "./helpers.ts";
 import type { RafsiInventoryClaim } from "../../../packages/core/src/index.ts";
 
 function claimCheckboxName(spelling: string): RegExp {
@@ -62,6 +62,7 @@ test("the lujvo builder offers long forms beside listed rafsi, recovers parts, h
       .sort();
   }, f.words.cukta);
   await startDraft(page, "lujvo");
+  await page.getByRole("radio", { name: "CLL rules" }).check();
   await expect(
     page.getByRole("heading", { name: "Build the lujvo" }),
   ).toBeVisible();
@@ -209,6 +210,7 @@ test("the extended profile joins whole-word parts that CLL rules reject", async 
   page,
 }) => {
   await startDraft(page, "lujvo");
+  await page.getByRole("radio", { name: "CLL rules" }).check();
   await page.getByLabel("Add a part").fill("fulta");
   await page.getByRole("button", { name: "Add fulta as entered" }).click();
   await page.getByLabel("Add a part").fill("ismu");
@@ -474,7 +476,7 @@ for (const profile of ["cll", "extended"]) {
     page,
   }) => {
     await startDraft(page, "lujvo");
-    const spelling = "tca".repeat(26);
+    const spelling = "tca".repeat(40);
     await page.evaluate(
       async ({ spelling, profile }) => {
         const { LocalStore } = await import(String("/src/data/store.ts"));
@@ -535,7 +537,7 @@ test("single-word recognition gives no component-lock or result-count advice", a
   page,
 }) => {
   await startDraft(page, "lujvo");
-  await page.getByLabel("Add a part").fill("tca".repeat(26));
+  await page.getByLabel("Add a part").fill("tca".repeat(40));
   const matches = page.getByRole("list", { name: "Matching words" });
   await expect(matches).toContainText(
     "recognition work is 50001, above the limit of 50000.",
@@ -649,4 +651,26 @@ test("source Remove names stay unique for alternatives and empty language rows",
     );
   expect(names.every((name) => name && name.trim())).toBe(true);
   expect(new Set(names).size).toBe(names.length);
+});
+
+test("the component picker shows fu'ivla and stores fuhivla", async ({
+  page,
+}) => {
+  await startDraft(page, "lujvo");
+  await page.getByLabel("Add a part").fill("leksiko");
+  const matches = page.getByRole("list", { name: "Matching words" });
+  await expect(matches).toContainText("fu'ivla, not in the local package");
+  await expectKindSpelling(page);
+  await matches
+    .getByRole("button", { name: "Add leksiko as entered", exact: true })
+    .click();
+  const components = page.getByRole("list", {
+    name: "Components",
+    exact: true,
+  });
+  await expect(components).toContainText("fu'ivla");
+  await expectKindSpelling(page);
+  await expect
+    .poll(async () => (await currentDraft(page)).lujvo.components[0]?.kind)
+    .toBe("fuhivla");
 });

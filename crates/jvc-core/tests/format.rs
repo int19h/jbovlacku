@@ -1025,3 +1025,17 @@ fn view_schema_accepts_both_explicit_route_profiles_and_rejects_unknown_names() 
     body["calculation"] = json!("unsupported-profile");
     assert!(validate_body(&header, &body).is_err());
 }
+
+#[test]
+fn lexical_kind_uses_fuhivla_without_a_legacy_alias() {
+    let mut body = parse_stored_json(include_bytes!("fixtures/definition.json")).unwrap();
+    body["word"]["spelling"] = json!("leksiko");
+    for (kind, valid) in [("fuhivla", true), ("fuivla", false), ("fu'ivla", false)] {
+        body["classification"]["kind"] = json!(kind);
+        let action = header(
+            json!({"kind":"definition.publish","word":word_id(&body["word"]).unwrap(),"language":"en","parents":[],"origin":"native"}),
+            Some(body_descriptor(&canonical_value(&body).unwrap()).unwrap()),
+        );
+        assert_eq!(validate_body(&action, &body).is_ok(), valid, "{kind}");
+    }
+}

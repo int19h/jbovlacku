@@ -68,6 +68,9 @@ function fixture(
                     name: "submit_answer",
                     arguments: JSON.stringify({
                       word_type: "gismu",
+                      alternative: null,
+                      alternative_reason: null,
+                      existing: null,
                       reason: "Root.",
                     }),
                   },
@@ -331,13 +334,20 @@ test("custom empty spending allowances omit impossible operations without hiding
   };
   const typeCost = minimumAssistanceCost(provider, "type");
   const sourcesCost = minimumAssistanceCost(provider, "gismu-sources");
-  assert.ok(typeCost < sourcesCost);
+  assert.notEqual(typeCost, sourcesCost);
+  const allowed = typeCost < sourcesCost ? "type" : "gismu-sources";
+  const blocked = typeCost < sourcesCost ? "gismu-sources" : "type";
   provider.maxCostUsd = (typeCost + sourcesCost) / 2;
   const app = new AssistanceService(
     { provider },
     "session-test",
     async () => [],
   );
-  assert.deepEqual(app.capabilities()[0].operations, ["type"]);
-  assert.doesNotMatch(app.capabilities()[0].disclosure, /gismu-sources/);
+  assert.deepEqual(app.capabilities()[0].operations, [allowed]);
+  const disclosedTasks = app
+    .capabilities()[0]
+    .disclosure.match(/all declared tasks: ([^.]+)\./)?.[1]
+    .split(", ");
+  assert.deepEqual(disclosedTasks, [allowed]);
+  assert.ok(!disclosedTasks.includes(blocked));
 });

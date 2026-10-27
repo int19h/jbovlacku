@@ -1,3 +1,10 @@
+import { kindLabel } from "../../model/types.ts";
+import { detectWord, typedWord } from "../../model/typed-headword.ts";
+import {
+  cachedPackage,
+  inventoryFromPackage,
+  currentRootConflicts,
+} from "../../model/builders.ts";
 import {
   assistanceAction,
   assistanceVisibility,
@@ -36,8 +43,8 @@ const cards: {
     example: "bangu",
   },
   {
-    kind: "fuivla",
-    title: "fu'ivla",
+    kind: "fuhivla",
+    title: kindLabel("fuhivla"),
     explanation: "Borrowed word.",
     example: "leksiko",
   },
@@ -56,14 +63,14 @@ const cards: {
   {
     kind: "other",
     title: "Other",
-    explanation: "Letteral, compound cmavo, experimental form.",
+    explanation: "Fixed phrase or another word type.",
     example: "",
   },
 ];
 const otherKinds: { kind: LexicalKind; label: string }[] = [
   { kind: "compound", label: "compound cmavo" },
   { kind: "letteral", label: "letteral" },
-  { kind: "other", label: "other experimental form" },
+  { kind: "other", label: "other fixed phrase or form" },
 ];
 export function nextActionLabel(kind: LexicalKind | null): string {
   switch (kind) {
@@ -92,6 +99,40 @@ export async function typePage(
     return;
   }
   const saver = new DraftSaver(app, draft);
+  const spelling = typedWord(draft.spelling);
+  const analysis = spelling ? detectWord(spelling) : null;
+  const detected = analysis
+    ? analysis.kind === "unknown"
+      ? "other"
+      : analysis.kind
+    : null;
+  if (draft.detectionFor !== spelling) {
+    if (draft.kind === null || draft.kind === draft.autoDetectedKind) {
+      if (confirmKindChange(draft, detected)) {
+        if (detected) draft.autoDetectedKind = detected;
+      } else {
+        draft.review = [...new Set([...draft.review, "word type"])];
+      }
+    } else if (detected && draft.kind !== detected) {
+      draft.review = [...new Set([...draft.review, "word type"])];
+    }
+    draft.detectionFor = spelling;
+    saver.touch();
+  }
+  if (
+    detected &&
+    draft.kind === detected &&
+    draft.review.includes("word type")
+  ) {
+    draft.review = draft.review.filter((field) => field !== "word type");
+    saver.touch();
+  }
+  const labelFor = () =>
+    spelling && (draft.kind === "gismu" || draft.kind === "fuhivla")
+      ? "Continue to places"
+      : spelling && draft.kind === "lujvo"
+        ? "Link the lujvo parts"
+        : nextActionLabel(draft.kind);
   main.append(stepBar(draft, 2));
   const columns = el("div", { class: "two-col" });
   const section = el("section", { "aria-labelledby": "h1", class: "main-col" });
@@ -103,6 +144,88 @@ export async function typePage(
       text: "What kind of word?",
     }),
   );
+  const detection = el("div", { role: "status", "aria-live": "polite" });
+  const typeReview = p(
+    "The spelling changed. Review the word type that you chose.",
+    "small",
+  );
+  typeReview.hidden = !draft.review.includes("word type");
+  detection.append(typeReview);
+  if (analysis) {
+    detection.append(
+      p(
+        `Detected form: ${kindLabel(analysis.kind)}. You can choose another kind.`,
+        "small",
+      ),
+    );
+    for (const diagnostic of analysis.diagnostics)
+      detection.append(p(diagnostic, "meta"));
+  }
+  section.append(detection);
+  const rootWarnings = el("div", {
+    role: "region",
+    "aria-label": "Gismu closeness",
+  });
+  const packageData = await cachedPackage(app.store);
+  if (!context.live()) return;
+  const renderRoots = () => {
+    rootWarnings.replaceChildren();
+    if (!spelling || draft.kind !== "gismu") return;
+    if (!packageData)
+      rootWarnings.append(
+        p(
+          "Gismu closeness could not be checked. No local package is downloaded.",
+          "small",
+        ),
+      );
+    else {
+      try {
+        const conflicts = currentRootConflicts(
+          spelling,
+          inventoryFromPackage(packageData),
+        );
+        rootWarnings.append(
+          p(
+            `Gismu closeness in local snapshot ${packageData.snapshot}. Other inventories are unknown.`,
+            "meta",
+          ),
+        );
+        if (!conflicts.length)
+          rootWarnings.append(
+            p("No known gismu is too close in this package.", "small"),
+          );
+        for (const conflict of conflicts)
+          rootWarnings.append(
+            el(
+              "p",
+              { class: "small" },
+              text(
+                conflict.rule === "identical"
+                  ? "Identical to "
+                  : conflict.rule === "final-vowel"
+                    ? "Last vowel differs from "
+                    : "Too close to ",
+              ),
+              link(
+                conflict.spelling,
+                `/word/${encodeURIComponent(conflict.word)}`,
+              ),
+            ),
+          );
+      } catch (error) {
+        rootWarnings.append(
+          p(`Gismu closeness could not be checked: ${String(error)}`, "small"),
+        );
+      }
+    }
+    rootWarnings.append(
+      link("Add source-language evidence", "/new/gismu?evidence=1", {
+        class: "touch-link",
+      }),
+    );
+  };
+  renderRoots();
+  section.append(rootWarnings);
   const fieldset = el("fieldset", { style: "border:0;margin:0;padding:0" });
   fieldset.append(el("legend", { class: "sr", text: "Word type" }));
   const grid = el("div", { class: "type-grid" });
@@ -127,7 +250,10 @@ export async function typePage(
         }),
       );
     select.addEventListener("change", () => {
-      draft.kind = select.value as LexicalKind;
+      if (!confirmKindChange(draft, select.value as LexicalKind)) {
+        select.value = draft.kind ?? "other";
+        return;
+      }
       saver.touch();
       refreshPrimary();
     });
@@ -250,21 +376,28 @@ export async function typePage(
   const refreshPrimary = () => {
     const button = primary.querySelector<HTMLButtonElement>(".btn-primary");
     if (!button) return;
-    button.textContent = nextActionLabel(draft.kind);
+    button.textContent = labelFor();
+    typeReview.hidden = !draft.review.includes("word type");
+    renderRoots();
     button.disabled = !draft.kind;
   };
   primary = actionBar(saver, {
     back: { label: "Back", href: "/new/meaning" },
     primary: {
-      label: nextActionLabel(draft.kind),
+      label: labelFor(),
       disabled: !draft.kind,
       action: async () => {
-        if (!draft.kind) return;
-        draft.step = Math.max(draft.step, 3) as Draft["step"];
+        if (!draft.kind || !confirmKindChange(draft, draft.kind)) return;
+        const places =
+          spelling && (draft.kind === "gismu" || draft.kind === "fuhivla");
+        draft.step = Math.max(draft.step, places ? 4 : 3) as Draft["step"];
         if (!(await saver.flush())) return;
-        navigate(formPath(draft));
+        navigate(places ? "/new/places" : formPath(draft));
       },
     },
   });
   main.append(primary);
+  main.addEventListener("assist-change", refreshPrimary, {
+    signal: context.signal,
+  });
 }

@@ -79,6 +79,13 @@ const frame = (description = "A traveler.") => ({
   constraints: [],
 });
 function completion(answer: unknown, summary = "") {
+  if (answer && typeof answer === "object" && "word_type" in answer)
+    answer = {
+      alternative: null,
+      alternative_reason: null,
+      existing: null,
+      ...answer,
+    };
   return {
     choices: [
       {

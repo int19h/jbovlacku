@@ -197,6 +197,9 @@ Rafsi claims retain their separate pair judgments, status, conflicts, and ration
 
 The first wizard screen uses two columns with a 40px gap when space permits.
 The left column asks “What does the word mean?” and provides a meaning textarea, language select, and optional Lojban word.
+Below the optional word field, show local morphology detection and the exact-word lookup state.
+An existing word shows “Already exists”, a word link, its definitions, and “Add a definition”.
+An unavailable lookup says that the word could not be checked and offers the consent-based remote check.
 The right column is “Close in meaning,” with existing words and exact definitions.
 Both columns can start from a 360px basis and stack at narrow widths.
 
@@ -207,6 +210,10 @@ The best match offers “Add a definition” and “Revise this one.” Other ma
 The author can continue despite every match. The bottom action area shows “Saved in this browser” and “New word.”
 Underscores remain draft placeholders until the author approves their numbering.
 The original meaning remains separate from later editable definition prose.
+Each semicolon restarts blank numbering at 1. The displayed count is the highest place number in any part.
+Unescaped circled numerals and `{place N}` reserve explicit numbers within each part. Blanks take the free numbers in order.
+Only a backslash before a circled character acts as an escape in Meaning. All other backslashes stay as typed.
+The count reports places rather than occurrences.
 
 ## Type screen, step 2
 
@@ -218,6 +225,13 @@ The card grid uses approximately 230px minimum columns where available, then one
 The main column uses a 480px basis and the suggestion panel a 260px basis, with a 40px gap.
 An explicit AI action can mark a proposal “AI pick” and show its reason. It does not select the type automatically.
 “Have the spelling already? Type it in and skip the builder” opens manual entry.
+A typed word preselects its detected type. Unknown analysis shows its diagnostics and leaves experimental types available.
+An unconfirmed preselection follows spelling corrections. Confirmed choices stay selected until the author changes them.
+Selecting or confirming a type clears its review notice.
+Forward step links and the full-editor link also confirm the current type.
+Cancellation of evidence removal keeps the previous selection visible.
+One confirmation action opens Places for gismu and fu'ivla, the component builder for lujvo, or Form for the other kinds.
+Beside confirmation, a typed gismu shows linked closeness warnings and an optional “Add source-language evidence” action.
 The primary button names the selected next action, such as “Build the lujvo.”
 Type changes preserve prose and annotations and require review before incompatible formation fields disappear.
 
@@ -230,6 +244,11 @@ Direct navigation to Places preserves manual spelling, classification, and notes
 
 The main builder uses a 480px basis. The definition column uses a 300px basis, with a 40px gap.
 The result card shows the 44px form with underlined component rafsi, construction score, and recovered components.
+A typed lujvo offers a source-word selector when a rafsi has competing assignments. Its exact rafsi and joins stay locked.
+An unknown source stays blank. “Continue without compound metadata” proceeds without source attribution.
+Saving compound metadata requires an explicit source word for every part.
+Its only candidate is the typed word. Builder actions ask before replacing a typed spelling.
+Only rows from typed analysis use this fixed layout. Ordinary rows and saved rows with unknown origin stay editable.
 A taken or available label names its snapshot and coverage limits. It never promises global uniqueness.
 A construction score describes the stated algorithm. It does not guarantee readability or editorial endorsement.
 
@@ -283,6 +302,15 @@ The definition uses an actual accessible rich-text editor, with Place insertion,
 Glosses appear as removable chips with an add field. Every removal target meets the 44px rule.
 Place rows show Description, Gloss, Kind of thing, and From, followed by “Add a place.”
 Repeated field labels include the place number in their accessible names.
+Before numbering approval, show each semicolon-separated part with its numbered preview and the places that it uses.
+Keep this breakdown beside the numbering action, including after the author uses the proposed definition.
+
+The Places step and the full editor show a note above three declared places, for every word type.
+Count each declared numbered place and count a repeating tail once. Null frames and constructed-predicate operands do not count.
+Use the exact heading, text, and “More about places” help in the [frontend specification](frontend.md#step-4-places-glosses-and-supporting-fields).
+The firmer text starts at six places. The note never blocks Next or Publish and requires no acknowledgment.
+Offer “Hide for this draft” with a 44px touch target. Keep that choice in the local draft only, outside signed records.
+Use the warning colors and a named disclosure for the help. Keep the text readable at 360 CSS pixels.
 
 | Arity control | Format representation | Required behavior |
 | --- | --- | --- |

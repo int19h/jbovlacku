@@ -1,5 +1,10 @@
 import { test, expect, type Page } from "@playwright/test";
-import { corePath, fixture, fingerprintText } from "./helpers.ts";
+import {
+  corePath,
+  fixture,
+  fingerprintText,
+  expectKindSpelling,
+} from "./helpers.ts";
 
 /**
  * Opens the Source disclosure of the definition on the page by its exact
@@ -1598,4 +1603,24 @@ test("signed record disclosures retain each body's original omitted or explicit 
     page.getByRole("textbox", { name: "Definition text" }),
   ).toHaveValue("Definition defaults disclosure fixture.");
   await expect(page.getByLabel("Description for place 1")).toHaveValue("");
+});
+
+test("revision comparisons display fu'ivla for the fuhivla classification", async ({
+  page,
+}) => {
+  const f = fixture();
+  await page.goto(`/word/${f.words.cukta}?lang=en`);
+  await page.evaluate(async (id) => {
+    const { loadDefinition } = await import(String("/src/data/api.ts"));
+    const { comparison } = await import(String("/src/pages/definition.ts"));
+    const parent = await loadDefinition(id);
+    const child = structuredClone(parent);
+    child.body.classification.kind = "fuhivla";
+    const result = comparison(parent, child);
+    document.querySelector("main")!.replaceChildren(result);
+  }, f.definitions.cukta1);
+  const changes = page.getByRole("region", { name: "Changed fields" });
+  await expect(changes).toContainText("Type");
+  await expect(changes).toContainText("fu'ivla");
+  await expectKindSpelling(page);
 });

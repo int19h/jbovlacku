@@ -51,6 +51,9 @@ async function savedView(page: Page, failure = "none") {
         revision: "saved",
       };
       const store = {
+        async savedDrafts() {
+          return [];
+        },
         async get(name: string, key: string) {
           if (name === "outbox" && holdReads)
             await new Promise<void>((resolve) => readReleases.push(resolve));

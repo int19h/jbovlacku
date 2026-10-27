@@ -28,6 +28,8 @@ import {
 } from "../../../../packages/core/src/browser.ts";
 import {
   componentId,
+  newLujvoState,
+  normalizeLujvoEvidence,
   formationSource,
   normalizeSourceRow,
   syncFormationSources,
@@ -37,6 +39,12 @@ import {
   type GismuRowState,
   type SourceReview,
 } from "./builders.ts";
+
+import {
+  changeTypedWord,
+  reconcileLujvoUndo,
+  typedWord,
+} from "./typed-headword.ts";
 
 export type Operation =
   | "type"
@@ -56,6 +64,12 @@ export interface Current {
   compound: Compound | null;
 }
 export interface Suggestion {
+  existing?: {
+    word: string;
+    event: string;
+    conversion: "se" | "te" | "ve" | "xe" | null;
+    revised_definition: string | null;
+  } | null;
   operation: Operation;
   draft_revision: string;
   proposals: { path: string; value: unknown }[];
@@ -97,8 +111,17 @@ export interface AssistanceData {
 
 /** Revision changes from saving do not make an otherwise unchanged suggestion stale. */
 export function draftFingerprint(draft: Draft): string {
-  const { revision, updatedAt, ai, retainedWordIpaNullSources, ...fields } =
-    draft;
+  const {
+    revision,
+    updatedAt,
+    ai,
+    retainedWordIpaNullSources,
+    savedDrafts,
+    revisionNotice,
+    ...fields
+  } = draft;
+  void savedDrafts;
+  void revisionNotice;
   void revision;
   void updatedAt;
   void ai;
@@ -229,7 +252,7 @@ export function validateSuggestion(
     s.operation !== operation ||
     s.draft_revision !== revision ||
     !Array.isArray(s.proposals) ||
-    !s.proposals.length ||
+    (!s.proposals.length && operation !== "type") ||
     typeof s.explanation !== "string" ||
     !s.provenance ||
     typeof s.provenance.provider !== "string" ||
@@ -239,6 +262,28 @@ export function validateSuggestion(
     typeof s.log !== "object"
   )
     throw new Error("The server returned an invalid suggestion.");
+  if (s.existing !== undefined && s.existing !== null) {
+    const existing = s.existing;
+    if (
+      operation !== "type" ||
+      !s.proposals.length ||
+      Object.keys(existing).sort().join(",") !==
+        "conversion,event,revised_definition,word" ||
+      typeof existing.word !== "string" ||
+      !existing.word.trim() ||
+      Array.from(existing.word).length > 64 ||
+      typeof existing.event !== "string" ||
+      !/^jve1:[0-9a-f]{64}$/.test(existing.event) ||
+      ![null, "se", "te", "ve", "xe"].includes(existing.conversion) ||
+      !(
+        existing.revised_definition === null ||
+        (typeof existing.revised_definition === "string" &&
+          !!existing.revised_definition.trim() &&
+          Array.from(existing.revised_definition).length <= 600)
+      )
+    )
+      throw new Error("The existing word suggestion is invalid.");
+  }
   const seen = new Set<string>();
   for (const p of s.proposals) {
     if (!p || !roots[operation].includes(p.path) || seen.has(p.path))
@@ -272,6 +317,7 @@ export function validateSuggestion(
       explanation: s.explanation,
       provenance: s.provenance,
       usage: s.usage,
+      ...(s.existing !== undefined ? { existing: s.existing } : {}),
     }),
     log_json: compactJson(s.log),
   };
@@ -317,16 +363,24 @@ export function applyFrame(draft: Draft, frame: Frame | null) {
 }
 /** Proposals remain ordinary editable data. Publication uses the existing signer. */
 export function applyProposals(draft: Draft, result: Suggestion) {
+  if (draft.lujvo) normalizeLujvoEvidence(draft.lujvo);
   const baseline =
     result.operation === "definition" || result.operation === "places-glosses"
       ? assistanceProblems(draft)
       : undefined;
-  for (const proposal of result.proposals) {
+  // Discard replaced evidence before deciding which retained fields need review.
+  const proposals = [...result.proposals].sort(
+    (left, right) =>
+      Number(right.path === "/compound") - Number(left.path === "/compound"),
+  );
+  for (const proposal of proposals) {
     const value = structuredClone(proposal.value);
     switch (proposal.path) {
       case "/word_type":
         if (draft.kind !== value) draft.selmaho = [];
         draft.kind = value as Draft["kind"];
+        delete draft.autoDetectedKind;
+        draft.review = draft.review.filter((field) => field !== "word type");
         break;
       case "/classification/selmaho":
         draft.selmaho = value as string[];
@@ -344,8 +398,9 @@ export function applyProposals(draft: Draft, result: Suggestion) {
         }));
         break;
       case "/spelling":
-        draft.spelling = value as string;
-        draft.publishAcknowledged = [];
+        changeTypedWord(draft, value as string);
+        if (result.proposals.some((p) => p.path === "/compound"))
+          draft.typedSpelling = null;
         break;
       case "/compound": {
         const compound = value as Compound;
@@ -381,18 +436,30 @@ export function applyProposals(draft: Draft, result: Suggestion) {
             "The proposed form does not match its deterministic construction.",
           );
         draft.lujvo = {
-          ...draft.lujvo,
+          ...newLujvoState(),
           profile: draft.lujvo?.profile ?? "cll",
+          ...(draft.lujvo?.restoredEvidenceHistory
+            ? {
+                restoredEvidenceHistory: structuredClone(
+                  draft.lujvo.restoredEvidenceHistory,
+                ),
+              }
+            : {}),
+          ordinarySpelling: typedWord(draft.spelling),
+          restoredReleased: true,
           components,
           selected: typeof spelling === "string" ? spelling : null,
           acknowledged: [],
         };
         // The builder supplies formation evidence only after the author uses a checked candidate.
         draft.compound = null;
-        draft.evidenceForm = null;
+        if (!draft.formation) draft.evidenceForm = null;
         break;
       }
     }
+  }
+  if (result.proposals.some((p) => p.path === "/compound") && draft.lujvo) {
+    draft.lujvo.ordinarySpelling = typedWord(draft.spelling);
   }
   if (
     result.operation === "definition" ||
@@ -927,6 +994,7 @@ export function restorePatches(draft: Draft, record: AssistanceRecord): number {
     else delete row.sourceReview;
   }
   syncFormationSources(draft);
+  reconcileLujvoUndo(draft, record.before?.lujvo);
   return kept;
 }
 
@@ -1169,6 +1237,14 @@ export function assistanceLogRows(
   );
   text("This log stays in this browser with the draft. It is never published.");
   if (record.error) text(record.error);
+  if (log.related) {
+    heading("Related dictionary entries");
+    code(log.related);
+  }
+  if (log.morphology) {
+    heading("Spelling analysis");
+    code(log.morphology);
+  }
   for (const exchange of (Array.isArray(log.exchanges)
     ? log.exchanges
     : []) as Record<string, unknown>[]) {

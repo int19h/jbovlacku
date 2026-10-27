@@ -1,3 +1,8 @@
+import { kindLabel } from "../../model/types.ts";
+import {
+  clearWordEvidence,
+  selectWordKind,
+} from "../../model/typed-headword.ts";
 /** Shared wizard pieces: draft persistence, the step bar, and the action bar. */
 import {
   el,
@@ -95,6 +100,22 @@ export async function loadDraft(
   if (!app.session.storageAvailable) return null;
   legacyDraft = null;
   try {
+    let savedDrafts = await app.store.savedDrafts();
+    const resume = new URL(location.href).searchParams.get("resume");
+    if (resume && /^saved:[0-9a-f-]{36}$/.test(resume)) {
+      const saved = await app.store.get<Draft>("drafts", resume);
+      if (saved?.version === 2) {
+        const current = await app.store.get<Draft>("drafts", DRAFT_KEY);
+        const restored = await app.store.switchDraft(
+          current?.revision ?? null,
+          { resume },
+        );
+        savedDrafts = restored.savedDrafts ?? [];
+        const url = new URL(location.href);
+        url.searchParams.delete("resume");
+        history.replaceState(history.state, "", url);
+      }
+    }
     const stored = await app.store.get<Draft>("drafts", DRAFT_KEY);
     if (stored && stored.version !== 2) {
       // An old draft stays untouched. The meaning page offers export, conversion, or discard.
@@ -102,6 +123,7 @@ export async function loadDraft(
       return null;
     }
     if (stored && stored.version === 2) {
+      stored.savedDrafts = savedDrafts;
       stored.lujvo ??= null;
       stored.gismu ??= null;
       if (!stored.revision) {
@@ -153,6 +175,25 @@ export function guardDraftNavigation(
   const saver = pendingSaver;
   // Without a saver the verdict is synchronous, so ordinary navigation stays synchronous.
   if (!saver) return true;
+  const path = new URL(target, location.href).pathname;
+  const forward = [
+    "/new/lujvo",
+    "/new/gismu",
+    "/new/form",
+    "/new/places",
+    "/new/publish",
+    "/new/editor",
+  ].includes(path);
+  if (forward && saver.draft.autoDetectedKind !== undefined) {
+    const kind =
+      path === "/new/lujvo"
+        ? "lujvo"
+        : path === "/new/gismu"
+          ? "gismu"
+          : saver.draft.kind;
+    if (!confirmKindChange(saver.draft, kind)) return false;
+    saver.touch();
+  }
   if (saver.leaving === target) {
     saver.detach();
     return true;
@@ -407,7 +448,25 @@ export function stepBar(draft: Draft, current: number): HTMLElement {
     link("Skip to the full editor", "/new/editor", { class: "meta step-skip" }),
   );
   bar.append(inner);
+  bar.append(savedDraftLinks(draft.savedDrafts ?? []));
   return bar;
+}
+/** The independent saved index also supplies links when there is no current draft. */
+export function savedDraftLinks(
+  entries: NonNullable<Draft["savedDrafts"]>,
+): HTMLElement {
+  const links = el("div", { class: "saved-drafts" });
+  for (const [index, saved] of entries.entries())
+    links.append(
+      link(
+        index === entries.length - 1
+          ? "Return to the saved draft"
+          : `Open saved draft: ${saved.label}`,
+        `/new/meaning?resume=${encodeURIComponent(saved.key)}`,
+        { class: "touch-link" },
+      ),
+    );
+  return links;
 }
 export interface ActionBarOptions {
   back?: { label: string; href: string } | null;
@@ -455,6 +514,7 @@ export async function startDraft(
   pendingSaver?.detach();
   const draft = newDraft(patch);
   await app.store.saveDraft(DRAFT_KEY, draft, expected);
+  draft.savedDrafts = await app.store.savedDrafts();
   return draft;
 }
 /**
@@ -485,17 +545,11 @@ export function confirmKindChange(
   const dropping = formationFieldsFor(kind, draft);
   if (dropping.length && draft.kind !== kind) {
     const ok = confirm(
-      `Changing the type to ${kind ?? "none"} no longer uses: ${dropping.join(", ")}. Remove those fields? The prose and annotations stay.`,
+      `Changing the type to ${kindLabel(kind ?? "none")} no longer uses: ${dropping.join(", ")}. Remove those fields? The prose and annotations stay.`,
     );
     if (!ok) return false;
-    if (kind !== "lujvo") draft.compound = null;
-    if (kind !== "gismu") {
-      draft.formation = null;
-      for (const row of draft.gismu?.rows ?? []) delete row.sourceReview;
-    }
-    if (!draft.compound && !draft.formation) draft.evidenceForm = null;
   }
-  draft.kind = kind;
+  selectWordKind(draft, kind);
   return true;
 }
 /** Removes structured evidence only after the author confirms the exact loss. */
@@ -507,9 +561,6 @@ export function removeFormationEvidence(draft: Draft): boolean {
     )
   )
     return false;
-  draft.compound = null;
-  draft.formation = null;
-  draft.evidenceForm = null;
-  draft.publishAcknowledged = [];
+  clearWordEvidence(draft);
   return true;
 }

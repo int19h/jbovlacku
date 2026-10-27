@@ -134,7 +134,7 @@ export type LexicalKind =
   | "gismu"
   | "cmavo"
   | "lujvo"
-  | "fuivla"
+  | "fuhivla"
   | "cmevla"
   | "compound"
   | "letteral"
@@ -143,12 +143,16 @@ export const lexicalKinds: LexicalKind[] = [
   "gismu",
   "cmavo",
   "lujvo",
-  "fuivla",
+  "fuhivla",
   "cmevla",
   "compound",
   "letteral",
   "other",
 ];
+/** The human spelling of a lexical kind. Stored values stay unchanged. */
+export function kindLabel(kind: string): string {
+  return kind === "fuhivla" ? "fu'ivla" : kind;
+}
 /** Interpreted definition content. Retained signed JSON can omit optional fields. */
 export interface DefinitionBody {
   word: WordObject;

@@ -315,14 +315,14 @@ function definition(
       {
         "cmavo-compound": "compound",
         "bu-letteral": "letteral",
-        "fu'ivla": "fuivla",
+        "fu'ivla": "fuhivla",
       } as Record<string, string>
     )[kind ?? ""] ?? kind;
   const supported = new Set([
     "gismu",
     "cmavo",
     "lujvo",
-    "fuivla",
+    "fuhivla",
     "cmevla",
     "compound",
     "letteral",

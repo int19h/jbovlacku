@@ -832,7 +832,7 @@ fn required_semantic<'de, D: serde::Deserializer<'de>>(
     Option::deserialize(deserializer)
 }
 // Versioned golden files in tests/fixtures are immutable. A projection change needs a new version.
-pub const HOST_RECORD_VERSION: u32 = 2;
+pub const HOST_RECORD_VERSION: u32 = 5;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct HostRecord {
@@ -910,7 +910,7 @@ fn decode_host_record(bytes: &[u8]) -> Result<HostRecord> {
     Ok(record)
 }
 
-pub const SEMANTIC_PROJECTION_VERSION: u32 = 1;
+pub const SEMANTIC_PROJECTION_VERSION: u32 = 2;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct HostSemanticRecord {
@@ -1255,9 +1255,10 @@ pub fn analyze_word(profile: &str, spelling: &str) -> std::result::Result<String
     let profile = match profile {
         "cll" => jvc_morphology::Profile::Cll,
         "extended" => jvc_morphology::Profile::Extended,
+        "extended-v2" => jvc_morphology::Profile::ExtendedV2,
         _ => {
             return Err(builder_fail(jvc_morphology::BuilderError::Invalid {
-                message: "The profile is cll or extended.".into(),
+                message: "The profile is cll, extended, or extended-v2.".into(),
             }));
         }
     };

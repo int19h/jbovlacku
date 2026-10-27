@@ -23,7 +23,11 @@ import {
   AssistanceError,
   type AssistanceOptions,
   type ContextDefinition,
+  type AssistRequest,
+  type TypeDictionary,
 } from "./assistance.ts";
+import { nearbyQuery, rankNearby } from "./nearby.ts";
+import { lexicalSearch } from "./lexical-search.ts";
 import {
   checkpointBindingKey,
   type CheckpointBinding,
@@ -200,7 +204,134 @@ export class DictionaryService {
         }
         return definitions;
       },
+      (request, context, signal) =>
+        this.typeDictionary(request, context, signal),
     );
+  }
+  /** Replace lexical retrieval here when an available semantic route is disclosed. */
+  private async typeDictionary(
+    request: AssistRequest,
+    context: ContextDefinition[],
+    signal: AbortSignal,
+  ): Promise<TypeDictionary> {
+    const snapshot = await this.interpretedSnapshot(null);
+    const packages = await this.packages(snapshot);
+    const query_words = nearbyQuery(request.meaning);
+    const entries = new Map(
+      packages.entries.map((entry) => [entry.event, entry.word.spelling]),
+    );
+    const result: TypeDictionary = {
+      snapshot: snapshot.snapshot,
+      method: "none",
+      query_words: [],
+      related: [],
+      entries,
+    };
+    if (packages.effectiveDefinitions === null || !packages.entries.length)
+      return result;
+    const view = this.options.selectedView ?? zeroView;
+    const evaluation = await this.evaluation(snapshot, view);
+    if (!evaluation.available) return result;
+    const active = (event: string) => {
+      const publication = evaluation.publications[event];
+      return (
+        publication?.eligible === "eligible" &&
+        publication.status === "active" &&
+        evaluation.receipts[event]?.interpretation === "effective"
+      );
+    };
+    const byEvent = new Map(
+      packages.entries.map((entry) => [entry.event, entry]),
+    );
+    const spelling = request.current.spelling?.trim().normalize("NFC");
+    signal.throwIfAborted();
+    const searches = query_words.map((query) => {
+      signal.throwIfAborted();
+      return lexicalSearch(
+        packages.entries,
+        query,
+        request.language,
+        evaluation,
+      );
+    });
+    result.method = query_words.length || spelling ? "lexical" : "none";
+    result.query_words = query_words;
+    const relevance = (entry: (typeof packages.entries)[number]) => {
+      const definition = entry.plain_text.toLocaleLowerCase("en");
+      const glosses = entry.glosses.map((gloss) =>
+        gloss.text.toLocaleLowerCase("en"),
+      );
+      return query_words.reduce(
+        (score, query) =>
+          score +
+          (glosses.includes(query)
+            ? 3
+            : glosses.some((gloss) => gloss.startsWith(query))
+              ? 2
+              : definition.includes(query)
+                ? 1
+                : 0),
+        0,
+      );
+    };
+    const supplied = new Set(context.map((entry) => entry.event));
+    const exactCandidates = spelling
+      ? packages.entries.filter(
+          (entry) =>
+            entry.word.spelling.normalize("NFC") === spelling &&
+            entry.language === request.language &&
+            active(entry.event) &&
+            !supplied.has(entry.event),
+        )
+      : [];
+    const editorial = new Map<string, number>();
+    if (exactCandidates.length > 1) {
+      const key = snapshot.snapshot + "|" + view;
+      const session = this.sessions.get(key);
+      if (session) {
+        try {
+          const ranking = await this.useSession(key, () =>
+            session.rankWord(
+              evaluation.publications[exactCandidates[0].event].word,
+            ),
+          );
+          for (const [index, layer] of (ranking.layers as string[][]).entries())
+            for (const event of layer) editorial.set(event, index);
+        } catch {
+          /* A missing score keeps the lexical fallback available. */
+        }
+      }
+    }
+    const exact = exactCandidates
+      .sort(
+        (a, b) =>
+          (editorial.get(a.event) ?? Infinity) -
+            (editorial.get(b.event) ?? Infinity) ||
+          relevance(b) - relevance(a) ||
+          (a.event < b.event ? -1 : a.event > b.event ? 1 : 0),
+      )
+      .slice(0, 3);
+    const append = (entry: (typeof packages.entries)[number]) => {
+      const characters = Array.from(entry.plain_text);
+      result.related.push({
+        event: entry.event,
+        word: entry.word.spelling,
+        kind: (entry.classification as { kind: string }).kind,
+        definition: characters.slice(0, 500).join(""),
+        ...(characters.length > 500 ? { truncated: true as const } : {}),
+      });
+    };
+    // Exact senses retain their separate definitions. Search words appear once.
+    exact.forEach(append);
+    const words = new Set(exact.map((entry) => entry.word.spelling));
+    for (const hit of rankNearby(searches)) {
+      if (result.related.length === 30) break;
+      const entry = byEvent.get(hit.preview.event)!;
+      if (supplied.has(entry.event) || words.has(entry.word.spelling)) continue;
+      words.add(entry.word.spelling);
+      append(entry);
+    }
+    return result;
   }
   private canonicalEnvelopes = new Map<string, string>();
   private importSelections = new Map<string, string[]>();
@@ -2148,97 +2279,12 @@ export class DictionaryService {
       if (retiredFlag !== null && retiredFlag !== "1")
         throw new ApiError(400, "retired", "retired must be 1 when present.");
       const includeRetired = retiredFlag === "1";
-      const q = query.toLocaleLowerCase("en");
-      const kinds = [
-        "headword",
-        "gloss",
-        "headword-prefix",
-        "gloss-prefix",
-        "token",
-      ];
-      const hits = new Map<
-        string,
-        {
-          word: unknown;
-          word_id: string;
-          match: string;
-          definitions: string[];
-          preview: {
-            event: string;
-            word_kind: string;
-            plain_text: string;
-            status: string;
-          };
-        }
-      >();
-      for (const entry of (await this.packages(snapshot)).entries) {
-        const publication = evaluation.publications[entry.event];
-        if (
-          entry.language !== language ||
-          !publication ||
-          evaluation.receipts[entry.event]?.interpretation !== "effective" ||
-          publication.eligible !== "eligible" ||
-          (publication.status !== "active" && !includeRetired)
-        )
-          continue;
-        const spelling = entry.word.spelling.toLocaleLowerCase("en");
-        const glosses = entry.glosses.map((g) =>
-          g.text.toLocaleLowerCase("en"),
-        );
-        const match =
-          spelling === q
-            ? "headword"
-            : glosses.includes(q)
-              ? "gloss"
-              : spelling.startsWith(q)
-                ? "headword-prefix"
-                : glosses.some((g) => g.startsWith(q))
-                  ? "gloss-prefix"
-                  : entry.plain_text.toLocaleLowerCase("en").includes(q)
-                    ? "token"
-                    : null;
-        if (!match) continue;
-        const wordId = publication.word;
-        const classification = entry.classification as {
-          kind?: unknown;
-        } | null;
-        const plainText = entry.plain_text.replace(/\s+/gu, " ").trim();
-        const characters = Array.from(plainText);
-        const preview = {
-          event: entry.event,
-          word_kind:
-            typeof classification?.kind === "string"
-              ? classification.kind
-              : "unknown",
-          plain_text:
-            characters.length > 240
-              ? characters.slice(0, 239).join("") + "…"
-              : plainText,
-          status: publication.status,
-        };
-        const old = hits.get(wordId);
-        if (old) {
-          old.definitions.push(entry.event);
-          if (
-            kinds.indexOf(match) < kinds.indexOf(old.match) ||
-            (match === old.match && entry.event < old.preview.event)
-          ) {
-            old.match = match;
-            old.preview = preview;
-          }
-        } else
-          hits.set(wordId, {
-            word: entry.word,
-            word_id: wordId,
-            match,
-            definitions: [entry.event],
-            preview,
-          });
-      }
-      const ordered = [...hits.values()].sort(
-        (a, b) =>
-          kinds.indexOf(a.match) - kinds.indexOf(b.match) ||
-          a.word_id.localeCompare(b.word_id),
+      const ordered = lexicalSearch(
+        (await this.packages(snapshot)).entries,
+        query,
+        language,
+        evaluation,
+        includeRetired,
       );
       const cursorHash = this.hashJson({
         query,

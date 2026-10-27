@@ -18,6 +18,10 @@ Native and WebAssembly builds share the format rules. The TypeScript application
 The definition validator accepts omitted [optional definition fields](docs/format.md#absent-fields-and-compatibility) and their explicit default values.
 Readers and editors apply defaults to separate interpreted values. Stored bodies, exports, hashes, signatures, and event IDs retain the original signed content.
 New definitions omit optional fields with default values. Required fields and imported source evidence remain required.
+The signed lexical kind for fu'ivla is `fuhivla`. The browser uses one shared label helper to display "fu'ivla".
+Raw JSON inspectors retain the signed label.
+The validator rejects the earlier `fuivla` label without an alias.
+A new version of each private projection forces backfill of stored validation results under the current schema.
 Formation sources accept an omitted or null `word_ipa`. They reject `stem` and `ipa`, including null and empty values.
 
 The shared core accepts `entity`, `mass`, and `tuple` as retired tags in signed version 1 bodies.
@@ -78,6 +82,11 @@ The [importer guide](packages/importer/README.md) describes its input, journal, 
 
 The guided wizard has five steps: Meaning, Type, Form, Places, and Publish. The full editor opens every field section and permits manual headword and type entry.
 Manual authoring works without AI. Publish signs the definition, a separate author blessing, selected rafsi claims, and their pair blessings as one locally persisted group.
+Meaning placeholders restart at 1 after each semicolon. Explicit circled numbers and `{place N}` reserve their numbers within each part.
+Blanks take the free numbers in order. The count is the highest place number, and the Places step previews each part before approval.
+Meaning treats only a backslash before a circled numeral as an escape. It preserves every other backslash.
+The Places step and the full editor offer hideable advice above three declared places, with firmer text above five.
+A repeating tail counts once. The advice applies to every word type and never blocks publication or enters signed records.
 Revise copies a publication into a new draft with its exact parent and keeps every field: links, code, operands, literal circled characters, every gloss with its language and sense, every derivation, and the frame role. The page names the only changes a native revision makes. A revision of imported text cites the imported publication and copies the source-rights reference once.
 Each rich text field of a draft holds its exact value, and only an edit of that field parses text, so an untouched field never changes. In structured editing every rich text node has a text form, and a backslash keeps a circled numeral or a token character literal. Pasted circled numbers stay literal unless the author chooses references. Removing a place keeps the referent of every other reference. The shared core checks the finished body before Publish is enabled, and every blocking problem names its field.
 A draft saved by the earlier prototype opens a choice to export it, convert it into a wizard draft, or discard it. The old license and attribution fields stay in the export only, because new definitions publish under CC0 1.0.
@@ -95,7 +104,48 @@ The lujvo builder says whether a candidate spelling is taken in the local packag
 The rafsi page lists known assignments across words from version 2 packages, and the claim page signs a claim with its pair blessing.
 The lujvo builder offers short rafsi, gismu stems, whole gismu, whole-word parts under the extended profile, locks, CLL scores, recovered parts, and every competing rafsi claim from the local package.
 If several parts share the same competing rafsi claim, the builder shows one acknowledgment for that claim.
-Choosing [optional hyphens](docs/morphology.md) in the lujvo builder remains a target change. The builder adds only the required hyphens.
+A word entered on Meaning gets local form detection and an exact identity lookup in the selected language package.
+A remote exact-word check requires consent for that word and language. Missing coverage stays visible.
+Type confirmation opens Places for a typed gismu or fu'ivla, source linking for a lujvo, and Form for the other kinds.
+The typed lujvo path locks the exact analyzed rafsi and joins, including [optional hyphens and experimental forms](docs/morphology.md).
+It preserves the entered spelling through publication, including case, commas, and framing periods. Source choices and exact definitions stay editable.
+Unknown source fields stay blank. Authors can link every source to save compound evidence, or continue with no compound metadata.
+
+A changed or cleared typed spelling restores ordinary builder rows. A generated replacement reopens with editable rows.
+A replacement typed lujvo starts fresh analysis, including a return to an earlier spelling before the builder reopens.
+A private origin marker distinguishes typed analysis from ordinary rafsi locks. Meaning visits and evidence removal preserve ordinary row editing.
+
+Saved rows with unknown origin stay editable and keep their signed version, boundaries, and matching joins.
+Spelling corrections preserve restored joins and compatible author-linked sources, exact definitions, and claims.
+Restored older profiles preserve accepted case, commas, and apostrophe variants after an exact match with the core construction.
+Released restoration stays released through reopening, reload, and rafsi relocking.
+Removing every row from a published revision starts a complete signed restoration on the next matching builder visit.
+It restores sources, locks, profile, and exact joins together, including `bangu'y'ismu` and `sairzba`.
+
+Fresh typed analysis uses matching signed or restored profile evidence instead of a private ordinary profile choice.
+Profile history survives visits to other typed words and removal of compound evidence.
+An unsupported historical reading keeps ordinary profile choices across reopening and reload.
+AI component acceptance creates clean ordinary rows. Conditional Undo restores prior construction and preserves later author edits.
+Component-only suggestions and evidence-only gismu Use preserve typed identity and the later replacement confirmation.
+Replaced evidence does not create a new spelling review. Retained annotations and earlier review marks stay intact.
+
+A [state model](docs/typed-headword-state.md) defines the shared transitions and their invariants.
+Seeded event sequences exercise those transitions with typed, legacy, and published-revision drafts.
+The event model inventories all production writers. Its seeded sequences include AI component and source apply and Undo.
+They also include gismu Use, manual Form Use, source synchronization, and all rafsi choices.
+Its preservation checks compare interpreted definition defaults while keeping real evidence edits and signed source bytes distinct.
+
+Historical fallback rows follow the current word and retry missing sources after a package download. Unresolved retries keep an authored ordinary profile.
+
+Unconfirmed type detection follows spelling corrections after confirmation of any evidence loss.
+Forward wizard links and direct Form or builder entry confirm the selected type. Cancellation keeps the previous type and evidence.
+A confirmed type stays selected, and completed type review clears its notice.
+
+New lujvo builders use the extended profile. Manual boundary controls for a generated spelling remain a target change.
+The CLL profile retains required-only construction and version 2. New extended construction and recognition use version 3.
+Saved extended version 2 records reopen with their original rules and component boundaries. Unknown versions stay unsupported.
+The extended profile permits `mz`, consonantal-syllable borrowings, and the experimental rafsi rules. The CLL and extended version 2 profiles retain their earlier rules.
+Source-language evidence scores a normalized gismu while its headword and evidence binding keep the typed bytes.
 The gismu generator offers the CLL 1987, CLL 1995, and Ilmen presets with pinned sources, custom weights, exact scores, tied ranks, per-language contributions, root and rafsi conflicts, and manual forms without fabricated evidence.
 The core and builders keep the optional full pronunciation, `word_ipa`, in signed formation sources.
 Draft reload preserves private `stem` and `ipa` values. Neither enters a signed formation source.
@@ -116,6 +166,20 @@ The [morphology profiles](docs/morphology.md) name the rules and versions that t
 
 Optional AI assistance offers suggestions for type, components, lujvo, cmavo class, source words, definition text, places, and glosses.
 The browser asks for consent before it sends draft fields. Suggestions need manual acceptance and support undo.
+Type suggestions can ask one question without changing the selected type, or name another possible type with its own reason.
+The server finds up to 30 related public definitions through lexical search and checks existing-word suggestions against the same snapshot.
+An existing-word suggestion can start an additional definition or a revision with an improved definition and undo.
+Both actions preserve the earlier draft. A place conversion opens the existing word page with its converted form and creates no publication.
+Adding a definition preserves every current field and marks spelling-dependent evidence for review.
+Revision actions show the ordinary notice about license and origin changes. Their exact parent and improved text keep the usual acceptance and undo flow.
+Saved-draft links survive wizard navigation and reload. Atomic returns consume the restored row and keep all other saved drafts reachable.
+An independent saved index also keeps those links after publication, replacement, discard, and ordinary revisions.
+Meaning can restore a saved draft without creating a new current draft first. Earlier orphaned saved rows migrate into the index.
+Existing-word actions also remain available after type acceptance.
+Related retrieval keeps up to three exact-spelling senses in editorial order and scans each lexical query once.
+Query cleanup keeps inner apostrophes. Logs distinguish lexical, semantic-profile, and absent retrieval.
+Related public definitions do not expand remembered consent. Semantic retrieval for type suggestions remains pending.
+Compound spelling parts also await the shared word analysis API. Type requests currently send only the forms that `analyzeWord` supplies.
 Source acceptance replaces earlier AI notes and preserves authored notes. A changed suggested word requires review of retained source evidence.
 Marked fields stay read-only until Keep or Clear. A type change that removes the formation also removes its review marks.
 Explicit evidence removal keeps the marks for reused source values. Undo restores required marks with returned values and preserves later review choices.
@@ -283,11 +347,11 @@ That run restored its checkpoint in 22.68 seconds. A later restart took 29.33 se
 The repaired host measurement uses `5aefd15`, with 59,125 imported definitions in 44 languages.
 Its checkpoint restart took 7.07 seconds. Recovery after the core digest changed took 70.72 seconds.
 
-| Visible write | Reviewed host, `b6c0354` | Repaired host, `5aefd15` |
-| --- | ---: | ---: |
-| Trust choice | 30.37 s | 8.38 s |
-| Native publication | 46.71 s | 9.53 s |
-| Judgment | 35.51 s | 5.39 s |
+| Visible write      | Reviewed host, `b6c0354` | Repaired host, `5aefd15` |
+| ------------------ | -----------------------: | -----------------------: |
+| Trust choice       |                  30.37 s |                   8.38 s |
+| Native publication |                  46.71 s |                   9.53 s |
+| Judgment           |                  35.51 s |                   5.39 s |
 
 The reviewed host peaked at 4.25 GiB. Three of 91 sampled word reads reached their three-second deadline.
 Twelve health probes reached their one-second deadline.

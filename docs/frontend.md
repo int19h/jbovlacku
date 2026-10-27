@@ -227,9 +227,24 @@ Each step saves the draft in this browser and exposes its save state.
 ### Step 1: meaning and nearby definitions
 
 The first step asks for a freeform definition and its language. A headword is optional at this point.
+The optional “Lojban word” field keeps a spelling that the author already chose.
+The app normalizes the spelling to NFC for word identity and analyses its form locally with `analyzeWord`.
+The app compares its `wordId` with the local language package. Remote lookup requires explicit consent for that word and language.
+An existing word shows “Already exists”, its linked word page, its definitions, and “Add a definition”.
+The author can continue with another definition of that word. An unavailable check says that the word could not be checked.
+A local package only establishes presence or absence in its named language and snapshot.
+
 The author can use `___` for argument placeholders, but ordinary prose also works.
 Underscores are an editor convention. The draft retains their spans without assigning final place numbers automatically.
 The app preserves this original meaning draft separately from the current editable definition.
+Each `;` restarts placeholder numbering at 1. The place count is the highest number used in any part.
+Unescaped circled numerals `①` through `⑳` and `{place N}` name explicit place numbers.
+Within each part, blanks take the free numbers in order, including when explicit numbers appear after the blanks.
+Only a backslash before a circled numeral is an escape in Meaning. It keeps that numeral literal.
+Every other backslash stays as typed, including doubled backslashes and backslashes before brackets, braces, or backticks.
+A backslash before `{place N}` stays literal and does not escape that place reference.
+The “N placeholders found” message reports places, rather than placeholder occurrences.
+Before approval on the Places step, the author sees each part and the places that it uses.
 
 The nearby-definition panel uses its local lexical package by default. It does not inherit remote upload from the ordinary search setting.
 If the package is missing, offer a download or continue manually. No private draft uploads passively.
@@ -249,15 +264,123 @@ Remote draft searches use POST bodies, not draft text embedded in navigable URLs
 
 ### Step 2: word type
 
-Ask which word type the author wants. Explain gismu, lujvo, cmavo, fu'ivla, cmevla, and other with short examples.
+Ask which word type the author wants. Explain all eight types: gismu, lujvo, cmavo, fu'ivla, cmevla, compound cmavo, letteral, and other.
+Other covers a fixed phrase or another form. The Other card exposes compound cmavo and letteral as separate choices.
 “Recommend a type” is an optional AI action. Its result includes a short explanation and does not select the type without acceptance.
+The explanation uses the language of the meaning. A meaning in Lojban gets an English explanation.
+A second possible type has its own reason after “Also possible: TYPE.” Acceptance applies only the main type.
+When the meaning gives too little information, the suggestion asks one question and offers Try again without Use this.
+That question keeps the selected card and every formation field.
+
+The server finds related public definitions inside the type job from the original meaning, independently of Step 1 searches.
+The lexical fallback uses up to six distinct query words. It removes whole-token place marks and punctuation at token ends and keeps inner apostrophes.
+It ranks words by matching query count, then summed search positions, then stable word ID.
+Each query scans the dictionary once with the same match tiers and order as ordinary lexical search.
+Up to three current definitions of the trimmed, NFC-normalized typed spelling come first.
+They follow ordinary editorial layers when available. Within one layer, exact gloss matches count three, gloss prefixes two, and definition-text matches one.
+The sum over query words decides relevance. Equal relevance uses stable event ID order.
+These exact senses keep separate records. Later lexical hits omit their spellings and every other duplicate spelling.
+The list excludes selected context events and holds at most 30 records in total.
+Each entry supplies its type and definition text without notes. A definition above 500 Unicode code points is cut and marked as truncated.
+The inference log records the snapshot and exact events in list order.
+It records lexical retrieval with its query words, semantic retrieval with its profile ID, or none when no search runs.
+The service sends its own spelling analysis when a spelling is present and records the morphology version in the log.
+The type prompt retains its approved `fuivla` identifier. The service translates between it and the app's `fuhivla` identifier at the type boundary.
+
+An existing-word block links to the word and offers Add a definition when the current definition fits.
+An improved definition appears with Revise this one. This action creates a local revision with the exact publication as its parent.
+The editor shows the same notice as ordinary Revise about changes to CC0, imported legacy content, and native origin.
+The improved text starts as a separate suggestion. Use this applies it with persistent Undo.
+For a conversion, such as `te vecnu`, the block offers Use te vecnu instead of Add a definition.
+That action opens the existing word page and shows the converted form. It creates no draft or publication.
+A conversion with an improved definition also offers Revise this one for the existing word in its own place order.
+Adding or revising saves the previous draft separately and offers Return to the saved draft.
+Add a definition copies every current field and uses the Step 1 spelling-change action. It preserves notes, places, glosses, sources, and evidence for review.
+An independent private `saved-index` row holds saved-draft links through every wizard route and reload.
+Current drafts hold a display copy only. Publication, replacement, discard, and ordinary revisions preserve the independent index in their transaction.
+Without a current draft, Meaning shows the saved links and an explicit Start a new definition action.
+Resuming in that state consumes the saved row without creating a blank archive. It requires that no other tab started a current draft.
+The first index read migrates earlier `saved:` rows, including orphaned rows with no current draft or backlink.
+Export drafts excludes the tagged index metadata and preserves earlier draft export formats.
+Returning also saves the draft that it leaves and consumes the restored saved row in one transaction.
+Other saved drafts remain linked. A failed or conflicting switch leaves every stored draft unchanged.
+No existing-word action publishes content.
+Use this for the proposed type remains available so that the author can continue with a new word.
+After type acceptance and reload, the existing-word block and its actions remain available beside Undo.
+A typed spelling preselects its detected type. The author confirms it with one action or selects another type.
+Word form alone cannot distinguish cmavo, compound cmavo, letterals, and experimental classifications.
+Unknown analysis shows its diagnostics and permits an experimental type.
+
+With a typed gismu or fu'ivla, type confirmation opens Places.
+A typed gismu shows nonblocking identical, final-vowel, and similar-consonant warnings beside confirmation, with links to every known conflicting word.
+Publish repeats that conflict review. Missing inventory coverage remains visible.
+An optional link opens the gismu builder for source-language evidence without replacing an equivalent typed spelling.
+Scoring uses the normalized form. The headword and its evidence binding keep the exact typed bytes.
+A different normalized candidate requires replacement confirmation.
+A typed lujvo opens the component builder. Cmavo, compound cmavo, letterals, cmevla, and other kinds open Form with the spelling filled in.
 The author can also enter an existing or custom spelling and continue manually.
+Changing the spelling updates detection and marks incompatible retained evidence for review.
+It preserves the type the author chose. An unconfirmed automatic type follows the new detection after the usual evidence-loss confirmation.
+Cancellation keeps the previous type and evidence, and marks the type for review.
+Selecting or confirming a type clears the type-review notice.
+Forward step links, the full-editor link, and direct Form or builder entry confirm the selected type too.
+
+A changed or cleared spelling exits the previous typed-lujvo mode.
+A replacement lujvo starts a fresh analysis, even when the author restores an earlier spelling before reopening the builder.
+Fresh analysis uses the morphology profile from matching signed or restored evidence.
+A private ordinary profile choice does not change that typed profile.
+
+That analysis preserves author-linked sources, exact definitions, and claims for compatible rafsi.
+Matching compound evidence supplies missing sources before dictionary suggestions do.
+The [headword state model](typed-headword-state.md) defines the private fields, events, and invariants.
 
 Changing type preserves the prose and annotations. The app identifies formation fields that no longer apply and asks before removing them.
 
 ### Step 3A: lujvo builder
 
 The builder contains ordered component rows, a candidate spelling, the current definition, and the preserved original meaning.
+For a typed lujvo, analysis supplies one component sequence.
+When a rafsi has several known source assignments, the author chooses its intended source word.
+A missing source stays blank. The author must link every source to save compound metadata.
+“Continue without compound metadata” preserves the spelling and saves no compound attribution.
+
+Every rafsi locks to its exact typed form, including full forms. Every boundary locks to its exact typed join, including optional hyphens.
+The only candidate is the typed spelling. The builder links source words and exact definitions without changing that spelling.
+Fixed typed layout requires an exact construction under the selected evidence profile.
+If a historical profile cannot construct that spelling, ordinary profile controls remain available.
+
+The fallback shows the current word's analyzed parts. Missing sources permit another analysis after a local package becomes available.
+Repeated unresolved analysis preserves an ordinary profile that the author already chose.
+
+A spelling accepted from the ordinary builder keeps editable component rows when the builder reopens.
+An explicit private marker identifies rows that typed analysis created. Rafsi locks and Meaning edits never create that marker.
+
+Saved rows without this origin marker stay editable, including after removal of compound evidence.
+They retain the signed morphology version, source boundaries, and matching joins.
+On first restoration without compound metadata, saved joins require matching spelling, locked parts, and complete analyzed boundaries.
+After restoration, joins and the exact spelling belong to their original rows, rafsi, and morphology profile.
+A spelling edit or removal of metadata keeps that association.
+A corrected headword can therefore recover its exact candidate, including case, commas, framing periods, and optional joins.
+
+Changing those rows, their order, their rafsi, or their morphology profile returns restored construction to automatic choices.
+That release persists through later builder visits and reloads.
+It remains released if the author restores an earlier lock or replaces rows with identical rafsi.
+If every row is removed from a published revision, the next builder visit starts a complete restoration from matching signed evidence.
+That restoration recovers sources, locks, profile, and exact joins together. It clears the former release and ordinary profile choice.
+Partial rows do not start that restoration. A spelling mismatch defers it until the signed spelling returns.
+The builder asks before an accepted candidate replaces a different entered headword.
+
+Accepted AI component suggestions create ordinary editable rows without inherited typed or restored construction.
+A suggested lujvo spelling uses ordinary selection semantics.
+Component-only suggestions keep the current headword's typed identity. A later Use still asks before replacing that headword.
+Undo restores the prior rows and their construction while the affected fields still match the accepted suggestion.
+It preserves later author edits under the same conditional Undo rules.
+Gismu acceptance also updates headword state before it binds generation evidence.
+Evidence-only gismu acceptance keeps equivalent typed bytes and their typed identity across repeated visits.
+Form replacements mark retained evidence and annotations for review. Evidence discarded by that same action cannot add a new spelling review.
+
+The typed path must reproduce every valid analyzed lujvo byte for byte, including extended `'y'` joins and irregular forms.
+The gismu and lujvo builders ask before replacing any spelling that the author typed.
 Authors can add dictionary words, enter recognized fu'ivla, reorder components, remove rows, or lock a particular rafsi.
 Component search includes cmavo and fu'ivla. It never filters the inventory to gismu alone.
 Each row shows source definitions and distinguishes listed assignments from automatically available long forms.
@@ -436,7 +559,32 @@ Removing a declared place requires removal, replacement, or literalization of ev
 
 A null frame means unspecified structure. The wizard never substitutes a guessed zero-place frame.
 
+The Places step and the full editor show a place-count note for every word type with more than three declared places.
+Count the declared numbered places. A repeating tail counts as one place.
+Null frames and operand places of constructed predicates do not count.
+The note never blocks Next or Publish and asks for no acknowledgment.
+The author can hide it for the current draft. This choice and the note leave no trace in signed records.
+
+For four or five places, the heading is “Does every place belong?” and the text is:
+
+> A place stays in the meaning even when nobody says it. Only zi'o removes it. That is why a container with no lid is not a botpi, whose x4 is the lid. Keep the places that the idea cannot do without, and add other details when needed with a tag such as sepi'o ("using tool").
+
+For six or more places, substitute the count for N in “Are all N places needed?” and use this text:
+
+> Few good definitions have more than five places, because a word with that many is hard to use. A place stays in the meaning even when nobody says it, and only zi'o removes it. Keep the places that the idea cannot do without, and add other details when needed with a tag such as sepi'o ("using tool").
+
+“More about places” explains that an omitted place is zo'e, the value that the speaker means.
+It cites CLL 7.7 and explains that zbasu still has a maker. zi'o makes a different relation, also under CLL 7.7.
+A modal adds a place to any bridi without changing the numbered ones, under CLL 9.5.
+Examples include BAI tags sepi'o, ma'e, and bau, and fi'o with any selbri.
+The help gives bamri as a good four-place example: x1 buys x2 from x3 for price x4.
+
 “Suggest places and glosses” is an optional AI action based on the current meaning, word form, component evidence, and existing draft annotations.
+The AI keeps every explicit participant with its number and order. It proposes additional places only when every use implies them.
+If an explicit participant fails that test, the AI keeps it and flags the doubt in `reason`.
+It puts modal tag offers and reasons for each place after the third in `reason`, outside place descriptions and definition text.
+When the request supplies no tag name, the AI describes the detail and says that a modal tag can add it.
+It names only Lojban words and tags that the request supplies.
 The result proposes typed fields and identifies unresolved mappings. The author reviews the rendered text and table before accepting changes.
 The definition of the whole word decides the meaning and the types. Component definitions only identify which role a place plays. Any word form that follows the selected morphology rules is accepted, including lower-scoring rafsi and optional hyphens.
 A type suggestion gives one to three alternatives for a place, each with a short reason. A line under the row lists each alternative and its reason. `unclear` means that the definition does not describe the place. An empty hint then reads “unspecified”. An existing hint stays unchanged.
@@ -556,7 +704,9 @@ For gismu sources, language, algorithm input, and weight determine the scores. N
 Source edits update the copy used for publication. An empty alternative row does not change the formation.
 A source reopened from signed evidence remains present even when its algorithm input is null.
 Validation preserves the draft. Loading an older draft synchronizes descriptive source edits once.
+Source synchronization preserves the formation's headword binding, including after AI source acceptance or conditional Undo.
 If scoring inputs change, publication waits for a new form selection or removal of the old evidence.
+Using manual Form with changed scoring inputs replaces the stale scores with manual evidence bound to the current headword.
 Unrelated definition and place suggestions remain usable. Acceptance refuses any new blocking frame or reference problem.
 The form action stays disabled while the generator recalculates. A chosen score must describe the exact current scoring inputs.
 Changing the chosen form invalidates morphology and conflict review. It marks formation-dependent annotations for review rather than deleting them.
@@ -935,7 +1085,7 @@ Public reads need no account. Public event admission follows published quotas an
 | Method and path                                                   | Contract                                                                                                                                                                                                             |
 | ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GET /capabilities`                                               | Format version, size limits, accepted body types, optional service capabilities, CORS policy, peer identity, and admission-policy link.                                                                              |
-| `GET /manifest`                                                   | Current snapshot, declared view, inventory manifest, cursors, and package availability. Raw discovery remains available when evaluation fails.                                                                          |
+| `GET /manifest`                                                   | Current snapshot, declared view, inventory manifest, cursors, and package availability. Raw discovery remains available when evaluation fails.                                                                       |
 | `GET /inventory?kind=K&snapshot=S&after=ID&limit=N`               | Sorted event, body, or import-selection IDs from one immutable snapshot, with next cursor.                                                                                                                           |
 | `GET /events/ID?snapshot=S`                                       | Exact envelope representation from the named snapshot, or explicit missing/withheld result.                                                                                                                          |
 | `GET /identity-heads/KEY?snapshot=S&after=ID&limit=N`             | Known maximal own event IDs for that key, from one snapshot.                                                                                                                                                         |
@@ -1485,6 +1635,10 @@ Public clients cannot turn an inference request into an arbitrary outbound URL f
 The first AI request shows one consent dialog for the selected provider and its declared tasks and data scope.
 The dialog names the server, provider, and fields sent. A broad scope is permitted only when the dialog declares it explicitly.
 Remembered consent applies only to that provider and scope. A new provider or expanded scope requires a new disclosure.
+Related public dictionary definitions and analysis of an already supplied spelling do not expand that scope.
+The dialog mentions those public definitions in a fixed line outside its remembered scope.
+A new embedding route that receives the original meaning requires a new disclosure unless the current statement already names it.
+Type jobs use lexical retrieval until a query-available semantic route is named in that statement.
 Every suggestion request requires an explicit action. Enabling a provider never uploads private drafts passively.
 After consent, buttons use a small “AI” tag without repeated provider text.
 Suggestions appear in a quiet panel with “Use this” and “Dismiss.” Accepted text becomes ordinary draft text with undo.
@@ -1541,13 +1695,17 @@ The total uncompressed request limit is 256 KiB. The server also enforces task-s
 A request body that does not arrive within ten seconds returns HTTP 408 with code `request_timeout`.
 
 A completed suggestion contains operation, draft_revision, proposals, explanation, provenance, usage, and log.
+For type results, `existing` is null or contains `word`, exact `event`, nullable `conversion`, and nullable `revised_definition`.
+Conversion is `se`, `te`, `ve`, or `xe`. Short related refs stay in the private exchange log and never replace the resolved result event.
+A null type has an empty proposals array. Other operations still require proposals.
 Each proposal contains path and value. Path is a JSON Pointer into current, restricted by the operation's allowlist below.
 Explanation is literal text. Provenance contains provider, model, revision, recipe, and seed. The reference service returns null for revision and seed.
 `revision` is a string or null. `seed` is a safe integer or null.
 
 Usage contains input_tokens and output_tokens. Each count is a nonnegative integer or null when unavailable.
 Reasons for proposed field edits travel inside proposal values. Panel-only reasons travel in the accepted tool arguments described below.
-Type alternatives use `type_hints.note` paragraphs with `type: reason`. Derivations keep the full kind prefix in `explanation`.
+Place type alternatives use `type_hints.note` paragraphs with `type: reason`. Derivations keep the full kind prefix in `explanation`.
+Word type alternatives appear as an additional line in `explanation`, with the display type and its own reason.
 
 Proposed source `notes` contain only the new selected sense and note with `Sense: ` and `Note: ` prefixes.
 Proposals never target identity, signatures, publication status, trust records, source ownership, or delivery state.

@@ -1,3 +1,4 @@
+import { kindLabel } from "../model/types.ts";
 /** One immutable definition revision, with its receipt and an optional comparison. */
 import { el, p, link, text, describe } from "../lib/dom.ts";
 import { routes, type RenderContext, type Route } from "../app/router.ts";
@@ -207,8 +208,8 @@ export function comparison(
   add("Language", a.language, b.language);
   add(
     "Type",
-    `${a.classification.kind} ${a.classification.selmaho.join(" ")}`.trim(),
-    `${b.classification.kind} ${b.classification.selmaho.join(" ")}`.trim(),
+    `${kindLabel(a.classification.kind)} ${a.classification.selmaho.join(" ")}`.trim(),
+    `${kindLabel(b.classification.kind)} ${b.classification.selmaho.join(" ")}`.trim(),
   );
   const frameText = (body: DefinitionBody) =>
     body.frame

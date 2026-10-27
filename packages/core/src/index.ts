@@ -438,7 +438,24 @@ export const canonicalizeStorageWrapper = (bytes: Uint8Array): string =>
   wasm.canonicalize_storage_wrapper(bytes);
 
 /** Word-form tools from the shared morphology crate. See docs/morphology.md. */
-export type MorphologyProfile = "cll" | "extended";
+export type MorphologyProfile = "cll" | "extended" | "extended-v2";
+/** Resolve exact signed morphology metadata. Unknown versions stay unsupported. */
+export function morphologyProfile(morphology: {
+  id: string;
+  version: string;
+}): MorphologyProfile {
+  const base =
+    "https://github.com/int19h/jbovlacku/blob/main/docs/morphology.md#";
+  if (morphology.id === base + "cll-lujvo" && morphology.version === "2")
+    return "cll";
+  if (morphology.id === base + "extended-lujvo") {
+    if (morphology.version === "2") return "extended-v2";
+    if (morphology.version === "3") return "extended";
+  }
+  throw new Error(
+    `Unsupported morphology: ${morphology.id} ${morphology.version}.`,
+  );
+}
 export interface BuilderPreset {
   id: string;
   label: string;
@@ -493,7 +510,7 @@ export interface RecoveredPart {
 export interface WordAnalysis {
   original: string;
   normalized: string | null;
-  kind: "gismu" | "lujvo" | "cmavo" | "fuivla" | "cmevla" | "unknown";
+  kind: "gismu" | "lujvo" | "cmavo" | "fuhivla" | "cmevla" | "unknown";
   readings: RecoveredPart[][];
   diagnostics: string[];
   morphology: { id: string; version: string };
@@ -519,6 +536,10 @@ export interface RafsiInventoryClaim {
 export interface LujvoRequest {
   profile: MorphologyProfile;
   components: LujvoComponentRequest[];
+  /** Version 3 explicit boundary joins. Null means automatic, empty means no join. */
+  joins?: (string | null)[];
+  /** Exact presentation, required to normalize to the parsed candidate. */
+  spelling?: string;
   inventory?: { snapshot?: string | null; claims?: RafsiInventoryClaim[] };
   limits?: { choice_product?: number; results?: number };
 }

@@ -1,3 +1,15 @@
+import { kindLabel } from "../../model/types.ts";
+import {
+  nearbyQuery as meaningQueries,
+  rankNearby,
+} from "../../../../../packages/service/src/nearby.ts";
+import { wordId } from "../../../../../packages/core/src/browser.ts";
+import {
+  changeTypedWord,
+  continueWithWord,
+  detectWord,
+  typedWord,
+} from "../../model/typed-headword.ts";
 /** Step 1: meaning, language, optional word, and nearby definitions from the local package. */
 import { el, p, text, link, button, field, describe } from "../../lib/dom.ts";
 import { languageName, plural } from "../../lib/format.ts";
@@ -9,7 +21,7 @@ import {
 } from "../../app/router.ts";
 import type { App } from "../../app/context.ts";
 import { localSearch, type CachedPackage } from "../../data/search.ts";
-import { remoteDraftSearch } from "../../data/api.ts";
+import { getWord, loadRecord, remoteDraftSearch } from "../../data/api.ts";
 import { placeholderCount, type Draft } from "../../model/draft.ts";
 import { countNodes, placeMarker } from "../../model/richtext.ts";
 import {
@@ -19,6 +31,7 @@ import {
   loadDraft,
   startDraft,
   stepBar,
+  savedDraftLinks,
   discardDraft,
   DraftConflictError,
   convertLegacyDraft,
@@ -27,7 +40,7 @@ import {
   DRAFT_KEY,
 } from "./common.ts";
 import { assistanceVisibility } from "../../components/assistance.ts";
-import type { SearchHit } from "../../model/types.ts";
+import type { DefinitionBody, SearchHit } from "../../model/types.ts";
 
 function highlightPlaceholders(meaning: string): HTMLElement {
   const node = el("p", { style: "margin-top:4px" });
@@ -74,6 +87,29 @@ export async function meaningPage(
   const requestedWord = params.get("word")?.normalize("NFC") ?? null;
   const requestedMeaning = params.get("meaning") ?? null;
   const requestedLanguage = params.get("lang") ?? null;
+  if (!draft && !requestedWord && !requestedMeaning) {
+    const saved = await app.store.savedDrafts();
+    if (!context.live()) return;
+    if (saved.length) {
+      main.append(
+        el("h1", { class: "page", text: "Saved drafts" }),
+        savedDraftLinks(saved),
+        button(
+          "Start a new definition",
+          async () => {
+            await startDraft(
+              app,
+              { language: app.session.preferences.definitionLanguage },
+              "absent",
+            );
+            navigate("/new/meaning");
+          },
+          { class: "btn" },
+        ),
+      );
+      return;
+    }
+  }
   if (!context.live()) return;
   // A link that names a different word than the saved draft asks before replacing it.
   const conflict =
@@ -173,7 +209,7 @@ export async function meaningPage(
       text("Plain words are fine. Use "),
       el("span", { class: "blank", text: "___" }),
       text(
-        " for each thing the word talks about. Underscores stay placeholders until you approve their numbering in the Places step.",
+        " for each thing the word talks about. Each semicolon restarts numbering at 1. You can also use ① through ⑳ or {place N}. Only a backslash before a circled character is an escape. It keeps that character literal. Every other backslash stays as typed. You approve numbering in the Places step.",
       ),
     ),
   );
@@ -246,13 +282,219 @@ export async function meaningPage(
     }
     saver.touch();
     scheduleNearby();
+    void checkTypedWord();
   };
   language.input.addEventListener("change", syncLanguage);
   custom.input.addEventListener("input", syncLanguage);
   word.input.addEventListener("input", () => {
-    draft.spelling = word.input.value;
+    changeTypedWord(draft, word.input.value);
     saver.touch();
+    void checkTypedWord();
   });
+  const typedStatus = el("div", {
+    role: "region",
+    "aria-label": "Typed word",
+    "aria-live": "polite",
+  });
+  left.append(typedStatus);
+  let typedConsent: string | null = null;
+  let typedRequest = 0;
+  const typedPackages = new Map<string, Promise<CachedPackage | undefined>>();
+  const typedKey = () =>
+    JSON.stringify([typedWord(draft.spelling), draft.language]);
+  const checkTypedWord = async () => {
+    const request = ++typedRequest;
+    const key = typedKey();
+    if (typedConsent !== key) typedConsent = null;
+    typedStatus.replaceChildren();
+    const spelling = typedWord(draft.spelling);
+    if (!spelling) return;
+    const analysis = detectWord(spelling);
+    typedStatus.append(
+      p(`Detected form: ${kindLabel(analysis.kind)}.`, "small"),
+    );
+    for (const diagnostic of analysis.diagnostics)
+      typedStatus.append(p(diagnostic, "meta"));
+    const valid = () =>
+      context.live() && request === typedRequest && key === typedKey();
+    if (!typedPackages.has(draft.language))
+      typedPackages.set(
+        draft.language,
+        app.store
+          .get<CachedPackage>("packages", draft.language)
+          .catch(() => undefined),
+      );
+    const packageData = await typedPackages.get(draft.language);
+    if (!valid()) return;
+    let id: string;
+    try {
+      id = wordId({ language: "jbo", spelling });
+    } catch {
+      typedStatus.append(
+        p(
+          "The word could not be checked. Correct its spelling first.",
+          "small",
+        ),
+      );
+      return;
+    }
+    const showExisting = (
+      definitions: { event: string; text: string }[],
+      coverage: string,
+    ) => {
+      typedStatus.append(
+        el(
+          "p",
+          { class: "small" },
+          text("Already exists: "),
+          link(spelling, routes.word(spelling, draft.language)),
+          text(`. ${coverage}`),
+        ),
+      );
+      const definitionsList = el("ul", { class: "small" });
+      for (const definition of definitions)
+        definitionsList.append(
+          el(
+            "li",
+            {},
+            link(
+              definition.text || "Open this definition",
+              routes.definition(definition.event),
+            ),
+          ),
+        );
+      typedStatus.append(
+        definitionsList,
+        button(
+          "Add a definition",
+          async () => {
+            continueWithWord(draft);
+            if (await saver.flush()) navigate("/new/type");
+          },
+          { class: "btn" },
+        ),
+      );
+      return definitionsList;
+    };
+    if (packageData) {
+      const entries = packageData.entries.filter(
+        (entry) =>
+          entry.word.spelling.normalize("NFC") === spelling &&
+          wordId({
+            ...entry.word,
+            spelling: entry.word.spelling.normalize("NFC"),
+          }) === id,
+      );
+      if (entries.length)
+        showExisting(
+          entries.map((entry) => ({
+            event: entry.event,
+            text: entry.plain_text,
+          })),
+          `Local package for ${draft.language}, snapshot ${packageData.snapshot}.`,
+        );
+      else
+        typedStatus.append(
+          p(
+            `No definition of this word is in the local package for ${draft.language}, snapshot ${packageData.snapshot}. Other languages and servers are unknown.`,
+            "meta",
+          ),
+        );
+    } else
+      typedStatus.append(
+        p(
+          "The word could not be checked. No local package is downloaded for this language.",
+          "small",
+        ),
+      );
+    if (typedConsent !== key) {
+      typedStatus.append(
+        button(
+          "Check this word on the server",
+          async () => {
+            if (
+              key !== typedKey() ||
+              !confirm(
+                `Check ${location.host} for ${JSON.stringify(spelling)} in definition language ${JSON.stringify(draft.language)}? The request sends this word and language.`,
+              )
+            )
+              return;
+            typedConsent = key;
+            await checkTypedWord();
+          },
+          { class: "btn btn-quiet" },
+        ),
+      );
+      return;
+    }
+    try {
+      const result = await getWord(id, { signal: context.signal });
+      if (!valid()) return;
+      if (!result.definitions.length) {
+        typedStatus.append(
+          p(
+            `This server has no definition of this word in snapshot ${result.snapshot}. Other inventories are unknown.`,
+            "meta",
+          ),
+        );
+        return;
+      }
+      const definitionList = showExisting(
+        [],
+        `This server, snapshot ${result.snapshot}. The list shows definitions in ${draft.language}.${result.definitions.length > 100 ? ` Only the first 100 of ${result.definitions.length} records are inspected. Open the word for the rest.` : ""}`,
+      );
+      const records = await Promise.all(
+        result.definitions.slice(0, 100).map(async (event) => {
+          try {
+            const record = await loadRecord<DefinitionBody>(
+              event,
+              result.snapshot,
+              { signal: context.signal },
+            );
+            if (record.body && record.body.language !== draft.language)
+              return null;
+            return {
+              event,
+              text: record.body
+                ? record.body.text
+                    .flat()
+                    .map((node) =>
+                      typeof node === "string"
+                        ? node
+                        : typeof node === "number"
+                          ? `place ${node}`
+                          : "",
+                    )
+                    .join("")
+                : "Definition unavailable. Open its record.",
+            };
+          } catch {
+            return { event, text: "Definition unavailable. Open its record." };
+          }
+        }),
+      );
+      if (!valid()) return;
+      for (const definition of records.filter((record) => record !== null))
+        definitionList.append(
+          el(
+            "li",
+            {},
+            link(
+              definition.text || "Open this definition",
+              routes.definition(definition.event),
+            ),
+          ),
+        );
+    } catch (error) {
+      if (valid())
+        typedStatus.append(
+          p(
+            `The word could not be checked on this server: ${describe(error)}`,
+            "small",
+          ),
+        );
+    }
+  };
   // Nearby definitions from the local package. No private text leaves the browser by default.
   const right = el("section", {
     "aria-labelledby": "similar-h",
@@ -291,13 +533,7 @@ export async function meaningPage(
   if (!context.live()) return;
   // Consent covers one exact query and its definition language.
   let remoteConsent: string | null = null;
-  const nearbyQuery = () =>
-    meaning.input.value
-      .trim()
-      .split(/\s+/)
-      .filter((word) => word.length > 2 && !/^_+$/.test(word))
-      .slice(0, 6)
-      .join(" ");
+  const nearbyQuery = () => meaningQueries(meaning.input.value).join(" ");
   const remoteQuery = () => nearbyQuery().split(" ")[0];
   const consentKey = () => JSON.stringify([remoteQuery(), draft.language]);
   const renderMode = () => {
@@ -373,7 +609,7 @@ export async function meaningPage(
           routes.word(hit.word.spelling, draft.language),
           { class: "hw", lang: "jbo" },
         ),
-        text(hit.preview?.word_kind ?? "", "meta"),
+        text(kindLabel(hit.preview?.word_kind ?? ""), "meta"),
       );
       const preview = el("span", { style: "flex-basis:100%" });
       for (const part of (hit.preview?.plain_text ?? "").split(/([①-⑳])/u)) {
@@ -410,8 +646,9 @@ export async function meaningPage(
     });
   };
   const useWord = (spelling: string) => {
-    draft.spelling = spelling;
+    changeTypedWord(draft, spelling);
     word.input.value = spelling;
+    void checkTypedWord();
     saver.touch();
     app.announce(
       `Adding a definition to ${spelling}. Continue with the word type.`,
@@ -426,17 +663,8 @@ export async function meaningPage(
     if (cached) {
       // Rank by the number of matching query words.
       const words = query.toLocaleLowerCase("en").split(" ");
-      const scored = new Map<string, { hit: SearchHit; score: number }>();
-      for (const w of words)
-        for (const hit of localSearch(cached.entries, w)) {
-          const entry = scored.get(hit.word_id) ?? { hit, score: 0 };
-          entry.score += 1;
-          scored.set(hit.word_id, entry);
-        }
       renderHits(
-        [...scored.values()]
-          .sort((a, b) => b.score - a.score)
-          .map((s) => s.hit),
+        rankNearby(words.map((word) => localSearch(cached.entries, word))),
         "local",
       );
       return;
@@ -459,6 +687,7 @@ export async function meaningPage(
     }
   };
   void nearby();
+  void checkTypedWord();
   columns.append(left, right);
   main.append(columns);
   main.append(
@@ -467,7 +696,7 @@ export async function meaningPage(
       primary: {
         label: "New word",
         action: async () => {
-          draft.step = Math.max(draft.step, 2) as Draft["step"];
+          continueWithWord(draft);
           if (!(await saver.flush())) return;
           navigate("/new/type");
         },
@@ -553,7 +782,12 @@ function renderLegacyDraft(
     details.append(
       el("dt", { text: label }),
       el("dd", {
-        text: value.length > 400 ? `${value.slice(0, 400)}…` : value,
+        text:
+          key === "kind"
+            ? kindLabel(value)
+            : value.length > 400
+              ? `${value.slice(0, 400)}…`
+              : value,
       }),
     );
   }

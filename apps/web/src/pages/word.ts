@@ -1,3 +1,4 @@
+import { kindLabel } from "../model/types.ts";
 /**
  * The word page: headword, composition, rafsi line, language tabs, and one
  * block per definition in layer order under the selected view.
@@ -115,6 +116,9 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
   const head = el("div", { class: "word-head" });
   const h1 = el("h1", { lang: "jbo", text: spelling });
   head.append(h1);
+  const conversion = route.params.get("conversion");
+  if (conversion && ["se", "te", "ve", "xe"].includes(conversion))
+    head.append(p(`${conversion} ${spelling}`, "hw"));
   const zb =
     app.session.preferences.orthography === "zbalermorna"
       ? zbalermorna(spelling)
@@ -200,11 +204,9 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
   const kinds = new Set(
     [...records.values()]
       .map((r) => r.body?.classification.kind)
-      .filter(Boolean),
+      .filter((kind) => kind !== undefined),
   );
-  kindTag.textContent = [...kinds]
-    .map((k) => (k === "fuivla" ? "fu'ivla" : k))
-    .join(" · ");
+  kindTag.textContent = [...kinds].map(kindLabel).join(" · ");
   // Composition line from any compound evidence.
   const compound = [...records.values()]
     .map((r) => r.body?.etymology.compound)

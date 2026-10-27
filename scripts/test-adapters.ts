@@ -52,6 +52,9 @@ const inferenceProvider = createHttpServer(async (request, response) => {
         ? {}
         : {
             word_type: "lujvo",
+            alternative: null,
+            alternative_reason: null,
+            existing: null,
             reason: "The meaning combines two component roles.",
           };
     response.writeHead(200, { "content-type": "application/json" });

@@ -2961,7 +2961,7 @@ test("selmaho stays independent of word type and removed formation evidence", as
 });
 
 for (const structured of [true, false]) {
-  test(`using the meaning preserves token characters in ${structured ? "structured" : "literal"} mode`, async ({
+  test(`using the meaning keeps literal syntax and reads explicit places in ${structured ? "structured" : "literal"} mode`, async ({
     page,
   }) => {
     const meaning =
@@ -2980,11 +2980,13 @@ for (const structured of [true, false]) {
       .getByRole("button", { name: "Use the meaning with numbered places" })
       .click();
     const json = JSON.parse(await page.locator("pre.json").innerText());
-    const middle = " is C:\\temp `x` [[cukta]] {place 5} {operand x} ② of ";
+    const middle = " is C:\\temp `x` [[cukta]] ";
     expect(json.text).toEqual(
-      structured ? [[1, middle, 2]] : [[`①${middle}②`]],
+      structured
+        ? [[1, middle, 5, " {operand x} ", 2, " of ", 3]]
+        : [[`①${middle}⑤ {operand x} ② of ③`]],
     );
-    expect(json.frame.places.map((p: any) => p.index)).toEqual([1, 2]);
+    expect(json.frame.places.map((p: any) => p.index)).toEqual([1, 2, 3, 4, 5]);
     await page.locator('.steps a[href="/new/meaning"]').click();
     await expect(page.getByRole("textbox", { name: "Meaning" })).toHaveValue(
       meaning,

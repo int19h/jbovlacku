@@ -36,14 +36,71 @@ export interface LujvoComponentState {
   /** Known rafsi claims of the word, from the package or entered by hand. */
   claims: { rafsi: string; pair: string }[];
   locked: string | null;
+  unresolvedSource?: string;
 }
 export interface LujvoState {
   profile: MorphologyProfile;
+  /** An explicit ordinary profile choice takes precedence over retained evidence. */
+  profileChosen?: true;
+  /** True only when typed analysis created these rows. Locks alone do not imply origin. */
+  typedOrigin?: true;
+  /** A saved spelling keeps ordinary rows. Empty means typed rows need fresh analysis. */
+  ordinarySpelling?: string;
+  /** Exact spelling and boundary locks for a typed lujvo. */
+  typed?: string;
+  /** Legacy draft fields, cleared when the typed spelling changes. */
+  typedReading?: import("../../../../packages/core/src/browser.ts").RecoveredPart[];
+  readingIndex?: number;
+  joins?: (string | null)[];
+  /** The rows and rafsi to which restored ordinary joins belong. */
+  restoredJoinParts?: { id: string; rafsi: string | null }[];
+  /** Exact bytes that belong to these restored rows, including framing and case. */
+  restoredSpelling?: string;
+  /** The morphology version that restored these boundaries and spelling. */
+  restoredProfile?: MorphologyProfile;
+  /** Release lasts until a new restoration from signed evidence with no rows. */
+  restoredReleased?: true;
+  /** Legacy single-entry evidence, migrated into restoredEvidenceHistory. */
+  restoredEvidence?: { spelling: string; profile: MorphologyProfile };
+  /** Exact spelling keys retain profiles across visits to other typed words. */
+  restoredEvidenceHistory?: { spelling: string; profile: MorphologyProfile }[];
   components: LujvoComponentState[];
   /** The chosen candidate spelling, when the author chose one. */
   selected: string | null;
   /** Conflict keys bound to the chosen spelling, snapshot, and competing claims. */
   acknowledged: string[];
+}
+/** Migrate the former single spelling without replacing newer keyed evidence. */
+export function normalizeLujvoEvidence(state: LujvoState) {
+  const old = state.restoredEvidence;
+  if (!old) return;
+  state.restoredEvidenceHistory ??= [];
+  if (
+    !state.restoredEvidenceHistory.some(
+      (entry) => entry.spelling === old.spelling,
+    )
+  )
+    state.restoredEvidenceHistory.push({ ...old });
+  delete state.restoredEvidence;
+}
+/** Keep profile evidence independent of the current row construction. */
+export function rememberLujvoEvidence(
+  state: LujvoState,
+  spelling: string,
+  profile: MorphologyProfile,
+  replace = false,
+) {
+  normalizeLujvoEvidence(state);
+  const existing = state.restoredEvidenceHistory?.find(
+    (entry) => entry.spelling === spelling,
+  );
+  if (existing && (!replace || existing.profile === profile)) return;
+  state.restoredEvidenceHistory = [
+    ...(state.restoredEvidenceHistory ?? []).filter(
+      (entry) => entry.spelling !== spelling,
+    ),
+    { spelling, profile },
+  ];
 }
 export interface GismuRowState {
   /** Stable browser identity. Older drafts receive it when they open. */
@@ -276,7 +333,7 @@ export interface GismuState {
   window: number;
 }
 export const newLujvoState = (): LujvoState => ({
-  profile: "cll",
+  profile: "extended",
   components: [],
   selected: null,
   acknowledged: [],
@@ -473,6 +530,14 @@ export function compoundMetadata(
   components: LujvoComponentState[],
   notes: string,
 ): Compound {
+  if (
+    components.some(
+      (component) => !component.spelling.trim() || component.unresolvedSource,
+    )
+  )
+    throw new Error(
+      "Link every source word before recording compound metadata.",
+    );
   return {
     components: candidate.parts.map((part) => {
       const component = components.find((c) => c.id === part.id);
