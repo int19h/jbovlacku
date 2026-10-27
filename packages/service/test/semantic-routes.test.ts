@@ -185,8 +185,23 @@ test("routes advertise compatible partial indexes, retain lexical reads, and val
     assert.equal(
       (await read(await service.fetch(request("/embedding-profiles"))))
         .profiles[0].query_available,
-      false,
+      true,
     );
+    const pendingOnly = await read(
+      await service.fetch(
+        request("/search/semantic", {
+          query: "pending meaning",
+          language: "en",
+          snapshot: manifest.snapshot,
+          view: view.envelope.id,
+          profile: profileId(profile),
+          limit: 1,
+        }),
+      ),
+    );
+    assert.deepEqual(pendingOnly.hits, []);
+    assert.equal(pendingOnly.coverage.pending, 1);
+    assert.equal(sends, 0);
     await indexer.run(generation.id);
     assert.equal(
       (await read(await service.fetch(request("/capabilities")))).features
