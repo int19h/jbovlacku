@@ -124,7 +124,7 @@ test("r4 R3-1 history breaks in two fields leave only their owner unresolved", a
       ...manifest,
       bytes: bytes.length,
       sha256: contentHash(bytes),
-      expected_rows: { ...manifest.expected_rows, definition_versions: 7 },
+      expected_rows: { ...manifest.expected_rows, definition_versions: 5 },
     }),
   );
   const output = join(input.directory, "proposal");

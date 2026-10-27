@@ -132,6 +132,138 @@ const entries = (budget: ReturnType<typeof store>) => {
   assert(snapshot?.version === 2);
   return snapshot.entries;
 };
+
+test("an operator saves its operation link before dispatch", async () => {
+  let linked: string | null = null;
+  const budget = store();
+  const { service } = fixture(
+    config({
+      fetch: async () => {
+        assert(linked?.startsWith("embedding:index:"));
+        assert(
+          entries(budget).some((entry) => entry.id === linked && entry.active),
+        );
+        return Response.json(embedding());
+      },
+    }),
+    budget,
+  );
+  const result = await service.embed(
+    input,
+    { kind: "index" },
+    undefined,
+    async (operation) => {
+      linked = operation;
+    },
+  );
+  assert.equal(result.operation, linked);
+});
+
+test("a failed operator link prevents dispatch and releases the unsent reservation", async () => {
+  let sends = 0;
+  const budget = store();
+  const { service } = fixture(
+    config({
+      fetch: async () => {
+        sends++;
+        return Response.json(embedding());
+      },
+    }),
+    budget,
+  );
+  await assert.rejects(
+    service.embed(input, { kind: "index" }, undefined, async () => {
+      throw new Error("The job store did not save its operation link.");
+    }),
+  );
+  assert.equal(sends, 0);
+  assert.equal(entries(budget).length, 0);
+  const operation = (await service.embeddingOperations())[0];
+  assert.equal(operation.state, "failed");
+  assert.equal(operation.transportPending, false);
+  assert.equal(operation.reservedUsd, 0);
+  assert.equal(operation.chargedUsd, 0);
+});
+
+test("host drain includes an interrupted admission before an execution slot exists", async () => {
+  const durable = store();
+  const gate = deferred<void>();
+  let saving = false;
+  let sends = 0;
+  const budget: AssistanceBudgetStore = {
+    load: durable.load,
+    async save(snapshot) {
+      if (!saving && snapshot.entries.some((entry) => entry.active)) {
+        saving = true;
+        await gate.promise;
+      }
+      await durable.save(snapshot);
+    },
+  };
+  const service = new AssistanceService(
+    {
+      provider: config({
+        timeoutMs: 40,
+        fetch: async () => {
+          sends++;
+          return Response.json(embedding());
+        },
+      }),
+      budgetStore: budget,
+    },
+    "test",
+    async () => [],
+  );
+  const caller = service
+    .embed(input, { kind: "index" })
+    .catch((failure) => failure);
+  await until(() => saving);
+  const failure = await caller;
+  assert.equal(failure.code, "embedding_timeout");
+  let drained = false;
+  const shutdown = service.drainEmbeddingTransports().then(() => {
+    drained = true;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(drained, false);
+  gate.resolve();
+  await shutdown;
+  assert.equal(sends, 0);
+  assert.equal(entries(durable).length, 0);
+});
+
+test("host drain includes a preparing dispatch hook after its caller times out", async () => {
+  const gate = deferred<void>();
+  let preparing = false;
+  let sends = 0;
+  const { service, budgetStore } = fixture(
+    config({
+      timeoutMs: 40,
+      fetch: async () => {
+        sends++;
+        return Response.json(embedding());
+      },
+    }),
+  );
+  const caller = service
+    .embed(input, { kind: "index" }, undefined, async () => {
+      preparing = true;
+      await gate.promise;
+    })
+    .catch((failure) => failure);
+  await until(() => preparing);
+  assert.equal((await caller).code, "embedding_timeout");
+  let drained = false;
+  const shutdown = service.drainEmbeddingTransports().then(() => {
+    drained = true;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(drained, false);
+  gate.resolve();
+  await shutdown;
+  assert.equal(sends, 0);
+  assert.equal(entries(budgetStore).length, 0);
+});
 const draft = (): AssistRequest => ({
   operation: "type",
   draft_revision: "shared-budget",
@@ -355,14 +487,27 @@ test("model mismatch and invalid vectors preserve known charges without a global
       },
     }),
   );
-  await assert.rejects(
-    service.embed(input, query()),
-    rejectCode("embedding_model_mismatch"),
-  );
-  await assert.rejects(
-    service.embed(input, query()),
-    rejectCode("embedding_response"),
-  );
+  for (const [code, costUsd] of [
+    ["embedding_model_mismatch", 0.000007],
+    ["embedding_response", 0.000008],
+  ] as const) {
+    await assert.rejects(service.embed(input, query()), (failure: unknown) => {
+      assert(failure instanceof AssistanceError);
+      assert.equal(failure.code, code);
+      assert.deepEqual(failure.embeddingUsage, {
+        inputTokens: 100,
+        totalTokens: 100,
+        costUsd,
+      });
+      const entry = entries(budgetStore).find(
+        (entry) => entry.id === failure.operation,
+      );
+      assert(entry);
+      assert.equal(entry.settledUsd, costUsd);
+      assert.equal(entry.costKnown, true);
+      return true;
+    });
+  }
   await service.embed(input, query());
   assert.equal(calls, 3);
   assert.equal(entries(budgetStore)[0].settledUsd, 0.000007);
@@ -623,15 +768,24 @@ test("admission and settlement waits cannot extend the caller deadline or dispat
     "test",
     async () => [],
   );
-  await assert.rejects(
-    settling.embed(input, query()),
-    rejectCode("embedding_timeout"),
-  );
+  await assert.rejects(settling.embed(input, query()), (failure: unknown) => {
+    assert(failure instanceof AssistanceError);
+    assert.equal(failure.code, "embedding_timeout");
+    assert.deepEqual(failure.embeddingUsage, {
+      inputTokens: 100,
+      totalTokens: 100,
+      costUsd: 0.000001,
+    });
+    return true;
+  });
   assert(settlementStarted);
   settlement.resolve();
   await until(
     async () => (await settling.embeddingOperations())[0]?.active === false,
   );
+  assert.equal(entries(durable)[0].settledUsd, 0.000001);
+  assert.equal(entries(durable)[0].costKnown, true);
+  assert.equal(entries(durable)[0].reservedUsd, 0);
 });
 
 for (const blockedSave of ["retry", "reservation"] as const) {
@@ -915,8 +1069,68 @@ test("key-loader failures are unavailable credentials and route failures are not
     );
     await assert.rejects(
       service.embed(input, query()),
-      rejectCode("embedding_provider"),
+      rejectCode(
+        status === 429 ? "embedding_rate_limited" : "embedding_provider",
+      ),
     );
+  }
+});
+
+test("rate limits preserve known and unknown charges with retry metadata", async () => {
+  for (const kind of ["priced", "unpriced", "malformed"] as const) {
+    let calls = 0;
+    const { service, budgetStore } = fixture(
+      config({
+        fetch: async () => {
+          calls++;
+          const init = { status: 429, headers: { "retry-after": "17" } };
+          return kind === "malformed"
+            ? new Response("<html>disposable-shared-key</html>", init)
+            : Response.json(
+                {
+                  error: { message: "disposable-shared-key" },
+                  ...(kind === "priced"
+                    ? {
+                        usage: {
+                          prompt_tokens: 23,
+                          total_tokens: 23,
+                          cost: 0.000009,
+                        },
+                      }
+                    : {}),
+                },
+                init,
+              );
+        },
+      }),
+    );
+    await assert.rejects(
+      service.embed(input, { kind: "index" }),
+      (failure: unknown) => {
+        assert(failure instanceof AssistanceError);
+        assert.equal(failure.code, "embedding_rate_limited");
+        assert.equal(failure.retryAfterMs, 17000);
+        assert(!failure.message.includes("disposable-shared-key"));
+        assert.deepEqual(
+          failure.embeddingUsage,
+          kind === "priced"
+            ? { inputTokens: 23, totalTokens: 23, costUsd: 0.000009 }
+            : kind === "unpriced"
+              ? { inputTokens: null, totalTokens: null, costUsd: null }
+              : undefined,
+        );
+        const entry = entries(budgetStore).find(
+          (entry) => entry.id === failure.operation,
+        );
+        assert(entry);
+        assert.equal(entry.costKnown, kind === "priced");
+        assert.equal(entry.settledUsd, kind === "priced" ? 0.000009 : quote);
+        assert.equal(entry.reservedUsd, kind === "priced" ? 0 : quote);
+        assert.equal(entry.active, false);
+        return true;
+      },
+    );
+    assert.equal(calls, 1);
   }
 });
 

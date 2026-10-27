@@ -232,6 +232,13 @@ export async function loadOwnHistory(
           );
         storedHeads = committedHeads;
       }
+      // Older browser caches can contain lifecycle evidence without its signing restriction.
+      const lifecycle = [...verified.values()].filter((envelope) =>
+        ["identity.transfer", "identity.compromise"].includes(
+          envelope.header.action.kind,
+        ),
+      );
+      if (lifecycle.length) await timed(store.rememberOwn(identity, lifecycle));
       return {
         identity,
         snapshot,

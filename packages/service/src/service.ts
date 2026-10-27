@@ -1,4 +1,6 @@
 import { prepareAdmissionRecords } from "./admission-records.ts";
+import { eligibleSemanticSource } from "./semantic/source.ts";
+import type { EmbeddingProfile } from "./semantic/types.ts";
 import {
   projectSemanticRecord,
   semanticRecordKey,
@@ -144,6 +146,13 @@ const RECORD_PAGE_LIMIT = 200;
 const RECORD_PAGE_BYTES = 4194304;
 export class DictionaryService {
   private assistance: AssistanceService;
+  /** Host-only indexing reads a completed snapshot. It adds no HTTP capability. */
+  async semanticSource(profile: EmbeddingProfile, snapshotId: string | null = null, view = this.options.selectedView ?? zeroView) {
+    const snapshot = await this.interpretedSnapshot(snapshotId);
+    this.identifier(view, "jve1:");
+    await this.requireView(snapshot, view);
+    return eligibleSemanticSource(profile, snapshot, await this.evaluation(snapshot, view), this.coordinator, this.objects);
+  }
   constructor(
     public objects: ObjectStore,
     public coordinator: Coordinator,
@@ -1883,7 +1892,7 @@ export class DictionaryService {
             message:
               detail.message ?? "Service could not complete this request.",
             event: null,
-            field: null,
+            field: code === "body_shape" ? "body" : null,
           },
           code === "size"
             ? 413

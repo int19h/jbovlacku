@@ -33,6 +33,7 @@ export class Session {
   storageAvailable = true;
   preferences!: Preferences;
   private lockTimer: ReturnType<typeof setTimeout> | undefined;
+  private unlockAttempt: AbortController | undefined;
   private listeners = new Set<SessionListener>();
   private preferenceChannel: BroadcastChannel | undefined;
   /** A pending action to resume after the key is created or unlocked. */
@@ -50,6 +51,7 @@ export class Session {
     });
   }
   async load() {
+    this.cancelUnlock();
     try {
       this.preferences = await this.store.preferences();
       setPreferredView(this.preferences.view);
@@ -79,6 +81,7 @@ export class Session {
       this.lockTimer = setTimeout(() => this.lock("idle"), IDLE_LOCK_MS);
   }
   lock(reason: "idle" | "user" = "user") {
+    this.cancelUnlock();
     this.workingKey = undefined;
     this.keepUnlocked = false;
     clearTimeout(this.lockTimer);
@@ -114,6 +117,7 @@ export class Session {
   }
   /** Switches to the successor key after a persisted handover. The old key stays stored as retired. */
   adoptSuccessor(backup: KeyBackup, key: CryptoKey) {
+    this.cancelUnlock();
     this.backup = backup;
     this.workingKey = key;
     this.touch();
@@ -135,7 +139,10 @@ export class Session {
   }
   /** Why ordinary signing is disabled for an identity, or null. */
   async signingDisabled(identity: string): Promise<string | null> {
-    if (await this.store.get("keys", `compromised:${identity}`))
+    if (
+      (await this.store.get("keys", `compromised:${identity}`)) ||
+      (await this.store.get("keys", `compromise-known:${identity}`))
+    )
       return "This key published a compromise notice. Ordinary actions from it are disabled.";
     if (
       (await this.store.get("keys", `handover:${identity}`)) ||
@@ -170,6 +177,7 @@ export class Session {
       );
     const created = await createKey(passphrase);
     await this.install(created.backup, "create");
+    this.cancelUnlock();
     this.backup = created.backup;
     this.workingKey = created.key;
     this.touch();
@@ -185,6 +193,7 @@ export class Session {
       );
     const opened = await unlockKey(imported, passphrase);
     await this.install(imported, "restore");
+    this.cancelUnlock();
     this.workingKey = opened;
     this.backup = imported;
     this.touch();
@@ -203,11 +212,32 @@ export class Session {
     await unlockKey(imported, passphrase);
     await this.markBackupTested();
   }
-  async unlock(passphrase: string) {
+  private cancelUnlock() {
+    this.unlockAttempt?.abort();
+    this.unlockAttempt = undefined;
+  }
+  async unlock(passphrase: string, signal?: AbortSignal) {
     if (!this.backup) throw new Error("There is no key in this browser.");
-    this.workingKey = await unlockKey(this.backup, passphrase);
-    this.touch();
-    this.changed();
+    this.cancelUnlock();
+    const attempt = new AbortController();
+    this.unlockAttempt = attempt;
+    const backup = this.backup;
+    const canceled = () =>
+      attempt.signal.aborted || signal?.aborted || this.backup !== backup;
+    try {
+      const key = await unlockKey(backup, passphrase);
+      if (canceled())
+        throw new DOMException("The unlock was canceled.", "AbortError");
+      this.workingKey = key;
+      this.touch();
+      this.changed();
+    } catch (error) {
+      if (canceled())
+        throw new DOMException("The unlock was canceled.", "AbortError");
+      throw error;
+    } finally {
+      if (this.unlockAttempt === attempt) this.unlockAttempt = undefined;
+    }
   }
   /**
    * Makes sure that a working key is available, then runs the action.
@@ -240,6 +270,7 @@ export class Session {
   }
   private unlockDialog(description: string): Promise<boolean> {
     return new Promise((resolve) => {
+      const attempt = new AbortController();
       const opener = document.activeElement as HTMLElement | null;
       const dialog = el("dialog", {
         class: "sheet",
@@ -258,9 +289,16 @@ export class Session {
         class: "btn btn-primary",
         text: "Unlock",
       });
-      const cancel = button("Cancel", () => dialog.close("cancel"), {
-        class: "btn btn-quiet",
-      });
+      const cancel = button(
+        "Cancel",
+        () => {
+          attempt.abort();
+          dialog.close("cancel");
+        },
+        {
+          class: "btn btn-quiet",
+        },
+      );
       append(
         form,
         el("h2", { id: "unlock-title", text: "Unlock your key" }),
@@ -276,17 +314,26 @@ export class Session {
         event.preventDefault();
         submit.disabled = true;
         try {
-          await this.unlock(pass.input.value);
+          await this.unlock(pass.input.value, attempt.signal);
           pass.input.value = "";
           dialog.close("unlocked");
         } catch (failure) {
+          if (
+            attempt.signal.aborted ||
+            (failure instanceof DOMException && failure.name === "AbortError")
+          ) {
+            dialog.close("cancel");
+            return;
+          }
           error.textContent = describe(failure);
           error.hidden = false;
           submit.disabled = false;
           pass.input.focus();
         }
       });
+      dialog.addEventListener("cancel", () => attempt.abort());
       dialog.addEventListener("close", () => {
+        attempt.abort();
         resolve(dialog.returnValue === "unlocked");
         dialog.remove();
         opener?.focus();
