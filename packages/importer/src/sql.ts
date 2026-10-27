@@ -377,7 +377,7 @@ function unresolved(
 
 function initializeStage(db: DatabaseSync) {
   db.exec(
-    "PRAGMA journal_mode=DELETE; PRAGMA synchronous=OFF; PRAGMA cache_size=-16384; PRAGMA temp_store=FILE; CREATE TABLE rows (table_name TEXT, source_id INTEGER, owner INTEGER, language INTEGER, position INTEGER, data TEXT); CREATE INDEX by_id ON rows(table_name,source_id); CREATE INDEX by_owner ON rows(table_name,owner,language); CREATE TABLE issues(table_name TEXT,source_key INTEGER,locator TEXT,reason TEXT); CREATE INDEX issue_keys ON issues(table_name,source_key); CREATE TABLE seen_definitions(record INTEGER PRIMARY KEY);",
+    "PRAGMA journal_mode=DELETE; PRAGMA synchronous=OFF; PRAGMA cache_size=-16384; PRAGMA temp_store=FILE; CREATE TABLE rows (table_name TEXT, source_id INTEGER, owner INTEGER, language INTEGER, position INTEGER, data TEXT); CREATE INDEX by_id ON rows(table_name,source_id); CREATE INDEX by_owner ON rows(table_name,owner,language); CREATE TABLE issues(table_name TEXT,source_key INTEGER,locator TEXT,reason TEXT); CREATE INDEX issue_keys ON issues(table_name,source_key); CREATE TABLE incomplete_tables(table_name TEXT PRIMARY KEY,reason TEXT); CREATE TABLE seen_definitions(record INTEGER PRIMARY KEY);",
   );
 }
 const stageId = (table: string, row: Row) => {
@@ -445,6 +445,10 @@ const issueKey = (table: string) =>
     }) as Record<string, string>
   )[table];
 function assertComplete(stage: DatabaseSync, table: string, key: number) {
+  const coverage = stage
+    .prepare("SELECT reason FROM incomplete_tables WHERE table_name=?")
+    .get(table);
+  if (coverage) throw new SourceRowError(coverage.reason as string);
   const lookup = [
     "definitions",
     "languages",
@@ -1549,6 +1553,23 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
     result.declared_rows = manifest.expected_rows;
     stage = new DatabaseSync(stagePath);
     await stageSource(sourcePath, stage, result);
+    // Missing rows have no reliable owner. Keep dependent selections unchanged.
+    // Extra physical rows still use the existing checks for malformed rows.
+    for (const [table, expected] of Object.entries(manifest.expected_rows)) {
+      if (result.table_rows[table] !== expected) {
+        result.incomplete = true;
+        const actual = result.table_rows[table];
+        if (actual === undefined || actual < expected) {
+          const reason = `The ${table} source evidence is incomplete. The manifest declares ${expected} rows. The COPY table ${actual === undefined ? "is absent" : `contains ${actual} physical rows`}.`;
+          stage
+            .prepare("INSERT INTO incomplete_tables VALUES(?,?)")
+            .run(table, reason);
+        }
+        result.notices.push(
+          `Manifest row count differs for ${table}: declared ${expected}, physical COPY rows ${result.table_rows[table] ?? 0}. No source repair was inferred.`,
+        );
+      }
+    }
     const stageBytes = (await stat(stagePath)).size;
     const definitionRows = Number(
       (
@@ -1581,14 +1602,6 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
       }
     }
     await estimateSize(stageBytes, definitionRows, newPublications);
-    for (const [table, expected] of Object.entries(manifest.expected_rows)) {
-      if (result.table_rows[table] !== expected) {
-        result.incomplete = true;
-        result.notices.push(
-          `Manifest row count differs for ${table}: declared ${expected}, physical COPY rows ${result.table_rows[table] ?? 0}. No source repair was inferred.`,
-        );
-      }
-    }
     result.source_rows = result.table_rows.definitions ?? 0;
     const currentStat = await stat(sourcePath);
     if (
