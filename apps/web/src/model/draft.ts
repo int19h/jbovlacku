@@ -709,48 +709,65 @@ export function editorToRichText(
   local = true,
 ): RichText {
   if (!structured) return textToRichText(source, false);
-  const paragraphs = source
-    .split(/\n\s*\n/)
-    .map((paragraph) => paragraph.replace(/\s+$/u, ""))
-    .filter((paragraph) => paragraph.length);
-  return paragraphs.map((paragraph) => {
-    const nodes: RichNode[] = [];
-    let pending = "";
-    const flush = () => {
-      if (pending) nodes.push(pending);
-      pending = "";
-    };
-    let index = 0;
-    for (const match of paragraph.matchAll(TOKEN)) {
-      pending += paragraph.slice(index, match.index);
-      index = match.index! + match[0].length;
-      const [, escaped, circled, placeNumber, operand, code, target, label] =
-        match;
-      if (escaped !== undefined) {
-        pending += escaped;
-        continue;
-      }
-      if (!local && (circled || placeNumber || operand)) {
-        pending += match[0];
-        continue;
-      }
-      flush();
-      if (circled) nodes.push(circled.codePointAt(0)! - 0x245f);
-      else if (placeNumber) nodes.push(Number(placeNumber));
-      else if (operand) nodes.push({ operand });
-      else if (code !== undefined) nodes.push({ code: unescape(code, true) });
-      else {
-        const spelling = unescape(target).trim().normalize("NFC");
-        const shown = label === undefined ? spelling : unescape(label).trim();
-        if (/^https?:\/\//iu.test(spelling))
-          nodes.push({ url: spelling, label: shown });
-        else nodes.push({ word: { language: "jbo", spelling }, label: shown });
-      }
-    }
-    pending += paragraph.slice(index);
+  const paragraphs: RichText = [];
+  let nodes: RichNode[] = [];
+  let pending = "";
+  const flush = () => {
+    if (pending) nodes.push(pending);
+    pending = "";
+  };
+  const finishParagraph = () => {
+    pending = pending.replace(/\s+$/u, "");
     flush();
-    return nodes;
-  });
+    if (nodes.length) paragraphs.push(nodes);
+    nodes = [];
+  };
+  // Consume whole tokens before recognizing paragraph breaks. Newlines inside
+  // a code node or link label belong to that node.
+  const tokens = new RegExp(`${TOKEN.source}|(\\n\\s*\\n)`, "gu");
+  let index = 0;
+  for (const match of source.matchAll(tokens)) {
+    pending += source.slice(index, match.index);
+    index = match.index! + match[0].length;
+    const [
+      ,
+      escaped,
+      circled,
+      placeNumber,
+      operand,
+      code,
+      target,
+      label,
+      paragraphBreak,
+    ] = match;
+    if (paragraphBreak !== undefined) {
+      finishParagraph();
+      continue;
+    }
+    if (escaped !== undefined) {
+      pending += escaped;
+      continue;
+    }
+    if (!local && (circled || placeNumber || operand)) {
+      pending += match[0];
+      continue;
+    }
+    flush();
+    if (circled) nodes.push(circled.codePointAt(0)! - 0x245f);
+    else if (placeNumber) nodes.push(Number(placeNumber));
+    else if (operand) nodes.push({ operand });
+    else if (code !== undefined) nodes.push({ code: unescape(code, true) });
+    else {
+      const spelling = unescape(target).trim().normalize("NFC");
+      const shown = label === undefined ? spelling : unescape(label);
+      if (/^https?:\/\//iu.test(spelling))
+        nodes.push({ url: spelling, label: shown });
+      else nodes.push({ word: { language: "jbo", spelling }, label: shown });
+    }
+  }
+  pending += source.slice(index);
+  finishParagraph();
+  return paragraphs;
 }
 /** Escapes characters that the token syntax reads, so text stays literal. */
 function escapeLiteral(value: string): string {
@@ -1207,10 +1224,15 @@ function richProblems(
       } else if ("word" in node) {
         if (!node.word.spelling)
           report(`${entry.label} has a word link without a spelling.`);
-        else if (!lojbanWord.test(node.word.spelling))
-          report(
-            `${entry.label} links the word "${node.word.spelling}", which is not a Lojban spelling.`,
-          );
+        else {
+          try {
+            wordId(node.word);
+          } catch (error) {
+            report(
+              `${entry.label} has an invalid word link: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
+        }
       } else if ("url" in node) {
         if (!/^https:\/\/[^\s/]+/u.test(node.url))
           report(
@@ -1483,12 +1505,17 @@ function buildFrame(draft: Draft, problems: DraftProblem[], rich: RichField[]) {
             message: `${which} needs a source word.`,
             blocking: true,
           });
-        else if (!lojbanWord.test(word))
-          problems.push({
-            field,
-            message: `${which} names "${word}", which is not a Lojban spelling.`,
-            blocking: true,
-          });
+        else {
+          try {
+            wordId({ language: "jbo", spelling: word });
+          } catch (error) {
+            problems.push({
+              field,
+              message: `${which} has an invalid source word: ${error instanceof Error ? error.message : String(error)}`,
+              blocking: true,
+            });
+          }
+        }
         if (
           d.place === null ||
           !Number.isInteger(d.place) ||

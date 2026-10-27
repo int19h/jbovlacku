@@ -1,3 +1,4 @@
+import { interpretDefinition } from "../../../../packages/core/src/browser.ts";
 import { kindLabel } from "../model/types.ts";
 /** One immutable definition revision, with its receipt and an optional comparison. */
 import { el, p, link, text, describe } from "../lib/dom.ts";
@@ -17,8 +18,8 @@ import {
   type RafsiBody,
   type WordResponse,
 } from "../model/types.ts";
-import { definitionBlock, describeArity } from "../components/definition.ts";
-import { plainText, renderRichText } from "../model/richtext.ts";
+import { definitionBlock } from "../components/definition.ts";
+import { renderRichText, visibleJson } from "../model/richtext.ts";
 import { identityLink } from "../components/attribution.ts";
 
 export async function definitionPage(
@@ -196,58 +197,58 @@ export function comparison(
     return section;
   }
   const rows: [string, string, string][] = [];
-  const add = (label: string, before: string, after: string) => {
-    if (before !== after) rows.push([label, before, after]);
+  const labels: Record<string, string> = {
+    word: "Word",
+    language: "Language",
+    text: "Definition",
+    frame: "Places",
+    operands: "Operands",
+    glosses: "Glosses",
+    notes: "Notes",
+    etymology: "Etymology",
+    examples: "Examples",
+    classification: "Type",
+    labels: "Labels",
+    sources: "Sources",
+    license: "Rights",
+    legacy: "Import evidence",
   };
-  add("Definition", plainText(a.text), plainText(b.text));
-  add(
-    "Glosses",
-    a.glosses.map((g) => g.text).join(", "),
-    b.glosses.map((g) => g.text).join(", "),
-  );
-  add("Language", a.language, b.language);
-  add(
-    "Type",
-    `${kindLabel(a.classification.kind)} ${a.classification.selmaho.join(" ")}`.trim(),
-    `${kindLabel(b.classification.kind)} ${b.classification.selmaho.join(" ")}`.trim(),
-  );
-  const frameText = (body: DefinitionBody) =>
-    body.frame
-      ? `${describeArity(body.frame.arity)}: ${body.frame.places
-          .map((pl) => {
-            const gloss = pl.glosses.map((g) => g.text).join("/");
-            const description = plainText(pl.description).trim();
-            const extras = [
-              pl.defaults.length
-                ? `defaults ${pl.defaults.map((d) => d.value.text).join("; ")}`
-                : null,
-              pl.derivation.length
-                ? `from ${pl.derivation.map((d) => `${d.word.spelling} ${d.place}`).join(", ")}`
-                : null,
-            ].filter(Boolean);
-            return `${pl.index} ${gloss || "—"}${description ? ` (${description})` : ""}${extras.length ? ` [${extras.join("; ")}]` : ""}`;
-          })
-          .join(" · ")}`
-      : "no frame";
-  add("Places", frameText(a), frameText(b));
-  add("Notes", plainText(a.notes), plainText(b.notes));
-  add("Etymology", plainText(a.etymology.text), plainText(b.etymology.text));
-  add(
-    "Examples",
-    a.examples.map((e) => e.text).join(" | "),
-    b.examples.map((e) => e.text).join(" | "),
-  );
-  add(
-    "Sources",
-    a.sources.map((s) => s.label).join(" | "),
-    b.sources.map((s) => s.label).join(" | "),
-  );
-  add("Labels", a.labels.join(", "), b.labels.join(", "));
-  add(
-    "Rights",
-    `${a.license.expression} ${a.license.attribution}`.trim(),
-    `${b.license.expression} ${b.license.attribution}`.trim(),
-  );
+  const object = (value: unknown): value is Record<string, unknown> =>
+    value !== null && typeof value === "object" && !Array.isArray(value);
+  const display = (value: unknown, path: string[]) => {
+    if (value === undefined) return "Not present";
+    if (path.join("/") === "classification/kind" && typeof value === "string")
+      return kindLabel(value as DefinitionBody["classification"]["kind"]);
+    return visibleJson(value);
+  };
+  const compare = (before: unknown, after: unknown, path: string[]) => {
+    if (before === after) return;
+    if (object(before) && object(after)) {
+      for (const key of [
+        ...new Set([...Object.keys(before), ...Object.keys(after)]),
+      ].sort())
+        compare(before[key], after[key], [...path, key]);
+      return;
+    }
+    if (Array.isArray(before) && Array.isArray(after)) {
+      for (
+        let index = 0;
+        index < Math.max(before.length, after.length);
+        index++
+      )
+        compare(before[index], after[index], [...path, String(index + 1)]);
+      return;
+    }
+    const [field, ...nested] = path;
+    rows.push([
+      [labels[field] ?? field, ...nested].join(" / "),
+      display(before, path),
+      display(after, path),
+    ]);
+  };
+  // Apply defaults without changing either authenticated body. Compare every
+  // nested value, including node types and evidence that prose summaries omit.
+  compare(interpretDefinition(a), interpretDefinition(b), []);
   if (!rows.length) {
     section.append(
       p("The two revisions have identical content fields.", "small"),
@@ -275,8 +276,8 @@ export function comparison(
         "tr",
         {},
         el("th", { scope: "row", text: label }),
-        el("td", {}, el("bdi", { text: before || "—" })),
-        el("td", {}, el("bdi", { text: after || "—" })),
+        el("td", {}, el("pre", { class: "json", text: before })),
+        el("td", {}, el("pre", { class: "json", text: after })),
       ),
     );
   table.append(body);
