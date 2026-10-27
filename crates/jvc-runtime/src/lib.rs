@@ -67,6 +67,12 @@ fn prepare(bytes: &[u8]) -> Result<Value> {
     let body = if o["body"].is_null() {
         None
     } else {
+        if !o["body"].is_object() {
+            return Err(Error::new(
+                "body_shape",
+                "transport body must be an object or null",
+            ));
+        }
         Some(canonical_value(&o["body"])?)
     };
     if let Some(bytes) = &body {
@@ -686,8 +692,7 @@ fn rank_word_state(
     let calculation = if graphs.is_empty() {
         Value::Null
     } else {
-        let default_overlay = json!({"version":1,"base_view":evaluation.selected_view,"root_changes":[],"trust":[],"blocked":[],"work":null});
-        let overlay = evaluation.overlay.as_ref().unwrap_or(&default_overlay);
+        let overlay = evaluation.overlay.as_ref().unwrap_or(&Value::Null);
         let suspensions=evaluation.lifecycle.suspended.iter().flat_map(|(identity,causes)|causes.iter().map(move|cause|json!({"identity":identity,"cause":cause,"reason":"incomplete_history"}))).collect::<Vec<_>>();
         json!({"algorithm":profile.unwrap().name(),"budget":params.as_ref().unwrap().work,"completed":graphs.values().map(|r|r.completed_work).sum::<u64>(),"exact":exact,"overlay":jvc_core::hash_id("sha256:",b"",&canonical_value(overlay)?),"incomplete_identities":evaluation.lifecycle.suspended.keys().collect::<Vec<_>>(),"suspensions":suspensions})
     };
@@ -1283,6 +1288,65 @@ fn assignment_status(current: Option<&str>, eligibility: &jvc_state::Eligibility
         "inactive"
     }
 }
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+    use jvc_core::{Header, body_descriptor, identity_from_seed, sign_header};
+
+    #[test]
+    fn admitted_bodies_round_trip_through_the_git_carrier() {
+        let mut lines = Vec::new();
+        for (index, body) in [
+            json!({"name":7}),
+            json!([]),
+            json!(false),
+            json!(7),
+            json!("text"),
+            Value::Null,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let bytes = canonical_value(&body).unwrap();
+            let envelope = sign_header(
+                &[231; 32],
+                Header {
+                    version: 1,
+                    issuer: identity_from_seed(&[231; 32]),
+                    previous: vec![],
+                    nonce: format!("{index:032x}"),
+                    action: json!({"kind":"identity.profile"}),
+                    content: Some(body_descriptor(&bytes).unwrap()),
+                },
+            )
+            .unwrap();
+            let record = json!({"envelope":envelope.envelope(),"body":body});
+            let prepared = prepare(&canonical_value(&record).unwrap());
+            if !body.is_null() && !body.is_object() {
+                assert_eq!(prepared.unwrap_err().code, "body_shape");
+                continue;
+            }
+            let prepared = prepared.unwrap();
+            assert_eq!(
+                prepared["body_status"],
+                if body.is_null() { "missing" } else { "invalid" }
+            );
+            lines.extend(canonical_value(&record).unwrap());
+            lines.push(b'\n');
+        }
+        let snapshot = jvc_carrier::Snapshot::from_jsonl(&lines).unwrap();
+        assert_eq!(snapshot.manifest().unwrap().events.count, 2);
+        assert_eq!(snapshot.manifest().unwrap().bodies.count, 1);
+        assert_eq!(
+            jvc_carrier::Snapshot::from_jsonl(&snapshot.to_jsonl().unwrap())
+                .unwrap()
+                .manifest()
+                .unwrap(),
+            snapshot.manifest().unwrap()
+        );
+    }
+}
+
 #[cfg(test)]
 mod builder_input_tests {
     use super::{BUILDER_INPUT_LIMIT, builder_input_checked};

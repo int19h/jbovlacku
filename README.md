@@ -36,6 +36,9 @@ Explicit alias replacement preserves the note, abstractor, and relation arity. A
 The Node.js adapter uses local object files and SQLite. The local Worker adapter uses R2, D1, and a Durable Object.
 The Worker currently serves the API only.
 Both adapters share admission, receipts, snapshots, search packages, and dictionary API logic.
+Both search indexes retain the current copy, one rollback copy, active staged copies, and copies that retained aliases reference.
+An alias points to unchanged entries without copying them. Index publication removes obsolete copies and aliases in the same transaction as the current pointer.
+The Worker stages chunked writes privately, so a failed rebuild leaves the complete published copy available.
 The native `jvc` command reads, writes, validates, and merges dictionary carriers. It also reads exact committed Git trees locally.
 The [carrier guide](crates/jvc-carrier/README.md) describes canonical files, import selections, retention policies, and read limits.
 
@@ -71,6 +74,12 @@ The committed adapter comparison uses one signed profile event. Importer tests i
 
 The SQL fixture retains four source definitions in English, French, and Russian, with available version history and numbered keywords.
 SQL extraction streams COPY blocks and joins source rows on disk. It retains separate language tags and separate word-level and definition-level rafsi evidence.
+Every table that the importer reads needs a complete COPY block.
+Present tables without declared counts are accepted with an unknown-count notice. The importer does not change the archived manifest.
+Absent tables and declared logical row deficits leave dependent definitions unresolved and preserve their selected publications and known baselines.
+Grouped split records count once, so extra physical lines cannot hide a missing record.
+If a keyword table contains malformed rows, definitions without well-formed mapping rows remain unresolved instead of acquiring known empty glosses.
+A complete empty table can still establish a real source change.
 Unsupported rows receive unresolved notices. The source archive keeps the original manifest and records the digest and path of the external dump.
 Split rows retain their owner across breaks in different fields. The size estimate counts new publications separately from staged observations.
 The SQL `--check-existing` mode requires a copied journal in fresh scratch output and refuses an existing proposal.
@@ -236,11 +245,15 @@ The [development guide](docs/development.md#optional-ai-assistance) gives the co
 
 The status editor, transfer editor, browser meaning search, and Lensisku cross-posting remain target features.
 The site view is the server's selected signed view, and the Trust page can use another retained signed view by its event ID. A signed view names its calculation profile, `simple-routes-bounds-v1` or `simple-routes-shun-v1`; the pages name the profile of each result and its route rule, and an unknown profile leaves scores unavailable.
+Site calculation metadata uses the digest of canonical JSON null for its absent overlay. An explicit empty overlay keeps its own digest.
 The personal view downloads the snapshot records, verifies each envelope and body in a Web Worker, and ranks words locally with the private overlay.
 It adds the current identity with allocation 1 only when its continuity group has no allocation or private root change.
 Zero allocations and removals also prevent that addition. It applies private blocks and public shuns as local blocks.
 A cancelled or incomplete local calculation keeps personal scores unavailable and offers the site view. "Recompute from records" compares a local site-view calculation with the server scores.
 A planned handover creates and tests a successor key, shows the old key's heads from every configured peer, searches for an existing transfer, and saves the transfer, the acceptance, and the encrypted successor key in one transaction before upload. Partial upload reads "Old key retired, acceptance waiting", and retries reuse the stored events.
+Canceling an unlock discards its pending key after decryption. Lock, page closure, and identity replacement also invalidate pending unlocks.
+Authenticated own history also disables ordinary signing after a backup restore or discovery in another tab.
+Malformed lifecycle actions do not disable signing.
 A compromise notice previews the retained and excluded records of a chosen causal frontier, blocks on missing history, and needs explicit approval for an empty frontier. Ordinary signing from a retired or compromised key is refused.
 
 Before lifecycle signatures, peer history scans include accepted records that still wait for evaluation.
@@ -319,6 +332,9 @@ The Node loader can retain a larger explicit traversal budget for a local import
 
 The Node adapter serves the revised SQL import with 59,125 definitions in 44 languages.
 The extraction omits derived vectors and cache fields from signed bodies.
+
+HTTP admission rejects body values other than objects or null before it stores a record.
+Schema-invalid objects remain available as signed content, and null keeps its missing-body meaning.
 
 The server stores private compact records in the same transaction as admission, including offline loads and late bodies.
 Cold evaluation, view changes, core upgrades, and checkpoint fallback reuse those records without another signature check or body hash.
