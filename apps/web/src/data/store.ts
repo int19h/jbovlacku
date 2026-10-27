@@ -14,6 +14,43 @@ import {
 import type { Envelope, Transport } from "../model/types.ts";
 import type { Draft } from "../model/draft.ts";
 
+/** Only authenticated, well-formed lifecycle actions can disable ordinary signing. */
+function lifecycleMarkers(identity: string, envelopes: Envelope[]) {
+  const markers = new Map<string, string>();
+  for (const envelope of envelopes) {
+    const verified = verifyEnvelope(utf8(JSON.stringify(envelope)));
+    if (envelope.header.issuer !== identity)
+      throw new Error("A learned record does not belong to this identity.");
+    if (!verified.action_valid) continue;
+    if (envelope.header.action.kind === "identity.transfer") {
+      const key = `transfer-known:${identity}`;
+      const existing = markers.get(key);
+      markers.set(
+        key,
+        existing && existing !== envelope.id
+          ? "conflicting-transfers"
+          : envelope.id,
+      );
+    }
+    if (envelope.header.action.kind === "identity.compromise")
+      markers.set(`compromise-known:${identity}`, envelope.id);
+  }
+  return [...markers];
+}
+function saveLifecycleMarkers(
+  keys: IDBObjectStore,
+  markers: [string, string][],
+) {
+  for (const [key, id] of markers) {
+    const existing = keys.get(key);
+    existing.onsuccess = () => {
+      if (!existing.result) keys.put(id, key);
+      else if (key.startsWith("transfer-known:") && existing.result !== id)
+        keys.put("conflicting-transfers", key);
+    };
+  }
+}
+
 export interface KeyBackup {
   format: "jbovlacku-key-backup";
   version: 1;
@@ -838,6 +875,7 @@ export class LocalStore {
       // A key retired or reported stolen in another tab cannot gain new ordinary records.
       const retired = keys.get(`handover:${identity}`);
       const compromised = keys.get(`compromised:${identity}`);
+      const knownCompromise = keys.get(`compromise-known:${identity}`);
       const request = heads.get(identity);
       // A publication names the exact draft revision it signed. The draft and
       // its publication record are read in this transaction, so two tabs
@@ -850,7 +888,7 @@ export class LocalStore {
         : null;
       const knownTransfer = keys.get(`transfer-known:${identity}`);
       const discarded = discardedPredecessorReads(keys, predecessors);
-      let remaining = 4 + (publication ? 3 : 0) + discarded.length;
+      let remaining = 5 + (publication ? 3 : 0) + discarded.length;
       const proceed = () => {
         if (--remaining) return;
         if (discarded.some((request) => request.result)) {
@@ -858,7 +896,12 @@ export class LocalStore {
           tx.abort();
           return;
         }
-        if (retired.result || knownTransfer.result || compromised.result) {
+        if (
+          retired.result ||
+          knownTransfer.result ||
+          compromised.result ||
+          knownCompromise.result
+        ) {
           failure = new Error(
             retired.result || knownTransfer.result
               ? "This key signed a handover and is retired. The group was not saved or sent."
@@ -920,6 +963,7 @@ export class LocalStore {
       knownTransfer.onsuccess = proceed;
       retired.onsuccess = proceed;
       compromised.onsuccess = proceed;
+      knownCompromise.onsuccess = proceed;
       request.onsuccess = proceed;
       if (draftRequest) draftRequest.onsuccess = proceed;
       if (recordRequest) recordRequest.onsuccess = proceed;
@@ -942,11 +986,7 @@ export class LocalStore {
     envelopes: Envelope[],
   ): Promise<string[]> {
     if (!envelopes.length) return [];
-    for (const envelope of envelopes) {
-      verifyEnvelope(utf8(JSON.stringify(envelope)));
-      if (envelope.header.issuer !== identity)
-        throw new Error("A server record does not belong to this identity.");
-    }
+    const lifecycle = lifecycleMarkers(identity, envelopes);
     const db = await this.database;
     let restored = false;
     let committedHeads: string[] = [];
@@ -959,6 +999,7 @@ export class LocalStore {
       const heads = tx.objectStore("heads");
       const keys = tx.objectStore("keys");
       const prefs = tx.objectStore("prefs");
+      saveLifecycleMarkers(keys, lifecycle);
       const history = own.getAll();
       const items = tx.objectStore("outbox").getAll();
       const current = heads.get(identity);
@@ -1048,14 +1089,13 @@ export class LocalStore {
     envelopes: import("../model/types.ts").Envelope[],
   ): Promise<void> {
     if (!envelopes.length) return;
-    for (const envelope of envelopes)
-      if (envelope.header.issuer !== identity)
-        throw new Error("A learned record does not belong to this identity.");
+    const lifecycle = lifecycleMarkers(identity, envelopes);
     const ids = new Set(envelopes.map((e) => e.id));
     const predecessors = new Set(envelopes.flatMap((e) => e.header.previous));
     const db = await this.database;
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(["ownhistory", "heads"], "readwrite");
+      const tx = db.transaction(["ownhistory", "heads", "keys"], "readwrite");
+      saveLifecycleMarkers(tx.objectStore("keys"), lifecycle);
       const own = tx.objectStore("ownhistory");
       for (const envelope of envelopes) own.put(envelope, envelope.id);
       const heads = tx.objectStore("heads");
@@ -1088,14 +1128,11 @@ export class LocalStore {
     envelopes: import("../model/types.ts").Envelope[],
   ): Promise<void> {
     if (!envelopes.length) return;
-    for (const envelope of envelopes)
-      if (envelope.header.issuer !== identity)
-        throw new Error(
-          "A remembered record does not belong to this identity.",
-        );
+    const lifecycle = lifecycleMarkers(identity, envelopes);
     const db = await this.database;
     return new Promise((resolve, reject) => {
-      const tx = db.transaction("ownhistory", "readwrite");
+      const tx = db.transaction(["ownhistory", "keys"], "readwrite");
+      saveLifecycleMarkers(tx.objectStore("keys"), lifecycle);
       const own = tx.objectStore("ownhistory");
       for (const envelope of envelopes) own.put(envelope, envelope.id);
       tx.oncomplete = () => resolve();

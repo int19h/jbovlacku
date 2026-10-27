@@ -29,6 +29,31 @@ struct Fixture {
     selected_view: String,
     overlay: Option<Value>,
 }
+
+#[test]
+fn site_overlay_digest_identifies_null_instead_of_an_empty_overlay() {
+    let mut fixture = Fixture::new();
+    let definition = fixture.definition("en");
+    fixture.bless(1, &definition);
+    fixture.view("simple-routes-bounds-v1", &[1], 1000);
+    let site = fixture.rank("null-overlay");
+    assert_eq!(
+        site["calculation"]["overlay"],
+        jvc_core::hash_id("sha256:", b"", b"null")
+    );
+    let overlay = json!({"version":1,"base_view":fixture.selected_view,"root_changes":[],"trust":[],"blocked":[],"work":null});
+    fixture.overlay = Some(overlay.clone());
+    let personal = fixture.rank("explicit-empty-overlay");
+    assert_eq!(personal["scores"], site["scores"]);
+    assert_eq!(
+        personal["calculation"]["overlay"],
+        jvc_core::hash_id("sha256:", b"", &canonical_value(&overlay).unwrap())
+    );
+    assert_ne!(
+        personal["calculation"]["overlay"],
+        site["calculation"]["overlay"]
+    );
+}
 impl Fixture {
     fn new() -> Self {
         Self {
