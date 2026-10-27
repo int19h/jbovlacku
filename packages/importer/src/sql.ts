@@ -72,6 +72,7 @@ export interface SqlReport {
   omitted: number[];
   notices: string[];
   table_rows: Record<string, number>;
+  logical_table_rows: Record<string, number>;
   declared_rows: Record<string, number>;
   languages: Record<string, number>;
 }
@@ -359,6 +360,7 @@ function report(): SqlReport {
     omitted: [],
     notices: [],
     table_rows: {},
+    logical_table_rows: {},
     declared_rows: {},
     languages: {},
   };
@@ -377,7 +379,7 @@ function unresolved(
 
 function initializeStage(db: DatabaseSync) {
   db.exec(
-    "PRAGMA journal_mode=DELETE; PRAGMA synchronous=OFF; PRAGMA cache_size=-16384; PRAGMA temp_store=FILE; CREATE TABLE rows (table_name TEXT, source_id INTEGER, owner INTEGER, language INTEGER, position INTEGER, data TEXT); CREATE INDEX by_id ON rows(table_name,source_id); CREATE INDEX by_owner ON rows(table_name,owner,language); CREATE TABLE issues(table_name TEXT,source_key INTEGER,locator TEXT,reason TEXT); CREATE INDEX issue_keys ON issues(table_name,source_key); CREATE TABLE seen_definitions(record INTEGER PRIMARY KEY);",
+    "PRAGMA journal_mode=DELETE; PRAGMA synchronous=OFF; PRAGMA cache_size=-16384; PRAGMA temp_store=FILE; CREATE TABLE rows (table_name TEXT, source_id INTEGER, owner INTEGER, language INTEGER, position INTEGER, data TEXT); CREATE INDEX by_id ON rows(table_name,source_id); CREATE INDEX by_owner ON rows(table_name,owner,language); CREATE TABLE issues(table_name TEXT,source_key INTEGER,locator TEXT,reason TEXT); CREATE INDEX issue_keys ON issues(table_name,source_key); CREATE TABLE incomplete_tables(table_name TEXT PRIMARY KEY,reason TEXT); CREATE TABLE seen_definitions(record INTEGER PRIMARY KEY);",
   );
 }
 const stageId = (table: string, row: Row) => {
@@ -445,6 +447,10 @@ const issueKey = (table: string) =>
     }) as Record<string, string>
   )[table];
 function assertComplete(stage: DatabaseSync, table: string, key: number) {
+  const coverage = stage
+    .prepare("SELECT reason FROM incomplete_tables WHERE table_name=?")
+    .get(table);
+  if (coverage) throw new SourceRowError(coverage.reason as string);
   const lookup = [
     "definitions",
     "languages",
@@ -471,7 +477,11 @@ async function stageSource(path: string, db: DatabaseSync, output: SqlReport) {
   try {
     for await (const copy of readCopyRows(path, TABLES, (table, rows) => {
       output.table_rows[table] = rows;
+      if (TABLES.has(table)) output.logical_table_rows[table] ??= 0;
     })) {
+      // A grouped malformed record is one source row, even across line breaks.
+      output.logical_table_rows[copy.table] =
+        (output.logical_table_rows[copy.table] ?? 0) + 1;
       const locator = (copy.fragments ?? [copy])
         .map(({ row, line }) => `${copy.table}/COPY-row=${row}/line=${line}`)
         .join(" + ");
@@ -620,40 +630,49 @@ function extract(
   if (spelling === null)
     throw new SourceRowError("The source spelling is unavailable.");
   const definitionLanguage = language(lang);
-  const mappings = getRows(stage, "keywordmapping", "owner", id).map(
-    (mapping) => {
-      assertComplete(
-        stage,
-        "natlangwords",
-        integer(mapping.natlangwordid, false),
+  const mappingRows = getRows(stage, "keywordmapping", "owner", id);
+  if (mappingRows.length === 0) {
+    const issue = stage
+      .prepare(
+        "SELECT locator FROM issues WHERE table_name='keywordmapping' LIMIT 1",
+      )
+      .get();
+    if (issue)
+      throw new SourceRowError(
+        `The keywordmapping source evidence is incomplete. This definition has no well-formed mapping rows, and the table has a malformed row at ${issue.locator}.`,
       );
-      const keyword = one(
-        stage,
-        "natlangwords",
-        integer(mapping.natlangwordid, false),
-      );
-      assertComplete(stage, "languages", integer(keyword.langid, false));
-      const keywordLanguage = one(
-        stage,
-        "languages",
-        integer(keyword.langid, false),
-      );
-      const place = integer(mapping.place, false);
-      if (place < 0)
-        throw new SourceRowError("A SQL place keyword has a negative index.");
-      const value = text(keyword.word);
-      if (value === null)
-        throw new SourceRowError("A SQL keyword lacks a word.");
-      return {
-        mapping,
-        keyword,
-        language: language(keywordLanguage),
-        place,
-        word: value,
-        meaning: text(keyword.meaning),
-      };
-    },
-  );
+  }
+  const mappings = mappingRows.map((mapping) => {
+    assertComplete(
+      stage,
+      "natlangwords",
+      integer(mapping.natlangwordid, false),
+    );
+    const keyword = one(
+      stage,
+      "natlangwords",
+      integer(mapping.natlangwordid, false),
+    );
+    assertComplete(stage, "languages", integer(keyword.langid, false));
+    const keywordLanguage = one(
+      stage,
+      "languages",
+      integer(keyword.langid, false),
+    );
+    const place = integer(mapping.place, false);
+    if (place < 0)
+      throw new SourceRowError("A SQL place keyword has a negative index.");
+    const value = text(keyword.word);
+    if (value === null) throw new SourceRowError("A SQL keyword lacks a word.");
+    return {
+      mapping,
+      keyword,
+      language: language(keywordLanguage),
+      place,
+      word: value,
+      meaning: text(keyword.meaning),
+    };
+  });
   const glosses = sorted(
     mappings
       .filter((item) => item.place === 0)
@@ -1549,6 +1568,44 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
     result.declared_rows = manifest.expected_rows;
     stage = new DatabaseSync(stagePath);
     await stageSource(sourcePath, stage, result);
+    // Missing rows have no reliable owner. Keep dependent selections unchanged.
+    // Extra logical rows still use the existing checks for malformed rows.
+    for (const table of new Set([
+      ...TABLES,
+      ...Object.keys(manifest.expected_rows),
+    ])) {
+      const expected = manifest.expected_rows[table];
+      const actual = TABLES.has(table)
+        ? result.logical_table_rows[table]
+        : result.table_rows[table];
+      const units = TABLES.has(table) ? "logical" : "physical";
+      if (expected === undefined && actual !== undefined) {
+        result.notices.push(
+          `Manifest row count is unknown for ${table}: declared unknown, ${units} COPY rows ${actual}${TABLES.has(table) ? `, physical COPY rows ${result.table_rows[table]}` : ""}. The present COPY table was accepted without a declared count. No source repair was inferred.`,
+        );
+        continue;
+      }
+      if (
+        expected === undefined ||
+        actual === undefined ||
+        actual !== expected
+      ) {
+        result.incomplete = true;
+        if (
+          expected === undefined ||
+          actual === undefined ||
+          actual < expected
+        ) {
+          const reason = `The ${table} source evidence is incomplete. ${expected === undefined ? "The manifest row count is unknown." : `The manifest declares ${expected} rows.`} The COPY table ${actual === undefined ? "is absent" : `contains ${actual} ${units} rows`}.`;
+          stage
+            .prepare("INSERT INTO incomplete_tables VALUES(?,?)")
+            .run(table, reason);
+        }
+        result.notices.push(
+          `Manifest row count ${expected === undefined ? "is unknown" : "differs"} for ${table}: declared ${expected ?? "unknown"}, ${units} COPY rows ${actual ?? "absent"}${TABLES.has(table) ? `, physical COPY rows ${result.table_rows[table] ?? "absent"}` : ""}. No source repair was inferred.`,
+        );
+      }
+    }
     const stageBytes = (await stat(stagePath)).size;
     const definitionRows = Number(
       (
@@ -1581,14 +1638,6 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
       }
     }
     await estimateSize(stageBytes, definitionRows, newPublications);
-    for (const [table, expected] of Object.entries(manifest.expected_rows)) {
-      if (result.table_rows[table] !== expected) {
-        result.incomplete = true;
-        result.notices.push(
-          `Manifest row count differs for ${table}: declared ${expected}, physical COPY rows ${result.table_rows[table] ?? 0}. No source repair was inferred.`,
-        );
-      }
-    }
     result.source_rows = result.table_rows.definitions ?? 0;
     const currentStat = await stat(sourcePath);
     if (

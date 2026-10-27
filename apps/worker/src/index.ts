@@ -102,7 +102,7 @@ export class AdmissionCoordinator
         waitUntil: (promise) => this.ctx.waitUntil(promise),
       },
       serverId: env.SERVER_ID,
-      index: new D1IndexStore(env.INDEX),
+      index: new D1IndexStore(env.INDEX, true),
       selectedView: env.SELECTED_VIEW || undefined,
       policyUrl: "https://example.invalid/jbovlacku-prototype-policy",
       publicOrigin: env.PUBLIC_ORIGIN || undefined,

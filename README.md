@@ -36,6 +36,9 @@ Explicit alias replacement preserves the note, abstractor, and relation arity. A
 The Node.js adapter uses local object files and SQLite. The local Worker adapter uses R2, D1, and a Durable Object.
 The Worker currently serves the API only.
 Both adapters share admission, receipts, snapshots, search packages, and dictionary API logic.
+Both search indexes retain the current copy, one rollback copy, active staged copies, and copies that retained aliases reference.
+An alias points to unchanged entries without copying them. Index publication removes obsolete copies and aliases in the same transaction as the current pointer.
+The Worker stages chunked writes privately, so a failed rebuild leaves the complete published copy available.
 The native `jvc` command reads, writes, validates, and merges dictionary carriers. It also reads exact committed Git trees locally.
 The [carrier guide](crates/jvc-carrier/README.md) describes canonical files, import selections, retention policies, and read limits.
 
@@ -71,6 +74,12 @@ The committed adapter comparison uses one signed profile event. Importer tests i
 
 The SQL fixture retains four source definitions in English, French, and Russian, with available version history and numbered keywords.
 SQL extraction streams COPY blocks and joins source rows on disk. It retains separate language tags and separate word-level and definition-level rafsi evidence.
+Every table that the importer reads needs a complete COPY block.
+Present tables without declared counts are accepted with an unknown-count notice. The importer does not change the archived manifest.
+Absent tables and declared logical row deficits leave dependent definitions unresolved and preserve their selected publications and known baselines.
+Grouped split records count once, so extra physical lines cannot hide a missing record.
+If a keyword table contains malformed rows, definitions without well-formed mapping rows remain unresolved instead of acquiring known empty glosses.
+A complete empty table can still establish a real source change.
 Unsupported rows receive unresolved notices. The source archive keeps the original manifest and records the digest and path of the external dump.
 Split rows retain their owner across breaks in different fields. The size estimate counts new publications separately from staged observations.
 The SQL `--check-existing` mode requires a copied journal in fresh scratch output and refuses an existing proposal.

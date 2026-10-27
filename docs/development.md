@@ -113,8 +113,10 @@ Legacy object-store wrappers and the old snapshot-ID table remain as one-time cl
 Anonymous event and selection admission has no contributor quota. Signed object retention remains unbounded.
 
 A generation is an index copy for one snapshot. An alias points to a generation with the same entries.
-The Node search index retains its current generation, one rollback generation, active staged generations, and the source generations that aliases use.
-Index publication removes obsolete rows, aliases, and markers in the same SQLite transaction.
+Both search indexes retain their current generation, one rollback generation, active staged generations, and the source generations that aliases use.
+Index publication removes obsolete rows, aliases, and markers in the same transaction as the current pointer.
+The Worker uses a D1 batch for that transaction. It stages chunked writes under a private identifier before it installs a complete generation.
+Unchanged entries use aliases on both hosts. Failed writes leave the preceding complete generation available.
 Historical API reads use immutable packages. If an index base is absent, the service rebuilds it from the completed package entries.
 
 This prototype needs an admission policy and resource limits before public use.
@@ -230,6 +232,11 @@ The SQL extraction uses every source definition language that the format can rep
 It preserves authored source fields and available history. It omits derived vectors and caches with explicit source limitations.
 Malformed related rows leave affected definitions unresolved. They never create false source removals.
 Split COPY fragments retain their first readable owner and remain malformed, including breaks in different fields.
+Each table that the importer reads needs a complete COPY block, even when the table is empty.
+Present tables without declared counts are accepted with a visible unknown-count notice. The archived manifest remains unchanged.
+Missing tables remain incomplete evidence. Grouped split records count once when the importer compares declared counts.
+Malformed keyword rows also block definitions that have no well-formed mapping rows. Damaged fragments cannot establish known empty glosses.
+The report keeps physical counts in `table_rows` and logical counts in `logical_table_rows`.
 Missing lookup rows block only their dependent definitions.
 The importer guide describes both extraction commands, source manifests, and unresolved reports.
 
