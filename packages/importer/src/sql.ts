@@ -72,6 +72,7 @@ export interface SqlReport {
   omitted: number[];
   notices: string[];
   table_rows: Record<string, number>;
+  logical_table_rows: Record<string, number>;
   declared_rows: Record<string, number>;
   languages: Record<string, number>;
 }
@@ -359,6 +360,7 @@ function report(): SqlReport {
     omitted: [],
     notices: [],
     table_rows: {},
+    logical_table_rows: {},
     declared_rows: {},
     languages: {},
   };
@@ -475,7 +477,11 @@ async function stageSource(path: string, db: DatabaseSync, output: SqlReport) {
   try {
     for await (const copy of readCopyRows(path, TABLES, (table, rows) => {
       output.table_rows[table] = rows;
+      if (TABLES.has(table)) output.logical_table_rows[table] ??= 0;
     })) {
+      // A grouped malformed record is one source row, even across line breaks.
+      output.logical_table_rows[copy.table] =
+        (output.logical_table_rows[copy.table] ?? 0) + 1;
       const locator = (copy.fragments ?? [copy])
         .map(({ row, line }) => `${copy.table}/COPY-row=${row}/line=${line}`)
         .join(" + ");
@@ -1554,19 +1560,34 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
     stage = new DatabaseSync(stagePath);
     await stageSource(sourcePath, stage, result);
     // Missing rows have no reliable owner. Keep dependent selections unchanged.
-    // Extra physical rows still use the existing checks for malformed rows.
-    for (const [table, expected] of Object.entries(manifest.expected_rows)) {
-      if (result.table_rows[table] !== expected) {
+    // Extra logical rows still use the existing checks for malformed rows.
+    for (const table of new Set([
+      ...TABLES,
+      ...Object.keys(manifest.expected_rows),
+    ])) {
+      const expected = manifest.expected_rows[table];
+      const actual = TABLES.has(table)
+        ? result.logical_table_rows[table]
+        : result.table_rows[table];
+      const units = TABLES.has(table) ? "logical" : "physical";
+      if (
+        expected === undefined ||
+        actual === undefined ||
+        actual !== expected
+      ) {
         result.incomplete = true;
-        const actual = result.table_rows[table];
-        if (actual === undefined || actual < expected) {
-          const reason = `The ${table} source evidence is incomplete. The manifest declares ${expected} rows. The COPY table ${actual === undefined ? "is absent" : `contains ${actual} physical rows`}.`;
+        if (
+          expected === undefined ||
+          actual === undefined ||
+          actual < expected
+        ) {
+          const reason = `The ${table} source evidence is incomplete. ${expected === undefined ? "The manifest row count is unknown." : `The manifest declares ${expected} rows.`} The COPY table ${actual === undefined ? "is absent" : `contains ${actual} ${units} rows`}.`;
           stage
             .prepare("INSERT INTO incomplete_tables VALUES(?,?)")
             .run(table, reason);
         }
         result.notices.push(
-          `Manifest row count differs for ${table}: declared ${expected}, physical COPY rows ${result.table_rows[table] ?? 0}. No source repair was inferred.`,
+          `Manifest row count ${expected === undefined ? "is unknown" : "differs"} for ${table}: declared ${expected ?? "unknown"}, ${units} COPY rows ${actual ?? "absent"}${TABLES.has(table) ? `, physical COPY rows ${result.table_rows[table] ?? "absent"}` : ""}. No source repair was inferred.`,
         );
       }
     }
