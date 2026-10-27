@@ -218,13 +218,34 @@ Each transaction removes only inputs and vectors without a remaining association
 An interrupted retirement keeps its cleanup marker. A later background prune or explicit retirement continues that cleanup.
 Operator-created generations remain under explicit operator control. The existing capacity limits still apply.
 
-A durable background pointer retains failures across restarts and later snapshots.
-The server does not replace a failed or interrupted job with a fresh attempt.
-Use the operator status, recovery, and explicit retry commands after stopping the server to repair that exact job.
-Only rate limits from the active invocation receive the indexer's existing bounded automatic retries.
+A durable background pointer retains the same job across failures, restarts, and later snapshots.
+The background server retries this job automatically. The operator CLI keeps its manual recovery and retry policy.
+A refusal before dispatch creates no provider charge. Busy slots, budget refusals, and probe errors receive exponential backoff from one second to one minute.
+A probe that reaches the provider retains its own charge, even when it fails before the indexing batch starts.
+The server waits for saved provider cooldowns and hourly or daily budget windows. It never raises a spending cap.
+
+An unknown indexing send receives at most three automatic linked retries in one recovery round.
+Each retry creates a new batch and shared-budget operation. Earlier batches and conservative charges remain intact.
+The delays are one, two, and four seconds, or longer when a provider or budget deadline requires it.
+A completed vector never enters another paid indexing batch. A retry waits until its earlier transport and settlement finish.
+When the round ends, the job pauses with `background_retry_exhausted` and writes a log line.
+Node writes `semantic_index_status` messages even when `JVC_LOG_ERRORS` is disabled. These messages omit provider response text.
+It opens another recovery round after one hour or at the next server start.
+A restart never shortens a provider cooldown or budget window.
+
+Generation status includes `background_recovery` while the background job waits.
+It names `next_attempt`, `not_before`, `sent_attempts`, `refusals`, `exhausted`, and `reason`.
+Times are Unix milliseconds. `not_before` preserves provider and budget deadlines separately from the recovery cooldown.
+The five-second host schedule starts eligible attempts. Healthy work continues through consecutive batches without that delay.
+A successful batch resets the failure sequence. A suspended profile still requires a compatible replacement profile.
+Fully staged jobs recover from retained inputs without reading their old source snapshot again.
+An unfinished preparation still requires its pinned source snapshot. If that snapshot expires, automatic backoff cannot repair the missing source.
+The job preserves its error for operator repair. Automatic recovery also cannot repair storage exhaustion or an invalid provider configuration.
+
 Shutdown stops scheduling and new claims, then drains admitted transports before closing storage and releasing the directory lock.
 A stop after a claim and before dispatch retains that unsent batch as failed and pauses the job with `index_paused`.
-It requires explicit retry selection. The background loop does not resume it as incomplete fresh work.
+The next server start recovers that background job, including a stop during a rate-limit wait.
+Operator jobs still require their existing explicit recovery and retry commands.
 
 Cold coverage reads at most 128 metadata bindings before yielding to the main event loop.
 Requests for the same exact evaluation and generation share one coverage calculation.
