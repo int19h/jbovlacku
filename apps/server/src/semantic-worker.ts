@@ -60,19 +60,17 @@ parentPort!.on(
             after ?? "",
           );
           return {
-            rows: rows
-              .slice(0, 128)
-              .map((row) => ({
-                event: String(row.event),
-                envelope: String(row.envelope),
-                body: String(row.body),
-                extraction_version: Number(row.extraction_version),
-                word: String(row.word),
-                language: String(row.language),
-                input_hash: String(row.input),
-                error: row.error === null ? null : String(row.error),
-                vector: row.vector as Uint8Array,
-              })),
+            rows: rows.slice(0, 128).map((row) => ({
+              event: String(row.event),
+              envelope: String(row.envelope),
+              body: String(row.body),
+              extraction_version: Number(row.extraction_version),
+              word: String(row.word),
+              language: String(row.language),
+              input_hash: String(row.input),
+              error: row.error === null ? null : String(row.error),
+              vector: row.vector as Uint8Array,
+            })),
             next: rows.length > 128 ? String(rows[127].event) : null,
           };
         },
