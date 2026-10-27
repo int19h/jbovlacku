@@ -213,6 +213,10 @@ The Node host stores vectors and exact event, envelope, body, input, and extract
 Its [operator command](docs/semantic-search.md) prepares eligible definitions in bounded pages and resumes fresh indexing through the shared embedding budget.
 Equal inputs share a vector under the same complete profile. Distinct publications retain their own associations.
 The job saves each operation link before dispatch. Interrupted sent batches need an explicit linked retry and keep their earlier charges.
+Saved claim positions avoid scans of completed inputs. Active batches reserve vector capacity before provider admission.
+Over-limit inputs retain their exclusion reasons while the remaining generation can complete.
+HTTP 429 responses use bounded backoff that respects `Retry-After` and retains each earlier charge.
+The saved profile cooldown survives restart. Known usage remains available even when a returned model or vector is invalid.
 Mocked tests cover partial progress, restart, failures, retirement, atomic publication, rollback, and explicit removal of current pointers.
 Semantic search routes, query caching, and Worker vector storage remain unfinished. The semantic capability stays disabled.
 A discarded result returns a clear status. Spending failures distinguish pending costs, timed limits, and requests that cannot fit.

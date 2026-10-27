@@ -61,9 +61,12 @@ The default concurrency equals the configured shared provider slots, normally tw
 Use `--concurrency N` to select fewer slots. The maximum is four and cannot exceed the provider configuration.
 
 Completed inputs never enter another paid batch in that generation.
+Fresh claims resume from a saved input position and use an index for selected retries.
 A later generation can reuse a retained vector only under the same full profile and exact input hash.
 Changed definitions keep their own event and body associations. New inputs remain pending.
-An unsupported input size counts as a failed definition rather than an omitted definition.
+An over-limit input retains its association and `input_limit` reason.
+It is excluded from embedding and counts in failed coverage.
+The generation completes when every other input has a vector, including when every input is excluded.
 
 SIGINT or SIGTERM stops new claims and lets admitted batches settle before shutdown.
 The command keeps its directory lock and stores open until every actual provider transport ends.
@@ -76,6 +79,34 @@ Use `status --job GENERATION_ID --after BATCH_ID` to read the next diagnostic pa
 Its summary counts completed inputs, retained dispatch intents, reported tokens and cost, and batches with missing usage.
 Dispatch intents include interrupted sends whose actual delivery remains uncertain.
 Reported totals exclude unknown values. The shared spending ledger keeps those unknown charges separately.
+Known usage stays on a failed batch when the returned model or vectors are invalid.
+Its reported cost remains part of the index summary and the shared spending ledger.
+
+## Handle provider rate limits
+
+An HTTP 429 response stops new claims and lets active workers settle.
+The command permits at most three automatic retry rounds per run.
+It waits at least one, two, then four seconds after each refusal, or longer when `Retry-After` requires it.
+The header accepts integer seconds or an HTTP date.
+Each wait is limited to 60 seconds. All waits in one run are limited to 120 seconds in total.
+If the required delay exceeds either bound, the job remains paused without an early retry.
+
+The store saves the cooldown deadline for the complete profile.
+Restarts and other generations of that profile respect the saved deadline.
+Status exposes this Unix timestamp in milliseconds as `retry_after`.
+A deadline in the past needs no further wait.
+If a 429 body times out, its header still sets the cooldown, but the timed-out batch needs an explicit retry.
+
+Each automatic retry creates a linked batch and a new shared-budget operation.
+Earlier batches and charges remain intact. A spending refusal stops the job.
+The `--max-batches` bound includes every attempt across the retry rounds.
+SIGINT or SIGTERM cancels a backoff wait and stops further attempts.
+Only 429 failures from the current invocation qualify for automatic retry.
+Other failures and ambiguous batches from earlier invocations require explicit retry selection.
+
+The command emits a `backoff` JSON event before each wait, with `delay_ms`, `attempt`, and `batches`.
+Attempt zero waits for a saved cooldown. Attempts one through three identify retry rounds.
+If a retry's inputs already have vectors from another generation, the worker continues to fresh work without another provider call.
 
 ## Recover interrupted work
 
@@ -101,7 +132,7 @@ npx tsx apps/server/src/semantic-cli.ts --data "$JVC_DATA_DIR" --command run --j
 
 Retry creates a new operation and preserves its predecessor batch and earlier charge.
 It requires a paused generation. It cannot replay an older attempt after a newer attempt owns those inputs.
-Provider or storage failure pauses the job. Manual dictionary reads and admission use their existing independent paths.
+Other provider or storage failures pause the job. Manual dictionary reads and admission use their existing independent paths.
 An unexpected returned model or a conflicting vector suspends the complete profile in durable storage.
 That suspension also blocks vector pages and publication. It does not follow from a spending refusal or unknown cost.
 After repairing the provider, prepare a fresh profile and generation. The command cannot reset a suspended epoch.
@@ -138,6 +169,13 @@ Another current or rollback pointer still protects any generation that it names.
 
 The store permits 300,000 associations and 100,000 vectors by default.
 Its separate logical allowance for retained document inputs and vector bytes is 2 GiB.
+Each claimed batch reserves its future vector count and bytes before provider admission.
+Preparation also respects those reservations, so later staged inputs cannot consume space promised to an active batch.
+A capacity refusal pauses the generation with `semantic_capacity` and creates no batch or provider charge.
+Completion, failure, and recovery release reservations in the same transaction as their state changes.
+The final write also enforces capacity and rolls back every vector if it fails.
+Older stores migrate their claim position and active reservations when the command opens them.
+
 SQLite metadata, page overhead, and WAL files need additional physical disk space.
 Query vectors require a separate cache in later work.
 Node exposes bounded vector pages for that later service. It does not load the complete vector set for one page read.

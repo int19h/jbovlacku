@@ -210,6 +210,14 @@ async function main() {
         concurrency,
         maxBatches: positive("max-batches", Number.MAX_SAFE_INTEGER),
         signal: stop.signal,
+        onBackoff: ({ attempt, delayMs, batches }) =>
+          output({
+            event: "backoff",
+            job: id,
+            attempt,
+            delay_ms: delayMs,
+            batches,
+          }),
       });
       output({
         event: "run",
@@ -268,6 +276,7 @@ async function main() {
         generation.state === "retired" ? null : await vectors.coverage(id!),
       summary: await vectors.summary(id!),
       compatibility: await vectors.compatibility(generation.profile),
+      retry_after: await vectors.retryAfter(generation.profile),
       current: await vectors.current(generation.profile, generation.view),
       batches,
       batches_next: batches.length === 64 ? batches.at(-1)!.id : null,
