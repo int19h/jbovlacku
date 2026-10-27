@@ -117,6 +117,23 @@ test("invalid vowel-initial boundaries do not report recognized words", () => {
   }
 });
 
+test("an invalid preferred cmavo split retries the ordinary nucleus", () => {
+  const analysis = detectWord("aierne");
+  assert.equal(analysis.kind, "unknown");
+  assert.deepEqual(
+    analysis.words?.map(({ text, kind }) => ({ text, kind })),
+    [
+      { text: "a", kind: "cmavo" },
+      { text: "ierne", kind: "fuhivla" },
+    ],
+  );
+  assert.equal(
+    wordFormFeedback(newDraft({ spelling: "aierne", kind: "fuhivla" }))
+      .blocking,
+    true,
+  );
+});
+
 test("vowels before glides do not show the BPFK warning", () => {
   for (const [spelling, kind] of [
     ["skiuarna", "fuhivla"],

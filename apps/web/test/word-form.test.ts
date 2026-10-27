@@ -137,6 +137,11 @@ test("the editor distinguishes vowels before glides from CgV and rejects missing
     await expect(status(page)).toContainText("does not match");
     await expect(status(page)).not.toContainText("Words:");
   }
+  await kind.selectOption("fuhivla");
+  await headword.fill("aierne");
+  await expect(status(page)).toContainText("Words: a · ierne.");
+  await expect(status(page)).toContainText("does not match");
+  await kind.selectOption("compound");
   await headword.fill("taia");
   await expect(status(page)).toContainText("Words: tai · a.");
   await expect(status(page)).not.toContainText("does not match");

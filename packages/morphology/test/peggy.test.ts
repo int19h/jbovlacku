@@ -339,7 +339,20 @@ test("only a falling diphthong before a cmavo permits an implied pause", () => {
       ],
     ],
     ["taioz", [{ text: "taioz", kind: "cmevla" }]],
-    ["taiolje", [{ text: "taiolje", kind: "fuhivla" }]],
+    [
+      "taiolje",
+      [
+        { text: "ta", kind: "cmavo" },
+        { text: "iolje", kind: "fuhivla" },
+      ],
+    ],
+    [
+      "aierne",
+      [
+        { text: "a", kind: "cmavo" },
+        { text: "ierne", kind: "fuhivla" },
+      ],
+    ],
   ] as const) {
     assert.deepEqual(
       words(analyzeWord("extended-v4", spelling)),

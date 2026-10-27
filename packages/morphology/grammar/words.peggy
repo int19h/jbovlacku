@@ -31,8 +31,9 @@ zifcme = expr:(!h (cgv_name / nucleus / glide / h / consonant !pause / digit)* c
 
 jbocme = expr:(&zifcme (any_syllable / digit)+ &pause) { return expr; }
 
-cmavo = !cmevla !CVCy_lujvo falling:cmavo_form
-  &(post_word / &{ return falling; } cmavo) { return node("cmavo", location(), []); }
+cmavo = !cmevla !CVCy_lujvo
+  (falling:cmavo_form &(post_word / &{ return falling; } cmavo)
+    / ordinary_cmavo_form &post_word) { return node("cmavo", location(), []); }
 
 CVCy_lujvo = expr:(CVC_rafsi y h? initial_rafsi* brivla_core / stressed_CVC_rafsi y short_final_rafsi) { return null; }
 
@@ -40,6 +41,9 @@ CVCy_lujvo = expr:(CVC_rafsi y h? initial_rafsi* brivla_core / stressed_CVC_rafs
 cmavo_form = y+ !y !h { return false; }
   / !h !cluster onset (cmavo_nucleus h)* last:cmavo_last { return last; }
   / digit { return false; }
+
+// Retry the ordinary nucleus when the preferred split has no valid boundary.
+ordinary_cmavo_form = !h !cluster onset (nucleus h)* (!stressed nucleus / nucleus !cluster)
 
 brivla = expr:(!cmavo !slihykru initial_rafsi* brivla_core) { return node("brivla", location(), expr); }
 
