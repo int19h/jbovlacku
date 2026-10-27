@@ -1048,3 +1048,47 @@ test("background indexing can add the first definition to a published empty cont
     assert.equal((await store.coverage(generation.id)).indexed, 1);
     assert.equal(provider.calls.length, 1);
   }));
+
+test("background indexing never replaces an unfinished operator job to replay its inputs", async () =>
+  fixture(async ({ store, ctx }) => {
+    const { BackgroundSemanticIndexer } =
+      await import("../src/semantic/background.ts");
+    const docs = rows(5);
+    const incomplete = await store.create(
+      {
+        snapshot: hash(7777),
+        view: ctx.evaluation.selected_view,
+        profile: profileId(profile),
+        eligible: 5,
+      },
+      profile,
+    );
+    await store.stage(incomplete.id, null, {
+      documents: docs,
+      next: docs.at(-1)!.event,
+      done: true,
+    });
+    const current = await store.current(incomplete.profile, incomplete.view);
+    await store.publish(incomplete.id, current);
+    const background = new BackgroundSemanticIndexer({
+      store,
+      profile: incomplete.profile,
+      view: incomplete.view,
+      assistance: {
+        embed: async () => {
+          throw new Error("No automatic dispatch from an operator job");
+        },
+      },
+      source: async () => {
+        throw new Error("No replacement source for an unfinished operator job");
+      },
+      probe: async () => {},
+      report: () => {},
+    });
+    await background.cycle();
+    await background.close();
+    assert.equal(
+      await store.backgroundGeneration(incomplete.profile, incomplete.view),
+      null,
+    );
+  }));

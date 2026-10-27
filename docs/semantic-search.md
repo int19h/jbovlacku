@@ -203,7 +203,8 @@ The profile must remain compatible. An index with no indexed definitions is unav
 Set `JVC_SEMANTIC_INDEXING=enabled` to index new definitions while the server runs.
 The server checks the latest completed snapshot every five seconds after each cycle ends.
 It uses its existing directory lock and AssistanceService, including the same execution slots, spending ledger, and limits.
-The operator must first publish a generation for the selected profile and view.
+The operator must first publish a completed generation for the selected profile and view.
+The server does not adopt unfinished operator jobs, which can contain failed or ambiguous sends.
 The background job stages bounded pages, publishes partial coverage, probes the retained profile, and embeds one batch at a time.
 Existing exact input hashes reuse retained vectors. Other inputs receive fresh vectors.
 The server does not create a new generation when all eligible events already have vectors.
