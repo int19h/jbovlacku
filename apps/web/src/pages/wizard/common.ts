@@ -140,7 +140,12 @@ export async function loadDraft(
         savedDrafts = await app.store.savedDrafts();
       }
       signal?.throwIfAborted();
-      if (location.href === url.href) {
+      // A conflicting edit can leave the requested saved row untouched.
+      // Keep its request in the URL until the author leaves or retries it.
+      if (
+        location.href === url.href &&
+        !savedDrafts.some((saved) => saved.key === resume)
+      ) {
         url.searchParams.delete("resume");
         replaceQuery(url.searchParams);
       }
@@ -185,6 +190,10 @@ export async function loadDraft(
   }
 }
 let pendingSaver: DraftSaver | null = null;
+/** Stops the old editor's saver only after the router commits a page change. */
+export function commitDraftNavigation() {
+  pendingSaver?.detach();
+}
 /**
  * A page unload cannot be refused by the router. The browser asks before
  * it leaves while the active saver holds edits that storage did not take.
@@ -225,18 +234,12 @@ export function guardDraftNavigation(
     if (!confirmKindChange(saver.draft, kind)) return false;
     saver.touch();
   }
-  if (saver.leaving === target) {
-    saver.detach();
-    return true;
-  }
+  if (saver.leaving === target) return true;
   return saver.flush().then(
     (ok) => {
       // The flush settles the latest content. A check here covers an edit
       // that arrived in the same turn, before this page is taken down.
-      if (ok && !saver.hasUnsaved) {
-        saver.detach();
-        return true;
-      }
+      if (ok && !saver.hasUnsaved) return true;
       saver.blocked(target);
       return false;
     },

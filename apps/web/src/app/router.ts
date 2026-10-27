@@ -52,6 +52,12 @@ let navigation = 0;
 function track() {
   shown = { href: location.href, state: history.state as unknown };
 }
+/** The latest refusal restores the page even if an older history guard still waits. */
+function refuse(current: number) {
+  if (current !== navigation || location.href === shown.href) return;
+  history.pushState(shown.state, "", shown.href);
+  track();
+}
 /**
  * Runs the guard. A synchronous verdict keeps navigation synchronous. A
  * guard that fails keeps the current page, because the guard exists to
@@ -110,9 +116,11 @@ export function navigate(
   };
   const verdict = allowed(url.href);
   if (verdict === true) commit();
-  else if (verdict !== false)
+  else if (verdict === false) refuse(current);
+  else
     void verdict.then((ok) => {
       if (ok) commit();
+      else refuse(current);
     });
 }
 /** Updates the query string without a new history entry or a render. */
@@ -160,15 +168,10 @@ export function installRouter() {
   window.addEventListener("popstate", () => {
     // The browser already moved. A refused move puts the shown page back.
     const target = location.href;
-    const previous = shown;
     const current = ++navigation;
     const settle = (ok: boolean) => {
-      if (current !== navigation || location.href !== target) return;
-      if (ok) emit(true);
-      else {
-        history.pushState(previous.state, "", previous.href);
-        track();
-      }
+      if (!ok) refuse(current);
+      else if (current === navigation && location.href === target) emit(true);
     };
     const verdict = allowed(target);
     if (typeof verdict === "boolean") settle(verdict);
