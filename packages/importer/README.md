@@ -138,12 +138,14 @@ Keep the journal with the proposal. Repeat imports reuse the retained envelopes.
 The JSON report names unresolved rows and groups them by reason.
 Read its `incomplete` field before loading the proposal. A saved proposal can contain unresolved source rows.
 Malformed related rows leave affected definitions unresolved and preserve their prior selections.
-Every table that the importer reads needs a declared logical row count and a COPY block, including empty tables.
-This includes history and attribution relations. A missing count, absent table, or logical row deficit makes dependent definitions unresolved.
+Every table that the importer reads needs a terminated COPY block, including empty tables, history, and attribution relations.
+An absent table or a logical row deficit against a declared count makes dependent definitions unresolved.
 The report shows a notice for each incomplete table. It keeps physical counts in `table_rows` and logical counts in `logical_table_rows`.
 One grouped malformed record counts as one logical row. Its extra physical lines cannot hide a missing record.
-The importer accepts partial count maps but does not infer missing counts from the dump.
-For example, an archive manifest without a `natlangwordbestplaces` count leaves that table incomplete, even when its COPY block exists.
+The importer accepts present tables with unknown counts and reports each unknown count without changing the archived manifest.
+For example, a present `natlangwordbestplaces` table without a declared count does not by itself make the import incomplete.
+If `keywordmapping` contains any malformed row, definitions without well-formed mapping rows remain unresolved instead of receiving known empty glosses.
+Definitions with well-formed mapping rows retain the checks for malformed rows under their own owner or an unreadable owner.
 The reader groups matching adjacent short fragments into one malformed record and reports every physical location.
 It retains the first fragment's owner without repairing or signing the damaged record.
 The field count spans every fragment, including breaks in different source fields.

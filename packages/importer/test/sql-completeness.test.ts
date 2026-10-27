@@ -116,6 +116,7 @@ async function run(
   options: {
     source?: string;
     counts?: Record<string, number | undefined>;
+    archiveManifest?: boolean;
   } = {},
 ) {
   const bytes = Buffer.from(options.source ?? common + relation);
@@ -149,7 +150,18 @@ async function run(
       notes: ["Synthetic audit fixture."],
     }),
   );
+  if (options.archiveManifest) {
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    await writeFile(
+      manifestPath,
+      `source = "dict"\nkind = "db-export"\nfetched_at = ${manifest.retrieved_at}\nsha256 = "${manifest.sha256.slice(7)}"\nbytes = ${manifest.bytes}\nnotes = "Synthetic audit fixture."\n\n[coverage.counts]\n` +
+        Object.entries(manifest.expected_rows)
+          .map(([name, count]) => `"${name}" = ${count}\n`)
+          .join(""),
+    );
+  }
   const output = join(directory, "proposal");
+  const manifestBytes = await readFile(manifestPath);
   const result = await importSqlSnapshot({
     sourcePath,
     manifestPath,
@@ -157,6 +169,17 @@ async function run(
     seed,
     roots: [],
   });
+  assert.deepEqual(await readFile(manifestPath), manifestBytes);
+  assert.deepEqual(
+    await readFile(
+      join(
+        output,
+        "source-archive",
+        `${contentHash(bytes).slice(7)}.${contentHash(manifestBytes).slice(7)}.manifest`,
+      ),
+    ),
+    manifestBytes,
+  );
   const journal = await readJournal(output);
   assert.ok(journal);
   return { result, entry: journal.entries["100"], entries: journal.entries };
@@ -235,7 +258,7 @@ for (const name of [
   "natlangwordbestplaces",
 ]) {
   for (const mode of ["uncounted", "absent", "absent and uncounted"]) {
-    test(`IM-01 ${mode} ${name} preserves prior evidence and reports incomplete coverage`, async () => {
+    test(`IM-01 ${mode} ${name} reports its coverage and preserves prior publications`, async () => {
       const directory = await setup();
       const first = await run(directory, "complete", mappings(1), 1);
       const options = {
@@ -247,10 +270,17 @@ for (const name of [
         counts: mode.includes("uncounted") ? { [name]: undefined } : {},
       };
       const second = await run(directory, mode, "", 1, options);
-      assert.equal(second.result.report.incomplete, true);
+      const absent = mode.includes("absent");
+      assert.equal(second.result.report.incomplete, absent);
       assert.equal(second.result.report.revised, 0);
       assert.equal(second.result.selection, first.result.selection);
-      assert.deepEqual(second.entry, first.entry);
+      assert.deepEqual(second.entry.baseline, first.entry.baseline);
+      assert.deepEqual(second.entry.versions, first.entry.versions);
+      if (!absent) {
+        assert.equal(second.result.report.reused, 1);
+        assert.deepEqual(second.result.report.unresolved, []);
+        assert.equal(second.result.report.declared_rows[name], undefined);
+      }
       const notice = second.result.report.notices.find((notice) =>
         notice.includes(`for ${name}:`),
       );
@@ -258,15 +288,17 @@ for (const name of [
       if (mode.includes("uncounted")) assert.match(notice, /count is unknown/);
       if (mode.includes("absent")) assert.match(notice, /COPY rows absent/);
       const repeated = await run(directory, mode, "", 1, options);
-      assert.equal(repeated.result.report.incomplete, true);
+      assert.equal(repeated.result.report.incomplete, absent);
       assert.deepEqual(
         repeated.result.report.notices,
         second.result.report.notices,
       );
-      assert.deepEqual(repeated.entry, first.entry);
+      assert.deepEqual(repeated.entry.baseline, second.entry.baseline);
+      assert.deepEqual(repeated.entry.versions, second.entry.versions);
       const fresh = await run(await setup(), mode, "", 1, options);
-      assert.equal(fresh.result.report.added, 0);
-      assert.equal(fresh.entry, undefined);
+      assert.equal(fresh.result.report.added, absent ? 0 : 1);
+      if (absent) assert.equal(fresh.entry, undefined);
+      else assert.deepEqual(fresh.result.report.unresolved, []);
     });
   }
 }
@@ -304,6 +336,121 @@ const twoOwners = replaceTable(
 );
 const ownerMappings = (rows: (string | number | null)[][]) =>
   table("keywordmapping", ["natlangwordid", "definitionid", "place"], rows);
+
+test("IM-01 the Opus v3like probe accepts the pinned partial archive manifest", async () => {
+  const directory = await setup();
+  const options = {
+    source:
+      replaceTable(
+        common,
+        "natlangwords",
+        table(
+          "natlangwords",
+          ["wordid", "langid", "word", "meaning"],
+          [[20, 2, "synthetic gloss", null]],
+        ),
+      ) + mappings(1),
+    counts: { natlangwords: 1, natlangwordbestplaces: undefined },
+    archiveManifest: true,
+  };
+  const first = await run(directory, "v3like", "", 1, options);
+  assert.equal(first.result.report.added, 1);
+  assert.equal(first.result.report.incomplete, false);
+  assert.deepEqual(first.result.report.unresolved, []);
+  assert.equal(
+    first.result.report.declared_rows.natlangwordbestplaces,
+    undefined,
+  );
+  assert.deepEqual(first.entry.baseline.glosses, {
+    known: [{ word: "synthetic gloss", meaning: null }],
+  });
+  assert.equal(first.result.report.notices.length, 1);
+  assert.match(
+    first.result.report.notices[0],
+    /count is unknown for natlangwordbestplaces: declared unknown, logical COPY rows 0, physical COPY rows 0/,
+  );
+  const repeated = await run(directory, "v3like", "", 1, options);
+  assert.equal(repeated.result.report.reused, 1);
+  assert.deepEqual(repeated.result.report.notices, first.result.report.notices);
+  assert.equal(repeated.result.selection, first.result.selection);
+  assert.deepEqual(repeated.entry.baseline, first.entry.baseline);
+  assert.deepEqual(repeated.entry.versions, first.entry.versions);
+});
+
+test("IM-01 the Opus mask2 probe cannot turn missing mappings into known empty glosses", async () => {
+  const directory = await setup();
+  const counts = { definitions: 2 };
+  const first = await run(directory, "complete", "", 2, {
+    source:
+      twoOwners +
+      ownerMappings([
+        [20, 100, 0],
+        [21, 101, 0],
+      ]),
+    counts,
+  });
+  assert.equal(first.result.report.added, 2);
+  // These fragments look like separate records. Both logical rows count.
+  const source =
+    twoOwners +
+    ownerMappings([
+      [20, 10],
+      [0, 0],
+    ]);
+  const second = await run(directory, "ungrouped-split-and-missing", "", 2, {
+    source,
+    counts,
+  });
+  assert.equal(second.result.report.table_rows.keywordmapping, 2);
+  assert.equal(second.result.report.logical_table_rows.keywordmapping, 2);
+  assert.deepEqual(second.result.report.notices, []);
+  assert.equal(second.result.report.incomplete, true);
+  assert.equal(second.result.report.revised, 0);
+  assert.equal(second.result.selection, first.result.selection);
+  assert.deepEqual(second.entries, first.entries);
+  for (const record of [100, 101])
+    assert.ok(
+      second.result.report.unresolved.some(
+        (issue) =>
+          issue.record === record &&
+          /no well-formed mapping rows/.test(issue.reason),
+      ),
+    );
+  const fresh = await run(await setup(), "ungrouped-split-and-missing", "", 2, {
+    source,
+    counts,
+  });
+  assert.equal(fresh.result.report.added, 0);
+  assert.deepEqual(fresh.entries, {});
+});
+
+test("IM-01 an unrelated malformed mapping blocks only owners without valid mappings", async () => {
+  const result = await run(await setup(), "unrelated-malformed", "", 2, {
+    source:
+      twoOwners +
+      ownerMappings([
+        [20, 10],
+        [21, 101, 0],
+      ]),
+    counts: { definitions: 2 },
+  });
+  assert.equal(result.result.report.logical_table_rows.keywordmapping, 2);
+  assert.equal(result.result.report.added, 1);
+  assert.equal(result.entries["100"], undefined);
+  assert.deepEqual(result.entries["101"].baseline.glosses, {
+    known: [{ word: "second gloss", meaning: null }],
+  });
+  assert.ok(
+    result.result.report.unresolved.some(
+      (issue) =>
+        issue.record === 100 &&
+        /no well-formed mapping rows/.test(issue.reason),
+    ),
+  );
+  assert.ok(
+    result.result.report.unresolved.every((issue) => issue.record !== 101),
+  );
+});
 
 test("IM-01 the Opus split-row probe cannot hide another owner's missing keyword row", async () => {
   const directory = await setup();
@@ -394,12 +541,14 @@ test("IM-01 surplus logical records remain reportable without freezing valid own
   );
 });
 
-test("IM-01 an empty mapping table does not hide an uncounted lookup table", async () => {
+test("IM-01 an empty mapping table accepts a present uncounted lookup table", async () => {
   const result = await run(await setup(), "uncounted-lookup", mappings(0), 0, {
     counts: { natlangwords: undefined },
   });
-  assert.equal(result.result.report.incomplete, true);
-  assert.equal(result.result.report.added, 0);
+  assert.equal(result.result.report.incomplete, false);
+  assert.equal(result.result.report.added, 1);
+  assert.deepEqual(result.result.report.unresolved, []);
+  assert.deepEqual(result.entry.baseline.glosses, { known: [] });
   assert.ok(
     result.result.report.notices.some((notice) =>
       /count is unknown for natlangwords/.test(notice),

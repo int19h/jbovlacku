@@ -630,40 +630,49 @@ function extract(
   if (spelling === null)
     throw new SourceRowError("The source spelling is unavailable.");
   const definitionLanguage = language(lang);
-  const mappings = getRows(stage, "keywordmapping", "owner", id).map(
-    (mapping) => {
-      assertComplete(
-        stage,
-        "natlangwords",
-        integer(mapping.natlangwordid, false),
+  const mappingRows = getRows(stage, "keywordmapping", "owner", id);
+  if (mappingRows.length === 0) {
+    const issue = stage
+      .prepare(
+        "SELECT locator FROM issues WHERE table_name='keywordmapping' LIMIT 1",
+      )
+      .get();
+    if (issue)
+      throw new SourceRowError(
+        `The keywordmapping source evidence is incomplete. This definition has no well-formed mapping rows, and the table has a malformed row at ${issue.locator}.`,
       );
-      const keyword = one(
-        stage,
-        "natlangwords",
-        integer(mapping.natlangwordid, false),
-      );
-      assertComplete(stage, "languages", integer(keyword.langid, false));
-      const keywordLanguage = one(
-        stage,
-        "languages",
-        integer(keyword.langid, false),
-      );
-      const place = integer(mapping.place, false);
-      if (place < 0)
-        throw new SourceRowError("A SQL place keyword has a negative index.");
-      const value = text(keyword.word);
-      if (value === null)
-        throw new SourceRowError("A SQL keyword lacks a word.");
-      return {
-        mapping,
-        keyword,
-        language: language(keywordLanguage),
-        place,
-        word: value,
-        meaning: text(keyword.meaning),
-      };
-    },
-  );
+  }
+  const mappings = mappingRows.map((mapping) => {
+    assertComplete(
+      stage,
+      "natlangwords",
+      integer(mapping.natlangwordid, false),
+    );
+    const keyword = one(
+      stage,
+      "natlangwords",
+      integer(mapping.natlangwordid, false),
+    );
+    assertComplete(stage, "languages", integer(keyword.langid, false));
+    const keywordLanguage = one(
+      stage,
+      "languages",
+      integer(keyword.langid, false),
+    );
+    const place = integer(mapping.place, false);
+    if (place < 0)
+      throw new SourceRowError("A SQL place keyword has a negative index.");
+    const value = text(keyword.word);
+    if (value === null) throw new SourceRowError("A SQL keyword lacks a word.");
+    return {
+      mapping,
+      keyword,
+      language: language(keywordLanguage),
+      place,
+      word: value,
+      meaning: text(keyword.meaning),
+    };
+  });
   const glosses = sorted(
     mappings
       .filter((item) => item.place === 0)
@@ -1570,6 +1579,12 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
         ? result.logical_table_rows[table]
         : result.table_rows[table];
       const units = TABLES.has(table) ? "logical" : "physical";
+      if (expected === undefined && actual !== undefined) {
+        result.notices.push(
+          `Manifest row count is unknown for ${table}: declared unknown, ${units} COPY rows ${actual}${TABLES.has(table) ? `, physical COPY rows ${result.table_rows[table]}` : ""}. The present COPY table was accepted without a declared count. No source repair was inferred.`,
+        );
+        continue;
+      }
       if (
         expected === undefined ||
         actual === undefined ||

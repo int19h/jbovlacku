@@ -74,9 +74,11 @@ The committed adapter comparison uses one signed profile event. Importer tests i
 
 The SQL fixture retains four source definitions in English, French, and Russian, with available version history and numbered keywords.
 SQL extraction streams COPY blocks and joins source rows on disk. It retains separate language tags and separate word-level and definition-level rafsi evidence.
-Every table that the importer reads needs a declared logical row count and a COPY block.
-Missing counts, absent tables, and logical row deficits leave dependent definitions unresolved and preserve their selected publications and known baselines.
+Every table that the importer reads needs a complete COPY block.
+Present tables without declared counts are accepted with an unknown-count notice. The importer does not change the archived manifest.
+Absent tables and declared logical row deficits leave dependent definitions unresolved and preserve their selected publications and known baselines.
 Grouped split records count once, so extra physical lines cannot hide a missing record.
+If a keyword table contains malformed rows, definitions without well-formed mapping rows remain unresolved instead of acquiring known empty glosses.
 A complete empty table can still establish a real source change.
 Unsupported rows receive unresolved notices. The source archive keeps the original manifest and records the digest and path of the external dump.
 Split rows retain their owner across breaks in different fields. The size estimate counts new publications separately from staged observations.
