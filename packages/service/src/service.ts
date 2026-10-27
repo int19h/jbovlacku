@@ -2745,7 +2745,11 @@ export class DictionaryService {
   private async objectResponse(hash: string): Promise<Response> {
     const bytes = await this.objects.get(hash);
     if (!bytes)
-      throw new ApiError(404, "missing", "Object bytes are unavailable.");
+      throw new ApiError(
+        503,
+        "storage_unavailable",
+        "Object bytes are unavailable. Retry this request.",
+      );
     return new Response(bytes as BodyInit, {
       headers: {
         "content-type": "application/json; charset=utf-8",

@@ -880,7 +880,7 @@ test("version 2 rafsi inventories reuse verified claims while original bodies ar
   );
   assert.equal(
     (await service.fetch(request(`/bodies/${claimHash}`))).status,
-    404,
+    503,
   );
   outage = "error";
   (service as any).packageCache.clear();
