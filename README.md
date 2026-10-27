@@ -36,6 +36,9 @@ Explicit alias replacement preserves the note, abstractor, and relation arity. A
 The Node.js adapter uses local object files and SQLite. The local Worker adapter uses R2, D1, and a Durable Object.
 The Worker currently serves the API only.
 Both adapters share admission, receipts, snapshots, search packages, and dictionary API logic.
+Both search indexes retain the current copy, one rollback copy, active staged copies, and copies that retained aliases reference.
+An alias points to unchanged entries without copying them. Index publication removes obsolete copies and aliases in the same transaction as the current pointer.
+The Worker stages chunked writes privately, so a failed rebuild leaves the complete published copy available.
 The native `jvc` command reads, writes, validates, and merges dictionary carriers. It also reads exact committed Git trees locally.
 The [carrier guide](crates/jvc-carrier/README.md) describes canonical files, import selections, retention policies, and read limits.
 
