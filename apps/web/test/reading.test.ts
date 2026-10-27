@@ -1613,12 +1613,14 @@ test("revision comparisons display fu'ivla for the fuhivla classification", asyn
   const coreHeld = new Promise<void>((resolve) => {
     releaseCore = resolve;
   });
+  const coreRequested = page.waitForRequest("**/*.wasm");
   await page.route("**/*.wasm", async (route) => {
     await coreHeld;
     await route.continue();
   });
   try {
     await page.goto(`/word/${f.words.cukta}?lang=en`);
+    await coreRequested;
     // Document load does not wait for the core or the application shell.
     await expect(page.locator("main")).toHaveCount(0);
   } finally {
