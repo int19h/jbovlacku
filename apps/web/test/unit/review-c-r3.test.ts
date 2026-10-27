@@ -119,3 +119,21 @@ test("F6 editor syntax keeps carriage returns out of textarea normalization", ()
   assert.match(editor, /\\r/);
   assert.deepEqual(editorToRichText(editor, true), rich);
 });
+
+test("F7 Unicode blank lines bound code and link tokens", () => {
+  for (const [opening, closing] of [
+    ["Use the ` key.", "Then ` again."],
+    ["Use [[cukta|text.", "Then ]] again."],
+  ]) {
+    const source = `${opening}\n\u00a0\n① is the agent.\n\u00a0\n${closing}`;
+    assert.deepEqual(editorToRichText(source, true), [
+      [opening],
+      [1, " is the agent."],
+      [closing],
+    ]);
+    assert.match(
+      remapPlaces(source, () => 2),
+      /② is the agent/,
+    );
+  }
+});

@@ -709,7 +709,7 @@ const lojbanWord = /^[a-z',.]+(?: [a-z',.]+)*$/u;
  *   Escaped whitespace preserves a whitespace-only paragraph.
  */
 const TOKEN =
-  /\\([\\`[{①-⑳\sr])|([①-⑳])|\{place (\d{1,5})\}|\{operand ([a-z][a-z0-9_-]{0,31})\}|`((?:\\[\s\S]|(?!\n[ \t\r]*\n)[^`\\])*)`|\[\[((?:\\[\s\S]|(?!\n[ \t\r]*\n)[^\\\]|])+)(?:\|((?:\\[\s\S]|(?!\n[ \t\r]*\n)[^\\\]])*))?\]\]/gu;
+  /\\([\\`[{①-⑳\sr])|([①-⑳])|\{place (\d{1,5})\}|\{operand ([a-z][a-z0-9_-]{0,31})\}|`((?:\\[\s\S]|(?!\n\s*\n)[^`\\])*)`|\[\[((?:\\[\s\S]|(?!\n\s*\n)[^\\\]|])+)(?:\|((?:\\[\s\S]|(?!\n\s*\n)[^\\\]])*))?\]\]/gu;
 const unescape = (value: string, code = false) =>
   value.replace(
     code ? /\\([\\`\r\nr])/gu : /\\([\\\]|`\r\nr])/gu,
