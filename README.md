@@ -45,8 +45,11 @@ The [carrier guide](crates/jvc-carrier/README.md) describes canonical files, imp
 The browser supports anonymous lookup, verified definition pages, encrypted key backups with a recovery test, and signed delivery with per-server receipts.
 Search sits in the header of every page. Result rows show the headword, rafsi, type, highlighted definition text, attribution, and a net score with Endorse and Oppose arrows.
 Word pages show every definition under the selected view, with place strips, revision notices, comparisons, source evidence, rafsi pair cards, and reviewer details.
+Revision comparisons show exact changed values throughout the interpreted body, including nested evidence and rich text node types.
+Direct revision reads retry unavailable bodies on the next visit. A known missing body stays missing within its pinned snapshot.
 Settings can show Zbalermorna beside Latin headwords on word and search pages. A local preference puts definitions with your judgments first without changing scores.
 Public identity pages show the signed profile, counts, and activity. Trust actions offer a private rule or a public signed record.
+Private trust and Ignore controls apply each addition or removal in one storage transaction, so concurrent unrelated choices remain saved.
 The local key edits its public profile, with a signed preview of the name, biography, and HTTPS links under the format limits. A rafsi pair link opens the pair's word and rafsi from the local search packages.
 The browser keeps the key's own records that it fetched from a server, so later signatures read them locally. It handles at most 4,096 own events per key and 64 concurrent branches. Above those limits it refuses to sign in this browser and says so.
 The Not delivered page lists waiting and stopped records. The header marker counts both, and stopped rows offer Resume and Save as file.
@@ -62,6 +65,7 @@ Updates keep focus on delivery controls and announce only short status changes. 
 If storage cannot be read, the saved page keeps known records and offers Retry reading. It reports missing records only after a successful read.
 Delivered records leave the list but keep their receipts in retained history. With no waiting or stopped records, the page shows a short empty state.
 Downloaded search packages permit local search without a request for each query. Version 2 packages carry authors, notes, and rafsi for result rows.
+A download keeps its requested language even when the language selector changes before it finishes.
 Signing needs localhost or HTTPS. A plain HTTP Tailscale address supports reading only.
 
 The importer prepares signed proposals from pinned local Lensisku JSON captures and SQL snapshots. Repeat imports reuse signed records and retain source evidence.
@@ -98,6 +102,8 @@ The Places step and the full editor offer hideable advice above three declared p
 A repeating tail counts once. The advice applies to every word type and never blocks publication or enters signed records.
 Revise copies a publication into a new draft with its exact parent and keeps every field: links, code, operands, literal circled characters, every gloss with its language and sense, every derivation, and the frame role. The page names the only changes a native revision makes. A revision of imported text cites the imported publication and copies the source-rights reference once.
 Each rich text field of a draft holds its exact value, and only an edit of that field parses text, so an untouched field never changes. In structured editing every rich text node has a text form, and a backslash keeps a circled numeral or a token character literal. Pasted circled numbers stay literal unless the author chooses references. Removing a place keeps the referent of every other reference. The shared core checks the finished body before Publish is enabled, and every blocking problem names its field.
+Editing beside multiline code or link labels preserves their content, including literal circled numbers and label spacing.
+Word links and place derivations use the shared format rules. Valid uppercase references retain their exact targets and do not block publication.
 A draft saved by the earlier prototype opens a choice to export it, convert it into a wizard draft, or discard it. The old license and attribution fields stay in the export only, because new definitions publish under CC0 1.0.
 Remote lexical search, word pages, and downloaded language packages exclude definitions whose receipts are not effective.
 Word pages and language packages retain effective deprecated definitions.
