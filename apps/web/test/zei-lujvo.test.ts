@@ -117,6 +117,36 @@ test("zei word-type feedback rejects incomplete and malformed chains", async ({
   await expect(status).not.toContainText("does not match");
 });
 
+test("zei feedback rejects final BU tails and accepts nonfinal BU operands", async ({
+  page,
+}) => {
+  await page.goto("/new/editor");
+  await page.getByLabel("Type", { exact: true }).selectOption("lujvo");
+  const headword = page.getByLabel("Headword", { exact: true });
+  const status = page.getByRole("status", { name: "Word form", exact: true });
+  for (const spelling of [
+    "sance zei denpa bu",
+    "broda zei brode bu",
+    "abu zei abu",
+    "broda zei brode bu bu",
+  ]) {
+    await headword.fill(spelling);
+    await expect(status).toContainText(
+      "does not match the selected lujvo type",
+    );
+  }
+  for (const spelling of [
+    "denpa bu zei sance",
+    "broda zei denpa bu zei sance",
+    "abu zei broda",
+    "y'y zei bu",
+  ]) {
+    await headword.fill(spelling);
+    await expect(status).toContainText("Detected form: lujvo.");
+    await expect(status).not.toContainText("does not match");
+  }
+});
+
 test("zei exact definition links survive publication, revision, and reload", async ({
   page,
 }) => {

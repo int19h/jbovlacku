@@ -131,6 +131,33 @@ test("malformed zei chains remain blocked as lujvo definitions", () => {
   }
 });
 
+test("zei feedback blocks final BU tails and keeps nonfinal BU operands", () => {
+  for (const spelling of [
+    "sance zei denpa bu",
+    "broda zei brode bu",
+    "abu zei abu",
+    "broda zei brode bu bu",
+  ]) {
+    const feedback = wordFormFeedback(newDraft({ kind: "lujvo", spelling }));
+    assert.equal(feedback.blocking, true, spelling);
+    assert.match(feedback.message, /does not match the selected lujvo type/);
+    assert.notEqual(detectWord(spelling).kind, "lujvo", spelling);
+  }
+  for (const spelling of [
+    "denpa bu zei sance",
+    "broda zei denpa bu zei sance",
+    "abu zei broda",
+    "y'y zei bu",
+  ]) {
+    const draft = newDraft({ kind: "lujvo", spelling, typedSpelling: spelling });
+    assert.equal(wordFormFeedback(draft).blocking, false, spelling);
+    assert.equal(detectWord(spelling).kind, "lujvo", spelling);
+    const state = prepareLujvoBuilder(draft, null);
+    assert.ok(isZeiLujvoState(state), spelling);
+    assert.equal(buildLujvoState(state).candidates[0].spelling, spelling);
+  }
+});
+
 test("zei component lookup ignores competing rafsi assignments", () => {
   const part = detectWord("cukta zei dunda").readings[0][0];
   const options = sourceOptions(part, cached, true);

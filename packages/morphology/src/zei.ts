@@ -36,6 +36,9 @@ export function zeiOperands(
       pending = [];
     } else pending.push(word);
   }
+  // A BU tail after the final zei makes the whole chain a letteral.
+  // The single word bu can still be the final operand.
+  if (pending.length !== 1) return null;
   const last = zeiOperand(pending, input);
   if (last === null || parts.length === 0) return null;
   parts.push(last);

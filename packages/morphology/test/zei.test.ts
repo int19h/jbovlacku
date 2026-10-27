@@ -70,6 +70,10 @@ test("finite BU operands and attached zei retain the actual component spelling",
     ["ibu zei sance", ["ibu", "sance"]],
     ["denpa bu zei sance", ["denpa bu", "sance"]],
     ["denpa bu bu zei sance", ["denpa bu bu", "sance"]],
+    ["broda zei denpa bu zei sance", ["broda", "denpa bu", "sance"]],
+    ["abu zei broda", ["abu", "broda"]],
+    ["y'y zei bu", ["y'y", "bu"]],
+    ["broda zei brodebu", ["broda", "brodebu"]],
     ["ka'ozeino zei namcu", ["ka'o", "no", "namcu"]],
     ["y zei broda", ["y", "broda"]],
   ] as const) {
@@ -84,6 +88,35 @@ test("finite BU operands and attached zei retain the actual component spelling",
     assert.deepEqual(
       built.candidates[0].parts.map(({ form }) => form),
       parts,
+      spelling,
+    );
+  }
+});
+
+test("a final BU tail cannot form a zei lujvo", () => {
+  for (const spelling of [
+    "sance zei denpa bu",
+    "broda zei brode bu",
+    "abu zei abu",
+    "broda zei brode bu bu",
+    "broda zei bububu",
+    "denpa bu zei sance bu",
+    "broda zei denpa bu zei sance bu",
+    "y'y zei bu bu",
+  ]) {
+    const analysis = analyzeWord("extended-v4", spelling);
+    assert.notEqual(analysis.kind, "lujvo", spelling);
+    assert.deepEqual(analysis.readings, [], spelling);
+    assert.deepEqual(analysis.words, segmentText(spelling).words, spelling);
+    const parts = spelling.split(join);
+    assert.throws(
+      () => buildLujvo(request(parts)),
+      /does not match its whole-word components/,
+      spelling,
+    );
+    assert.throws(
+      () => buildLujvo(request(parts, spelling.toUpperCase())),
+      /does not match its whole-word components/,
       spelling,
     );
   }
