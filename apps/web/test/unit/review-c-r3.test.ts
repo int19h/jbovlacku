@@ -105,3 +105,17 @@ test("F3 alignment bounds comparisons for 3000 changed items", () => {
   assert.equal(changes.length, 3000);
   assert.ok(reads < 100_000, `Read ${reads} values`);
 });
+
+test("F6 editor syntax keeps carriage returns out of textarea normalization", () => {
+  const rich: RichText = [
+    [
+      "before\rafter",
+      { code: "x\ry" },
+      { url: "https://example.org/", label: "left\rright" },
+    ],
+  ];
+  const editor = richTextToEditor(rich);
+  assert.doesNotMatch(editor, /\r/);
+  assert.match(editor, /\\r/);
+  assert.deepEqual(editorToRichText(editor, true), rich);
+});

@@ -709,9 +709,12 @@ const lojbanWord = /^[a-z',.]+(?: [a-z',.]+)*$/u;
  *   Escaped whitespace preserves a whitespace-only paragraph.
  */
 const TOKEN =
-  /\\([\\`[{①-⑳\s])|([①-⑳])|\{place (\d{1,5})\}|\{operand ([a-z][a-z0-9_-]{0,31})\}|`((?:\\[\s\S]|(?!\n[ \t\r]*\n)[^`\\])*)`|\[\[((?:\\[\s\S]|(?!\n[ \t\r]*\n)[^\\\]|])+)(?:\|((?:\\[\s\S]|(?!\n[ \t\r]*\n)[^\\\]])*))?\]\]/gu;
+  /\\([\\`[{①-⑳\sr])|([①-⑳])|\{place (\d{1,5})\}|\{operand ([a-z][a-z0-9_-]{0,31})\}|`((?:\\[\s\S]|(?!\n[ \t\r]*\n)[^`\\])*)`|\[\[((?:\\[\s\S]|(?!\n[ \t\r]*\n)[^\\\]|])+)(?:\|((?:\\[\s\S]|(?!\n[ \t\r]*\n)[^\\\]])*))?\]\]/gu;
 const unescape = (value: string, code = false) =>
-  value.replace(code ? /\\([\\`\r\n])/gu : /\\([\\\]|`\r\n])/gu, "$1");
+  value.replace(
+    code ? /\\([\\`\r\nr])/gu : /\\([\\\]|`\r\nr])/gu,
+    (_, escaped: string) => (escaped === "r" ? "\r" : escaped),
+  );
 /** Editor text to rich text. Structured mode reads the token syntax. */
 export function editorToRichText(
   source: string,
@@ -754,7 +757,7 @@ export function editorToRichText(
       continue;
     }
     if (escaped !== undefined) {
-      pending += escaped;
+      pending += escaped === "r" ? "\r" : escaped;
       continue;
     }
     if (!local && (circled || placeNumber || operand)) {
@@ -790,10 +793,11 @@ function escapeLiteral(
         ? /[\\`[{①-⑳\s]/gu
         : /[\\`[{①-⑳\r\n]/gu
       : /[\\`[{①-⑳]/gu,
-    (c) => `\\${c}`,
+    (c) => (c === "\r" ? "\\r" : `\\${c}`),
   );
 }
-const escapeInside = (value: string) => value.replace(/[\\\]|`\r\n]/gu, "\\$&");
+const escapeInside = (value: string) =>
+  value.replace(/[\\\]|`\r\n]/gu, (c) => (c === "\r" ? "\\r" : `\\${c}`));
 /** Rich text to editor text in the token syntax. Lossless. */
 export function richTextToEditor(value: RichText): string {
   return value
@@ -819,7 +823,7 @@ export function richTextToEditor(value: RichText): string {
               ? `[[${escapeInside(node.url)}]]`
               : `[[${escapeInside(node.url)}|${escapeInside(node.label)}]]`;
           if ("code" in node)
-            return `\`${node.code.replace(/[\\`\r\n]/gu, "\\$&")}\``;
+            return `\`${node.code.replace(/[\\`\r\n]/gu, (c) => (c === "\r" ? "\\r" : `\\${c}`))}\``;
           if ("operand" in node) return `{operand ${node.operand}}`;
           return "";
         })
