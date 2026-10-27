@@ -29,6 +29,8 @@ import { isShortRafsiForm } from "../packages/morphology/src/rafsi.ts";
 import { BuilderError } from "../packages/morphology/src/errors.ts";
 import type {
   GismuRequest,
+  GismuResult,
+  GismuCandidate,
   GismuSourceRow,
   LujvoRequest,
   MorphologyProfile,
@@ -62,6 +64,128 @@ export function canonicalJson(value: unknown): string {
     return input;
   };
   return JSON.stringify(canonical(value));
+}
+export interface ExplanationDifference {
+  path: string;
+  before: GismuCandidate["contributions"][number];
+  after: GismuCandidate["contributions"][number];
+}
+// Independent CLL matcher for the explanation allowance. Do not reuse the scorer.
+function referenceMatch(form: string, input: string): number {
+  let longest = 0;
+  for (let mask = 1; mask < 1 << form.length; mask++) {
+    let position = -1,
+      length = 0;
+    for (let i = 0; i < form.length; i++) {
+      if (!(mask & (1 << i))) continue;
+      position = input.indexOf(form[i], position + 1);
+      if (position < 0) {
+        length = 0;
+        break;
+      }
+      length++;
+    }
+    longest = Math.max(longest, length);
+  }
+  if (longest >= 3) return longest;
+  if (longest !== 2) return 0;
+  for (let gap = 1; gap <= 2; gap++)
+    for (let i = 0; i + gap < form.length; i++)
+      for (let j = 0; j + gap < input.length; j++)
+        if (form[i] === input[j] && form[i + gap] === input[j + gap]) return 2;
+  return 0;
+}
+/** Allow only the documented source explanation fix, then compare complete JSON. */
+export function compareResults(
+  request: Request,
+  rust: Result,
+  actual: Result,
+): {
+  matches: boolean;
+  approvedDifferences: ExplanationDifference[];
+} {
+  const rejected = { matches: false, approvedDifferences: [] };
+  if (canonicalJson(rust) === canonicalJson(actual))
+    return { matches: true, approvedDifferences: [] };
+  if (request.op !== "generate" || !("ok" in rust) || !("ok" in actual))
+    return rejected;
+  const expected = structuredClone(rust) as { ok: GismuResult };
+  const differences: ExplanationDifference[] = [];
+  try {
+    const candidates = expected.ok.candidates.map((candidate, index) => ({
+      candidate,
+      path: `ok.candidates[${index}]`,
+    }));
+    if (expected.ok.manual !== null)
+      candidates.push({ candidate: expected.ok.manual, path: "ok.manual" });
+    for (const { candidate, path } of candidates) {
+      // The reference matcher enumerates at most 31 nonempty subsequences.
+      if (!/^[a-z]{5}$/.test(candidate.form)) return rejected;
+      for (let l = 0; l < expected.ok.languages.length; l++) {
+        const language = expected.ok.languages[l];
+        const inputs = language.inputs;
+        if (inputs.length < 2) continue;
+        const zero = language.normalized.numerator === "0";
+        const matched = inputs.map((input) =>
+          referenceMatch(candidate.form, input),
+        );
+        let old = 0,
+          chosen = 0;
+        const weightedOrder = (a: number, b: number) =>
+          zero
+            ? 0
+            : matched[a] * inputs[b].length - matched[b] * inputs[a].length;
+        for (let a = 1; a < inputs.length; a++) {
+          if (weightedOrder(a, old) > 0) old = a;
+          const order = weightedOrder(a, chosen);
+          if (order > 0 || (order === 0 && matched[a] > matched[chosen]))
+            chosen = a;
+        }
+        if (chosen === old) continue;
+        if (weightedOrder(chosen, old) !== 0 || matched[chosen] <= matched[old])
+          return rejected;
+        let numerator =
+          BigInt(language.normalized.numerator) * BigInt(matched[old]);
+        let denominator =
+          BigInt(language.normalized.denominator) * BigInt(inputs[old].length);
+        let a = numerator,
+          b = denominator;
+        while (b !== 0n) [a, b] = [b, a % b];
+        numerator /= a;
+        denominator /= a;
+        const before = {
+          language: language.language,
+          input: inputs[old],
+          matched: matched[old],
+          length: inputs[old].length,
+          weighted: {
+            numerator: String(numerator),
+            denominator: String(denominator),
+          },
+        };
+        if (canonicalJson(candidate.contributions[l]) !== canonicalJson(before))
+          return rejected;
+        const after = {
+          ...before,
+          input: inputs[chosen],
+          matched: matched[chosen],
+          length: inputs[chosen].length,
+        };
+        candidate.contributions[l] = after;
+        differences.push({
+          path: `${path}.contributions[${l}]`,
+          before,
+          after,
+        });
+      }
+    }
+  } catch {
+    return rejected;
+  }
+  return differences.length > 0 &&
+    canonicalJson(expected) === canonicalJson(actual)
+    ? { matches: true, approvedDifferences: differences }
+    : rejected;
 }
 export function callTypeScript(input: Request): Result {
   try {
@@ -416,6 +540,33 @@ export function boundaryRequests(): Request[] {
       source("deu", "abc", 0),
       source("deu", "makrum", 0),
     ],
+    [
+      source("eng", "makrum"),
+      source("deu", "makrum", 0),
+      source("deu", "abc", 0),
+    ],
+    [
+      source("eng", "makrum"),
+      source("deu", "mak", 0),
+      source("deu", "makrum", 0),
+    ],
+    [
+      source("eng", "makrum"),
+      source("deu", "makrum", 0),
+      source("deu", "mak", 0),
+    ],
+    [source("eng", "mak"), source("eng", "makru")],
+    [source("eng", "makru"), source("eng", "mak")],
+    [
+      source("eng", "makrum"),
+      source("deu", "makrum", 0),
+      source("deu", "makruz", 0),
+    ],
+    [
+      source("eng", "makrum"),
+      source("deu", "makruz", 0),
+      source("deu", "makrum", 0),
+    ],
     [source("eng", "makrum", 0)],
     [source(" ", "a")],
     [source("é".repeat(33), "a")],
@@ -537,7 +688,8 @@ For full process CPU and peak RSS, run with:
   /usr/bin/time -v -o OUT/process-time.txt npx tsx scripts/compare-morphology.ts [options]
 
 The harness also records TypeScript CPU and peak RSS and native oracle timing.
-It stops at the first mismatch and writes the complete request and both results.`);
+It records approved source-explanation changes with both complete raw results.
+It stops at the first unexpected mismatch and writes the complete request and both results.`);
     return;
   }
   const configuration = options(process.argv.slice(2));
@@ -553,6 +705,8 @@ It stops at the first mismatch and writes the complete request and both results.
     started,
     seed: "0x12345678",
     comparison: "Complete JSON, sorted object keys, exact array order",
+    explanation_allowance:
+      "Equal weighted values prefer the larger matched-letter count. Complete ties retain source order. All other JSON must match.",
     scope:
       "Retained CLL, extended version 2, and extended version 3 only. Gencmu inputs supply no syntax expectations.",
   };
@@ -782,12 +936,19 @@ It stops at the first mismatch and writes the complete request and both results.
     join(configuration.out, "comparison-ledger.jsonl"),
     { flags: "wx" },
   );
+  const approvedFile = "approved-explanation-differences.jsonl";
+  const approvedLedger = createWriteStream(
+    join(configuration.out, approvedFile),
+    { flags: "wx" },
+  );
   const requestDigest = createHash("sha256"),
     rustDigest = createHash("sha256"),
     typescriptDigest = createHash("sha256");
   const operationCounts: Record<string, number> = {},
     groupCounts: Record<string, number> = {};
   let comparisons = 0,
+    approvedComparisons = 0,
+    approvedDifferences = 0,
     mismatch: unknown = null,
     failure: unknown = null,
     lastProgress = Date.now();
@@ -802,6 +963,7 @@ It stops at the first mismatch and writes the complete request and both results.
     const canonicalRequest = canonicalJson(request),
       canonicalRust = canonicalJson(rust),
       canonicalActual = canonicalJson(actual);
+    const comparison = compareResults(request, rust, actual);
     requestDigest.update(canonicalRequest + "\n");
     rustDigest.update(canonicalRust + "\n");
     typescriptDigest.update(canonicalActual + "\n");
@@ -814,10 +976,32 @@ It stops at the first mismatch and writes the complete request and both results.
       request_sha256: sha256(canonicalRequest),
       rust_sha256: sha256(canonicalRust),
       typescript_sha256: sha256(canonicalActual),
+      comparison: !comparison.matches
+        ? "unexpected-difference"
+        : comparison.approvedDifferences.length
+          ? "approved-explanation-difference"
+          : "identical",
+      approved_explanation_differences: comparison.approvedDifferences.length,
     };
     if (!ledger.write(JSON.stringify(entry) + "\n"))
       await once(ledger, "drain");
-    if (canonicalRust !== canonicalActual) {
+    if (comparison.approvedDifferences.length > 0) {
+      approvedComparisons++;
+      approvedDifferences += comparison.approvedDifferences.length;
+      if (
+        !approvedLedger.write(
+          JSON.stringify({
+            ...entry,
+            request,
+            rust,
+            typescript: actual,
+            differences: comparison.approvedDifferences,
+          }) + "\n",
+        )
+      )
+        await once(approvedLedger, "drain");
+    }
+    if (!comparison.matches) {
       mismatch = {
         request,
         rust,
@@ -940,6 +1124,8 @@ It stops at the first mismatch and writes the complete request and both results.
     }
     ledger.end();
     await once(ledger, "finish");
+    approvedLedger.end();
+    await once(approvedLedger, "finish");
     writeFileSync(join(configuration.out, "oracle-stderr.txt"), stderr);
     const cpu = process.cpuUsage(cpuStart),
       usage = process.resourceUsage();
@@ -953,6 +1139,9 @@ It stops at the first mismatch and writes the complete request and both results.
       request_sha256: requestDigest.digest("hex"),
       rust_results_sha256: rustDigest.digest("hex"),
       typescript_results_sha256: typescriptDigest.digest("hex"),
+      approved_explanation_comparisons: approvedComparisons,
+      approved_explanation_differences: approvedDifferences,
+      approved_explanation_file: approvedFile,
       passed: failure === null,
       mismatches: mismatch === null ? 0 : 1,
       failure,
@@ -971,6 +1160,8 @@ It stops at the first mismatch and writes the complete request and both results.
           passed: failure === null,
           comparisons,
           operationCounts,
+          approved_explanation_comparisons: approvedComparisons,
+          approved_explanation_differences: approvedDifferences,
           coverage: counts,
           evidence: configuration.out,
           failure,

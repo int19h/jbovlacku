@@ -340,19 +340,99 @@ test("large distinct denominators refuse before candidate enumeration", () => {
   );
   fails(() => generateGismu(request(sources)), "weight arithmetic bits");
 });
-test("zero-weight alternatives retain their first input on weighted ties", () => {
-  const result = generateGismu({
-    ...request([
-      row("eng", "makrum"),
-      row("deu", "abc", 0),
-      row("deu", "makrum", 0),
-    ]),
+test("zero-weight alternatives choose the larger match in both source orders", () => {
+  const run = (inputs: string[]) =>
+    generateGismu({
+      ...request([
+        row("eng", "makrum"),
+        ...inputs.map((input) => row("deu", input, 0)),
+      ]),
+      manual: "makru",
+      window: 512,
+    });
+  const forward = run(["abc", "makrum"]),
+    reverse = run(["makrum", "abc"]);
+  assert.deepEqual(forward.manual, reverse.manual);
+  for (const result of [forward, reverse]) {
+    const ranked = result.candidates.find((c) => c.form === "makru")!;
+    assert.ok(ranked);
+    for (const candidate of [ranked, result.manual!]) {
+      assert.deepEqual(candidate.contributions[1], {
+        language: "deu",
+        input: "makrum",
+        matched: 5,
+        length: 6,
+        weighted: fraction("0", "1"),
+      });
+      assert.deepEqual(candidate.score, fraction("5", "6"));
+      assert.equal(candidate.rank, 1);
+    }
+  }
+  // Keep the candidate alphabet fixed while removing the alternative choice.
+  const baseline = generateGismu({
+    ...request([row("eng", "makrum"), row("deu", "abcmakrum", 0)]),
     manual: "makru",
-    window: 0,
+    window: 512,
   });
-  assert.equal(result.manual!.contributions[1].input, "abc");
-  assert.deepEqual(
-    result.manual!.contributions[1].weighted,
-    fraction("0", "1"),
-  );
+  const numeric = (result: typeof forward) => ({
+    considered: result.considered,
+    candidates: result.candidates.map(({ form, score, rank }) => ({
+      form,
+      score,
+      rank,
+    })),
+    manual: { score: result.manual!.score, rank: result.manual!.rank },
+  });
+  assert.deepEqual(numeric(forward), numeric(reverse));
+  assert.deepEqual(numeric(forward), numeric(baseline));
+});
+test("weighted ties prefer matched letters over recognition fraction", () => {
+  for (const inputs of [
+    ["mak", "makrum"],
+    ["makrum", "mak"],
+  ]) {
+    const result = generateGismu({
+      ...request([
+        row("eng", "makrum"),
+        ...inputs.map((input) => row("deu", input, 0)),
+      ]),
+      manual: "makru",
+      window: 0,
+    });
+    // 5/6 wins the explanation over 3/3 because the weight is zero.
+    assert.equal(result.manual!.contributions[1].input, "makrum");
+    assert.equal(result.manual!.contributions[1].matched, 5);
+    assert.deepEqual(result.manual!.score, fraction("5", "6"));
+  }
+});
+test("positive weighted ties prefer larger matches and complete ties keep source order", () => {
+  for (const inputs of [
+    ["mak", "makru"],
+    ["makru", "mak"],
+  ]) {
+    const result = generateGismu({
+      ...request(inputs.map((input) => row("eng", input))),
+      manual: "makru",
+    });
+    assert.equal(result.manual!.contributions[0].input, "makru");
+    assert.deepEqual(result.manual!.score, fraction("1", "1"));
+    assert.equal(result.manual!.rank, 1);
+  }
+  for (const weight of [0, 1]) {
+    for (const inputs of [
+      ["makrum", "makruz"],
+      ["makruz", "makrum"],
+    ]) {
+      const result = generateGismu({
+        ...request([
+          row("eng", "makru"),
+          ...inputs.map((input) => row("deu", input, weight)),
+        ]),
+        manual: "makru",
+        window: 0,
+      });
+      assert.equal(result.manual!.contributions[1].input, inputs[0]);
+      assert.equal(result.manual!.contributions[1].matched, 5);
+    }
+  }
 });

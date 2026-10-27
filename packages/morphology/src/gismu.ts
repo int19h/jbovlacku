@@ -316,7 +316,11 @@ class Scorer {
       for (let a = 0; a < languages[l].inputs.length; a++) {
         const m = Math.min(matchScore(candidate, languages[l].inputs[a]), 5);
         const value = this.tables[l][a][m];
-        if (a === 0 || value > chosenValue) {
+        if (
+          a === 0 ||
+          value > chosenValue ||
+          (value === chosenValue && m > chosen[1])
+        ) {
           chosen = [a, m];
           chosenValue = value;
         }
