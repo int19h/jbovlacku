@@ -2,6 +2,8 @@ import type { EmbeddingUsage } from "../embedding.ts";
 import type { EmbeddingProfile } from "./types.ts";
 import type { DocumentPage, IndexContext, IndexDocument } from "./source.ts";
 
+export const MAX_PROFILE_COOLDOWN_MS = 60 * 60 * 1000;
+
 export interface IndexGeneration extends IndexContext {
   id: string;
   state: "paused" | "running" | "completed" | "retired";
@@ -52,7 +54,8 @@ export interface VectorStore {
   summary(id: string): Promise<IndexSummary>;
   compatibility(profile: string): Promise<string | null>;
   suspend(profile: string, reason: string): Promise<void>;
-  defer(profile: string, until: number): Promise<void>;
+  defer(profile: string, until: number, now?: number): Promise<void>;
+  clearCooldown(profile: string): Promise<void>;
   retryAfter(profile: string): Promise<number | null>;
   page(
     id: string,

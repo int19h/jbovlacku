@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { before, test } from "node:test";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
+import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -21,6 +22,7 @@ import {
   type IndexClock,
 } from "../src/semantic/indexer.ts";
 import type { IndexDocument } from "../src/semantic/source.ts";
+import { MAX_PROFILE_COOLDOWN_MS } from "../src/semantic/vector-store.ts";
 
 before(async () =>
   initializeCore(
@@ -52,12 +54,15 @@ function fakeClock() {
   return {
     waits,
     now: () => now,
+    advance(ms: number) {
+      now += ms;
+    },
     async sleep(ms: number, signal?: AbortSignal) {
       signal?.throwIfAborted();
       waits.push(ms);
       now += ms;
     },
-  } satisfies IndexClock & { waits: number[] };
+  } satisfies IndexClock & { waits: number[]; advance(ms: number): void };
 }
 function deferred() {
   let resolve!: () => void;
@@ -299,12 +304,12 @@ test("the total wait limit stops repeated long cooldowns", async () => {
   );
 });
 
-test("an excessive Retry-After pauses without an early retry or automatic replay on resume", async () => {
+test("an excessive Retry-After expires at the cap without automatically replaying old work", async () => {
   let sends = 0;
   await fixture(
     async () => {
       sends++;
-      return limited("9999999999999999999999999");
+      return sends === 1 ? limited("9999999999999999999999999") : success(1);
     },
     async ({ store, assistance, id }) => {
       const clock = fakeClock();
@@ -312,9 +317,68 @@ test("an excessive Retry-After pauses without an early retry or automatic replay
       const result = await indexer.run(id);
       assert.equal(result.generation.error, "embedding_rate_limited");
       assert.deepEqual(clock.waits, []);
+      assert.equal(
+        await store.retryAfter(result.generation.profile),
+        clock.now() + MAX_PROFILE_COOLDOWN_MS,
+      );
+      const [old] = await store.batches(id);
       await indexer.run(id);
       assert.equal(sends, 1);
-      assert.equal((await store.batches(id)).length, 1);
+      clock.advance(MAX_PROFILE_COOLDOWN_MS);
+      const resumed = await indexer.run(id);
+      assert.equal(resumed.generation.error, "index_incomplete");
+      assert.equal(sends, 1);
+      assert.deepEqual(await store.batches(id), [old]);
+      await store.retry(old.id);
+      assert.equal((await indexer.run(id)).generation.state, "completed");
+      assert.equal(sends, 2);
+      assert.equal(
+        (await store.batches(id)).find((batch) => batch.previous)?.previous,
+        old.id,
+      );
+      assert.deepEqual(clock.waits, []);
+    },
+  );
+});
+
+test("the store caps new and legacy deadlines while preserving shorter provider cooldowns", async () => {
+  await fixture(
+    async () => assert.fail("The deadline test must not call a provider."),
+    async ({ store, id, path }) => {
+      const profile = (await store.generation(id)).profile;
+      const clock = fakeClock();
+      await store.defer(profile, Number.MAX_SAFE_INTEGER, clock.now());
+      assert.equal(
+        await store.retryAfter(profile),
+        clock.now() + MAX_PROFILE_COOLDOWN_MS,
+      );
+      await store.defer(profile, clock.now() + 1000, clock.now());
+      assert.equal(
+        await store.retryAfter(profile),
+        clock.now() + MAX_PROFILE_COOLDOWN_MS,
+      );
+      await store.clearCooldown(profile);
+      await store.defer(profile, clock.now() + 61000, clock.now());
+      assert.equal(await store.retryAfter(profile), clock.now() + 61000);
+      const legacy = new DatabaseSync(path);
+      try {
+        legacy
+          .prepare(
+            "UPDATE semantic_profile_backoff SET retry_after=? WHERE profile=?",
+          )
+          .run(Number.MAX_SAFE_INTEGER, profile);
+      } finally {
+        legacy.close();
+      }
+      await store.defer(profile, clock.now() + 1000, clock.now());
+      assert.equal(
+        await store.retryAfter(profile),
+        clock.now() + MAX_PROFILE_COOLDOWN_MS,
+      );
+      await assert.rejects(
+        store.defer(profile, 1000, NaN),
+        /retry deadline is invalid/,
+      );
     },
   );
 });
@@ -535,13 +599,13 @@ test("a reopened store applies the saved cooldown to another generation of the s
   );
 });
 
-test("a saved excessive cooldown blocks new generations after reopen without sending fresh work", async () => {
+test("a capped cooldown survives reopen and permits fresh work after its deadline", async () => {
   let sends = 0;
   const clock = fakeClock();
   await fixture(
     async () => {
       sends++;
-      return limited("61");
+      return sends === 1 ? limited("9999999999999999999999999") : success(1);
     },
     async ({ store, assistance, id, path }) => {
       await new SemanticIndexer(store, assistance, clock).run(id);
@@ -557,6 +621,21 @@ test("a saved excessive cooldown blocks new generations after reopen without sen
         assert.deepEqual(await reopened.batches(generation.id), []);
         assert.deepEqual(clock.waits, []);
         assert.equal(sends, 1);
+        assert.equal(
+          await reopened.retryAfter(generation.profile),
+          clock.now() + MAX_PROFILE_COOLDOWN_MS,
+        );
+        const old = await reopened.batches(id);
+        clock.advance(MAX_PROFILE_COOLDOWN_MS);
+        const resumed = await new SemanticIndexer(
+          reopened,
+          assistance,
+          clock,
+        ).run(generation.id);
+        assert.equal(resumed.generation.state, "completed");
+        assert.equal(sends, 2);
+        assert.deepEqual(await reopened.batches(id), old);
+        assert.equal((await reopened.batches(generation.id))[0].previous, null);
       } finally {
         reopened.close();
       }
@@ -574,12 +653,12 @@ test("a cooldown extended during the wait is read again before dispatch", async 
     },
     async ({ store, assistance, id }) => {
       const identity = (await store.generation(id)).profile;
-      await store.defer(identity, clock.now() + 5000);
+      await store.defer(identity, clock.now() + 5000, clock.now());
       const sleep = clock.sleep.bind(clock);
       clock.sleep = async (delay, signal) => {
         await sleep(delay, signal);
         if (clock.waits.length === 1)
-          await store.defer(identity, clock.now() + 3000);
+          await store.defer(identity, clock.now() + 3000, clock.now());
         assert.equal(sends, 0);
       };
       const events: IndexBackoff[] = [];
@@ -611,7 +690,8 @@ test("a cooldown saved by another job stops fresh claims in an active generation
     },
     async ({ store, assistance, id }) => {
       const identity = (await store.generation(id)).profile;
-      saveCooldown = () => store.defer(identity, clock.now() + 7000);
+      saveCooldown = () =>
+        store.defer(identity, clock.now() + 7000, clock.now());
       const result = await new SemanticIndexer(store, assistance, clock).run(
         id,
         { concurrency: 1 },

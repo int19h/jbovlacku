@@ -8,6 +8,7 @@ import { SemanticError, type EmbeddingProfile } from "./types.ts";
 import { vectorBytes, vectorFromBytes } from "./vector.ts";
 import type { DocumentPage, IndexContext } from "./source.ts";
 import type { EmbeddingUsage } from "../embedding.ts";
+import { MAX_PROFILE_COOLDOWN_MS } from "./vector-store.ts";
 import type {
   IndexBatch,
   IndexGeneration,
@@ -227,13 +228,32 @@ export class SqlVectorStore implements VectorStore {
       reason,
     );
   }
-  async defer(profile: string, until: number): Promise<void> {
-    if (!hash(profile) || !Number.isSafeInteger(until) || until < 0)
+  async defer(profile: string, until: number, now = Date.now()): Promise<void> {
+    if (
+      !hash(profile) ||
+      !Number.isSafeInteger(until) ||
+      until < 0 ||
+      !Number.isSafeInteger(now) ||
+      now < 0
+    )
       fail("semantic_backoff", "The embedding retry deadline is invalid.");
+    const maximum = Math.min(
+      Number.MAX_SAFE_INTEGER,
+      now + MAX_PROFILE_COOLDOWN_MS,
+    );
     this.sql.exec(
-      "INSERT INTO semantic_profile_backoff VALUES(?,?) ON CONFLICT(profile) DO UPDATE SET retry_after=MAX(retry_after,excluded.retry_after)",
+      "INSERT INTO semantic_profile_backoff VALUES(?,?) ON CONFLICT(profile) DO UPDATE SET retry_after=MIN(MAX(retry_after,excluded.retry_after),?)",
       profile,
-      until,
+      Math.min(until, maximum),
+      maximum,
+    );
+  }
+  async clearCooldown(profile: string): Promise<void> {
+    if (!hash(profile))
+      fail("semantic_profile", "The embedding profile is invalid.");
+    this.sql.exec(
+      "DELETE FROM semantic_profile_backoff WHERE profile=?",
+      profile,
     );
   }
   async retryAfter(profile: string): Promise<number | null> {

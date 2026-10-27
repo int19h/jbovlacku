@@ -236,12 +236,11 @@ export class SemanticIndexer {
                   rateLimited ? 1000 * 2 ** round : 0,
                   typeof hint === "number" && Number.isFinite(hint) ? hint : 0,
                 );
+                const now = this.clock.now();
                 await this.store.defer(
                   identity,
-                  Math.min(
-                    Number.MAX_SAFE_INTEGER,
-                    Math.ceil(this.clock.now() + delayMs),
-                  ),
+                  Math.min(Number.MAX_SAFE_INTEGER, Math.ceil(now + delayMs)),
+                  now,
                 );
               }
               if (
