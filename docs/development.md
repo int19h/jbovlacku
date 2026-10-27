@@ -545,6 +545,11 @@ If a write fails, treat partial output as unusable until inspected.
 
 ## Semantic index cooldown recovery
 
+The Node server accepts `JVC_SEMANTIC_PROFILE` as a complete `sha256:` profile hash.
+It enables meaning search only for a matching complete published generation and a configured embedding provider.
+The [semantic search guide](semantic-search.md#enable-node-meaning-search) describes the routes, query cache, compatibility probes, and limits.
+The local Worker adapter has no vector backend and continues to report the capability as unavailable.
+
 The Node indexing command saves a rate-limit deadline for each complete embedding profile.
 It caps each saved deadline at one hour from the provider failure, including an invalidly large `Retry-After` value.
 A new refusal can extend the deadline by at most one hour from that refusal.

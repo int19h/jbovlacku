@@ -219,7 +219,14 @@ HTTP 429 responses use bounded backoff that respects `Retry-After` and retains e
 The saved profile cooldown survives restart and has a one-hour cap. Operators can clear it without changing batches or charges.
 Known usage remains available even when a returned model or vector is invalid.
 Mocked tests cover partial progress, restart, failures, retirement, atomic publication, rollback, and explicit removal of current pointers.
-Semantic search routes, query caching, and Worker vector storage remain unfinished. The semantic capability stays disabled.
+The Node host serves meaning searches when a selected profile has a complete published index for the exact snapshot and view.
+`GET /embedding-profiles` reports coverage and query availability. `POST /search/semantic` returns definition events with cosine distances.
+Two worker threads scan bounded vector pages and keep only the requested best results. Lexical reads remain available during inference and scans.
+The persistent query cache stores complete profile hashes, exact input hashes, and vectors. Concurrent cache misses share one computation.
+Cache hits require no provider request or spending reservation. Each search still filters the selected view and excludes inert definitions.
+Public reference probes detect model drift before new query computations. A detected mismatch suspends that profile, including its cached queries.
+Cancellation stops the caller's wait. Admitted embedding work still settles and can fill the shared cache without a replacement request.
+Worker vector storage and the browser meaning controls remain unfinished. An unconfigured host reports meaning search as unavailable.
 A discarded result returns a clear status. Spending failures distinguish pending costs, timed limits, and requests that cannot fit.
 The default spending share admits every enabled operation at each reasoning effort, with decision reports enabled or disabled.
 Each task uses an output cap based on recorded prompt tests. An explicit operator limit replaces the automatic caps.
@@ -227,7 +234,7 @@ Every output limit stays at or below 20,480 tokens, including explicit limits an
 Mocked providers cover the request and correction loop. These tests do not establish live model accuracy.
 The [development guide](docs/development.md#optional-ai-assistance) gives the configuration and retention limits.
 
-The status editor, transfer editor, semantic search, and Lensisku cross-posting remain target features.
+The status editor, transfer editor, browser meaning search, and Lensisku cross-posting remain target features.
 The site view is the server's selected signed view, and the Trust page can use another retained signed view by its event ID. A signed view names its calculation profile, `simple-routes-bounds-v1` or `simple-routes-shun-v1`; the pages name the profile of each result and its route rule, and an unknown profile leaves scores unavailable.
 The personal view downloads the snapshot records, verifies each envelope and body in a Web Worker, and ranks words locally with the private overlay.
 It adds the current identity with allocation 1 only when its continuity group has no allocation or private root change.

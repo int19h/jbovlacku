@@ -14,6 +14,8 @@ import type {
   IndexGeneration,
   VectorStore,
   VectorAssociation,
+  ExpectedAssociation,
+  IndexCoverage,
 } from "./vector-store.ts";
 
 /** Hosts supply binary SQL bindings and atomic transactions. No provider work runs in a transaction. */
@@ -139,6 +141,57 @@ export class SqlVectorStore implements VectorStore {
         view,
       )
       .map((row) => this.generationRow(String(row.generation)));
+  }
+  /** Current evaluation can exclude associations retained by an older evaluator. Prove every required binding without reading vector payloads. */
+  async coverageFor(id: string, expected: ExpectedAssociation[]) {
+    const generation = this.active(id);
+    const empty = (): IndexCoverage => ({
+      eligible: 0,
+      indexed: 0,
+      pending: 0,
+      failed: 0,
+    });
+    const all = empty();
+    const languages: Record<string, IndexCoverage> = {};
+    for (let offset = 0; offset < expected.length; offset += 128) {
+      const page = expected.slice(offset, offset + 128);
+      const rows = this.sql.exec(
+        `SELECT a.*,v.input IS NOT NULL AS indexed,b.state AS batch_state FROM semantic_associations a
+        LEFT JOIN semantic_vectors v ON v.profile=? AND v.input=a.input
+        LEFT JOIN semantic_batch_inputs bi ON bi.generation=a.generation AND bi.input=a.input
+        LEFT JOIN semantic_batches b ON b.id=bi.batch
+        WHERE a.generation=? AND a.event IN (${page.map(() => "?").join(",")})`,
+        generation.profile,
+        id,
+        ...page.map((row) => row.event),
+      );
+      const byEvent = new Map(rows.map((row) => [String(row.event), row]));
+      for (const binding of page) {
+        const row = byEvent.get(binding.event);
+        const mismatch =
+          row &&
+          (row.envelope !== binding.envelope ||
+            row.body !== binding.body ||
+            row.word !== binding.word ||
+            row.language !== binding.language ||
+            row.extraction_version !== binding.extraction_version);
+        const language = (languages[binding.language] ??= empty());
+        const status = mismatch
+          ? "failed"
+          : row?.indexed && !row.error
+            ? "indexed"
+            : row &&
+                (row.error ||
+                  ["failed", "ambiguous"].includes(String(row.batch_state)))
+              ? "failed"
+              : "pending";
+        all.eligible++;
+        language.eligible++;
+        all[status]++;
+        language[status]++;
+      }
+    }
+    return { all, languages };
   }
   async references(id: string) {
     const generation = this.active(id);

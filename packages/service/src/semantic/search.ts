@@ -1,4 +1,7 @@
-import type { Evaluation } from "../../../core/src/index.ts";
+import {
+  semanticProjectionVersion,
+  type Evaluation,
+} from "../../../core/src/index.ts";
 import { abortable, AssistanceError } from "../inference.ts";
 import type { AssistanceService } from "../assistance.ts";
 import type { Snapshot } from "../storage.ts";
@@ -67,6 +70,13 @@ export class SemanticSearch {
   private pending = new Map<string, Promise<Float32Array>>();
   private probeWork = new Map<string, Promise<void>>();
   private checked = new Map<string, number>();
+  private coverageCache = new WeakMap<
+    Evaluation,
+    Map<
+      string,
+      Promise<{ all: IndexCoverage; languages: Record<string, IndexCoverage> }>
+    >
+  >();
   constructor(
     readonly options: SemanticOptions,
     private inference: Pick<AssistanceService, "embed">,
@@ -87,6 +97,33 @@ export class SemanticSearch {
     return (
       await this.options.store.published(context.evaluation.selected_view)
     ).find((g) => g.profile === this.options.profile);
+  }
+  private coverage(context: SearchContext, generation: IndexGeneration) {
+    let cached = this.coverageCache.get(context.evaluation);
+    if (!cached)
+      this.coverageCache.set(context.evaluation, (cached = new Map()));
+    const old = cached.get(generation.id);
+    if (old) return old;
+    const expected = eligibleEvents(context).map((id) => {
+      const event = context.snapshot.events[id];
+      const publication = context.evaluation.publications[id];
+      if (!event?.body_hash || !publication.language) throw unavailable();
+      return {
+        event: id,
+        envelope: event.envelope_hash,
+        body: event.body_hash,
+        word: publication.word,
+        language: publication.language,
+        extraction_version: semanticProjectionVersion(),
+      };
+    });
+    const work = this.options.store.coverageFor(generation.id, expected);
+    // Completed associations are immutable. Pending generations must reflect indexing progress.
+    if (generation.state === "completed") {
+      cached.set(generation.id, work);
+      void work.catch(() => cached!.delete(generation.id));
+    }
+    return work;
   }
   private async ready(
     context: SearchContext,
@@ -115,10 +152,23 @@ export class SemanticSearch {
     const generation = await this.generation(context);
     if (!generation) return [];
     const profile = await this.options.store.profile(generation.id);
-    const all = await this.options.store.coverage(generation.id);
     const same = generation.snapshot === context.snapshot.snapshot;
+    const bound = same ? await this.coverage(context, generation) : null;
+    const all = bound?.all ?? {
+      indexed: 0,
+      eligible: eligibleEvents(context).length,
+      pending: eligibleEvents(context).length,
+      failed: 0,
+    };
     const counts = same
-      ? await this.options.store.coverage(generation.id, language)
+      ? language === undefined
+        ? all
+        : (bound!.languages[language] ?? {
+            indexed: 0,
+            eligible: 0,
+            pending: 0,
+            failed: 0,
+          })
       : {
           indexed: 0,
           eligible: eligibleEvents(context, language).length,
@@ -307,14 +357,18 @@ export class SemanticSearch {
     const profile = await this.options.store.profile(generation.id);
     // Validate the complete profile and exact query before any reservation.
     const bytes = queryInput(profile, request.query);
-    const all = await this.options.store.coverage(generation.id);
+    if (generation.snapshot !== context.snapshot.snapshot) throw unavailable();
+    const bound = await this.coverage(context, generation);
+    const all = bound.all;
     await this.compatible(generation.profile);
     if (!(await this.ready(context, generation, profile, all)))
       throw unavailable();
-    const coverage = await this.options.store.coverage(
-      generation.id,
-      request.language,
-    );
+    const coverage = bound.languages[request.language] ?? {
+      indexed: 0,
+      eligible: 0,
+      pending: 0,
+      failed: 0,
+    };
     const eligible = eligibleEvents(context, request.language).filter(
       (id) => !selection.excludedEvents?.has(id),
     );

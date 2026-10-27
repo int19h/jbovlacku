@@ -42,7 +42,15 @@ export interface IndexSummary {
 export interface VectorAssociation extends Omit<IndexDocument, "input"> {
   vector: Uint8Array | null;
 }
+export type ExpectedAssociation = Pick<
+  IndexDocument,
+  "event" | "envelope" | "body" | "extraction_version" | "word" | "language"
+>;
 export interface VectorStore {
+  coverageFor(
+    id: string,
+    expected: ExpectedAssociation[],
+  ): Promise<{ all: IndexCoverage; languages: Record<string, IndexCoverage> }>;
   published(view: string): Promise<IndexGeneration[]>;
   references(id: string): Promise<{ input: Uint8Array; vector: Uint8Array }[]>;
   create(

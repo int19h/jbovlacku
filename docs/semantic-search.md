@@ -1,8 +1,9 @@
-# Semantic indexing
+# Semantic indexing and search
 
 The Node operator command builds a fresh vector index from the dictionary's private semantic records.
 A vector represents a definition for later meaning comparisons. A generation binds its associations to one snapshot, view, and profile.
-Semantic search routes and query caching remain unavailable. Both hosts keep `semantic_search` disabled.
+The Node host can search a complete published generation with a configured query provider.
+The Worker host has no configured vector backend and keeps `semantic_search` disabled.
 
 The command uses the application recipe from the [format specification](format.md#optional-derived-embeddings).
 It never reads historical research vectors. It retains complete profile metadata and the original event, envelope, body, and input hashes.
@@ -156,7 +157,7 @@ npx tsx apps/server/src/semantic-cli.ts --data "$JVC_DATA_DIR" --command rollbac
 ```
 
 Rollback requires the named generation to remain current and a retained rollback generation.
-Publication changes only the derived index pointer. It does not enable public semantic routes.
+Publication changes only the derived index pointer. Public queries also require the host configuration and complete coverage described below.
 Current generations, rollback generations, and jobs with active batches cannot retire.
 Use the exact current generation ID to remove its publication pointer:
 
@@ -183,5 +184,86 @@ The final write also enforces capacity and rolls back every vector if it fails.
 Older stores migrate their claim position and active reservations when the command opens them.
 
 SQLite metadata, page overhead, and WAL files need additional physical disk space.
-Query vectors require a separate cache in later work.
-Node exposes bounded vector pages for that later service. It does not load the complete vector set for one page read.
+Query vectors use a separate allocation of at most 2,048 entries and 32 MiB of vector bytes.
+Node scans at most 128 associations per page. One extra row determines whether another page remains.
+
+## Enable Node meaning search
+
+Set `JVC_SEMANTIC_PROFILE` to the complete profile hash from the indexing status.
+Keep the existing AI configuration and key-file path. Restart the server with its indexed data directory.
+The server reads `semantic-vectors.sqlite` beside its dictionary and spending databases.
+No key reaches the browser. The browser never receives query or document vectors.
+
+The selected generation must match the requested snapshot and view exactly.
+It must be published, completed, compatible, and free of pending or failed definitions across all languages.
+A completed job with excluded over-limit definitions does not meet this requirement.
+After dictionary changes, prepare and publish a complete generation for the new completed snapshot.
+An older index never silently stands in for that snapshot.
+
+`GET /api/v1/embedding-profiles` returns exactly one `profiles` array.
+Each entry reports its profile hash, label, query availability, indexed count, eligible count, pending count, and limitations.
+Optional `snapshot`, `view`, and `language` parameters select the coverage context.
+Without those parameters, the request uses the latest completed snapshot, configured view, and all languages.
+An absent current generation returns an empty array.
+A generation for another snapshot reports zero indexed definitions and the requested context's eligible count as pending.
+
+`POST /api/v1/search/semantic` accepts these JSON fields:
+
+```json
+{
+  "query": "x1 buys x2 from x3",
+  "language": "en",
+  "snapshot": "sha256:SNAPSHOT_HASH",
+  "view": "jve1:VIEW_HASH",
+  "profile": "sha256:PROFILE_HASH",
+  "limit": 30
+}
+```
+
+Replace each placeholder with its complete lowercase hash.
+The API accepts limits from 1 through 100. Its general query limit is 16 KiB.
+This profile has a tighter limit of 4,096 UTF-8 bytes, including its exact query prefix. Oversized inputs fail before payment.
+The server rejects malformed Unicode and does not normalize, trim, or silently truncate the query.
+Query fields belong in the JSON body, not the URL.
+
+The response names its snapshot, view, profile, and exact query input hash.
+Each hit names an event, word ID, cosine distance, and one-based position.
+Equal distances use event-ID order. Several definitions of one word can appear in the public results.
+Coverage reports indexed, eligible, pending, and failed counts for the selected language.
+Distance measures related meaning. It is not a dictionary score, endorsement, or calibrated probability.
+
+The scanner uses the same effective, selected, active definitions as ordinary lexical search.
+It runs in at most two reusable Node workers. Each worker has a bounded SQLite page cache and keeps at most 100 best hits.
+An extra concurrent scan returns `semantic_busy` instead of creating another worker or an unbounded queue.
+Neither the scanner nor a query cache hit reads original definition bodies.
+Expiry during inference or scanning returns `snapshot_expired`, without exposing a result from a different snapshot.
+
+## Query cache, probes, and cancellation
+
+The query cache stores only the full profile hash, exact prefixed input hash, vector bytes, and last-use time.
+It stores no query text, definition body, or cross-snapshot search result.
+Least recently used entries leave when the entry or byte limit is reached. Ties use profile and input hash order.
+Every search applies its requested dictionary context, including when another snapshot computed the cached query vector.
+
+Concurrent misses for one profile and input share one computation.
+At most sixteen distinct computations wait at once. Provider work uses the existing shared execution and spending limits.
+A cache hit creates no provider request or reservation, including when paid work has exhausted its budget.
+The first caller's network owns a shared query computation. Later waiters do not incur another charge.
+Cache timing can reveal that someone recently used the same public-dictionary query.
+
+Before the first new query computation after restart, the server recomputes up to two public document reference inputs.
+It repeats this probe before a new computation when the last successful probe is at least one hour old.
+Cache hits do not trigger paid probes. They still consult the durable profile suspension state before returning results.
+The probe compares current vectors with retained vectors under a cosine-distance tolerance of 0.0001.
+Confirmed drift or an unexpected model name suspends the profile, including its cached queries.
+The hosted revision remains unknown. A passing sample cannot prove that every input remains compatible or that the alias never changes.
+Financial refusals and transient provider failures do not suspend a compatible profile.
+
+New query computations respect the saved provider cooldown. They never automatically retry a failed provider request.
+Cancellation ends one caller's wait and stops its vector scan.
+An admitted shared embedding computation continues to settle and can fill the cache after all callers leave.
+Shutdown waits for those computations and actual provider transports before closing stores and releasing the data-directory lock.
+An expired or canceled search does not refund an already sent request or start a replacement.
+
+The browser meaning mode and AI dictionary tools are separate features.
+Downloaded document vectors alone do not provide offline meaning search. Derived-vector exchange remains unavailable.

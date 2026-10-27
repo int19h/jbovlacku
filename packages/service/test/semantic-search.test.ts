@@ -498,3 +498,144 @@ test("query cache enforces byte and entry limits without retaining query text", 
     database.close();
   }
 });
+
+test("current coverage filters old inert associations and checks exact extraction and body bindings", async () =>
+  fixture(async ({ store, scanner, path, docs, ctx }) => {
+    const provider = mock();
+    const current = structuredClone(ctx.evaluation);
+    current.receipts[docs[0].event].interpretation = "inert";
+    current.publications[docs[1].event].status = "retired";
+    const selected = { ...ctx, evaluation: current };
+    const options = {
+      profile: profileId(profile),
+      store,
+      cache: store.queryCache,
+      scanner,
+    };
+    const engine = new SemanticSearch(options, provider.assistance, true);
+    const description = (await engine.profiles(selected))[0];
+    assert.equal(description.query_available, true);
+    assert.equal(description.eligible, 2);
+    assert.equal(description.indexed, 2);
+    assert.deepEqual(
+      (await engine.search(selected, request(), "local")).hits.map(
+        (hit) => hit.event,
+      ),
+      docs.slice(2).map((row) => row.event),
+    );
+    const sql = new DatabaseSync(path);
+    try {
+      for (const mutation of [
+        "extraction_version=1",
+        `body='${hash(99999)}'`,
+      ]) {
+        sql.exec(
+          `UPDATE semantic_associations SET ${mutation} WHERE event='${docs[2].event}'`,
+        );
+        const changed = new SemanticSearch(options, provider.assistance, true);
+        assert.equal(
+          (await changed.profiles(selected))[0].query_available,
+          false,
+        );
+        await assert.rejects(
+          changed.search(selected, request(), "local"),
+          /complete compatible/,
+        );
+        sql
+          .prepare(
+            "UPDATE semantic_associations SET extraction_version=2,body=? WHERE event=?",
+          )
+          .run(docs[2].body, docs[2].event);
+      }
+      // Equal aggregate counts cannot hide one absent currently eligible association.
+      sql
+        .prepare("DELETE FROM semantic_associations WHERE event=?")
+        .run(docs[2].event);
+      assert.equal(
+        (
+          await new SemanticSearch(options, provider.assistance, true).profiles(
+            selected,
+          )
+        )[0].query_available,
+        false,
+      );
+    } finally {
+      sql.close();
+    }
+    assert.deepEqual(provider.calls, ["probe", "query"]);
+  }));
+
+test("a complete empty context returns no hits or paid probe and a warm hit survives budget exhaustion", async () =>
+  fixture(async ({ store, scanner, ctx }) => {
+    const provider = mock();
+    const options = {
+      profile: profileId(profile),
+      store,
+      cache: store.queryCache,
+      scanner,
+    };
+    const engine = new SemanticSearch(options, provider.assistance, true);
+    await engine.search(ctx, request(), "local");
+    provider.config.hourlyBudgetUsd = 0;
+    assert.equal((await engine.search(ctx, request(), "local")).hits.length, 3);
+    await assert.rejects(engine.search(ctx, request("uncached"), "local"));
+    assert.deepEqual(provider.calls, ["probe", "query"]);
+    const empty = context([], hash(4000), hash(4001, "jve1:"));
+    const generation = await store.create(
+      {
+        snapshot: empty.snapshot.snapshot,
+        view: empty.evaluation.selected_view,
+        profile: profileId(profile),
+        eligible: 0,
+      },
+      profile,
+    );
+    await store.stage(generation.id, null, {
+      documents: [],
+      next: null,
+      done: true,
+    });
+    await store.start(generation.id);
+    await store.finish(generation.id);
+    await store.publish(generation.id, null);
+    assert.equal((await engine.profiles(empty))[0].query_available, true);
+    const result = await engine.search(
+      empty,
+      request("empty context"),
+      "local",
+    );
+    assert.deepEqual(result.hits, []);
+    assert.deepEqual(result.coverage, {
+      indexed: 0,
+      eligible: 0,
+      pending: 0,
+      failed: 0,
+    });
+    assert.equal(provider.calls.length, 2);
+  }));
+
+test("distinct-word scans keep the best definition after exclusions and stable ties", async () => {
+  const docs = rows(5).map((row, i) => ({
+    ...row,
+    word: hash(i < 3 ? 300 : 301, "jvw1:"),
+    vector: vectorBytes(unit()),
+  }));
+  const hits = await scanPages(
+    {
+      generation: "test",
+      profile: profileId(profile),
+      snapshot: hash(1000),
+      view: hash(1001, "jve1:"),
+      language: "en",
+      vector: unit(),
+      eligible: docs.slice(1).map((row) => row.event),
+      limit: 2,
+      distinctWords: true,
+    },
+    async () => ({ rows: docs, next: null }),
+  );
+  assert.deepEqual(
+    hits.map((hit) => hit.event),
+    [docs[1].event, docs[3].event],
+  );
+});
