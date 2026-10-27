@@ -15,6 +15,7 @@ import type {
 import { DetailBudget } from "./detail-budget.ts";
 import { BuilderError, invalid, requireLimit, resource } from "./errors.ts";
 import {
+  asciiLower,
   isConsonant,
   isInitialPair,
   isVowel,
@@ -37,7 +38,14 @@ import {
 } from "./legacy-recognize.ts";
 import type { Reading } from "./legacy-recognize.ts";
 
-import { parsePeggyMetered } from "./recognize.ts";
+import { analyzePeggyWord, parsePeggyMetered } from "./recognize.ts";
+import {
+  ZEI_JOIN,
+  ZEI_SCORING_ID,
+  zeiOperand,
+  zeiOperands,
+  zeiReading,
+} from "./zei.ts";
 
 export const CLL_MORPHOLOGY_ID =
   "https://github.com/int19h/jbovlacku/blob/main/docs/morphology.md#cll-lujvo";
@@ -606,6 +614,8 @@ export function buildLujvoWithDetailBudget(
   if (request.components.length < 2 || request.components.length > 64)
     invalid("A lujvo needs 2 through 64 components.");
   requireLimit("inventory claims", (inventory.claims ?? []).length, 20_000);
+  if (profile === "extended-v4" && joins.includes(ZEI_JOIN))
+    return buildZeiLujvo(request);
   for (const component of request.components) {
     requireLimit("component bytes", bytes(component.spelling), 128);
     requireLimit("component claims", (component.claims ?? []).length, 64);
@@ -821,6 +831,134 @@ export function buildLujvoWithDetailBudget(
     diagnostics,
   };
 }
+/** Link whole words with zei. This path never reads or creates rafsi claims. */
+function buildZeiLujvo(request: LujvoRequest): LujvoResult {
+  if (request.profile !== "extended-v4")
+    invalid("Zei linking needs morphology version 4.");
+  if (
+    request.joins?.length !== request.components.length - 1 ||
+    request.joins.some((join) => join !== ZEI_JOIN)
+  )
+    invalid("A zei chain needs zei at every boundary.");
+  const budget = new RecognitionBudget();
+  const analyze = (spelling: string) =>
+    analyzePeggyWord(spelling, {
+      throwResourceErrors: true,
+      chargeWork: (spent) => budget.charge(spent),
+    });
+  const forms: string[] = [];
+  const rows: RowAnalysis[] = request.components.map((component) => {
+    requireLimit("component bytes", bytes(component.spelling), 128);
+    requireLimit("component claims", (component.claims ?? []).length, 64);
+    for (const claim of component.claims ?? [])
+      requireLimit("rafsi bytes", bytes(claim.rafsi), 128);
+    const selected = component.locked ?? component.spelling;
+    requireLimit("component bytes", bytes(selected), 128);
+    const analysis = analyze(selected);
+    const part =
+      analysis.normalized === null
+        ? null
+        : zeiOperand(analysis.words ?? [], analysis.normalized);
+    const valid =
+      part !== null &&
+      part.start === 0 &&
+      part.end === analysis.normalized!.length;
+    if (!valid)
+      invalid("Each zei component must be one word or a word followed by bu.");
+    if (component.spelling) {
+      const source = analyze(component.spelling);
+      if (source.normalized !== part.text)
+        invalid("A linked zei source must match its whole component spelling.");
+    }
+    forms.push(part.text);
+    return {
+      id: component.id,
+      normalized: part.text,
+      choices: [
+        {
+          form: part.text,
+          origin: "core",
+          shape: "word",
+          position: "any",
+          pair: null,
+        },
+      ],
+      lock_valid: true,
+      recognition_incomplete: false,
+      diagnostics: [],
+    };
+  });
+  requireLimit(
+    "choice combinations",
+    1,
+    Math.min(request.limits?.choice_product ?? 20_000, 20_000),
+  );
+  const canonical = forms.join(ZEI_JOIN);
+  const spelling = request.spelling ?? canonical;
+  requireLimit("word bytes", bytes(spelling), 128);
+  const analysis = analyze(spelling);
+  const operands =
+    analysis.normalized === null
+      ? null
+      : zeiOperands(analysis.words ?? [], analysis.normalized);
+  if (
+    analysis.kind !== "lujvo" ||
+    operands === null ||
+    !same(
+      operands.map((part) => part.text),
+      forms,
+    )
+  )
+    invalid("The zei spelling does not match its whole-word components.");
+  const positions: { start: number; end: number; char: string }[] = [];
+  let offset = 0;
+  for (const original of spelling) {
+    const start = offset;
+    offset += original.length;
+    if (original === ",") continue;
+    const char = asciiLower(original).replace(/[h’]/g, "'");
+    positions.push({ start, end: offset, char });
+  }
+  if (positions[0]?.char === ".") positions.shift();
+  if (positions.at(-1)?.char === ".") positions.pop();
+  const tokens: string[] = [];
+  let previous = 0;
+  for (const [index, part] of operands.entries()) {
+    const start = index === 0 ? 0 : positions[part.start].start;
+    if (index > 0) tokens.push(spelling.slice(previous, start));
+    const end =
+      index === operands.length - 1
+        ? spelling.length
+        : positions[part.end - 1].end;
+    tokens.push(spelling.slice(start, end));
+    previous = end;
+  }
+  const candidate: LujvoCandidate = {
+    spelling,
+    parts: forms.map((form, index) => ({
+      id: request.components[index].id,
+      form,
+      origin: "core",
+      pair: null,
+    })),
+    tokens,
+    score: 0,
+    recovered: zeiReading(operands),
+    conflicts: [],
+    unlisted: [],
+  };
+  return {
+    rows,
+    candidates: (request.limits?.results ?? 64) === 0 ? [] : [candidate],
+    complete: true,
+    considered: 1,
+    rejected: [],
+    morphology: morphology(request.profile),
+    scoring: { id: ZEI_SCORING_ID, version: "1" },
+    diagnostics: [],
+  };
+}
+
 /** Check all selected detail rows before copying any values into the result. */
 export function addConflictDetails(
   candidates: LujvoCandidate[],

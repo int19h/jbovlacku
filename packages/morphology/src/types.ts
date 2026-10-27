@@ -67,7 +67,7 @@ export interface RafsiInventoryClaim {
 export interface LujvoRequest {
   profile: MorphologyProfile;
   components: LujvoComponentRequest[];
-  /** Version 3 explicit boundary joins. Null means automatic, empty means no join. */
+  /** Explicit boundary joins. Version 4 also permits an all-" zei " chain. */
   joins?: (string | null)[];
   /** Exact presentation, required to normalize to the parsed candidate. */
   spelling?: string;

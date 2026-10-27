@@ -263,8 +263,13 @@ test("word morphology preserves words around magic-looking cmavo", () => {
     { text: "zei", kind: "cmavo" },
     { text: "brode", kind: "gismu" },
   ]);
-  assert.equal(joined.kind, "unknown");
-  assert.deepEqual(joined.readings, []);
+  assert.equal(joined.kind, "lujvo");
+  assert.deepEqual(joined.readings, [
+    [
+      { text: "broda", kind: "core", join_before: null },
+      { text: "brode", kind: "core", join_before: " zei " },
+    ],
+  ]);
 });
 
 test("hesitation-shaped forms are ordinary cmavo and can form compound cmavo", () => {

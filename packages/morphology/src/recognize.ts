@@ -2,6 +2,7 @@ import { parse, SyntaxError, type ParseNode } from "./generated-parser.js";
 import { BuilderError, requireLimit, resource } from "./errors.ts";
 import type { Reading } from "./legacy-recognize.ts";
 import { asciiLower, trimWord, utf8Length } from "./phonotactics.ts";
+import { zeiOperands, zeiReading } from "./zei.ts";
 import { gismuShape, isShortRafsiForm } from "./rafsi.ts";
 import type { MorphologyWord, RecoveredPart, WordAnalysis } from "./types.ts";
 
@@ -106,7 +107,13 @@ export function parsePeggyMetered(
 }
 
 /** The offsets in words refer to the normalized input. */
-export function analyzePeggyWord(original: string): WordAnalysis {
+export function analyzePeggyWord(
+  original: string,
+  options: {
+    throwResourceErrors?: boolean;
+    chargeWork?: (spent: number) => void;
+  } = {},
+): WordAnalysis {
   const analysis: WordAnalysis = {
     original,
     normalized: null,
@@ -129,12 +136,17 @@ export function analyzePeggyWord(original: string): WordAnalysis {
       return analysis;
     }
     analysis.normalized = input.replace(/^\.|\.$/g, "");
-    const { nodes, words } = recognizeWords(analysis.normalized);
+    const { nodes, words, spent } = recognizeWords(analysis.normalized);
+    options.chargeWork?.(spent);
     analysis.words = words;
     analysis.diagnostics = [
       ...new Set(words.flatMap((word) => word.diagnostics)),
     ];
-    if (words.length === 1 && words[0].text === analysis.normalized) {
+    const linked = zeiOperands(words, analysis.normalized);
+    if (linked !== null) {
+      analysis.kind = "lujvo";
+      analysis.readings = [zeiReading(linked)];
+    } else if (words.length === 1 && words[0].text === analysis.normalized) {
       analysis.kind = words[0].kind;
       if (analysis.kind === "lujvo") {
         const tokens = componentTokens(nodes[0], analysis.normalized);
@@ -175,6 +187,8 @@ export function analyzePeggyWord(original: string): WordAnalysis {
     }
   } catch (error) {
     if (!(error instanceof BuilderError)) throw error;
+    if (options.throwResourceErrors && error.failure.kind === "resource-limit")
+      throw error;
     analysis.kind = "unknown";
     analysis.readings = [];
     analysis.words = [];
