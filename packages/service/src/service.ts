@@ -1,6 +1,12 @@
 import { prepareAdmissionRecords } from "./admission-records.ts";
 import { eligibleSemanticSource } from "./semantic/source.ts";
 import type { EmbeddingProfile } from "./semantic/types.ts";
+import { SemanticError } from "./semantic/types.ts";
+import {
+  SemanticSearch,
+  type SemanticOptions,
+  type SearchContext,
+} from "./semantic/search.ts";
 import {
   projectSemanticRecord,
   semanticRecordKey,
@@ -112,6 +118,7 @@ const compareBytes = (a: number[], b: number[]): number => {
 };
 export interface ServiceOptions {
   assistance?: AssistanceOptions;
+  semantic?: SemanticOptions;
   serverId: string;
   selectedView?: string;
   stateLimits?: EvaluationRequest["limits"];
@@ -146,12 +153,42 @@ const RECORD_PAGE_LIMIT = 200;
 const RECORD_PAGE_BYTES = 4194304;
 export class DictionaryService {
   private assistance: AssistanceService;
-  /** Host-only indexing reads a completed snapshot. It adds no HTTP capability. */
-  async semanticSource(profile: EmbeddingProfile, snapshotId: string | null = null, view = this.options.selectedView ?? zeroView) {
+  private semantic?: SemanticSearch;
+  private async semanticContext(
+    snapshotId: string | null,
+    view: string,
+  ): Promise<SearchContext> {
     const snapshot = await this.interpretedSnapshot(snapshotId);
     this.identifier(view, "jve1:");
     await this.requireView(snapshot, view);
-    return eligibleSemanticSource(profile, snapshot, await this.evaluation(snapshot, view), this.coordinator, this.objects);
+    const evaluation = await this.evaluation(snapshot, view);
+    return {
+      snapshot,
+      evaluation,
+      retained: async () =>
+        Boolean(await this.coordinator.getSnapshot(snapshot.snapshot)),
+    };
+  }
+  async drainSemanticQueries() {
+    await this.semantic?.drain();
+    await this.assistance.drainEmbeddingTransports();
+  }
+  /** Host-only indexing reads a completed snapshot. It adds no HTTP capability. */
+  async semanticSource(
+    profile: EmbeddingProfile,
+    snapshotId: string | null = null,
+    view = this.options.selectedView ?? zeroView,
+  ) {
+    const snapshot = await this.interpretedSnapshot(snapshotId);
+    this.identifier(view, "jve1:");
+    await this.requireView(snapshot, view);
+    return eligibleSemanticSource(
+      profile,
+      snapshot,
+      await this.evaluation(snapshot, view),
+      this.coordinator,
+      this.objects,
+    );
   }
   constructor(
     public objects: ObjectStore,
@@ -207,6 +244,12 @@ export class DictionaryService {
       (request, context, signal) =>
         this.typeDictionary(request, context, signal),
     );
+    if (options.semantic)
+      this.semantic = new SemanticSearch(
+        options.semantic,
+        this.assistance,
+        Boolean(options.assistance?.provider?.embedding),
+      );
   }
   /** Replace lexical retrieval here when an available semantic route is disclosed. */
   private async typeDictionary(
@@ -1869,7 +1912,11 @@ export class DictionaryService {
       }
       response = await this.route(request, network);
     } catch (error) {
-      if (error instanceof ApiError || error instanceof AssistanceError)
+      if (
+        error instanceof ApiError ||
+        error instanceof AssistanceError ||
+        error instanceof SemanticError
+      )
         response = json(
           {
             code: error.code,
@@ -1964,6 +2011,88 @@ export class DictionaryService {
       this.options.publicOrigin,
     );
     if (assistance) return assistance;
+    if (request.method === "POST" && path === "/search/semantic") {
+      if (url.search)
+        throw new ApiError(
+          400,
+          "query",
+          "Semantic search fields belong in the JSON body.",
+        );
+      let fields: Record<string, unknown>;
+      try {
+        fields = JSON.parse(
+          new TextDecoder("utf-8", { fatal: true }).decode(
+            await this.requestBytes(request, 131072),
+          ),
+        );
+      } catch (error) {
+        if (error instanceof ApiError) throw error;
+        throw new ApiError(
+          400,
+          "transport",
+          "Semantic search needs a JSON object.",
+        );
+      }
+      const names = [
+        "query",
+        "language",
+        "snapshot",
+        "view",
+        "profile",
+        "limit",
+      ];
+      if (
+        !fields ||
+        typeof fields !== "object" ||
+        Array.isArray(fields) ||
+        Object.keys(fields).some((key) => !names.includes(key)) ||
+        names.some((key) => !(key in fields)) ||
+        typeof fields.query !== "string" ||
+        !fields.query.length ||
+        utf8(fields.query).length > 16384 ||
+        typeof fields.language !== "string" ||
+        typeof fields.snapshot !== "string" ||
+        typeof fields.view !== "string" ||
+        typeof fields.profile !== "string" ||
+        !Number.isInteger(fields.limit) ||
+        Number(fields.limit) < 1 ||
+        Number(fields.limit) > 100
+      )
+        throw new ApiError(400, "query", "Semantic search fields are invalid.");
+      const language = this.language(fields.language);
+      this.identifier(fields.snapshot, "sha256:");
+      this.identifier(fields.profile, "sha256:");
+      const context = await this.semanticContext(fields.snapshot, fields.view);
+      if (!this.semantic)
+        throw new ApiError(
+          503,
+          "semantic_unavailable",
+          "Meaning search is unavailable on this server.",
+        );
+      try {
+        return json(
+          await this.semantic.search(
+            context,
+            {
+              query: fields.query,
+              language,
+              profile: fields.profile,
+              limit: Number(fields.limit),
+            },
+            network,
+            request.signal,
+          ),
+        );
+      } catch (error) {
+        if (request.signal.aborted)
+          throw new ApiError(
+            499,
+            "semantic_canceled",
+            "The search was canceled.",
+          );
+        throw error;
+      }
+    }
     if (request.method === "POST" && path === "/events")
       return this.admit(await this.requestBytes(request));
     if (request.method === "POST" && path === "/import-selections") {
@@ -2064,7 +2193,37 @@ export class DictionaryService {
       !(request.method === "POST" && path === "/search")
     )
       throw new ApiError(405, "method", "Method is not supported.");
-    if (path === "/capabilities")
+    if (path === "/embedding-profiles") {
+      if (
+        [...url.searchParams.keys()].some(
+          (key) => !["snapshot", "view", "language"].includes(key),
+        )
+      )
+        throw new ApiError(
+          400,
+          "query",
+          "The profile request contains an invalid field.",
+        );
+      const language = url.searchParams.has("language")
+        ? this.language(url.searchParams.get("language"))
+        : undefined;
+      const context = await this.semanticContext(
+        url.searchParams.get("snapshot"),
+        url.searchParams.get("view") ?? this.options.selectedView ?? zeroView,
+      );
+      return json({
+        profiles: (await this.semantic?.profiles(context, language)) ?? [],
+      });
+    }
+    if (path === "/capabilities") {
+      const profiles = this.semantic
+        ? await this.semantic.profiles(
+            await this.semanticContext(
+              null,
+              this.options.selectedView ?? zeroView,
+            ),
+          )
+        : [];
       return json({
         versions: [1],
         max_envelope_bytes: 20480,
@@ -2080,17 +2239,18 @@ export class DictionaryService {
           "identity.profile",
         ],
         features: {
-          semantic_search: false,
+          semantic_search: profiles.some((profile) => profile.query_available),
           assistance: this.assistance.capabilities().length > 0,
           account_observation: false,
           lensisku_bridge: false,
           derived_exchange: false,
         },
-        embedding_profiles: [],
+        embedding_profiles: profiles.map((profile) => profile.id),
         assistance_profiles: this.assistance.capabilities(),
         git_mirror: null,
         account_witness_service: null,
       });
+    }
     if (path === "/manifest") {
       const snapshot = await this.interpretedSnapshot(null);
       const packages = await this.packages(snapshot);

@@ -1,4 +1,6 @@
 import { BROWSER_HEADERS } from "./security.ts";
+import { SqliteVectorStore } from "./semantic.ts";
+import { NodeVectorScanner } from "./semantic-scanner.ts";
 import {
   nodeAssistance,
   SqliteAssistanceBudgetStore,
@@ -55,6 +57,8 @@ async function initializeService() {
   let coordinator: SqliteCoordinator | undefined;
   let assistanceBudget: SqliteAssistanceBudgetStore | undefined;
   let evaluationRuntime: NodeEvaluationRuntime | undefined;
+  let vectors: SqliteVectorStore | undefined;
+  let scanner: NodeVectorScanner | undefined;
   try {
     const coreBytes = await readFile(
       new URL(
@@ -84,10 +88,30 @@ async function initializeService() {
             join(directory, "assistance-spending.sqlite"),
           )
         : undefined;
+    const assistance = identityAvailable
+      ? nodeAssistance(process.env, assistanceBudget)
+      : {};
+    const semanticProfile = process.env.JVC_SEMANTIC_PROFILE;
+    if (semanticProfile && !/^sha256:[a-f0-9]{64}$/.test(semanticProfile))
+      throw new Error(
+        "JVC_SEMANTIC_PROFILE must name a complete profile hash.",
+      );
+    if (semanticProfile) {
+      const path = join(directory, "semantic-vectors.sqlite");
+      vectors = new SqliteVectorStore(path);
+      scanner = new NodeVectorScanner(path);
+    }
     const service = new DictionaryService(objects, coordinator, {
-      assistance: identityAvailable
-        ? nodeAssistance(process.env, assistanceBudget)
-        : {},
+      assistance,
+      semantic:
+        vectors && scanner && semanticProfile
+          ? {
+              profile: semanticProfile,
+              store: vectors,
+              cache: vectors.queryCache,
+              scanner,
+            }
+          : undefined,
       index,
       checkpoints: new FileCheckpointStore(
         join(directory, "evaluation-cache"),
@@ -132,9 +156,13 @@ async function initializeService() {
       coordinator,
       assistanceBudget,
       evaluationRuntime,
+      vectors,
+      scanner,
       release,
     };
   } catch (error) {
+    await scanner?.close();
+    vectors?.close();
     await evaluationRuntime?.close();
     coordinator?.close();
     index?.close();
@@ -149,6 +177,8 @@ const {
   coordinator,
   assistanceBudget,
   evaluationRuntime,
+  vectors,
+  scanner,
   release,
 } = await initializeService();
 const assets = resolve(process.env.JVC_ASSETS_DIR ?? "apps/web/dist");
@@ -217,6 +247,11 @@ const server = createServer((incoming, outgoing) => {
         method: incoming.method,
         headers,
       };
+      const cancellation = new AbortController();
+      init.signal = cancellation.signal;
+      outgoing.once("close", () => {
+        if (!outgoing.writableFinished) cancellation.abort();
+      });
       let abandoned = false;
       if (incoming.method !== "GET" && incoming.method !== "HEAD") {
         const source = (
@@ -286,6 +321,9 @@ function closeService(): Promise<void> {
     prepareEvaluationShutdown: () => service.prepareEvaluationShutdown(),
     stopEvaluation: () => evaluationRuntime.close(),
     closeStorage: async () => {
+      await service.drainSemanticQueries();
+      await scanner?.close();
+      vectors?.close();
       try {
         coordinator.close();
       } finally {

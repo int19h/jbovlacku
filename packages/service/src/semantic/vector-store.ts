@@ -43,6 +43,8 @@ export interface VectorAssociation extends Omit<IndexDocument, "input"> {
   vector: Uint8Array | null;
 }
 export interface VectorStore {
+  published(view: string): Promise<IndexGeneration[]>;
+  references(id: string): Promise<{ input: Uint8Array; vector: Uint8Array }[]>;
   create(
     context: IndexContext,
     profile: EmbeddingProfile,

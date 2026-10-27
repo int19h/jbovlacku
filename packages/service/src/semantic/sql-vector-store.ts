@@ -132,6 +132,31 @@ export class SqlVectorStore implements VectorStore {
       error: row.error === null ? null : String(row.error),
     };
   }
+  async published(view: string): Promise<IndexGeneration[]> {
+    return this.sql
+      .exec(
+        "SELECT generation FROM semantic_current WHERE view=? ORDER BY profile LIMIT 64",
+        view,
+      )
+      .map((row) => this.generationRow(String(row.generation)));
+  }
+  async references(id: string) {
+    const generation = this.active(id);
+    this.compatible(generation.profile);
+    return this.sql
+      .exec(
+        `SELECT i.bytes AS input,v.bytes AS vector FROM semantic_associations a
+      JOIN semantic_inputs i ON i.profile=? AND i.input=a.input
+      JOIN semantic_vectors v ON v.profile=i.profile AND v.input=i.input
+      WHERE a.generation=? AND a.error IS NULL ORDER BY a.event LIMIT 2`,
+        generation.profile,
+        id,
+      )
+      .map((row) => ({
+        input: row.input as Uint8Array,
+        vector: row.vector as Uint8Array,
+      }));
+  }
   private active(id: string): IndexGeneration {
     const generation = this.generationRow(id);
     if (generation.state === "retired")
