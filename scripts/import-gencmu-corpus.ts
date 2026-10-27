@@ -13,6 +13,9 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const revision = "0b3da7d2ec2f727a6730d77c775f88214a7ffc89";
+// This list is part of the original reference ledger manifest. Keep it stable
+// so a replay can validate the complete extraction manifest byte for byte.
+// The project policy below accepts every word operation as an ordinary cmavo.
 const magic = new Set([
   "zo",
   "zoi",
@@ -399,6 +402,27 @@ const equalProjection = (
       foreign: b.foreign,
     },
   );
+const operationReason = (token: StoredToken): string => {
+  const value = token.value.toLowerCase();
+  let operation: string;
+  if (token.kind === "hesitation") operation = "hesitation";
+  else if (["lo'ai", "sa'ai", "le'ai"].includes(value))
+    operation = "replacement quotation";
+  else if (value === "ze'ei") operation = "nonce joining";
+  else if (value === "zei") operation = "zei joining";
+  else if (value === "bu") operation = "letter conversion";
+  else if (token.tags.includes("FAhO")) operation = "end-of-text truncation";
+  else if (
+    token.tags.some((tag) =>
+      ["SI", "SA", "SU", "SUhUhUhUhUhUhUhU"].includes(tag),
+    )
+  )
+    operation = "erasure";
+  else if (token.tags.some((tag) => ["ZOhOI", "MEhOI", "DOhOI"].includes(tag)))
+    operation = "raw-run quotation";
+  else operation = "quotation";
+  return `${token.value} is an ordinary cmavo. Its ${operation} operation does not apply.`;
+};
 const fixtureCases = completed.map((row) => {
   const reference = project(
     row.text,
@@ -427,7 +451,13 @@ const fixtureCases = completed.map((row) => {
         ["lo'ai", "sa'ai", "le'ai"].includes(token.value.toLowerCase())),
   );
   const changed = !equalProjection(reference, ordinary);
-  const allowed = changed && triggers.length > 0 && unlisted.length === 0;
+  const operations: StoredToken[] = [...triggers, ...unlisted];
+  if (changed && operations.length === 0)
+    throw new Error(
+      `Changed expectation has no word-operation evidence: ${row.id}`,
+    );
+  const allowed = changed;
+  const previouslyPending = changed && unlisted.length > 0;
   const knownDiphthong = row.id === "i212.r8.ieho.quote-gap";
   let expected = allowed ? ordinary : reference;
   if (knownDiphthong)
@@ -477,34 +507,38 @@ const fixtureCases = completed.map((row) => {
         ? {
             reason: knownDiphthong
               ? "The approved falling-diphthong preference reads zoi + e'o + mi. ZOI has no quotation operation in this project."
-              : "Each listed magic word is an ordinary cmavo. Its word operation does not apply. Surrounding text uses the independently parsed ordinary forms.",
-            tokens: triggers.map((token: StoredToken) => ({
+              : "Every magic word is an ordinary cmavo. Its word operation does not apply. Surrounding text uses the independently parsed ordinary forms.",
+            tokens: operations.map((token) => ({
               text: token.value,
               source: token.source,
+              tags: token.tags,
+              reason: operationReason(token),
             })),
+            ...(previouslyPending && !knownDiphthong
+              ? {
+                  resolution:
+                    "The human partner authorized all magic words as ordinary cmavo in R3.",
+                }
+              : {}),
             originalExpectation: reference,
           }
         : null,
-    unresolved:
-      changed && !allowed && !knownDiphthong
-        ? {
-            reason:
-              "The recorded WORDS expectation differs from ordinary forms through an operation outside the authorized magic-word list. The policy decision is pending.",
-            operations: unlisted.map((token: StoredToken) => ({
-              text: token.value,
-              tags: token.tags,
-              source: token.source,
-            })),
-          }
-        : null,
+    unresolved: null,
   };
 });
+const { magicWords: extractionMagicWords, ...referenceSource } = manifest;
 const fixture = {
-  source: manifest,
+  source: {
+    ...referenceSource,
+    extractionMagicWords,
+    referenceLedgerSha256: hash(readFileSync(ledger)),
+  },
   policy: {
-    allowedMagicWords: [...magic, "pure-y hesitation"],
+    allowedMagicWords: "all",
+    hesitation:
+      "Every hesitation is an ordinary cmavo. Adjacent pure-y forms in one run remain one cmavo.",
     replacementRule:
-      "Only cases whose changed expectation involves listed magic words and no unlisted operation receive a replacement. Other cases retain the recorded expectation and an unresolved finding.",
+      "Every changed word-operation expectation uses independently parsed ordinary FORMS. Each replacement retains its reference expectation and operation reasons.",
     explicitCaseOverrides: ["i212.r8.ieho.quote-gap"],
   },
   cases: fixtureCases,
@@ -526,6 +560,9 @@ writeFileSync(
       cases: fixtureCases.length,
       replacements: fixtureCases.filter((row) => row.replacements).length,
       unresolved: fixtureCases.filter((row) => row.unresolved).length,
+      resolvedPolicyCases: fixtureCases.filter(
+        (row) => row.replacements && "resolution" in row.replacements,
+      ).length,
     },
     null,
     2,

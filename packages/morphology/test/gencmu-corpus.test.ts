@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { segmentText } from "../src/index.ts";
@@ -25,7 +26,18 @@ type Case = {
   expected: Expected;
   unresolved: null | { reason: string; operations: unknown[] };
   reference: Expected;
-  replacements: unknown;
+  ordinaryForms: Expected;
+  replacements: null | {
+    reason: string;
+    tokens: {
+      text: string;
+      source: [number, number];
+      tags: string[];
+      reason: string;
+    }[];
+    originalExpectation: Expected;
+    resolution?: string;
+  };
   referenceSource: string;
   recordedWords?: string[];
 };
@@ -40,6 +52,8 @@ const fixture = JSON.parse(
     caseCount: number;
     recordedWordsCount: number;
     sourceFiles: Record<string, string>;
+    sourceDigest: string;
+    referenceLedgerSha256: string;
   };
   cases: Case[];
 };
@@ -69,6 +83,18 @@ test("the pinned corpus retains every experimental case and its oracle source", 
       .length,
     201,
   );
+  assert.equal(fixture.cases.filter((row) => row.replacements).length, 1266);
+  assert.equal(
+    fixture.cases.filter((row) => row.replacements?.resolution).length,
+    508,
+  );
+  assert.equal(
+    fixture.source.sourceDigest,
+    createHash("sha256")
+      .update(JSON.stringify(fixture.source.sourceFiles))
+      .digest("hex"),
+  );
+  assert.match(fixture.source.referenceLedgerSha256, /^[a-f0-9]{64}$/);
   for (const row of fixture.cases) {
     assert.ok(row.id && row.file && row.line > 0);
     assert.match(
@@ -78,17 +104,32 @@ test("the pinned corpus retains every experimental case and its oracle source", 
     );
     if (row.referenceSource.startsWith("recorded"))
       assert.ok(Array.isArray(row.recordedWords), row.id);
-    if (row.unresolved) {
-      assert.ok(row.unresolved.reason, row.id);
-      assert.ok(row.unresolved.operations.length > 0, row.id);
+    assert.equal(row.unresolved, null, row.id);
+    if (row.replacements) {
+      assert.ok(row.replacements.reason, row.id);
+      assert.ok(row.replacements.tokens.length > 0, row.id);
+      for (const token of row.replacements.tokens) {
+        assert.ok(token.text && token.reason && token.tags.length > 0, row.id);
+        assert.ok(
+          token.source[0] >= 0 && token.source[1] > token.source[0],
+          row.id,
+        );
+      }
+      assert.deepEqual(
+        row.replacements.originalExpectation,
+        row.reference,
+        row.id,
+      );
+      if (row.id !== "i212.r8.ieho.quote-gap")
+        assert.deepEqual(row.expected, row.ordinaryForms, row.id);
+    } else {
       assert.deepEqual(row.expected, row.reference, row.id);
-      assert.equal(row.replacements, null, row.id);
     }
   }
 });
 
 for (const row of fixture.cases) {
-  test(`experimental corpus: ${row.id}${row.unresolved ? " [unresolved expectation]" : ""}`, () => {
+  test(`experimental corpus: ${row.id}`, () => {
     const result = segmentText(row.text, {
       features: row.features,
       withoutFeatures: row.withoutFeatures,
@@ -110,7 +151,7 @@ for (const row of fixture.cases) {
     assert.deepEqual(
       actual,
       projection(row.expected),
-      `${row.file}:${row.line} ${row.unresolved?.reason ?? ""}`,
+      `${row.file}:${row.line}`,
     );
   });
 }
