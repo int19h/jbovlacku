@@ -70,6 +70,17 @@ export interface LujvoState {
   /** Conflict keys bound to the chosen spelling, snapshot, and competing claims. */
   acknowledged: string[];
 }
+/** Zei joins whole words. Its component forms do not claim rafsi. */
+export function isZeiLujvoState(state: LujvoState): boolean {
+  return !!state.joins?.length && state.joins.every((join) => join === " zei ");
+}
+export function isZeiCompound(compound: Pick<Compound, "scoring">): boolean {
+  return (
+    compound.scoring.id ===
+      "https://github.com/int19h/jbovlacku/blob/main/docs/morphology.md#zei-lujvo-linking" &&
+    compound.scoring.version === "1"
+  );
+}
 /** Migrate the former single spelling without replacing newer keyed evidence. */
 export function normalizeLujvoEvidence(state: LujvoState) {
   const old = state.restoredEvidence;
@@ -333,7 +344,7 @@ export interface GismuState {
   window: number;
 }
 export const newLujvoState = (): LujvoState => ({
-  profile: "extended",
+  profile: "extended-v4",
   components: [],
   selected: null,
   acknowledged: [],
@@ -512,6 +523,7 @@ export function currentCompoundConflicts(
   compound: Compound,
   inventory: PackageInventory,
 ) {
+  if (isZeiCompound(compound)) return [];
   return inventory.claims.filter((claim) =>
     compound.components.some(
       (component) =>
@@ -549,7 +561,7 @@ export function compoundMetadata(
     }),
     morphology: { ...result.morphology },
     scoring: { ...result.scoring },
-    score: candidate.score,
+    score: isZeiCompound(result) ? null : candidate.score,
     notes: textToRichText(notes, false),
   };
 }

@@ -475,18 +475,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "jvc-morphology"
-version = "0.1.0"
-dependencies = [
- "num-bigint",
- "num-integer",
- "num-rational",
- "num-traits",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "jvc-rank"
 version = "0.1.0"
 dependencies = [
@@ -501,7 +489,6 @@ version = "0.1.0"
 dependencies = [
  "jvc-carrier",
  "jvc-core",
- "jvc-morphology",
  "jvc-rank",
  "jvc-state",
  "libc",

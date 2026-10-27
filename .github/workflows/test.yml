@@ -54,6 +54,8 @@ jobs:
         run: node scripts/test-state-parity.mjs
       - name: Check TypeScript
         run: npm run typecheck
+      - name: Test TypeScript morphology
+        run: npm run test:morphology
       - name: Test storage and import
         run: |
           npm run test:service

@@ -38,7 +38,10 @@ import { compromisePage } from "./pages/compromise.ts";
 import { placesPage } from "./pages/wizard/places.ts";
 import { publishPage } from "./pages/wizard/publish.ts";
 import { claimPage, rafsiPage, rafsiPairPage } from "./pages/rafsi.ts";
-import { guardDraftNavigation } from "./pages/wizard/common.ts";
+import {
+  commitDraftNavigation,
+  guardDraftNavigation,
+} from "./pages/wizard/common.ts";
 import { PersonalCalculator } from "./data/personal.ts";
 import { classifyReceipt } from "./data/delivery.ts";
 import { watchReaderFocus } from "./app/focus.ts";
@@ -255,7 +258,10 @@ async function start() {
       }
     }
   };
-  onNavigate((route, options) => void render(route, options));
+  onNavigate((route, options) => {
+    commitDraftNavigation();
+    void render(route, options);
+  });
   if (session.storageAvailable) setNavigationGuard(guardDraftNavigation);
   installRouter();
   await render(currentRoute(), { focusHeading: false });

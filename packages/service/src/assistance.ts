@@ -8,6 +8,7 @@ import {
   wordId,
   canonicalize,
   rafsiPairId,
+  type WordAnalysis,
 } from "../../core/src/index.ts";
 import {
   AssistanceError,
@@ -482,13 +483,17 @@ const appKind = (kind: string) => (kind === "fuivla" ? "fuhivla" : kind);
 const typeLabel = (kind: string) =>
   kind === "fuivla" ? "fu'ivla" : kind === "compound" ? "compound cmavo" : kind;
 /** Compound parts come only from the application's morphology API. */
-export function typeSpellingFields(analysis: {
-  kind: string;
-  parts?: string[];
-}) {
+export function typeSpellingFields(
+  analysis: Pick<WordAnalysis, "kind" | "words">,
+) {
   if (analysis.kind === "compound")
-    return analysis.parts && analysis.parts.length >= 2
-      ? { spelling_form: "compound", spelling_parts: analysis.parts }
+    return analysis.words &&
+      analysis.words.length >= 2 &&
+      analysis.words.every((word) => word.kind === "cmavo")
+      ? {
+          spelling_form: "compound",
+          spelling_parts: analysis.words.map((word) => word.text),
+        }
       : { spelling_form: "unknown" };
   return { spelling_form: promptKind(analysis.kind) };
 }
@@ -525,7 +530,7 @@ function typeCase(
   let morphology: { id: string; version: string } | undefined;
   if (request.current.spelling?.trim()) {
     try {
-      const analysis = analyzeWord("extended", request.current.spelling);
+      const analysis = analyzeWord("extended-v4", request.current.spelling);
       morphology = analysis.morphology;
       Object.assign(input, typeSpellingFields(analysis));
     } catch {
@@ -979,9 +984,9 @@ export async function runAssistance(
             nextIndex = index + 1;
           }
           const result = buildLujvo({
-            profile: "extended",
+            profile: "extended-v4",
             components: components.map((component: Data, index: number) => {
-              const analysis = analyzeWord("extended", component.spelling);
+              const analysis = analyzeWord("extended-v4", component.spelling);
               const fixed = fixedByIndex.get(index);
               return {
                 id: String(index),

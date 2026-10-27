@@ -20,7 +20,6 @@ COPY packages/ packages/
 COPY apps/ apps/
 COPY docs/dependencies.md docs/third-party-notices.md docs/
 COPY scripts/copy-notices.mjs scripts/copy-notices.mjs
-COPY crates/jvc-morphology/THIRD-PARTY-NOTICES.md crates/jvc-morphology/THIRD-PARTY-NOTICES.md
 COPY --from=core /source/packages/core/generated/ packages/core/generated/
 RUN npm run build:server && npm run build:web
 

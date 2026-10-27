@@ -65,6 +65,9 @@ The log records the snapshot and exact events. Retrieval metadata carries `metho
 Lexical retrieval records query words. Semantic retrieval records `profile`. A missing hook or unavailable dictionary records `none`.
 The log also records the morphology identifier and version for a successful spelling analysis.
 The request adds `spelling_form` when a spelling is present. Other task requests stay unchanged.
+The current TypeScript morphology profile identifies compound cmavo and supplies their parsed words in `spelling_parts`.
+For example, `taia` sends `["tai", "a"]`, and `i'ecu'i` sends `["i'e", "cu'i"]`.
+Other forms omit `spelling_parts`. An empty spelling omits both fields.
 Type runs currently have no dictionary lookup tools. The shared system prompt keeps its no-lookup sentence.
 
 The system prompt joins these files in this order, with a blank line between them:

@@ -1,0 +1,1182 @@
+{
+  "source": "Immutable Lensisku import index copy",
+  "index_sha256": "8de9c6125227e6507a5c3d3fb5751f924e0354fa2bd4f8c4b78b0b0fe2c77e94",
+  "cases": [
+    {
+      "spelling": ".a zei .u",
+      "event": "jve1:eb20c52873ffd9cf3bec5049654184c53a5a74550385cfed35616489fc1ece3c",
+      "body": "sha256:d07e4d5c1b726ce276ab5892674965fb6fc1b35a67b91fc2de01509f4e9ed6cc",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "abu zei sance",
+      "event": "jve1:635273783f73392a343ac063c1878cfab102f6a7762cdd5b153ffc7ab3731047",
+      "body": "sha256:028319f184d7a74cc435e16f47185b06002c931a6a3677f16656dffafec77921",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "artik zei braxamsi",
+      "event": "jve1:4d71ee7c510f93a1f7544c9b5ede04ad3e29704d7cb7257d20383562017f8ee6",
+      "body": "sha256:128b65131c0b857f852dc1969f70025eac50c184029896b3405fd670fbf47c69",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "atlantik. zei braxamsi",
+      "event": "jve1:1ba8da89ed8133f293c6e1cf7ed05959b7b0653d5c22afc5a4946d2df8cb04a0",
+      "body": "sha256:41df9df1455fde8d969335c3c756a9ad0458719871c8066c58631ca4c2d03257",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "b zei p zei f zei k",
+      "event": "jve1:5cb3978cc0b782115bd9c36b000df61deda89e641142931ce4b86ab0029976be",
+      "body": "sha256:6fcc68fe0b3f86c0a793b752d3490aba8cf969cc9f4d130684e3527df90b725c",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "batke zei uidje",
+      "event": "jve1:51b43739ae267d8f3282d665f07401cc148eccd9154d50dd63d3ae59ef7009f6",
+      "body": "sha256:47a4e3fce286073acce002ac4cd162776fc81ccf5da01772e2cbee95da9ff16e",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "bdjencfrapsklixmto'ugyvz zei valsi",
+      "event": "jve1:e869ed001822b56147ddf1ecc526635d5900e80f1cce15fa5b859e16d59a4ae8",
+      "body": "sha256:a116673b6efd3dd8b07645462da77be0b81e023af38373a5e0c71372a1c44ef6",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "bi'in zei uanta",
+      "event": "jve1:8d83477ab585293b83405c7520853f67f334900491a5bbdb31118b2d0b9355a3",
+      "body": "sha256:71925df06ef91711d4167ae58fe1f4a5d44d2bdd95ce5fcae8badd9f9591fb37",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "by zei sance",
+      "event": "jve1:c6ad941c5d1d07f349f73ab857af4042db176a8286c15a7fa532f100c1e5089a",
+      "body": "sha256:7479d86e72b83d4e0d7a0cb5e978d10e7479171d6e8ae0dae47d166738c9d290",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "catke zei uidje",
+      "event": "jve1:6898ba509c5045f6247a6a9d7b1e479a70e9755da1cbb31881186a1b633f7cbe",
+      "body": "sha256:4e85815d5ce9b51be53b5bfa5affd59a913fbd351e6395c4c6e01b2b99daa2af",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "ce'a zei ciste",
+      "event": "jve1:24b434b2eb368efadf5566cdf25f54d78b2374b661d4b8590459c2b397ff15f5",
+      "body": "sha256:e08f73d46f69d33e0eb55ed90d2b9d79b4f14168530bb5532cfd4df2d30b89b0",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "ci zei brinefa",
+      "event": "jve1:3970d84995367bbc7993cd2652d29fcfdddc17b38d324f7d92478116a350df2b",
+      "body": "sha256:3a3e242d3bd39012d2edf3fc80dfeb3ae73b0f7fd9257dafe51e6a8e30c17745",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "ci zei jurfuga",
+      "event": "jve1:2eb780738bae1a4354c01e8ea72f63f0a4616593849808f89219dd8b28a2c2aa",
+      "body": "sha256:d738ee991fab3b691a81f92babc12f51631a9d5b006ee7e5a22d2de9b5f9da4c",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "ci zei karsna",
+      "event": "jve1:c8cc7f1e8598ca442ca6820da5ec6abd4875fca89a075a24660b78437a01c9cb",
+      "body": "sha256:cf68acb60391ba9bdaff24643a1b129f313926e4edf22e500951056ba6a55e1d",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "ci zei mektika",
+      "event": "jve1:87abb90702a5fc09df2c17c056c46d73bed6c3d3f901061f66b5cfceb3e29491",
+      "body": "sha256:ce7335626384056238fcfcf404b18d9ad6120413818017d65faacb6fdbc3bdb0",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "ci zei sumtika",
+      "event": "jve1:593ad90f84acaca1dae1183222a2fa6f9f7b7809508148531d1958de80e3f1d0",
+      "body": "sha256:827ba510a251d84967d294b413764e896391d58dc38e265f9e48157ca284a501",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "ci zei tuple",
+      "event": "jve1:3faa458694834afa6cbccf85e5cb7eeb73b88eac93072b4ad6e567af46a08293",
+      "body": "sha256:935a45d55c19359bc8a20d450a85b3c9fb29fb66ef9e7d7727b773af97850f66",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "ci zei zgabube",
+      "event": "jve1:18eb854f94565d98b8ac1b3c97ca07f7a5c06d2dee35a0685b8b490451c56c9b",
+      "body": "sha256:59742966840151e7fa06591bd7d41d848a59d5d6c9377b956a167b71d6fead50",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "cirla zei burgere",
+      "event": "jve1:639d6cb9d351d27829c3666f401b813e98a785e2f735c8827523457965c833e7",
+      "body": "sha256:4b8968c4b553e24e3545faf6d2abe2b9d3b7b730f425e1da215136c729d78cc8",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "ciska zei uidje",
+      "event": "jve1:110cd2fbe37f863915435e69914a52ecaae623365158259b1f953195e5b49a04",
+      "body": "sha256:4a1289238cefa16986f25b18167188bd6218fe67e7cf697c70be22cf411af786",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "cu'a zei fancu",
+      "event": "jve1:6beee47feb48df29442b3259e3ed3d126339a0db961480c4afbca9dc89341369",
+      "body": "sha256:88caa4cbf9e9b40529716cc4eb07a5f9db1f493921bed5c753e62490469d03ef",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "cy zei bai'ei zei bangu",
+      "event": "jve1:33f098b912271c76791a292b4245ae19a55f009df45f838a76ed6fb8e40256f1",
+      "body": "sha256:50adb0fcc27aab172c1e71da9a31180f827967943236cc7bb72d8de3d9eb6ca9",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "cy zei bangu",
+      "event": "jve1:d051a9cbc7c67692deac2a33ac2979f94009c01d1a5416bdd641e1d4fe68ace4",
+      "body": "sha256:be0b53600655015a7ad4cd46f92e464c731c2b1e022a99bb66d0d8664cec969e",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "cy zei sance",
+      "event": "jve1:a28de3d4254d8e47e123ca3136272f4e906f1bf280320722863d2a12d1febe5e",
+      "body": "sha256:63528a75c6acf6d2b5af99daecb05e2b9f82d8a2cc50f0892842a15fb04179f9",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "deLEZ. zei gejystani",
+      "event": "jve1:7e38bf91060687a15bc291ec83d74c392bb417874d10b5a4306e439a110ede50",
+      "body": "sha256:fa709048c5fe3150e347725effa84b14b79a41044d8c0321a9171e99f8b0c5b5",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "denpa bu zei sance",
+      "event": "jve1:bb6da52ce9757ffe92137e7c72961cf1b84ba3666f38614e82b5592735e5f9e4",
+      "body": "sha256:e53d14d66f7d3da6832ec832421e2073f67d975b0cf2b4a5e4bbe15114a1249f",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "detci'e zei nanca",
+      "event": "jve1:d37fa7cc646e1b63fe915a4cfcc5deb5d1c561c57193fb22f1794c8517c5cb6a",
+      "body": "sha256:9be9e46a3a066c961d812c127521c6dd1066c5aee59d6a789bb203927cd583cf",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "dropanra zei ionti",
+      "event": "jve1:eebea722530686c308c8867855ea6563660b1abc23f82896f2dabb73284d7b54",
+      "body": "sha256:c4ae95fdfe0c30396c3b7d5ef7d939c3a145a20c8f33487dc912829c100b81a2",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "dy zei sance",
+      "event": "jve1:9d918902599108a6128d0ce826cd499cc005ae547598636597e39e1120b523c4",
+      "body": "sha256:b25e8b26ae549c863710d810c0c90ecedc320f997e162440f50e13e26e214066",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "ebu zei sance",
+      "event": "jve1:5bab72f5e2cad910222badec9f3fcbdfe1b7e1489803681ec35a6cda8c928077",
+      "body": "sha256:905101317dc7b7ec8e7afc2674b500660cc37ec56e80913a1812d89f0f8aa457",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "ek zei uanta",
+      "event": "jve1:08fb91da17ec527506ff5e70bf197fe3da4d9262141d456ddb74668e6fcf25c7",
+      "body": "sha256:1d3e6f988e0f5a3a4bc7e0f810344f4a4d1a70e5ae16e96d3cabe6c180252222",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "fi'u zei re zei cinse",
+      "event": "jve1:887da5c1a25c45156b3112fcacd10a92cad49ead75a0c0fe7e74d194b758a740",
+      "body": "sha256:d007e252ae83d982816c9c0b06439b5b980166487a5ffc47b992341a38825ccb",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "fy zei sance",
+      "event": "jve1:3810452a650692877345c697b119d1cec90ab87fe7d42528bec6dd1a5454e1e5",
+      "body": "sha256:d924f986d2df6b5eba60dacbfff1cbc69bd28646e7749236270620613445c86e",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "ga'e zei lerfu",
+      "event": "jve1:57515e407c43493691616eabefb75fee8f065ee6a3d01a5c2f98357ad3870567",
+      "body": "sha256:d1a5b8b0ec277138abe4a9e4441bc3a90ae0fe72fbfd1ded27ff6ee111398dcf",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "gek zei uanta",
+      "event": "jve1:861dfad19379213e50bfce3204b1fb2ab6a8b584242c7d59cb3aaef7b8437d80",
+      "body": "sha256:895b58ff439c72c602a10a5a8d006f14b50f226e8e7a2def2d9fa8b5c35410f2",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "gi'ek zei uanta",
+      "event": "jve1:2c01a118ef958ac7ddcdc91d7d777487f2f3f1749d4b94cd1156e37a6bad00a7",
+      "body": "sha256:ef5fee4ae178d7886a8b80a5439006c9222483c00f1028476229cd0ae15e5370",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "gik zei uanta",
+      "event": "jve1:6c28ba4d0f7b959d8f7725e653e0eccf7db1f7e42fdd1d04ebaec39abf9b2237",
+      "body": "sha256:1127fb24f93b626186fe3287e4f4b4cd4c5ae394153d5621de1a3a032087d2a8",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "gradrgu zei rinka zei sojnalsanji",
+      "event": "jve1:9ee7d8a8e9e5a07d9c9488773a3eb69e615c06d7d7c3769b1ad535143f9ebc01",
+      "body": "sha256:be0aa864e9382cccc4662faa4b1dca4e22230913dc1d866a26624717bd425f0c",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "gregori zei nanca",
+      "event": "jve1:4eb18830a44b727245000ae4f6b4a3270c218843b67ce1e11b98c1ce49a05575",
+      "body": "sha256:07f8930a1ce3a4f80506f8633f113f827f17f47723240a5b3400b433a70616ae",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "greku zei uidje",
+      "event": "jve1:595ae9eb7c0eaeab16e657b0299a7995e9885537970a27b54a296a2ae888ea5b",
+      "body": "sha256:45552e5f67d95639035680af5406d1ab883f4a8a29841567827903675cd82c4f",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "gribatke zei uidje",
+      "event": "jve1:e7af8822fa2cda255319a6115818bdccb63aeb24b4bef2c586ee2cf0986d3237",
+      "body": "sha256:5d191b940a365d158fd0b797875a84ef53dc28a158e63df19a87632d662a864f",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "gu'ek zei uanta",
+      "event": "jve1:50941bbf33591d58480b92ee1dce020b42ca29426a31498c26aa9508ada71cea",
+      "body": "sha256:1b95b7082536cd3dddd47a94283c4aec27e7fe22ac8b3cb6e9f2659c404fd0ad",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "gugyl zei zamgri",
+      "event": "jve1:caf4b20cafb832cfa551b28aea72a9cb9f7b5eb9969b38bf82097453b72a5350",
+      "body": "sha256:f5ae8747889926c023a6ca2f61b97d544b4acd679dd71e7bd057e8daf8aeb99b",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "gunro zei uidje",
+      "event": "jve1:095d6cbf7fecb49d21b9c54d64d539a53276f9527e5066a61bc0f1473e32110d",
+      "body": "sha256:6c600dc3a1e415189043da77caa39fdeda0a0b77fa895504cc4ada040ea15cff",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "gy zei sance",
+      "event": "jve1:52579d79d2e1ba0838e802c4fd5ace81bccfbdd254c3e3f8ccec9054b6d5be26",
+      "body": "sha256:8d1b1e748252bcb248f541ac9dca73a66bf878743f119a7c2e54eec9948d8f96",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "ibu zei sance",
+      "event": "jve1:02f2298c17887290cb04eb85f9dd127f3150eb1e0ae9c24af88372bf5f5a14d4",
+      "body": "sha256:f6a2d7d3c36ee2af309563f13fe2d5aeb927331f7894017dc29cc15b9af88e11",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "ibu zei zunsna",
+      "event": "jve1:5b18dbecec9447ab6f36be2504f7c0a26d8c798f8b15726d7296c0556873e5d7",
+      "body": "sha256:68e65859066c8f6d2455578f1360f6d4c2b577326a567ddf73622c5915d76f8c",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "iu zei tcitygau",
+      "event": "jve1:e16e06f1ac35781b1861c40dd3375366ebf2ef598c9334f963c5a1efd1c32315",
+      "body": "sha256:bdc8c5001ee5c2ebf1218c436e2519d80f8f13e57cf7560e57f82c9e0ec12f8b",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "jbobau zei po'o zei pulji",
+      "event": "jve1:8617b08002ddf60e0a81f9910f534b697d571e890d73f79ac16e9b2462e7462a",
+      "body": "sha256:be0ebe9d0712f9d39b7d6380da85177a3a40e2c6156849abc753338cef53e42b",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "jek zei uanta",
+      "event": "jve1:43b7f950d3ae070fbc3b124baea3051d5a1d67f0ba4d052d2ec638d9249f26d9",
+      "body": "sha256:67fd3f600b2ebca05792f28e68723ffa615ae5ef1917ec2c82a347625b6ff69a",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "jetnu zei uidje",
+      "event": "jve1:af01e069b7251ebbe2f91a3e7099d8b77072be234470eb833aed7a74eb1e8a9f",
+      "body": "sha256:0f693c700cbebf507b83fa18ab6ade50960e3086f686820c30133d9de06a3015",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "jgitrviolino zei konceto",
+      "event": "jve1:04f5adb2430b42547791b657435a349fba46f05ab6121e1ddb24bf246bee40bc",
+      "body": "sha256:61ba74f8b46dfbf42125d3429e91b881b040bb48656299a6362f1159789c1fe6",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "jgitrviolono zei konceto",
+      "event": "jve1:141c35b0f62151a9a46c6ac46fc4da0d5dd30973d20bc45dc479cf69b9fe0de3",
+      "body": "sha256:3d212f0587ae42bc2a967aa981f8bcfc8f0e94b8a6c3e48f5ff356681cd520dd",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "joik zei uanta",
+      "event": "jve1:6b6e951fddca2a4de2c0da3363ea22991716e67a1dbd32c6927c487f1a6b1a26",
+      "body": "sha256:b0586463aa931e62bd5dcdc076e2e0688bba88b8fad57cc1de1394e9f52e8341",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "joikek zei uente",
+      "event": "jve1:0c1264bd6c9456af591b07df70fbe1bd7d02ccfdd4361e9acdbc0f77611fc0ca",
+      "body": "sha256:5b5aaf9e2b6e76a8ba8fab29d1f083660fb9adebae7cf2596bff317f0147c434",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "joikijek zei uente",
+      "event": "jve1:fa6094f6c3c35057a4a6d5bbce7df14854a671903d8d326b316f725477988133",
+      "body": "sha256:287098d4669765f507abe38bfa330c223d40a54f326e0bd2ce0535eb8d02281c",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "jy zei sance",
+      "event": "jve1:7a692d6dfe7d64ccee8bd06f36c0a0b87d4ffbba11506fcc7e70432573f1e6bb",
+      "body": "sha256:8796f16f4fb79ebaacd907a2ba57f3ad8812c2ae944ffd332535056b5f95e4a4",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "ka'i zei sumtika",
+      "event": "jve1:a198ba2955aec8eddeae1df593300320cd4c0df5953c6ef292ae66e61660b16f",
+      "body": "sha256:cb999f898703a41391f61d2aa7cff9fc3942ac8e66148bdc84602a719ac79c04",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "ka'o zei namcu",
+      "event": "jve1:267bf532dedfe65ff593afa68655aeb920baa09768a26f3e2172f09185fcf0f4",
+      "body": "sha256:6bf2fbf2877294aaa0bd28c581c5ca549f3ba0021aa5d8f424b12b4a91190f8f",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "ka'o'ai zei namcu",
+      "event": "jve1:1f10954f3701d7a2dd44312dbcc5444c1810cbec9edb57d196805fc4606b9a9c",
+      "body": "sha256:89a3373564c7aba68fb7d24e07d29243e04e382215da112fbe84ab3d19d9ecb7",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "ka'ozeino zei namcu",
+      "event": "jve1:b756b73896b6857c2e008b576d77346d001f75eafc5655dffab7163814d4755f",
+      "body": "sha256:1705ce3f19365c65e7881e22bf4ee8d65cde3f136a8a67f34dcc883280934c6e",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "karot zei spati",
+      "event": "jve1:b93ad9ba71e0b26beabeebaa3aec0be92d1191468de43b1b015b995b5c51864d",
+      "body": "sha256:d0703f55d15e7029d89f6991c3babe6eaa1b27cbfb0247bf5ce3706d922bad1d",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "konceto zei pagbu",
+      "event": "jve1:715889cb37c7a51b16f7c2d9bb48dfdd634a363568f8aff981fd4b5c6aed4c67",
+      "body": "sha256:c9fbf43128e6a2da6e004f280a90a6b4e51bf71256dbf666c74b066eca8093a3",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "kulnrfarsi zei lolgai",
+      "event": "jve1:d51214f6b1d4b5db40f87f3419090bc9bbd8326c39bfd6584c12b8076af47d73",
+      "body": "sha256:889ef9ad3f210733a1398c46e17190a35183ff5d9744ddef5b348fa57e9a6bc2",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "ky zei sance",
+      "event": "jve1:56c9081dbf0be06425082fcefcda05116e32e489096ac70b53653bd9c62332fa",
+      "body": "sha256:bb8d640f6b2be9972ae7b04a0168c17101440bf9951a5c330fb572bc1e9e96fe",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "kyuiz zei cipra",
+      "event": "jve1:886c5ce5ea64dd850ef04225dcc3c79d10c5a3a56aed3e19569742759a74a4c1",
+      "body": "sha256:476c202d3aa15be902a90ef43324736ebc2d133cb045367fa40f6606ebe1e787",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "l zei l zei g",
+      "event": "jve1:446d241fee447a4febba4e4dccd97c58269f6b0d9d59d40882af4c1b64b457e6",
+      "body": "sha256:605a305f0e4305a6dbde9ba3adbc8dbc066ed4d65309c354f55a4c803a57a77a",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "lilneia zei cmene",
+      "event": "jve1:0d848da5790e6d12a11c548546a5292f846ddde80bef828eeb976bb729d7a0b4",
+      "body": "sha256:6f1856aac218681896dddd7e1ebe8722d190967d3cda688806abb8563838e759",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "loi zei binsasu",
+      "event": "jve1:5c71b9d1746e31f8c12906bfc1ad59e294275109a887831a40c5775232785933",
+      "body": "sha256:ce44ac29ffd7e3aae6582aea5f5bdddd11357e0ba9d33b53ddd332d01d00173d",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "loi zei uinda",
+      "event": "jve1:07368018b1dfa795d31f5c07b72e266566b1a57e2f45b52b3824502a737df0f9",
+      "body": "sha256:e50028de5f95eb02c2177de1a3bc44fcff0f5dbe9ee420090ae4c3f4f65db613",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "lojban zei simsa",
+      "event": "jve1:4bbebd7a995a19bc8682d0df05211441e5d61c17b000e105ffcc53d8ebe2c8ec",
+      "body": "sha256:0091ae94e8e87fada86d3438e5eb310e1d9cd45641729190921560b5b0d174ba",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "ly zei sance",
+      "event": "jve1:c6e99d9ea94de0c96bd562c73d4abe5e7b23ea4909b7ae7eb2e6dbc9e7ebf900",
+      "body": "sha256:1b91fa35a08b43dd1890b94fe9bec3f2ebdcc94a9c3818433a3b47f32e6173ec",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "ma'u zei ionti",
+      "event": "jve1:0cc0bf3970e02527f9223cfb7975c31d7ba4e4f0e04762e83e94596917e9aade",
+      "body": "sha256:506b644d94050218144d7cb51b5e9402cc25fcb80367fb3f49e4a7535d7b1599",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "ma'u zei majga",
+      "event": "jve1:7104a55386bafae3164ef79f708a50ecd974d9c198cfbcc771cdafb925f7d6fb",
+      "body": "sha256:9fa262b780bae7f040fc3175d825318648cde6c12e3ab9da04c9ff8e3b635627",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "ma'u zei namcu",
+      "event": "jve1:7442da34736f7e9eae82e4d8d7e55dfd7da6cc2e0ac6e2ca9fc55f8402409156",
+      "body": "sha256:ade1036d011bb9a24149f3b33ab7014ee34deb022934adb4d1578e4ed325ca45",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "makcubi zei xotli",
+      "event": "jve1:0c947aae213626f3934fae22ff580b702e409e022edae3dee09343de191c7b1c",
+      "body": "sha256:0909424a7dd96844b7b13ce1b58038630d6d460fa8303dd12fc989dfacbef5d2",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "mei zei ni'orsu",
+      "event": "jve1:e6d65a5fdd84fb6d5f49c0c40863e9e6225d6d593d15ef1708a7223d291ff92d",
+      "body": "sha256:df4e7e7b2180527b8448762c617e8d41746c41c5c02ac903ad3c301e5bb275cd",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "milis zei sucyskami",
+      "event": "jve1:45b6672aa6819a6258bf9e29e4afad6bd84b5ecabfc7d6dfe39baa34515a1030",
+      "body": "sha256:22bd75dbea4a3b79d96b3ce52c2981403336218fc50364df0b2cae6cd57cd422",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "modzi zei bangu",
+      "event": "jve1:eebcec2a2a0075ed631dd65d97f06d9b00eebddef40cd44c3cbded342c5e849a",
+      "body": "sha256:87e165bd3e6d88f3b1f63ae2ed3a94f593ecc49453564430cc60fb7222addc3d",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "moldrudandu zei inflamati",
+      "event": "jve1:1a17635a797aed370bf8c488748e20bf52013b06c7cf69eec3b2bc9303c1b504",
+      "body": "sha256:f7d04e956fffce8ef577f655596b414c6d0c4c6fec5523b3069fc1990971e11d",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "mu zei sumtika",
+      "event": "jve1:693739f99cf98eca616bf0c5790d932429b8e6e9711c98f863a6dc2d539e52d5",
+      "body": "sha256:be4f3b0a99081ffdadca61e253aceaf8202ff1c5ed1b6a19d2d1d7acbb680957",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "mu zei zgabube",
+      "event": "jve1:ad22c5a28aec85f73d82453b173cb56853b2219a811869ce21071450efbc67c6",
+      "body": "sha256:1b9581deeab0e045ceb423963857d27932d3741029fbe2f2a8c3bec1e31a4469",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "mur zei sucyskami",
+      "event": "jve1:4b067f728cd6c7b6c9481c67d522441b30a842b7fe5e604c11e687461b990e96",
+      "body": "sha256:7e2d99a9a4f772eb95d765d318034b9e10301253757d6343e8775af10ba2b409",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "my zei sance",
+      "event": "jve1:86042d41ecd6799503067e6286ded84fa180740bcbe026b16ff3685947a7d99d",
+      "body": "sha256:96cbb1b4533f5040eeba2d7a34f590fcfcfb0eeab5960ed1aaa5fc8110b7b69a",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "ni'u zei ionti",
+      "event": "jve1:2a7e49ebe9dfeaad085cc9c86ea1e24b3b6794ff0a8c71f7874b47ef523f76db",
+      "body": "sha256:b170377e6027ec621bb3b6293225d2b73f535752cbe8a9d011f4458c96904510",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "ni'u zei namcu",
+      "event": "jve1:d60fd774abfb111a8368be7e9f4b18f15d431a74ecba93810470a56e74109c26",
+      "body": "sha256:d2bd8f4f4b65e07e6de054d436ac5b95baa72a48acb3396529c4e6e217de7dcf",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "nilmu'o zei uidje",
+      "event": "jve1:107d1e86d25304d4b7e48bb646fec524179e05b5c1a79cc7bd35275da9d5ab7c",
+      "body": "sha256:01022d8b703d2747e7f0239f0cb23ba340ad8b89059562426328970ea27f9c37",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "nozeika'o zei namcu",
+      "event": "jve1:855292333e8402dded80d86240d170c7f7a55f3aaa28f022f05ef3d7f0a74073",
+      "body": "sha256:f8646507be8dcd5274d4bd5c439fa8fff355c8630601ec1fd91b7ea9f4f96859",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "ny zei sance",
+      "event": "jve1:81cf7c8d8e1d06580e34691d1152dad15d92d0a6a83508ac8252d828a6f8809a",
+      "body": "sha256:1424d80d3bd223eb3915ee35c44a62fa109f2cdff6b735b41bbc831323645a20",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "obu zei sance",
+      "event": "jve1:3599ed004df36faba3a310957c87294444c3e82731b9d897220e8bce5f5dfaa5",
+      "body": "sha256:d73b1c1eb4a3a858b3df3dd8c6e5d6c1023d48f0dec15b83de0869589056973a",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "olimpik zei atlete",
+      "event": "jve1:e5653af9b37b72e03954b0d6375454de084d2150308e6dd1977cea208256a54a",
+      "body": "sha256:1c3ae809516d5f1d2531f4d44edfb3b8622451a19208f80015a7156772659ccf",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "pa zei brinefa",
+      "event": "jve1:84e654976b16b142edda493da3528cb00eee4b6363302ad05de99487f39a8f21",
+      "body": "sha256:0ba6b264d744cd2f10be72b395151c104c1ccd658392d4b8e7d84b5584db6422",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "pa zei funseia",
+      "event": "jve1:23289d16b47821dbc37b9d0c044c62648442a368321d48097112e80a9aaf78e5",
+      "body": "sha256:1630419c700b5f1832e8cf196c2d10090ba061516174eef6065915e343081f6b",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "pa zei jarnezi",
+      "event": "jve1:ae129ac583cd59ac1983a0839ba8f5a4045bc1c2d39e4d2112eb16372fb5c6af",
+      "body": "sha256:8bfb897f288a0da97bb70d2fe90e760c77d040759f6836df7d015f6870c63a18",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "pa zei jurfuga",
+      "event": "jve1:c2aa6851b1d6ceb68741c453afe0511e891012620f0724f30f0cdc3f23c72b24",
+      "body": "sha256:7e57c8dc812cf150c2a8bcf76c29e7f59b6caae72a7c1171465c5ebe74a92e11",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "pa zei karsna",
+      "event": "jve1:301e34012b09de6cef168d2757121c24f6e549bc5fd35c7a3f721994755b98af",
+      "body": "sha256:2c6623c1d61c574abb0d957919048dbc8f836ff6f04e10e38d4fb0926171a22b",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "pa zei meksota",
+      "event": "jve1:60995b286b283d9ab5d3de6128b90943315b34758195bf171060197a1733c873",
+      "body": "sha256:4247f1d549e77c95557395966eba96dcf58e384818c4aa61debc5844301e1aa0",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "pa zei mektika",
+      "event": "jve1:dba6f14c5c9166db5c832089eb27a68d1f2308d47abc67519c65eb76c856bc11",
+      "body": "sha256:5008190aadbc6d5cbea13f3e140654cad7bfc2e05e0e1c7363282125d5b4c502",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "pa zei sumsenime",
+      "event": "jve1:090d070b655cff8d62f34f45dcc59f176f3afc24969c0158429ad42639314e82",
+      "body": "sha256:7f7499e864da54536b5876b557f0bbaef0cdb30b475b9fcb4994dd9f51b6d107",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "pa zei sumtifa",
+      "event": "jve1:e3408a26a8b26ba6f045a69e95068c93901f2ee19819bedeb0de1915f924d32f",
+      "body": "sha256:3ae99eb97e638bbc22f3369e943426fe237aebe86534d0cd6d7540b4e3a214cb",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "pa zei sumtika",
+      "event": "jve1:3688fb8627ef24ff92d3b8e3e5cb827da56ad96323ab7f92745bd40c063a5fce",
+      "body": "sha256:34e739f418b2e98290b59bdeac10407d73705deb1e4ede6fd505a857b22c66fb",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "pa zei taulka",
+      "event": "jve1:7e48b5ccfb53a771d69ef9894be3358de805e1e117c2a8a8ef5a6ce992d76d7c",
+      "body": "sha256:6839f1ff0c5440effc3cef875a776315a163044d26b8854a9832a9c243d69607",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "pa zei zgabube",
+      "event": "jve1:b58a977742ef5c2c0291f0559c1ce42294bbf59417de66abb5c59efab50038f3",
+      "body": "sha256:440a5680eeba717d2c30c99b5b41ea12550b03580919496ee77ed41a17abd875",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "pasifik. zei braxamsi",
+      "event": "jve1:e14428f256c4bb2406e4fcc42f0afc408cd58a0d2b5000da5edad7015d98508f",
+      "body": "sha256:82dc8139800c8f17731eb33c902ff6b0ec2da7da1bf00852e15ad53f2a3bf17f",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "pejypoi zei uidje",
+      "event": "jve1:4e5a3801e69819a88284bd00eea2ec21372e2f0c205e627e56c0b2c91ec89203",
+      "body": "sha256:2f720dc8694c895dcfd9c8d6248b8bb76831e79ce8bed0f8123a97424a5bd614",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "pejypoici'a zei uidje",
+      "event": "jve1:e8577450e22cd4b7f04495e840dcf67fc2f526fdb7838ca224bedf25b8798596",
+      "body": "sha256:233d38165cada496c75b5a10c4e6e528690a9595d24b0f7f114c156d1c72838f",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "pevyca'o zei uidje",
+      "event": "jve1:d372d82cb19325f6fea824498b59c2633ac3438f1c1a873a7b4a0674a12e036c",
+      "body": "sha256:024d48551fdc2a1c7935c89b50fa99232600bdb1b177a1be7e56ca1f21cf2680",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "pipnrpiano zei konceto",
+      "event": "jve1:050ddad605768058e2b152a9a10b512caec752a8920ea2d45045df45a77e4e63",
+      "body": "sha256:49f6c6df27caa079de7e43764a57c4442369cde5c29e00404dadd6c3a7c0593e",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "porsi zei uidje",
+      "event": "jve1:ba12850222124c7bc691a58c27c16cfd1ad6ee80f630581d343815555555ad56",
+      "body": "sha256:ee1d8d5410c38e7523dbb9744fdb9ec7c11030158d23fbdfea41f291bec7936e",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "py zei sance",
+      "event": "jve1:57a5201297fbc8e4353a253ef60e3c54c020fb313e7b9e2d167a1d11836027bb",
+      "body": "sha256:99ce9259ee619b96ea36316df2ac4917446c600961e994812b04f9a27f0c1642",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "re zei brinefa",
+      "event": "jve1:3ebdc9ee1e58698bf2de7c7c9a93ddf5ebb6726d3206131d04e3bd35f7076ce1",
+      "body": "sha256:6b05490b66d50adcc3addfbd8bfbc74de008c5e4b048118c05a3e1e3332e889e",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "re zei funseia",
+      "event": "jve1:3374c4215a03e01f2016aaa5f3f3ba6d4022f10614c1bea8928f79fe53a54ef2",
+      "body": "sha256:ed93ad7ffc7dc80f59a0b92d079850632add1b5ee8f4ba800cb6427dbf708cb0",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "re zei jurfuga",
+      "event": "jve1:a78d94ab51517557b74072048ed392130b84ef628b08029eeda29abf827e2129",
+      "body": "sha256:06537fa5bb9c5550ad72a4b92101f322f7e2f70e48dd0f0d5182270152d7711f",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "re zei karsna",
+      "event": "jve1:cc481bdef0ce975aaa871e68c2dfaca55a79521584c4b81068907a091d7b68ee",
+      "body": "sha256:63c002b52d06f8050bc1fa94388c839c1939bc3a4241ebfc7a333dd1fca5e552",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "re zei meksota",
+      "event": "jve1:64c38a577a88eb44dc8db3c4d59ff4903eba19287599282e6794a38babc957ba",
+      "body": "sha256:f9aee058db3ef801f3212ea1615f7221dbccd6097cb960a70e7f90326d3cd795",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "re zei mektika",
+      "event": "jve1:fe4a29143e513056c8f40eda85d9dd16f58bca43fd3321aca2f0a7e0342c10f5",
+      "body": "sha256:eecb6f3667c307bc48e8a494fb91aef1ed96b5841a23e673a7414b25facf9059",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "re zei sumsenime",
+      "event": "jve1:fdc92247d1ce1a76c2b55d39af528db7284a37caa2f904874dca0e6d3aa12468",
+      "body": "sha256:918722d969b0327c388b7560afb05bba5f457463c1bdc88d4389dc9a49202238",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "re zei sumsenimere",
+      "event": "jve1:776b78fa220c079a1c4c5585f2add4b80ca60a122014d888f55627504c3199d0",
+      "body": "sha256:4cffb8621e2d9fbc14b7f7d07c9d1ddb55936d5242cdd9672c1c015bb9f6df8f",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "re zei sumtika",
+      "event": "jve1:fc9e835c3d741b7228b28f419f900ecae6da70bbcef963e99d2aec13d05e8883",
+      "body": "sha256:89680b2621294c882b50388d3462e632c496b26c4f43e0fb08713b5e65a0f8fd",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "re zei taulka",
+      "event": "jve1:5dfd2ac7b469a0946f2e781bd861516794ab4d27d2d08f6ff71b38e88c326ce8",
+      "body": "sha256:fadcb6962648e5f2ccb8eb330e4131da92b5ade164a2d9955761b42334c47aed",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "re zei zgabube",
+      "event": "jve1:75a91beeba9ad43b8f483d428e91e701ab0a22c6499c7dcbd89a9cf6e5a61b8c",
+      "body": "sha256:f324a0792cfd222ba4a936baa609ed14992c7aef573074c0d3d72dd2ab92faaa",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "redit zei basyzumfau",
+      "event": "jve1:7f2ba1d000aef714d8253cfa05936613c41f2fe9434db5edd5d52326e92f208d",
+      "body": "sha256:4fc68477e8b9b5bbbfe5be89140253685dd1385825eec573237f783e86cc0de5",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "rirny'utka zei treicytunba",
+      "event": "jve1:7578ddf153335bc18107502a577a77d7e4541f99b2cc3748c183591c1db25399",
+      "body": "sha256:7052b463b218030ddcdf015bde5dec1e18aff3c2c95092da015bbd4bb6112570",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "ry zei sance",
+      "event": "jve1:3171a1b68f6f20ba10bf435eb9b22344c12f539d50f6027a727ded678ece22af",
+      "body": "sha256:9f064da51c509f37a42b46aca88cfb35fc27c41cee2bc20ad962cc407c81111c",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "sa'ei zei gerna",
+      "event": "jve1:82ea5bfd3a756f2f9d81b97238cb3546bfac8ede362b3934fa0b6ce1346b45f8",
+      "body": "sha256:79cc6682a45a96c6e5aaf2626e1c04acc6f7110761c6f70e12e29726e0942644",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "sa'ei zei valsi",
+      "event": "jve1:ef1b5d19a68b616a8369635442b435b7f2b0833d555074cbb88428e434c26d24",
+      "body": "sha256:9b195bccba47ba6a185ab09308fe9f00eb479aedc4793f084ad127cd47c6d0c1",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "samjudri zei uidje",
+      "event": "jve1:c9ced97306e19935172011f1da1490745f2c88a7df1645a4c51649a63a4f1ca9",
+      "body": "sha256:e7e9f8b77d5c59cb1e6ab9ec00eb4bba032cd4a7ed6fa98d7fbe8c346373715a",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "sibir zei tumla",
+      "event": "jve1:4b5ea3079eb39f73272321cb95fc02a8b548eac5590d1b110196f6a108115e61",
+      "body": "sha256:049484ae82a011b926229d593a8a1b2b8ef0810d285da54855e8b3302c7fb674",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "simfoni zei pagbu",
+      "event": "jve1:5e42b17eb054d4de3ee7eaa9da4dc3449d634553234358870dffb05f5c7e2c46",
+      "body": "sha256:bb14d5a2d959ea776acaf470915bd62b7a0511c469f0a8e3659e976aabefa885",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "skicu zei uidje",
+      "event": "jve1:5a1abe8d31d9cd57b2a83b048f47bac39c794d1262604cfb96d92da5d905babf",
+      "body": "sha256:a1617f13ae08b1cff9505d576c3282c340cfd371435f1ee674b5273745ae8d81",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "sornai zei raurci'e",
+      "event": "jve1:09f258302ddfaf1472afa697d566320ae76b294c6dfbc3684faa1bc082a73ab4",
+      "body": "sha256:7c002c864ac55fcfece7502698de91280f851f4c78683e36c5821a665bac701a",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "stika zei uidje",
+      "event": "jve1:ceb0391086bfeadef25b41a3b1d88acc02b13151e59170153af931f873d53169",
+      "body": "sha256:f2c0c8b330fc945e32e7b6e53a7bdc2a40e1e25b441efa71d545de9cbc9a941f",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "sy zei sance",
+      "event": "jve1:e31b79e6d40841495de7ebaa1a626d88070e065c5b4d066314614e4e2dc9c3e8",
+      "body": "sha256:e1c492ed0e8192c26dfe659bd086bb544f092706d6895efc72d0a12775d813d9",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "tarbi zei asna",
+      "event": "jve1:5fa50d881666eca77de8161407ea244285f863a8d128ca5ce009cc46072efa0f",
+      "body": "sha256:2e8758a320bd1e98a42bccf604392ff01f018e8fdc2803332e7428ebf0d31b97",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "tcita zei uidje",
+      "event": "jve1:364aed2f2c56b1fa6c7039e8c474ffe35a1790ff9db669a6f6b90c1d03790592",
+      "body": "sha256:ba37e06189434d8ffc1ffb5daa5c771716ebf00c0ce0a728530ebb60290650a5",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "te'o zei dugri",
+      "event": "jve1:7e05f5fd904a4f0c38492ef5e533afa83a019a2074343c2836844d29f2641f4b",
+      "body": "sha256:8d0cb678f3712dbae361c7c82b8e47765161bc5fe18a0e2abd3d598dd8138e4a",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "to'a zei lerfu",
+      "event": "jve1:a0022f5c1d378095350006cb3cd3a2d03988ab3f27310381f0bc03801f52b56e",
+      "body": "sha256:2b70ae1db1572a8c09f0b5eed67074a0beb4f7f8e00655b942afe5ef891d88f2",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "to'e zei kancuka'e",
+      "event": "jve1:df5dc71a5393b23fbaad8c0a37615e9ec41c993cca3f99f2c43cf15085f38326",
+      "body": "sha256:feb372c1f0eac6a868c8967d3378c08efbd0a3c75a6161a7ea517c452f7cd81e",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "turing zei sucyskami",
+      "event": "jve1:56a41de8eda1d5f0f697ec3ad65b5a10d7528d8d1e59ba275ffbc30963038a37",
+      "body": "sha256:6a38925ea5a9ee362dc04f0db504d1e073b8232e5534af65ffbab690454cf659",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "ty zei creka",
+      "event": "jve1:5e963eadb20442b1937a1c7e13031f17f5a70e0d54eeb574ebf5fbe318a94690",
+      "body": "sha256:cdaf84333e8dfe943f7aaa746aa64a2ef5ec261368fc7c6b88df3c655f201e36",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "ty zei sance",
+      "event": "jve1:9f217fb3572e9098a57829a7c5ee7999a48904c15a3e3e7b5e0fde39c449f656",
+      "body": "sha256:3937f808c9a8d8dac43ab06d9d8f1ff7857d07740a3aa2356a6df85adae755c9",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "u zei bangu",
+      "event": "jve1:d51cd410365248d1c73c14a5d98d3e000c87f06e037042af4eff2320e4bdd232",
+      "body": "sha256:145ebcf9152adaad35957c90f25e33edf406ed4a02feba1e9be5e60af1fc270d",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "uaigri zei eikse",
+      "event": "jve1:eb3f9743ae92f2ce2770e0d64dcbd0f61856b18c74eb94957e2b20200f0d0b4a",
+      "body": "sha256:dc9be9056bc746f7a39330d1707be5886eb60f5a36b189f216ed1fd105166095",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "ubu zei sance",
+      "event": "jve1:de52258339a064dc8ad0d8fd127fb35e8d4c4f98dbcd926f5adacdc3b6d4a1e8",
+      "body": "sha256:1b71e98404175e32b1d0863df623ff197905ca2bfb4f9c2a745826dbf744c8b4",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "ubu zei zunsna",
+      "event": "jve1:3c5be767e746cd5e7003692cdf5c7271b99087d85b39a8ec62f0b7a30bc170e5",
+      "body": "sha256:b407931e263924b492e10a1df55b320a0062a7695a5da997633b4f4e637438c9",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "ubutycys zei cacra",
+      "event": "jve1:591425c42951eb0a2082db186201f6da7f95afb4f615c8779acdc59734202b7a",
+      "body": "sha256:06e86cb099862401add71146f6c985dd05caea473f226cd24d8fdd409e24eaf1",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "uidja zei tanbo",
+      "event": "jve1:5b9ee1200bd23a667ffc8523d72b857838b908a876638a51f71edab78fa54de2",
+      "body": "sha256:1026fa2d02ed295ecb8ffea3b1af138f4949937321a5f8d055a2f57fecdee8d2",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "utco zei morna",
+      "event": "jve1:2f2ea8fdf8997ea2e2e3f896332817365cbf8b7214c56206b2f269de9eb85e6a",
+      "body": "sha256:e6369967b168097356d8f380bfc59a83489265dcfc293c83471d833f8fff4f0e",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "vanbi zei uidje",
+      "event": "jve1:09007a0dbf2609cbd319fbc1431a975acc9173434535dcdd100d4fd5b112df29",
+      "body": "sha256:2133f659964536069f9a45288da665388cf4969c48dd18aefd52c001e6282782",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "vi'e zei saske",
+      "event": "jve1:dd924400e0a552c48a1233479687276c835f48a131682e089e8602cf93fdd5b3",
+      "body": "sha256:d35ae1c1a6d6aa955d8e13c4f5c19884566346d1f2463d3ed21d9f9526417941",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "vo zei sumtika",
+      "event": "jve1:67342ab7af97f8cb5ccb217dc592928a9d6cb95efcb826f245c3ef6a7949829e",
+      "body": "sha256:ddb6285d76a472b907eab79218d1f391fdd6c166938727882460b836fd5b7070",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "vo zei zgabube",
+      "event": "jve1:f2369d319acd003b1eb003d12514b713853873e44a8a6e078fecc2425623a14d",
+      "body": "sha256:2b08573a8cb6737d6d963e277cbdac2fb7b86a56fbe98109cf6e45c0c0c59405",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "vy zei sance",
+      "event": "jve1:f0edb450728d6c641e2c42c92dbbfd0c9e019bff0a4e9e6f435ff2b2b7e85bdb",
+      "body": "sha256:d5c4406b957915f05df1d6bab282a23903393591e15c4d80c3f6f336fef69145",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "xa zei sumtika",
+      "event": "jve1:ffb0b00d316ae4b5f16543953b4ae76acdabc61c90dcfe9c850aa90df056f635",
+      "body": "sha256:8398e5912fc1c32fc49a349a5142d44698b81c0971eb13d1b35ef18bf5a5ef4b",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "xa zei zgabube",
+      "event": "jve1:9313c5b86eefdfa0a9302b7d459bf7641e9a5886d43672c2c3bea641b87bdf9a",
+      "body": "sha256:f14cfa9be09ba6495ef315022a10571432968eee1895332f7fb130d44db070d9",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "xu zei preti",
+      "event": "jve1:5961b5ed1ffdf60c0d8bc27c7a7b1648ff6529e72e3fa7f7473a874996fa301e",
+      "body": "sha256:68f095f3de268be487188b98161836754cd874cfd5ae496cf68ca9ff6cc98ef6",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "xy zei dirce",
+      "event": "jve1:136bfd6a21b8538623859af3111f846710a6823390add71a3bbbe18851cdc386",
+      "body": "sha256:adb89a9e55aa2d88df63a7a98077640a3b864157ba8ff36784d3dc045fd6b527",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "xy zei gusni",
+      "event": "jve1:4cec20753cb442757f5b4fbd768961ee1bb50ae72bd2ca9a595fafcf89a48b78",
+      "body": "sha256:b4ec50cfbd9e5a2c0e6ba56a36566ea7501d96497ca671e278575e9c3d994571",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "xy zei kantu",
+      "event": "jve1:7e081ec9f592d0dd0089b968249e4633a1b00d3bdfb23b43b6d1ad7020f64254",
+      "body": "sha256:787ba707696af403f1d904f5bf98229dfa2ee9af33cdfe4d61cbba4a0b626020",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "xy zei sance",
+      "event": "jve1:a10fc9ef1da56dd30bf132d0047b7b9f5f1f1d24e0e4b431c0b10bf32cfbe29a",
+      "body": "sha256:ce31b5e01173d64b9ad7734c22df14c54b7178e592400f5a7c4e8adf534110ee",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "y'y zei bu",
+      "event": "jve1:d98e1ee2676e0b9dd3045fb34e06c26cd72b0453117c984acd8d237e3b6d8c2a",
+      "body": "sha256:4faf265ee7ad408cbc7a95f9b61b2adb3b8e01eff017f1a385ba4cb322eedfbe",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "y'y zei sance",
+      "event": "jve1:91ae534f0c145ff0e7fe34919d65a3e2ceea57b6c71022f8a9fb09c1449aaed7",
+      "body": "sha256:197f88e374f56fe0a0a6a1fb1156e6bee1d0fa478adbd1564103bfc6a92989e7",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "za'e zei lujvo",
+      "event": "jve1:0c25fb1dc4b0bab9527eabc06d2c0237071a8ca7699a8bfee26dfe00a301a989",
+      "body": "sha256:7a45516eb4f132abe05719a21f4b0c45b095ebb63b2b9734b7f9a6d95737eef8",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "za'e zei valsi",
+      "event": "jve1:e9e27346f85466793726f7bbfd081289fa656026d991fa03065856276620d3e1",
+      "body": "sha256:4af95a0595868d5b70f9b1007d774b0708b5ea3de5502301689e0b187d8abb5b",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "ze'i zei seldejni",
+      "event": "jve1:6e102bf3ef9ce46dddef50745a206062e0914af93d5b0c7953cd5e8a1e8d2c9d",
+      "body": "sha256:97eb10ba67f22975d1108bfeb35e588c493936cff9d3f7cac22abc4fc0b2c37d",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "ze'u zei seldejni",
+      "event": "jve1:594ce8d8a70767fe93bbbe7bd96e885264574f3eaff1fb862c3e9d2917efb370",
+      "body": "sha256:b38fd731afb0e79e9787e00fcd403e592efe827f07eecbb6c52fa3775e659dff",
+      "kind": "lujvo",
+      "supported": true
+    },
+    {
+      "spelling": "zo si si zei fa'o",
+      "event": "jve1:c415a9f511344da58b054da60b04b74dde7cfc12c079f60d78e07b1471ff5128",
+      "body": "sha256:573515ccec2748a9d239796c481959188239b7f75c4bb2e1eb514de1c21b34fb",
+      "kind": "lujvo",
+      "supported": false
+    },
+    {
+      "spelling": "zy zei sance",
+      "event": "jve1:958361bd2989a7851198c91eecde2e16edb3129cf19fb48624ac2d7d0f22bd45",
+      "body": "sha256:0564e91f7eed9cab5d0baa162df71bf84f3799e5d64efa49185425a8a88c63bd",
+      "kind": "lujvo",
+      "supported": true
+    }
+  ]
+}

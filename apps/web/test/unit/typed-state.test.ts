@@ -890,7 +890,7 @@ test("keyed profile history survives other typed words and migrates the former s
         assert.equal(state.typedOrigin, true);
         assert.equal(
           state.profile,
-          spelling === "BAU,CLA" ? "cll" : "extended",
+          spelling === "BAU,CLA" ? "cll" : "extended-v4",
         );
         assert.equal(buildLujvoState(state).candidates[0].spelling, spelling);
         assert.ok(
@@ -1592,11 +1592,12 @@ test("random production event sequences preserve draft invariants after every ev
               ? morphologyProfile(before.compound!.morphology)
               : (before.lujvo?.restoredEvidenceHistory?.find(
                   (entry) => entry.spelling === word,
-                )?.profile ?? "extended");
-            const analysis =
-              profile === "extended"
-                ? detectWord(word)
-                : analyzeWord(profile, word);
+                )?.profile ??
+                (before.lujvo?.typedOrigin && before.lujvo.typed === word
+                  ? before.lujvo.profile
+                  : undefined) ??
+                "extended-v4");
+            const analysis = detectWord(word, profile);
             const ordinary =
               before.lujvo?.ordinarySpelling ??
               (before.lujvo?.components.length && !before.lujvo.typedOrigin

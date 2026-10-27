@@ -1609,16 +1609,36 @@ test("revision comparisons display fu'ivla for the fuhivla classification", asyn
   page,
 }) => {
   const f = fixture();
-  await page.goto(`/word/${f.words.cukta}?lang=en`);
-  await page.evaluate(async (id) => {
-    const { loadDefinition } = await import(String("/src/data/api.ts"));
-    const { comparison } = await import(String("/src/pages/definition.ts"));
-    const parent = await loadDefinition(id);
-    const child = structuredClone(parent);
-    child.body.classification.kind = "fuhivla";
-    const result = comparison(parent, child);
-    document.querySelector("main")!.replaceChildren(result);
-  }, f.definitions.cukta1);
+  let releaseCore!: () => void;
+  const coreHeld = new Promise<void>((resolve) => {
+    releaseCore = resolve;
+  });
+  const coreRequested = page.waitForRequest("**/*.wasm");
+  await page.route("**/*.wasm", async (route) => {
+    await coreHeld;
+    await route.continue();
+  });
+  try {
+    await page.goto(`/word/${f.words.cukta}?lang=en`);
+    await coreRequested;
+  } finally {
+    releaseCore();
+  }
+  await expect(page.locator("main article.definition").first()).toBeVisible();
+  await page.evaluate(
+    async ({ id, path }) => {
+      const { initializeCore } = await import(path);
+      await initializeCore();
+      const { loadDefinition } = await import(String("/src/data/api.ts"));
+      const { comparison } = await import(String("/src/pages/definition.ts"));
+      const parent = await loadDefinition(id);
+      const child = structuredClone(parent);
+      child.body.classification.kind = "fuhivla";
+      const result = comparison(parent, child);
+      document.querySelector("main")!.replaceChildren(result);
+    },
+    { id: f.definitions.cukta1, path: corePath },
+  );
   const changes = page.getByRole("region", { name: "Changed fields" });
   await expect(changes).toContainText("Type");
   await expect(changes).toContainText("fu'ivla");

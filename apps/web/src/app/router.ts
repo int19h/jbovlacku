@@ -47,8 +47,16 @@ export function setNavigationGuard(next: NavigationGuard | null) {
 }
 /** The last location the page showed, so a refused history move can be undone. */
 let shown = { href: location.href, state: history.state as unknown };
+/** Only the latest navigation can commit after an asynchronous guard. */
+let navigation = 0;
 function track() {
   shown = { href: location.href, state: history.state as unknown };
+}
+/** The latest refusal restores the page even if an older history guard still waits. */
+function refuse(current: number) {
+  if (current !== navigation || location.href === shown.href) return;
+  history.pushState(shown.state, "", shown.href);
+  track();
 }
 /**
  * Runs the guard. A synchronous verdict keeps navigation synchronous. A
@@ -88,7 +96,10 @@ export function navigate(
     location.assign(url.href);
     return;
   }
+  const source = location.href;
+  const current = ++navigation;
   const commit = () => {
+    if (current !== navigation || location.href !== source) return;
     if (options.replace)
       history.replaceState(
         options.state ?? history.state,
@@ -105,9 +116,11 @@ export function navigate(
   };
   const verdict = allowed(url.href);
   if (verdict === true) commit();
-  else if (verdict !== false)
+  else if (verdict === false) refuse(current);
+  else
     void verdict.then((ok) => {
       if (ok) commit();
+      else refuse(current);
     });
 }
 /** Updates the query string without a new history entry or a render. */
@@ -155,10 +168,10 @@ export function installRouter() {
   window.addEventListener("popstate", () => {
     // The browser already moved. A refused move puts the shown page back.
     const target = location.href;
+    const current = ++navigation;
     const settle = (ok: boolean) => {
-      if (ok) emit(true);
-      else if (location.href === target)
-        history.pushState(shown.state, "", shown.href);
+      if (!ok) refuse(current);
+      else if (current === navigation && location.href === target) emit(true);
     };
     const verdict = allowed(target);
     if (typeof verdict === "boolean") settle(verdict);

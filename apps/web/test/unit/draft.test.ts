@@ -233,7 +233,7 @@ test("the numbering needs approval and a fixed frame declares every index in ord
 
 test("variadic and context frames and type hints round-trip through the body", () => {
   const draft = newDraft({
-    spelling: "broda",
+    spelling: "ui",
     kind: "cmavo",
     selmaho: ["UI"],
     text: "① and ②, then more.",

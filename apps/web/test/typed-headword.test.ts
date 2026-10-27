@@ -378,7 +378,7 @@ for (const spelling of ["sairzba", "bangu'y'ismu", "SAI,rZBA"])
         );
     });
     expect(published.body.word.spelling).toBe(spelling);
-    expect(published.body.etymology.compound.morphology.version).toBe("3");
+    expect(published.body.etymology.compound.morphology.version).toBe("4");
   });
 
 test("remote existence remains visible when a definition cannot be fetched", async ({

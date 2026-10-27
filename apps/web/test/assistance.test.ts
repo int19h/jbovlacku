@@ -940,6 +940,72 @@ test("browser requests reach the Node service and a mocked provider with a corre
   expect(JSON.stringify(saved)).not.toContain("browser-fixture-only");
 });
 
+for (const [spelling, parts] of [
+  ["taia", ["tai", "a"]],
+  ["i'ecu'i", ["i'e", "cu'i"]],
+] as const) {
+  test(`browser type requests send server-computed compound parts for ${spelling}`, async ({
+    page,
+  }) => {
+    await draft(page, { kind: "cmavo", spelling });
+    const request = page.waitForRequest(
+      (request) =>
+        request.method() === "POST" &&
+        new URL(request.url()).pathname === "/api/v1/assist",
+    );
+    await page
+      .getByRole("button", { name: "Recommend a type", exact: true })
+      .click();
+    await allow(page);
+    const browserInput = (await request).postDataJSON();
+    expect(browserInput.current.spelling).toBe(spelling);
+    expect(browserInput.current.word_type).toBe("cmavo");
+    for (const fields of [browserInput, browserInput.current]) {
+      expect(Object.hasOwn(fields, "spelling_form")).toBe(false);
+      expect(Object.hasOwn(fields, "spelling_parts")).toBe(false);
+    }
+
+    const panel = page.getByRole("region", {
+      name: "Recommend a type suggestion",
+    });
+    await expect(panel).toContainText("A grammar word fits this meaning.");
+    await expect(page.getByRole("radio", { name: /^cmavo/ })).toBeChecked();
+    const before = await stored(page);
+    expect(before.kind).toBe("cmavo");
+    const record = before.ai.records[0];
+    expect(record.result.proposals).toEqual([
+      { path: "/word_type", value: "compound" },
+    ]);
+    const log = JSON.parse(record.log_json);
+    expect(log.morphology).toEqual({
+      id: "https://github.com/int19h/jbovlacku/blob/main/docs/morphology.md#extended-lujvo",
+      version: "4",
+    });
+    const exchange = log.exchanges[0];
+    const providerInput = JSON.parse(exchange.request);
+    expect(providerInput.current.spelling).toBe(spelling);
+    expect(providerInput.spelling_form).toBe("compound");
+    expect(providerInput.spelling_parts).toEqual(parts);
+    expect(exchange.attempts).toHaveLength(2);
+    expect(exchange.attempts[0].check.accepted).toBe(false);
+    expect(exchange.attempts[1].check.accepted).toBe(true);
+    const providerMessage = exchange.attempts[1].request.messages.find(
+      (message: { role: string }) => message.role === "user",
+    );
+    expect(JSON.parse(providerMessage.content)).toEqual(providerInput);
+
+    await panel.getByRole("button", { name: "Use this", exact: true }).click();
+    await expect(page.getByRole("radio", { name: /^Other/ })).toBeChecked();
+    const accepted = await stored(page);
+    expect(accepted.kind).toBe("compound");
+    expect(accepted.spelling).toBe(spelling);
+    await page.reload();
+    const reloaded = await stored(page);
+    expect(reloaded.kind).toBe("compound");
+    expect(reloaded.spelling).toBe(spelling);
+  });
+}
+
 test("consent cannot start duplicate runs and cancel then restart keeps the new job isolated", async ({
   page,
 }) => {
@@ -3670,10 +3736,63 @@ for (const conversion of [null, "te"]) {
       .click();
     expect((await stored(page)).text).toEqual(revision.text);
     expect((await stored(page)).parents).toEqual(revision.parents);
-    await page.getByRole("link", { name: "Return to the saved draft" }).click();
-    await expect(page).toHaveURL(/\/new\/meaning/);
+    let releaseRestore!: () => void;
+    const restoreHeld = new Promise<void>((resolve) => {
+      releaseRestore = resolve;
+    });
+    let enterRestore!: () => void;
+    const restoreStarted = new Promise<void>((resolve) => {
+      enterRestore = resolve;
+    });
+    await page.exposeFunction("holdDraftRestore", () => {
+      enterRestore();
+      return restoreHeld;
+    });
+    await page.evaluate(async () => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const original = LocalStore.prototype.switchDraft;
+      LocalStore.prototype.switchDraft = async function (...args: any[]) {
+        LocalStore.prototype.switchDraft = original;
+        await (window as any).holdDraftRestore();
+        return original.apply(this, args);
+      };
+    });
+    const returnLink = page.getByRole("link", {
+      name: "Return to the saved draft",
+    });
+    const savedKey = new URL(
+      (await returnLink.getAttribute("href"))!,
+      page.url(),
+    ).searchParams.get("resume")!;
+    try {
+      await returnLink.click();
+      await restoreStarted;
+      // The URL moves before storage switches. No draft editor is ready yet.
+      await expect(page).toHaveURL(/\/new\/meaning\?resume=/);
+      await expect(page.locator("main").getByRole("textbox")).toHaveCount(0);
+      expect((await stored(page)).text).toEqual(revision.text);
+      const saved = await page.evaluate(async (key) => {
+        const { LocalStore } = await import(String("/src/data/store.ts"));
+        return new LocalStore().get("drafts", key);
+      }, savedKey);
+      expect(saved.text).toEqual(before.text);
+      expect(saved.spelling).toBe(before.spelling);
+    } finally {
+      releaseRestore();
+    }
+    // Removing resume means that the storage transaction completed.
+    await expect(page).toHaveURL(/\/new\/meaning$/);
+    await expect(
+      page.getByRole("textbox", { name: "Meaning", exact: true }),
+    ).toHaveValue(before.meaning);
     expect((await stored(page)).text).toEqual(before.text);
     expect((await stored(page)).spelling).toBe(before.spelling);
+    expect((await stored(page)).parents).toEqual(before.parents);
+    await page.reload();
+    await expect(
+      page.getByRole("textbox", { name: "Meaning", exact: true }),
+    ).toHaveValue(before.meaning);
+    expect((await stored(page)).text).toEqual(before.text);
   });
 }
 

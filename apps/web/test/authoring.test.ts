@@ -911,7 +911,7 @@ test("a fully disconnected author signs a complete definition into storage and l
         }),
       );
     },
-    { spelling: "brodvi", rafsi: "rod" },
+    { spelling: "brovi", rafsi: "rod" },
   );
   const previousSnapshot = await page.evaluate(
     async () => (await (await fetch("/api/v1/manifest")).json()).snapshot,
@@ -988,7 +988,7 @@ test("a fully disconnected author signs a complete definition into storage and l
     before.map((r: any) => [r.id, r.transport]),
   );
   // Keep the accepted receipts in this app session and request a fresh view.
-  await spaGoto(page, "/word/brodvi?fresh=1");
+  await spaGoto(page, "/word/brovi?fresh=1");
   await expect(
     page.getByText(
       "This server stored your records. Its word view is updating.",
@@ -1056,7 +1056,7 @@ test("a failure right after the group commits still recovers the same group afte
   await page.getByLabel("Sign from history saved in this browser only").check();
   await page.route("**/api/v1/**", (route) => route.abort("connectionreset"));
   // Before the commit: a failing group transaction keeps the draft and writes nothing.
-  const revision = await writeReviewedDraft(page, "brodza");
+  const revision = await writeReviewedDraft(page, "broza");
   await page.evaluate(async () => {
     const { LocalStore } = await import(String("/src/data/store.ts"));
     const original = LocalStore.prototype.queueGroup;
@@ -1868,7 +1868,7 @@ test("a draft from the old prototype's version 1 database opens a choice instead
     const { LocalStore } = await import(String("/src/data/store.ts"));
     const { newDraft } = await import(String("/src/model/draft.ts"));
     const next = newDraft({
-      spelling: "brodna",
+      spelling: "brona",
       kind: "gismu",
       meaning: "Newer draft from another tab",
       text: "Newer draft from another tab",
@@ -1939,7 +1939,7 @@ test("the full editor keeps referents on removal, saves type notes and derivatio
   await createIdentity(page);
   await page.getByRole("link", { name: "Add a word" }).click();
   await page.getByRole("link", { name: "Skip to the full editor" }).click();
-  await page.getByLabel("Headword").fill("brodfa");
+  await page.getByLabel("Headword").fill("brofa");
   await page.getByLabel("Type", { exact: true }).selectOption("cmavo");
   await page.getByLabel("selma'o", { exact: true }).fill("UI");
   const editor = page.getByRole("textbox", { name: "Definition text" });
@@ -2305,7 +2305,7 @@ test("moving a place keeps every referent, and a language change keeps each plac
   await createIdentity(page);
   await page.getByRole("link", { name: "Add a word" }).click();
   await page.getByRole("link", { name: "Skip to the full editor" }).click();
-  await page.getByLabel("Headword").fill("brodgu");
+  await page.getByLabel("Headword").fill("brogu");
   await page.getByLabel("Type", { exact: true }).selectOption("gismu");
   const editor = page.getByRole("textbox", { name: "Definition text" });
   for (let i = 0; i < 3; i++)
@@ -2447,7 +2447,7 @@ test("an explicit place number edit refreshes the visible text, and the next edi
       "drafts",
       "current",
       newDraft({
-        spelling: "brodka",
+        spelling: "broka",
         kind: "gismu",
         text: "① is something.",
         frameMode: "context",
@@ -2490,7 +2490,7 @@ test("switching off the reference reading asks first, turns references into lite
   await createIdentity(page);
   await page.getByRole("link", { name: "Add a word" }).click();
   await page.getByRole("link", { name: "Skip to the full editor" }).click();
-  await page.getByLabel("Headword").fill("brodke");
+  await page.getByLabel("Headword").fill("broke");
   await page.getByLabel("Type", { exact: true }).selectOption("gismu");
   await page.getByRole("button", { name: "+ Add a place" }).click();
   await page
@@ -2550,12 +2550,12 @@ test("a core-only rule shows its exact reason on the publish page and keeps Publ
       "drafts",
       "current",
       newDraft({
-        spelling: "brodko",
+        spelling: "broko",
         kind: "gismu",
         text: "fine",
         structured: false,
         step: 5,
-        evidenceForm: "brodko",
+        evidenceForm: "broko",
         formation: {
           method: "non-algorithmic",
           algorithm: null,
@@ -2600,7 +2600,7 @@ test("a place number that another place holds is refused before anything changes
       "drafts",
       "current",
       newDraft({
-        spelling: "brodku",
+        spelling: "broku",
         kind: "gismu",
         text: "① gives ② away.",
         frameMode: "context",
@@ -2674,7 +2674,7 @@ test("a type note follows the selected mode and keeps an unchanged rich note thr
       "drafts",
       "current",
       newDraft({
-        spelling: "brodno",
+        spelling: "brono",
         kind: "gismu",
         text: "① is noted.",
         frameMode: "fixed",

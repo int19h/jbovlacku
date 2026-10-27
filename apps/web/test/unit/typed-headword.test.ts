@@ -15,9 +15,11 @@ import {
   sourceOptions,
   typedLujvoState,
   typedWord,
+  prepareLujvoBuilder,
+  buildLujvoState,
 } from "../../src/model/typed-headword.ts";
 import { newDraft, normalizeDraft } from "../../src/model/draft.ts";
-import { compoundMetadata } from "../../src/model/builders.ts";
+import { compoundMetadata, newLujvoState } from "../../src/model/builders.ts";
 import type { CachedPackage } from "../../src/data/search.ts";
 
 before(async () =>
@@ -84,6 +86,7 @@ test("all typed lujvo hydrate exact locks and reproduce their spelling", () => {
 test("stored morphology selects the actual version and rejects unknown evidence", () => {
   const id =
     "https://github.com/int19h/jbovlacku/blob/main/docs/morphology.md#extended-lujvo";
+  assert.equal(morphologyProfile({ id, version: "4" }), "extended-v4");
   const profile = morphologyProfile({ id, version: "2" });
   assert.equal(profile, "extended-v2");
   const analysis = awaitlessAnalyze(profile, "ckusni'ybroda");
@@ -103,9 +106,66 @@ test("stored morphology selects the actual version and rejects unknown evidence"
   assert.equal(rebuilt.morphology.version, "2");
   assert.equal(rebuilt.candidates[0].spelling, "ckusni'ybroda");
   assert.throws(
-    () => morphologyProfile({ id, version: "4" }),
+    () => morphologyProfile({ id, version: "5" }),
     /Unsupported morphology/,
   );
+});
+
+test("signed version 3 binds legacy rows before the new default can release their joins", () => {
+  for (const [spelling, sources] of [
+    ["sairzba", ["sanmi", "zbasu"]],
+    ["bangu'y'ismu", ["bangu", "ismu"]],
+  ] as const) {
+    const parts = awaitlessAnalyze("extended", spelling).readings[0];
+    const state = newLujvoState();
+    state.typed = spelling;
+    state.selected = spelling;
+    state.joins = parts.slice(1).map((part) => part.join_before ?? "");
+    state.components = sources.map((source, index) => ({
+      id: String(index),
+      spelling: source,
+      kind: detectWord(source).kind,
+      locked: parts[index].text,
+      definition: null,
+      gloss: "",
+      claims: [{ rafsi: parts[index].text, pair: "synthetic-pair" }],
+    }));
+    const draft = newDraft({
+      kind: "lujvo",
+      spelling,
+      typedSpelling: spelling,
+      evidenceForm: spelling,
+      lujvo: state,
+      compound: {
+        components: sources.map((source, index) => ({
+          word: { language: "jbo", spelling: source },
+          definition: null,
+          rafsi: parts[index].text,
+        })),
+        morphology: {
+          id: "https://github.com/int19h/jbovlacku/blob/main/docs/morphology.md#extended-lujvo",
+          version: "3",
+        },
+        scoring: {
+          id: "https://github.com/int19h/jbovlacku/blob/main/docs/morphology.md#extended-lujvo-scoring",
+          version: "1",
+        },
+        score: null,
+        notes: [],
+      },
+    });
+    prepareLujvoBuilder(draft, null);
+    assert.equal(draft.lujvo!.profile, "extended");
+    assert.equal(draft.lujvo!.restoredReleased, undefined);
+    assert.deepEqual(
+      draft.lujvo!.joins,
+      parts.slice(1).map((part) => part.join_before ?? ""),
+    );
+    assert.equal(
+      buildLujvoState(draft.lujvo!).candidates[0].spelling,
+      spelling,
+    );
+  }
 });
 
 test("source-word ambiguity stays unresolved until the author chooses", () => {
