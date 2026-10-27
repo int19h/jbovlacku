@@ -286,3 +286,31 @@ test("foreign-run proof keeps normalized source offsets and requires every survi
   );
   assert.equal(foreignRunProof(input, noForeign, projected), null);
 });
+
+test("foreign-run proof also retains original source runs that normalization changes", () => {
+  const input = "la'oi hydrocodone";
+  const original: Reference = {
+    ok: true,
+    words: [word("la'oi")],
+    tokens: [
+      { text: "la'oi", tags: ["Word", "Cmavo"], source: [0, 5] },
+      { text: " ", tags: ["PAUSE"], source: [5, 6] },
+      { text: "hydrocodone", tags: ["FOREIGN"], source: [6, 17] },
+    ],
+  };
+  const proof = foreignRunProof(input, original, projected);
+  assert.deepEqual(proof?.runs, [
+    { input: "la'oi", actual: [word("la'oi")] },
+    { input: "hydrocodone", actual: [] },
+  ]);
+  assert.equal(
+    foreignRunProof(input, original, (run) => ({
+      normalized: run,
+      words:
+        run === "hydrocodone"
+          ? [word("drocodone", "brivla")]
+          : projected(run).words,
+    })),
+    null,
+  );
+});

@@ -751,11 +751,13 @@ async function main() {
     if (!explainedBoundary && actual.length === 0) {
       // Normalization can close comma gaps within a pure-y run. Keep its reference
       // tokens and offsets paired with that exact normalized input.
-      const proof = foreignRunProof(
-        analysis.normalized ?? input,
-        effective,
-        projectedAnalysis,
-      );
+      const proof =
+        foreignRunProof(input, ref, projectedAnalysis) ??
+        foreignRunProof(
+          analysis.normalized ?? input,
+          effective,
+          projectedAnalysis,
+        );
       if (proof !== null) {
         explainedBoundary = true;
         explainedWarning = true;
