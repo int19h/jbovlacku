@@ -47,6 +47,8 @@ export function setNavigationGuard(next: NavigationGuard | null) {
 }
 /** The last location the page showed, so a refused history move can be undone. */
 let shown = { href: location.href, state: history.state as unknown };
+/** Only the latest navigation can commit after an asynchronous guard. */
+let navigation = 0;
 function track() {
   shown = { href: location.href, state: history.state as unknown };
 }
@@ -88,7 +90,10 @@ export function navigate(
     location.assign(url.href);
     return;
   }
+  const source = location.href;
+  const current = ++navigation;
   const commit = () => {
+    if (current !== navigation || location.href !== source) return;
     if (options.replace)
       history.replaceState(
         options.state ?? history.state,
@@ -155,10 +160,15 @@ export function installRouter() {
   window.addEventListener("popstate", () => {
     // The browser already moved. A refused move puts the shown page back.
     const target = location.href;
+    const previous = shown;
+    const current = ++navigation;
     const settle = (ok: boolean) => {
+      if (current !== navigation || location.href !== target) return;
       if (ok) emit(true);
-      else if (location.href === target)
-        history.pushState(shown.state, "", shown.href);
+      else {
+        history.pushState(previous.state, "", previous.href);
+        track();
+      }
     };
     const verdict = allowed(target);
     if (typeof verdict === "boolean") settle(verdict);

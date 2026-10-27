@@ -13,7 +13,12 @@ import {
   describe,
   download,
 } from "../../lib/dom.ts";
-import { navigate, routes, type Route } from "../../app/router.ts";
+import {
+  navigate,
+  replaceQuery,
+  routes,
+  type Route,
+} from "../../app/router.ts";
 import type { App } from "../../app/context.ts";
 import {
   formationFieldsFor,
@@ -23,7 +28,11 @@ import {
   type Draft,
 } from "../../model/draft.ts";
 import { lexicalKinds, type LexicalKind } from "../../model/types.ts";
-import { DraftConflictError, type ExpectedDraft } from "../../data/store.ts";
+import {
+  DraftConflictError,
+  SavedDraftUnavailableError,
+  type ExpectedDraft,
+} from "../../data/store.ts";
 import { assistanceSaveKey, retainAssistance } from "../../model/assistance.ts";
 export { DraftConflictError };
 
@@ -95,28 +104,49 @@ export function convertLegacyDraft(stored: Record<string, unknown>): Draft {
 }
 export async function loadDraft(
   app: App,
-  options: { throwOnReadError?: boolean } = {},
+  options: { throwOnReadError?: boolean; signal?: AbortSignal } = {},
 ): Promise<Draft | null> {
   if (!app.session.storageAvailable) return null;
   legacyDraft = null;
+  const url = new URL(location.href);
+  const { signal } = options;
   try {
+    signal?.throwIfAborted();
     let savedDrafts = await app.store.savedDrafts();
-    const resume = new URL(location.href).searchParams.get("resume");
+    signal?.throwIfAborted();
+    const resume = url.searchParams.get("resume");
     if (resume && /^saved:[0-9a-f-]{36}$/.test(resume)) {
       const saved = await app.store.get<Draft>("drafts", resume);
       if (saved?.version === 2) {
         const current = await app.store.get<Draft>("drafts", DRAFT_KEY);
-        const restored = await app.store.switchDraft(
-          current?.revision ?? null,
-          { resume },
-        );
-        savedDrafts = restored.savedDrafts ?? [];
-        const url = new URL(location.href);
+        try {
+          const restored = await app.store.switchDraft(
+            current?.revision ?? null,
+            { resume },
+            signal,
+          );
+          savedDrafts = restored.savedDrafts ?? [];
+        } catch (error) {
+          if (
+            !(error instanceof DraftConflictError) &&
+            !(error instanceof SavedDraftUnavailableError)
+          )
+            throw error;
+          // Another restore or writer won. Show its current draft without retrying the switch.
+          savedDrafts = await app.store.savedDrafts();
+        }
+      } else {
+        // Another restore can consume the saved row before this read reaches it.
+        savedDrafts = await app.store.savedDrafts();
+      }
+      signal?.throwIfAborted();
+      if (location.href === url.href) {
         url.searchParams.delete("resume");
-        history.replaceState(history.state, "", url);
+        replaceQuery(url.searchParams);
       }
     }
     const stored = await app.store.get<Draft>("drafts", DRAFT_KEY);
+    signal?.throwIfAborted();
     if (stored && stored.version !== 2) {
       // An old draft stays untouched. The meaning page offers export, conversion, or discard.
       legacyDraft = { stored: stored as unknown as Record<string, unknown> };
@@ -149,6 +179,7 @@ export async function loadDraft(
     }
     return null;
   } catch (error) {
+    if (signal?.aborted) return null;
     if (options.throwOnReadError) throw error;
     return null;
   }
