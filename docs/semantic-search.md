@@ -198,7 +198,7 @@ The selected generation must match the requested view and complete profile.
 Search checks every event against its exact envelope, body, word, language, and semantic extraction version in the requested snapshot.
 Unchanged definitions remain searchable after other events change the snapshot. New definitions remain pending until their vectors exist.
 Missing or mismatched associations cannot enter the results. A failed entry does not disable unrelated indexed definitions.
-The profile must remain compatible. An index with no indexed definitions is unavailable unless the requested context is empty.
+The profile must remain compatible. A context with no indexed definitions returns empty hits with its pending and failed counts, without paid inference.
 
 Set `JVC_SEMANTIC_INDEXING=enabled` to index new definitions while the server runs.
 The server checks the latest completed snapshot every five seconds after each cycle ends.
@@ -208,7 +208,8 @@ The server does not adopt unfinished operator jobs, which can contain failed or 
 The background job stages bounded pages, publishes partial coverage, probes the retained profile, and embeds one batch at a time.
 Existing exact input hashes reuse retained vectors. Other inputs receive fresh vectors.
 The server does not create a new generation when all eligible events already have vectors.
-Completed background generations leave storage when no current, rollback, or active background pointer retains them.
+Completed background generations leave storage when no current, rollback, active background pointer, or in-flight search retains them.
+A search retains its generation through inference, scanning, and final retention checks. Cancellation releases it after the worker stops reading.
 Operator-created generations remain under explicit operator control. The existing capacity limits still apply.
 
 A durable background pointer retains failures across restarts and later snapshots.

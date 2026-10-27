@@ -54,6 +54,7 @@ export interface ProbeEvidence {
   references: { input: string; distance: number }[];
 }
 export interface VectorStore {
+  retainGeneration(id: string): Promise<() => void>;
   backgroundGeneration(
     profile: string,
     view: string,

@@ -805,12 +805,12 @@ test("warm scans leave the main loop runnable and reserve one worker per client 
       "A warm scan must still run while HTTP work can execute",
     );
     controller.abort();
-    await canceled;
     await assert.rejects(scanner.scan(request), /already has an active/);
+    await canceled;
+    // A settled cancellation must release its real worker, not only the caller's promise.
+    const resumed = scanner.scan(request);
     await other;
-    // Completion on the second worker also gives the canceled worker time to acknowledge.
-    await new Promise<void>((resolve) => setTimeout(resolve, 30));
-    assert.equal((await scanner.scan(request)).length, 3);
+    assert.equal((await resumed).length, 3);
   }));
 
 test("cold coverage yields between bounded metadata pages", async () =>
@@ -1091,4 +1091,96 @@ test("background indexing never replaces an unfinished operator job to replay it
       await store.backgroundGeneration(incomplete.profile, incomplete.view),
       null,
     );
+  }));
+
+test("a delayed query retains its generation through multiple background publications", async () =>
+  fixture(async ({ store, scanner, docs, ctx }) => {
+    const { BackgroundSemanticIndexer } =
+      await import("../src/semantic/background.ts");
+    const initial = (await store.published(ctx.evaluation.selected_view))[0];
+    await store.setBackgroundGeneration(initial.id);
+    const provider = mock();
+    let release!: () => void;
+    provider.setGate(
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+    );
+    const engine = new SemanticSearch(
+      { profile: profileId(profile), store, cache: store.queryCache, scanner },
+      provider.assistance,
+      true,
+    );
+    let count = 5;
+    const background = new BackgroundSemanticIndexer({
+      store,
+      profile: profileId(profile),
+      view: ctx.evaluation.selected_view,
+      assistance: provider.assistance,
+      source: async () => {
+        const documents = rows(count);
+        return {
+          context: {
+            snapshot: hash(8000 + count),
+            view: ctx.evaluation.selected_view,
+            profile: profileId(profile),
+            eligible: count,
+          },
+          page: async () => ({
+            documents,
+            next: documents.at(-1)!.event,
+            done: true,
+          }),
+        };
+      },
+      probe: (generation, profile) => engine.probe(generation, profile),
+      report: () => {},
+    });
+    const searching = engine.search(ctx, request(), "local");
+    try {
+      while (!provider.calls.includes("query"))
+        await new Promise((resolve) => setTimeout(resolve, 1));
+      await background.cycle();
+      count = 6;
+      await background.cycle();
+      assert.equal((await store.generation(initial.id)).state, "completed");
+      await assert.rejects(store.retire(initial.id), /active search/);
+      release();
+      const result = await searching;
+      assert.equal(result.snapshot, ctx.snapshot.snapshot);
+      assert.deepEqual(
+        result.hits.map((hit) => hit.event),
+        docs.slice(0, 3).map((row) => row.event),
+      );
+      await background.cycle();
+      assert.equal((await store.generation(initial.id)).state, "retired");
+    } finally {
+      release();
+      await searching.catch(() => {});
+      await background.close();
+    }
+  }));
+
+test("an entirely pending population remains query-available without paid inference", async () =>
+  fixture(async ({ store, scanner }) => {
+    const provider = mock();
+    const engine = new SemanticSearch(
+      { profile: profileId(profile), store, cache: store.queryCache, scanner },
+      provider.assistance,
+      true,
+    );
+    const pending = context(rows(5).slice(4), hash(9000));
+    const description = (await engine.profiles(pending))[0];
+    assert.equal(description.query_available, true);
+    assert.equal(description.indexed, 0);
+    assert.equal(description.pending, 1);
+    const result = await engine.search(pending, request(), "local");
+    assert.deepEqual(result.hits, []);
+    assert.deepEqual(result.coverage, {
+      eligible: 1,
+      indexed: 0,
+      pending: 1,
+      failed: 0,
+    });
+    assert.equal(provider.calls.length, 0);
   }));

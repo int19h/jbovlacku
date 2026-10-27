@@ -139,7 +139,6 @@ export class SemanticSearch {
       context.evaluation.available &&
       generation.state !== "retired" &&
       generation.source_done &&
-      (coverage.indexed > 0 || coverage.eligible === 0) &&
       coverage.eligible === eligibleEvents(context).length &&
       profileId(profile) === profileId(createQwenProfile(profile.epoch)) &&
       !(await this.options.store.compatibility(generation.profile))
@@ -352,78 +351,84 @@ export class SemanticSearch {
     const generation = await this.generation(context);
     if (!generation || request.profile !== this.options.profile)
       throw unavailable();
-    const profile = await this.options.store.profile(generation.id);
-    // Validate the complete profile and exact query before any reservation.
-    const bytes = queryInput(profile, request.query);
-    const bound = await this.coverage(context, generation);
-    const all = bound.all;
-    await this.compatible(generation.profile);
-    if (!(await this.ready(context, generation, profile, all)))
-      throw unavailable();
-    const coverage = bound.languages[request.language] ?? {
-      indexed: 0,
-      eligible: 0,
-      pending: 0,
-      failed: 0,
-    };
-    const eligible = eligibleEvents(context, request.language).filter(
-      (id) => !selection.excludedEvents?.has(id),
-    );
-    let hits = [] as Awaited<ReturnType<VectorScanner["scan"]>>;
-    if (eligible.length && coverage.indexed > 0) {
-      signal?.throwIfAborted();
-      const work = this.vector(generation, profile, bytes, network);
-      const vector = await (signal ? abortable(work, signal) : work);
+    const release = await this.options.store.retainGeneration(generation.id);
+    try {
+      const profile = await this.options.store.profile(generation.id);
+      // Validate the complete profile and exact query before any reservation.
+      const bytes = queryInput(profile, request.query);
+      const bound = await this.coverage(context, generation);
+      const all = bound.all;
+      await this.compatible(generation.profile);
+      if (!(await this.ready(context, generation, profile, all)))
+        throw unavailable();
+      const coverage = bound.languages[request.language] ?? {
+        indexed: 0,
+        eligible: 0,
+        pending: 0,
+        failed: 0,
+      };
+      const eligible = eligibleEvents(context, request.language).filter(
+        (id) => !selection.excludedEvents?.has(id),
+      );
+      let hits = [] as Awaited<ReturnType<VectorScanner["scan"]>>;
+      if (eligible.length && coverage.indexed > 0) {
+        signal?.throwIfAborted();
+        const work = this.vector(generation, profile, bytes, network);
+        const vector = await (signal ? abortable(work, signal) : work);
+        await this.checkRetained(context);
+        await this.compatible(generation.profile);
+        hits = await this.options.scanner.scan(
+          {
+            generation: generation.id,
+            profile: generation.profile,
+            snapshot: context.snapshot.snapshot,
+            view: generation.view,
+            language: request.language,
+            vector,
+            limit: request.limit,
+            eligible,
+            network,
+            bindings: eligible.map((event) => ({
+              event,
+              envelope: context.snapshot.events[event].envelope_hash,
+              body: context.snapshot.events[event].body_hash!,
+              word: context.evaluation.publications[event].word,
+              language: context.evaluation.publications[event].language!,
+              extraction_version: semanticProjectionVersion(),
+            })),
+            distinctWords: selection.distinctWords,
+          },
+          signal,
+        );
+        for (const hit of hits) {
+          const p = context.evaluation.publications[hit.event];
+          if (!p || p.word !== hit.word)
+            throw new SemanticError(
+              503,
+              "semantic_binding",
+              "A vector association differs from its evaluated definition.",
+            );
+        }
+      }
       await this.checkRetained(context);
       await this.compatible(generation.profile);
-      hits = await this.options.scanner.scan(
-        {
-          generation: generation.id,
-          profile: generation.profile,
-          snapshot: context.snapshot.snapshot,
-          view: generation.view,
-          language: request.language,
-          vector,
-          limit: request.limit,
-          eligible,
-          network,
-          bindings: eligible.map((event) => ({
-            event,
-            envelope: context.snapshot.events[event].envelope_hash,
-            body: context.snapshot.events[event].body_hash!,
-            word: context.evaluation.publications[event].word,
-            language: context.evaluation.publications[event].language!,
-            extraction_version: semanticProjectionVersion(),
-          })),
-          distinctWords: selection.distinctWords,
-        },
-        signal,
-      );
-      for (const hit of hits) {
-        const p = context.evaluation.publications[hit.event];
-        if (!p || p.word !== hit.word)
-          throw new SemanticError(
-            503,
-            "semantic_binding",
-            "A vector association differs from its evaluated definition.",
-          );
-      }
+      if (
+        (await this.options.store.generation(generation.id)).state === "retired"
+      )
+        throw unavailable();
+      return {
+        snapshot: context.snapshot.snapshot,
+        view: context.evaluation.selected_view,
+        profile: generation.profile,
+        query_hash: inputHash(bytes),
+        hits,
+        coverage,
+      };
+    } finally {
+      release();
     }
-    await this.checkRetained(context);
-    await this.compatible(generation.profile);
-    if (
-      (await this.options.store.generation(generation.id)).state === "retired"
-    )
-      throw unavailable();
-    return {
-      snapshot: context.snapshot.snapshot,
-      view: context.evaluation.selected_view,
-      profile: generation.profile,
-      query_hash: inputHash(bytes),
-      hits,
-      coverage,
-    };
   }
+
   async drain() {
     await Promise.allSettled([
       ...this.pending.values(),

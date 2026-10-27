@@ -79,7 +79,7 @@ export class NodeVectorScanner implements VectorScanner {
     return new Promise<SemanticHit[]>((resolve, reject) => {
       const abort = () => {
         Atomics.store(new Int32Array(cancel), 0, 1);
-        reject(signal?.reason);
+        // Keep the search lease and client slot until the worker stops reading.
       };
       const cleanup = () => {
         signal?.removeEventListener("abort", abort);
@@ -95,7 +95,8 @@ export class NodeVectorScanner implements VectorScanner {
       }) => {
         if (message.id !== id) return;
         cleanup();
-        if (message.error)
+        if (signal?.aborted) reject(signal.reason);
+        else if (message.error)
           reject(
             new SemanticError(
               message.error.status,

@@ -45,6 +45,7 @@ export class BackgroundSemanticIndexer {
     let job = await store.backgroundGeneration(identity, view);
     // An unfinished operator job can contain failed or ambiguous sends. Do not adopt or replay it.
     if (!job && current.state !== "completed") return;
+    await store.pruneBackgroundGenerations(identity, view);
     // Never replace a failed job with a fresh generation that can replay its inputs.
     if (
       job &&

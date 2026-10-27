@@ -25,6 +25,7 @@ export interface ScanRequest {
   distinctWords?: boolean;
 }
 export interface VectorScanner {
+  /** Settle only after every generation read stops, including after cancellation. */
   scan(request: ScanRequest, signal?: AbortSignal): Promise<SemanticHit[]>;
 }
 export type VectorPageReader = (

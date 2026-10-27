@@ -52,6 +52,19 @@ const boundedPage = (limit: number, maximum = 128) => {
 };
 
 export class SqlVectorStore implements VectorStore {
+  private readers = new Map<string, number>();
+  async retainGeneration(id: string): Promise<() => void> {
+    this.active(id);
+    this.readers.set(id, (this.readers.get(id) ?? 0) + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const remaining = this.readers.get(id)! - 1;
+      if (remaining) this.readers.set(id, remaining);
+      else this.readers.delete(id);
+    };
+  }
   constructor(
     private sql: VectorSqlConnection,
     private limits = DEFAULT_VECTOR_LIMITS,
@@ -169,7 +182,8 @@ export class SqlVectorStore implements VectorStore {
       profile,
       view,
     );
-    for (const row of rows) await this.retire(String(row.id));
+    for (const row of rows)
+      if (!this.readers.has(String(row.id))) await this.retire(String(row.id));
   }
   async published(view: string): Promise<IndexGeneration[]> {
     return this.sql
@@ -1043,6 +1057,11 @@ export class SqlVectorStore implements VectorStore {
     });
   }
   async retire(id: string) {
+    if (this.readers.has(id))
+      fail(
+        "semantic_retirement",
+        "An active search still uses this generation.",
+      );
     this.sql.transaction(() => {
       const generation = this.active(id);
       if (
