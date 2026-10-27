@@ -25,7 +25,7 @@ import { NodeEvaluationRuntime } from "./evaluation.ts";
 import { FileCheckpointStore } from "./checkpoint.ts";
 
 const usage =
-  "Use semantic-cli.ts --data DIRECTORY --command prepare|run|status|recover|retry|publish|unpublish|rollback|retire [--job ID] [--batch ID] [--after BATCH_ID] [--max-batches N] [--concurrency N] [--pages N]. Stop the server for this directory first.";
+  "Use semantic-cli.ts --data DIRECTORY --command prepare|run|status|recover|retry|clear-cooldown|publish|unpublish|rollback|retire [--job ID] [--batch ID] [--after BATCH_ID] [--max-batches N] [--concurrency N] [--pages N]. Stop the server for this directory first.";
 const allowed = new Set([
   "data",
   "command",
@@ -138,6 +138,7 @@ async function main() {
       "status",
       "recover",
       "retry",
+      "clear-cooldown",
       "publish",
       "unpublish",
       "rollback",
@@ -225,6 +226,9 @@ async function main() {
         summary: await vectors.summary(id!),
         elapsed_ms: performance.now() - started,
       });
+    } else if (command === "clear-cooldown") {
+      const generation = await vectors.generation(id!);
+      await vectors.clearCooldown(generation.profile);
     } else if (command === "recover") await vectors.recover(id!);
     else if (command === "retry") {
       const batch = args.get("batch");

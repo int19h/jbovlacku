@@ -86,16 +86,22 @@ Its reported cost remains part of the index summary and the shared spending ledg
 
 An HTTP 429 response stops new claims and lets active workers settle.
 The command permits at most three automatic retry rounds per run.
-It waits at least one, two, then four seconds after each refusal, or longer when `Retry-After` requires it.
+It waits at least one, two, then four seconds after each refusal, or longer for the saved `Retry-After` deadline.
 The header accepts integer seconds or an HTTP date.
 Each wait is limited to 60 seconds. All waits in one run are limited to 120 seconds in total.
 If the required delay exceeds either bound, the job remains paused without an early retry.
 
-The store saves the cooldown deadline for the complete profile.
+The store saves the cooldown deadline for the complete profile, capped at one hour from each refusal.
+The cap limits faulty provider values. A later refusal can extend the deadline by at most another hour.
 Restarts and other generations of that profile respect the saved deadline.
 Status exposes this Unix timestamp in milliseconds as `retry_after`.
 A deadline in the past needs no further wait.
 If a 429 body times out, its header still sets the cooldown, but the timed-out batch needs an explicit retry.
+
+To override a faulty deadline, stop the server for the directory and use `--command clear-cooldown --job GENERATION_ID`.
+This clears the deadline for every generation of that profile, including longer deadlines saved by older versions.
+The command preserves batches, charges, retry selections, and profile suspensions. It sends no provider request.
+See [cooldown recovery](development.md#semantic-index-cooldown-recovery) for the complete command.
 
 Each automatic retry creates a linked batch and a new shared-budget operation.
 Earlier batches and charges remain intact. A spending refusal stops the job.

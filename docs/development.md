@@ -543,6 +543,36 @@ Removing the sidecar loses this check. A filtered directory alone does not remem
 A refusal does not prove physical deletion from Git history, peers, or backups.
 If a write fails, treat partial output as unusable until inspected.
 
+## Semantic index cooldown recovery
+
+The Node indexing command saves a rate-limit deadline for each complete embedding profile.
+It caps each saved deadline at one hour from the provider failure, including an invalidly large `Retry-After` value.
+A new refusal can extend the deadline by at most one hour from that refusal.
+Status exposes the saved Unix timestamp in milliseconds as `retry_after`.
+Existing stores can retain longer deadlines from older versions until a new refusal replaces them or an operator clears them.
+
+The command waits at most 60 seconds at once and 120 seconds per invocation.
+If the saved deadline exceeds those wait bounds, the job stays paused.
+The one-hour cap bounds the saved refusal, not the wait inside one command.
+After the deadline expires, fresh work can proceed. Earlier failed batches still require explicit retry selection.
+
+To override a faulty provider deadline, stop the server that uses the data directory.
+Set `JVC_DATA_DIR` to that directory and `JVC_INDEX_JOB` to an existing generation ID.
+Run this command from the repository root:
+
+```sh
+npx tsx apps/server/src/semantic-cli.ts --data "$JVC_DATA_DIR" --command clear-cooldown --job "$JVC_INDEX_JOB"
+```
+
+The command takes the directory lock and clears the deadline for the named generation's complete profile.
+It affects every generation that shares that profile. Its status output reports `retry_after: null`.
+Repeating the command is harmless.
+It sends no provider request and does not read a provider key.
+It preserves batches, retry selections, spending charges, and profile suspensions.
+The next `run` still uses normal shared-budget admission and does not automatically replay earlier failed batches.
+
+The [semantic index guide](semantic-search.md#handle-provider-rate-limits) describes backoff, explicit retries, and command output.
+
 ## Tests and evidence
 
 Install Git, Node.js 24, and `ssh-keygen` before the Rust tests.

@@ -216,7 +216,8 @@ The job saves each operation link before dispatch. Interrupted sent batches need
 Saved claim positions avoid scans of completed inputs. Active batches reserve vector capacity before provider admission.
 Over-limit inputs retain their exclusion reasons while the remaining generation can complete.
 HTTP 429 responses use bounded backoff that respects `Retry-After` and retains each earlier charge.
-The saved profile cooldown survives restart. Known usage remains available even when a returned model or vector is invalid.
+The saved profile cooldown survives restart and has a one-hour cap. Operators can clear it without changing batches or charges.
+Known usage remains available even when a returned model or vector is invalid.
 Mocked tests cover partial progress, restart, failures, retirement, atomic publication, rollback, and explicit removal of current pointers.
 Semantic search routes, query caching, and Worker vector storage remain unfinished. The semantic capability stays disabled.
 A discarded result returns a clear status. Spending failures distinguish pending costs, timed limits, and requests that cannot fit.
