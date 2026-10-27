@@ -45,9 +45,12 @@ The [carrier guide](crates/jvc-carrier/README.md) describes canonical files, imp
 The browser supports anonymous lookup, verified definition pages, encrypted key backups with a recovery test, and signed delivery with per-server receipts.
 Search sits in the header of every page. Result rows show the headword, rafsi, type, highlighted definition text, attribution, and a net score with Endorse and Oppose arrows.
 Word pages show every definition under the selected view, with place strips, revision notices, comparisons, source evidence, rafsi pair cards, and reviewer details.
+Structured editing preserves saved line breaks and whitespace through explicit escapes. Unmatched code and link delimiters stay within their paragraph.
+Word-link and derivation spelling advice never blocks a format-valid reference. Invalid references show plain error sentences.
 Revision comparisons group changes by readable fields and numbered places, with rich text and complete place and source details.
 They align inserted and removed list items and keep exact structured values in closed disclosures.
 Import evidence changes use a short presence or absence line. Comparisons still detect every change in the interpreted body.
+Comparison fields follow reader order and show invisible controls as escapes. Nested lists align their changed items, with bounded alignment work and batches of 50 displayed changes.
 Direct revision reads retry unavailable bodies on the next visit. A known missing body stays missing within its pinned snapshot.
 Settings can show Zbalermorna beside Latin headwords on word and search pages. A local preference puts definitions with your judgments first without changing scores.
 Public identity pages show the signed profile, counts, and activity. Trust actions offer a private rule or a public signed record.

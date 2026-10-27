@@ -1,6 +1,7 @@
 /** Readable field values for revision comparisons. Exact values stay optional. */
-import { el, p } from "../lib/dom.ts";
-import { renderRichText, visibleJson } from "../model/richtext.ts";
+import { el, p, button } from "../lib/dom.ts";
+import { renderRichText, visibleJson, visibleText } from "../model/richtext.ts";
+import { sameValue, changedItems } from "../model/comparison.ts";
 import { kindLabel } from "../model/types.ts";
 
 export const fieldLabels: Record<string, string> = {
@@ -32,7 +33,7 @@ export const fieldLabels: Record<string, string> = {
 };
 const label = (key: string) =>
   fieldLabels[key] ??
-  key.replaceAll("_", " ").replace(/^./, (c) => c.toUpperCase());
+  visibleText(key.replaceAll("_", " ").replace(/^./, (c) => c.toUpperCase()));
 const richFields = new Set([
   "text",
   "description",
@@ -56,6 +57,13 @@ export function readableValue(value: unknown, field: string): HTMLElement {
     value.every((paragraph) => Array.isArray(paragraph))
   ) {
     const result = renderRichText(value, { placeHref: null });
+    const walker = document.createTreeWalker(result, NodeFilter.SHOW_TEXT);
+    while (walker.nextNode())
+      walker.currentNode.textContent = visibleText(
+        walker.currentNode.textContent ?? "",
+      );
+    for (const node of result.querySelectorAll<HTMLElement>("[title]"))
+      node.title = visibleText(node.title);
     result.classList.add("comparison-prose");
     for (const code of result.querySelectorAll("code"))
       code.before(el("span", { class: "meta", text: "Code: " }));
@@ -87,7 +95,91 @@ export function readableValue(value: unknown, field: string): HTMLElement {
     }
     return list.childElementCount ? list : p("Not specified", "meta");
   }
-  return p(field === "kind" ? kindLabel(String(value)) : String(value));
+  return p(
+    visibleText(field === "kind" ? kindLabel(String(value)) : String(value)),
+  );
+}
+
+interface Change {
+  field: string;
+  path: string[];
+  before: unknown;
+  after: unknown;
+}
+/** Align nested lists and expose only changed children of structured fields. */
+function changes(
+  before: unknown,
+  after: unknown,
+  field: string,
+  path: string[] = [],
+): Change[] {
+  if (sameValue(before, after)) return [];
+  const rich = richFields.has(field) && field !== "constraints";
+  if (!rich && Array.isArray(before) && Array.isArray(after))
+    return changedItems(before, after).map(([left, right]) => ({
+      field,
+      path,
+      before: left,
+      after: right,
+    }));
+  if (
+    before &&
+    after &&
+    typeof before === "object" &&
+    typeof after === "object" &&
+    !Array.isArray(before) &&
+    !Array.isArray(after)
+  ) {
+    const left = before as Record<string, unknown>,
+      right = after as Record<string, unknown>;
+    return [...new Set([...Object.keys(left), ...Object.keys(right)])].flatMap(
+      (key) => changes(left[key], right[key], key, [...path, label(key)]),
+    );
+  }
+  return [{ field, path, before, after }];
+}
+
+export function changedValues(
+  before: unknown,
+  after: unknown,
+  field: string,
+): HTMLElement {
+  const container = el("div");
+  const items = changes(before, after, field);
+  let shown = 0;
+  const more = button("", () => appendBatch(), { class: "btn btn-quiet" });
+  const appendBatch = () => {
+    more.remove();
+    for (const item of items.slice(shown, shown + 50)) {
+      if (item.path.length)
+        container.append(el("h4", { text: item.path.join(" · ") }));
+      const oldValue = readableValue(item.before, item.field),
+        newValue = readableValue(item.after, item.field);
+      container.append(
+        el(
+          "div",
+          { class: "comparison-pair" },
+          el("div", {}, el("h4", { text: "Parent" }), oldValue),
+          el("div", {}, el("h4", { text: "This revision" }), newValue),
+        ),
+      );
+      if (oldValue.textContent === newValue.textContent)
+        container.append(
+          p(
+            "The structured values differ. Open Show exact values to inspect the difference.",
+            "meta",
+          ),
+        );
+      container.append(exactValues(item.before, item.after));
+    }
+    shown = Math.min(shown + 50, items.length);
+    if (shown < items.length) {
+      more.textContent = `${items.length - shown} more changes. Show the next 50`;
+      container.append(more);
+    }
+  };
+  appendBatch();
+  return container;
 }
 
 export function exactValues(before: unknown, after: unknown): HTMLElement {

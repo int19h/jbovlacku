@@ -1,7 +1,7 @@
 import { interpretDefinition } from "../../../../packages/core/src/browser.ts";
-import { sameValue, changedItems } from "../model/comparison.ts";
+import { sameValue } from "../model/comparison.ts";
 import {
-  readableValue,
+  changedValues,
   exactValues,
   fieldLabels,
 } from "../components/comparison.ts";
@@ -219,7 +219,26 @@ export function comparison(
   // never decides equality and never changes either authenticated body.
   const before = interpretDefinition(a) as unknown as DefinitionBody;
   const after = interpretDefinition(b) as unknown as DefinitionBody;
-  for (const field of Object.keys(before) as (keyof DefinitionBody)[]) {
+  const readerOrder = [
+    "text",
+    "word",
+    "language",
+    "frame",
+    "operands",
+    "glosses",
+    "notes",
+    "examples",
+    "etymology",
+    "sources",
+    "classification",
+    "labels",
+    "license",
+  ];
+  const fieldsInOrder = [
+    ...new Set([...readerOrder, ...Object.keys(before), ...Object.keys(after)]),
+  ].filter((field) => field !== "legacy");
+  fieldsInOrder.push("legacy");
+  for (const field of fieldsInOrder as (keyof DefinitionBody)[]) {
     if (field !== "frame") {
       add(fieldLabels[field] ?? field, field, before[field], after[field]);
       continue;
@@ -232,6 +251,8 @@ export function comparison(
       before.frame === null ? null : leftFrame,
       after.frame === null ? null : rightFrame,
     );
+    const leftPlaces = new Map(left.map((place) => [place.index, place]));
+    const rightPlaces = new Map(right.map((place) => [place.index, place]));
     const indices = [
       ...new Set([...left, ...right].map((place) => place.index)),
     ].sort((a, b) => a - b);
@@ -239,8 +260,8 @@ export function comparison(
       add(
         `Place ${index}`,
         "place",
-        left.find((place) => place.index === index),
-        right.find((place) => place.index === index),
+        leftPlaces.get(index),
+        rightPlaces.get(index),
       );
     // Place numbers provide identity. Retain order changes separately if present.
     if (left.length === right.length && indices.length === left.length)
@@ -278,35 +299,7 @@ export function comparison(
       fields.append(row);
       continue;
     }
-    const list = [
-      "glosses",
-      "sources",
-      "examples",
-      "operands",
-      "labels",
-    ].includes(field);
-    const changes = list
-      ? changedItems(before as unknown[], after as unknown[])
-      : [[before, after]];
-    for (const [left, right] of changes) {
-      const oldValue = readableValue(left, field);
-      const newValue = readableValue(right, field);
-      const pair = el(
-        "div",
-        { class: "comparison-pair" },
-        el("div", {}, el("h4", { text: "Parent" }), oldValue),
-        el("div", {}, el("h4", { text: "This revision" }), newValue),
-      );
-      row.append(pair);
-      if (oldValue.textContent === newValue.textContent)
-        row.append(
-          p(
-            "The structured values differ. Open Show exact values to inspect the difference.",
-            "meta",
-          ),
-        );
-      row.append(exactValues(left, right));
-    }
+    row.append(changedValues(before, after, field));
     fields.append(row);
   }
   section.append(fields);

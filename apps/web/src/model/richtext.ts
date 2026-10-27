@@ -162,12 +162,14 @@ export function plainText(value: unknown): string {
     .join("\n");
 }
 /** Escapes control and direction characters for source views. */
-export function visibleJson(value: unknown): string {
-  return JSON.stringify(value, null, 2).replace(
-    /[\u0000-\u001f\u007f-\u009f‪-‮⁦-⁩]/gu,
-    (c) =>
-      c === "\n" ? c : `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
+export function visibleText(value: string): string {
+  return value.replace(
+    /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/gu,
+    (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
   );
+}
+export function visibleJson(value: unknown): string {
+  return visibleText(JSON.stringify(value, null, 2));
 }
 export const CIRCLED = /([①-⑳])/u;
 /**

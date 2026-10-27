@@ -24,6 +24,25 @@ export function changedItems<T>(
   a: T[],
   b: T[],
 ): [T | undefined, T | undefined][] {
+  let start = 0;
+  while (start < a.length && start < b.length && sameValue(a[start], b[start]))
+    start++;
+  let endA = a.length,
+    endB = b.length;
+  while (endA > start && endB > start && sameValue(a[endA - 1], b[endB - 1])) {
+    endA--;
+    endB--;
+  }
+  a = a.slice(start, endA);
+  b = b.slice(start, endB);
+  // Above this cell budget, compare in order. This bounds work for unrelated
+  // long lists. Prefix and suffix trimming still isolates ordinary small edits.
+  if (a.length * b.length > 40_000) {
+    const result: [T | undefined, T | undefined][] = [];
+    for (let i = 0; i < Math.max(a.length, b.length); i++)
+      if (!sameValue(a[i], b[i])) result.push([a[i], b[i]]);
+    return result;
+  }
   const lengths = (left: T[], right: T[]) => {
     let row = new Uint32Array(right.length + 1);
     for (const value of left) {
