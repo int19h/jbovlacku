@@ -224,6 +224,7 @@ It adds the current identity with allocation 1 only when its continuity group ha
 Zero allocations and removals also prevent that addition. It applies private blocks and public shuns as local blocks.
 A cancelled or incomplete local calculation keeps personal scores unavailable and offers the site view. "Recompute from records" compares a local site-view calculation with the server scores.
 A planned handover creates and tests a successor key, shows the old key's heads from every configured peer, searches for an existing transfer, and saves the transfer, the acceptance, and the encrypted successor key in one transaction before upload. Partial upload reads "Old key retired, acceptance waiting", and retries reuse the stored events.
+Canceling an unlock discards its pending key after decryption. Lock, page closure, and identity replacement also invalidate pending unlocks.
 Authenticated own history also disables ordinary signing after a backup restore or discovery in another tab.
 Malformed lifecycle actions do not disable signing.
 A compromise notice previews the retained and excluded records of a chosen causal frontier, blocks on missing history, and needs explicit approval for an empty frontier. Ordinary signing from a retired or compromised key is refused.
