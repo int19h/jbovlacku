@@ -164,8 +164,12 @@ The analysis returns each component as a `core` part with ` zei ` before every p
 Its `words` array still contains the individual words, including each `zei` cmavo.
 The CLL profile and extended versions `2` and `3` retain their earlier behavior.
 
-A component can also be one ordinary word followed by one or more `bu` words.
+Before the last `zei`, a component can also be one ordinary word followed by one or more `bu` words.
 Analysis keeps the normalized component spelling, including internal spaces. Thus `ibu` and `denpa bu` retain their own source identities.
+
+The final component must be one word. A final `bu` after another word makes the whole chain a letteral, so lujvo analysis rejects it.
+A final component that is only `bu` remains valid, as in `y'y zei bu`.
+
 Arbitrary sequences of cmavo do not form one component. Quote and erasure words do not consume other words in this analysis.
 The imported spelling `zo si si zei fa'o` falls outside these rules and remains unsupported.
 
@@ -176,7 +180,14 @@ The linking identifier and version above distinguish this evidence from rafsi co
 
 ## Work limits
 
-The recognizer accepts at most 128 input bytes. It permits at most 50,000 calls to recursive recognition functions that share its cache. This counts failed paths and cached calls. The Peggy profile counts rule entries with the same ceiling. Exhaustion invalidates the whole analysis, including any earlier successful branch. Analysis returns `unknown` with a resource diagnostic. Candidate recognition exhaustion makes builders return `BuilderError::ResourceLimit` and no partial result.
+The recognizer accepts at most 128 input bytes.
+The historical profiles permit at most 50,000 calls to recursive recognition functions that share their cache.
+The Peggy profile permits at most 75,000 rule entries per headword.
+Both counters include failed paths and cached calls.
+
+Exhaustion invalidates the whole analysis, including any earlier successful branch.
+Analysis returns `unknown` with a resource diagnostic.
+Candidate recognition exhaustion makes builders return `BuilderError::ResourceLimit` and no partial result.
 
 A lujvo request accepts 2 through 64 components, 64 claims per component, and 20,000 inventory claims. A component or claimed rafsi accepts at most 128 bytes. A build permits at most 20,000 choice combinations and 2,000,000 recognition calls across candidate checks. A result window permits at most 512 candidates.
 

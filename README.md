@@ -113,7 +113,8 @@ It preserves the entered spelling through publication, including case, commas, a
 Unknown source fields stay blank. Authors can link every source to save compound evidence, or continue with no compound metadata.
 
 Typed `zei` chains use whole component words as source links. The source form stays fixed, and authors can select an exact definition.
-Components can include one word followed by `bu`, as in `denpa bu zei sance`.
+Components before the last `zei` can include one word followed by `bu`, as in `denpa bu zei sance`.
+The final component must be one word, so `sance zei denpa bu` is not a lujvo.
 These links need no rafsi and carry no construction score. Publication and revision preserve the selected definitions and entered spelling.
 The imported spelling `zo si si zei fa'o` remains unsupported because it falls outside the [component rules](docs/morphology.md#zei-lujvo-linking).
 
