@@ -33,7 +33,7 @@ function lifecycleMarkers(identity: string, envelopes: Envelope[]) {
       );
     }
     if (envelope.header.action.kind === "identity.compromise")
-      markers.set(`compromised:${identity}`, envelope.id);
+      markers.set(`compromise-known:${identity}`, envelope.id);
   }
   return [...markers];
 }
@@ -875,6 +875,7 @@ export class LocalStore {
       // A key retired or reported stolen in another tab cannot gain new ordinary records.
       const retired = keys.get(`handover:${identity}`);
       const compromised = keys.get(`compromised:${identity}`);
+      const knownCompromise = keys.get(`compromise-known:${identity}`);
       const request = heads.get(identity);
       // A publication names the exact draft revision it signed. The draft and
       // its publication record are read in this transaction, so two tabs
@@ -887,7 +888,7 @@ export class LocalStore {
         : null;
       const knownTransfer = keys.get(`transfer-known:${identity}`);
       const discarded = discardedPredecessorReads(keys, predecessors);
-      let remaining = 4 + (publication ? 3 : 0) + discarded.length;
+      let remaining = 5 + (publication ? 3 : 0) + discarded.length;
       const proceed = () => {
         if (--remaining) return;
         if (discarded.some((request) => request.result)) {
@@ -895,7 +896,12 @@ export class LocalStore {
           tx.abort();
           return;
         }
-        if (retired.result || knownTransfer.result || compromised.result) {
+        if (
+          retired.result ||
+          knownTransfer.result ||
+          compromised.result ||
+          knownCompromise.result
+        ) {
           failure = new Error(
             retired.result || knownTransfer.result
               ? "This key signed a handover and is retired. The group was not saved or sent."
@@ -957,6 +963,7 @@ export class LocalStore {
       knownTransfer.onsuccess = proceed;
       retired.onsuccess = proceed;
       compromised.onsuccess = proceed;
+      knownCompromise.onsuccess = proceed;
       request.onsuccess = proceed;
       if (draftRequest) draftRequest.onsuccess = proceed;
       if (recordRequest) recordRequest.onsuccess = proceed;

@@ -139,7 +139,10 @@ export class Session {
   }
   /** Why ordinary signing is disabled for an identity, or null. */
   async signingDisabled(identity: string): Promise<string | null> {
-    if (await this.store.get("keys", `compromised:${identity}`))
+    if (
+      (await this.store.get("keys", `compromised:${identity}`)) ||
+      (await this.store.get("keys", `compromise-known:${identity}`))
+    )
       return "This key published a compromise notice. Ordinary actions from it are disabled.";
     if (
       (await this.store.get("keys", `handover:${identity}`)) ||

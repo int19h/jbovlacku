@@ -143,6 +143,142 @@ for (const kind of ["identity.transfer", "identity.compromise"]) {
   });
 }
 
+for (const learned of [false, true]) {
+  test(`a holder can save a cutoff ${learned ? "after learning another notice" : "without a learned notice"}`, async ({
+    page,
+  }) => {
+    await harness(page);
+    const result = await page.evaluate(
+      async ({ corePath, learned }) => {
+        const core = await import(corePath);
+        await core.initializeCore();
+        const { createKey } = await import(String("/src/data/keys.ts"));
+        const { signWith, outboxItem, queueCompromise } = await import(
+          String("/src/data/lifecycle.ts")
+        );
+        const { LocalStore } = await import(String("/src/data/store.ts"));
+        const { Session } = await import(String("/src/app/session.ts"));
+        const created = await createKey("holder cutoff passphrase");
+        const identity = created.backup.identity;
+        // A notice from another holder does not replace this holder's cutoff.
+        const first = await signWith(created.key, identity, [], {
+          kind: "identity.compromise",
+          safe: [],
+        });
+        const store = new LocalStore(`holder-cutoff-${crypto.randomUUID()}`);
+        await store.installIdentity(created.backup, "restore");
+        const heads = learned
+          ? await store.restoreServerOwn(identity, [first.envelope])
+          : [];
+        const localBefore = await store.get("keys", `compromised:${identity}`);
+        const knownBefore = await store.get(
+          "keys",
+          `compromise-known:${identity}`,
+        );
+        const session = new Session(store);
+        const disabledBefore = await session.signingDisabled(identity);
+        let ordinarySigning = "not attempted";
+        let ordinaryGroup = "not attempted";
+        if (learned) {
+          const { Signer } = await import(String("/src/app/actions.ts"));
+          const action = {
+            kind: "judgment.set",
+            target: "jve1:" + "b".repeat(64),
+            value: "bless",
+          };
+          await session.load();
+          await session.unlock("holder cutoff passphrase");
+          try {
+            await new Signer(
+              session,
+              { invalidate: async () => {} } as any,
+              () => true,
+            ).sign([{ action, body: null }]);
+            ordinarySigning = "signed";
+          } catch (error) {
+            ordinarySigning = String(error);
+          } finally {
+            session.lock();
+          }
+          const ordinary = await signWith(created.key, identity, heads, action);
+          try {
+            await store.queueGroup([
+              outboxItem(ordinary, crypto.randomUUID(), 0, {}),
+            ]);
+            ordinaryGroup = "saved";
+          } catch (error) {
+            ordinaryGroup = String(error);
+          }
+        }
+        const second = await signWith(created.key, identity, heads, {
+          kind: "identity.compromise",
+          safe: [],
+        });
+        let saved = "saved";
+        let duplicate = "not attempted";
+        try {
+          await queueCompromise(
+            store,
+            outboxItem(second, crypto.randomUUID(), 0, {}),
+            heads,
+          );
+          const third = await signWith(
+            created.key,
+            identity,
+            [second.envelope.id],
+            { kind: "identity.compromise", safe: [] },
+          );
+          try {
+            await queueCompromise(
+              store,
+              outboxItem(third, crypto.randomUUID(), 0, {}),
+              [second.envelope.id],
+            );
+            duplicate = "saved";
+          } catch (error) {
+            duplicate = String(error);
+          }
+        } catch (error) {
+          saved = String(error);
+        }
+        return {
+          saved,
+          duplicate,
+          localBefore,
+          knownBefore,
+          firstId: first.envelope.id,
+          secondId: second.envelope.id,
+          localAfter: await store.get("keys", `compromised:${identity}`),
+          disabledBefore,
+          ordinarySigning,
+          ordinaryGroup,
+          disabledAfter: await session.signingDisabled(identity),
+          outboxIds: (await store.list("outbox")).map(
+            (item: { id: string }) => item.id,
+          ),
+          heads: await store.get("heads", identity),
+        };
+      },
+      { corePath, learned },
+    );
+    expect(result.saved).toBe("saved");
+    expect(result.localBefore).toBeUndefined();
+    expect(result.knownBefore).toBe(learned ? result.firstId : undefined);
+    if (learned) {
+      expect(result.disabledBefore).toContain("compromise notice");
+      expect(result.ordinarySigning).toContain("compromise notice");
+      expect(result.ordinaryGroup).toContain("compromise notice");
+    } else expect(result.disabledBefore).toBeNull();
+    expect(result.disabledAfter).toContain("compromise notice");
+    expect(result.localAfter).toBe(result.secondId);
+    expect(result.duplicate).toContain(
+      "This key already has a compromise notice in this browser. Nothing was saved or sent.",
+    );
+    expect(result.outboxIds).toEqual([result.secondId]);
+    expect(result.heads).toEqual([result.secondId]);
+  });
+}
+
 test("authenticated history disables signing in its storage transaction and ignores malformed lifecycle actions", async ({
   page,
 }) => {
