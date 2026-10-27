@@ -692,8 +692,7 @@ fn rank_word_state(
     let calculation = if graphs.is_empty() {
         Value::Null
     } else {
-        let default_overlay = json!({"version":1,"base_view":evaluation.selected_view,"root_changes":[],"trust":[],"blocked":[],"work":null});
-        let overlay = evaluation.overlay.as_ref().unwrap_or(&default_overlay);
+        let overlay = evaluation.overlay.as_ref().unwrap_or(&Value::Null);
         let suspensions=evaluation.lifecycle.suspended.iter().flat_map(|(identity,causes)|causes.iter().map(move|cause|json!({"identity":identity,"cause":cause,"reason":"incomplete_history"}))).collect::<Vec<_>>();
         json!({"algorithm":profile.unwrap().name(),"budget":params.as_ref().unwrap().work,"completed":graphs.values().map(|r|r.completed_work).sum::<u64>(),"exact":exact,"overlay":jvc_core::hash_id("sha256:",b"",&canonical_value(overlay)?),"incomplete_identities":evaluation.lifecycle.suspended.keys().collect::<Vec<_>>(),"suspensions":suspensions})
     };
