@@ -63,6 +63,7 @@ export interface VectorStore {
   pruneBackgroundGenerations(profile: string, view: string): Promise<void>;
   recordProbe(profile: string, evidence: ProbeEvidence): Promise<void>;
   probeEvidence(profile: string): Promise<ProbeEvidence | null>;
+  coverageRevision(id: string): Promise<string>;
   coverageFor(
     id: string,
     expected: ExpectedAssociation[],

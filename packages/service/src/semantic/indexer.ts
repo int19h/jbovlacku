@@ -195,13 +195,20 @@ export class SemanticIndexer {
             }
             if (options.signal?.aborted) {
               await this.store.fail(batch.id, "index_paused");
+              await this.store.pause(id, "index_paused");
               break;
             }
             let usage: EmbeddingUsage | undefined;
             try {
+              const inputs = await this.store.inputs(batch.id);
+              if (options.signal?.aborted) {
+                await this.store.fail(batch.id, "index_paused");
+                await this.store.pause(id, "index_paused");
+                break;
+              }
               // Do not detach provider settlement when an operator pauses or exits.
               const result = await this.assistance.embed(
-                await this.store.inputs(batch.id),
+                inputs,
                 { kind: "index" },
                 undefined,
                 (operation) => this.store.sent(batch.id, operation),

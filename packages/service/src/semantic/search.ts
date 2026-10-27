@@ -77,7 +77,14 @@ export class SemanticSearch {
     Evaluation,
     Map<
       string,
-      Promise<{ all: IndexCoverage; languages: Record<string, IndexCoverage> }>
+      {
+        revision: string;
+        pending: boolean;
+        work: Promise<{
+          all: IndexCoverage;
+          languages: Record<string, IndexCoverage>;
+        }>;
+      }
     >
   >();
   constructor(
@@ -101,12 +108,13 @@ export class SemanticSearch {
       await this.options.store.published(context.evaluation.selected_view)
     ).find((g) => g.profile === this.options.profile);
   }
-  private coverage(context: SearchContext, generation: IndexGeneration) {
+  private async coverage(context: SearchContext, generation: IndexGeneration) {
+    const revision = await this.options.store.coverageRevision(generation.id);
     let cached = this.coverageCache.get(context.evaluation);
     if (!cached)
       this.coverageCache.set(context.evaluation, (cached = new Map()));
     const old = cached.get(generation.id);
-    if (old) return old;
+    if (old && (old.pending || old.revision === revision)) return old.work;
     const expected = eligibleEvents(context).map((id) => {
       const event = context.snapshot.events[id];
       const publication = context.evaluation.publications[id];
@@ -121,11 +129,17 @@ export class SemanticSearch {
       };
     });
     const work = this.options.store.coverageFor(generation.id, expected);
-    // Completed associations are immutable. Pending generations must reflect indexing progress.
-    if (generation.state === "completed") {
-      cached.set(generation.id, work);
-      void work.catch(() => cached!.delete(generation.id));
-    }
+    // A changed revision invalidates settled work. Concurrent readers share the bounded scan.
+    const entry = { revision, pending: true, work };
+    cached.set(generation.id, entry);
+    void work.then(
+      () => {
+        entry.pending = false;
+      },
+      () => {
+        if (cached.get(generation.id) === entry) cached.delete(generation.id);
+      },
+    );
     return work;
   }
   private async ready(
@@ -150,41 +164,51 @@ export class SemanticSearch {
   ): Promise<ProfileDescription[]> {
     const generation = await this.generation(context);
     if (!generation) return [];
-    const profile = await this.options.store.profile(generation.id);
-    const bound = await this.coverage(context, generation);
-    const all = bound.all;
-    const counts =
-      language === undefined
-        ? all
-        : (bound.languages[language] ?? {
-            indexed: 0,
-            eligible: 0,
-            pending: 0,
-            failed: 0,
-          });
-    const query_available = await this.ready(context, generation, profile, all);
-    return [
-      {
-        id: generation.profile,
-        label: "Qwen3 Embedding 8B through OpenRouter / Nebius",
-        query_available,
-        indexed: counts.indexed,
-        eligible: counts.eligible,
-        pending: counts.pending,
-        limitations: [
-          "The hosted model revision is unknown. Compatibility probes cannot prove that it never changes.",
-          "The browser needs this server to compute query vectors. Offline meaning search and derived exchange are unavailable.",
-          ...(!query_available
-            ? [
-                "A compatible published index and query provider are required for this view.",
-              ]
-            : []),
-          ...(counts.failed
-            ? [`${counts.failed} definitions failed indexing.`]
-            : []),
-        ],
-      },
-    ];
+    const release = await this.options.store.retainGeneration(generation.id);
+    try {
+      const profile = await this.options.store.profile(generation.id);
+      const bound = await this.coverage(context, generation);
+      const all = bound.all;
+      const counts =
+        language === undefined
+          ? all
+          : (bound.languages[language] ?? {
+              indexed: 0,
+              eligible: 0,
+              pending: 0,
+              failed: 0,
+            });
+      const query_available = await this.ready(
+        context,
+        generation,
+        profile,
+        all,
+      );
+      return [
+        {
+          id: generation.profile,
+          label: "Qwen3 Embedding 8B through OpenRouter / Nebius",
+          query_available,
+          indexed: counts.indexed,
+          eligible: counts.eligible,
+          pending: counts.pending,
+          limitations: [
+            "The hosted model revision is unknown. Compatibility probes cannot prove that it never changes.",
+            "The browser needs this server to compute query vectors. Offline meaning search and derived exchange are unavailable.",
+            ...(!query_available
+              ? [
+                  "A compatible published index and query provider are required for this view.",
+                ]
+              : []),
+            ...(counts.failed
+              ? [`${counts.failed} definitions failed indexing.`]
+              : []),
+          ],
+        },
+      ];
+    } finally {
+      release();
+    }
   }
   private async checkRetained(context: SearchContext) {
     if (!(await context.retained()))

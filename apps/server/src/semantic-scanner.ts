@@ -29,10 +29,8 @@ export class NodeVectorScanner implements VectorScanner {
         "semantic_closed",
         "The vector scanner is closed.",
       );
-    if (
-      request.network &&
-      this.workers.some((slot) => slot.busy && slot.network === request.network)
-    )
+    const network = request.network ?? "";
+    if (this.workers.some((slot) => slot.busy && slot.network === network))
       throw new SemanticError(
         503,
         "semantic_busy",
@@ -72,7 +70,7 @@ export class NodeVectorScanner implements VectorScanner {
         "Both vector scan workers are busy. Try again later.",
       );
     slot.busy = true;
-    slot.network = request.network;
+    slot.network = network;
     const selected = slot;
     const id = ++this.sequence;
     const cancel = new SharedArrayBuffer(4);

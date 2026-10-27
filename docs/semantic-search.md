@@ -210,6 +210,12 @@ Existing exact input hashes reuse retained vectors. Other inputs receive fresh v
 The server does not create a new generation when all eligible events already have vectors.
 Completed background generations leave storage when no current, rollback, active background pointer, or in-flight search retains them.
 A search retains its generation through inference, scanning, and final retention checks. Cancellation releases it after the worker stops reading.
+Profile coverage reads also retain their generation until their shared calculation finishes.
+Retirement marks an unreferenced generation as retired before it deletes rows.
+Each transaction deletes at most 128 associations or batch-input links.
+It yields between transactions. New readers and publication cannot select that generation.
+Each transaction removes only inputs and vectors without a remaining association. It updates storage counts in the same transaction.
+An interrupted retirement keeps its cleanup marker. A later background prune or explicit retirement continues that cleanup.
 Operator-created generations remain under explicit operator control. The existing capacity limits still apply.
 
 A durable background pointer retains failures across restarts and later snapshots.
@@ -217,9 +223,15 @@ The server does not replace a failed or interrupted job with a fresh attempt.
 Use the operator status, recovery, and explicit retry commands after stopping the server to repair that exact job.
 Only rate limits from the active invocation receive the indexer's existing bounded automatic retries.
 Shutdown stops scheduling and new claims, then drains admitted transports before closing storage and releasing the directory lock.
+A stop after a claim and before dispatch retains that unsent batch as failed and pauses the job with `index_paused`.
+It requires explicit retry selection. The background loop does not resume it as incomplete fresh work.
 
 Cold coverage reads at most 128 metadata bindings before yielding to the main event loop.
-Completed immutable generations cache coverage for each exact evaluation. Partial generations refresh counts as indexing proceeds.
+Requests for the same exact evaluation and generation share one coverage calculation.
+Settled coverage stays cached until association or batch progress changes, or the profile gains or loses a vector.
+Failure, recovery, and retry selection invalidate that cache. A vector completed by another generation also invalidates it.
+If progress changes during a shared calculation, the next request after completion refreshes its counts.
+Coverage reads use bounded pages and do not claim an atomic snapshot across those pages.
 A failure on this optional path makes capabilities report meaning search as unavailable. Other capabilities remain present.
 
 `GET /api/v1/embedding-profiles` returns exactly one `profiles` array.
@@ -257,6 +269,7 @@ Distance measures related meaning. It is not a dictionary score, endorsement, or
 The scanner uses the same effective, selected, active definitions as ordinary lexical search.
 It runs in at most two reusable Node workers. Each worker has a bounded SQLite page cache and keeps at most 100 best hits.
 Each client network can hold at most one scan worker, including after cancellation until that worker acknowledges completion.
+Requests with an empty or absent network share one client identity and the same limit.
 Another scan from that network returns `semantic_busy` before it can take the second worker.
 A third client also receives `semantic_busy` while both workers are busy. There is no unbounded scan queue.
 Neither the scanner nor a query cache hit reads original definition bodies.

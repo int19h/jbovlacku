@@ -1169,3 +1169,717 @@ test("an entirely pending population remains query-available without paid infere
     });
     assert.equal(provider.calls.length, 0);
   }));
+
+test("partial coverage shares concurrent work and caches unchanged progress", async () =>
+  fixture(async ({ store, scanner }) => {
+    const docs = rows(260);
+    const ctx = context(docs, hash(9100));
+    const generation = await store.create(
+      {
+        snapshot: ctx.snapshot.snapshot,
+        view: ctx.evaluation.selected_view,
+        profile: profileId(profile),
+        eligible: docs.length,
+      },
+      profile,
+    );
+    for (let offset = 0; offset < docs.length; offset += 128) {
+      const page = docs.slice(offset, offset + 128);
+      await store.stage(generation.id, offset ? docs[offset - 1].event : null, {
+        documents: page,
+        next: page.at(-1)!.event,
+        done: offset + 128 >= docs.length,
+      });
+    }
+    await store.publish(
+      generation.id,
+      await store.current(generation.profile, generation.view),
+    );
+    const coverageFor = store.coverageFor.bind(store);
+    let computations = 0;
+    store.coverageFor = async (...args) => {
+      computations++;
+      return coverageFor(...args);
+    };
+    const engine = new SemanticSearch(
+      {
+        profile: generation.profile,
+        store,
+        cache: store.queryCache,
+        scanner,
+      },
+      mock().assistance,
+      true,
+    );
+    const [one, two] = await Promise.all([
+      engine.profiles(ctx),
+      engine.profiles(ctx),
+    ]);
+    assert.deepEqual(one, two);
+    assert.equal(one[0].pending, 256);
+    assert.equal(
+      computations,
+      1,
+      "Concurrent partial coverage must share one calculation",
+    );
+    await engine.profiles(ctx);
+    assert.equal(
+      computations,
+      1,
+      "Unchanged partial coverage must stay cached",
+    );
+  }));
+
+test("empty networks share the same one-worker scan limit", async () =>
+  fixture(async ({ store, scanner, docs, ctx }) => {
+    const generation = (await store.published(ctx.evaluation.selected_view))[0];
+    const request = {
+      generation: generation.id,
+      profile: generation.profile,
+      snapshot: generation.snapshot,
+      view: generation.view,
+      language: "en",
+      vector: unit(),
+      eligible: docs.map((row) => row.event),
+      limit: 3,
+    };
+    const first = scanner.scan(request);
+    try {
+      await assert.rejects(
+        scanner.scan({ ...request, network: "" }),
+        /already has an active/,
+      );
+      const other = scanner.scan({ ...request, network: "known-client" });
+      assert.equal((await other).length, 3);
+      assert.equal((await first).length, 3);
+    } finally {
+      await first;
+    }
+  }));
+
+test("retirement yields with rows remaining and blocks concurrent publication or new readers", async () =>
+  fixture(async ({ store, path }) => {
+    const docs = rows(1024);
+    const target = await publish(store, docs, context(docs, hash(9200)));
+    const current = await publish(store, docs, context(docs, hash(9201)));
+    await publish(store, docs, context(docs, hash(9202)));
+    const release = await store.retainGeneration(target.id);
+    await assert.rejects(store.retire(target.id), /active search/);
+    release();
+    const db = new DatabaseSync(path, { readOnly: true });
+    const connection = (
+      store as unknown as {
+        sql: import("../src/semantic/sql-vector-store.ts").VectorSqlConnection;
+      }
+    ).sql;
+    const transaction = connection.transaction.bind(connection);
+    const pages: number[] = [];
+    const remainingRows = () =>
+      Number(
+        db
+          .prepare(
+            "SELECT COUNT(*) AS n FROM semantic_associations WHERE generation=?",
+          )
+          .get(target.id)!.n,
+      );
+    connection.transaction = (operation) => {
+      const before = remainingRows();
+      const result = transaction(operation);
+      const removed = before - remainingRows();
+      if (removed) pages.push(removed);
+      return result;
+    };
+    let done = false;
+    const work = store.retire(target.id).then(() => {
+      done = true;
+    });
+    try {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      assert.equal(
+        done,
+        false,
+        "Retirement must yield before all rows leave storage",
+      );
+      const remaining = Number(
+        db
+          .prepare(
+            "SELECT COUNT(*) AS n FROM semantic_associations WHERE generation=?",
+          )
+          .get(target.id)!.n,
+      );
+      assert(
+        remaining > 0 && remaining < docs.length,
+        `Remaining rows: ${remaining}`,
+      );
+      await assert.rejects(store.retainGeneration(target.id), /retired/);
+      await assert.rejects(
+        store.publish(
+          target.id,
+          await store.current(target.profile, target.view),
+        ),
+        /retired/,
+      );
+      // Reads and publication of a different retained generation remain available across the yield.
+      assert.equal((await store.page(current.id, null, 1)).rows.length, 1);
+      const head = await store.current(current.profile, current.view);
+      assert.equal(await store.publish(current.id, head), true);
+      await work;
+      assert.equal((await store.generation(target.id)).state, "retired");
+      assert.equal((await store.coverage(current.id)).indexed, docs.length);
+      assert.deepEqual(pages, Array(8).fill(128));
+    } finally {
+      await work;
+      connection.transaction = transaction;
+      db.close();
+    }
+  }));
+
+test("shutdown after an unsent claim pauses the trapped batch for explicit recovery", async () =>
+  fixture(async ({ store, ctx }) => {
+    const { BackgroundSemanticIndexer } =
+      await import("../src/semantic/background.ts");
+    const { SemanticIndexer } = await import("../src/semantic/indexer.ts");
+    const docs = rows(5);
+    let sends = 0;
+    const assistance = {
+      embed: async (
+        inputs: Uint8Array[],
+        _caller: unknown,
+        _signal: unknown,
+        before?: (operation: string) => Promise<void>,
+      ) => {
+        sends++;
+        const operation = `embedding:index:shutdown-${sends}`;
+        await before?.(operation);
+        return {
+          operation,
+          vectors: inputs.map(() => unit()),
+          usage,
+          model: profile.model,
+        };
+      },
+    };
+    const options = {
+      store,
+      profile: profileId(profile),
+      view: ctx.evaluation.selected_view,
+      assistance,
+      source: async () => ({
+        context: {
+          snapshot: hash(9300),
+          view: ctx.evaluation.selected_view,
+          profile: profileId(profile),
+          eligible: 5,
+        },
+        page: async () => ({
+          documents: docs,
+          next: docs.at(-1)!.event,
+          done: true,
+        }),
+      }),
+      probe: async () => {},
+      report: () => {},
+    };
+    const background = new BackgroundSemanticIndexer(options);
+    const claim = store.claim.bind(store);
+    let closing: Promise<void> | undefined;
+    let claims = 0;
+    store.claim = async (id) => {
+      claims++;
+      const batch = await claim(id);
+      if (batch && !closing) closing = background.close();
+      return batch;
+    };
+    await background.cycle();
+    await closing;
+    const job = (await store.backgroundGeneration(
+      options.profile,
+      options.view,
+    ))!;
+    const oldBatch = (await store.batches(job.id))[0];
+    assert.equal(sends, 0);
+    assert.equal(oldBatch.state, "failed");
+    assert.equal(oldBatch.error, "index_paused");
+    const restarted = new BackgroundSemanticIndexer(options);
+    try {
+      const stoppedClaims = claims;
+      for (let i = 0; i < 3; i++) await restarted.cycle();
+      assert.equal(
+        claims,
+        stoppedClaims,
+        "An unsent failed input must not spin through empty claims",
+      );
+      assert.equal((await store.generation(job.id)).error, "index_paused");
+      assert.equal(
+        sends,
+        0,
+        "Restart must not retry the failed batch automatically",
+      );
+      store.claim = claim;
+      await store.retry(oldBatch.id);
+      await new SemanticIndexer(store, assistance).run(job.id);
+      assert.equal((await store.generation(job.id)).state, "completed");
+      const batches = await store.batches(job.id);
+      assert.equal(batches.length, 2);
+      assert.equal(
+        batches.find((batch) => batch.previous === oldBatch.id)!.state,
+        "completed",
+      );
+      assert.equal(sends, 1);
+    } finally {
+      await restarted.close();
+    }
+  }));
+
+test("coverage invalidates for failure recovery retry and vectors completed in another generation", async () =>
+  fixture(async ({ store, scanner }) => {
+    const docs = rows(5);
+    const ctx = context(docs, hash(9400));
+    const make = async (snapshot: string) => {
+      const generation = await store.create(
+        {
+          snapshot,
+          view: ctx.evaluation.selected_view,
+          profile: profileId(profile),
+          eligible: docs.length,
+        },
+        profile,
+      );
+      await store.stage(generation.id, null, {
+        documents: docs,
+        next: docs.at(-1)!.event,
+        done: true,
+      });
+      return generation;
+    };
+    const generation = await make(ctx.snapshot.snapshot);
+    await store.publish(
+      generation.id,
+      await store.current(generation.profile, generation.view),
+    );
+    const engine = new SemanticSearch(
+      { profile: generation.profile, store, cache: store.queryCache, scanner },
+      mock().assistance,
+      true,
+    );
+    const coverageFor = store.coverageFor.bind(store);
+    let calculations = 0;
+    store.coverageFor = async (...args) => {
+      calculations++;
+      return coverageFor(...args);
+    };
+    const counts = async (
+      indexed: number,
+      pending: number,
+      failed: boolean,
+    ) => {
+      const value = (await engine.profiles(ctx))[0];
+      assert.equal(value.indexed, indexed);
+      assert.equal(value.pending, pending);
+      assert.equal(
+        value.limitations.some((line) => line.includes("failed indexing")),
+        failed,
+      );
+    };
+    await counts(4, 1, false);
+    await store.start(generation.id);
+    const first = (await store.claim(generation.id))!;
+    await counts(4, 1, false);
+    await store.fail(first.id, "embedding_busy");
+    await store.pause(generation.id, "embedding_busy");
+    await counts(4, 0, true);
+    await store.retry(first.id);
+    const beforeRetry = calculations;
+    await counts(4, 0, true);
+    assert.equal(
+      calculations,
+      beforeRetry + 1,
+      "Explicit retry selection invalidates the cached version",
+    );
+    await store.start(generation.id);
+    const retry = (await store.claim(generation.id))!;
+    await counts(4, 1, false);
+    await store.sent(retry.id, "embedding:index:interrupted-coverage");
+    await counts(4, 1, false);
+    await store.recover(generation.id);
+    await counts(4, 0, true);
+    const other = await make(hash(9401));
+    await store.start(other.id);
+    const batch = (await store.claim(other.id))!;
+    const operation = "embedding:index:reusable-coverage";
+    await store.sent(batch.id, operation);
+    await store.complete(
+      batch.id,
+      operation,
+      batch.inputs.map(() => unit()),
+      usage,
+    );
+    await counts(5, 0, false);
+    const stable = calculations;
+    await counts(5, 0, false);
+    assert.equal(
+      calculations,
+      stable,
+      "Other-generation completion must refresh once, then stay cached",
+    );
+  }));
+
+test("coverage progress during a shared calculation invalidates its settled result", async () =>
+  fixture(async ({ store, scanner }) => {
+    const docs = rows(5);
+    const ctx = context(docs, hash(9450));
+    const generation = await store.create(
+      {
+        snapshot: ctx.snapshot.snapshot,
+        view: ctx.evaluation.selected_view,
+        profile: profileId(profile),
+        eligible: 5,
+      },
+      profile,
+    );
+    await store.stage(generation.id, null, {
+      documents: docs,
+      next: docs.at(-1)!.event,
+      done: true,
+    });
+    await store.publish(
+      generation.id,
+      await store.current(generation.profile, generation.view),
+    );
+    const engine = new SemanticSearch(
+      { profile: generation.profile, store, cache: store.queryCache, scanner },
+      mock().assistance,
+      true,
+    );
+    const coverageFor = store.coverageFor.bind(store);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let calculations = 0;
+    let scanned = false;
+    store.coverageFor = async (...args) => {
+      calculations++;
+      const result = await coverageFor(...args);
+      scanned = true;
+      if (calculations === 1) await gate;
+      return result;
+    };
+    const first = engine.profiles(ctx);
+    try {
+      while (!scanned)
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      await store.start(generation.id);
+      const batch = (await store.claim(generation.id))!;
+      await store.fail(batch.id, "embedding_busy");
+      const second = engine.profiles(ctx);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(
+        calculations,
+        1,
+        "Changed progress must not duplicate work already in flight",
+      );
+      release();
+      await Promise.all([first, second]);
+      const fresh = (await engine.profiles(ctx))[0];
+      assert.equal(calculations, 2);
+      assert.equal(fresh.pending, 0);
+      assert(
+        fresh.limitations.some((line) => line.includes("1 definitions failed")),
+      );
+    } finally {
+      release();
+      await first;
+    }
+  }));
+
+test("shutdown while reading claimed inputs prevents dispatch and retains explicit retry evidence", async () =>
+  fixture(async ({ store, ctx }) => {
+    const { SemanticIndexer } = await import("../src/semantic/indexer.ts");
+    const docs = rows(5);
+    const generation = await store.create(
+      {
+        snapshot: hash(9500),
+        view: ctx.evaluation.selected_view,
+        profile: profileId(profile),
+        eligible: docs.length,
+      },
+      profile,
+    );
+    await store.stage(generation.id, null, {
+      documents: docs,
+      next: docs.at(-1)!.event,
+      done: true,
+    });
+    const signal = new AbortController();
+    const inputs = store.inputs.bind(store);
+    store.inputs = async (id) => {
+      const result = await inputs(id);
+      signal.abort();
+      return result;
+    };
+    let calls = 0;
+    const embed = async () => {
+      calls++;
+      throw new Error("Dispatch after shutdown");
+    };
+    await new SemanticIndexer(store, { embed }).run(generation.id, {
+      concurrency: 1,
+      signal: signal.signal,
+    });
+    assert.equal(calls, 0);
+    const batch = (await store.batches(generation.id))[0];
+    assert.equal(batch.state, "failed");
+    assert.equal(batch.operation, null);
+    assert.equal((await store.generation(generation.id)).error, "index_paused");
+  }));
+
+for (const mode of ["batch", "probe"] as const)
+  test(`policy keeps pre-send ${mode} refusals paused without automatic replay`, async () =>
+    fixture(async ({ store, ctx }) => {
+      const { BackgroundSemanticIndexer } =
+        await import("../src/semantic/background.ts");
+      const { AssistanceError } = await import("../src/inference.ts");
+      let attempts = 0;
+      const docs = rows(5);
+      const refuse = async () => {
+        attempts++;
+        throw new AssistanceError(
+          429,
+          "embedding_busy",
+          "No slot is available.",
+        );
+      };
+      const options = {
+        store,
+        profile: profileId(profile),
+        view: ctx.evaluation.selected_view,
+        assistance: {
+          embed:
+            mode === "batch"
+              ? refuse
+              : async () => {
+                  throw new Error("Probe must stop dispatch");
+                },
+        },
+        source: async () => ({
+          context: {
+            snapshot: hash(9550),
+            view: ctx.evaluation.selected_view,
+            profile: profileId(profile),
+            eligible: 5,
+          },
+          page: async () => ({
+            documents: docs,
+            next: docs.at(-1)!.event,
+            done: true,
+          }),
+        }),
+        probe: mode === "probe" ? refuse : async () => {},
+        report: () => {},
+      };
+      const background = new BackgroundSemanticIndexer(options);
+      try {
+        await background.cycle().catch((error) => {
+          assert.equal(error.code, "embedding_busy");
+        });
+        for (let i = 0; i < 3; i++) await background.cycle();
+        const job = (await store.backgroundGeneration(
+          options.profile,
+          options.view,
+        ))!;
+        assert.equal(job.error, "embedding_busy");
+        assert.equal(attempts, 1);
+        assert.equal((await store.summary(job.id)).dispatch_intents, 0);
+      } finally {
+        await background.close();
+      }
+    }));
+
+test("a snapshot change with complete exact coverage does not create a background generation", async () =>
+  fixture(async ({ store, scanner, docs, ctx }) => {
+    const { BackgroundSemanticIndexer } =
+      await import("../src/semantic/background.ts");
+    const engine = new SemanticSearch(
+      { profile: profileId(profile), store, cache: store.queryCache, scanner },
+      mock().assistance,
+      true,
+    );
+    const changed = context(docs, hash(9600));
+    const before = await store.current(
+      profileId(profile),
+      ctx.evaluation.selected_view,
+    );
+    const background = new BackgroundSemanticIndexer({
+      store,
+      profile: profileId(profile),
+      view: ctx.evaluation.selected_view,
+      needed: async () =>
+        (await engine.profiles(changed)).some((row) => row.pending > 0),
+      source: async () => {
+        throw new Error("Complete coverage needs no source generation");
+      },
+      assistance: {
+        embed: async () => {
+          throw new Error("Complete coverage needs no provider");
+        },
+      },
+      probe: async () => {
+        throw new Error("Complete coverage needs no probe");
+      },
+      report: () => {},
+    });
+    try {
+      await background.cycle();
+      assert.equal(
+        await store.current(profileId(profile), ctx.evaluation.selected_view),
+        before,
+      );
+      assert.equal(
+        await store.backgroundGeneration(
+          profileId(profile),
+          ctx.evaluation.selected_view,
+        ),
+        null,
+      );
+    } finally {
+      await background.close();
+    }
+  }));
+
+test("interrupted retirement resumes bounded cleanup with exact storage accounting", async () =>
+  fixture(async ({ store, path, docs }) => {
+    const targetDocs = rows(260);
+    const target = await publish(
+      store,
+      targetDocs,
+      context(targetDocs, hash(9700)),
+    );
+    await store.setBackgroundGeneration(target.id);
+    await publish(store, docs, context(docs, hash(9701)));
+    const latest = await publish(store, docs, context(docs, hash(9702)));
+    await store.setBackgroundGeneration(latest.id);
+    const connection = (
+      store as unknown as {
+        sql: import("../src/semantic/sql-vector-store.ts").VectorSqlConnection;
+      }
+    ).sql;
+    const exec = connection.exec.bind(connection);
+    let deletions = 0;
+    connection.exec = (sql, ...bindings) => {
+      if (
+        sql.startsWith("DELETE FROM semantic_associations") &&
+        ++deletions === 129
+      )
+        throw new Error("Interrupted after the first retirement page");
+      return exec(sql, ...bindings);
+    };
+    try {
+      await assert.rejects(
+        store.retire(target.id),
+        /Interrupted after the first/,
+      );
+    } finally {
+      connection.exec = exec;
+    }
+    assert.equal((await store.generation(target.id)).state, "retired");
+    assert.equal(
+      Number(
+        exec(
+          "SELECT COUNT(*) AS n FROM semantic_associations WHERE generation=?",
+          target.id,
+        )[0].n,
+      ),
+      132,
+    );
+    const reopened = new SqliteVectorStore(path);
+    try {
+      await reopened.pruneBackgroundGenerations(target.profile, target.view);
+      assert.equal(
+        Number(
+          exec(
+            "SELECT COUNT(*) AS n FROM semantic_associations WHERE generation=?",
+            target.id,
+          )[0].n,
+        ),
+        0,
+      );
+      assert.equal(
+        Number(
+          exec(
+            "SELECT COUNT(*) AS n FROM semantic_batch_inputs WHERE generation=?",
+            target.id,
+          )[0].n,
+        ),
+        0,
+      );
+      assert.equal(
+        Number(exec("SELECT COUNT(*) AS n FROM semantic_retirements")[0].n),
+        0,
+      );
+      const stored = exec("SELECT * FROM semantic_usage WHERE id=1")[0];
+      assert.equal(
+        stored.associations,
+        exec("SELECT COUNT(*) AS n FROM semantic_associations")[0].n,
+      );
+      assert.equal(
+        stored.vectors,
+        exec("SELECT COUNT(*) AS n FROM semantic_vectors")[0].n,
+      );
+      assert.equal(
+        stored.bytes,
+        Number(
+          exec(
+            "SELECT COALESCE(SUM(length(bytes)),0) AS n FROM semantic_inputs",
+          )[0].n,
+        ) +
+          Number(
+            exec(
+              "SELECT COALESCE(SUM(length(bytes)),0) AS n FROM semantic_vectors",
+            )[0].n,
+          ),
+      );
+      assert.equal((await reopened.coverage(latest.id)).indexed, 4);
+    } finally {
+      reopened.close();
+    }
+  }));
+
+test("profile coverage holds a generation lease across background publication and retirement", async () =>
+  fixture(async ({ store, scanner, ctx, docs }) => {
+    const initial = (await store.published(ctx.evaluation.selected_view))[0];
+    await store.setBackgroundGeneration(initial.id);
+    const engine = new SemanticSearch(
+      { profile: initial.profile, store, cache: store.queryCache, scanner },
+      mock().assistance,
+      true,
+    );
+    const coverageFor = store.coverageFor.bind(store);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let started = false;
+    store.coverageFor = async (...args) => {
+      started = true;
+      await gate;
+      return coverageFor(...args);
+    };
+    const work = engine.profiles(ctx);
+    try {
+      while (!started)
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      await publish(store, docs, context(docs, hash(9800)));
+      const last = await publish(store, docs, context(docs, hash(9801)));
+      await store.setBackgroundGeneration(last.id);
+      await store.pruneBackgroundGenerations(initial.profile, initial.view);
+      assert.equal((await store.generation(initial.id)).state, "completed");
+      release();
+      assert.equal((await work)[0].indexed, docs.length);
+      await store.pruneBackgroundGenerations(initial.profile, initial.view);
+      assert.equal((await store.generation(initial.id)).state, "retired");
+    } finally {
+      release();
+      await work;
+    }
+  }));
