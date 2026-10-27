@@ -1,4 +1,5 @@
 import { kindLabel } from "../model/types.ts";
+import { changeTypedWord } from "../model/typed-headword.ts";
 /** Optional assistance. Provider data is inert, private, and separate from publication. */
 import {
   button,
@@ -11,8 +12,13 @@ import {
   text,
 } from "../lib/dom.ts";
 import type { App } from "../app/context.ts";
-import { navigate, type RenderContext } from "../app/router.ts";
-import { getCapabilities, selfPeer, readBounded } from "../data/api.ts";
+import { navigate, routes, type RenderContext } from "../app/router.ts";
+import {
+  getCapabilities,
+  selfPeer,
+  readBounded,
+  loadDefinition,
+} from "../data/api.ts";
 import {
   assistanceLog,
   assistanceLogJson,
@@ -40,7 +46,12 @@ import {
   type Suggestion,
 } from "../model/assistance.ts";
 import { richTextToText, renderRichText } from "../model/richtext.ts";
-import type { Draft } from "../model/draft.ts";
+import {
+  draftFromBody,
+  editorToRichText,
+  revisionChanges,
+  type Draft,
+} from "../model/draft.ts";
 import {
   setSourceAiNoteGroup,
   sourceNotes,
@@ -266,6 +277,9 @@ async function consent(
       p(`Fields sent: ${d.data_scope.join(", ")}.`),
       p(
         `Scope: ${d.statement}. Your draft leaves this browser only when you choose an AI action.`,
+      ),
+      p(
+        "Type suggestions can also send public dictionary definitions that the server finds for your meaning.",
       ),
       p(
         "Suggestions and their logs stay with this private draft. Selected content is published only when you publish it.",
@@ -751,6 +765,118 @@ export function assistanceAction(
     }
     return section;
   }
+  function existingWordBlock(r: AssistanceRecord): HTMLElement | null {
+    const result = r.result;
+    if (result?.operation !== "type" || !result.existing) return null;
+    const existing = result.existing;
+    const block = el(
+      "section",
+      { class: "ai-existing", "aria-label": "Existing word" },
+      p("Existing word: "),
+      link(existing.word, routes.word(existing.word, draft.language), {
+        lang: "jbo",
+        class: "hw",
+      }),
+    );
+    const converted = existing.conversion
+      ? `${existing.conversion} ${existing.word}`
+      : null;
+    if (converted) block.append(p(converted));
+    const startExistingDraft = async (revise: boolean) => {
+      try {
+        if (!(await saver.flush()) || !context.live()) return;
+        const publication = await loadDefinition(existing.event);
+        if (!context.live()) return;
+        if (
+          !publication.body ||
+          publication.body.word.spelling !== existing.word
+        )
+          throw new Error("The existing definition is unavailable.");
+        const origin =
+          publication.envelope.header.action.origin === "import"
+            ? "import"
+            : "native";
+        const replacement = revise
+          ? draftFromBody(
+              publication.body,
+              existing.event,
+              origin,
+              publication.rawBody,
+            )
+          : structuredClone(draft);
+        if (revise)
+          replacement.revisionNotice = revisionChanges(
+            publication.body,
+            origin,
+          );
+        else changeTypedWord(replacement, existing.word);
+        if (revise) {
+          const proposed: Suggestion = {
+            ...result,
+            operation: "definition",
+            existing: undefined,
+            proposals: [
+              {
+                path: "/text",
+                value: editorToRichText(
+                  existing.revised_definition!,
+                  replacement.structured,
+                ),
+              },
+            ],
+            explanation:
+              "Review the proposed definition. Use this applies it with undo.",
+          };
+          storeAssistanceRecord(replacement, {
+            ...r,
+            id: crypto.randomUUID(),
+            key: "definition",
+            label: "Rewrite definition",
+            operation: "definition",
+            fingerprint: draftFingerprint(replacement),
+            requested: currentDraft(replacement),
+            result: proposed,
+            state: "done",
+            patches: undefined,
+            before: undefined,
+            after: undefined,
+          });
+        }
+        await app.store.switchDraft(draft.revision, replacement);
+        saver.detach();
+        navigate(revise ? "/new/editor" : "/new/type");
+      } catch (error) {
+        app.announce(describe(error));
+      }
+    };
+    if (converted)
+      block.append(
+        button(
+          `Use ${converted}`,
+          async () => {
+            if (await saver.flush())
+              navigate(
+                `${routes.word(existing.word, draft.language)}&conversion=${existing.conversion}`,
+              );
+          },
+          { class: "btn" },
+        ),
+      );
+    else if (existing.revised_definition === null)
+      block.append(
+        button("Add a definition", () => void startExistingDraft(false), {
+          class: "btn",
+        }),
+      );
+    if (existing.revised_definition !== null)
+      block.append(
+        p(existing.revised_definition),
+        button("Revise this one", () => void startExistingDraft(true), {
+          class: "btn",
+        }),
+      );
+    return block;
+  }
   function renderAccepted(r: AssistanceRecord) {
     content.append(
       el(
@@ -785,6 +911,8 @@ export function assistanceAction(
         ),
       ),
     );
+    const block = existingWordBlock(r);
+    if (block) content.append(block);
   }
   function renderOtherMappingUndos(result?: Suggestion) {
     const frame = result
@@ -916,6 +1044,7 @@ export function assistanceAction(
       return;
     }
     const r = record;
+    const hasProposal = result.proposals.length > 0;
     const panel = el(
       "section",
       {
@@ -924,12 +1053,14 @@ export function assistanceAction(
         tabindex: "-1",
       },
       el("div", {}, text("AI", "ai-tag"), text(` ${options.label}`)),
-      p(result.explanation),
+      ...result.explanation.split(/\n\n/u).map((paragraph) => p(paragraph)),
       p(
         `${result.provenance.model} · ${result.provenance.provider} · prompt ${result.provenance.recipe}`,
         "meta",
       ),
     );
+    const existingBlock = existingWordBlock(r);
+    if (existingBlock) panel.append(existingBlock);
     const stale = draftFingerprint(draft) !== r.fingerprint;
     let reviewed = !stale;
     let reviewedFingerprint = draftFingerprint(draft);
@@ -989,7 +1120,7 @@ export function assistanceAction(
     }
     let invalid = "";
     try {
-      if (!needsNoteChoice)
+      if (!needsNoteChoice && hasProposal)
         apply(structuredClone(draft), result, r.sourceTarget);
     } catch (error) {
       invalid = describe(error);
@@ -1082,7 +1213,13 @@ export function assistanceAction(
       el(
         "div",
         { class: "actions" },
-        invalid ? null : accept,
+        invalid || !hasProposal ? null : accept,
+        !hasProposal
+          ? button("Try again", () => void start(), {
+              class: "btn btn-quiet",
+              "data-ai-focus": "",
+            })
+          : null,
         button(
           "Dismiss",
           async () => {

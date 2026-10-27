@@ -207,6 +207,10 @@ export interface DraftFormation extends Omit<Formation, "sources"> {
   sources: DraftFormationSource[];
 }
 export interface Draft {
+  /** A display copy of the independent saved index. Older drafts keep this for migration. */
+  savedDrafts?: { key: string; label: string }[];
+  /** The ordinary revision notice waits until the editor first shows it. */
+  revisionNotice?: string[];
   /** Private suggestions, logs, and undo records. These fields never enter a signed body. */
   ai?: import("./assistance.ts").AssistanceData;
   version: 2;

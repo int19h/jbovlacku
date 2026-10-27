@@ -1,4 +1,8 @@
 import { kindLabel } from "../../model/types.ts";
+import {
+  nearbyQuery as meaningQueries,
+  rankNearby,
+} from "../../../../../packages/service/src/nearby.ts";
 import { wordId } from "../../../../../packages/core/src/browser.ts";
 import {
   changeTypedWord,
@@ -27,6 +31,7 @@ import {
   loadDraft,
   startDraft,
   stepBar,
+  savedDraftLinks,
   discardDraft,
   DraftConflictError,
   convertLegacyDraft,
@@ -82,6 +87,29 @@ export async function meaningPage(
   const requestedWord = params.get("word")?.normalize("NFC") ?? null;
   const requestedMeaning = params.get("meaning") ?? null;
   const requestedLanguage = params.get("lang") ?? null;
+  if (!draft && !requestedWord && !requestedMeaning) {
+    const saved = await app.store.savedDrafts();
+    if (!context.live()) return;
+    if (saved.length) {
+      main.append(
+        el("h1", { class: "page", text: "Saved drafts" }),
+        savedDraftLinks(saved),
+        button(
+          "Start a new definition",
+          async () => {
+            await startDraft(
+              app,
+              { language: app.session.preferences.definitionLanguage },
+              "absent",
+            );
+            navigate("/new/meaning");
+          },
+          { class: "btn" },
+        ),
+      );
+      return;
+    }
+  }
   if (!context.live()) return;
   // A link that names a different word than the saved draft asks before replacing it.
   const conflict =
@@ -505,13 +533,7 @@ export async function meaningPage(
   if (!context.live()) return;
   // Consent covers one exact query and its definition language.
   let remoteConsent: string | null = null;
-  const nearbyQuery = () =>
-    meaning.input.value
-      .trim()
-      .split(/\s+/)
-      .filter((word) => word.length > 2 && !/^_+$/.test(word))
-      .slice(0, 6)
-      .join(" ");
+  const nearbyQuery = () => meaningQueries(meaning.input.value).join(" ");
   const remoteQuery = () => nearbyQuery().split(" ")[0];
   const consentKey = () => JSON.stringify([remoteQuery(), draft.language]);
   const renderMode = () => {
@@ -641,17 +663,8 @@ export async function meaningPage(
     if (cached) {
       // Rank by the number of matching query words.
       const words = query.toLocaleLowerCase("en").split(" ");
-      const scored = new Map<string, { hit: SearchHit; score: number }>();
-      for (const w of words)
-        for (const hit of localSearch(cached.entries, w)) {
-          const entry = scored.get(hit.word_id) ?? { hit, score: 0 };
-          entry.score += 1;
-          scored.set(hit.word_id, entry);
-        }
       renderHits(
-        [...scored.values()]
-          .sort((a, b) => b.score - a.score)
-          .map((s) => s.hit),
+        rankNearby(words.map((word) => localSearch(cached.entries, word))),
         "local",
       );
       return;

@@ -64,6 +64,12 @@ export interface Current {
   compound: Compound | null;
 }
 export interface Suggestion {
+  existing?: {
+    word: string;
+    event: string;
+    conversion: "se" | "te" | "ve" | "xe" | null;
+    revised_definition: string | null;
+  } | null;
   operation: Operation;
   draft_revision: string;
   proposals: { path: string; value: unknown }[];
@@ -105,8 +111,17 @@ export interface AssistanceData {
 
 /** Revision changes from saving do not make an otherwise unchanged suggestion stale. */
 export function draftFingerprint(draft: Draft): string {
-  const { revision, updatedAt, ai, retainedWordIpaNullSources, ...fields } =
-    draft;
+  const {
+    revision,
+    updatedAt,
+    ai,
+    retainedWordIpaNullSources,
+    savedDrafts,
+    revisionNotice,
+    ...fields
+  } = draft;
+  void savedDrafts;
+  void revisionNotice;
   void revision;
   void updatedAt;
   void ai;
@@ -237,7 +252,7 @@ export function validateSuggestion(
     s.operation !== operation ||
     s.draft_revision !== revision ||
     !Array.isArray(s.proposals) ||
-    !s.proposals.length ||
+    (!s.proposals.length && operation !== "type") ||
     typeof s.explanation !== "string" ||
     !s.provenance ||
     typeof s.provenance.provider !== "string" ||
@@ -247,6 +262,28 @@ export function validateSuggestion(
     typeof s.log !== "object"
   )
     throw new Error("The server returned an invalid suggestion.");
+  if (s.existing !== undefined && s.existing !== null) {
+    const existing = s.existing;
+    if (
+      operation !== "type" ||
+      !s.proposals.length ||
+      Object.keys(existing).sort().join(",") !==
+        "conversion,event,revised_definition,word" ||
+      typeof existing.word !== "string" ||
+      !existing.word.trim() ||
+      Array.from(existing.word).length > 64 ||
+      typeof existing.event !== "string" ||
+      !/^jve1:[0-9a-f]{64}$/.test(existing.event) ||
+      ![null, "se", "te", "ve", "xe"].includes(existing.conversion) ||
+      !(
+        existing.revised_definition === null ||
+        (typeof existing.revised_definition === "string" &&
+          !!existing.revised_definition.trim() &&
+          Array.from(existing.revised_definition).length <= 600)
+      )
+    )
+      throw new Error("The existing word suggestion is invalid.");
+  }
   const seen = new Set<string>();
   for (const p of s.proposals) {
     if (!p || !roots[operation].includes(p.path) || seen.has(p.path))
@@ -280,6 +317,7 @@ export function validateSuggestion(
       explanation: s.explanation,
       provenance: s.provenance,
       usage: s.usage,
+      ...(s.existing !== undefined ? { existing: s.existing } : {}),
     }),
     log_json: compactJson(s.log),
   };
@@ -1201,6 +1239,14 @@ export function assistanceLogRows(
   );
   text("This log stays in this browser with the draft. It is never published.");
   if (record.error) text(record.error);
+  if (log.related) {
+    heading("Related dictionary entries");
+    code(log.related);
+  }
+  if (log.morphology) {
+    heading("Spelling analysis");
+    code(log.morphology);
+  }
   for (const exchange of (Array.isArray(log.exchanges)
     ? log.exchanges
     : []) as Record<string, unknown>[]) {

@@ -153,7 +153,13 @@ const provider = createServer(async (request, response) => {
               : "Keep the selected book component and add a sign component.",
         }
       : corrected
-        ? { word_type: "cmavo", reason: "A grammar word fits this meaning." }
+        ? {
+            word_type: "cmavo",
+            alternative: null,
+            reason: "A grammar word fits this meaning.",
+            alternative_reason: null,
+            existing: null,
+          }
         : {};
   response.writeHead(200, { "content-type": "application/json" });
   response.end(
