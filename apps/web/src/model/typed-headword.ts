@@ -30,6 +30,8 @@ import {
   syncFormationSources,
   normalizeLujvoEvidence,
   rememberLujvoEvidence,
+  isZeiLujvoState,
+  isZeiCompound,
   type LujvoComponentState,
   type LujvoState,
 } from "./builders.ts";
@@ -285,18 +287,21 @@ function matchingLockedReading(state: LujvoState, spelling: string) {
 function signedComponent(
   component: Compound["components"][number],
   profile: MorphologyProfile,
+  zei = false,
 ): LujvoComponentState {
   return {
     id: componentId(),
     spelling: component.word.spelling,
     kind: detectWord(component.word.spelling, profile).kind,
     definition: component.definition,
-    claims: [
-      {
-        rafsi: component.rafsi,
-        pair: rafsiPairId(wordId(component.word), component.rafsi),
-      },
-    ],
+    claims: zei
+      ? []
+      : [
+          {
+            rafsi: component.rafsi,
+            pair: rafsiPairId(wordId(component.word), component.rafsi),
+          },
+        ],
     locked: component.rafsi,
     gloss: "",
   };
@@ -308,6 +313,7 @@ function retainSources(
   previous: LujvoComponentState[],
   compound: Compound | null,
   profile: MorphologyProfile,
+  wholeWord = false,
 ) {
   const used = new Set<LujvoComponentState>();
   const linked = (row: LujvoComponentState) =>
@@ -326,10 +332,15 @@ function retainSources(
   return components.map((component, index) => {
     const same = previous[index];
     const remaining = previous.filter((row) => !used.has(row));
-    const exact = remaining.filter((row) => row.locked === component.locked);
+    const exact = remaining.filter(
+      (row) =>
+        row.locked === component.locked &&
+        (!wholeWord ||
+          detectWord(row.spelling, profile).normalized === component.locked),
+    );
     const authoredExact = exact.filter(linked);
-    const fallback = remaining.filter((row) =>
-      compatible(row, component.locked),
+    const fallback = remaining.filter(
+      (row) => !wholeWord && compatible(row, component.locked),
     );
     const atPosition = same && !used.has(same) ? same : undefined;
     const old =
@@ -348,13 +359,19 @@ function retainSources(
                   : undefined;
     if (old) used.add(old);
     if (old && linked(old))
-      return old.locked === component.locked
-        ? old
-        : { ...old, locked: component.locked };
+      return wholeWord
+        ? { ...old, claims: [] }
+        : old.locked === component.locked
+          ? old
+          : { ...old, locked: component.locked };
     const signed = compound?.components[index];
     if (signed?.rafsi === component.locked)
       return {
-        ...signedComponent(signed, profile),
+        ...signedComponent(
+          signed,
+          profile,
+          !!compound && isZeiCompound(compound),
+        ),
         ...(old ? { id: old.id } : {}),
       };
     if (authoredExact.length > 1 || fallback.length > 1)
@@ -394,6 +411,13 @@ export function prepareLujvoBuilder(
   let state = (draft.lujvo ??= newLujvoState());
   reconcileLujvoRows(state);
   const spelling = typedWord(draft.spelling);
+  if (
+    draft.compound &&
+    draft.evidenceForm === spelling &&
+    isZeiCompound(draft.compound) &&
+    !state.components.length
+  )
+    draft.typedSpelling = spelling;
   const typedIdentity =
     !!draft.typedSpelling && typedWord(draft.typedSpelling) === spelling;
   const legacyTypedRows = !!state.typed && !state.typedOrigin;
@@ -453,11 +477,12 @@ export function prepareLujvoBuilder(
     if (hydrate)
       state.components = retainSources(
         retainedCompound.components.map((component) =>
-          signedComponent(component, profile),
+          signedComponent(component, profile, isZeiCompound(retainedCompound)),
         ),
         state.components,
         retainedCompound,
         profile,
+        isZeiCompound(retainedCompound),
       );
     const retainedLocks =
       state.components.length === retainedCompound.components.length &&
@@ -482,6 +507,15 @@ export function prepareLujvoBuilder(
       );
       if (parts)
         state.joins = parts.slice(1).map((part) => part.join_before ?? "");
+    }
+    if (
+      isZeiCompound(retainedCompound) &&
+      retainedLocks &&
+      isZeiLujvoState(state)
+    ) {
+      state.typedOrigin = true;
+      state.typed = spelling;
+      draft.typedSpelling = spelling;
     }
   }
   // An ordinary profile choice never changes the word's retained analysis evidence.
@@ -513,6 +547,7 @@ export function prepareLujvoBuilder(
       state.components,
       retainedCompound,
       next.profile,
+      isZeiLujvoState(next),
     );
     if (exactTypedConstruction(next)) state = draft.lujvo = next;
     else {
@@ -552,6 +587,17 @@ export function prepareLujvoBuilder(
         state.restoredSpelling = associated;
       if (state.restoredSpelling)
         rememberLujvoEvidence(state, state.restoredSpelling, state.profile);
+    }
+  }
+  if (isZeiLujvoState(state)) {
+    for (const component of state.components) {
+      component.claims = [];
+      const known = sourceOptions(
+        { text: component.locked ?? "", kind: "core", join_before: null },
+        cached,
+        true,
+      ).find((source) => source.spelling === component.spelling);
+      if (known) component.definitions = known.definitions;
     }
   }
   return state;
@@ -612,12 +658,16 @@ export function selectLujvoCandidate(
 export function sourceOptions(
   part: RecoveredPart,
   cached: CachedPackage | null,
+  wholeWord = false,
 ) {
   const words = new Map<string, LujvoComponentState>();
   for (const entry of cached?.entries ?? []) {
     const spelling = entry.word.spelling;
-    const listed = "issuer" in entry ? (entry as PackageEntryV2).rafsi : [];
+    const listed =
+      !wholeWord && "issuer" in entry ? (entry as PackageEntryV2).rafsi : [];
+    if (wholeWord && spelling !== part.text) continue;
     if (
+      !wholeWord &&
       spelling !== part.text &&
       !(
         entry.classification.kind === "gismu" &&
@@ -663,6 +713,9 @@ export function typedLujvoState(
   cached: CachedPackage | null,
   profile: MorphologyProfile = "extended-v4",
 ) {
+  const zei =
+    parts.length > 1 &&
+    parts.slice(1).every((part) => part.join_before === " zei ");
   return {
     ...newLujvoState(),
     profile,
@@ -671,8 +724,19 @@ export function typedLujvoState(
     selected: spelling,
     joins: parts.slice(1).map((part) => part.join_before ?? ""),
     components: parts.map((part) => {
-      const choices = sourceOptions(part, cached);
+      const choices = sourceOptions(part, cached, zei);
       if (choices.length === 1) return choices[0];
+      if (zei)
+        return {
+          id: componentId(),
+          spelling: part.text,
+          kind: detectWord(part.text, profile).kind,
+          definition: null,
+          definitions: [],
+          gloss: "",
+          claims: [],
+          locked: part.text,
+        };
       return {
         id: componentId(),
         spelling: "",
@@ -768,6 +832,11 @@ export function linkedSources(
   state: import("./builders.ts").LujvoState,
 ): boolean {
   return state.components.every(
-    (component) => !!component.spelling.trim() && !component.unresolvedSource,
+    (component) =>
+      !!component.spelling.trim() &&
+      !component.unresolvedSource &&
+      (!isZeiLujvoState(state) ||
+        detectWord(component.spelling, state.profile).normalized ===
+          component.locked),
   );
 }

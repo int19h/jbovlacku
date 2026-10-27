@@ -1,4 +1,5 @@
 import { wordFormStatus } from "../../components/word-form-feedback.ts";
+import { isZeiCompound } from "../../model/builders.ts";
 import { kindLabel } from "../../model/types.ts";
 import { changeTypedWord } from "../../model/typed-headword.ts";
 import { placeCountNote } from "../../components/place-count-note.ts";
@@ -1713,7 +1714,9 @@ export async function placesPage(
       if (draft.compound)
         nodes.push(
           p(
-            `Compound evidence: ${draft.compound.components.map((c) => `${c.word.spelling} (${c.rafsi})`).join(" + ")}${draft.compound.score !== null ? ` · score ${draft.compound.score}` : ""}. Read-only.`,
+            isZeiCompound(draft.compound)
+              ? `Component words: ${draft.compound.components.map((c) => c.word.spelling).join(" zei ")}. Read-only.`
+              : `Compound evidence: ${draft.compound.components.map((c) => `${c.word.spelling} (${c.rafsi})`).join(" + ")}${draft.compound.score !== null ? ` · score ${draft.compound.score}` : ""}. Read-only.`,
             "small",
           ),
         );

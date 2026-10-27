@@ -53,6 +53,7 @@ import {
   inventoryFromPackage,
   inventoryCoverage,
   lujvoConflictKey,
+  isZeiLujvoState,
   type LujvoComponentState,
   type PackageInventory,
 } from "../../model/builders.ts";
@@ -109,6 +110,8 @@ export async function lujvoPage(
     return;
   }
   const inventory: PackageInventory = inventoryFromPackage(cached);
+  const zei = isZeiLujvoState(state);
+  const fixedParts = !!state.typed || zei;
   const builderCurrent = () => {
     const morphology =
       result?.morphology ??
@@ -154,10 +157,12 @@ export async function lujvoPage(
       el("bdi", { text: draft.meaning || "(no meaning yet)" }),
     ),
   );
-  if (state.typed) {
+  if (fixedParts) {
     section.append(
       p(
-        `Link the source words of ${state.typed}. Its rafsi and joins stay fixed. Fill every source to save compound metadata, or continue without it.`,
+        zei
+          ? `These words form ${state.typed ?? state.restoredSpelling} with zei. Choose exact source definitions when known. The words and joins stay fixed.`
+          : `Link the source words of ${state.typed}. Its rafsi and joins stay fixed. Fill every source to save compound metadata, or continue without it.`,
         "small",
       ),
     );
@@ -184,7 +189,7 @@ export async function lujvoPage(
   ] as const) {
     const input = el("input", { type: "radio", name: "profile", value });
     input.checked = state.profile === value;
-    input.disabled = !!state.typedOrigin;
+    input.disabled = fixedParts;
     const wrapper = el(
       "label",
       { class: input.checked ? "on" : "" },
@@ -200,14 +205,15 @@ export async function lujvoPage(
     });
     profileGroup.append(wrapper);
   }
-  section.append(
-    el("div", { style: "margin-bottom:6px" }, profileGroup),
-    p(
-      "CLL rules use short rafsi, gismu stems, and whole gismu in the last position, with the joins of CLL 4.11 and the scores of CLL 4.12. The extended profile also joins whole brivla with 'y, y, or y' and gives a shape outside the CLL table rank zero. That extension is audited jbotci behavior, not CLL text.",
-      "meta",
-    ),
-  );
-  if (state.typed) profileGroup.closest("div")!.hidden = true;
+  section.append(el("div", { style: "margin-bottom:6px" }, profileGroup));
+  if (!zei)
+    section.append(
+      p(
+        "CLL rules use short rafsi, gismu stems, and whole gismu in the last position, with the joins of CLL 4.11 and the scores of CLL 4.12. The extended profile also joins whole brivla with 'y, y, or y' and gives a shape outside the CLL table rank zero. That extension is audited jbotci behavior, not CLL text.",
+        "meta",
+      ),
+    );
+  if (fixedParts) profileGroup.closest("div")!.hidden = true;
   // Component rows.
   const list = el("ol", {
     class: "parts",
@@ -235,8 +241,8 @@ export async function lujvoPage(
   });
   addRow.append(addField.wrapper);
   section.append(addRow, addResults);
-  if (state.typed) addRow.hidden = true;
-  if (!state.typed)
+  if (fixedParts) addRow.hidden = true;
+  if (!fixedParts)
     section.append(
       assistanceAction(app, draft, saver, context, {
         key: "components",
@@ -469,13 +475,13 @@ export async function lujvoPage(
         style:
           "padding:14px 16px;display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center",
       });
-      if (state.typed) {
+      if (fixedParts) {
         const part = {
           text: component.locked ?? "",
           kind: "rafsi" as const,
           join_before: index ? (state.joins?.[index - 1] ?? "") : null,
         };
-        const options = sourceOptions(part, cached);
+        const options = sourceOptions(part, cached, zei);
         item.append(
           el("strong", { lang: "jbo", text: component.locked ?? "" }),
           p(
@@ -483,7 +489,15 @@ export async function lujvoPage(
             "meta",
           ),
         );
-        if (options.length) {
+        if (zei)
+          item.append(
+            link(
+              component.spelling,
+              `/word/${encodeURIComponent(component.spelling)}`,
+              { lang: "jbo" },
+            ),
+          );
+        if (!zei && options.length) {
           const source = field(`Source word for part ${index + 1}`, {
             options: [
               { value: "", label: "Choose a source word" },
@@ -505,28 +519,30 @@ export async function lujvoPage(
           });
           item.append(source.wrapper);
         }
-        const source = field(`Other source word for part ${index + 1}`, {
-          value: options.some(
-            (option) => option.spelling === component.spelling,
-          )
-            ? ""
-            : component.spelling,
-          lang: "jbo",
-          spellcheck: false,
-        });
-        source.input.addEventListener("change", () => {
-          selectLujvoSource(state, index, source.input.value);
-          saver.touch();
-          rebuild();
-        });
-        item.append(source.wrapper);
-        if (!options.length && !component.spelling)
-          item.append(
-            p(
-              "No source word is linked. Enter one to record its attribution, or continue without compound metadata. The rafsi stays fixed.",
-              "meta",
-            ),
-          );
+        if (!zei) {
+          const source = field(`Other source word for part ${index + 1}`, {
+            value: options.some(
+              (option) => option.spelling === component.spelling,
+            )
+              ? ""
+              : component.spelling,
+            lang: "jbo",
+            spellcheck: false,
+          });
+          source.input.addEventListener("change", () => {
+            selectLujvoSource(state, index, source.input.value);
+            saver.touch();
+            rebuild();
+          });
+          item.append(source.wrapper);
+          if (!options.length && !component.spelling)
+            item.append(
+              p(
+                "No source word is linked. Enter one to record its attribution, or continue without compound metadata. The rafsi stays fixed.",
+                "meta",
+              ),
+            );
+        }
         if (component.definitions?.length) {
           const definition = field(
             `Exact definition of ${component.spelling}`,
@@ -878,11 +894,15 @@ export async function lujvoPage(
     resultCard.append(headline);
     resultCard.append(
       p(
-        `Construction score ${candidate.score} under ${state.profile === "cll" ? "CLL 4.12" : "the extended scorer"}. A lower score reads more easily. It says nothing about who endorses a rafsi.`,
+        zei
+          ? "Zei links these whole words. No rafsi or construction score applies."
+          : `Construction score ${candidate.score} under ${state.profile === "cll" ? "CLL 4.12" : "the extended scorer"}. A lower score reads more easily. It says nothing about who endorses a rafsi.`,
         "meta",
       ),
       p(
-        `Recovered parts: ${candidate.recovered.map((r) => (r.join_before ? `${r.join_before} + ` : "") + r.text).join(" + ")}. The form reads as one word and gives back the intended sequence.`,
+        zei
+          ? `Component words: ${candidate.recovered.map((part) => part.text).join(" · ")}.`
+          : `Recovered parts: ${candidate.recovered.map((r) => (r.join_before ? `${r.join_before} + ` : "") + r.text).join(" + ")}. The form reads as one word and gives back the intended sequence.`,
         "small",
       ),
     );
@@ -927,7 +947,7 @@ export async function lujvoPage(
         ),
       );
     const coverage = inventoryCoverage(inventory);
-    resultCard.append(p(coverage, "meta"));
+    if (!zei) resultCard.append(p(coverage, "meta"));
     if (candidate.conflicts.length) {
       const box = el("div", {
         class: "notice",
