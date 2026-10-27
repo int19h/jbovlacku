@@ -6,6 +6,9 @@ export interface ParseNode {
 }
 export function parse(
   input: string,
-  options: { tracer: { trace(event: { type: string }): void } },
+  options: {
+    textMode?: boolean;
+    tracer: { trace(event: { type: string }): void };
+  },
 ): ParseNode[];
 export class SyntaxError extends Error {}

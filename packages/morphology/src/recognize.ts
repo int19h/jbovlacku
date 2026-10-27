@@ -19,10 +19,16 @@ function hasCgv(node: ParseNode): boolean {
 /** Read all words once. The tracer counts cached calls and failed branches. */
 export function recognizeWords(input: string, limit = PEG_WORK_LIMIT) {
   requireLimit("word bytes", utf8Length(input), 128);
+  return readPeggyWords(input, limit);
+}
+
+/** Parse one complete spelling. Callers supply byte and aggregate work limits. */
+export function readPeggyWords(input: string, limit: number, textMode = false) {
   let spent = 0;
   let nodes: ParseNode[] = [];
   try {
     nodes = parse(input, {
+      textMode,
       tracer: {
         trace(event) {
           if (event.type === "rule.enter" && ++spent > limit)

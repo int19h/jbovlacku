@@ -149,19 +149,19 @@ nucleus = expr:(vowel / diphthong / y !nucleus) { return null; }
 
 glide = expr:((i / u) &nucleus !glide) { return null; }
 
-diphthong = expr:((a u !u / (a i / e i / o i) !i) !nucleus) { return null; }
+diphthong = expr:((a !onglide u !u / (a !onglide i / e !onglide i / o !onglide i) !i) !nucleus) { return null; }
 
-vowel = expr:((a / e / i / o / u) !nucleus) { return null; }
+vowel = expr:(!marked_glide !(&{ return options.textMode === true; } diphthong) (a / e / i / o / u) !nucleus) { return null; }
 
 a = expr:(comma* [aA]) { return null; }
 
 e = expr:(comma* [eE]) { return null; }
 
-i = expr:(comma* [iI]) { return null; }
+i = expr:(comma* ([iI] / &{ return options.textMode === true; } [qɩ])) { return null; }
 
 o = expr:(comma* [oO]) { return null; }
 
-u = expr:(comma* [uU]) { return null; }
+u = expr:(comma* ([uU] / &{ return options.textMode === true; } [wʋ])) { return null; }
 
 y = expr:(comma* [yY] !(!y nucleus)) { return null; }
 
@@ -245,9 +245,9 @@ cmavo_nucleus = diphthong_letters { return true; }
 cmavo_last = !stressed nucleus:cmavo_nucleus { return nucleus; }
   / nucleus:cmavo_nucleus !cluster { return nucleus; }
 
-diphthong_letters = expr:(a i !i / a u !u / e i !i / o i !i) { return null; }
+diphthong_letters = expr:(a !onglide i !i / a !onglide u !u / e !onglide i !i / o !onglide i !i) { return null; }
 
-vowel_letter = expr:(a / e / i / o / u) { return null; }
+vowel_letter = expr:(!marked_glide (a / e / i / o / u)) { return null; }
 
 initial_parts = expr:(sibilant? other? liquid?) { return null; }
 
@@ -263,3 +263,7 @@ brivla_onset = expr:(onset / cgv_onset) { return expr; }
 position = &{ return true; } { return location().start.offset; }
 
 cgv_rafsi_continuation = expr:((CVC_rafsi / CCV_rafsi / stressed_CVC_rafsi / stressed_CCV_rafsi) !r consonant glide) { return null; }
+
+// Text preprocessing retains marked glides until the word grammar reads them.
+onglide = &{ return options.textMode === true; } comma* [qw]
+marked_glide = &{ return options.textMode === true; } comma* [qwɩʋ]

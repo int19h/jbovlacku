@@ -1,3 +1,14 @@
+export {
+  segmentText,
+  TEXT_BYTE_LIMIT,
+  TEXT_WORK_LIMIT,
+  TEXT_RUN_LIMIT,
+} from "./text.ts";
+export type {
+  TextSegmentation,
+  TextSegmentationOptions,
+  ForeignRun,
+} from "./text.ts";
 export type * from "./types.ts";
 export { BuilderError } from "./errors.ts";
 export { builderPresets } from "./presets.ts";

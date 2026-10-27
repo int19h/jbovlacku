@@ -123,6 +123,28 @@ As an author types, the browser reports a mismatch with a selected lexical kind.
 A mismatched ordinary classification blocks client signing until the author changes the type or adds an explicit experimental label.
 Other remains available. Dictionary admission never validates word shape.
 
+### Text segmentation
+
+`segmentText` reads complete text through the same Peggy word grammar.
+It treats magic words as ordinary cmavo.
+It returns recognized words and foreign runs separately.
+A foreign run is a complete pause-bounded stretch that has no word reading.
+A failed run cannot supply partial words, but other runs remain available.
+The result includes the total number of parser rule entries.
+
+The text orthography layer converts supported spelling forms before the word parse.
+It preserves stress and marked glides, expands digits, and maps supported Latin, Cyrillic, and Zbalermorna letters.
+`features` and `withoutFeatures` carry orthography options, including `case-insensitive` and `cll-cyrillic`.
+Word text uses the normalized spelling. Each `start` and `end` refers to the original input in UTF-16 code units.
+Foreign text retains the original spelling.
+
+Text segmentation permits at most 1 MiB of original UTF-8 input and 5,000,000 parser rule entries across all runs.
+Each nonforeign run permits at most 128 normalized phonemes, which bounds the parser's recursive depth.
+Caller options can reduce the aggregate limits.
+A resource error throws and returns no partial result.
+These text limits and spelling conversions do not change headword admission or the builders.
+The headword API retains its case folding and its whole-input failure behavior.
+
 ## Work limits
 
 The recognizer accepts at most 128 input bytes. It permits at most 50,000 calls to recursive recognition functions that share its cache. This counts failed paths and cached calls. The Peggy profile counts rule entries with the same ceiling. Exhaustion invalidates the whole analysis, including any earlier successful branch. Analysis returns `unknown` with a resource diagnostic. Candidate recognition exhaustion makes builders return `BuilderError::ResourceLimit` and no partial result.
