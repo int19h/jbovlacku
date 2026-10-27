@@ -173,6 +173,8 @@ Both actions preserve the earlier draft. A place conversion opens the existing w
 Adding a definition preserves every current field and marks spelling-dependent evidence for review.
 Revision actions show the ordinary notice about license and origin changes. Their exact parent and improved text keep the usual acceptance and undo flow.
 Saved-draft links survive wizard navigation and reload. Atomic returns consume the restored row and keep all other saved drafts reachable.
+Leaving a restore before its storage transaction starts cancels the switch and keeps both drafts.
+A newer navigation takes priority while a save waits. A refused Back keeps the current page, its URL, and unsaved edits.
 An independent saved index also keeps those links after publication, replacement, discard, and ordinary revisions.
 Meaning can restore a saved draft without creating a new current draft first. Earlier orphaned saved rows migrate into the index.
 Existing-word actions also remain available after type acceptance.
