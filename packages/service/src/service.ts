@@ -248,7 +248,9 @@ export class DictionaryService {
       this.semantic = new SemanticSearch(
         options.semantic,
         this.assistance,
-        Boolean(options.assistance?.provider?.embedding),
+        Boolean(options.assistance?.provider?.embedding) &&
+          options.assistance?.provider?.baseUrl ===
+            "https://openrouter.ai/api/v1",
       );
   }
   /** Replace lexical retrieval here when an available semantic route is disclosed. */

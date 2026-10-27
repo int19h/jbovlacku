@@ -284,6 +284,21 @@ test("routes advertise only exact complete indexes, retain lexical reads, and va
       (await disabled.fetch(request("/search/semantic", body))).status,
       503,
     );
+    const otherEndpoint = new DictionaryService(objects, coordinator, {
+      ...options,
+      assistance: {
+        provider: { ...config, baseUrl: "https://other.invalid/v1" },
+      },
+    });
+    assert.equal(
+      (await read(await otherEndpoint.fetch(request("/capabilities")))).features
+        .semantic_search,
+      false,
+    );
+    assert.equal(
+      (await otherEndpoint.fetch(request("/search/semantic", body))).status,
+      503,
+    );
     const missing = "sha256:" + "f".repeat(64);
     assert.equal(
       (
