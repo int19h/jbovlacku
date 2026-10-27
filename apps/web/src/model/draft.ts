@@ -22,7 +22,7 @@ import {
   richTextToText,
   textToRichText,
 } from "./richtext.ts";
-import { wordFormFeedback } from "./word-form.ts";
+import { wordFormFeedback, detectWord } from "./word-form.ts";
 import { placeGlyph } from "../lib/format.ts";
 import { cloneAssistance } from "./assistance.ts";
 import {
@@ -684,6 +684,15 @@ export interface DraftProblem {
   /** Problems that block signing. Warnings do not. */
   blocking: boolean;
 }
+function referenceAdvice(spelling: string): string | null {
+  try {
+    return detectWord(spelling.toLowerCase()).kind === "unknown"
+      ? "This reference spelling does not match a recognized Lojban word form. You can still publish it."
+      : null;
+  } catch {
+    return "The reference spelling could not be checked. You can still publish it.";
+  }
+}
 const lojbanWord = /^[a-z',.]+(?: [a-z',.]+)*$/u;
 /**
  * The editor's token syntax in structured mode. Every rich text node has a
@@ -696,12 +705,13 @@ const lojbanWord = /^[a-z',.]+(?: [a-z',.]+)*$/u;
  * - `[[https://host/path]]` or `[[https://host/path|label]]`: a web link.
  * - `` `text` ``: code.
  * - A backslash before `\`, `[`, `{`, `` ` ``, or a circled numeral keeps
- *   that character as literal text.
+ *   that character as literal text. Escaped line breaks stay inside a node.
+ *   Escaped whitespace preserves a whitespace-only paragraph.
  */
 const TOKEN =
-  /\\([\\`[{①-⑳])|([①-⑳])|\{place (\d{1,5})\}|\{operand ([a-z][a-z0-9_-]{0,31})\}|`((?:\\.|[^`])*)`|\[\[((?:\\.|[^\]|])+)(?:\|((?:\\.|[^\]])*))?\]\]/gu;
+  /\\([\\`[{①-⑳\s])|([①-⑳])|\{place (\d{1,5})\}|\{operand ([a-z][a-z0-9_-]{0,31})\}|`((?:\\[\s\S]|(?!\n[ \t\r]*\n)[^`\\])*)`|\[\[((?:\\[\s\S]|(?!\n[ \t\r]*\n)[^\\\]|])+)(?:\|((?:\\[\s\S]|(?!\n[ \t\r]*\n)[^\\\]])*))?\]\]/gu;
 const unescape = (value: string, code = false) =>
-  value.replace(code ? /\\([\\`])/gu : /\\([\\\]|`])/gu, "$1");
+  value.replace(code ? /\\([\\`\r\n])/gu : /\\([\\\]|`\r\n])/gu, "$1");
 /** Editor text to rich text. Structured mode reads the token syntax. */
 export function editorToRichText(
   source: string,
@@ -717,13 +727,12 @@ export function editorToRichText(
     pending = "";
   };
   const finishParagraph = () => {
-    pending = pending.replace(/\s+$/u, "");
     flush();
     if (nodes.length) paragraphs.push(nodes);
     nodes = [];
   };
-  // Consume whole tokens before recognizing paragraph breaks. Newlines inside
-  // a code node or link label belong to that node.
+  // Escaped line breaks belong to a node. Raw paragraph breaks bound tokens,
+  // so an unmatched delimiter cannot consume a later paragraph.
   const tokens = new RegExp(`${TOKEN.source}|(\\n\\s*\\n)`, "gu");
   let index = 0;
   for (const match of source.matchAll(tokens)) {
@@ -770,17 +779,32 @@ export function editorToRichText(
   return paragraphs;
 }
 /** Escapes characters that the token syntax reads, so text stays literal. */
-function escapeLiteral(value: string): string {
-  return value.replace(/[\\`[{①-⑳]/gu, (c) => `\\${c}`);
+function escapeLiteral(
+  value: string,
+  preserveLines = false,
+  protectSpaces = false,
+): string {
+  return value.replace(
+    preserveLines
+      ? protectSpaces
+        ? /[\\`[{①-⑳\s]/gu
+        : /[\\`[{①-⑳\r\n]/gu
+      : /[\\`[{①-⑳]/gu,
+    (c) => `\\${c}`,
+  );
 }
-const escapeInside = (value: string) => value.replace(/[\\\]|`]/gu, "\\$&");
+const escapeInside = (value: string) => value.replace(/[\\\]|`\r\n]/gu, "\\$&");
 /** Rich text to editor text in the token syntax. Lossless. */
 export function richTextToEditor(value: RichText): string {
   return value
-    .map((paragraph) =>
-      paragraph
+    .map((paragraph) => {
+      const protectSpaces = paragraph.every(
+        (node) => typeof node === "string" && !node.trim(),
+      );
+      return paragraph
         .map((node) => {
-          if (typeof node === "string") return escapeLiteral(node);
+          if (typeof node === "string")
+            return escapeLiteral(node, true, protectSpaces);
           if (typeof node === "number")
             return node <= 20
               ? String.fromCodePoint(0x245f + node)
@@ -795,12 +819,12 @@ export function richTextToEditor(value: RichText): string {
               ? `[[${escapeInside(node.url)}]]`
               : `[[${escapeInside(node.url)}|${escapeInside(node.label)}]]`;
           if ("code" in node)
-            return `\`${node.code.replace(/[\\`]/gu, "\\$&")}\``;
+            return `\`${node.code.replace(/[\\`\r\n]/gu, "\\$&")}\``;
           if ("operand" in node) return `{operand ${node.operand}}`;
           return "";
         })
-        .join(""),
-    )
+        .join("");
+    })
     .join("\n\n");
 }
 /** The literal text form of one place number. */
@@ -1188,7 +1212,11 @@ function richProblems(
   problems: DraftProblem[],
 ) {
   const seen = new Map<string, DraftProblem>();
-  const report = (message: string, convertPlaceReference = false) => {
+  const report = (
+    message: string,
+    convertPlaceReference = false,
+    blocking = true,
+  ) => {
     const key = `${entry.field}:${message}`;
     const existing = seen.get(key);
     if (existing) {
@@ -1198,7 +1226,7 @@ function richProblems(
     const problem: DraftProblem = {
       field: entry.field,
       message,
-      blocking: true,
+      blocking,
       ...(convertPlaceReference ? { richFieldKey: entry.key } : {}),
     };
     seen.set(key, problem);
@@ -1227,9 +1255,11 @@ function richProblems(
         else {
           try {
             wordId(node.word);
-          } catch (error) {
+            const advice = referenceAdvice(node.word.spelling);
+            if (advice) report(`${entry.label}: ${advice}`, false, false);
+          } catch {
             report(
-              `${entry.label} has an invalid word link: ${error instanceof Error ? error.message : String(error)}`,
+              `${entry.label} has an invalid word link. Use a spelling of at most 256 UTF-8 bytes, without controls or edge spaces.`,
             );
           }
         }
@@ -1508,10 +1538,17 @@ function buildFrame(draft: Draft, problems: DraftProblem[], rich: RichField[]) {
         else {
           try {
             wordId({ language: "jbo", spelling: word });
-          } catch (error) {
+            const advice = referenceAdvice(word);
+            if (advice)
+              problems.push({
+                field,
+                message: `${which}: ${advice}`,
+                blocking: false,
+              });
+          } catch {
             problems.push({
               field,
-              message: `${which} has an invalid source word: ${error instanceof Error ? error.message : String(error)}`,
+              message: `${which} has an invalid source word. Use a spelling of at most 256 UTF-8 bytes, without controls or edge spaces.`,
               blocking: true,
             });
           }

@@ -553,6 +553,9 @@ Repeated references can name the same place. Textual order does not determine fi
 
 In structured editing, typed circled numerals insert integer place references. Pasting offers literal text or explicit token conversion.
 Every rich text node has a text form in structured editing, so a published body converts to editor text and back without loss: `①` or `{place N}` is a place reference, `{operand ID}` an operand reference, `[[spelling|label]]` a word link, `[[https://host/path|label]]` a web link, and `` `text` `` code. A backslash before `\`, `[`, `{`, `` ` ``, or a circled numeral keeps that character as literal text.
+A backslash before an actual line break keeps that line break inside its string, code, or link label. The editor writes these escapes when it loads a saved value.
+Unescaped blank lines separate paragraphs. A code span or link cannot cross that boundary, so an unmatched delimiter stays in its paragraph.
+Structured editing preserves trailing spaces. A backslash before a space or tab keeps it as literal whitespace, including in a paragraph that contains only whitespace.
 The draft holds each rich text field as its exact rich text value. The editor shows a field in its text form and parses the text back only when the author edits that field, so an untouched value never changes. Literal mode turns the place references of every field into circled characters after a confirmation, and structured mode reads circled characters in text as references again. Links and code stay in both modes; a field edited in literal mode becomes plain text.
 Literal mode preserves circled characters and underscores as text. Both modes produce the same compact rich-text schema.
 In literal mode, removing or moving a place updates the visible circled characters in unchanged fields to keep their saved references aligned.
