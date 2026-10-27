@@ -114,11 +114,18 @@ The rafsi page lists known assignments across words from version 2 packages, and
 The lujvo builder offers short rafsi, gismu stems, whole gismu, whole-word parts under the extended profile, locks, CLL scores, recovered parts, and every competing rafsi claim from the local package.
 If several parts share the same competing rafsi claim, the builder shows one acknowledgment for that claim.
 A word entered on Meaning gets local form detection and an exact identity lookup in the selected language package.
+Headword analysis lowercases author input, so capitals do not mark stress. Authors must write word breaks explicitly.
 A remote exact-word check requires consent for that word and language. Missing coverage stays visible.
 Type confirmation opens Places for a typed gismu or fu'ivla, source linking for a lujvo, and Form for the other kinds.
-The typed lujvo path locks the exact analyzed rafsi and joins, including [optional hyphens and experimental forms](docs/morphology.md).
+The typed lujvo path locks the exact analyzed parts and joins, including [optional hyphens and experimental forms](docs/morphology.md).
 It preserves the entered spelling through publication, including case, commas, and framing periods. Source choices and exact definitions stay editable.
 Unknown source fields stay blank. Authors can link every source to save compound evidence, or continue with no compound metadata.
+
+Typed `zei` chains use whole component words as source links. The source form stays fixed, and authors can select an exact definition.
+Components before the last `zei` can include one word followed by `bu`, as in `denpa bu zei sance`.
+The final component must be one word, so `sance zei denpa bu` is not a lujvo.
+These links need no rafsi and carry no construction score. Publication and revision preserve the selected definitions and entered spelling.
+The imported spelling `zo si si zei fa'o` remains unsupported because it falls outside the [component rules](docs/morphology.md#zei-lujvo-linking).
 
 A changed or cleared typed spelling restores ordinary builder rows. A generated replacement reopens with editable rows.
 A replacement typed lujvo starts fresh analysis, including a return to an earlier spelling before the builder reopens.
@@ -151,8 +158,8 @@ Forward wizard links and direct Form or builder entry confirm the selected type.
 A confirmed type stays selected, and completed type review clears its notice.
 
 New lujvo builders use the extended profile. Manual boundary controls for a generated spelling remain a target change.
-The CLL profile retains required-only construction and version 2. New extended construction and recognition use version 3.
-Saved extended version 2 records reopen with their original rules and component boundaries. Unknown versions stay unsupported.
+The CLL profile retains required-only construction and version 2. New extended construction and recognition use version 4.
+Saved extended versions 2 and 3 reopen with their original rules and component boundaries. Unknown versions stay unsupported.
 The extended profile permits `mz`, consonantal-syllable borrowings, and the experimental rafsi rules. The CLL and extended version 2 profiles retain their earlier rules.
 Source-language evidence scores a normalized gismu while its headword and evidence binding keep the typed bytes.
 The gismu generator offers the CLL 1987, CLL 1995, and Ilmen presets with pinned sources, custom weights, exact scores, tied ranks, per-language contributions, root and rafsi conflicts, and manual forms without fabricated evidence.
@@ -172,6 +179,14 @@ Changes to scoring inputs block publication until the author selects the form ag
 Unrelated suggestions remain usable, and pending calculations cannot attach an older score to new inputs.
 Reopening a signed source with a null algorithm input preserves that evidence.
 The [morphology profiles](docs/morphology.md) name the rules and versions that the metadata records.
+Word recognition, segmentation, lujvo construction, and gismu generation run in TypeScript without WebAssembly initialization.
+New authoring uses a committed Peggy grammar and generated parser. The earlier profiles retain their exact recognizer in TypeScript.
+The parser reads `y`, pure `y` runs, and `ie'o` as ordinary cmavo. It splits compound cmavo without dictionary matching.
+For example, `taia` is `tai .a`, and `i'ecu'i` is `i'e cu'i`. Magic words do not execute word operations.
+Accepted CgV names and borrowings carry a warning about current BPFK morphology from the same parse.
+The Form, Type, and full editor screens report selected-kind mismatches as the author types.
+A mismatch blocks client signing unless the author selects a matching type, Other, or an explicit experimental classification.
+Dictionary admission keeps word shape outside record validity.
 
 Optional AI assistance offers suggestions for type, components, lujvo, cmavo class, source words, definition text, places, and glosses.
 The browser asks for consent before it sends draft fields. Suggestions need manual acceptance and support undo.
@@ -193,7 +208,7 @@ Existing-word actions also remain available after type acceptance.
 Related retrieval keeps up to three exact-spelling senses in editorial order and scans each lexical query once.
 Query cleanup keeps inner apostrophes. Logs distinguish lexical, semantic-profile, and absent retrieval.
 Related public definitions do not expand remembered consent. Semantic retrieval for type suggestions remains pending.
-Compound spelling parts also await the shared word analysis API. Type requests currently send only the forms that `analyzeWord` supplies.
+Type requests use the shared word analysis API to send compound cmavo parts. Their private logs record the morphology profile and version.
 Source acceptance replaces earlier AI notes and preserves authored notes. A changed suggested word requires review of retained source evidence.
 Marked fields stay read-only until Keep or Clear. A type change that removes the formation also removes its review marks.
 Explicit evidence removal keeps the marks for reused source values. Undo restores required marks with returned values and preserves later review choices.

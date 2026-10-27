@@ -12,7 +12,6 @@ crate-type = ["rlib", "cdylib"]
 jvc-core = { path = "../jvc-core" }
 jvc-state = { path = "../jvc-state" }
 jvc-rank = { path = "../jvc-rank" }
-jvc-morphology = { path = "../jvc-morphology" }
 serde.workspace = true
 serde_json.workspace = true
 serde_json_canonicalizer = "=0.3.2"

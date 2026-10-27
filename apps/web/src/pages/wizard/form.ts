@@ -1,9 +1,5 @@
-import { kindLabel } from "../../model/types.ts";
-import {
-  changeTypedWord,
-  detectWord,
-  useManualForm,
-} from "../../model/typed-headword.ts";
+import { wordFormStatus } from "../../components/word-form-feedback.ts";
+import { changeTypedWord, useManualForm } from "../../model/typed-headword.ts";
 import { assistanceAction } from "../../components/assistance.ts";
 /**
  * Step 3C: the manual Form screen. Spelling, attributed morphology notes, and
@@ -116,18 +112,13 @@ export async function formPage(route: Route, context: RenderContext, app: App) {
   spelling.input.style.fontSize = "24px";
   spelling.input.addEventListener("input", () => {
     changeTypedWord(draft, spelling.input.value);
-    renderDetection();
+    detection.refresh();
     saver.touch();
     refresh();
   });
   section.append(spelling.wrapper);
-  const detection = el("p", { class: "small", role: "status" });
-  const renderDetection = () => {
-    const analysis = detectWord(draft.spelling);
-    detection.textContent = `Detected form: ${kindLabel(analysis.kind)}. ${analysis.diagnostics.join(" ")}`;
-  };
-  renderDetection();
-  section.append(detection);
+  const detection = wordFormStatus(draft, () => saver.touch());
+  section.append(detection.wrapper);
   if (kind === "cmavo" || kind === "compound" || kind === "letteral") {
     const selmaho = field("selma'o", {
       value: draft.selmaho.join(", "),
@@ -172,7 +163,7 @@ export async function formPage(route: Route, context: RenderContext, app: App) {
   )
     section.append(
       p(
-        "Morphology assistance is not available in this build. A morphology disagreement is a warning, not a rejection. You can proceed with an explicit experimental classification.",
+        "The word-form check updates as you type. To keep a different classification, select Experimental classification or change the type to Other.",
         "meta",
       ),
     );

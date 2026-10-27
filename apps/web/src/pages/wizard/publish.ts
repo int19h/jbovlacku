@@ -34,6 +34,7 @@ import {
   conflictReviewKey,
   currentRootConflicts,
   currentCompoundConflicts,
+  isZeiCompound,
   lujvoConflictKey,
   rootConflictKey,
 } from "../../model/builders.ts";
@@ -364,7 +365,9 @@ export async function publishPage(
   if (draft.compound) {
     conflicts.append(
       p(
-        `Component rafsi: ${inventoryCoverage(inventory)}${componentConflicts.length ? "" : " No competing claim is known in that coverage."}`,
+        isZeiCompound(draft.compound)
+          ? "Zei links whole component words. No rafsi assignment applies."
+          : `Component rafsi: ${inventoryCoverage(inventory)}${componentConflicts.length ? "" : " No competing claim is known in that coverage."}`,
         "meta",
       ),
     );

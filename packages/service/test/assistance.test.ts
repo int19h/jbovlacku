@@ -11,6 +11,7 @@ import {
   utf8,
   builderPresets,
   createEvent,
+  analyzeWord,
 } from "../../core/src/index.ts";
 import { DictionaryService } from "../src/service.ts";
 import { emptyState } from "../src/storage.ts";
@@ -3304,7 +3305,25 @@ test("existing refs resolve to events for related records and selected definitio
   }
 });
 test("type spelling analysis and kind translation stay inside the type request", async () => {
-  for (const spelling of [null, "ui", "broda", "a phrase"]) {
+  const rows: [string | null, string | undefined, string[]?][] = [
+    [null, undefined],
+    ["", undefined],
+    [" \t ", undefined],
+    ["taia", "compound", ["tai", "a"]],
+    ["i'ecu'i", "compound", ["i'e", "cu'i"]],
+    ["doima", "compound", ["doi", "ma"]],
+    ["coico'o", "compound", ["coi", "co'o"]],
+    ["ty.bu", "compound", ["ty", "bu"]],
+    [" T,A,I,A ", "compound", ["tai", "a"]],
+    ["ui", "cmavo"],
+    ["broda", "gismu"],
+    ["taiax", "cmevla"],
+    ["a phrase", "unknown"],
+    ["ui broda", "unknown"],
+    ["taia?broda", "unknown"],
+    ["u".repeat(129), "unknown"],
+  ];
+  for (const [spelling, form, parts] of rows) {
     let seen: any;
     const config = makeConfig({
       fetch: queue(
@@ -3331,20 +3350,55 @@ test("type spelling analysis and kind translation stay inside the type request",
     assert.equal(result.proposals[0].value, "fuhivla");
     assert.equal(seen.current.word_type, "fuivla");
     assert.equal(seen.current.classification.kind, "fuivla");
-    if (spelling === null)
+    if (form === undefined)
       assert.equal(Object.hasOwn(seen, "spelling_form"), false);
-    else
-      assert.equal(
-        seen.spelling_form,
-        spelling === "ui"
-          ? "cmavo"
-          : spelling === "broda"
-            ? "gismu"
-            : "unknown",
-      );
-    if (spelling && spelling !== "a phrase") assert.ok(log.morphology?.version);
+    else assert.equal(seen.spelling_form, form, spelling ?? "null");
+    if (parts) assert.deepEqual(seen.spelling_parts, parts, spelling!);
+    else assert.equal(Object.hasOwn(seen, "spelling_parts"), false);
+    assert.equal(Object.hasOwn(seen, "words"), false);
+    assert.equal(Object.hasOwn(seen, "readings"), false);
+    assert.equal(Object.hasOwn(seen, "diagnostics"), false);
+    if (form !== undefined)
+      assert.deepEqual(log.morphology, {
+        id: "https://github.com/int19h/jbovlacku/blob/main/docs/morphology.md#extended-lujvo",
+        version: "4",
+      });
+    else assert.equal(log.morphology, undefined);
     assert.deepEqual(seen.related, []);
     assert.equal(request.current.word_type, "fuhivla");
+    assert.equal(request.current.spelling, spelling);
+  }
+});
+
+test("type check 9 corrects cmavo answers for parsed compound spellings", async () => {
+  const problem =
+    "The application's analysis of the spelling decides between cmavo and compound. Use the type that spelling_form shows.";
+  for (const spelling of ["taia", "i'ecu'i"]) {
+    const config = makeConfig({
+      fetch: queue(
+        [
+          completion(typeAnswer({ word_type: "cmavo" })),
+          completion(typeAnswer({ word_type: "compound" })),
+        ],
+        (body, turn) => {
+          if (turn) assert.ok(body.messages.at(-1).content.includes(problem));
+        },
+      ),
+    });
+    const log = newLog("type", config, await promptVersion());
+    const result = await runAssistance(
+      draft("type", { spelling }),
+      config,
+      [],
+      AbortSignal.timeout(2000),
+      log,
+      () => {},
+    );
+    assert.deepEqual(result.proposals, [
+      { path: "/word_type", value: "compound" },
+    ]);
+    assert.deepEqual(log.exchanges[0].attempts[0].check.problems, [problem]);
+    assert.equal(log.corrections, 1);
   }
 });
 
@@ -3581,13 +3635,25 @@ for (const typed of ["brodu", "bródu"])
 
 test("type compound request fields use only parts supplied by the morphology API", async () => {
   const { typeSpellingFields } = await import("../src/assistance.ts");
-  assert.deepEqual(
-    typeSpellingFields({ kind: "compound", parts: ["tai", ".a"] }),
-    { spelling_form: "compound", spelling_parts: ["tai", ".a"] },
-  );
+  const analysis = analyzeWord("extended-v4", "taia");
+  assert.deepEqual(typeSpellingFields(analysis), {
+    spelling_form: "compound",
+    spelling_parts: ["tai", "a"],
+  });
   assert.deepEqual(typeSpellingFields({ kind: "compound" }), {
     spelling_form: "unknown",
   });
+  assert.deepEqual(
+    typeSpellingFields({ ...analysis, words: analysis.words!.slice(0, 1) }),
+    { spelling_form: "unknown" },
+  );
+  assert.deepEqual(
+    typeSpellingFields({
+      ...analysis,
+      words: [analysis.words![0], { ...analysis.words![1], kind: "gismu" }],
+    }),
+    { spelling_form: "unknown" },
+  );
   assert.deepEqual(typeSpellingFields({ kind: "cmavo" }), {
     spelling_form: "cmavo",
   });

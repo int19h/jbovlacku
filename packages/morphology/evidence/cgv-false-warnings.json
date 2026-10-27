@@ -1,0 +1,894 @@
+{
+  "description": "These 220 dictionary headwords received a CgV warning at the baseline revision. The pinned gencmu forms stage accepted them without Cgv-Warning. Each must remain accepted without that warning.",
+  "baseline_revision": "9a75a5573f4933549fe61fc9c9361baa879438ff",
+  "gencmu_revision": "0b3da7d2ec2f727a6730d77c775f88214a7ffc89",
+  "dialect": "experimental",
+  "stage": "forms",
+  "dictionary_headword_count": 31668,
+  "dictionary_headwords_sha256": "2c7868e0540a2bd478cc5deffc28830324d311e9d873dd16971cb18cab89041d",
+  "baseline_recognize_sha256": "a929c55794a56cd4966f40cf66a668a645d32d0134b81f4d9d126b821f1f40f4",
+  "gencmu_experimental_grammar_sha256": "c6e9056abdc8a3815243f043d425c083a0cfb477db077b734c59c91d8bf70ec6",
+  "count": 220,
+  "words": [
+    {
+      "input": "ZAMbiias",
+      "kind": "cmevla"
+    },
+    {
+      "input": "abniiena",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "abniienybau",
+      "kind": "lujvo"
+    },
+    {
+      "input": "abniienygu'e",
+      "kind": "lujvo"
+    },
+    {
+      "input": "abniienyru'u",
+      "kind": "lujvo"
+    },
+    {
+      "input": "aktiniiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "akuuas",
+      "kind": "cmevla"
+    },
+    {
+      "input": "amfiiuma",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "amnadiia",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "amniio",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "andiuorxol",
+      "kind": "cmevla"
+    },
+    {
+      "input": "apsuua",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "artriiume",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "atkaciia",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "atkuuila",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "atriium",
+      "kind": "cmevla"
+    },
+    {
+      "input": "bantuuo",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "barjiiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "benkiio",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "berkeliiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "bliiardo",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "bluueta",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "bolrbliiardo",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "bolviia",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "bombiksiia",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "borxiiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "braxiiura",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "breviia",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "briii",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "bundukiia",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "burjuia",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "cenciia",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "cistrxaioliiano",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "cistrxiioniiano",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "ckaisiiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "ckankuua",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "ckeriiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "ckuriiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "cmuuugle",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "cniiobi",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "cnuiorke",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "cpikiui",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "creniiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "crenzuue",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "crimpuui",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "crituuensa",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "crodiiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "ctaliiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "ctoriiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "ctuliiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "datkrsomateriia",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "demkratiia",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "dipsrosiiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "diuatas",
+      "kind": "cmevla"
+    },
+    {
+      "input": "djanuua",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "djiienka",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "djonstiuetMIL",
+      "kind": "cmevla"
+    },
+    {
+      "input": "djuliio",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "djumxuriia",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "djuniio",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "djuriio",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "dubniiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "dzuluui",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "e'urpiiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "ejliio",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "elniniio",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "enriio",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "erbiiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "estciia",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "fenxuuana",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "ferbruua",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "fermiiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "filsofiia",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "fleroviiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "fluuori",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "franguua",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "fransiiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "funtiio",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "galjiiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "gambiia",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "gerkrtciuaua",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "gerkuuono",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "germniiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "giiOm",
+      "kind": "cmevla"
+    },
+    {
+      "input": "gondiii'i",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "gonxeguuo",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "gordiio",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "grafnkipliiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "grafnseljimcnkipliiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "grukiui",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "grutrkiui",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "gruue",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "guzmrmakuua",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "ikfiio",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "indiiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "interviiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "irdiiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "irterbiiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "iskuuil",
+      "kind": "cmevla"
+    },
+    {
+      "input": "itcriiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "itiiopiias",
+      "kind": "cmevla"
+    },
+    {
+      "input": "itliiano",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "jbakiui",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "jbarnkiui",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "jmaliio",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "jvalriio",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "jvencuio",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "kadmiiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "kandiiene",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "kantiniiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "karliiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "klombiia",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "korliiande",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "kriiofla",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "kriluui",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "kruuaiti",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "kruuenu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "kulnrturkiie",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "kuualalumpur",
+      "kind": "cmevla"
+    },
+    {
+      "input": "latcranguui",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "laurnciiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "lenguua",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "liiaunin",
+      "kind": "cmevla"
+    },
+    {
+      "input": "litxiiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "lormanrdaubentoniia",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "manapuuas",
+      "kind": "cmevla"
+    },
+    {
+      "input": "manctuuo",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "mardjiio",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "mariias",
+      "kind": "cmevla"
+    },
+    {
+      "input": "martiio",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "masxiia",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "merkiiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "miiAmiiak",
+      "kind": "cmevla"
+    },
+    {
+      "input": "miiamip",
+      "kind": "cmevla"
+    },
+    {
+      "input": "miiaumis",
+      "kind": "cmevla"
+    },
+    {
+      "input": "miiymAs",
+      "kind": "cmevla"
+    },
+    {
+      "input": "minguuo",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "minsiiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "mitxondriio",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "moksoviiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "mriiaucmo",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "naMIBiias",
+      "kind": "cmevla"
+    },
+    {
+      "input": "neptuniiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "nerliiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "nipniiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "nobveliiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "nu,IORK",
+      "kind": "cmevla"
+    },
+    {
+      "input": "nudrbiiano",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "ordiia",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "otsmiiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "pemsuua",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "pervuui",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "pinxiia",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "plesiio",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "plutniiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "polniiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "priliio",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "raldiiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "ricrkaciia",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "ricrko'ompasiia",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "rongeniiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "rubdiiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "sebastiIAN",
+      "kind": "cmevla"
+    },
+    {
+      "input": "sitcuuan",
+      "kind": "cmevla"
+    },
+    {
+      "input": "skandiiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "skiueli",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "skorpiio",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "sleniiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "slinkuui",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "sloskatkuuila",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "sniuenzi",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "soMAliias",
+      "kind": "cmevla"
+    },
+    {
+      "input": "spaniiole",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "sparviiola",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "sriuu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "strontiiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "stuuiki",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "sultaniia",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "tcasnuue",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "tciiani",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "tciiivu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "tcinciia",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "tcinguuo",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "tciuaua",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "tciuiro",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "tcuskuue",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "tenbriio",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "tenguuar",
+      "kind": "cmevla"
+    },
+    {
+      "input": "terbiiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "tiptiuitce",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "tortiia",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "truueno",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "tsa'abliiei",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "tseborgiiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "tsekuuoia",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "tsuuomno",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "uitkipediia",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "urguuandas",
+      "kind": "cmevla"
+    },
+    {
+      "input": "urniiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "vanguia",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "versiio",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "vluuo",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "xafniiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "xali,uyd",
+      "kind": "cmevla"
+    },
+    {
+      "input": "xastsiiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "xasy'atkuuila",
+      "kind": "lujvo"
+    },
+    {
+      "input": "xaupiias",
+      "kind": "cmevla"
+    },
+    {
+      "input": "xiIUM",
+      "kind": "cmevla"
+    },
+    {
+      "input": "xiuas",
+      "kind": "cmevla"
+    },
+    {
+      "input": "xolmiiu",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "xre'abniienybau",
+      "kind": "lujvo"
+    },
+    {
+      "input": "xrisobibliia",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "xruii",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "xukmrxeruuina",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "zabdiia",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "zambiia",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "zdalatukuuerpo'alegriiamakarenaketukuuerpo'espadarle'alegriiakosabuuenadalatukuuerpo'alegriiamakarena'eimakarena",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "zduriiane",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "zgicrenzuue",
+      "kind": "fuhivla"
+    },
+    {
+      "input": "zvasiiu",
+      "kind": "fuhivla"
+    }
+  ]
+}

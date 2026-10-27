@@ -1,3 +1,4 @@
+import { wordFormStatus } from "../../components/word-form-feedback.ts";
 import { kindLabel } from "../../model/types.ts";
 import { detectWord, typedWord } from "../../model/typed-headword.ts";
 import {
@@ -161,7 +162,9 @@ export async function typePage(
     for (const diagnostic of analysis.diagnostics)
       detection.append(p(diagnostic, "meta"));
   }
-  section.append(detection);
+  const formStatus = wordFormStatus(draft, () => saver.touch());
+  section.append(detection, formStatus.wrapper);
+  main.addEventListener("assist-change", formStatus.refresh);
   const rootWarnings = el("div", {
     role: "region",
     "aria-label": "Gismu closeness",
@@ -379,6 +382,7 @@ export async function typePage(
     button.textContent = labelFor();
     typeReview.hidden = !draft.review.includes("word type");
     renderRoots();
+    formStatus.refresh();
     button.disabled = !draft.kind;
   };
   primary = actionBar(saver, {

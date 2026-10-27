@@ -49,7 +49,7 @@ test("Playwright runs isolate data and workers reuse only their run directory", 
 
 test("both build outputs carry the exact morphology notice and an index link", async () => {
   const notice = await readFile(
-    join(root, "crates/jvc-morphology/THIRD-PARTY-NOTICES.md"),
+    join(root, "packages/morphology/THIRD-PARTY-NOTICES.md"),
   );
   const parent = process.env.JVC_TEST_ROOT ?? tmpdir();
   await mkdir(parent, { recursive: true });

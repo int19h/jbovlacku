@@ -25,7 +25,8 @@ The project ships two server adapters: a standalone server and a Cloudflare Work
 Neither the dictionary format nor the standalone server requires a Cloudflare account.
 
 The application uses a Rust core with native and WebAssembly builds, plus a shared TypeScript HTTP service layer.
-The core contains canonical records, signatures, causal state, ranking, and deterministic word-building operations.
+The Rust core contains canonical records, signatures, causal state, and ranking.
+A shared TypeScript package provides word recognition and deterministic word builders.
 The browser and Workers consume its WebAssembly build. The CLI can use the native build.
 Thin host adapters supply storage, transaction coordination, queues, secrets, clocks, and outbound HTTP.
 The implementer must establish dependency licenses and runtime compatibility before reusing jbotci code.

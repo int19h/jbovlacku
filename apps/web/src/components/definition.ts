@@ -27,6 +27,7 @@ import { judgmentControl, scoreDetails } from "./judgment.ts";
 import type { App } from "../app/context.ts";
 import { routes } from "../app/router.ts";
 import { getIdentity } from "../data/api.ts";
+import { isZeiCompound } from "../model/builders.ts";
 import type { LoadedRecord } from "../data/api.ts";
 
 export interface DefinitionBlockOptions {
@@ -621,12 +622,13 @@ export function etymologyNodes(body: DefinitionBody): Node[] {
       renderRichText(e.text, { language: body.language, placeHref: null }),
     );
   if (e.compound) {
+    const zei = isZeiCompound(e.compound);
     const parts = e.compound.components
-      .map((c) => `${c.word.spelling} (${c.rafsi})`)
-      .join(" + ");
+      .map((c) => (zei ? c.word.spelling : `${c.word.spelling} (${c.rafsi})`))
+      .join(zei ? " zei " : " + ");
     nodes.push(
       p(
-        `${parts}${e.compound.score !== null ? ` · score ${e.compound.score}` : ""}`,
+        `${parts}${!zei && e.compound.score !== null ? ` · score ${e.compound.score}` : ""}`,
         "small",
       ),
     );
