@@ -5,9 +5,10 @@ import { createQwenProfile, profileId } from "./profile.ts";
 import type { SemanticSource } from "./source.ts";
 import type { EmbeddingProfile } from "./types.ts";
 import { SemanticError } from "./types.ts";
-import type { VectorStore } from "./vector-store.ts";
+import type { IndexBatch, VectorStore } from "./vector-store.ts";
 
-export type IndexEmbedder = Pick<AssistanceService, "embed">;
+export type IndexEmbedder = Pick<AssistanceService, "embed"> &
+  Partial<Pick<AssistanceService, "embeddingOperationPending">>;
 
 export interface IndexBackoff {
   /** Zero waits for a saved profile cooldown. One through three name retry rounds. */
@@ -85,6 +86,9 @@ export class SemanticIndexer {
     id: string,
     options: {
       concurrency?: number;
+      /** The background host schedules its own durable retries. The CLI keeps the default. */
+      automaticRetries?: boolean;
+      onFailure?: (failure: unknown, batch: IndexBatch) => void;
       maxBatches?: number;
       signal?: AbortSignal;
       /** Called after all workers settle and before each bounded retry wait. */
@@ -199,6 +203,7 @@ export class SemanticIndexer {
               break;
             }
             let usage: EmbeddingUsage | undefined;
+            let operation: string | null = null;
             try {
               const inputs = await this.store.inputs(batch.id);
               if (options.signal?.aborted) {
@@ -211,7 +216,10 @@ export class SemanticIndexer {
                 inputs,
                 { kind: "index" },
                 undefined,
-                (operation) => this.store.sent(batch.id, operation),
+                async (id) => {
+                  await this.store.sent(batch.id, id);
+                  operation = id;
+                },
               );
               usage = result.usage;
               await this.store.complete(
@@ -237,7 +245,10 @@ export class SemanticIndexer {
               else stopCode = code;
               if (
                 rateLimited ||
-                (typeof hint === "number" && Number.isFinite(hint) && hint >= 0)
+                (!code.startsWith("billing_") &&
+                  typeof hint === "number" &&
+                  Number.isFinite(hint) &&
+                  hint >= 0)
               ) {
                 const delayMs = Math.max(
                   rateLimited ? 1000 * 2 ** round : 0,
@@ -258,6 +269,12 @@ export class SemanticIndexer {
               )
                 await this.store.suspend(identity, code);
               await this.store.fail(batch.id, code, usage);
+              options.onFailure?.(failure, {
+                ...batch,
+                operation,
+                state: operation ? "ambiguous" : "failed",
+                error: code,
+              });
               const generation = await this.store.generation(id);
               if (
                 generation.state === "paused" &&
@@ -276,6 +293,7 @@ export class SemanticIndexer {
         const failed = results.find((result) => result.status === "rejected");
         if (failed?.status === "rejected") throw failed.reason;
         if (
+          options.automaticRetries === false ||
           !retries.length ||
           stopCode ||
           round >= 3 ||

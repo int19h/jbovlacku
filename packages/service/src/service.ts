@@ -134,6 +134,7 @@ export interface ServiceOptions {
   checkpointIntervalMs?: number;
   coreVersion?: string;
   reportError?: (error: unknown) => void;
+  reportSemanticStatus?: (message: string) => void;
   allowPrototypeBatch?: boolean;
   beforeCommit?: (state: State) => Promise<void>;
   /**
@@ -183,6 +184,7 @@ export class DictionaryService {
           )
         ).some((profile) => profile.pending > 0),
       report: (error) => this.options.reportError?.(error),
+      status: this.options.reportSemanticStatus,
     });
     this.backgroundSemantic.start();
   }

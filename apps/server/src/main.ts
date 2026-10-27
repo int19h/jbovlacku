@@ -120,6 +120,10 @@ async function initializeService() {
       coreVersion,
       asyncMaterialization: true,
       evaluationRuntime,
+      reportSemanticStatus: (message) =>
+        console.warn(
+          JSON.stringify({ event: "semantic_index_status", message }),
+        ),
       reportError:
         process.env.JVC_LOG_ERRORS === "enabled"
           ? (error) =>

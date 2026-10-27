@@ -4,7 +4,19 @@ import type { DocumentPage, IndexContext, IndexDocument } from "./source.ts";
 
 export const MAX_PROFILE_COOLDOWN_MS = 60 * 60 * 1000;
 
+export interface BackgroundRecovery {
+  next_attempt: number;
+  not_before: number;
+  operation?: string;
+  batch?: string;
+  refusals: number;
+  sent_attempts: number;
+  exhausted: boolean;
+  reason: string;
+}
+
 export interface IndexGeneration extends IndexContext {
+  background_recovery?: BackgroundRecovery;
   id: string;
   state: "paused" | "running" | "completed" | "retired";
   cursor: string | null;
@@ -60,6 +72,12 @@ export interface VectorStore {
     view: string,
   ): Promise<IndexGeneration | null>;
   setBackgroundGeneration(id: string): Promise<void>;
+  setBackgroundRecovery(
+    id: string,
+    recovery: BackgroundRecovery | null,
+  ): Promise<void>;
+  recoverBackground(id: string): Promise<void>;
+  retryableBatch(id: string): Promise<IndexBatch | null>;
   pruneBackgroundGenerations(profile: string, view: string): Promise<void>;
   recordProbe(profile: string, evidence: ProbeEvidence): Promise<void>;
   probeEvidence(profile: string): Promise<ProbeEvidence | null>;

@@ -10,6 +10,7 @@ import type { DocumentPage, IndexContext } from "./source.ts";
 import type { EmbeddingUsage } from "../embedding.ts";
 import { MAX_PROFILE_COOLDOWN_MS } from "./vector-store.ts";
 import type {
+  BackgroundRecovery,
   IndexBatch,
   IndexGeneration,
   VectorStore,
@@ -92,6 +93,7 @@ export class SqlVectorStore implements VectorStore {
       "CREATE TABLE IF NOT EXISTS semantic_capacity_reservations(batch TEXT PRIMARY KEY, vectors INTEGER NOT NULL, bytes INTEGER NOT NULL)",
       "CREATE TABLE IF NOT EXISTS semantic_coverage_progress(scope TEXT PRIMARY KEY, revision INTEGER NOT NULL)",
       "CREATE TABLE IF NOT EXISTS semantic_retirements(generation TEXT PRIMARY KEY)",
+      "CREATE TABLE IF NOT EXISTS semantic_background_recovery(generation TEXT PRIMARY KEY, value TEXT NOT NULL)",
       "CREATE TABLE IF NOT EXISTS semantic_background_owned(generation TEXT PRIMARY KEY)",
       "CREATE TABLE IF NOT EXISTS semantic_background(profile TEXT NOT NULL, view TEXT NOT NULL, generation TEXT NOT NULL, PRIMARY KEY(profile,view))",
       "CREATE TABLE IF NOT EXISTS semantic_current(profile TEXT NOT NULL, view TEXT NOT NULL, generation TEXT NOT NULL, rollback TEXT, PRIMARY KEY(profile,view))",
@@ -157,7 +159,18 @@ export class SqlVectorStore implements VectorStore {
         "semantic_generation",
         "The index generation is unavailable.",
       );
+    const recovery = this.sql.exec(
+      "SELECT value FROM semantic_background_recovery WHERE generation=?",
+      id,
+    )[0];
     return {
+      ...(recovery
+        ? {
+            background_recovery: JSON.parse(
+              String(recovery.value),
+            ) as BackgroundRecovery,
+          }
+        : {}),
       id,
       snapshot: String(row.snapshot),
       view: String(row.view),
@@ -168,6 +181,48 @@ export class SqlVectorStore implements VectorStore {
       source_done: Boolean(row.source_done),
       error: row.error === null ? null : String(row.error),
     };
+  }
+  async setBackgroundRecovery(id: string, recovery: BackgroundRecovery | null) {
+    this.active(id);
+    if (recovery === null) {
+      this.sql.exec(
+        "DELETE FROM semantic_background_recovery WHERE generation=?",
+        id,
+      );
+    } else {
+      this.sql.exec(
+        "INSERT INTO semantic_background_recovery VALUES(?,?) ON CONFLICT(generation) DO UPDATE SET value=excluded.value",
+        id,
+        JSON.stringify(recovery),
+      );
+    }
+  }
+  async recoverBackground(id: string) {
+    const generation = this.active(id);
+    if (
+      generation.state === "running" ||
+      this.sql.exec(
+        "SELECT 1 FROM semantic_batches WHERE generation=? AND state IN ('prepared','sent') LIMIT 1",
+        id,
+      ).length
+    )
+      await this.recover(id);
+  }
+  /** Select only a failed attempt that still owns all its inputs. History size does not limit recovery. */
+  async retryableBatch(id: string) {
+    this.active(id);
+    const row = this.sql.exec(
+      `SELECT b.id FROM semantic_batch_inputs i JOIN semantic_batches b ON b.id=i.batch
+       JOIN semantic_generations g ON g.id=i.generation
+       LEFT JOIN semantic_vectors v ON v.profile=g.profile AND v.input=i.input
+       WHERE i.generation=? AND b.state IN ('failed','ambiguous') AND v.input IS NULL
+       AND NOT EXISTS (SELECT 1 FROM json_each(b.inputs) j
+         LEFT JOIN semantic_batch_inputs owner ON owner.generation=b.generation AND owner.input=j.value
+         WHERE owner.batch IS NULL OR owner.batch!=b.id)
+       LIMIT 1`,
+      id,
+    )[0];
+    return row ? this.batch(String(row.id)) : null;
   }
   async backgroundGeneration(profile: string, view: string) {
     const row = this.sql.exec(
@@ -930,6 +985,11 @@ export class SqlVectorStore implements VectorStore {
         "UPDATE semantic_batches SET state='completed',usage=?,error=NULL WHERE id=?",
         JSON.stringify(usage),
         id,
+      );
+      // Reset recovery in the vector transaction so that a crash cannot restore the old failure streak.
+      this.sql.exec(
+        "DELETE FROM semantic_background_recovery WHERE generation=?",
+        generation.id,
       );
     });
   }
