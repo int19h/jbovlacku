@@ -228,3 +228,64 @@ test("authenticated history disables signing in its storage transaction and igno
     expect(outcome.saved, JSON.stringify(outcome)).toBe(!outcome.valid);
   }
 });
+
+test("distinct authenticated transfers keep the recovery conflict marker within one batch and across calls", async ({
+  page,
+}) => {
+  await harness(page);
+  const markers = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const seed = new Uint8Array(32).fill(71);
+    const identity = core.identityFromSeed(seed);
+    const transfers = [87, 88].map(
+      (successor, index) =>
+        core.createEvent(
+          seed,
+          [],
+          String(index + 1).repeat(32),
+          {
+            kind: "identity.transfer",
+            successor: core.identityFromSeed(
+              new Uint8Array(32).fill(successor),
+            ),
+          },
+          null,
+        ).envelope,
+    );
+    const results = [];
+    for (const method of [
+      "restoreServerOwn",
+      "rememberOwn",
+      "recordBranch",
+    ] as const) {
+      for (const batch of [false, true]) {
+        const store = new LocalStore(
+          `transfer-conflict-${crypto.randomUUID()}`,
+        );
+        if (batch) await store[method](identity, transfers);
+        else {
+          await store[method](identity, [transfers[0]]);
+          await store[method](identity, [transfers[0]]);
+          results.push(
+            (await store.get("keys", `transfer-known:${identity}`)) ===
+              transfers[0].id,
+          );
+          await store[method](identity, [transfers[1]]);
+        }
+        results.push(
+          (await store.get("keys", `transfer-known:${identity}`)) ===
+            "conflicting-transfers",
+        );
+        await store[method](identity, [transfers[0]]);
+        results.push(
+          (await store.get("keys", `transfer-known:${identity}`)) ===
+            "conflicting-transfers",
+        );
+      }
+    }
+    return results;
+  }, corePath);
+  expect(markers.every(Boolean)).toBe(true);
+});

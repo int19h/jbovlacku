@@ -16,18 +16,26 @@ import type { Draft } from "../model/draft.ts";
 
 /** Only authenticated, well-formed lifecycle actions can disable ordinary signing. */
 function lifecycleMarkers(identity: string, envelopes: Envelope[]) {
-  const markers: [string, string][] = [];
+  const markers = new Map<string, string>();
   for (const envelope of envelopes) {
     const verified = verifyEnvelope(utf8(JSON.stringify(envelope)));
     if (envelope.header.issuer !== identity)
       throw new Error("A learned record does not belong to this identity.");
     if (!verified.action_valid) continue;
-    if (envelope.header.action.kind === "identity.transfer")
-      markers.push([`transfer-known:${identity}`, envelope.id]);
+    if (envelope.header.action.kind === "identity.transfer") {
+      const key = `transfer-known:${identity}`;
+      const existing = markers.get(key);
+      markers.set(
+        key,
+        existing && existing !== envelope.id
+          ? "conflicting-transfers"
+          : envelope.id,
+      );
+    }
     if (envelope.header.action.kind === "identity.compromise")
-      markers.push([`compromised:${identity}`, envelope.id]);
+      markers.set(`compromised:${identity}`, envelope.id);
   }
-  return markers;
+  return [...markers];
 }
 function saveLifecycleMarkers(
   keys: IDBObjectStore,
@@ -37,6 +45,8 @@ function saveLifecycleMarkers(
     const existing = keys.get(key);
     existing.onsuccess = () => {
       if (!existing.result) keys.put(id, key);
+      else if (key.startsWith("transfer-known:") && existing.result !== id)
+        keys.put("conflicting-transfers", key);
     };
   }
 }
