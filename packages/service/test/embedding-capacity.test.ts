@@ -35,6 +35,9 @@ const answer = {
               name: "submit_answer",
               arguments: JSON.stringify({
                 word_type: "gismu",
+                alternative: null,
+                alternative_reason: null,
+                existing: null,
                 reason: "Root.",
               }),
             },

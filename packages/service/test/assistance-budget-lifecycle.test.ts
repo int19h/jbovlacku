@@ -50,6 +50,9 @@ const completion = (cost: number | null = 0.001) => ({
               name: "submit_answer",
               arguments: JSON.stringify({
                 word_type: "gismu",
+                alternative: null,
+                alternative_reason: null,
+                existing: null,
                 reason: "Root.",
               }),
             },

@@ -393,8 +393,6 @@ function hintEditor(
   render();
   return box;
 }
-/** What the next render of the page says about a Revise copy. */
-let reviseNotice: string[] | null = null;
 export async function placesPage(
   route: Route,
   context: RenderContext,
@@ -440,7 +438,8 @@ export async function placesPage(
         record.envelope.header.action.origin === "import" ? "import" : "native";
       const replaced = draft;
       draft = draftFromBody(record.body, reviseId, origin, record.rawBody);
-      reviseNotice = revisionChanges(record.body, origin);
+      draft.savedDrafts = await app.store.savedDrafts();
+      draft.revisionNotice = revisionChanges(record.body, origin);
       await app.store.saveDraft(
         DRAFT_KEY,
         draft,
@@ -472,9 +471,10 @@ export async function placesPage(
   }
   const saver = new DraftSaver(app, draft);
   main.append(stepBar(draft, 4));
-  if (reviseNotice) {
-    const changes = reviseNotice;
-    reviseNotice = null;
+  if (draft.revisionNotice) {
+    const changes = draft.revisionNotice;
+    delete draft.revisionNotice;
+    saver.touch();
     main.append(
       p(
         changes.length
@@ -507,6 +507,14 @@ export async function placesPage(
     }),
   );
   main.append(headline);
+  if (draft.ai?.records.some((record) => record.key === "definition"))
+    main.append(
+      assistanceAction(app, draft, saver, context, {
+        key: "definition",
+        label: "Rewrite definition",
+        operation: "definition",
+      }),
+    );
   if (draft.parents.length)
     main.append(
       el(

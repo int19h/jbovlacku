@@ -282,7 +282,9 @@ export async function preferencesPage(
       button(
         "Export drafts",
         async () => {
-          const drafts = await app.store.list("drafts");
+          const drafts = (
+            await app.store.list<{ kind?: string }>("drafts")
+          ).filter((row) => row?.kind !== "saved-drafts");
           download(
             `jbovlacku-drafts-${Date.now()}.json`,
             JSON.stringify(drafts, null, 2),
