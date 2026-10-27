@@ -187,7 +187,7 @@ Existing-word actions also remain available after type acceptance.
 Related retrieval keeps up to three exact-spelling senses in editorial order and scans each lexical query once.
 Query cleanup keeps inner apostrophes. Logs distinguish lexical, semantic-profile, and absent retrieval.
 Related public definitions do not expand remembered consent. Semantic retrieval for type suggestions remains pending.
-Compound spelling parts also await the shared word analysis API. Type requests currently send only the forms that `analyzeWord` supplies.
+Type requests use the shared word analysis API to send compound cmavo parts. Their private logs record the morphology profile and version.
 Source acceptance replaces earlier AI notes and preserves authored notes. A changed suggested word requires review of retained source evidence.
 Marked fields stay read-only until Keep or Clear. A type change that removes the formation also removes its review marks.
 Explicit evidence removal keeps the marks for reused source values. Undo restores required marks with returned values and preserves later review choices.

@@ -110,8 +110,12 @@ const provider = createServer(async (request, response) => {
     body.tools?.[0]?.function?.parameters?.properties ?? {},
     "word_ipa",
   );
+  const typeTask = Object.hasOwn(
+    body.tools?.[0]?.function?.parameters?.properties ?? {},
+    "word_type",
+  );
   const supplied =
-    componentTask || sourceTask
+    componentTask || sourceTask || typeTask
       ? JSON.parse(
           body.messages.find(
             (message: { role: string }) => message.role === "user",
@@ -154,7 +158,8 @@ const provider = createServer(async (request, response) => {
         }
       : corrected
         ? {
-            word_type: "cmavo",
+            word_type:
+              supplied?.spelling_form === "compound" ? "compound" : "cmavo",
             alternative: null,
             reason: "A grammar word fits this meaning.",
             alternative_reason: null,
