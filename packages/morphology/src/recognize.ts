@@ -8,7 +8,9 @@ import type { MorphologyWord, RecoveredPart, WordAnalysis } from "./types.ts";
 
 export const CGV_WARNING =
   "This form is not valid under the current BPFK morphology.";
-export const PEG_WORK_LIMIT = 50_000;
+// A bounded search found a 128-byte lujvo that needs 53,800 rule entries.
+// Leave 21,200 entries of headroom. Historical profiles keep their own limits.
+export const PEG_WORK_LIMIT = 75_000;
 const morphology = {
   id: "https://github.com/int19h/jbovlacku/blob/main/docs/morphology.md#extended-lujvo",
   version: "4",
