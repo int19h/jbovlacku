@@ -14,6 +14,33 @@ import {
 import type { Envelope, Transport } from "../model/types.ts";
 import type { Draft } from "../model/draft.ts";
 
+/** Only authenticated, well-formed lifecycle actions can disable ordinary signing. */
+function lifecycleMarkers(identity: string, envelopes: Envelope[]) {
+  const markers: [string, string][] = [];
+  for (const envelope of envelopes) {
+    const verified = verifyEnvelope(utf8(JSON.stringify(envelope)));
+    if (envelope.header.issuer !== identity)
+      throw new Error("A learned record does not belong to this identity.");
+    if (!verified.action_valid) continue;
+    if (envelope.header.action.kind === "identity.transfer")
+      markers.push([`transfer-known:${identity}`, envelope.id]);
+    if (envelope.header.action.kind === "identity.compromise")
+      markers.push([`compromised:${identity}`, envelope.id]);
+  }
+  return markers;
+}
+function saveLifecycleMarkers(
+  keys: IDBObjectStore,
+  markers: [string, string][],
+) {
+  for (const [key, id] of markers) {
+    const existing = keys.get(key);
+    existing.onsuccess = () => {
+      if (!existing.result) keys.put(id, key);
+    };
+  }
+}
+
 export interface KeyBackup {
   format: "jbovlacku-key-backup";
   version: 1;
@@ -942,11 +969,7 @@ export class LocalStore {
     envelopes: Envelope[],
   ): Promise<string[]> {
     if (!envelopes.length) return [];
-    for (const envelope of envelopes) {
-      verifyEnvelope(utf8(JSON.stringify(envelope)));
-      if (envelope.header.issuer !== identity)
-        throw new Error("A server record does not belong to this identity.");
-    }
+    const lifecycle = lifecycleMarkers(identity, envelopes);
     const db = await this.database;
     let restored = false;
     let committedHeads: string[] = [];
@@ -959,6 +982,7 @@ export class LocalStore {
       const heads = tx.objectStore("heads");
       const keys = tx.objectStore("keys");
       const prefs = tx.objectStore("prefs");
+      saveLifecycleMarkers(keys, lifecycle);
       const history = own.getAll();
       const items = tx.objectStore("outbox").getAll();
       const current = heads.get(identity);
@@ -1048,14 +1072,13 @@ export class LocalStore {
     envelopes: import("../model/types.ts").Envelope[],
   ): Promise<void> {
     if (!envelopes.length) return;
-    for (const envelope of envelopes)
-      if (envelope.header.issuer !== identity)
-        throw new Error("A learned record does not belong to this identity.");
+    const lifecycle = lifecycleMarkers(identity, envelopes);
     const ids = new Set(envelopes.map((e) => e.id));
     const predecessors = new Set(envelopes.flatMap((e) => e.header.previous));
     const db = await this.database;
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(["ownhistory", "heads"], "readwrite");
+      const tx = db.transaction(["ownhistory", "heads", "keys"], "readwrite");
+      saveLifecycleMarkers(tx.objectStore("keys"), lifecycle);
       const own = tx.objectStore("ownhistory");
       for (const envelope of envelopes) own.put(envelope, envelope.id);
       const heads = tx.objectStore("heads");
@@ -1088,14 +1111,11 @@ export class LocalStore {
     envelopes: import("../model/types.ts").Envelope[],
   ): Promise<void> {
     if (!envelopes.length) return;
-    for (const envelope of envelopes)
-      if (envelope.header.issuer !== identity)
-        throw new Error(
-          "A remembered record does not belong to this identity.",
-        );
+    const lifecycle = lifecycleMarkers(identity, envelopes);
     const db = await this.database;
     return new Promise((resolve, reject) => {
-      const tx = db.transaction("ownhistory", "readwrite");
+      const tx = db.transaction(["ownhistory", "keys"], "readwrite");
+      saveLifecycleMarkers(tx.objectStore("keys"), lifecycle);
       const own = tx.objectStore("ownhistory");
       for (const envelope of envelopes) own.put(envelope, envelope.id);
       tx.oncomplete = () => resolve();

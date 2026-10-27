@@ -84,6 +84,8 @@ export class Signer {
       identity,
       this.offlineSigning(),
     );
+    const learnedRestriction = await session.signingDisabled(identity);
+    if (learnedRestriction) throw new Error(learnedRestriction);
     if (
       session.workingKey !== signingKey ||
       session.backup?.identity !== identity
