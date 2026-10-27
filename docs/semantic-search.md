@@ -223,6 +223,7 @@ The background server retries this job automatically. The operator CLI keeps its
 A refusal before dispatch creates no provider charge. Busy slots, budget refusals, and probe errors receive exponential backoff from one second to one minute.
 A probe that reaches the provider retains its own charge, even when it fails before the indexing batch starts.
 The server waits for saved provider cooldowns and hourly or daily budget windows. It never raises a spending cap.
+Provider hints keep the existing one-hour cooldown cap. Budget-window hints retain their full delay, including a daily window.
 
 An unknown indexing send receives at most three automatic linked retries in one recovery round.
 Each retry creates a new batch and shared-budget operation. Earlier batches and conservative charges remain intact.

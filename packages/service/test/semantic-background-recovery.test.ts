@@ -889,3 +889,39 @@ test("background exhaustion writes safe status even when raw error reporting is 
     await background.close();
   }
 });
+
+for (const hint of ["31536000", "9007199254740991"]) {
+  test(`background provider hint ${hint} stays within the one-hour cap and recovers`, async (t) => {
+    let calls = 0;
+    const f = await fixture(t, async () =>
+      ++calls === 1
+        ? new Response("Limited", {
+            status: 429,
+            headers: { "retry-after": hint },
+          })
+        : success(),
+    );
+    const background = f.host();
+    await background.cycle();
+    const saved = await f.job();
+    assert.equal(
+      saved.error,
+      "embedding_rate_limited",
+      "A large provider hint must not become an invalid-date error",
+    );
+    assert(
+      saved.background_recovery,
+      "A long provider refusal must receive a recovery deadline",
+    );
+    assert.equal(saved.background_recovery.next_attempt - Date.now(), 3600000);
+    assert.equal(saved.background_recovery.not_before - Date.now(), 3600000);
+    f.advance(3599999);
+    await background.cycle();
+    assert.equal(calls, 1);
+    f.advance(1);
+    await background.cycle();
+    assert.equal(calls, 2);
+    assert.equal((await f.job()).state, "completed");
+    assert(Math.abs((await charge(f.budget)) - (quote + cost)) < 1e-12);
+  });
+}

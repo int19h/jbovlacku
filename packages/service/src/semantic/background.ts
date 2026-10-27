@@ -1,6 +1,7 @@
 import { SemanticIndexer, type IndexEmbedder } from "./indexer.ts";
 import type { SemanticSource } from "./source.ts";
 import type { EmbeddingProfile } from "./types.ts";
+import { MAX_PROFILE_COOLDOWN_MS } from "./vector-store.ts";
 import type {
   BackgroundRecovery,
   IndexGeneration,
@@ -190,7 +191,12 @@ export class BackgroundSemanticIndexer {
     const now = this.now();
     const notBefore = Math.max(
       (await store.retryAfter(job.profile)) ?? 0,
-      Number.isFinite(hint) && hint > 0 ? now + hint : 0,
+      Number.isFinite(hint) && hint > 0
+        ? now +
+            (reason.startsWith("billing_")
+              ? hint
+              : Math.min(hint, MAX_PROFILE_COOLDOWN_MS))
+        : 0,
     );
     const sentAttempts = (previous?.sent_attempts ?? 0) + (sent ? 1 : 0);
     const refusals = sent ? 0 : Math.min(16, (previous?.refusals ?? 0) + 1);
