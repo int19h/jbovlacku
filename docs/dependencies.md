@@ -31,6 +31,11 @@ The SHA-256 digest identifies the original UTF-8 text. A dependency change requi
 
 `packages/morphology` ports word-form rules from jbotci under the MIT License. Its `THIRD-PARTY-NOTICES.md` keeps that notice and the preset citations.
 It also retains the MIT notices for ilmentufa and gencmu, which supply the Peggy grammar and reference rules.
+The [text orthography layer](../packages/morphology/src/orthography.ts) derives its rules from six pinned gencmu phoneme grammar documents.
+The [experimental corpus fixture](../packages/morphology/evidence/gencmu-corpus.json) adapts gencmu test cases and records their pinned source revision, file digests, and case identifiers.
+The [morphology notice](../packages/morphology/THIRD-PARTY-NOTICES.md) names those documents and retains gencmu's MIT notice.
+Its [corpus text notices](../packages/morphology/THIRD-PARTY-NOTICES.md#corpus-text-sources) also retain CLL's separate permission notice and identify the inherited literary excerpts.
+The gencmu MIT notice does not assign a license to separately authored quotations.
 Morphology adds no Rust dependency. Peggy 5.1.1 compiles the committed grammar into the committed parser. Both build outputs retain the exact notice as `notices/morphology-notices.md`. The container also retains it as `/app/docs/morphology-notices.md`.
 
 The Rust standard library also contributes code outside `Cargo.lock`.
