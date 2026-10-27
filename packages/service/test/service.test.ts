@@ -562,10 +562,13 @@ test("Wasm malformed overlay matches the native unavailable result", async () =>
 test("transport enclosure accepts a depth32 body and rejects depth33", async () => {
   const { service, coordinator } = await instance();
   let body: unknown = {};
-  for (let i = 0; i < 31; i++) body = [body];
+  for (let i = 0; i < 31; i++) body = { nested: body };
   const entry = event("future.unknown", body);
   assert.equal((await service.fetch(request("/events", entry))).status, 201);
-  const oversized = JSON.stringify({ envelope: entry.envelope, body: [body] });
+  const oversized = JSON.stringify({
+    envelope: entry.envelope,
+    body: { nested: body },
+  });
   assert.equal(
     (
       await service.fetch(
