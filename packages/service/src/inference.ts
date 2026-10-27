@@ -1,6 +1,7 @@
 import { compactJson } from "./json.ts";
 export { compactJson, jsonParts } from "./json.ts";
 import { promptFiles } from "./prompt-bundle.ts";
+import type { EmbeddingUsage } from "./embedding.ts";
 
 export const EMBEDDING_MODEL = "qwen/qwen3-embedding-8b";
 export const EMBEDDING_ROUTE = "nebius";
@@ -34,6 +35,8 @@ type JsonObject = Record<string, any>;
 export const isObject = (value: unknown): value is JsonObject =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 export class AssistanceError extends Error {
+  embeddingUsage?: EmbeddingUsage;
+  retryAfterMs?: number;
   constructor(
     public status: number,
     public code: string,

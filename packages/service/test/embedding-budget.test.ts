@@ -487,14 +487,27 @@ test("model mismatch and invalid vectors preserve known charges without a global
       },
     }),
   );
-  await assert.rejects(
-    service.embed(input, query()),
-    rejectCode("embedding_model_mismatch"),
-  );
-  await assert.rejects(
-    service.embed(input, query()),
-    rejectCode("embedding_response"),
-  );
+  for (const [code, costUsd] of [
+    ["embedding_model_mismatch", 0.000007],
+    ["embedding_response", 0.000008],
+  ] as const) {
+    await assert.rejects(service.embed(input, query()), (failure: unknown) => {
+      assert(failure instanceof AssistanceError);
+      assert.equal(failure.code, code);
+      assert.deepEqual(failure.embeddingUsage, {
+        inputTokens: 100,
+        totalTokens: 100,
+        costUsd,
+      });
+      const entry = entries(budgetStore).find(
+        (entry) => entry.id === failure.operation,
+      );
+      assert(entry);
+      assert.equal(entry.settledUsd, costUsd);
+      assert.equal(entry.costKnown, true);
+      return true;
+    });
+  }
   await service.embed(input, query());
   assert.equal(calls, 3);
   assert.equal(entries(budgetStore)[0].settledUsd, 0.000007);
@@ -755,15 +768,24 @@ test("admission and settlement waits cannot extend the caller deadline or dispat
     "test",
     async () => [],
   );
-  await assert.rejects(
-    settling.embed(input, query()),
-    rejectCode("embedding_timeout"),
-  );
+  await assert.rejects(settling.embed(input, query()), (failure: unknown) => {
+    assert(failure instanceof AssistanceError);
+    assert.equal(failure.code, "embedding_timeout");
+    assert.deepEqual(failure.embeddingUsage, {
+      inputTokens: 100,
+      totalTokens: 100,
+      costUsd: 0.000001,
+    });
+    return true;
+  });
   assert(settlementStarted);
   settlement.resolve();
   await until(
     async () => (await settling.embeddingOperations())[0]?.active === false,
   );
+  assert.equal(entries(durable)[0].settledUsd, 0.000001);
+  assert.equal(entries(durable)[0].costKnown, true);
+  assert.equal(entries(durable)[0].reservedUsd, 0);
 });
 
 for (const blockedSave of ["retry", "reservation"] as const) {
@@ -1047,8 +1069,68 @@ test("key-loader failures are unavailable credentials and route failures are not
     );
     await assert.rejects(
       service.embed(input, query()),
-      rejectCode("embedding_provider"),
+      rejectCode(
+        status === 429 ? "embedding_rate_limited" : "embedding_provider",
+      ),
     );
+  }
+});
+
+test("rate limits preserve known and unknown charges with retry metadata", async () => {
+  for (const kind of ["priced", "unpriced", "malformed"] as const) {
+    let calls = 0;
+    const { service, budgetStore } = fixture(
+      config({
+        fetch: async () => {
+          calls++;
+          const init = { status: 429, headers: { "retry-after": "17" } };
+          return kind === "malformed"
+            ? new Response("<html>disposable-shared-key</html>", init)
+            : Response.json(
+                {
+                  error: { message: "disposable-shared-key" },
+                  ...(kind === "priced"
+                    ? {
+                        usage: {
+                          prompt_tokens: 23,
+                          total_tokens: 23,
+                          cost: 0.000009,
+                        },
+                      }
+                    : {}),
+                },
+                init,
+              );
+        },
+      }),
+    );
+    await assert.rejects(
+      service.embed(input, { kind: "index" }),
+      (failure: unknown) => {
+        assert(failure instanceof AssistanceError);
+        assert.equal(failure.code, "embedding_rate_limited");
+        assert.equal(failure.retryAfterMs, 17000);
+        assert(!failure.message.includes("disposable-shared-key"));
+        assert.deepEqual(
+          failure.embeddingUsage,
+          kind === "priced"
+            ? { inputTokens: 23, totalTokens: 23, costUsd: 0.000009 }
+            : kind === "unpriced"
+              ? { inputTokens: null, totalTokens: null, costUsd: null }
+              : undefined,
+        );
+        const entry = entries(budgetStore).find(
+          (entry) => entry.id === failure.operation,
+        );
+        assert(entry);
+        assert.equal(entry.costKnown, kind === "priced");
+        assert.equal(entry.settledUsd, kind === "priced" ? 0.000009 : quote);
+        assert.equal(entry.reservedUsd, kind === "priced" ? 0 : quote);
+        assert.equal(entry.active, false);
+        return true;
+      },
+    );
+    assert.equal(calls, 1);
   }
 });
 

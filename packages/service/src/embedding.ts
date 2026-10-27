@@ -36,6 +36,18 @@ export interface PreparedEmbedding {
 const error = (code: string, message: string) =>
   new AssistanceError(502, code, message);
 
+function retryAfterDelay(value: string | null): number | undefined {
+  if (value === null) return;
+  const text = value.trim();
+  if (/^\d+$/.test(text))
+    // A delay above the safe integer range must stop a bounded retry policy.
+    return Math.min(Number(text) * 1000, Number.MAX_SAFE_INTEGER);
+  // Do not let Date.parse interpret malformed numeric delays as dates.
+  if (!/^[A-Za-z]{3,9}(?:,| )/.test(text)) return;
+  const date = Date.parse(text);
+  if (Number.isFinite(date)) return Math.max(0, date - Date.now());
+}
+
 /** Accept only the router slug and the observed upstream model name. */
 export function qwenResponseModel(value: unknown): value is string {
   return value === EMBEDDING_MODEL || value === "Qwen/Qwen3-Embedding-8B";
@@ -201,6 +213,8 @@ export async function requestEmbedding(
     sent(): void | Promise<void>;
     transportEnded(): void;
     cost(usage: EmbeddingUsage): Promise<void>;
+    /** Preserve the header before response reading or settlement can time out. */
+    retryAfter?(delayMs: number): void;
   },
 ): Promise<EmbeddingResult> {
   let key: string;
@@ -222,6 +236,8 @@ export async function requestEmbedding(
     );
   signal.throwIfAborted();
   await callbacks.sent();
+  let usage: EmbeddingUsage | undefined;
+  let retryAfterMs: number | undefined;
   // Keep the transport separate from the deadline race. An ignored abort holds
   // its execution slot until the original transport actually ends.
   const transport = (async () => {
@@ -253,14 +269,31 @@ export async function requestEmbedding(
         "The embedding provider returned a redirect.",
       );
     }
-    const value: unknown = JSON.parse(await responseText(response, signal));
+    const rateLimited = response.status === 429;
+    if (rateLimited) {
+      retryAfterMs = retryAfterDelay(response.headers.get("retry-after"));
+      if (retryAfterMs !== undefined) callbacks.retryAfter?.(retryAfterMs);
+    }
+    const rateLimitError = () =>
+      error(
+        "embedding_rate_limited",
+        "The embedding provider rate limit refused the request.",
+      );
+    let value: unknown;
+    try {
+      value = JSON.parse(await responseText(response, signal));
+    } catch (failure) {
+      signal.throwIfAborted();
+      if (rateLimited) throw rateLimitError();
+      throw failure;
+    }
     const rawUsage =
       isObject(value) && isObject(value.usage) ? value.usage : null;
     const count = (item: unknown) =>
       typeof item === "number" && Number.isSafeInteger(item) && item >= 0
         ? item
         : null;
-    const usage: EmbeddingUsage = {
+    usage = {
       inputTokens: count(rawUsage?.prompt_tokens),
       totalTokens: count(rawUsage?.total_tokens),
       costUsd:
@@ -272,6 +305,7 @@ export async function requestEmbedding(
     };
     await callbacks.cost(usage);
     signal.throwIfAborted();
+    if (rateLimited) throw rateLimitError();
     if (!response.ok || !isObject(value) || value.error)
       throw error(
         "embedding_provider",
@@ -305,5 +339,24 @@ export async function requestEmbedding(
     return { model: value.model, vectors, usage };
   })();
   const tracked = transport.finally(callbacks.transportEnded);
-  return abortable(tracked, signal);
+  try {
+    return await abortable(tracked, signal);
+  } catch (failure) {
+    const result =
+      failure instanceof AssistanceError
+        ? new AssistanceError(failure.status, failure.code, failure.message)
+        : signal.aborted
+          ? new AssistanceError(
+              504,
+              "embedding_timeout",
+              "The embedding request reached its time limit.",
+            )
+          : error(
+              "embedding_provider",
+              "The embedding provider request failed.",
+            );
+    result.embeddingUsage = usage;
+    result.retryAfterMs = retryAfterMs;
+    throw result;
+  }
 }

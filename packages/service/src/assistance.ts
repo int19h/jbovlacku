@@ -1355,6 +1355,8 @@ export class AssistanceService {
       resolveLifetime();
     };
     let operationId: string | undefined;
+    const metadata: Pick<AssistanceError, "embeddingUsage" | "retryAfterMs"> =
+      {};
     const controller = new AbortController();
     const timer = setTimeout(
       () =>
@@ -1443,6 +1445,7 @@ export class AssistanceService {
           signal,
           beforeSend,
           drained,
+          metadata,
         ),
       )
       .finally(() => {
@@ -1468,9 +1471,12 @@ export class AssistanceService {
           operationId,
         );
         error.name = failure.name;
+        error.embeddingUsage =
+          failure.embeddingUsage ?? metadata.embeddingUsage;
+        error.retryAfterMs = failure.retryAfterMs ?? metadata.retryAfterMs;
         throw error;
       }
-      throw new AssistanceError(
+      const error = new AssistanceError(
         callerSignal?.aborted ? 499 : 502,
         callerSignal?.aborted ? "embedding_canceled" : "embedding_provider",
         callerSignal?.aborted
@@ -1478,6 +1484,9 @@ export class AssistanceService {
           : "The embedding provider request failed.",
         operationId,
       );
+      error.embeddingUsage = metadata.embeddingUsage;
+      error.retryAfterMs = metadata.retryAfterMs;
+      throw error;
     }
   }
 
@@ -1537,6 +1546,7 @@ export class AssistanceService {
     signal: AbortSignal,
     beforeSend?: (operation: string) => Promise<void>,
     drained?: () => void,
+    metadata: Pick<AssistanceError, "embeddingUsage" | "retryAfterMs"> = {},
   ): Promise<EmbeddingResult & { operation: string }> {
     let sent = false;
     let recorded = false;
@@ -1571,7 +1581,11 @@ export class AssistanceService {
           operation.transportPending = false;
           release();
         },
+        retryAfter: (delayMs) => {
+          metadata.retryAfterMs = delayMs;
+        },
         cost: async (usage) => {
+          metadata.embeddingUsage = usage;
           if (recorded) return;
           recorded = true;
           await this.settleCost(
@@ -1594,7 +1608,7 @@ export class AssistanceService {
         recorded = true;
         await this.settleCost(operation.id, null, prepared.estimatedUsd);
       }
-      throw new AssistanceError(
+      const error = new AssistanceError(
         signal.aborted
           ? 504
           : failure instanceof AssistanceError
@@ -1607,6 +1621,14 @@ export class AssistanceService {
             ? failure.message
             : "The embedding provider request failed.",
       );
+      if (failure instanceof AssistanceError) {
+        metadata.embeddingUsage =
+          failure.embeddingUsage ?? metadata.embeddingUsage;
+        metadata.retryAfterMs = failure.retryAfterMs;
+      }
+      error.embeddingUsage = metadata.embeddingUsage;
+      error.retryAfterMs = metadata.retryAfterMs;
+      throw error;
     } finally {
       try {
         await this.budgetLock(async () => {

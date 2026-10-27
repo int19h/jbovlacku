@@ -332,7 +332,15 @@ test("vector validation rejects bad counts, indices, dimensions, and finite-valu
   ];
   for (const value of cases) {
     const fixture = run(value, value.data.length === 2 ? 2 : 1);
-    await assert.rejects(fixture.work, AssistanceError);
+    await assert.rejects(fixture.work, (failure: unknown) => {
+      assert(failure instanceof AssistanceError);
+      assert.deepEqual(failure.embeddingUsage, {
+        inputTokens: 12,
+        totalTokens: 12,
+        costUsd: 0.00000012,
+      });
+      return true;
+    });
     assert.equal(
       fixture.costs.length,
       1,
@@ -353,6 +361,131 @@ test("vector validation rejects bad counts, indices, dimensions, and finite-valu
   assert.equal(
     dense.vectors[0].reduce((sum, item) => sum + item * item, 0),
     1,
+  );
+});
+
+test("429 metadata survives malformed bodies without exposing provider text or retrying", async (t) => {
+  const now = Date.UTC(2026, 9, 27, 12);
+  t.mock.method(Date, "now", () => now);
+  for (const [header, expected] of [
+    ["12", 12000],
+    ["0", 0],
+    ["999999999999999999999999999999999999999999999", Number.MAX_SAFE_INTEGER],
+    ["9".repeat(400), Number.MAX_SAFE_INTEGER],
+    [new Date(now + 45000).toUTCString(), 45000],
+    [new Date(now - 45000).toUTCString(), 0],
+    ["-1", undefined],
+    ["1.5", undefined],
+    ["later", undefined],
+    ["", undefined],
+    [null, undefined],
+  ] as const) {
+    let calls = 0;
+    let costs = 0;
+    let ended = 0;
+    const provider = config(async () => {
+      calls++;
+      return new Response("<html>disposable-embedding-key</html>", {
+        status: 429,
+        headers: header === null ? {} : { "retry-after": header },
+      });
+    });
+    await assert.rejects(
+      requestEmbedding(
+        prepareEmbedding([bytes("public")], provider),
+        provider,
+        new AbortController().signal,
+        {
+          sent() {},
+          transportEnded() {
+            ended++;
+          },
+          async cost() {
+            costs++;
+          },
+        },
+      ),
+      (failure: unknown) => {
+        assert(failure instanceof AssistanceError);
+        assert.equal(failure.code, "embedding_rate_limited");
+        assert.equal(failure.retryAfterMs, expected);
+        assert.equal(failure.embeddingUsage, undefined);
+        assert(!failure.message.includes("disposable-embedding-key"));
+        return true;
+      },
+    );
+    assert.equal(calls, 1);
+    assert.equal(costs, 0);
+    assert.equal(ended, 1);
+  }
+});
+
+test("oversized 429 bodies stay bounded and retain the retry delay", async () => {
+  let canceled = false;
+  const provider = config(
+    async () =>
+      new Response(
+        new ReadableStream({
+          start(stream) {
+            stream.enqueue(new Uint8Array(EMBEDDING_RESPONSE_BYTES + 1));
+          },
+          cancel() {
+            canceled = true;
+          },
+        }),
+        { status: 429, headers: { "retry-after": "9" } },
+      ),
+  );
+  await assert.rejects(
+    requestEmbedding(
+      prepareEmbedding([bytes("public")], provider),
+      provider,
+      new AbortController().signal,
+      {
+        sent() {},
+        transportEnded() {},
+        async cost() {
+          assert.fail("No parsed usage.");
+        },
+      },
+    ),
+    (failure: unknown) => {
+      assert(failure instanceof AssistanceError);
+      assert.equal(failure.code, "embedding_rate_limited");
+      assert.equal(failure.retryAfterMs, 9000);
+      assert.equal(failure.embeddingUsage, undefined);
+      return true;
+    },
+  );
+  assert(canceled);
+});
+
+test("a deadline after the cost callback retains parsed usage", async () => {
+  const controller = new AbortController();
+  const provider = config(async () => Response.json(response()));
+  await assert.rejects(
+    requestEmbedding(
+      prepareEmbedding([bytes("public")], provider),
+      provider,
+      controller.signal,
+      {
+        sent() {},
+        transportEnded() {},
+        async cost() {
+          controller.abort();
+        },
+      },
+    ),
+    (failure: unknown) => {
+      assert(failure instanceof AssistanceError);
+      assert.equal(failure.code, "embedding_timeout");
+      assert.deepEqual(failure.embeddingUsage, {
+        inputTokens: 12,
+        totalTokens: 12,
+        costUsd: 0.00000012,
+      });
+      return true;
+    },
   );
 });
 
@@ -418,39 +551,87 @@ test("response bounds cover headers, streamed bytes, invalid JSON, HTTP errors, 
   }
 });
 
-test("a stalled response body stops at the provider deadline", async () => {
-  const controller = new AbortController();
-  let canceled = false;
-  let ended = false;
-  const provider = config(
-    async () =>
-      new Response(
-        new ReadableStream({
-          start(stream) {
-            stream.enqueue(bytes('{"model":'));
-          },
-          cancel() {
-            canceled = true;
-          },
-        }),
-      ),
-  );
-  const work = requestEmbedding(
-    prepareEmbedding([bytes("public")], provider),
-    provider,
-    controller.signal,
-    {
-      sent() {},
-      transportEnded() {
-        ended = true;
+for (const status of [200, 429]) {
+  test(`a stalled ${status} response body stops at the provider deadline`, async () => {
+    const controller = new AbortController();
+    let canceled = false;
+    let ended = false;
+    const provider = config(
+      async () =>
+        new Response(
+          new ReadableStream({
+            start(stream) {
+              stream.enqueue(bytes('{"model":'));
+            },
+            cancel() {
+              canceled = true;
+            },
+          }),
+          { status, headers: { "retry-after": "10" } },
+        ),
+    );
+    const work = requestEmbedding(
+      prepareEmbedding([bytes("public")], provider),
+      provider,
+      controller.signal,
+      {
+        sent() {},
+        transportEnded() {
+          ended = true;
+        },
+        async cost() {},
       },
-      async cost() {},
-    },
-  );
-  const timer = setTimeout(() => controller.abort(), 20);
-  await assert.rejects(work);
-  clearTimeout(timer);
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  assert(canceled);
-  assert(ended);
+    );
+    const timer = setTimeout(() => controller.abort(), 20);
+    await assert.rejects(work);
+    clearTimeout(timer);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert(canceled);
+    assert(ended);
+  });
+}
+
+test("priced provider errors preserve usage and expose only fixed messages", async () => {
+  for (const status of [429, 503]) {
+    const provider = config(async () =>
+      Response.json(
+        {
+          usage: response().usage,
+          error: { message: "disposable-embedding-key" },
+        },
+        { status, headers: { "retry-after": "4" } },
+      ),
+    );
+    const costs: EmbeddingUsage[] = [];
+    await assert.rejects(
+      requestEmbedding(
+        prepareEmbedding([bytes("public")], provider),
+        provider,
+        new AbortController().signal,
+        {
+          sent() {},
+          transportEnded() {},
+          async cost(usage) {
+            costs.push(usage);
+          },
+        },
+      ),
+      (failure: unknown) => {
+        assert(failure instanceof AssistanceError);
+        assert.equal(
+          failure.code,
+          status === 429 ? "embedding_rate_limited" : "embedding_provider",
+        );
+        assert.equal(failure.retryAfterMs, status === 429 ? 4000 : undefined);
+        assert.deepEqual(failure.embeddingUsage, {
+          inputTokens: 12,
+          totalTokens: 12,
+          costUsd: 0.00000012,
+        });
+        assert.deepEqual(costs, [failure.embeddingUsage]);
+        assert(!failure.message.includes("disposable-embedding-key"));
+        return true;
+      },
+    );
+  }
 });
