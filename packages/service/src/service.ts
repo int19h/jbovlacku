@@ -1883,7 +1883,7 @@ export class DictionaryService {
             message:
               detail.message ?? "Service could not complete this request.",
             event: null,
-            field: null,
+            field: code === "body_shape" ? "body" : null,
           },
           code === "size"
             ? 413

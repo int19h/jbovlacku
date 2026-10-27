@@ -303,6 +303,9 @@ The Node loader can retain a larger explicit traversal budget for a local import
 The Node adapter serves the revised SQL import with 59,125 definitions in 44 languages.
 The extraction omits derived vectors and cache fields from signed bodies.
 
+HTTP admission rejects body values other than objects or null before it stores a record.
+Schema-invalid objects remain available as signed content, and null keeps its missing-body meaning.
+
 The server stores private compact records in the same transaction as admission, including offline loads and late bodies.
 Cold evaluation, view changes, core upgrades, and checkpoint fallback reuse those records without another signature check or body hash.
 A versioned backfill parses existing private data once. The browser still verifies original records independently.

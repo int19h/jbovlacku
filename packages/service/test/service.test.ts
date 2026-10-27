@@ -110,6 +110,53 @@ test("strict transport rejects duplicate keys and unsafe numbers before JavaScri
   assert.equal((await coordinator.load()).position, 0);
   coordinator.close();
 });
+test("HTTP admission retains only object bodies or missing bodies for carrier export", async () => {
+  const { service, coordinator } = await instance();
+  for (const body of [[], false, 7, "text"]) {
+    const entry = event("identity.profile", body);
+    const response = await service.fetch(request("/events", entry));
+    assert.equal(response.status, 422);
+    assert.deepEqual(await response.json(), {
+      code: "body_shape",
+      message: "transport body must be an object or null",
+      event: null,
+      field: "body",
+    });
+  }
+  assert.equal((await coordinator.load()).position, 0);
+  const invalidObject = event("identity.profile", { name: 7 });
+  const accepted = await service.fetch(request("/events", invalidObject));
+  assert.equal(accepted.status, 201);
+  assert.equal(((await accepted.json()) as any).body_status, "invalid");
+  const missing = event("identity.profile", {
+    name: "missing body",
+    bio: [],
+    links: [],
+  });
+  const headerOnly = await service.fetch(
+    request("/events", { envelope: missing.envelope, body: null }),
+  );
+  assert.equal(headerOnly.status, 201);
+  assert.equal(((await headerOnly.json()) as any).body_status, "missing");
+  const page: any = await (await service.fetch(request("/records"))).json();
+  assert.equal(page.items.length, 2);
+  assert.deepEqual(
+    page.items.find(
+      (record: any) => record.envelope.id === invalidObject.envelope.id,
+    ).body,
+    { name: 7 },
+  );
+  assert.equal(
+    page.items.find((record: any) => record.envelope.id === missing.envelope.id)
+      .body,
+    null,
+  );
+  const manifest: any = await (
+    await service.fetch(request("/manifest"))
+  ).json();
+  assert.equal(manifest.manifest.events.count, 2);
+  assert.equal(manifest.manifest.bodies.count, 1);
+});
 test("retry and process storage reopen preserve one receipt and exact snapshot", async () => {
   const instanceA = await instance();
   const entry = event();
