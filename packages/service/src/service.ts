@@ -1,3 +1,4 @@
+import { BackgroundSemanticIndexer } from "./semantic/background.ts";
 import { prepareAdmissionRecords } from "./admission-records.ts";
 import { eligibleSemanticSource } from "./semantic/source.ts";
 import type { EmbeddingProfile } from "./semantic/types.ts";
@@ -154,6 +155,40 @@ const RECORD_PAGE_BYTES = 4194304;
 export class DictionaryService {
   private assistance: AssistanceService;
   private semantic?: SemanticSearch;
+  private backgroundSemantic?: BackgroundSemanticIndexer;
+  startSemanticIndexing() {
+    if (
+      !this.semantic ||
+      this.backgroundSemantic ||
+      !this.options.semantic ||
+      this.options.assistance?.provider?.baseUrl !==
+        "https://openrouter.ai/api/v1" ||
+      !this.options.assistance?.provider?.embedding
+    )
+      return;
+    this.backgroundSemantic = new BackgroundSemanticIndexer({
+      store: this.options.semantic.store,
+      profile: this.options.semantic.profile,
+      view: this.options.selectedView ?? zeroView,
+      assistance: this.assistance,
+      source: (profile, snapshot) => this.semanticSource(profile, snapshot),
+      probe: (generation, profile) => this.semantic!.probe(generation, profile),
+      needed: async () =>
+        (
+          await this.semantic!.profiles(
+            await this.semanticContext(
+              null,
+              this.options.selectedView ?? zeroView,
+            ),
+          )
+        ).some((profile) => profile.pending > 0),
+      report: (error) => this.options.reportError?.(error),
+    });
+    this.backgroundSemantic.start();
+  }
+  async stopSemanticIndexing() {
+    await this.backgroundSemantic?.close();
+  }
   private async semanticContext(
     snapshotId: string | null,
     view: string,
@@ -2218,14 +2253,18 @@ export class DictionaryService {
       });
     }
     if (path === "/capabilities") {
-      const profiles = this.semantic
-        ? await this.semantic.profiles(
+      let profiles: Awaited<ReturnType<SemanticSearch["profiles"]>> = [];
+      try {
+        if (this.semantic)
+          profiles = await this.semantic.profiles(
             await this.semanticContext(
               null,
               this.options.selectedView ?? zeroView,
             ),
-          )
-        : [];
+          );
+      } catch {
+        // Optional meaning search must not hide independent host capabilities.
+      }
       return json({
         versions: [1],
         max_envelope_bytes: 20480,

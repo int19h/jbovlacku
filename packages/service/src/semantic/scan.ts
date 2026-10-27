@@ -1,6 +1,6 @@
 import { SemanticError } from "./types.ts";
 import { vectorFromBytes } from "./vector.ts";
-import type { VectorAssociation } from "./vector-store.ts";
+import type { ExpectedAssociation, VectorAssociation } from "./vector-store.ts";
 
 export interface SemanticHit {
   event: string;
@@ -17,6 +17,10 @@ export interface ScanRequest {
   vector: Float32Array;
   limit: number;
   eligible: string[];
+  /** The host identity is used only for concurrent scan admission. */
+  network?: string;
+  /** Public search supplies exact bindings from its requested evaluation. */
+  bindings?: ExpectedAssociation[];
   /** Host callers can request distinct words after excluding comparison holdouts. */
   distinctWords?: boolean;
 }
@@ -47,6 +51,9 @@ export async function scanPages(
       "The search limit must be from 1 through 100.",
     );
   const allowed = new Set(request.eligible);
+  const bindings =
+    request.bindings &&
+    new Map(request.bindings.map((row) => [row.event, row]));
   const hits: SemanticHit[] = [];
   const query = request.vector;
   let qq = 0;
@@ -66,6 +73,17 @@ export async function scanPages(
         row.language !== request.language ||
         !row.vector ||
         row.error
+      )
+        continue;
+      const expected = bindings?.get(row.event);
+      if (
+        bindings &&
+        (!expected ||
+          expected.envelope !== row.envelope ||
+          expected.body !== row.body ||
+          expected.word !== row.word ||
+          expected.language !== row.language ||
+          expected.extraction_version !== row.extraction_version)
       )
         continue;
       const vector = vectorFromBytes(row.vector, query.length);

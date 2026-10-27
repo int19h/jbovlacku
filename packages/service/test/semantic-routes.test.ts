@@ -1,6 +1,8 @@
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import assert from "node:assert/strict";
 import { before, test } from "node:test";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -45,7 +47,7 @@ const read = async (response: Response): Promise<any> => {
   return response.json();
 };
 
-test("routes advertise only exact complete indexes, retain lexical reads, and validate public inputs", async () => {
+test("routes advertise compatible partial indexes, retain lexical reads, and validate public inputs", async () => {
   const base = process.env.JVC_TEST_ROOT ?? tmpdir();
   await mkdir(base, { recursive: true });
   const directory = await mkdtemp(join(base, "semantic-routes-"));
@@ -54,8 +56,12 @@ test("routes advertise only exact complete indexes, retain lexical reads, and va
     2,
   );
   const objects = new FileObjectStore(join(directory, "objects"));
-  const store = new SqliteVectorStore(join(directory, "vectors.sqlite"));
-  const scanner = new NodeVectorScanner(join(directory, "vectors.sqlite"));
+  const store = new SqliteVectorStore(
+    join(directory, "semantic-vectors.sqlite"),
+  );
+  const scanner = new NodeVectorScanner(
+    join(directory, "semantic-vectors.sqlite"),
+  );
   const profile = createQwenProfile("28".repeat(16));
   const seed = new Uint8Array(32).fill(93);
   const view = createEvent(
@@ -308,6 +314,39 @@ test("routes advertise only exact complete indexes, retain lexical reads, and va
       ).status,
       410,
     );
+    const healthyCapabilities = await read(
+      await service.fetch(request("/capabilities")),
+    );
+    const published = store.published;
+    store.published = async () => {
+      throw new Error("Broken optional vector store");
+    };
+    const failedCapabilities = await read(
+      await service.fetch(request("/capabilities")),
+    );
+    assert.equal(failedCapabilities.features.semantic_search, false);
+    assert.deepEqual(failedCapabilities.embedding_profiles, []);
+    assert.equal(
+      failedCapabilities.features.assistance,
+      healthyCapabilities.features.assistance,
+    );
+    assert.deepEqual(
+      failedCapabilities.assistance_profiles,
+      healthyCapabilities.assistance_profiles,
+    );
+    store.published = published;
+    const noView = new DictionaryService(objects, coordinator, {
+      ...options,
+      selectedView: undefined,
+    });
+    const noViewCapabilities = await read(
+      await noView.fetch(request("/capabilities")),
+    );
+    assert.equal(noViewCapabilities.features.semantic_search, false);
+    assert.deepEqual(
+      noViewCapabilities.assistance_profiles,
+      healthyCapabilities.assistance_profiles,
+    );
     const change = createEvent(
       seed,
       [definition.envelope.id],
@@ -319,13 +358,131 @@ test("routes advertise only exact complete indexes, retain lexical reads, and va
     assert.equal(
       (await read(await service.fetch(request("/capabilities")))).features
         .semantic_search,
-      false,
+      true,
     );
     assert.equal(
       (await read(await service.fetch(request("/embedding-profiles"))))
         .profiles[0].pending,
-      1,
+      0,
     );
+
+    // Exercise the shipped host, its directory lock, and its own background timer.
+    const key = join(directory, "mock-key.txt");
+    await writeFile(key, "disposable-semantic-key", { mode: 0o600 });
+    const child = spawn(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        "--import",
+        new URL("./fixtures/semantic-live-provider.ts", import.meta.url).href,
+        "apps/server/src/main.ts",
+      ],
+      {
+        cwd: new URL("../../../", import.meta.url),
+        env: {
+          ...process.env,
+          HOST: "127.0.0.1",
+          PORT: process.env.JVC_TEST_API_PORT ?? "9120",
+          JVC_DATA_DIR: directory,
+          JVC_VIEW: view.envelope.id,
+          JVC_AI_ENABLED: "enabled",
+          JVC_AI_KEY_FILE: key,
+          JVC_SEMANTIC_PROFILE: profileId(profile),
+          JVC_SEMANTIC_INDEXING: "enabled",
+        } as unknown as NodeJS.ProcessEnv,
+        stdio: ["ignore", "pipe", "pipe", "ipc"],
+      },
+    );
+    let logs = "";
+    child.stdout!.on("data", (chunk) => {
+      logs += chunk.toString();
+    });
+    child.stderr!.on("data", (chunk) => {
+      logs += chunk.toString();
+    });
+    const exited = once(child, "exit");
+    const baseUrl = `http://127.0.0.1:${process.env.JVC_TEST_API_PORT ?? "9120"}/api/v1`;
+    const until = async (check: () => Promise<boolean>) => {
+      for (let i = 0; i < 1000; i++) {
+        if (await check()) return;
+        if (child.exitCode !== null) throw new Error(logs);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      throw new Error("The semantic host test timed out. " + logs);
+    };
+    try {
+      await until(async () => logs.includes('"event":"listening"'));
+      const profiles = async () =>
+        (await read(await fetch(baseUrl + "/embedding-profiles"))).profiles[0];
+      for (let n = 0; n < 2; n++) {
+        const added = createEvent(
+          seed,
+          [change.envelope.id],
+          (n ? "e" : "d").repeat(32),
+          {
+            kind: "definition.publish",
+            word: wordId(word),
+            language: "en",
+            parents: [],
+            origin: "native",
+          },
+          {
+            ...(definition.body as Record<string, unknown>),
+            text: [[`A new traveler ${n} goes somewhere.`]],
+          },
+        );
+        const pending = once(child, "message");
+        const admitted = await fetch(baseUrl + "/events", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(added),
+        });
+        assert(admitted.ok, await admitted.text());
+        await until(async () => (await profiles()).pending === 1);
+        assert.equal((await profiles()).query_available, true);
+        const semantic = await read(
+          await fetch(baseUrl + "/search/semantic", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              ...body,
+              snapshot: (await read(await fetch(baseUrl + "/manifest")))
+                .snapshot,
+            }),
+          }),
+        );
+        assert.equal(semantic.coverage.pending, 1);
+        assert.equal(semantic.hits.length, n + 1);
+        assert.equal(
+          (await fetch(baseUrl + "/search?q=traveler&language=en")).status,
+          200,
+        );
+        await pending;
+        if (n === 0) {
+          child.send({ release: true });
+          await until(async () => (await profiles()).pending === 0);
+          assert.equal((await profiles()).indexed, 2);
+        } else {
+          child.kill("SIGTERM");
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          assert.equal(
+            child.exitCode,
+            null,
+            "Shutdown must retain the host while its provider transport waits",
+          );
+          child.send({ release: true });
+          const [code] = await exited;
+          assert.equal(code, 0, logs);
+        }
+      }
+    } finally {
+      if (child.exitCode === null) {
+        child.send({ release: true });
+        child.kill("SIGTERM");
+        await exited;
+      }
+    }
   } finally {
     release?.();
     await service.drainSemanticQueries();

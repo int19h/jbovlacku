@@ -31,8 +31,7 @@ parentPort!.on(
       const g = generation.get(request.generation);
       if (
         !g ||
-        g.state !== "completed" ||
-        g.snapshot !== request.snapshot ||
+        g.state === "retired" ||
         g.view !== request.view ||
         g.profile !== request.profile
       )

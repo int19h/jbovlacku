@@ -9,6 +9,7 @@ import type {
 interface Slot {
   worker: Worker;
   busy: boolean;
+  network?: string;
   fail?: (error: Error) => void;
 }
 /** Two reusable read-only workers bound memory and leave the HTTP thread free. */
@@ -27,6 +28,15 @@ export class NodeVectorScanner implements VectorScanner {
         503,
         "semantic_closed",
         "The vector scanner is closed.",
+      );
+    if (
+      request.network &&
+      this.workers.some((slot) => slot.busy && slot.network === request.network)
+    )
+      throw new SemanticError(
+        503,
+        "semantic_busy",
+        "This client already has an active vector scan. Try again later.",
       );
     let slot = this.workers.find((worker) => !worker.busy);
     if (!slot && this.workers.length < 2) {
@@ -62,6 +72,7 @@ export class NodeVectorScanner implements VectorScanner {
         "Both vector scan workers are busy. Try again later.",
       );
     slot.busy = true;
+    slot.network = request.network;
     const selected = slot;
     const id = ++this.sequence;
     const cancel = new SharedArrayBuffer(4);
@@ -74,6 +85,7 @@ export class NodeVectorScanner implements VectorScanner {
         signal?.removeEventListener("abort", abort);
         selected.worker.removeListener("message", receive);
         selected.busy = false;
+        selected.network = undefined;
         selected.fail = undefined;
       };
       const receive = (message: {

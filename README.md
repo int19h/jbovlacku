@@ -228,7 +228,9 @@ HTTP 429 responses use bounded backoff that respects `Retry-After` and retains e
 The saved profile cooldown survives restart and has a one-hour cap. Operators can clear it without changing batches or charges.
 Known usage remains available even when a returned model or vector is invalid.
 Mocked tests cover partial progress, restart, failures, retirement, atomic publication, rollback, and explicit removal of current pointers.
-The Node host serves meaning searches when a selected profile has a complete published index for the exact snapshot and view.
+The Node host serves meaning searches from compatible published vectors with exact event bindings in the requested snapshot and view.
+New definitions remain pending while unchanged definitions stay searchable. Optional background indexing uses the same host budgets without stopping dictionary reads.
+Cold coverage yields between bounded metadata pages. Each client network can hold at most one scan worker.
 `GET /embedding-profiles` reports coverage and query availability. `POST /search/semantic` returns definition events with cosine distances.
 Two worker threads scan bounded vector pages and keep only the requested best results. Lexical reads remain available during inference and scans.
 The persistent query cache stores complete profile hashes, exact input hashes, and vectors. Concurrent cache misses share one computation.

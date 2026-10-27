@@ -88,6 +88,7 @@ The Node adapter accepts these environment variables:
 | `JVC_VIEW`                  | Explicit selected view event ID. A fresh service has no dictionary view.                      |
 | `JVC_STATE_TRAVERSAL_LIMIT` | Explicit state work budget from 1 through 1,000,000,000. It overrides the saved import limit. |
 | `JVC_PUBLIC_ORIGIN`         | Explicit public origin permitted to submit browser writes through a reverse proxy.            |
+| `JVC_SEMANTIC_INDEXING`     | Set `enabled` to index pending definitions in the running Node server under its shared budgets. |
 | `JVC_SNAPSHOT_LIMIT`        | Retained snapshot count. The default is 16. Allowed values are 1 through 64.                  |
 | `JVC_CORS_ORIGINS`          | Comma-separated additional permitted origins.                                                 |
 | `JVC_POLICY_URL`            | Operator policy URL. The prototype placeholder is not a published policy.                     |

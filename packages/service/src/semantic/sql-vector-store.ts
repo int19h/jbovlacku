@@ -76,6 +76,8 @@ export class SqlVectorStore implements VectorStore {
       "CREATE INDEX IF NOT EXISTS semantic_batch_active ON semantic_batches(generation,id) WHERE state IN ('prepared','sent')",
       "CREATE TABLE IF NOT EXISTS semantic_batch_inputs(generation TEXT NOT NULL, input TEXT NOT NULL, batch TEXT NOT NULL, PRIMARY KEY(generation,input))",
       "CREATE TABLE IF NOT EXISTS semantic_capacity_reservations(batch TEXT PRIMARY KEY, vectors INTEGER NOT NULL, bytes INTEGER NOT NULL)",
+      "CREATE TABLE IF NOT EXISTS semantic_background_owned(generation TEXT PRIMARY KEY)",
+      "CREATE TABLE IF NOT EXISTS semantic_background(profile TEXT NOT NULL, view TEXT NOT NULL, generation TEXT NOT NULL, PRIMARY KEY(profile,view))",
       "CREATE TABLE IF NOT EXISTS semantic_current(profile TEXT NOT NULL, view TEXT NOT NULL, generation TEXT NOT NULL, rollback TEXT, PRIMARY KEY(profile,view))",
       "CREATE TABLE IF NOT EXISTS semantic_usage(id INTEGER PRIMARY KEY CHECK(id=1), associations INTEGER NOT NULL, vectors INTEGER NOT NULL, bytes INTEGER NOT NULL)",
       "INSERT OR IGNORE INTO semantic_usage VALUES(1,0,0,0)",
@@ -136,6 +138,39 @@ export class SqlVectorStore implements VectorStore {
       error: row.error === null ? null : String(row.error),
     };
   }
+  async backgroundGeneration(profile: string, view: string) {
+    const row = this.sql.exec(
+      "SELECT generation FROM semantic_background WHERE profile=? AND view=?",
+      profile,
+      view,
+    )[0];
+    return row ? this.generationRow(String(row.generation)) : null;
+  }
+  async setBackgroundGeneration(id: string) {
+    const generation = this.active(id);
+    this.sql.exec(
+      "INSERT OR IGNORE INTO semantic_background_owned VALUES(?)",
+      id,
+    );
+    this.sql.exec(
+      "INSERT INTO semantic_background VALUES(?,?,?) ON CONFLICT(profile,view) DO UPDATE SET generation=excluded.generation",
+      generation.profile,
+      generation.view,
+      id,
+    );
+  }
+  async pruneBackgroundGenerations(profile: string, view: string) {
+    const rows = this.sql.exec(
+      `SELECT g.id FROM semantic_generations g
+      JOIN semantic_background_owned o ON o.generation=g.id
+      WHERE g.profile=? AND g.view=? AND g.state='completed'
+      AND NOT EXISTS(SELECT 1 FROM semantic_current c WHERE c.generation=g.id OR c.rollback=g.id)
+      AND NOT EXISTS(SELECT 1 FROM semantic_background b WHERE b.generation=g.id)`,
+      profile,
+      view,
+    );
+    for (const row of rows) await this.retire(String(row.id));
+  }
   async published(view: string): Promise<IndexGeneration[]> {
     return this.sql
       .exec(
@@ -188,6 +223,8 @@ export class SqlVectorStore implements VectorStore {
     const all = empty();
     const languages: Record<string, IndexCoverage> = {};
     for (let offset = 0; offset < expected.length; offset += 128) {
+      // Yield between bounded metadata pages so cold coverage leaves HTTP work runnable.
+      if (offset) await new Promise<void>((resolve) => setTimeout(resolve, 0));
       const page = expected.slice(offset, offset + 128);
       const rows = this.sql.exec(
         `SELECT a.*,v.input IS NOT NULL AS indexed,b.state AS batch_state FROM semantic_associations a

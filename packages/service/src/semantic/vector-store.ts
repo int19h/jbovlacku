@@ -54,6 +54,12 @@ export interface ProbeEvidence {
   references: { input: string; distance: number }[];
 }
 export interface VectorStore {
+  backgroundGeneration(
+    profile: string,
+    view: string,
+  ): Promise<IndexGeneration | null>;
+  setBackgroundGeneration(id: string): Promise<void>;
+  pruneBackgroundGenerations(profile: string, view: string): Promise<void>;
   recordProbe(profile: string, evidence: ProbeEvidence): Promise<void>;
   probeEvidence(profile: string): Promise<ProbeEvidence | null>;
   coverageFor(

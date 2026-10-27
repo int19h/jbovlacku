@@ -240,7 +240,7 @@ for (const mode of ["node", "paged backend"] as const)
       );
       const [first, second] = await Promise.all([
         engine.search(ctx, request(), "local"),
-        engine.search(ctx, request(), "local"),
+        engine.search(ctx, request(), "another-network"),
       ]);
       assert.deepEqual(first, second);
       assert.deepEqual(provider.calls, ["probe", "query"]);
@@ -376,7 +376,7 @@ test("expiry before or during inference never returns hits and does not refund o
     assert.deepEqual(provider.calls, ["probe", "query"]);
   }));
 
-test("coverage requires exact complete context and refuses unsupported input before payment", async () =>
+test("coverage follows exact events across snapshots and refuses unsupported input before payment", async () =>
   fixture(async ({ store, scanner, docs, ctx }) => {
     const provider = mock();
     const engine = new SemanticSearch(
@@ -386,13 +386,9 @@ test("coverage requires exact complete context and refuses unsupported input bef
     );
     const newer = context(docs, hash(9999));
     const advertised = await engine.profiles(newer);
-    assert.equal(advertised[0].query_available, false);
-    assert.equal(advertised[0].indexed, 0);
-    assert.equal(advertised[0].pending, 4);
-    await assert.rejects(
-      engine.search(newer, request(), "local"),
-      /complete compatible/,
-    );
+    assert.equal(advertised[0].query_available, true);
+    assert.equal(advertised[0].indexed, 4);
+    assert.equal(advertised[0].pending, 0);
     await assert.rejects(
       engine.search(ctx, request("x".repeat(4096)), "local"),
       /4096 prefixed/,
@@ -438,16 +434,22 @@ test("scan filtering precedes top-k and distinct-word grouping and permits lexic
       limit: 2,
       eligible: [docs[2].event, docs[3].event],
     };
-    let eventLoopWorked = false;
-    const scanning = scanner.scan(input);
+    let scanFinished = false;
+    const scanning = scanner.scan(input).then((hits) => {
+      scanFinished = true;
+      return hits;
+    });
     await new Promise<void>((resolve) =>
       setImmediate(() => {
-        eventLoopWorked = true;
+        assert.equal(
+          scanFinished,
+          false,
+          "HTTP work must run before the scan ends",
+        );
         resolve();
       }),
     );
     const hits = await scanning;
-    assert(eventLoopWorked);
     assert.deepEqual(
       hits.map((h) => h.event),
       [docs[2].event, docs[3].event],
@@ -539,11 +541,13 @@ test("current coverage filters old inert associations and checks exact extractio
         const changed = new SemanticSearch(options, provider.assistance, true);
         assert.equal(
           (await changed.profiles(selected))[0].query_available,
-          false,
+          true,
         );
-        await assert.rejects(
-          changed.search(selected, request(), "local"),
-          /complete compatible/,
+        const result = await changed.search(selected, request(), "local");
+        assert.equal(result.coverage.failed, 1);
+        assert.deepEqual(
+          result.hits.map((hit) => hit.event),
+          [docs[3].event],
         );
         sql
           .prepare(
@@ -560,8 +564,8 @@ test("current coverage filters old inert associations and checks exact extractio
           await new SemanticSearch(options, provider.assistance, true).profiles(
             selected,
           )
-        )[0].query_available,
-        false,
+        )[0].pending,
+        1,
       );
     } finally {
       sql.close();
@@ -685,4 +689,362 @@ test("fixed probe tolerance admits small numerical variation and retains evidenc
       await store.compatibility(profileId(profile)),
       "semantic_model_drift",
     );
+  }));
+
+test("partial coverage retains unchanged definitions and omits missing or mismatched events", async () =>
+  fixture(async ({ store, scanner, docs }) => {
+    const provider = mock();
+    const engine = new SemanticSearch(
+      { profile: profileId(profile), store, cache: store.queryCache, scanner },
+      provider.assistance,
+      true,
+    );
+    const added = rows(5);
+    const changed = context(added, hash(9999));
+    changed.snapshot.events[docs[0].event].body_hash = hash(9876);
+    const description = (await engine.profiles(changed))[0];
+    assert.equal(description.query_available, true);
+    assert.equal(description.indexed, 3);
+    assert.equal(description.pending, 1);
+    const result = await engine.search(
+      changed,
+      { ...request(), limit: 100 },
+      "local",
+    );
+    assert.equal(result.snapshot, changed.snapshot.snapshot);
+    assert.deepEqual(result.coverage, {
+      eligible: 5,
+      indexed: 3,
+      pending: 1,
+      failed: 1,
+    });
+    assert.deepEqual(
+      result.hits.map((hit) => hit.event),
+      docs.slice(1).map((row) => row.event),
+    );
+  }));
+
+test("unequal distances replace worse definitions and evict the worst top-k hit", async () => {
+  // Event order deliberately opposes distance order. One word improves after eviction.
+  const distances = [0.8, 0.6, 0.4, 0.1, 0.2, 0.1];
+  const docs = rows(6).map((row, i) => {
+    const vector = unit();
+    vector[0] = 1 - distances[i];
+    vector[1] = Math.sqrt(1 - vector[0] ** 2);
+    return {
+      ...row,
+      word: hash(i === 3 ? 300 : i === 5 ? 302 : i + 300, "jvw1:"),
+      vector: vectorBytes(vector),
+    };
+  });
+  const request = {
+    generation: "test",
+    profile: profileId(profile),
+    snapshot: hash(1000),
+    view: hash(1001, "jve1:"),
+    language: "en",
+    vector: unit(),
+    eligible: docs.map((row) => row.event),
+    limit: 2,
+  };
+  for (const limit of [2, 3])
+    for (const distinctWords of [false, true]) {
+      const hits = await scanPages(
+        { ...request, limit, distinctWords },
+        async (after) => {
+          const index =
+            after === null
+              ? 0
+              : docs.findIndex((row) => row.event === after) + 1;
+          return {
+            rows: [docs[index]],
+            next: index + 1 === docs.length ? null : docs[index].event,
+          };
+        },
+      );
+      assert.deepEqual(
+        hits.map((hit) => hit.event),
+        limit === 2
+          ? [docs[3].event, docs[5].event]
+          : [docs[3].event, docs[5].event, docs[4].event],
+      );
+      assert(
+        hits.slice(0, 2).every((hit) => Math.abs(hit.distance - 0.1) < 1e-7),
+      );
+    }
+});
+
+test("warm scans leave the main loop runnable and reserve one worker per client until cancellation settles", async () =>
+  fixture(async ({ store, scanner, ctx }) => {
+    const docs = rows(1024);
+    const generation = await publish(store, docs, context(docs, hash(4500)));
+    const request = {
+      generation: generation.id,
+      snapshot: ctx.snapshot.snapshot,
+      view: generation.view,
+      profile: generation.profile,
+      language: "en",
+      vector: unit(),
+      limit: 3,
+      eligible: docs.map((row) => row.event),
+      network: "one",
+    };
+    await scanner.scan(request);
+    let done = false;
+    const controller = new AbortController();
+    const scan = scanner.scan(request, controller.signal).then(() => {
+      done = true;
+    });
+    const canceled = assert.rejects(scan);
+    await assert.rejects(scanner.scan(request), /already has an active/);
+    const other = scanner.scan({ ...request, network: "two" });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(
+      done,
+      false,
+      "A warm scan must still run while HTTP work can execute",
+    );
+    controller.abort();
+    await canceled;
+    await assert.rejects(scanner.scan(request), /already has an active/);
+    await other;
+    // Completion on the second worker also gives the canceled worker time to acknowledge.
+    await new Promise<void>((resolve) => setTimeout(resolve, 30));
+    assert.equal((await scanner.scan(request)).length, 3);
+  }));
+
+test("cold coverage yields between bounded metadata pages", async () =>
+  fixture(async ({ store }) => {
+    const docs = rows(1024);
+    const generation = await publish(store, docs, context(docs, hash(4500)));
+    let done = false;
+    const work = store.coverageFor(generation.id, docs).then((coverage) => {
+      done = true;
+      return coverage;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(
+      done,
+      false,
+      "Cold coverage must allow main-loop work before it ends",
+    );
+    assert.equal((await work).all.indexed, 1024);
+  }));
+
+test("background jobs keep partial search available and finish new inputs without another lock", async () =>
+  fixture(async ({ store, scanner, docs, ctx }) => {
+    const { BackgroundSemanticIndexer } =
+      await import("../src/semantic/background.ts");
+    const { lockDataDirectory } =
+      await import("../../importer/src/load-lock.ts");
+    const directory = await mkdtemp(
+      join(process.env.JVC_TEST_ROOT ?? tmpdir(), "semantic-lock-"),
+    );
+    const releaseLock = await lockDataDirectory(directory, "test-live-server");
+    const provider = mock();
+    const engine = new SemanticSearch(
+      { profile: profileId(profile), store, cache: store.queryCache, scanner },
+      provider.assistance,
+      true,
+    );
+    const added = rows(5);
+    const changed = context(added, hash(9999));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let started = false;
+    const background = new BackgroundSemanticIndexer({
+      store,
+      profile: profileId(profile),
+      view: ctx.evaluation.selected_view,
+      assistance: {
+        embed: async (...args) => {
+          started = true;
+          await gate;
+          return provider.assistance.embed(...args);
+        },
+      },
+      source: async () => ({
+        context: {
+          snapshot: changed.snapshot.snapshot,
+          view: changed.evaluation.selected_view,
+          profile: profileId(profile),
+          eligible: 5,
+        },
+        page: async () => ({
+          documents: added,
+          next: added.at(-1)!.event,
+          done: true,
+        }),
+      }),
+      probe: (generation, profile) => engine.probe(generation, profile),
+      report: () => {},
+    });
+    try {
+      const running = background.cycle();
+      while (!started) await new Promise((resolve) => setTimeout(resolve, 1));
+      const pending = await engine.search(changed, request(), "local");
+      assert.equal(pending.coverage.pending, 1);
+      assert.equal(pending.coverage.indexed, docs.length);
+      let closed = false;
+      const closing = background.close().then(() => {
+        closed = true;
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(
+        closed,
+        false,
+        "Shutdown must wait for the admitted index transport",
+      );
+      release();
+      await Promise.all([running, closing]);
+      const complete = await engine.search(
+        changed,
+        { ...request(), limit: 10 },
+        "local",
+      );
+      assert.equal(complete.coverage.pending, 0);
+      assert.equal(complete.hits.length, 5);
+      const calls = provider.calls.length;
+      await background.cycle();
+      assert.equal(
+        provider.calls.length,
+        calls,
+        "Shutdown must disable later work",
+      );
+    } finally {
+      release();
+      await background.close();
+      await releaseLock();
+      await rm(directory, { recursive: true });
+    }
+  }));
+
+test("background failure persists across restart and snapshot changes without another paid attempt", async () =>
+  fixture(async ({ store, ctx }) => {
+    const { BackgroundSemanticIndexer } =
+      await import("../src/semantic/background.ts");
+    let calls = 0;
+    let snapshot = hash(9999);
+    const added = rows(5);
+    const options = {
+      store,
+      profile: profileId(profile),
+      view: ctx.evaluation.selected_view,
+      assistance: {
+        embed: async (
+          _inputs: Uint8Array[],
+          _caller: unknown,
+          _signal: unknown,
+          before?: (operation: string) => Promise<void>,
+        ) => {
+          calls++;
+          await before?.("embedding:index:unknown-delivery");
+          throw new Error("Unknown transport result");
+        },
+      },
+      source: async () => ({
+        context: {
+          snapshot,
+          view: ctx.evaluation.selected_view,
+          profile: profileId(profile),
+          eligible: 5,
+        },
+        page: async () => ({
+          documents: added,
+          next: added.at(-1)!.event,
+          done: true,
+        }),
+      }),
+      probe: async () => {},
+      report: () => {},
+    };
+    const first = new BackgroundSemanticIndexer(options);
+    await first.cycle();
+    await first.close();
+    assert.equal(calls, 1);
+    const generation = (await store.backgroundGeneration(
+      profileId(profile),
+      ctx.evaluation.selected_view,
+    ))!;
+    assert.equal(generation.error, "index_failed");
+    snapshot = hash(10000);
+    const restarted = new BackgroundSemanticIndexer(options);
+    await restarted.cycle();
+    await restarted.close();
+    const oldBatch = (await store.batches(generation.id))[0];
+    await store.retry(oldBatch.id);
+    await store.start(generation.id);
+    const uncertain = (await store.claim(generation.id))!;
+    await store.sent(uncertain.id, "embedding:index:interrupted");
+    const afterCrash = new BackgroundSemanticIndexer(options);
+    await afterCrash.cycle();
+    await store.recover(generation.id);
+    assert.equal(
+      (await store.batches(generation.id)).find(
+        (batch) => batch.id === uncertain.id,
+      )!.state,
+      "ambiguous",
+    );
+    await afterCrash.cycle();
+    await afterCrash.close();
+    assert.equal(calls, 1);
+    assert.equal(
+      (await store.backgroundGeneration(
+        profileId(profile),
+        ctx.evaluation.selected_view,
+      ))!.id,
+      generation.id,
+    );
+  }));
+
+test("background indexing can add the first definition to a published empty context", async () =>
+  fixture(async ({ store }) => {
+    const { BackgroundSemanticIndexer } =
+      await import("../src/semantic/background.ts");
+    const empty = {
+      snapshot: hash(6000),
+      view: hash(6001, "jve1:"),
+      profile: profileId(profile),
+      eligible: 0,
+    };
+    const initial = await store.create(empty, profile);
+    await store.stage(initial.id, null, {
+      documents: [],
+      next: null,
+      done: true,
+    });
+    await store.start(initial.id);
+    await store.finish(initial.id);
+    await store.publish(initial.id, null);
+    const provider = mock();
+    const docs = rows(5).slice(4);
+    const background = new BackgroundSemanticIndexer({
+      store,
+      profile: empty.profile,
+      view: empty.view,
+      assistance: provider.assistance,
+      source: async () => ({
+        context: { ...empty, snapshot: hash(6002), eligible: 1 },
+        page: async () => ({
+          documents: docs,
+          next: docs[0].event,
+          done: true,
+        }),
+      }),
+      probe: async () => {
+        throw new Error("An empty index has no reference vectors to probe");
+      },
+      report: () => {},
+    });
+    await background.cycle();
+    await background.close();
+    const generation = (await store.backgroundGeneration(
+      empty.profile,
+      empty.view,
+    ))!;
+    assert.equal(generation.state, "completed");
+    assert.equal((await store.coverage(generation.id)).indexed, 1);
+    assert.equal(provider.calls.length, 1);
   }));

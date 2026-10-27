@@ -150,6 +150,8 @@ async function initializeService() {
         .filter(Boolean),
     });
     await service.initialize();
+    if (process.env.JVC_SEMANTIC_INDEXING === "enabled")
+      service.startSemanticIndexing();
     return {
       service,
       index,
@@ -318,7 +320,10 @@ function closeService(): Promise<void> {
     },
     closeConnections: () => server.closeAllConnections(),
     flush: () => service.flushMaterialization(),
-    prepareEvaluationShutdown: () => service.prepareEvaluationShutdown(),
+    prepareEvaluationShutdown: async () => {
+      await service.stopSemanticIndexing();
+      await service.prepareEvaluationShutdown();
+    },
     stopEvaluation: () => evaluationRuntime.close(),
     closeStorage: async () => {
       await service.drainSemanticQueries();

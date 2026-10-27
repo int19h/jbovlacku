@@ -65,7 +65,7 @@ const unavailable = () =>
   new SemanticError(
     503,
     "semantic_unavailable",
-    "A complete compatible index is unavailable for this snapshot and view.",
+    "A compatible index is unavailable for this view.",
   );
 
 /** Cache vectors only. Every result uses a newly pinned dictionary context. */
@@ -137,12 +137,9 @@ export class SemanticSearch {
     return (
       this.providerAvailable &&
       context.evaluation.available &&
-      generation.snapshot === context.snapshot.snapshot &&
-      generation.state === "completed" &&
+      generation.state !== "retired" &&
       generation.source_done &&
-      coverage.failed === 0 &&
-      coverage.pending === 0 &&
-      coverage.indexed === coverage.eligible &&
+      (coverage.indexed > 0 || coverage.eligible === 0) &&
       coverage.eligible === eligibleEvents(context).length &&
       profileId(profile) === profileId(createQwenProfile(profile.epoch)) &&
       !(await this.options.store.compatibility(generation.profile))
@@ -155,29 +152,17 @@ export class SemanticSearch {
     const generation = await this.generation(context);
     if (!generation) return [];
     const profile = await this.options.store.profile(generation.id);
-    const same = generation.snapshot === context.snapshot.snapshot;
-    const bound = same ? await this.coverage(context, generation) : null;
-    const all = bound?.all ?? {
-      indexed: 0,
-      eligible: eligibleEvents(context).length,
-      pending: eligibleEvents(context).length,
-      failed: 0,
-    };
-    const counts = same
-      ? language === undefined
+    const bound = await this.coverage(context, generation);
+    const all = bound.all;
+    const counts =
+      language === undefined
         ? all
-        : (bound!.languages[language] ?? {
+        : (bound.languages[language] ?? {
             indexed: 0,
             eligible: 0,
             pending: 0,
             failed: 0,
-          })
-      : {
-          indexed: 0,
-          eligible: eligibleEvents(context, language).length,
-          pending: eligibleEvents(context, language).length,
-          failed: 0,
-        };
+          });
     const query_available = await this.ready(context, generation, profile, all);
     return [
       {
@@ -192,7 +177,7 @@ export class SemanticSearch {
           "The browser needs this server to compute query vectors. Offline meaning search and derived exchange are unavailable.",
           ...(!query_available
             ? [
-                "A complete compatible index and query provider are required for this snapshot and view.",
+                "A compatible published index and query provider are required for this view.",
               ]
             : []),
           ...(counts.failed
@@ -370,7 +355,6 @@ export class SemanticSearch {
     const profile = await this.options.store.profile(generation.id);
     // Validate the complete profile and exact query before any reservation.
     const bytes = queryInput(profile, request.query);
-    if (generation.snapshot !== context.snapshot.snapshot) throw unavailable();
     const bound = await this.coverage(context, generation);
     const all = bound.all;
     await this.compatible(generation.profile);
@@ -386,7 +370,7 @@ export class SemanticSearch {
       (id) => !selection.excludedEvents?.has(id),
     );
     let hits = [] as Awaited<ReturnType<VectorScanner["scan"]>>;
-    if (eligible.length) {
+    if (eligible.length && coverage.indexed > 0) {
       signal?.throwIfAborted();
       const work = this.vector(generation, profile, bytes, network);
       const vector = await (signal ? abortable(work, signal) : work);
@@ -396,12 +380,21 @@ export class SemanticSearch {
         {
           generation: generation.id,
           profile: generation.profile,
-          snapshot: generation.snapshot,
+          snapshot: context.snapshot.snapshot,
           view: generation.view,
           language: request.language,
           vector,
           limit: request.limit,
           eligible,
+          network,
+          bindings: eligible.map((event) => ({
+            event,
+            envelope: context.snapshot.events[event].envelope_hash,
+            body: context.snapshot.events[event].body_hash!,
+            word: context.evaluation.publications[event].word,
+            language: context.evaluation.publications[event].language!,
+            extraction_version: semanticProjectionVersion(),
+          })),
           distinctWords: selection.distinctWords,
         },
         signal,

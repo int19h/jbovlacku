@@ -1672,8 +1672,9 @@ Embedding-profile responses contain exactly profiles. Each entry contains id, la
 Id is a profile hash. Counts are nonnegative integers. Limitations is an array of strings. Query_available is a boolean.
 Optional snapshot, view, and language parameters select the profile response's coverage context.
 Without them, coverage uses the completed snapshot, configured view, and all languages.
-Query availability requires a complete compatible published index for the exact snapshot, view, and selected profile.
-Pending or failed entries in any language keep that generation unavailable for public queries.
+Query availability requires a compatible published index for the requested view and selected profile.
+Each result must match the exact event, envelope, body, word, language, and extraction version in the requested snapshot.
+Pending or failed entries remain outside the results. Other indexed definitions remain searchable.
 
 The semantic request contains query, language, snapshot, view, profile, and limit. Query is nonempty text of at most 16 KiB.
 Language is a definition-language tag. Snapshot and profile are hashes. View is an event ID. Limit ranges from 1 through 100.

@@ -2,7 +2,7 @@
 
 The Node operator command builds a fresh vector index from the dictionary's private semantic records.
 A vector represents a definition for later meaning comparisons. A generation binds its associations to one snapshot, view, and profile.
-The Node host can search a complete published generation with a configured query provider.
+The Node host can search a published generation with partial coverage and a configured query provider.
 The Worker host has no configured vector backend and keeps `semantic_search` disabled.
 
 The command uses the application recipe from the [format specification](format.md#optional-derived-embeddings).
@@ -157,7 +157,7 @@ npx tsx apps/server/src/semantic-cli.ts --data "$JVC_DATA_DIR" --command rollbac
 ```
 
 Rollback requires the named generation to remain current and a retained rollback generation.
-Publication changes only the derived index pointer. Public queries also require the host configuration and complete coverage described below.
+Publication changes only the derived index pointer. Public queries also require the compatible profile and host configuration described below.
 Current generations, rollback generations, and jobs with active batches cannot retire.
 Use the exact current generation ID to remove its publication pointer:
 
@@ -194,18 +194,38 @@ Keep the existing AI configuration and key-file path. Restart the server with it
 The server reads `semantic-vectors.sqlite` beside its dictionary and spending databases.
 No key reaches the browser. The browser never receives query or document vectors.
 
-The selected generation must match the requested snapshot and view exactly.
-It must be published, completed, compatible, and free of pending or failed definitions across all languages.
-A completed job with excluded over-limit definitions does not meet this requirement.
-After dictionary changes, prepare and publish a complete generation for the new completed snapshot.
-An older index never silently stands in for that snapshot.
+The selected generation must match the requested view and complete profile.
+Search checks every event against its exact envelope, body, word, language, and semantic extraction version in the requested snapshot.
+Unchanged definitions remain searchable after other events change the snapshot. New definitions remain pending until their vectors exist.
+Missing or mismatched associations cannot enter the results. A failed entry does not disable unrelated indexed definitions.
+The profile must remain compatible. An index with no indexed definitions is unavailable unless the requested context is empty.
+
+Set `JVC_SEMANTIC_INDEXING=enabled` to index new definitions while the server runs.
+The server checks the latest completed snapshot every five seconds after each cycle ends.
+It uses its existing directory lock and AssistanceService, including the same execution slots, spending ledger, and limits.
+The operator must first publish a generation for the selected profile and view.
+The background job stages bounded pages, publishes partial coverage, probes the retained profile, and embeds one batch at a time.
+Existing exact input hashes reuse retained vectors. Other inputs receive fresh vectors.
+The server does not create a new generation when all eligible events already have vectors.
+Completed background generations leave storage when no current, rollback, or active background pointer retains them.
+Operator-created generations remain under explicit operator control. The existing capacity limits still apply.
+
+A durable background pointer retains failures across restarts and later snapshots.
+The server does not replace a failed or interrupted job with a fresh attempt.
+Use the operator status, recovery, and explicit retry commands after stopping the server to repair that exact job.
+Only rate limits from the active invocation receive the indexer's existing bounded automatic retries.
+Shutdown stops scheduling and new claims, then drains admitted transports before closing storage and releasing the directory lock.
+
+Cold coverage reads at most 128 metadata bindings before yielding to the main event loop.
+Completed immutable generations cache coverage for each exact evaluation. Partial generations refresh counts as indexing proceeds.
+A failure on this optional path makes capabilities report meaning search as unavailable. Other capabilities remain present.
 
 `GET /api/v1/embedding-profiles` returns exactly one `profiles` array.
 Each entry reports its profile hash, label, query availability, indexed count, eligible count, pending count, and limitations.
 Optional `snapshot`, `view`, and `language` parameters select the coverage context.
 Without those parameters, the request uses the latest completed snapshot, configured view, and all languages.
 An absent current generation returns an empty array.
-A generation for another snapshot reports zero indexed definitions and the requested context's eligible count as pending.
+Coverage counts exact current event bindings, even when the generation began under an older snapshot.
 
 `POST /api/v1/search/semantic` accepts these JSON fields:
 
@@ -234,7 +254,9 @@ Distance measures related meaning. It is not a dictionary score, endorsement, or
 
 The scanner uses the same effective, selected, active definitions as ordinary lexical search.
 It runs in at most two reusable Node workers. Each worker has a bounded SQLite page cache and keeps at most 100 best hits.
-An extra concurrent scan returns `semantic_busy` instead of creating another worker or an unbounded queue.
+Each client network can hold at most one scan worker, including after cancellation until that worker acknowledges completion.
+Another scan from that network returns `semantic_busy` before it can take the second worker.
+A third client also receives `semantic_busy` while both workers are busy. There is no unbounded scan queue.
 Neither the scanner nor a query cache hit reads original definition bodies.
 Expiry during inference or scanning returns `snapshot_expired`, without exposing a result from a different snapshot.
 
