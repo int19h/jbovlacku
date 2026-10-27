@@ -20,9 +20,11 @@ The [word fixtures](../evidence/gencmu-words.json) record source revisions, sour
 The table names every rule family that changes recognition behavior.
 Tree actions and the top-level entry point also change to return word and component spans.
 The remaining letter, syllable, stress, and rafsi rules retain the camxes experimental expressions.
+The headword entrypoint lowercases input before those rules run, as the table describes.
 
 | Rule family | Change and source |
 | --- | --- |
+| Headword input before `words` | Lowercase author input before parsing. Capitals never mark stress in author headwords, so authors must write word breaks explicitly. `BROdaku` reads as one fu'ivla, `brodaku`. Gencmu reads `BROda` and `ku` instead. This is a deliberate headword policy. The separate `segmentText` entrypoint retains gencmu's capital-stress handling by default. |
 | `extended_rafsi`, `stressed_extended_rafsi`, `initial_rafsi` | Use the camxes-exp alternatives. See gencmu [Extended rafsi](https://github.com/int19h/gencmu/blob/0b3da7d2ec2f727a6730d77c775f88214a7ffc89/grammars/words/experimental.md#extended-rafsi). This includes classical `hy-rafsi`, borrowing rafsi, and their stressed forms. |
 | `fuhivla_rafsi`, `stressed_fuhivla_rafsi` | Permit an apostrophe onset before `y`. Keep the onset ordinary, so CgV cannot fill this rafsi slot. See the same Extended rafsi section. |
 | `slihykru`, `brivla` | Refuse an initial CCV followed by `'y` and another onset. Include CgV in that onset. Apply the refusal to every brivla test, including nested tests. See the same Extended rafsi section. |
@@ -44,8 +46,10 @@ The parser does not run a second recognizer to produce that warning.
 The warning says, “This form is not valid under the current BPFK morphology.”
 It makes no general validity claim about the form.
 
-Two or more cmavo form a compound cmavo. Mixed word sequences remain unknown as dictionary headwords.
-For example, `y bu` is a compound cmavo, while `broda zei brode` remains three words.
+Two or more cmavo form a compound cmavo unless headword analysis recognizes a supported `zei` chain.
+The segmenter still reads `broda zei brode` as three words. Headword analysis reports the complete chain as a lujvo with `broda` and `brode` as its components.
+The builder links those whole components without rafsi. See [Zei lujvo linking](../../../docs/morphology.md#zei-lujvo-linking) for its finite operand rules and evidence identifier.
+Other mixed word sequences remain unknown as dictionary headwords. The spaced headword `y bu` is a compound cmavo.
 A `y` inside a lujvo stays inside that word.
 A pure `y` run cannot take the start of a cmavo such as `y'y` or `y'e`.
 One-word headwords permit one leading and one trailing framing period.

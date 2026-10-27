@@ -104,19 +104,26 @@ It also uses one parse to accept CgV in names and borrowings and report its warn
 That warning says, “This form is not valid under the current BPFK morphology.”
 It makes no general claim that the form is invalid.
 
-The scope includes word boundaries and word classes. It excludes quotes, erasure, and other magic-word operations.
+The segmenter handles word boundaries and word classes. It does not execute quotes, erasure, or other magic-word operations.
 Words such as `zoi`, `la'o`, `zo`, `sa`, `su`, and `zei` are ordinary cmavo.
-A `zei` never joins adjacent words in this package.
+The segmenter returns `zei` as a separate word.
+Dictionary headword analysis also recognizes [zei lujvo](#zei-lujvo-linking) from those word spans.
 
 Pure `y` runs, including `y` and `yyy`, and forms such as `ie'o` are ordinary cmavo.
 A `y` inside a lujvo stays inside that word, including in a hyphen or rafsi.
-Two or more cmavo form a compound cmavo. Thus `taia` splits as `tai .a`, and `i'ecu'i` splits as `i'e cu'i`.
+Outside a supported `zei` chain, two or more cmavo form a compound cmavo.
+Thus `taia` splits as `tai .a`, and `i'ecu'i` splits as `i'e cu'i`.
 The split uses morphology without dictionary matches. The spaced headword `y bu` is also a compound cmavo.
 These hesitation and diphthong rules are explicit project changes from the source parsers.
 
 The result includes `words`, with normalized text, word class, offsets, and per-word diagnostics.
 Offsets refer to the returned normalized spelling. Lujvo readings retain exact component and join boundaries from the same parse.
 The API makes no spelling changes to signed records.
+
+Headword analysis lowercases input before parsing. Capitals never mark stress in author headwords, so authors must write word breaks explicitly.
+For example, `BROdaku` normalizes to `brodaku` and reads as one fu'ivla.
+Gencmu instead reads two words from that spelling, `BROda` and `ku`.
+This difference is deliberate. To mark that boundary, write `broda ku`.
 
 The browser uses this profile for new authoring. It preserves a matching historical profile when it restores formation evidence.
 As an author types, the browser reports a mismatch with a selected lexical kind.
@@ -134,6 +141,8 @@ The result includes the total number of parser rule entries.
 
 The text orthography layer converts supported spelling forms before the word parse.
 It preserves stress and marked glides, expands digits, and maps supported Latin, Cyrillic, and Zbalermorna letters.
+This separate text API retains gencmu's capital-stress handling by default.
+Thus `segmentText("BROdaku")` returns `brOda` and `ku`, while author headword analysis reads one fu'ivla.
 `features` and `withoutFeatures` carry orthography options, including `case-insensitive` and `cll-cyrillic`.
 Word text uses the normalized spelling. Each `start` and `end` refers to the original input in UTF-16 code units.
 Foreign text retains the original spelling.
@@ -144,6 +153,26 @@ Caller options can reduce the aggregate limits.
 A resource error throws and returns no partial result.
 These text limits and spelling conversions do not change headword admission or the builders.
 The headword API retains its case folding and its whole-input failure behavior.
+
+## Zei lujvo linking
+
+Identifier: `https://github.com/int19h/jbovlacku/blob/main/docs/morphology.md#zei-lujvo-linking`. Version `1`.
+
+Under `extended-v4`, headword analysis recognizes `word zei word` and longer chains as lujvo.
+The component words retain their complete spellings. They do not need rafsi.
+The analysis returns each component as a `core` part with ` zei ` before every part after the first.
+Its `words` array still contains the individual words, including each `zei` cmavo.
+The CLL profile and extended versions `2` and `3` retain their earlier behavior.
+
+A component can also be one ordinary word followed by one or more `bu` words.
+Analysis keeps the normalized component spelling, including internal spaces. Thus `ibu` and `denpa bu` retain their own source identities.
+Arbitrary sequences of cmavo do not form one component. Quote and erasure words do not consume other words in this analysis.
+The imported spelling `zo si si zei fa'o` falls outside these rules and remains unsupported.
+
+The builder links the whole component words to dictionary sources and optional exact definitions.
+It preserves the entered lujvo spelling. It offers no rafsi choices and reports no rafsi claims or conflicts for these components.
+This path supplies no construction score. Its internal candidate uses `0` only as a placeholder, and signed compound metadata records `score: null`.
+The linking identifier and version above distinguish this evidence from rafsi construction scores.
 
 ## Work limits
 

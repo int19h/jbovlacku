@@ -657,9 +657,9 @@ async function main() {
         ) ||
         !same(warnings(spellingReference.words), warnings(effective.words))
       ) {
-        reasons.push("deferred-capital-stress");
+        reasons.push("author-headword-lowercasing");
         counterfactuals.push({
-          reason: "deferred-capital-stress",
+          reason: "author-headword-lowercasing",
           input: analysis.normalized,
           reference: effective,
         });

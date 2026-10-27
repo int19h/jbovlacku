@@ -105,11 +105,17 @@ The rafsi page lists known assignments across words from version 2 packages, and
 The lujvo builder offers short rafsi, gismu stems, whole gismu, whole-word parts under the extended profile, locks, CLL scores, recovered parts, and every competing rafsi claim from the local package.
 If several parts share the same competing rafsi claim, the builder shows one acknowledgment for that claim.
 A word entered on Meaning gets local form detection and an exact identity lookup in the selected language package.
+Headword analysis lowercases author input, so capitals do not mark stress. Authors must write word breaks explicitly.
 A remote exact-word check requires consent for that word and language. Missing coverage stays visible.
 Type confirmation opens Places for a typed gismu or fu'ivla, source linking for a lujvo, and Form for the other kinds.
-The typed lujvo path locks the exact analyzed rafsi and joins, including [optional hyphens and experimental forms](docs/morphology.md).
+The typed lujvo path locks the exact analyzed parts and joins, including [optional hyphens and experimental forms](docs/morphology.md).
 It preserves the entered spelling through publication, including case, commas, and framing periods. Source choices and exact definitions stay editable.
 Unknown source fields stay blank. Authors can link every source to save compound evidence, or continue with no compound metadata.
+
+Typed `zei` chains use whole component words as source links. The source form stays fixed, and authors can select an exact definition.
+Components can include one word followed by `bu`, as in `denpa bu zei sance`.
+These links need no rafsi and carry no construction score. Publication and revision preserve the selected definitions and entered spelling.
+The imported spelling `zo si si zei fa'o` remains unsupported because it falls outside the [component rules](docs/morphology.md#zei-lujvo-linking).
 
 A changed or cleared typed spelling restores ordinary builder rows. A generated replacement reopens with editable rows.
 A replacement typed lujvo starts fresh analysis, including a return to an earlier spelling before the builder reopens.
