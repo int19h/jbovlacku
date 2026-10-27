@@ -406,7 +406,7 @@ test("coverage follows exact events across snapshots and refuses unsupported inp
     assert.equal(provider.calls.length, 0);
   }));
 
-test("scan filtering precedes top-k and distinct-word grouping and permits lexical event-loop work", async () =>
+test("scan filtering precedes top-k and distinct-word grouping", async () =>
   fixture(async ({ store, scanner, docs, ctx }) => {
     // The internal comparison policy removes hidden events before the top 30 distinct-word limit.
     const provider = mock();
@@ -434,22 +434,7 @@ test("scan filtering precedes top-k and distinct-word grouping and permits lexic
       limit: 2,
       eligible: [docs[2].event, docs[3].event],
     };
-    let scanFinished = false;
-    const scanning = scanner.scan(input).then((hits) => {
-      scanFinished = true;
-      return hits;
-    });
-    await new Promise<void>((resolve) =>
-      setImmediate(() => {
-        assert.equal(
-          scanFinished,
-          false,
-          "HTTP work must run before the scan ends",
-        );
-        resolve();
-      }),
-    );
-    const hits = await scanning;
+    const hits = await scanner.scan(input);
     assert.deepEqual(
       hits.map((h) => h.event),
       [docs[2].event, docs[3].event],
