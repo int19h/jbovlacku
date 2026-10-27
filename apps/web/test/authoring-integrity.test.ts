@@ -95,7 +95,7 @@ test("comparison exposes nested changes and distinct rich text nodes", async ({
         (b) => (b.sources[0].url = "https://example.org/other"),
         "https://example.org/other",
       ],
-      ["code to reference", (b) => (b.text = [[1]]), "code"],
+      ["code to reference", (b) => (b.text = [[1]]), "Code:"],
       [
         "default condition",
         (b) => (b.frame.places[0].defaults[0].condition = [["only at night"]]),
@@ -221,10 +221,21 @@ test("comparison exposes nested changes and distinct rich text nodes", async ({
         { body, envelope },
         { body: core.interpretDefinition(after), envelope },
       );
+      const visible = result.cloneNode(true) as HTMLElement;
+      visible
+        .querySelectorAll("details")
+        .forEach((node: Element) => node.remove());
       return {
         name,
         expected,
-        text: result.textContent,
+        text: visible.textContent,
+        fields: [...result.querySelectorAll(".comparison-field > h3")].map(
+          (node) => node.textContent,
+        ),
+        prose: result.querySelectorAll(".comparison-prose").length,
+        code: result.querySelector("code")?.textContent,
+        place: result.querySelector('[aria-label="place 1"]') !== null,
+        exposedJson: result.querySelectorAll("pre:not(details pre)").length,
         beforeProblems,
         afterProblems,
       };
@@ -240,6 +251,24 @@ test("comparison exposes nested changes and distinct rich text nodes", async ({
       .soft(result.text, result.name)
       .not.toContain("identical content fields");
     expect.soft(result.text, result.name).toContain(result.expected);
+    expect.soft(result.exposedJson, result.name).toBe(0);
+    expect.soft(result.fields.length, result.name).toBe(1);
+    expect.soft(result.fields[0], result.name).not.toContain(" / ");
+    if (result.name === "code to reference") {
+      expect(result.code).toBe("①");
+      expect(result.place).toBe(true);
+      expect(result.fields).toEqual(["Definition"]);
+    }
+    if (result.name === "default condition") {
+      expect(result.fields).toEqual(["Place 1"]);
+      expect(result.text).toContain("When");
+      expect(result.prose).toBeGreaterThan(0);
+    }
+    if (result.name === "source URL") {
+      expect(result.fields).toEqual(["Sources"]);
+      expect(result.text).toContain("source");
+      expect(result.text).toContain("https://example.org/original");
+    }
   }
 });
 
@@ -396,4 +425,246 @@ test("a package download keeps its requested language after the selector changes
   await expect(page.getByRole("status")).toContainText(
     "English search package is saved",
   );
+});
+
+test("comparison aligns middle list changes and numbered places", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const results = await page.evaluate(async (path) => {
+    const core = await import(path);
+    await core.initializeCore();
+    const model = await import(String("/src/model/draft.ts"));
+    const { comparison } = await import(String("/src/pages/definition.ts"));
+    const body = model.draftToBody(
+      model.newDraft({ spelling: "broda", kind: "gismu", text: "Test" }),
+    ).body;
+    const envelope = { id: "jve1:" + "a".repeat(64) };
+    const values = [];
+    for (const field of ["glosses", "sources", "examples"]) {
+      const item = (name: string) =>
+        field === "glosses"
+          ? { language: "en", text: name, sense: null }
+          : field === "sources"
+            ? {
+                label: name,
+                url: `https://example.org/${name}`,
+                locator: `page ${name}`,
+                event: null,
+              }
+            : { language: "jbo", text: name, translation: [], notes: [] };
+      const before = { ...body, [field]: [item("first"), item("last")] };
+      const after = {
+        ...body,
+        [field]: [item("first"), item("middle"), item("last")],
+      };
+      for (const [left, right] of [
+        [before, after],
+        [after, before],
+      ]) {
+        const result = comparison(
+          { body: left, envelope },
+          { body: right, envelope },
+        );
+        result
+          .querySelectorAll("details")
+          .forEach((node: Element) => node.remove());
+        values.push({
+          field,
+          text: result.textContent,
+          rows: result.querySelectorAll(".comparison-field").length,
+          pairs: result.querySelectorAll(".comparison-pair").length,
+        });
+      }
+    }
+    const first = { index: 1, description: [["first"]] };
+    const middle = { index: 2, description: [["middle"]] };
+    const last = { index: 3, description: [["last"]] };
+    const frame = {
+      role: "predicate",
+      arity: { mode: "context" },
+      places: [first, last],
+    };
+    const result = comparison(
+      { body: { ...body, frame }, envelope },
+      {
+        body: { ...body, frame: { ...frame, places: [first, middle, last] } },
+        envelope,
+      },
+    );
+    result
+      .querySelectorAll("details")
+      .forEach((node: Element) => node.remove());
+    values.push({
+      field: "Place 2",
+      text: result.textContent,
+      rows: result.querySelectorAll(".comparison-field").length,
+      pairs: result.querySelectorAll(".comparison-pair").length,
+    });
+    return values;
+  }, corePath);
+  for (const result of results) {
+    expect(result.rows, result.field).toBe(1);
+    expect(result.pairs, result.field).toBe(1);
+    expect(result.text, result.field).toContain("middle");
+    expect(result.text, result.field).toContain("Not present");
+    expect(result.text, result.field).not.toContain("first");
+    expect(result.text, result.field).not.toContain("last");
+    expect(result.text, result.field).not.toContain("identical content fields");
+    if (result.field === "sources") {
+      expect(result.text).toContain("https://example.org/middle");
+      expect(result.text).toContain("page middle");
+    }
+  }
+});
+
+test("reviewed import comparison summarizes legacy evidence behind a disclosure", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const result = await page.evaluate(async (path) => {
+    const core = await import(path);
+    await core.initializeCore();
+    const model = await import(String("/src/model/draft.ts"));
+    const { comparison } = await import(String("/src/pages/definition.ts"));
+    const body = model.draftToBody(
+      model.newDraft({
+        spelling: "broda",
+        kind: "gismu",
+        text: "Imported definition",
+      }),
+    ).body;
+    body.legacy = {
+      source: "https://example.org",
+      snapshot: "sha256:" + "d".repeat(64),
+      extraction: "fixture-v1",
+      record: { kind: "definition", id: 1 },
+      locator: "definitions/1",
+      original: { definition: "Archived source text" },
+      attribution: {
+        author: "Source author",
+        editor: null,
+        dates: {},
+        author_account: null,
+      },
+      conversion: {
+        method: "literal",
+        tool: "fixture",
+        version: "1",
+        model: null,
+        review: "unreviewed",
+        mappings: [],
+        warnings: [],
+      },
+      limitations: [],
+    };
+    const original = JSON.stringify(body);
+    const id = "jve1:" + "a".repeat(64);
+    const draft = model.draftFromBody(body, id, "import");
+    const child = model.draftToBody(draft).body;
+    const problems = model.coreProblems(
+      body,
+      core.wordId(body.word),
+      [],
+      "import",
+    );
+    const childProblems = model.coreProblems(
+      child,
+      core.wordId(child.word),
+      [id],
+      "native",
+    );
+    const comparisonNode = comparison(
+      { body, envelope: { id } },
+      { body: child, envelope: { id } },
+    );
+    document.querySelector("main")!.replaceChildren(comparisonNode);
+    return {
+      problems,
+      childProblems,
+      legacy: child.legacy,
+      unchanged: JSON.stringify(body) === original,
+    };
+  }, corePath);
+  expect(result.problems).toEqual([]);
+  expect(result.childProblems).toEqual([]);
+  expect(result.legacy).toBeNull();
+  expect(result.unchanged).toBe(true);
+  const field = page.locator('[data-field="Import evidence"]');
+  await expect(field).toContainText(
+    "Import evidence is present in the parent and absent in this revision.",
+  );
+  await expect(
+    field.getByText("Archived source text", { exact: false }),
+  ).not.toBeVisible();
+  await expect(field.locator("details")).not.toHaveAttribute("open");
+  await field.getByText("Show exact values", { exact: true }).click();
+  await expect(field.locator("pre").first()).toBeVisible();
+  await expect(field.locator("pre").first()).toContainText(
+    "Archived source text",
+  );
+  await expect(page.locator("main")).not.toContainText(
+    "identical content fields",
+  );
+});
+
+test("comparison explains equal-looking prose and fits a narrow screen", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.goto("/");
+  await page.evaluate(async (path) => {
+    const core = await import(path);
+    await core.initializeCore();
+    const model = await import(String("/src/model/draft.ts"));
+    const { comparison } = await import(String("/src/pages/definition.ts"));
+    const body = model.draftToBody(
+      model.newDraft({ spelling: "broda", kind: "gismu", text: "Test" }),
+    ).body;
+    body.text = [["Same prose"]];
+    body.sources = [
+      {
+        label: "Source",
+        url: "https://example.org/" + "a".repeat(300),
+        locator: null,
+        event: null,
+      },
+    ];
+    const child = structuredClone(body);
+    child.text = [["Same ", "prose"]];
+    child.sources[0].locator = "page 42";
+    const envelope = { id: "jve1:" + "a".repeat(64) };
+    document
+      .querySelector("main")!
+      .replaceChildren(
+        comparison({ body, envelope }, { body: child, envelope }),
+      );
+  }, corePath);
+  const field = page.locator('[data-field="Definition"]');
+  await expect(field.locator(".comparison-prose")).toHaveText([
+    "Same prose",
+    "Same prose",
+  ]);
+  await expect(field).toContainText("The structured values differ.");
+  await expect(page.locator("main")).not.toContainText(
+    "identical content fields",
+  );
+  await expect(page.locator("pre:visible")).toHaveCount(0);
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+  const pair = field.locator(".comparison-pair > div");
+  const oldBox = await pair.nth(0).boundingBox();
+  const newBox = await pair.nth(1).boundingBox();
+  expect(newBox!.y).toBeGreaterThan(oldBox!.y + oldBox!.height);
+  await field.getByText("Show exact values", { exact: true }).click();
+  await expect(field.locator("pre").first()).toContainText('"Same prose"');
+  await expect(field.locator("pre").last()).toContainText('"Same "');
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
 });

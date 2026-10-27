@@ -1,5 +1,10 @@
 import { interpretDefinition } from "../../../../packages/core/src/browser.ts";
-import { kindLabel } from "../model/types.ts";
+import { sameValue, changedItems } from "../model/comparison.ts";
+import {
+  readableValue,
+  exactValues,
+  fieldLabels,
+} from "../components/comparison.ts";
 /** One immutable definition revision, with its receipt and an optional comparison. */
 import { el, p, link, text, describe } from "../lib/dom.ts";
 import { routes, type RenderContext, type Route } from "../app/router.ts";
@@ -19,7 +24,7 @@ import {
   type WordResponse,
 } from "../model/types.ts";
 import { definitionBlock } from "../components/definition.ts";
-import { renderRichText, visibleJson } from "../model/richtext.ts";
+import { renderRichText } from "../model/richtext.ts";
 import { identityLink } from "../components/attribution.ts";
 
 export async function definitionPage(
@@ -196,103 +201,115 @@ export function comparison(
     );
     return section;
   }
-  const rows: [string, string, string][] = [];
-  const labels: Record<string, string> = {
-    word: "Word",
-    language: "Language",
-    text: "Definition",
-    frame: "Places",
-    operands: "Operands",
-    glosses: "Glosses",
-    notes: "Notes",
-    etymology: "Etymology",
-    examples: "Examples",
-    classification: "Type",
-    labels: "Labels",
-    sources: "Sources",
-    license: "Rights",
-    legacy: "Import evidence",
+  const rows: {
+    label: string;
+    field: string;
+    before: unknown;
+    after: unknown;
+  }[] = [];
+  const add = (
+    label: string,
+    field: string,
+    before: unknown,
+    after: unknown,
+  ) => {
+    if (!sameValue(before, after)) rows.push({ label, field, before, after });
   };
-  const object = (value: unknown): value is Record<string, unknown> =>
-    value !== null && typeof value === "object" && !Array.isArray(value);
-  const display = (value: unknown, path: string[]) => {
-    if (value === undefined) return "Not present";
-    if (path.join("/") === "classification/kind" && typeof value === "string")
-      return kindLabel(value as DefinitionBody["classification"]["kind"]);
-    return visibleJson(value);
-  };
-  const compare = (before: unknown, after: unknown, path: string[]) => {
-    if (before === after) return;
-    if (object(before) && object(after)) {
-      for (const key of [
-        ...new Set([...Object.keys(before), ...Object.keys(after)]),
-      ].sort())
-        compare(before[key], after[key], [...path, key]);
-      return;
+  // Defaults and all nested values decide whether a field changed. Rendering
+  // never decides equality and never changes either authenticated body.
+  const before = interpretDefinition(a) as unknown as DefinitionBody;
+  const after = interpretDefinition(b) as unknown as DefinitionBody;
+  for (const field of Object.keys(before) as (keyof DefinitionBody)[]) {
+    if (field !== "frame") {
+      add(fieldLabels[field] ?? field, field, before[field], after[field]);
+      continue;
     }
-    if (Array.isArray(before) && Array.isArray(after)) {
-      for (
-        let index = 0;
-        index < Math.max(before.length, after.length);
-        index++
-      )
-        compare(before[index], after[index], [...path, String(index + 1)]);
-      return;
-    }
-    const [field, ...nested] = path;
-    rows.push([
-      [labels[field] ?? field, ...nested].join(" / "),
-      display(before, path),
-      display(after, path),
-    ]);
-  };
-  // Apply defaults without changing either authenticated body. Compare every
-  // nested value, including node types and evidence that prose summaries omit.
-  compare(interpretDefinition(a), interpretDefinition(b), []);
+    const { places: left = [], ...leftFrame } = before.frame ?? {};
+    const { places: right = [], ...rightFrame } = after.frame ?? {};
+    add(
+      "Place structure",
+      "frame",
+      before.frame === null ? null : leftFrame,
+      after.frame === null ? null : rightFrame,
+    );
+    const indices = [
+      ...new Set([...left, ...right].map((place) => place.index)),
+    ].sort((a, b) => a - b);
+    for (const index of indices)
+      add(
+        `Place ${index}`,
+        "place",
+        left.find((place) => place.index === index),
+        right.find((place) => place.index === index),
+      );
+    // Place numbers provide identity. Retain order changes separately if present.
+    if (left.length === right.length && indices.length === left.length)
+      add(
+        "Place order",
+        "order",
+        left.map((place) => place.index),
+        right.map((place) => place.index),
+      );
+  }
   if (!rows.length) {
     section.append(
       p("The two revisions have identical content fields.", "small"),
     );
     return section;
   }
-  const table = el("table", { class: "small" });
-  table.append(
-    el(
-      "thead",
-      {},
-      el(
-        "tr",
-        {},
-        el("th", { scope: "col", text: "Field" }),
-        el("th", { scope: "col", text: "Parent" }),
-        el("th", { scope: "col", text: "This revision" }),
-      ),
-    ),
-  );
-  const body = el("tbody");
-  for (const [label, before, after] of rows)
-    body.append(
-      el(
-        "tr",
-        {},
-        el("th", { scope: "row", text: label }),
-        el("td", {}, el("pre", { class: "json", text: before })),
-        el("td", {}, el("pre", { class: "json", text: after })),
-      ),
+  const fields = el("div", {
+    role: "region",
+    "aria-label": "Changed fields",
+    class: "comparison-fields",
+  });
+  for (const { label, field, before, after } of rows) {
+    const row = el(
+      "section",
+      { class: "comparison-field", "data-field": label },
+      el("h3", { text: label }),
     );
-  table.append(body);
-  section.append(
-    el(
-      "div",
-      {
-        class: "table-scroll",
-        tabindex: "0",
-        role: "region",
-        "aria-label": "Changed fields",
-      },
-      table,
-    ),
-  );
+    if (field === "legacy") {
+      row.append(
+        p(
+          `Import evidence is ${before === null ? "absent" : "present"} in the parent and ${after === null ? "absent" : "present"} in this revision.${before !== null && after !== null ? " The evidence changed." : ""}`,
+        ),
+        exactValues(before, after),
+      );
+      fields.append(row);
+      continue;
+    }
+    const list = [
+      "glosses",
+      "sources",
+      "examples",
+      "operands",
+      "labels",
+    ].includes(field);
+    const changes = list
+      ? changedItems(before as unknown[], after as unknown[])
+      : [[before, after]];
+    for (const [left, right] of changes) {
+      const oldValue = readableValue(left, field);
+      const newValue = readableValue(right, field);
+      const pair = el(
+        "div",
+        { class: "comparison-pair" },
+        el("div", {}, el("h4", { text: "Parent" }), oldValue),
+        el("div", {}, el("h4", { text: "This revision" }), newValue),
+      );
+      row.append(pair);
+      if (oldValue.textContent === newValue.textContent)
+        row.append(
+          p(
+            "The structured values differ. Open Show exact values to inspect the difference.",
+            "meta",
+          ),
+        );
+      row.append(exactValues(left, right));
+    }
+    fields.append(row);
+  }
+  section.append(fields);
   section.append(
     el(
       "p",
