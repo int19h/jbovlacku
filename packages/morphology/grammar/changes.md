@@ -55,9 +55,11 @@ A pure `y` run cannot take the start of a cmavo such as `y'y` or `y'e`.
 One-word headwords permit one leading and one trailing framing period.
 Other surrounding pause material remains visible in word spans, but it does not become a valid one-word headword.
 
-Peggy counts every rule entry, including failed branches and cached calls. One analysis permits 50,000 entries and 128 original input bytes.
+Peggy counts every rule entry, including failed branches and cached calls.
+One version 4 headword analysis permits 75,000 rule entries and 128 original input bytes.
 Exhaustion discards the complete result. Builders also charge these entries to their shared recognition budget.
-The historical profiles retain their earlier counting rules and exact diagnostics.
+
+The historical profiles retain their limit of 50,000 recognition calls, counting rules, and exact diagnostics.
 The text entrypoint uses separate aggregate limits and returns foreign runs. See [Text segmentation](../../../docs/morphology.md#text-segmentation).
 
 The package commits the generated parser. `npm run build:morphology` regenerates it without runtime code evaluation.
