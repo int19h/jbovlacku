@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { corePath } from "./helpers.ts";
+import { corePath, fixture } from "./helpers.ts";
 
 async function harness(page: Page) {
   await page.route("**/authority-harness", (route) =>
@@ -111,4 +111,39 @@ test("site calculation and browser session metadata use the same null overlay di
   expect(result.explicit).toBe(result.expectedExplicit);
   expect(result.site).not.toBe(result.explicit);
   expect(result.sameScores).toBe(true);
+});
+
+test("a site calculation in the browser worker agrees with its saved session metadata", async ({
+  page,
+}) => {
+  await harness(page);
+  const result = await page.evaluate(
+    async ({ corePath, word }) => {
+      const core = await import(corePath);
+      await core.initializeCore();
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const { PersonalCalculator, nullOverlayDigest } = await import(
+        String("/src/data/personal.ts")
+      );
+      const calculator = new PersonalCalculator(
+        new LocalStore(`site-digest-${crypto.randomUUID()}`),
+        async () => ({ identity: null }),
+      );
+      try {
+        const ranking = await calculator.rankWord(word, { mode: "site" });
+        return {
+          session: ranking.overlay,
+          calculation: ranking.calculation?.overlay,
+          status: calculator.status.overlay,
+          expected: nullOverlayDigest(),
+        };
+      } finally {
+        calculator.cancel();
+      }
+    },
+    { corePath, word: fixture().words.cukta },
+  );
+  expect(result.session).toBe(result.expected);
+  expect(result.calculation).toBe(result.session);
+  expect(result.status).toBe(result.session);
 });
