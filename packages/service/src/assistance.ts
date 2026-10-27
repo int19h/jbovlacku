@@ -1284,6 +1284,7 @@ export class AssistanceService {
   private running = 0;
   private embeddingWork = new Map<string, EmbeddingOperation>();
   private embeddingSlots = new Map<string, number>();
+  private embeddingLifetimes = new Set<Promise<void>>();
   private embeddingFailedWaits = new Set<string>();
   private embeddingSettled = new Map<
     string,
@@ -1315,6 +1316,7 @@ export class AssistanceService {
     inputs: readonly Uint8Array[],
     caller: EmbeddingCaller,
     callerSignal?: AbortSignal,
+    beforeSend?: (operation: string) => Promise<void>,
   ): Promise<EmbeddingResult & { operation: string }> {
     callerSignal?.throwIfAborted();
     const config = this.options.provider;
@@ -1343,7 +1345,18 @@ export class AssistanceService {
       );
     const deadline = Date.now() + config.timeoutMs;
     const prepared = prepareEmbedding(inputs, config);
+    let resolveLifetime!: () => void;
+    const lifetime = new Promise<void>((resolve) => {
+      resolveLifetime = resolve;
+    });
+    this.embeddingLifetimes.add(lifetime);
+    const drained = () => {
+      this.embeddingLifetimes.delete(lifetime);
+      resolveLifetime();
+    };
     let operationId: string | undefined;
+    const metadata: Pick<AssistanceError, "embeddingUsage" | "retryAfterMs"> =
+      {};
     const controller = new AbortController();
     const timer = setTimeout(
       () =>
@@ -1425,9 +1438,20 @@ export class AssistanceService {
     });
     const work = admission
       .then((operation) =>
-        this.executeEmbedding(operation, prepared, config, signal),
+        this.executeEmbedding(
+          operation,
+          prepared,
+          config,
+          signal,
+          beforeSend,
+          drained,
+          metadata,
+        ),
       )
-      .finally(() => clearTimeout(timer));
+      .finally(() => {
+        clearTimeout(timer);
+        if (!operationId || !this.embeddingSlots.has(operationId)) drained();
+      });
     // Both hosts retain their existing background-work policy.
     this.options.waitUntil?.(work.catch(() => {}));
     try {
@@ -1447,9 +1471,12 @@ export class AssistanceService {
           operationId,
         );
         error.name = failure.name;
+        error.embeddingUsage =
+          failure.embeddingUsage ?? metadata.embeddingUsage;
+        error.retryAfterMs = failure.retryAfterMs ?? metadata.retryAfterMs;
         throw error;
       }
-      throw new AssistanceError(
+      const error = new AssistanceError(
         callerSignal?.aborted ? 499 : 502,
         callerSignal?.aborted ? "embedding_canceled" : "embedding_provider",
         callerSignal?.aborted
@@ -1457,7 +1484,16 @@ export class AssistanceService {
           : "The embedding provider request failed.",
         operationId,
       );
+      error.embeddingUsage = metadata.embeddingUsage;
+      error.retryAfterMs = metadata.retryAfterMs;
+      throw error;
     }
+  }
+
+  /** Stop new host calls first. Keep storage and its lock until admitted transport and settlement end. */
+  async drainEmbeddingTransports(): Promise<void> {
+    while (this.embeddingLifetimes.size)
+      await Promise.all([...this.embeddingLifetimes]);
   }
 
   /** Bounded diagnostics contain no inputs, vectors, network addresses, or keys. */
@@ -1508,6 +1544,9 @@ export class AssistanceService {
     prepared: ReturnType<typeof prepareEmbedding>,
     config: ProviderConfig,
     signal: AbortSignal,
+    beforeSend?: (operation: string) => Promise<void>,
+    drained?: () => void,
+    metadata: Pick<AssistanceError, "embeddingUsage" | "retryAfterMs"> = {},
   ): Promise<EmbeddingResult & { operation: string }> {
     let sent = false;
     let recorded = false;
@@ -1518,6 +1557,7 @@ export class AssistanceService {
       released = true;
       this.embeddingSlots.delete(operation.id);
       this.running--;
+      drained?.();
       const terminal = [...this.embeddingWork.values()].filter(
         (item) =>
           !item.transportPending && !["preparing", "sent"].includes(item.state),
@@ -1530,7 +1570,9 @@ export class AssistanceService {
     };
     try {
       const result = await requestEmbedding(prepared, config, signal, {
-        sent: () => {
+        sent: async () => {
+          await beforeSend?.(operation.id);
+          signal.throwIfAborted();
           sent = true;
           operation.state = "sent";
           operation.transportPending = true;
@@ -1539,7 +1581,11 @@ export class AssistanceService {
           operation.transportPending = false;
           release();
         },
+        retryAfter: (delayMs) => {
+          metadata.retryAfterMs = delayMs;
+        },
         cost: async (usage) => {
+          metadata.embeddingUsage = usage;
           if (recorded) return;
           recorded = true;
           await this.settleCost(
@@ -1562,7 +1608,7 @@ export class AssistanceService {
         recorded = true;
         await this.settleCost(operation.id, null, prepared.estimatedUsd);
       }
-      throw new AssistanceError(
+      const error = new AssistanceError(
         signal.aborted
           ? 504
           : failure instanceof AssistanceError
@@ -1575,6 +1621,14 @@ export class AssistanceService {
             ? failure.message
             : "The embedding provider request failed.",
       );
+      if (failure instanceof AssistanceError) {
+        metadata.embeddingUsage =
+          failure.embeddingUsage ?? metadata.embeddingUsage;
+        metadata.retryAfterMs = failure.retryAfterMs;
+      }
+      error.embeddingUsage = metadata.embeddingUsage;
+      error.retryAfterMs = metadata.retryAfterMs;
+      throw error;
     } finally {
       try {
         await this.budgetLock(async () => {
