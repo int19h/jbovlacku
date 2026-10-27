@@ -906,14 +906,16 @@ test("background jobs keep partial search available and finish new inputs withou
     }
   }));
 
-test("background failure persists across restart and snapshot changes without another paid attempt", async () =>
+test("background recovery keeps the same job across restart and snapshot changes", async () =>
   fixture(async ({ store, ctx }) => {
     const { BackgroundSemanticIndexer } =
       await import("../src/semantic/background.ts");
     let calls = 0;
     let snapshot = hash(9999);
+    let now = Date.now();
     const added = rows(5);
     const options = {
+      now: () => now,
       store,
       profile: profileId(profile),
       view: ctx.evaluation.selected_view,
@@ -955,17 +957,19 @@ test("background failure persists across restart and snapshot changes without an
     ))!;
     assert.equal(generation.error, "index_failed");
     snapshot = hash(10000);
+    now += 1000;
     const restarted = new BackgroundSemanticIndexer(options);
     await restarted.cycle();
     await restarted.close();
-    const oldBatch = (await store.batches(generation.id))[0];
+    assert.equal(calls, 2);
+    const oldBatch = (await store.retryableBatch(generation.id))!;
     await store.retry(oldBatch.id);
     await store.start(generation.id);
     const uncertain = (await store.claim(generation.id))!;
     await store.sent(uncertain.id, "embedding:index:interrupted");
+    now += 2000;
     const afterCrash = new BackgroundSemanticIndexer(options);
     await afterCrash.cycle();
-    await store.recover(generation.id);
     assert.equal(
       (await store.batches(generation.id)).find(
         (batch) => batch.id === uncertain.id,
@@ -974,7 +978,7 @@ test("background failure persists across restart and snapshot changes without an
     );
     await afterCrash.cycle();
     await afterCrash.close();
-    assert.equal(calls, 1);
+    assert.equal(calls, 3);
     assert.equal(
       (await store.backgroundGeneration(
         profileId(profile),
@@ -1334,11 +1338,10 @@ test("retirement yields with rows remaining and blocks concurrent publication or
     }
   }));
 
-test("shutdown after an unsent claim pauses the trapped batch for explicit recovery", async () =>
+test("shutdown after an unsent claim keeps a failed batch for linked background recovery", async () =>
   fixture(async ({ store, ctx }) => {
     const { BackgroundSemanticIndexer } =
       await import("../src/semantic/background.ts");
-    const { SemanticIndexer } = await import("../src/semantic/indexer.ts");
     const docs = rows(5);
     let sends = 0;
     const assistance = {
@@ -1402,22 +1405,20 @@ test("shutdown after an unsent claim pauses the trapped batch for explicit recov
     assert.equal(oldBatch.error, "index_paused");
     const restarted = new BackgroundSemanticIndexer(options);
     try {
-      const stoppedClaims = claims;
+      await restarted.cycle();
+      const completedClaims = claims;
       for (let i = 0; i < 3; i++) await restarted.cycle();
       assert.equal(
         claims,
-        stoppedClaims,
-        "An unsent failed input must not spin through empty claims",
+        completedClaims,
+        "Completed work must not spin through empty claims",
       );
-      assert.equal((await store.generation(job.id)).error, "index_paused");
       assert.equal(
         sends,
-        0,
-        "Restart must not retry the failed batch automatically",
+        1,
+        "Restart must make one linked attempt for the unsent batch",
       );
       store.claim = claim;
-      await store.retry(oldBatch.id);
-      await new SemanticIndexer(store, assistance).run(job.id);
       assert.equal((await store.generation(job.id)).state, "completed");
       const batches = await store.batches(job.id);
       assert.equal(batches.length, 2);
@@ -1635,7 +1636,7 @@ test("shutdown while reading claimed inputs prevents dispatch and retains explic
   }));
 
 for (const mode of ["batch", "probe"] as const)
-  test(`policy keeps pre-send ${mode} refusals paused without automatic replay`, async () =>
+  test(`background pre-send ${mode} refusals stay paused during their backoff`, async () =>
     fixture(async ({ store, ctx }) => {
       const { BackgroundSemanticIndexer } =
         await import("../src/semantic/background.ts");

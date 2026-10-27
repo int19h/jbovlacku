@@ -250,6 +250,8 @@ Known usage remains available even when a returned model or vector is invalid.
 Mocked tests cover partial progress, restart, failures, retirement, atomic publication, rollback, and explicit removal of current pointers.
 The Node host serves meaning searches from compatible published vectors with exact event bindings in the requested snapshot and view.
 New definitions remain pending while unchanged definitions stay searchable. Optional background indexing uses the same host budgets without stopping dictionary reads.
+Background jobs retry transient failures with bounded backoff and linked retries. They preserve earlier charges and wait for provider cooldowns and budget windows.
+After three unsuccessful retries, a job waits one hour or until the next server start. Operator CLI recovery remains manual.
 Cold coverage yields between bounded metadata pages. Concurrent requests share coverage work, and partial coverage stays cached until index progress changes.
 Generation retirement yields between bounded deletion transactions and resumes interrupted cleanup.
 Each client network can hold at most one scan worker. Empty or absent networks share that same limit.
