@@ -256,16 +256,16 @@ export async function trustPage(
       button(
         "Remove",
         async () => {
-          const current = await app.store.overlay();
-          current.trust = current.trust.filter(
-            (r) =>
-              !(
-                r.issuer === rule.issuer &&
-                r.subject === rule.subject &&
-                scopeKey(r.scope) === scopeKey(rule.scope)
-              ),
-          );
-          await app.store.setOverlay(current);
+          await app.store.updateOverlay((current) => {
+            current.trust = current.trust.filter(
+              (r) =>
+                !(
+                  r.issuer === rule.issuer &&
+                  r.subject === rule.subject &&
+                  scopeKey(r.scope) === scopeKey(rule.scope)
+                ),
+            );
+          });
           rerender();
         },
         { class: "btn btn-quiet" },
@@ -305,15 +305,15 @@ export async function trustPage(
       button(
         "Remove",
         async () => {
-          const current = await app.store.overlay();
-          current.blocked = current.blocked.filter(
-            (b) =>
-              !(
-                b.identity === blocked.identity &&
-                scopeKey(b.scope) === scopeKey(blocked.scope)
-              ),
-          );
-          await app.store.setOverlay(current);
+          await app.store.updateOverlay((current) => {
+            current.blocked = current.blocked.filter(
+              (b) =>
+                !(
+                  b.identity === blocked.identity &&
+                  scopeKey(b.scope) === scopeKey(blocked.scope)
+                ),
+            );
+          });
           rerender();
         },
         { class: "btn btn-quiet" },

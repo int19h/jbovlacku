@@ -295,32 +295,39 @@ export function trustPanel(app: App, options: TrustPanelOptions): HTMLElement {
             );
             return;
           }
-          const overlay = await app.store.overlay();
-          if (mode === "trust") {
-            overlay.trust = overlay.trust.filter(
-              (r) =>
-                !(
-                  r.subject === subject && scopeKey(r.scope) === scopeKey(scope)
-                ),
-            );
-            overlay.trust.push({
-              issuer: app.session.identity!,
-              subject,
-              scope,
-              value: "heed",
-              weight: null,
-            });
-          } else {
-            overlay.blocked = overlay.blocked.filter(
-              (b) =>
-                !(
-                  b.identity === subject &&
-                  scopeKey(b.scope) === scopeKey(scope)
-                ),
-            );
-            overlay.blocked.push({ identity: subject, scope });
-          }
-          await app.store.setOverlay(overlay);
+          const issuer = app.session.identity;
+          const requestedScope = { ...scope };
+          await app.store.updateOverlay((overlay) => {
+            if (mode === "trust") {
+              overlay.trust = overlay.trust.filter(
+                (r) =>
+                  !(
+                    r.issuer === issuer &&
+                    r.subject === subject &&
+                    scopeKey(r.scope) === scopeKey(requestedScope)
+                  ),
+              );
+              overlay.trust.push({
+                issuer: issuer!,
+                subject,
+                scope: requestedScope,
+                value: "heed",
+                weight: null,
+              });
+            } else {
+              overlay.blocked = overlay.blocked.filter(
+                (b) =>
+                  !(
+                    b.identity === subject &&
+                    scopeKey(b.scope) === scopeKey(requestedScope)
+                  ),
+              );
+              overlay.blocked.push({
+                identity: subject,
+                scope: requestedScope,
+              });
+            }
+          });
           app.announce(
             mode === "trust"
               ? "Saved as a private rule in this browser."
