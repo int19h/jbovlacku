@@ -369,6 +369,8 @@ A larger traversal budget does not remove memory limits.
 [Issue 10](https://github.com/int19h/jbovlacku/issues/10) tracks URL serialization and invisible headword characters.
 The browser tests wait for the shared core before they prepare signed fixtures.
 Controlled tests keep delivery acceptance, word-view readiness, and AI control readiness separate.
+Saved-draft return tests wait for the restore transaction and retain the original prose through reload.
+Revision comparison tests wait for the rendered word page and initialized core, including delayed startup.
 The calculator race tests use their own browser database.
 The development guide lists local tests. Their scope does not establish full specification conformance or public deployment readiness.
 
