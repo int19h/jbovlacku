@@ -52,6 +52,8 @@ export interface VectorStore {
   summary(id: string): Promise<IndexSummary>;
   compatibility(profile: string): Promise<string | null>;
   suspend(profile: string, reason: string): Promise<void>;
+  defer(profile: string, until: number): Promise<void>;
+  retryAfter(profile: string): Promise<number | null>;
   page(
     id: string,
     after?: string | null,

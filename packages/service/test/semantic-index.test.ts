@@ -27,7 +27,10 @@ import {
   SemanticIndexer,
   type IndexEmbedder,
 } from "../src/semantic/indexer.ts";
-import { DEFAULT_VECTOR_LIMITS } from "../src/semantic/sql-vector-store.ts";
+import {
+  DEFAULT_VECTOR_LIMITS,
+  SqlVectorStore,
+} from "../src/semantic/sql-vector-store.ts";
 import {
   eligibleSemanticSource,
   type IndexDocument,
@@ -129,7 +132,7 @@ function embedder(
   };
 }
 async function prepared(
-  store: SqliteVectorStore,
+  store: SqlVectorStore,
   rows: IndexDocument[],
   snapshot?: string,
   p = profile(),
@@ -494,11 +497,14 @@ test("unpublish lets a suspended profile retire and frees capacity for its fresh
         createQwenProfile("90".repeat(16)),
       );
       await store.publish(next.id, null);
-      const replacement = new SemanticIndexer(store, embedder());
+      const provider = embedder();
+      const replacement = new SemanticIndexer(store, provider);
       assert.equal(
         (await replacement.run(next.id)).generation.error,
         "semantic_capacity",
       );
+      assert.equal(provider.calls.length, 0);
+      assert.equal((await store.batches(next.id)).length, 0);
       await assert.rejects(store.retire(old.id), /rollback reference/);
       assert.equal(await store.unpublish(old.profile, old.view, old.id), true);
       assert.equal(
@@ -520,9 +526,8 @@ test("unpublish lets a suspended profile retire and frees capacity for its fresh
       } finally {
         database.close();
       }
-      const failed = (await store.batches(next.id))[0];
-      await store.retry(failed.id);
       assert.equal((await replacement.run(next.id)).coverage.indexed, 2);
+      assert.equal(provider.calls.length, 1);
     },
     { ...DEFAULT_VECTOR_LIMITS, vectors: 2 },
   ));
@@ -561,7 +566,7 @@ test("operator pause stops new claims and waits for admitted batches to settle",
     assert.equal((await store.batches(job.id))[0].state, "completed");
   }));
 
-test("failed source entries and transactional capacity failures keep honest coverage", async () =>
+test("excluded source entries permit completion and retain their exact reason", async () =>
   fixture(async (store) => {
     const rows = documents(2);
     rows[1] = {
@@ -578,7 +583,15 @@ test("failed source entries and transactional capacity failures keep honest cove
       pending: 0,
       failed: 1,
     });
-    assert.equal(result.generation.state, "paused");
+    assert.equal(result.generation.state, "completed");
+    assert.equal(result.generation.error, null);
+    assert.equal((await store.page(job.id)).rows[1].error, "input_limit");
+    const resumed = embedder();
+    assert.equal(
+      (await new SemanticIndexer(store, resumed).run(job.id)).generation.state,
+      "completed",
+    );
+    assert.equal(resumed.calls.length, 0);
     const invalid = source(documents(1), hash(3000));
     const other = await store.create(invalid.context, profile());
     const page = await invalid.page(null, 128);
@@ -588,13 +601,18 @@ test("failed source entries and transactional capacity failures keep honest cove
     assert.equal((await store.coverage(other.id)).pending, 1);
   }));
 
-test("vector capacity failure rolls back every result in the batch", async () =>
+test("vector capacity refuses the batch before a provider call", async () =>
   fixture(
     async (store, path) => {
       const job = await prepared(store, documents(2));
-      const result = await new SemanticIndexer(store, embedder()).run(job.id);
+      const provider = embedder();
+      const result = await new SemanticIndexer(store, provider).run(job.id);
       assert.equal(result.coverage.indexed, 0);
-      assert.equal(result.coverage.failed, 2);
+      assert.equal(result.coverage.failed, 0);
+      assert.equal(result.coverage.pending, 2);
+      assert.equal(result.generation.error, "semantic_capacity");
+      assert.equal(provider.calls.length, 0);
+      assert.equal((await store.batches(job.id)).length, 0);
       const database = new DatabaseSync(path);
       try {
         assert.equal(
@@ -667,7 +685,7 @@ test("private source paging uses evaluator eligibility and exact record bindings
   const fixtures = JSON.parse(
     await readFile(
       new URL(
-        "../../../crates/jvc-runtime/tests/fixtures/semantic-record-inputs-v1.json",
+        "../../../crates/jvc-runtime/tests/fixtures/semantic-record-inputs-v2.json",
         import.meta.url,
       ),
       "utf8",
@@ -953,4 +971,293 @@ test("CLI teardown keeps stores and the directory lock until an abort-ignoring t
     else await closeSemanticIndexHost(assistance, budget, vectors, release);
     await rm(directory, { recursive: true });
   }
+});
+
+test("fresh claims seek past saved progress and retry lookup uses its own index", async () =>
+  fixture(async (_store, path) => {
+    const database = new DatabaseSync(path);
+    const claims: { sql: string; cursor: string }[] = [];
+    const traced = new SqlVectorStore({
+      exec(sql, ...bindings) {
+        if (sql.includes("SELECT DISTINCT a.input"))
+          claims.push({ sql, cursor: String(bindings[2]) });
+        const statement = database.prepare(sql);
+        if (statement.columns().length)
+          return statement.all(...bindings) as Record<string, unknown>[];
+        statement.run(...bindings);
+        return [];
+      },
+      transaction(operation) {
+        database.exec("BEGIN IMMEDIATE");
+        try {
+          const result = operation();
+          database.exec("COMMIT");
+          return result;
+        } catch (failure) {
+          database.exec("ROLLBACK");
+          throw failure;
+        }
+      },
+    });
+    try {
+      const rows = documents(4096);
+      const job = await prepared(traced, rows);
+      const provider = embedder();
+      const result = await new SemanticIndexer(traced, provider).run(job.id, {
+        concurrency: 1,
+      });
+      assert.equal(result.generation.state, "completed");
+      assert.equal(provider.calls.length, 512);
+      assert.equal(claims[0].cursor, "");
+      for (let i = 1; i < claims.length; i++)
+        assert.equal(claims[i].cursor, provider.calls[i - 1].at(-1));
+      const plan = database
+        .prepare("EXPLAIN QUERY PLAN " + claims.at(-1)!.sql)
+        .all(job.profile, job.id, claims.at(-1)!.cursor)
+        .map((row) => String(row.detail))
+        .join("\n");
+      assert.match(
+        plan,
+        /SEARCH a USING INDEX semantic_association_inputs \(generation=\? AND input>\?\)/,
+      );
+      const retryPlan = database
+        .prepare(
+          "EXPLAIN QUERY PLAN SELECT id FROM semantic_batches WHERE generation=? AND retry=1 ORDER BY id LIMIT 1",
+        )
+        .all(job.id)
+        .map((row) => String(row.detail))
+        .join("\n");
+      assert.match(retryPlan, /COVERING INDEX semantic_batch_retry/);
+      assert.doesNotMatch(retryPlan, /SCAN |TEMP B-TREE/);
+      assert.equal(new Set(provider.calls.flat()).size, rows.length);
+    } finally {
+      database.close();
+    }
+  }));
+
+test("migration restores the claim position and active capacity reservations", async () =>
+  fixture(async (store, path) => {
+    const job = await prepared(store, documents(17));
+    await store.start(job.id);
+    const old = (await store.claim(job.id))!;
+    await store.sent(old.id, "embedding:index:old-version");
+    const database = new DatabaseSync(path);
+    database.exec("ALTER TABLE semantic_generations DROP COLUMN claim_cursor");
+    database.exec("DROP TABLE semantic_capacity_reservations");
+    const reopened = new SqliteVectorStore(path);
+    try {
+      assert.equal(
+        database
+          .prepare("SELECT claim_cursor FROM semantic_generations WHERE id=?")
+          .get(job.id)!.claim_cursor,
+        old.inputs.at(-1),
+      );
+      assert.equal(
+        database
+          .prepare(
+            "SELECT vectors FROM semantic_capacity_reservations WHERE batch=?",
+          )
+          .get(old.id)!.vectors,
+        8,
+      );
+      await reopened.recover(job.id);
+      assert.equal(
+        database
+          .prepare("SELECT COUNT(*) AS n FROM semantic_capacity_reservations")
+          .get()!.n,
+        0,
+      );
+      const provider = embedder();
+      const first = await new SemanticIndexer(reopened, provider).run(job.id);
+      assert.equal(first.coverage.indexed, 9);
+      assert.equal(first.coverage.failed, 8);
+      assert(
+        provider.calls.flat().every((input) => !old.inputs.includes(input)),
+      );
+      await reopened.retry(old.id);
+      const last = await new SemanticIndexer(reopened, provider).run(job.id);
+      assert.equal(last.generation.state, "completed");
+      assert.equal(last.coverage.indexed, 17);
+      assert.equal(new Set(provider.calls.flat()).size, 17);
+    } finally {
+      reopened.close();
+      database.close();
+    }
+  }));
+
+test("a satisfied retry continues to fresh work in the same run", async () =>
+  fixture(async (store) => {
+    const rows = documents(16);
+    const first = await prepared(store, rows);
+    await store.start(first.id);
+    const old = (await store.claim(first.id))!;
+    await store.sent(old.id, "embedding:index:lost-cross-generation");
+    await store.recover(first.id);
+    const shared = rows.filter((row) => old.inputs.includes(row.input_hash!));
+    const second = await prepared(store, shared, hash(2001));
+    await new SemanticIndexer(store, embedder()).run(second.id);
+    await store.retry(old.id);
+    const provider = embedder();
+    const result = await new SemanticIndexer(store, provider).run(first.id, {
+      concurrency: 1,
+    });
+    assert.equal(result.generation.state, "completed");
+    assert.equal(result.coverage.indexed, 16);
+    assert.equal(provider.calls.length, 1);
+    assert(provider.calls[0].every((input) => !old.inputs.includes(input)));
+    assert.deepEqual(
+      (await store.batches(first.id)).find((batch) => batch.id === old.id)
+        ?.state,
+      "ambiguous",
+    );
+  }));
+
+test("a generation containing only excluded inputs completes without dispatch", async () =>
+  fixture(async (store) => {
+    const rows = documents(2).map((row) => ({
+      ...row,
+      input: null,
+      input_hash: null,
+      error: "input_limit",
+    }));
+    const job = await prepared(store, rows);
+    const provider = embedder();
+    const result = await new SemanticIndexer(store, provider).run(job.id);
+    assert.equal(result.generation.state, "completed");
+    assert.deepEqual(result.coverage, {
+      eligible: 2,
+      indexed: 0,
+      pending: 0,
+      failed: 2,
+    });
+    assert.equal(provider.calls.length, 0);
+    assert.equal((await store.batches(job.id)).length, 0);
+  }));
+
+test("active batches reserve vector capacity across workers and generations", async () =>
+  fixture(
+    async (store, path) => {
+      const job = await prepared(store, documents(24));
+      const provider = embedder();
+      const result = await new SemanticIndexer(store, provider).run(job.id, {
+        concurrency: 4,
+      });
+      assert.equal(provider.calls.length, 1);
+      assert.equal(result.generation.error, "semantic_capacity");
+      assert.deepEqual(result.coverage, {
+        eligible: 24,
+        indexed: 8,
+        pending: 16,
+        failed: 0,
+      });
+      const database = new DatabaseSync(path);
+      try {
+        assert.equal(
+          database
+            .prepare("SELECT COUNT(*) AS n FROM semantic_capacity_reservations")
+            .get()!.n,
+          0,
+        );
+        const next = await prepared(store, documents(9), hash(2002));
+        const otherProvider = embedder();
+        const other = await new SemanticIndexer(store, otherProvider).run(
+          next.id,
+        );
+        assert.equal(other.generation.error, "semantic_capacity");
+        assert.equal(otherProvider.calls.length, 0);
+      } finally {
+        database.close();
+      }
+    },
+    { ...DEFAULT_VECTOR_LIMITS, vectors: 8 },
+  ));
+
+test("reserved vector bytes block staging until an unsent batch releases them", async () => {
+  const row = documents(1)[0];
+  await fixture(
+    async (store, path) => {
+      const job = await prepared(store, [row]);
+      await store.start(job.id);
+      const batch = (await store.claim(job.id))!;
+      const otherRows = documents(2).slice(1);
+      const input = source(otherRows, hash(2001));
+      const other = await store.create(input.context, profile());
+      const page = await input.page(null, 128);
+      await assert.rejects(
+        store.stage(other.id, null, page),
+        /reached its capacity/,
+      );
+      assert.equal((await store.generation(other.id)).cursor, null);
+      await store.fail(batch.id, "before_dispatch");
+      await store.pause(job.id);
+      await store.stage(other.id, null, page);
+      const database = new DatabaseSync(path);
+      try {
+        assert.equal(
+          database
+            .prepare("SELECT COUNT(*) AS n FROM semantic_capacity_reservations")
+            .get()!.n,
+          0,
+        );
+      } finally {
+        database.close();
+      }
+    },
+    { ...DEFAULT_VECTOR_LIMITS, bytes: row.input!.byteLength + 4096 * 4 },
+  );
+});
+
+test("byte capacity is refused before payment and completion retains its atomic guard", async () => {
+  const rows = documents(2);
+  const inputBytes = rows.reduce((n, row) => n + row.input!.byteLength, 0);
+  await fixture(
+    async (store) => {
+      const job = await prepared(store, rows);
+      const provider = embedder();
+      const result = await new SemanticIndexer(store, provider).run(job.id);
+      assert.equal(result.generation.error, "semantic_capacity");
+      assert.equal(provider.calls.length, 0);
+      assert.equal((await store.batches(job.id)).length, 0);
+    },
+    { ...DEFAULT_VECTOR_LIMITS, bytes: inputBytes + 4096 * 4 },
+  );
+  const limits = { ...DEFAULT_VECTOR_LIMITS, vectors: 2 };
+  await fixture(async (store, path) => {
+    const job = await prepared(store, rows);
+    await store.start(job.id);
+    const batch = (await store.claim(job.id))!;
+    const operation = "embedding:index:capacity-guard";
+    await store.sent(batch.id, operation);
+    // Inject a smaller limit after admission to exercise the completion guard.
+    limits.vectors = 1;
+    await assert.rejects(
+      store.complete(batch.id, operation, [unit(), unit()], usage),
+      /reached its capacity/,
+    );
+    const database = new DatabaseSync(path);
+    try {
+      assert.equal(
+        database.prepare("SELECT COUNT(*) AS n FROM semantic_vectors").get()!.n,
+        0,
+      );
+      assert.equal(
+        database
+          .prepare(
+            "SELECT vectors FROM semantic_capacity_reservations WHERE batch=?",
+          )
+          .get(batch.id)!.vectors,
+        2,
+      );
+      assert.equal((await store.batches(job.id))[0].state, "sent");
+      await store.fail(batch.id, "semantic_capacity", usage);
+      assert.equal(
+        database
+          .prepare("SELECT COUNT(*) AS n FROM semantic_capacity_reservations")
+          .get()!.n,
+        0,
+      );
+    } finally {
+      database.close();
+    }
+  }, limits);
 });
