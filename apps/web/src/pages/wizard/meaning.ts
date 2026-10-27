@@ -76,7 +76,7 @@ export async function meaningPage(
     );
     return;
   }
-  let draft = await loadDraft(app);
+  let draft = await loadDraft(app, { signal: context.signal });
   if (!context.live()) return;
   const legacy = draft ? null : pendingLegacyDraft();
   if (legacy) {

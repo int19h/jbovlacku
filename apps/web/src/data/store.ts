@@ -106,6 +106,12 @@ export class DraftConflictError extends Error {
     );
   }
 }
+/** A saved row is missing, invalid, or no longer listed for restoration. */
+export class SavedDraftUnavailableError extends Error {
+  constructor() {
+    super("The saved draft is unavailable.");
+  }
+}
 export class PublicationConflictError extends Error {
   constructor(
     public kind: "already-published" | "newer-draft" | "draft-missing",
@@ -565,14 +571,17 @@ export class LocalStore {
   async switchDraft(
     currentRevision: string | null,
     replacement: Draft | { resume: string },
+    signal?: AbortSignal,
   ): Promise<Draft> {
     if (
       "resume" in replacement &&
       !/^saved:[0-9a-f-]{36}$/.test(replacement.resume)
     )
-      throw new Error("The saved draft is unavailable.");
+      throw new SavedDraftUnavailableError();
     const db = await this.database;
     return new Promise((resolve, reject) => {
+      // Once this transaction starts, later draft reads run after it.
+      signal?.throwIfAborted();
       const tx = db.transaction("drafts", "readwrite");
       const drafts = tx.objectStore("drafts");
       let failure: unknown;
@@ -602,7 +611,7 @@ export class LocalStore {
               resumed?.result.version !== 2 ||
               !index.entries.some((entry) => entry.key === consumed))
           )
-            throw new Error("The saved draft is unavailable.");
+            throw new SavedDraftUnavailableError();
           next = structuredClone(
             consumed ? (resumed!.result as Draft) : (replacement as Draft),
           );

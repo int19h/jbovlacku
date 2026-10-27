@@ -3670,10 +3670,63 @@ for (const conversion of [null, "te"]) {
       .click();
     expect((await stored(page)).text).toEqual(revision.text);
     expect((await stored(page)).parents).toEqual(revision.parents);
-    await page.getByRole("link", { name: "Return to the saved draft" }).click();
-    await expect(page).toHaveURL(/\/new\/meaning/);
+    let releaseRestore!: () => void;
+    const restoreHeld = new Promise<void>((resolve) => {
+      releaseRestore = resolve;
+    });
+    let enterRestore!: () => void;
+    const restoreStarted = new Promise<void>((resolve) => {
+      enterRestore = resolve;
+    });
+    await page.exposeFunction("holdDraftRestore", () => {
+      enterRestore();
+      return restoreHeld;
+    });
+    await page.evaluate(async () => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const original = LocalStore.prototype.switchDraft;
+      LocalStore.prototype.switchDraft = async function (...args: any[]) {
+        LocalStore.prototype.switchDraft = original;
+        await (window as any).holdDraftRestore();
+        return original.apply(this, args);
+      };
+    });
+    const returnLink = page.getByRole("link", {
+      name: "Return to the saved draft",
+    });
+    const savedKey = new URL(
+      (await returnLink.getAttribute("href"))!,
+      page.url(),
+    ).searchParams.get("resume")!;
+    try {
+      await returnLink.click();
+      await restoreStarted;
+      // The URL moves before storage switches. No draft editor is ready yet.
+      await expect(page).toHaveURL(/\/new\/meaning\?resume=/);
+      await expect(page.locator("main").getByRole("textbox")).toHaveCount(0);
+      expect((await stored(page)).text).toEqual(revision.text);
+      const saved = await page.evaluate(async (key) => {
+        const { LocalStore } = await import(String("/src/data/store.ts"));
+        return new LocalStore().get("drafts", key);
+      }, savedKey);
+      expect(saved.text).toEqual(before.text);
+      expect(saved.spelling).toBe(before.spelling);
+    } finally {
+      releaseRestore();
+    }
+    // Removing resume means that the storage transaction completed.
+    await expect(page).toHaveURL(/\/new\/meaning$/);
+    await expect(
+      page.getByRole("textbox", { name: "Meaning", exact: true }),
+    ).toHaveValue(before.meaning);
     expect((await stored(page)).text).toEqual(before.text);
     expect((await stored(page)).spelling).toBe(before.spelling);
+    expect((await stored(page)).parents).toEqual(before.parents);
+    await page.reload();
+    await expect(
+      page.getByRole("textbox", { name: "Meaning", exact: true }),
+    ).toHaveValue(before.meaning);
+    expect((await stored(page)).text).toEqual(before.text);
   });
 }
 

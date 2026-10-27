@@ -182,6 +182,11 @@ Both actions preserve the earlier draft. A place conversion opens the existing w
 Adding a definition preserves every current field and marks spelling-dependent evidence for review.
 Revision actions show the ordinary notice about license and origin changes. Their exact parent and improved text keep the usual acceptance and undo flow.
 Saved-draft links survive wizard navigation and reload. Atomic returns consume the restored row and keep all other saved drafts reachable.
+Leaving a restore before its storage transaction starts cancels the switch and keeps both drafts.
+A newer navigation takes priority while a save waits. A refused Back keeps the current page, its URL, and unsaved edits.
+If a later navigation also refuses, it restores the shown URL. A cancelled kind dialog keeps the editor saving later edits.
+The saver stops only when navigation commits. If a concurrent edit blocks a restore, the URL keeps its `resume` request while the saved row remains available.
+An ordinary step link leaves that request without retrying it. The saved-draft link can retry it and preserves the newer current draft.
 An independent saved index also keeps those links after publication, replacement, discard, and ordinary revisions.
 Meaning can restore a saved draft without creating a new current draft first. Earlier orphaned saved rows migrate into the index.
 Existing-word actions also remain available after type acceptance.
@@ -395,6 +400,8 @@ A larger traversal budget does not remove memory limits.
 [Issue 10](https://github.com/int19h/jbovlacku/issues/10) tracks URL serialization and invisible headword characters.
 The browser tests wait for the shared core before they prepare signed fixtures.
 Controlled tests keep delivery acceptance, word-view readiness, and AI control readiness separate.
+Saved-draft return tests wait for the restore transaction and retain the original prose through reload.
+Revision comparison tests wait for the rendered word page and initialized core, including delayed startup.
 The calculator race tests use their own browser database.
 The development guide lists local tests. Their scope does not establish full specification conformance or public deployment readiness.
 

@@ -100,7 +100,10 @@ export async function publishPage(
   };
   let draft;
   try {
-    draft = await loadDraft(app, { throwOnReadError: true });
+    draft = await loadDraft(app, {
+      throwOnReadError: true,
+      signal: context.signal,
+    });
   } catch {
     readFailure();
     return;

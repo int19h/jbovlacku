@@ -85,7 +85,7 @@ export async function lujvoPage(
   const { main } = context;
   context.title("Add a word: Build the lujvo");
   main.className = "surface-wizard";
-  const draft = await loadDraft(app);
+  const draft = await loadDraft(app, { signal: context.signal });
   if (!context.live()) return;
   if (!draft) {
     navigate("/new/meaning", { replace: true });

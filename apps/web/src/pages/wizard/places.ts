@@ -412,7 +412,8 @@ export async function placesPage(
     );
     return;
   }
-  let draft = await loadDraft(app);
+  let draft = await loadDraft(app, { signal: context.signal });
+  if (!context.live()) return;
   const reviseId = route.params.get("revise");
   if (reviseId && (!draft || draft.parents[0] !== reviseId)) {
     // Revise copies the publication into a new draft with its exact parent ID.
