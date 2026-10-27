@@ -16,6 +16,7 @@ import type {
   VectorAssociation,
   ExpectedAssociation,
   IndexCoverage,
+  ProbeEvidence,
 } from "./vector-store.ts";
 
 /** Hosts supply binary SQL bindings and atomic transactions. No provider work runs in a transaction. */
@@ -60,6 +61,7 @@ export class SqlVectorStore implements VectorStore {
     for (const statement of [
       "CREATE TABLE IF NOT EXISTS semantic_profiles(id TEXT PRIMARY KEY, value BLOB NOT NULL)",
       "CREATE TABLE IF NOT EXISTS semantic_profile_suspensions(profile TEXT PRIMARY KEY, reason TEXT NOT NULL)",
+      "CREATE TABLE IF NOT EXISTS semantic_probe_evidence(profile TEXT PRIMARY KEY,value TEXT NOT NULL)",
       "CREATE TABLE IF NOT EXISTS semantic_profile_backoff(profile TEXT PRIMARY KEY, retry_after INTEGER NOT NULL)",
       "CREATE TABLE IF NOT EXISTS semantic_generations(id TEXT PRIMARY KEY, snapshot TEXT NOT NULL, view TEXT NOT NULL, profile TEXT NOT NULL, eligible INTEGER NOT NULL, state TEXT NOT NULL, cursor TEXT, source_done INTEGER NOT NULL DEFAULT 0, error TEXT)",
       "CREATE TABLE IF NOT EXISTS semantic_associations(generation TEXT NOT NULL, event TEXT NOT NULL, envelope TEXT NOT NULL, body TEXT NOT NULL, extraction_version INTEGER NOT NULL, word TEXT NOT NULL, language TEXT NOT NULL, input TEXT, error TEXT, PRIMARY KEY(generation,event))",
@@ -141,6 +143,38 @@ export class SqlVectorStore implements VectorStore {
         view,
       )
       .map((row) => this.generationRow(String(row.generation)));
+  }
+  async recordProbe(profile: string, evidence: ProbeEvidence) {
+    if (
+      !hash(profile) ||
+      !evidence.operation.startsWith("embedding:probe:") ||
+      !Number.isSafeInteger(evidence.checked_at) ||
+      !Number.isFinite(evidence.tolerance) ||
+      evidence.tolerance <= 0 ||
+      evidence.tolerance > 0.001 ||
+      !evidence.references.length ||
+      evidence.references.length > 2 ||
+      evidence.references.some(
+        (r) =>
+          !hash(r.input) ||
+          !Number.isFinite(r.distance) ||
+          r.distance < 0 ||
+          r.distance > 2,
+      )
+    )
+      fail("semantic_probe", "The compatibility probe evidence is invalid.");
+    this.sql.exec(
+      "INSERT INTO semantic_probe_evidence VALUES(?,?) ON CONFLICT(profile) DO UPDATE SET value=excluded.value",
+      profile,
+      JSON.stringify(evidence),
+    );
+  }
+  async probeEvidence(profile: string): Promise<ProbeEvidence | null> {
+    const row = this.sql.exec(
+      "SELECT value FROM semantic_probe_evidence WHERE profile=?",
+      profile,
+    )[0];
+    return row ? JSON.parse(String(row.value)) : null;
   }
   /** Current evaluation can exclude associations retained by an older evaluator. Prove every required binding without reading vector payloads. */
   async coverageFor(id: string, expected: ExpectedAssociation[]) {

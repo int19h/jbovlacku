@@ -46,7 +46,16 @@ export type ExpectedAssociation = Pick<
   IndexDocument,
   "event" | "envelope" | "body" | "extraction_version" | "word" | "language"
 >;
+export interface ProbeEvidence {
+  operation: string;
+  checked_at: number;
+  tolerance: number;
+  model: string;
+  references: { input: string; distance: number }[];
+}
 export interface VectorStore {
+  recordProbe(profile: string, evidence: ProbeEvidence): Promise<void>;
+  probeEvidence(profile: string): Promise<ProbeEvidence | null>;
   coverageFor(
     id: string,
     expected: ExpectedAssociation[],

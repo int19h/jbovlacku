@@ -254,7 +254,11 @@ Cache timing can reveal that someone recently used the same public-dictionary qu
 Before the first new query computation after restart, the server recomputes up to two public document reference inputs.
 It repeats this probe before a new computation when the last successful probe is at least one hour old.
 Cache hits do not trigger paid probes. They still consult the durable profile suspension state before returning results.
-The probe compares current vectors with retained vectors under a cosine-distance tolerance of 0.0001.
+The probe compares current vectors with retained vectors under a fixed cosine-distance tolerance of 0.0005.
+Independent public reference tests found ordinary same-provider differences up to about 0.0002, including repeated identical batches.
+This tolerance allows that numerical variation. It is not fitted to dictionary search targets and does not adapt after failures.
+The operator status command reports the latest probe's operation, model, input hashes, distances, time, and tolerance.
+It stores no query text or provider key.
 Confirmed drift or an unexpected model name suspends the profile, including its cached queries.
 The hosted revision remains unknown. A passing sample cannot prove that every input remains compatible or that the alias never changes.
 Financial refusals and transient provider failures do not suspend a compatible profile.

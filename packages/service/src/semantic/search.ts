@@ -22,6 +22,9 @@ import type {
 import type { QueryCache } from "./query-cache.ts";
 import type { VectorScanner } from "./scan.ts";
 
+/** Independent public reference runs include ordinary differences near 0.0002. This fixed tolerance is not fitted to search targets. */
+export const PROBE_MAX_DISTANCE = 0.0005;
+
 export interface SemanticOptions {
   profile: string;
   store: VectorStore;
@@ -224,14 +227,24 @@ export class SemanticSearch {
           references.map((r) => r.input),
           { kind: "probe" },
         );
+        if (result.vectors.length !== references.length) throw unavailable();
+        const comparisons = result.vectors.map((v, i) => ({
+          input: inputHash(references[i].input),
+          distance: distance(
+            v,
+            vectorFromBytes(references[i].vector, profile.dimension),
+          ),
+        }));
+        await this.options.store.recordProbe(generation.profile, {
+          operation: result.operation,
+          checked_at: Date.now(),
+          tolerance: PROBE_MAX_DISTANCE,
+          model: result.model,
+          references: comparisons,
+        });
         if (
-          result.vectors.length !== references.length ||
-          result.vectors.some(
-            (v, i) =>
-              distance(
-                v,
-                vectorFromBytes(references[i].vector, profile.dimension),
-              ) > 0.0001,
+          comparisons.some(
+            (reference) => reference.distance > PROBE_MAX_DISTANCE,
           )
         ) {
           await this.options.store.suspend(
@@ -241,7 +254,7 @@ export class SemanticSearch {
           throw new SemanticError(
             503,
             "semantic_model_drift",
-            "The provider vectors changed. This profile is suspended.",
+            "The provider vectors changed beyond the compatibility tolerance. This profile is suspended.",
           );
         }
         this.checked.set(generation.profile, Date.now());

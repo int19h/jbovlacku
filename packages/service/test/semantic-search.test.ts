@@ -167,6 +167,7 @@ function mock() {
   const calls: string[] = [];
   let queryGate: Promise<void> = Promise.resolve();
   let drift = false;
+  let sample: Float32Array | undefined;
   const config = providerConfig(
     { JVC_AI_ENABLED: "enabled" },
     async () => "disposable-test-key",
@@ -180,7 +181,7 @@ function mock() {
       model: "Qwen/Qwen3-Embedding-8B",
       data: body.input.map((_: unknown, index: number) => ({
         index,
-        embedding: Array.from(unit(drift ? 1 : 0)),
+        embedding: Array.from(sample ?? unit(drift ? 1 : 0)),
       })),
       usage: { prompt_tokens: 1, total_tokens: 1, cost: 0.00000001 },
     });
@@ -196,6 +197,9 @@ function mock() {
     assistance,
     setGate: (gate: Promise<void>) => {
       queryGate = gate;
+    },
+    sample: (vector: Float32Array) => {
+      sample = vector;
     },
     drift: () => {
       drift = true;
@@ -639,3 +643,46 @@ test("distinct-word scans keep the best definition after exclusions and stable t
     [docs[1].event, docs[3].event],
   );
 });
+
+test("fixed probe tolerance admits small numerical variation and retains evidence before suspension", async () =>
+  fixture(async ({ store, scanner, ctx }) => {
+    const provider = mock();
+    const options = {
+      profile: profileId(profile),
+      store,
+      cache: store.queryCache,
+      scanner,
+    };
+    const rotated = (cosineDistance: number) => {
+      const vector = unit();
+      vector[0] = 1 - cosineDistance;
+      vector[1] = Math.sqrt(1 - vector[0] ** 2);
+      return vector;
+    };
+    provider.sample(rotated(0.0002));
+    await new SemanticSearch(options, provider.assistance, true).search(
+      ctx,
+      request(),
+      "local",
+    );
+    let evidence = (await store.probeEvidence(profileId(profile)))!;
+    assert.equal(evidence.tolerance, 0.0005);
+    assert(evidence.references.every((r) => r.distance < evidence.tolerance));
+    assert.equal(evidence.references.length, 2);
+    provider.sample(rotated(0.0008));
+    await assert.rejects(
+      new SemanticSearch(options, provider.assistance, true).search(
+        ctx,
+        request("changed"),
+        "local",
+      ),
+      /compatibility tolerance/,
+    );
+    evidence = (await store.probeEvidence(profileId(profile)))!;
+    assert(evidence.references.every((r) => r.distance > evidence.tolerance));
+    assert(evidence.operation.startsWith("embedding:probe:"));
+    assert.equal(
+      await store.compatibility(profileId(profile)),
+      "semantic_model_drift",
+    );
+  }));

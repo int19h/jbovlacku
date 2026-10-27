@@ -280,6 +280,7 @@ async function main() {
         generation.state === "retired" ? null : await vectors.coverage(id!),
       summary: await vectors.summary(id!),
       compatibility: await vectors.compatibility(generation.profile),
+      probe: await vectors.probeEvidence(generation.profile),
       retry_after: await vectors.retryAfter(generation.profile),
       current: await vectors.current(generation.profile, generation.view),
       batches,
