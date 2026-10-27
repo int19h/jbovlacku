@@ -12,7 +12,9 @@ const morphology = {
   id: "https://github.com/int19h/jbovlacku/blob/main/docs/morphology.md#extended-lujvo",
   version: "4",
 };
-const cgv = /[bcdfgjklmnprstvxz][iu][aeiouy]/i;
+function hasCgv(node: ParseNode): boolean {
+  return node.rule === "cgv_onset" || node.children.some(hasCgv);
+}
 
 /** Read all words once. The tracer counts cached calls and failed branches. */
 export function recognizeWords(input: string, limit = PEG_WORK_LIMIT) {
@@ -38,7 +40,7 @@ export function recognizeWords(input: string, limit = PEG_WORK_LIMIT) {
       kind: node.rule as MorphologyWord["kind"],
       start: node.start,
       end: node.end,
-      diagnostics: node.rule !== "cmavo" && cgv.test(text) ? [CGV_WARNING] : [],
+      diagnostics: hasCgv(node) ? [CGV_WARNING] : [],
     };
   });
   return { words, nodes, spent };

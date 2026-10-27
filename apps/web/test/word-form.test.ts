@@ -107,6 +107,44 @@ test("accepted CgV names and borrowings display the exact current-BPFK warning",
   await page.getByLabel("Headword", { exact: true }).fill("leksiko");
   await expect(status(page)).not.toContainText("current BPFK");
 });
+test("the editor distinguishes vowels before glides from CgV and rejects missing pauses", async ({
+  page,
+}) => {
+  await page.goto("/new/editor");
+  const headword = page.getByLabel("Headword", { exact: true });
+  const kind = page.getByLabel("Type", { exact: true });
+  for (const [word, value] of [
+    ["skiuarna", "fuhivla"],
+    ["zdiuarka", "fuhivla"],
+    ["skuiarna", "fuhivla"],
+    ["pliiarka", "fuhivla"],
+    ["doskiuas", "cmevla"],
+    ["nskiuars", "cmevla"],
+  ]) {
+    await kind.selectOption(value);
+    await headword.fill(word);
+    await expect(status(page)).not.toContainText("does not match");
+    await expect(status(page)).not.toContainText("current BPFK");
+  }
+  await headword.fill("ncian");
+  await expect(status(page)).toContainText(
+    "This form is not valid under the current BPFK morphology.",
+  );
+  await expect(status(page)).not.toContainText("does not match");
+  await kind.selectOption("compound");
+  for (const word of ["baoz", "uylaolje"]) {
+    await headword.fill(word);
+    await expect(status(page)).toContainText("does not match");
+    await expect(status(page)).not.toContainText("Words:");
+  }
+  await headword.fill("taia");
+  await expect(status(page)).toContainText("Words: tai · a.");
+  await expect(status(page)).not.toContainText("does not match");
+  await headword.fill("i'ecu'i");
+  await expect(status(page)).toContainText("Words: i'e · cu'i.");
+  await expect(status(page)).not.toContainText("does not match");
+});
+
 test("full-editor labels and explicit classification controls stay synchronized", async ({
   page,
 }) => {

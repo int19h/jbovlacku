@@ -4,6 +4,12 @@
 // Copyright (c) 2014 lagleki, ilmen, and other contributors.
 // See ../THIRD-PARTY-NOTICES.md and changes.md for sources and changes.
 {
+  function hasCgv(value) {
+    if (Array.isArray(value)) return value.some(hasCgv);
+    return value != null && typeof value === "object"
+      && (value.rule === "cgv_onset" || hasCgv(value.children));
+  }
+
   function node(rule, range, children) {
     function collect(value) {
       if (!value) return [];
@@ -21,15 +27,19 @@ gap = (comma* space_char)+
 
 cmevla = expr:(jbocme / zifcme) { return node("cmevla", location(), expr); }
 
-zifcme = expr:(!h (nucleus / glide / h / consonant !pause / digit)* consonant &pause) { return null; }
+zifcme = expr:(!h (cgv_name / nucleus / glide / h / consonant !pause / digit)* consonant &pause) { return expr; }
 
-jbocme = expr:(&zifcme (any_syllable / digit)+ &pause) { return null; }
+jbocme = expr:(&zifcme (any_syllable / digit)+ &pause) { return expr; }
 
-cmavo = expr:(!cmevla !CVCy_lujvo cmavo_form &post_word) { return node("cmavo", location(), expr); }
+cmavo = !cmevla !CVCy_lujvo falling:cmavo_form
+  &(post_word / &{ return falling; } cmavo) { return node("cmavo", location(), []); }
 
 CVCy_lujvo = expr:(CVC_rafsi y h? initial_rafsi* brivla_core / stressed_CVC_rafsi y short_final_rafsi) { return null; }
 
-cmavo_form = expr:(y+ !y !h / !h !cluster onset (cmavo_nucleus h)* cmavo_last / digit) { return null; }
+// Only a final falling diphthong permits an implied pause before another cmavo.
+cmavo_form = y+ !y !h { return false; }
+  / !h !cluster onset (cmavo_nucleus h)* last:cmavo_last { return last; }
+  / digit { return false; }
 
 brivla = expr:(!cmavo !slihykru initial_rafsi* brivla_core) { return node("brivla", location(), expr); }
 
@@ -46,7 +56,7 @@ fuhivla = begin:position exclusion:(&rafsi_string { return true; })?
   end:position &{
     const form = input.slice(begin, end);
     return /[bcdfgjklmnprstvxz]{2}/i.test(form)
-      && (!exclusion || /[bcdfgjklmnprstvxz][iu][aeiouy]/i.test(form));
+      && (!exclusion || hasCgv(expr));
   } { return node("fuhivla", location(), expr); }
 
 stressed_extended_rafsi = expr:(stressed_hy_rafsi / stressed_fuhivla_rafsi) { return node("stressed_extended_rafsi", location(), expr); }
@@ -57,9 +67,9 @@ stressed_fuhivla_rafsi = expr:(fuhivla_head stressed_syllable consonantal_syllab
 
 fuhivla_rafsi = expr:(&unstressed_syllable fuhivla_head onset y h?) { return node("fuhivla_rafsi", location(), expr); }
 
-fuhivla_head = expr:(!rafsi_string brivla_head) { return null; }
+fuhivla_head = expr:(!rafsi_string brivla_head) { return expr; }
 
-brivla_head = expr:(!cmavo !slinkuhi !h &brivla_onset unstressed_syllable*) { return null; }
+brivla_head = expr:(!cmavo !slinkuhi !h &brivla_onset unstressed_syllable*) { return expr; }
 
 slinkuhi = expr:(!rafsi_string consonant rafsi_string) { return null; }
 
@@ -103,15 +113,15 @@ CVV_rafsi = expr:(consonant (unstressed_vowel h unstressed_vowel / unstressed_di
 
 r_hyphen = expr:(r &consonant / n &r) { return node("r_hyphen", location(), expr); }
 
-final_syllable = expr:(brivla_onset !y !stressed nucleus !cmevla &post_word) { return null; }
+final_syllable = expr:(brivla_onset !y !stressed nucleus !cmevla &post_word) { return expr; }
 
-stressed_syllable = expr:(&stressed syllable / syllable &stress) { return null; }
+stressed_syllable = expr:(&stressed syllable / syllable &stress) { return expr; }
 
 stressed_diphthong = expr:(&stressed diphthong / diphthong &stress) { return null; }
 
 stressed_vowel = expr:(&stressed vowel / vowel &stress) { return null; }
 
-unstressed_syllable = expr:(!stressed syllable !stress / consonantal_syllable) { return null; }
+unstressed_syllable = expr:(!stressed syllable !stress / consonantal_syllable) { return expr; }
 
 unstressed_diphthong = expr:(!stressed diphthong !stress) { return null; }
 
@@ -121,9 +131,9 @@ stress = expr:((consonant / glide)* h? y? syllable pause) { return null; }
 
 stressed = expr:(brivla_onset comma* [AEIOU]) { return null; }
 
-any_syllable = expr:(brivla_onset nucleus coda? / consonantal_syllable) { return null; }
+any_syllable = expr:(brivla_onset nucleus coda? / consonantal_syllable) { return expr; }
 
-syllable = expr:(brivla_onset !y nucleus coda?) { return null; }
+syllable = expr:(brivla_onset !y nucleus coda?) { return expr; }
 
 consonantal_syllable = expr:(consonant &syllabic coda) { return null; }
 
@@ -211,7 +221,7 @@ h = expr:(comma* ['h] &nucleus) { return null; }
 
 digit = expr:(comma* [0123456789] !h !nucleus) { return null; }
 
-post_word = expr:(pause / lojban_word) { return null; }
+post_word = expr:(pause / !nucleus lojban_word) { return null; }
 
 pause = expr:(comma* space_char+ / EOF) { return null; }
 
@@ -225,9 +235,11 @@ lojban_word = expr:(cmevla / cmavo / brivla) { return null; }
 
 space_char = expr:([.\t\n\r?!\u0020]) { return null; }
 
-cmavo_nucleus = expr:(diphthong_letters / vowel_letter / y !nucleus) { return null; }
+cmavo_nucleus = diphthong_letters { return true; }
+  / (vowel_letter / y !nucleus) { return false; }
 
-cmavo_last = expr:(!stressed cmavo_nucleus / cmavo_nucleus !cluster) { return null; }
+cmavo_last = !stressed nucleus:cmavo_nucleus { return nucleus; }
+  / nucleus:cmavo_nucleus !cluster { return nucleus; }
 
 diphthong_letters = expr:(a i !i / a u !u / e i !i / o i !i) { return null; }
 
@@ -237,14 +249,13 @@ initial_parts = expr:(sibilant? other? liquid?) { return null; }
 
 cgv_initial = expr:((affricate / initial_parts) !consonant) { return null; }
 
-cgv_onset = expr:(begin:position cgv_initial end:position &{ return end > begin; } glide) { return null; }
+cgv_onset = expr:(begin:position cgv_initial end:position &{ return end > begin; } glide) { return node("cgv_onset", location(), expr); }
 
-brivla_onset = expr:(onset / cgv_onset) { return null; }
+// Free-form names need the same glide rule even when no syllable parse succeeds.
+cgv_name = expr:(consonant glide) { return node("cgv_onset", location(), expr); }
+
+brivla_onset = expr:(onset / cgv_onset) { return expr; }
 
 position = &{ return true; } { return location().start.offset; }
-
-cgv_form = expr:(&{ return /[bcdfgjklmnprstvxz][iu][aeiouy]/i.test(input.slice(location().start.offset)); }) { return null; }
-
-cgv_cluster = expr:(&{ return /[bcdfgjklmnprstvxz]{2}/i.test(input.slice(location().start.offset)); }) { return null; }
 
 cgv_rafsi_continuation = expr:((CVC_rafsi / CCV_rafsi / stressed_CVC_rafsi / stressed_CCV_rafsi) !r consonant glide) { return null; }

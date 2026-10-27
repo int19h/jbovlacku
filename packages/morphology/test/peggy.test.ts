@@ -309,9 +309,82 @@ test("compound cmavo follow morphology and the brief longest-nucleus override", 
   }
 });
 
+test("only a falling diphthong before a cmavo permits an implied pause", () => {
+  for (const spelling of ["baoz", "uylaolje", "baa"]) {
+    const analysis = analyzeWord("extended-v4", spelling);
+    assert.equal(analysis.kind, "unknown", spelling);
+    assert.deepEqual(analysis.words, [], spelling);
+    assert.deepEqual(recognizeWords(spelling).words, [], spelling);
+  }
+  for (const [spelling, expected] of [
+    [
+      "ba.oz",
+      [
+        { text: "ba", kind: "cmavo" },
+        { text: "oz", kind: "cmevla" },
+      ],
+    ],
+    [
+      "la.olje",
+      [
+        { text: "la", kind: "cmavo" },
+        { text: "olje", kind: "fuhivla" },
+      ],
+    ],
+    [
+      "ba.a",
+      [
+        { text: "ba", kind: "cmavo" },
+        { text: "a", kind: "cmavo" },
+      ],
+    ],
+    ["taioz", [{ text: "taioz", kind: "cmevla" }]],
+    ["taiolje", [{ text: "taiolje", kind: "fuhivla" }]],
+  ] as const) {
+    assert.deepEqual(
+      words(analyzeWord("extended-v4", spelling)),
+      expected,
+      spelling,
+    );
+  }
+});
+
+test("a vowel before a glide does not produce a CgV warning", () => {
+  for (const [spelling, kind] of [
+    ["skiuarna", "fuhivla"],
+    ["zdiuarka", "fuhivla"],
+    ["skuiarna", "fuhivla"],
+    ["pliiarka", "fuhivla"],
+    ["doskiuas", "cmevla"],
+    ["bliiardo", "fuhivla"],
+    ["bolviia", "fuhivla"],
+    ["amniio", "fuhivla"],
+    ["ZAMbiias", "cmevla"],
+    ["nskiuars", "cmevla"],
+  ] as const) {
+    const analysis = analyzeWord("extended-v4", spelling);
+    assert.equal(analysis.kind, kind, spelling);
+    assert.deepEqual(analysis.diagnostics, [], spelling);
+    assert.deepEqual(analysis.words![0].diagnostics, [], spelling);
+  }
+});
+
+test("a failed word parse cannot retain a CgV warning", () => {
+  for (const spelling of ["ncian baoz", "sliagri zzzz"]) {
+    const result = recognizeWords(spelling);
+    assert.deepEqual(result.words, [], spelling);
+    assert.deepEqual(result.nodes, [], spelling);
+    assert.ok(
+      !analyzeWord("extended-v4", spelling).diagnostics.includes(warning),
+      spelling,
+    );
+  }
+});
+
 test("CgV warnings are exact, unique, and limited to the word that contains the form", () => {
   for (const spelling of [
     "mariam",
+    "ncian",
     "lidias",
     "niys",
     "kuys",

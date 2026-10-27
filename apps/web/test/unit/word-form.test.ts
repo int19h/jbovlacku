@@ -105,9 +105,37 @@ test("cmavo clusters split by morphology and preserve hesitation words", () => {
   for (const spelling of ["y", "yyy", "ie'o", "y'y", "y'e"])
     assert.equal(detectWord(spelling).kind, "cmavo");
 });
+test("invalid vowel-initial boundaries do not report recognized words", () => {
+  for (const spelling of ["baoz", "uylaolje"]) {
+    const analysis = detectWord(spelling);
+    assert.equal(analysis.kind, "unknown", spelling);
+    assert.deepEqual(analysis.words, [], spelling);
+    assert.equal(
+      wordFormFeedback(newDraft({ spelling, kind: "compound" })).blocking,
+      true,
+    );
+  }
+});
+
+test("vowels before glides do not show the BPFK warning", () => {
+  for (const [spelling, kind] of [
+    ["skiuarna", "fuhivla"],
+    ["zdiuarka", "fuhivla"],
+    ["skuiarna", "fuhivla"],
+    ["pliiarka", "fuhivla"],
+    ["doskiuas", "cmevla"],
+    ["nskiuars", "cmevla"],
+  ] as const) {
+    const feedback = wordFormFeedback(newDraft({ spelling, kind }));
+    assert.equal(feedback.blocking, false, spelling);
+    assert.doesNotMatch(feedback.text, /current BPFK/, spelling);
+  }
+});
+
 test("accepted CgV forms show the exact BPFK warning without blocking", () => {
   for (const [spelling, kind] of [
     ["cian", "cmevla"],
+    ["ncian", "cmevla"],
     ["sliagri", "fuhivla"],
   ] as const) {
     const feedback = wordFormFeedback(newDraft({ spelling, kind }));

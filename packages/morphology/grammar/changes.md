@@ -27,14 +27,18 @@ The remaining letter, syllable, stress, and rafsi rules retain the camxes experi
 | `slihykru`, `brivla` | Refuse an initial CCV followed by `'y` and another onset. Include CgV in that onset. Apply the refusal to every brivla test, including nested tests. See the same Extended rafsi section. |
 | `m` | Permit `mz`, as camxes-exp does. See gencmu [The pair mz](https://github.com/int19h/gencmu/blob/0b3da7d2ec2f727a6730d77c775f88214a7ffc89/grammars/words/experimental.md#the-pair-mz). |
 | Consonant letters, `brivla_onset`, syllables, and `fuhivla` | Permit CgV in names and borrowing syllables. Keep ordinary rafsi onsets. Require a cluster in every borrowing. Keep the short-rafsi guard and its `r` exception. A borrowing can contain a late cluster. See gencmu [Consonants before glides](https://github.com/int19h/gencmu/blob/0b3da7d2ec2f727a6730d77c775f88214a7ffc89/grammars/words/experimental.md#consonants-before-glides). |
-| `fuhivla` span conditions | Test the complete borrowing for a cluster and CgV. A later word cannot supply either test. See the same Consonants before glides section. |
+| `fuhivla` span conditions | Test the complete borrowing for a cluster. Use its successful parse nodes to test for CgV. A later word cannot supply either test. See the same Consonants before glides section. |
 | `words`, `lojban_word`, and gaps | Read word forms only. Omit quotes, erasure, selma'o matching, BU formation, and ZEI compounds. Every magic word remains an ordinary cmavo. This is an explicit project scope decision. |
 | `cmavo_form` and gaps | Read a complete pure `y` run as an ordinary cmavo. Read `ie'o` and similar forms as ordinary cmavo. Never discard them as hesitation. This explicit project decision overrides gencmu [Hesitation words](https://github.com/int19h/gencmu/blob/0b3da7d2ec2f727a6730d77c775f88214a7ffc89/grammars/words/experimental.md#hesitation-words) and [Whole hesitation runs](https://github.com/int19h/gencmu/blob/0b3da7d2ec2f727a6730d77c775f88214a7ffc89/grammars/words/bpfk.md#whole-hesitation-runs). |
-| `cmavo_nucleus`, `cmavo_last`, and `post_word` | Prefer the complete falling diphthong before another cmavo. Permit the implied pause at that boundary. Thus `taia` is `tai .a`, and `i'ecu'i` is `i'e cu'i`. This explicit project decision changes the reference treatment of [Cmavo](https://github.com/int19h/gencmu/blob/0b3da7d2ec2f727a6730d77c775f88214a7ffc89/grammars/words/bpfk.md#cmavo) and [Syllables and stress](https://github.com/int19h/gencmu/blob/0b3da7d2ec2f727a6730d77c775f88214a7ffc89/grammars/words/bpfk.md#syllables-and-stress). It uses no dictionary matches. |
+| `cmavo`, `cmavo_nucleus`, `cmavo_last`, and `post_word` | Prefer the complete falling diphthong before another cmavo. Permit an implied pause only after that diphthong and before another cmavo. Keep `pause / !nucleus lojban_word` at all other word boundaries. Thus `taia` is `tai .a`, and `i'ecu'i` is `i'e cu'i`. This explicit project decision changes the reference treatment of [Cmavo](https://github.com/int19h/gencmu/blob/0b3da7d2ec2f727a6730d77c775f88214a7ffc89/grammars/words/bpfk.md#cmavo) and [Syllables and stress](https://github.com/int19h/gencmu/blob/0b3da7d2ec2f727a6730d77c775f88214a7ffc89/grammars/words/bpfk.md#syllables-and-stress). It uses no dictionary matches. |
 
 ## Output and limits
 
-The parser records a warning on each accepted CgV word. It does not run a second recognizer to produce that warning.
+The parser records a warning only when the accepted word tree contains a `cgv_onset` node.
+Free-form names retain the same marker through a `consonant glide` branch in `zifcme`.
+The `glide` rule includes `!glide`, so a vowel before a glide does not cause a warning.
+Failed branches and lookahead tests cannot add markers to an accepted tree.
+The parser does not run a second recognizer to produce that warning.
 The warning says, “This form is not valid under the current BPFK morphology.”
 It makes no general validity claim about the form.
 
