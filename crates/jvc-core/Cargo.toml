@@ -1,0 +1,30 @@
+[package]
+name = "jvc-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+serde_json_canonicalizer = "=0.3.2"
+sha2 = "=0.10.9"
+base64 = "=0.22.1"
+hex = "=0.4.3"
+curve25519-dalek = "=4.1.3"
+ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["std"] }
+ssh-key = { version = "=0.6.7", default-features = false, features = ["std", "ed25519"] }
+unicode-normalization = "=0.1.24"
+wasm-bindgen = "=0.2.105"
+ssh-encoding = { version = "=0.2.0", features = ["std"] }
+num-bigint = "=0.4.6"
+num-integer = "=0.1.46"
+url = "=2.5.7"
+language-tags = "=0.3.2"
+
+[dev-dependencies]
+tempfile = "=3.23.0"

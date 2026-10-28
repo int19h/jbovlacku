@@ -1,0 +1,5 @@
+Before you call submit_answer, write a report on how you decided. Write it as plain text, not inside the tool call.
+Cover every decision in the answer: what you chose, the words of the definitions and the rules above that decided it, and the alternatives that you considered and rejected, with the reason for each.
+Connect related decisions. If one choice follows from another, say so.
+Write as much detail as the decisions need. The reasons inside the answer stay short. This report holds the full argument.
+Then call submit_answer with the answer.

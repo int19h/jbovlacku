@@ -1,0 +1,4 @@
+Suggest one or more selma'o for this proposed cmavo.
+Explain how the supplied definition fits each choice.
+A proposed or unknown selma'o is allowed as an attributed suggestion. This does not install grammar rules.
+Return selmaho, an array of nonempty strings, and reason.

@@ -1,0 +1,239 @@
+{
+  "description": "Answer shapes for the submit_answer tool. For glosses, hints and mappings, the tool argument is an object with one property for each requested key: word for the whole word, and x1, x2 and so on for its places. Each property has the value shape below. For sources, the tool argument is the object below.",
+  "value_shape": {
+    "glosses": {
+      "type": "object",
+      "properties": {
+        "gloss": {
+          "type": "string"
+        },
+        "sense": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "gloss",
+        "sense"
+      ],
+      "additionalProperties": false
+    },
+    "hints": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "referent",
+              "agent",
+              "event",
+              "state",
+              "process",
+              "relation",
+              "proposition",
+              "number",
+              "text",
+              "set",
+              "sequence",
+              "unclear"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "description": "Alternatives for this place. Any of these: a filler of any listed type fits."
+    },
+    "mappings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "component": {
+            "type": "string",
+            "description": "One supplied component place, such as klama[2], or none, or unclear."
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "component",
+          "reason"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "sources": {
+      "type": "object",
+      "properties": {
+        "word": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sense": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "word_ipa": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The pronunciation of the whole chosen word, with its stress marked."
+        },
+        "stem": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ipa": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sounds": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Only the letters a b c d e f g i j k l m n o p r s t u v x z, with no spaces."
+        },
+        "note": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "word",
+        "sense",
+        "word_ipa",
+        "stem",
+        "ipa",
+        "sounds",
+        "note"
+      ],
+      "additionalProperties": false
+    },
+    "type": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "word_type",
+        "alternative",
+        "reason",
+        "alternative_reason",
+        "existing"
+      ],
+      "properties": {
+        "word_type": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "gismu",
+            "lujvo",
+            "cmavo",
+            "fuivla",
+            "cmevla",
+            "compound",
+            "letteral",
+            "other",
+            null
+          ]
+        },
+        "alternative": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "gismu",
+            "lujvo",
+            "cmavo",
+            "fuivla",
+            "cmevla",
+            "compound",
+            "letteral",
+            "other",
+            null
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 400
+        },
+        "alternative_reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "existing": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "required": [
+            "word",
+            "ref",
+            "conversion",
+            "revised_definition"
+          ],
+          "properties": {
+            "word": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "ref": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "conversion": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "enum": [
+                "se",
+                "te",
+                "ve",
+                "xe",
+                null
+              ]
+            },
+            "revised_definition": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "minLength": 1,
+              "maxLength": 600
+            }
+          }
+        }
+      }
+    }
+  }
+}

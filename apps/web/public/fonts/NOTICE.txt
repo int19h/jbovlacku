@@ -1,0 +1,14 @@
+Noto Sans
+Copyright 2022 The Noto Project Authors (https://github.com/notofonts/latin-greek-cyrillic)
+
+STIX Two Math
+Copyright 2001-2021 The STIX Fonts Project Authors (https://github.com/stipub/stixfonts)
+
+Crisa
+Copyright (c) 2011-2015 by tyPoland Lukasz Dziedzic (http://www.typoland.com/)
+with Reserved Font Name "Lato".
+Modified into Crisa for Lojban/Zbalermorna in 2019 by Jack Humbert.
+
+These fonts use the SIL Open Font License, Version 1.1.
+The full license is in OFL.txt. The font files retain their embedded notices.
+The files come from crates/jbotci-ui/assets/fonts in the jbotci repository.

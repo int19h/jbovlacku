@@ -1,0 +1,23 @@
+target/
+dist/
+node_modules/
+.wrangler/
+.cache/
+playwright-report/
+test-results/
+/packages/core/generated/
+/data/
+*.log
+.env
+.env.local
+.env.*.local
+*.db
+*.db-shm
+*.db-wal
+
+# Local workspace links can point at external build storage.
+/node_modules
+/.cache
+/packages/core/generated
+/apps/server/dist
+/apps/web/dist

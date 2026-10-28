@@ -1,0 +1,637 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import {
+  providerConfig,
+  AssistanceError,
+  type ProviderConfig,
+} from "../src/inference.ts";
+import {
+  EMBEDDING_MODEL,
+  EMBEDDING_DIMENSIONS,
+  EMBEDDING_RESPONSE_BYTES,
+  prepareEmbedding,
+  requestEmbedding,
+  qwenResponseModel,
+  type EmbeddingUsage,
+} from "../src/embedding.ts";
+
+const bytes = (text: string) => new TextEncoder().encode(text);
+const vector = (first = 2) =>
+  Array.from({ length: EMBEDDING_DIMENSIONS }, (_, index) =>
+    index === 0 ? first : 0,
+  );
+const response = (count = 1) => ({
+  model: "Qwen/Qwen3-Embedding-8B",
+  data: Array.from({ length: count }, (_, index) => ({
+    index,
+    embedding: vector(index + 2),
+  })),
+  usage: { prompt_tokens: 12, total_tokens: 12, cost: 0.00000012 },
+});
+function config(
+  fetcher: typeof fetch,
+  overrides: Partial<ProviderConfig> = {},
+) {
+  return {
+    ...providerConfig(
+      { JVC_AI_ENABLED: "enabled" },
+      async () => "disposable-embedding-key",
+    )!,
+    fetch: fetcher,
+    ...overrides,
+  };
+}
+function run(
+  value: unknown,
+  inputCount = 1,
+  overrides: Partial<ProviderConfig> = {},
+) {
+  const provider = config(async () => Response.json(value), overrides);
+  const costs: EmbeddingUsage[] = [];
+  let sent = 0;
+  let ended = 0;
+  const work = requestEmbedding(
+    prepareEmbedding(
+      Array.from({ length: inputCount }, () => bytes("public fixture")),
+      provider,
+    ),
+    provider,
+    new AbortController().signal,
+    {
+      sent: () => {
+        sent++;
+      },
+      transportEnded: () => {
+        ended++;
+      },
+      cost: async (usage) => {
+        costs.push(usage);
+      },
+    },
+  );
+  return { work, costs, sent: () => sent, ended: () => ended };
+}
+
+test("embedding configuration pins the model and route with a separate input price", () => {
+  const defaults = config(fetch);
+  assert.deepEqual(defaults.embedding, {
+    model: EMBEDDING_MODEL,
+    route: "nebius",
+    inputPrice: 0.01,
+  });
+  assert.equal(defaults.inputPrice, 0.1);
+  assert.equal(
+    prepareEmbedding([bytes("a"), bytes("b")], defaults).estimatedUsd,
+    0.00064,
+  );
+  assert.equal(
+    providerConfig({ JVC_AI_ENABLED: "disabled" }, async () => "unused"),
+    undefined,
+  );
+  for (const env of [
+    { JVC_AI_EMBEDDING_MODEL: "another-model" },
+    { JVC_AI_EMBEDDING_MODEL: "" },
+    { JVC_AI_EMBEDDING_PROVIDER_ROUTE: "another-route" },
+    { JVC_AI_EMBEDDING_PROVIDER_ROUTE: "" },
+    { JVC_AI_EMBEDDING_INPUT_PRICE: "NaN" },
+    { JVC_AI_EMBEDDING_INPUT_PRICE: "-1" },
+    { JVC_AI_EMBEDDING_INPUT_PRICE: "0" },
+    { JVC_AI_EMBEDDING_INPUT_PRICE: "" },
+    { JVC_AI_EMBEDDING_INPUT_PRICE: "5e-324" },
+  ]) {
+    const generation = providerConfig(
+      { JVC_AI_ENABLED: "enabled", ...env },
+      async () => "unused",
+    )!;
+    assert.equal(generation.model, defaults.model);
+    assert.deepEqual(generation.operations, defaults.operations);
+    assert.equal(generation.embedding, undefined);
+    assert.match(
+      generation.embeddingDisabledReason!,
+      /^Embedding inference is disabled because JVC_AI_EMBEDDING_/,
+    );
+    assert.throws(
+      () => prepareEmbedding([bytes("public")], generation),
+      (failure: any) =>
+        failure.code === "embedding_configuration" &&
+        failure.message === generation.embeddingDisabledReason,
+    );
+  }
+  const configured = providerConfig(
+    { JVC_AI_ENABLED: "enabled", JVC_AI_EMBEDDING_INPUT_PRICE: "0.02" },
+    async () => "unused",
+  )!;
+  assert.equal(
+    prepareEmbedding([bytes("a")], configured).estimatedUsd,
+    0.00064,
+  );
+});
+
+test("the provider preserves exact input bytes and forbids redirects and route fallback", async () => {
+  const exact = "\uFEFFInstruct: Find a meaning\nQuery: e\u0301";
+  const provider = config(async (url, init) => {
+    assert.equal(url, "https://openrouter.ai/api/v1/embeddings");
+    assert.equal(init?.method, "POST");
+    assert.equal(init?.redirect, "manual");
+    assert.equal(
+      new Headers(init?.headers).get("authorization"),
+      "Bearer disposable-embedding-key",
+    );
+    const body = JSON.parse(String(init?.body));
+    assert.deepEqual(body, {
+      model: EMBEDDING_MODEL,
+      input: [exact, "document"],
+      encoding_format: "float",
+      provider: {
+        order: ["nebius"],
+        only: ["nebius"],
+        allow_fallbacks: false,
+        max_price: { prompt: 0.01 },
+      },
+      usage: { include: true },
+    });
+    const value = response(2);
+    value.data.reverse();
+    value.data[0].embedding = vector(-2);
+    return Response.json(value);
+  });
+  const result = await requestEmbedding(
+    prepareEmbedding([bytes(exact), bytes("document")], provider),
+    provider,
+    new AbortController().signal,
+    { sent() {}, transportEnded() {}, async cost() {} },
+  );
+  assert.equal(result.model, "Qwen/Qwen3-Embedding-8B");
+  assert.equal(result.vectors[0].length, 4096);
+  assert.equal(result.vectors[0][0], 1);
+  assert.equal(result.vectors[1][0], -1);
+  assert.deepEqual(result.usage, {
+    inputTokens: 12,
+    totalTokens: 12,
+    costUsd: 0.00000012,
+  });
+});
+
+test("the route cap never exceeds the reservation price or the general price ceiling", () => {
+  for (const [price, ceiling, expected] of [
+    [0.01, 10, 0.01],
+    [0.02, 0.001, 0.001],
+  ]) {
+    const provider = config(fetch, {
+      maxPrice: ceiling,
+      embedding: { model: EMBEDDING_MODEL, route: "nebius", inputPrice: price },
+    });
+    const prepared = prepareEmbedding([bytes("public")], provider);
+    assert.equal(JSON.parse(prepared.body).provider.max_price.prompt, expected);
+    assert.equal(prepared.estimatedUsd, (32000 * price) / 1000000);
+  }
+  for (const price of [0, -1, Number.MIN_VALUE]) {
+    assert.throws(
+      () =>
+        prepareEmbedding(
+          [bytes("public")],
+          config(fetch, {
+            embedding: {
+              model: EMBEDDING_MODEL,
+              route: "nebius",
+              inputPrice: price,
+            },
+          }),
+        ),
+      (failure: any) => failure.code === "embedding_configuration",
+    );
+  }
+  // A lower generation ceiling still leaves generation-only configuration valid.
+  assert.equal(
+    providerConfig(
+      { JVC_AI_ENABLED: "enabled", JVC_AI_MAX_PRICE: "0.001" },
+      async () => "unused",
+    )!.embedding!.inputPrice,
+    0.01,
+  );
+});
+
+test("every redirect response is refused before its JSON or usage is read", async () => {
+  for (const status of [300, 301, 302, 303, 307, 308, 399]) {
+    let canceled = false;
+    let costCalls = 0;
+    const provider = config(
+      async () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(bytes(JSON.stringify(response())));
+            },
+            cancel() {
+              canceled = true;
+            },
+          }),
+          { status, headers: { location: "https://example.invalid/redirect" } },
+        ),
+    );
+    await assert.rejects(
+      requestEmbedding(
+        prepareEmbedding([bytes("public")], provider),
+        provider,
+        new AbortController().signal,
+        {
+          sent() {},
+          transportEnded() {},
+          async cost() {
+            costCalls++;
+          },
+        },
+      ),
+      (failure: any) => failure.code === "embedding_provider",
+    );
+    assert(canceled);
+    assert.equal(costCalls, 0);
+  }
+  const opaque = new Response("redirect");
+  Object.defineProperty(opaque, "type", { value: "opaqueredirect" });
+  const provider = config(async () => opaque);
+  await assert.rejects(
+    requestEmbedding(
+      prepareEmbedding([bytes("public")], provider),
+      provider,
+      new AbortController().signal,
+      { sent() {}, transportEnded() {}, async cost() {} },
+    ),
+    (failure: any) => failure.code === "embedding_provider",
+  );
+});
+
+test("input bounds reject malformed UTF-8 and oversized encoded requests before dispatch", () => {
+  const provider = config(async () => {
+    throw new Error("No dispatch expected.");
+  });
+  for (const inputs of [
+    [],
+    [bytes("")],
+    [bytes("a".repeat(4097))],
+    [new Uint8Array([0xc0, 0x80])],
+    Array.from({ length: 9 }, () => bytes("a")),
+    Array.from({ length: 8 }, () => bytes("\0".repeat(4096))),
+  ])
+    assert.throws(
+      () => prepareEmbedding(inputs, provider),
+      (failure: any) => failure.code === "embedding_input",
+    );
+  assert.equal(
+    prepareEmbedding(
+      Array.from({ length: 8 }, () => bytes("a".repeat(4096))),
+      provider,
+    ).count,
+    8,
+  );
+  // Provider normalization expands this input. The quote remains 32,000 tokens.
+  assert.equal(
+    prepareEmbedding([bytes("\u0344".repeat(2048))], provider).estimatedUsd,
+    0.00032,
+  );
+});
+
+test("only the two exact returned model names match", async () => {
+  assert(qwenResponseModel(EMBEDDING_MODEL));
+  assert(qwenResponseModel("Qwen/Qwen3-Embedding-8B"));
+  for (const model of [
+    "QWEN/QWEN3-EMBEDDING-8B",
+    "qwen3-embedding-8b",
+    "qwen/qwen3-embedding-8b:free",
+    null,
+  ]) {
+    assert(!qwenResponseModel(model));
+    const fixture = run({ ...response(), model });
+    await assert.rejects(
+      fixture.work,
+      (failure: any) => failure.code === "embedding_model_mismatch",
+    );
+    assert.equal(fixture.costs[0].costUsd, 0.00000012);
+    assert.equal(fixture.sent(), 1);
+    assert.equal(fixture.ended(), 1);
+  }
+});
+
+test("vector validation rejects bad counts, indices, dimensions, and finite-value failures", async () => {
+  const cases = [
+    { ...response(), data: [] },
+    { ...response(2), data: [response(2).data[0], response(2).data[0]] },
+    { ...response(), data: [{ index: -1, embedding: vector() }] },
+    { ...response(), data: [{ index: 0.5, embedding: vector() }] },
+    { ...response(), data: [{ index: 1, embedding: vector() }] },
+    { ...response(), data: [{ index: 0, embedding: [1, 2] }] },
+    { ...response(), data: [{ index: 0, embedding: vector(0) }] },
+    {
+      ...response(),
+      data: [{ index: 0, embedding: [null, ...vector().slice(1)] }],
+    },
+    {
+      ...response(),
+      data: [{ index: 0, embedding: ["2", ...vector().slice(1)] }],
+    },
+  ];
+  for (const value of cases) {
+    const fixture = run(value, value.data.length === 2 ? 2 : 1);
+    await assert.rejects(fixture.work, (failure: unknown) => {
+      assert(failure instanceof AssistanceError);
+      assert.deepEqual(failure.embeddingUsage, {
+        inputTokens: 12,
+        totalTokens: 12,
+        costUsd: 0.00000012,
+      });
+      return true;
+    });
+    assert.equal(
+      fixture.costs.length,
+      1,
+      "Reported charges survive invalid vectors.",
+    );
+  }
+  for (const first of [Number.MAX_VALUE, Number.MIN_VALUE]) {
+    const result = await run({
+      ...response(),
+      data: [{ index: 0, embedding: vector(first) }],
+    }).work;
+    assert.equal(result.vectors[0][0], 1);
+  }
+  const dense = await run({
+    ...response(),
+    data: [{ index: 0, embedding: Array(4096).fill(1) }],
+  }).work;
+  assert.equal(
+    dense.vectors[0].reduce((sum, item) => sum + item * item, 0),
+    1,
+  );
+});
+
+test("429 metadata survives malformed bodies without exposing provider text or retrying", async (t) => {
+  const now = Date.UTC(2026, 9, 27, 12);
+  t.mock.method(Date, "now", () => now);
+  for (const [header, expected] of [
+    ["12", 12000],
+    ["0", 0],
+    ["999999999999999999999999999999999999999999999", Number.MAX_SAFE_INTEGER],
+    ["9".repeat(400), Number.MAX_SAFE_INTEGER],
+    [new Date(now + 45000).toUTCString(), 45000],
+    [new Date(now - 45000).toUTCString(), 0],
+    ["-1", undefined],
+    ["1.5", undefined],
+    ["later", undefined],
+    ["", undefined],
+    [null, undefined],
+  ] as const) {
+    let calls = 0;
+    let costs = 0;
+    let ended = 0;
+    const provider = config(async () => {
+      calls++;
+      return new Response("<html>disposable-embedding-key</html>", {
+        status: 429,
+        headers: header === null ? {} : { "retry-after": header },
+      });
+    });
+    await assert.rejects(
+      requestEmbedding(
+        prepareEmbedding([bytes("public")], provider),
+        provider,
+        new AbortController().signal,
+        {
+          sent() {},
+          transportEnded() {
+            ended++;
+          },
+          async cost() {
+            costs++;
+          },
+        },
+      ),
+      (failure: unknown) => {
+        assert(failure instanceof AssistanceError);
+        assert.equal(failure.code, "embedding_rate_limited");
+        assert.equal(failure.retryAfterMs, expected);
+        assert.equal(failure.embeddingUsage, undefined);
+        assert(!failure.message.includes("disposable-embedding-key"));
+        return true;
+      },
+    );
+    assert.equal(calls, 1);
+    assert.equal(costs, 0);
+    assert.equal(ended, 1);
+  }
+});
+
+test("oversized 429 bodies stay bounded and retain the retry delay", async () => {
+  let canceled = false;
+  const provider = config(
+    async () =>
+      new Response(
+        new ReadableStream({
+          start(stream) {
+            stream.enqueue(new Uint8Array(EMBEDDING_RESPONSE_BYTES + 1));
+          },
+          cancel() {
+            canceled = true;
+          },
+        }),
+        { status: 429, headers: { "retry-after": "9" } },
+      ),
+  );
+  await assert.rejects(
+    requestEmbedding(
+      prepareEmbedding([bytes("public")], provider),
+      provider,
+      new AbortController().signal,
+      {
+        sent() {},
+        transportEnded() {},
+        async cost() {
+          assert.fail("No parsed usage.");
+        },
+      },
+    ),
+    (failure: unknown) => {
+      assert(failure instanceof AssistanceError);
+      assert.equal(failure.code, "embedding_rate_limited");
+      assert.equal(failure.retryAfterMs, 9000);
+      assert.equal(failure.embeddingUsage, undefined);
+      return true;
+    },
+  );
+  assert(canceled);
+});
+
+test("a deadline after the cost callback retains parsed usage", async () => {
+  const controller = new AbortController();
+  const provider = config(async () => Response.json(response()));
+  await assert.rejects(
+    requestEmbedding(
+      prepareEmbedding([bytes("public")], provider),
+      provider,
+      controller.signal,
+      {
+        sent() {},
+        transportEnded() {},
+        async cost() {
+          controller.abort();
+        },
+      },
+    ),
+    (failure: unknown) => {
+      assert(failure instanceof AssistanceError);
+      assert.equal(failure.code, "embedding_timeout");
+      assert.deepEqual(failure.embeddingUsage, {
+        inputTokens: 12,
+        totalTokens: 12,
+        costUsd: 0.00000012,
+      });
+      return true;
+    },
+  );
+});
+
+test("missing and invalid usage stays unknown rather than a zero charge", async () => {
+  for (const usage of [
+    undefined,
+    {},
+    { prompt_tokens: -1, total_tokens: 1.5, cost: "0" },
+    { cost: -1 },
+  ]) {
+    const fixture = run({ ...response(), usage });
+    const result = await fixture.work;
+    assert.deepEqual(result.usage, {
+      inputTokens: null,
+      totalTokens: null,
+      costUsd: null,
+    });
+    assert.deepEqual(fixture.costs, [result.usage]);
+  }
+  const free = await run({
+    ...response(),
+    usage: { prompt_tokens: 0, total_tokens: 0, cost: 0 },
+  }).work;
+  assert.equal(free.usage.costUsd, 0);
+});
+
+test("response bounds cover headers, streamed bytes, invalid JSON, HTTP errors, and redirects", async () => {
+  for (const make of [
+    () =>
+      new Response("{}", {
+        headers: { "content-length": String(EMBEDDING_RESPONSE_BYTES + 1) },
+      }),
+    () => new Response("{}", { headers: { "content-length": "invalid" } }),
+    () => new Response("a".repeat(EMBEDDING_RESPONSE_BYTES + 1)),
+    () => new Response("not JSON"),
+    () => new Response(new Uint8Array([0xff])),
+    () => new Response(null),
+    () =>
+      Response.json(
+        { ...response(), error: { message: "disposable-embedding-key" } },
+        { status: 429 },
+      ),
+    () =>
+      new Response(null, {
+        status: 302,
+        headers: { location: "https://example.invalid/secret" },
+      }),
+  ]) {
+    let count = 0;
+    const provider = config(async () => {
+      count++;
+      return make();
+    });
+    await assert.rejects(
+      requestEmbedding(
+        prepareEmbedding([bytes("public")], provider),
+        provider,
+        new AbortController().signal,
+        { sent() {}, transportEnded() {}, async cost() {} },
+      ),
+    );
+    assert.equal(count, 1);
+  }
+});
+
+for (const status of [200, 429]) {
+  test(`a stalled ${status} response body stops at the provider deadline`, async () => {
+    const controller = new AbortController();
+    let canceled = false;
+    let ended = false;
+    const provider = config(
+      async () =>
+        new Response(
+          new ReadableStream({
+            start(stream) {
+              stream.enqueue(bytes('{"model":'));
+            },
+            cancel() {
+              canceled = true;
+            },
+          }),
+          { status, headers: { "retry-after": "10" } },
+        ),
+    );
+    const work = requestEmbedding(
+      prepareEmbedding([bytes("public")], provider),
+      provider,
+      controller.signal,
+      {
+        sent() {},
+        transportEnded() {
+          ended = true;
+        },
+        async cost() {},
+      },
+    );
+    const timer = setTimeout(() => controller.abort(), 20);
+    await assert.rejects(work);
+    clearTimeout(timer);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert(canceled);
+    assert(ended);
+  });
+}
+
+test("priced provider errors preserve usage and expose only fixed messages", async () => {
+  for (const status of [429, 503]) {
+    const provider = config(async () =>
+      Response.json(
+        {
+          usage: response().usage,
+          error: { message: "disposable-embedding-key" },
+        },
+        { status, headers: { "retry-after": "4" } },
+      ),
+    );
+    const costs: EmbeddingUsage[] = [];
+    await assert.rejects(
+      requestEmbedding(
+        prepareEmbedding([bytes("public")], provider),
+        provider,
+        new AbortController().signal,
+        {
+          sent() {},
+          transportEnded() {},
+          async cost(usage) {
+            costs.push(usage);
+          },
+        },
+      ),
+      (failure: unknown) => {
+        assert(failure instanceof AssistanceError);
+        assert.equal(
+          failure.code,
+          status === 429 ? "embedding_rate_limited" : "embedding_provider",
+        );
+        assert.equal(failure.retryAfterMs, status === 429 ? 4000 : undefined);
+        assert.deepEqual(failure.embeddingUsage, {
+          inputTokens: 12,
+          totalTokens: 12,
+          costUsd: 0.00000012,
+        });
+        assert.deepEqual(costs, [failure.embeddingUsage]);
+        assert(!failure.message.includes("disposable-embedding-key"));
+        return true;
+      },
+    );
+  }
+});

@@ -1,0 +1,12 @@
+Draft a definition for the chosen form. Preserve the original intended meaning.
+Use the current prose, chosen spelling, ordered components and supplied source definitions.
+Do not silently add or remove a participant or condition.
+Keep every explicit participant with its number and order. Propose additional numbered places only for roles that every use implies.
+If an explicit participant fails that test, keep it and flag the doubt in reason.
+Offer modal tags for other details. In reason, give each modal tag offer and a separate explanation for each place after the third.
+Do not put these offers or explanations in text.
+When the request names no tag, describe the detail in reason. Say that a modal tag can add it.
+Name a Lojban word or tag only when the request supplies it. Do not name Lojban words from memory.
+
+Return text, one plain string, and a separate top-level reason. Do not use HTML or executable markup.
+Placeholders such as x1 stay literal text. The application presents this beside the existing prose for review.

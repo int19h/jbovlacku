@@ -1,0 +1,140 @@
+* {
+  box-sizing: border-box;
+}
+html {
+  font-family: var(--font);
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--ink);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  overflow-wrap: anywhere;
+}
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+#app {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+a {
+  color: var(--accent);
+  text-underline-offset: 0.18em;
+}
+a:hover {
+  color: var(--accent-hover);
+}
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+h1,
+h2,
+h3 {
+  margin: 0;
+  line-height: 1.2;
+}
+p {
+  margin: 0;
+}
+ol,
+ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+bdi {
+  unicode-bidi: isolate;
+}
+code {
+  font-size: 0.9em;
+  background: var(--sunk);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+mark {
+  background: var(--mark);
+  color: inherit;
+  border-radius: 3px;
+  padding: 0 2px;
+}
+table {
+  border-collapse: collapse;
+  width: 100%;
+}
+td,
+th {
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+th {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink3);
+}
+.num {
+  font-variant-numeric: tabular-nums;
+}
+.right {
+  text-align: right;
+}
+/* Hidden text supplies accessible names. Interactive nodes must not use this class. */
+.sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+[hidden] {
+  display: none !important;
+}
+.zbalermorna {
+  font-family: var(--font-zbalermorna);
+}
+.math {
+  font-family: var(--font-math);
+}
+.muted {
+  color: var(--ink2);
+}
+.meta {
+  font-size: 13px;
+  color: var(--ink3);
+}
+.meta a {
+  color: inherit;
+}
+.small {
+  font-size: 14px;
+  color: var(--ink2);
+}
+.fingerprint {
+  font-size: 14px;
+  color: var(--ink3);
+  word-break: break-all;
+  direction: ltr;
+  unicode-bidi: isolate;
+  font-variant-numeric: tabular-nums;
+}
+.direction-warning {
+  text-decoration: underline dotted;
+}
+@media (prefers-reduced-motion: no-preference) {
+  details > summary svg.chev {
+    transition: transform 0.12s;
+  }
+}

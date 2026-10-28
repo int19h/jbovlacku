@@ -1,0 +1,50 @@
+[
+  {
+    "body": {
+      "bio": [],
+      "links": [],
+      "name": "Signature variants"
+    },
+    "envelope": {
+      "header": {
+        "action": {
+          "kind": "identity.profile"
+        },
+        "content": {
+          "bytes": 49,
+          "hash": "sha256:cb1bd931eb774104cae28f67f9b7ef37ce0af131639106f61667e522b3ad4743"
+        },
+        "issuer": "ed25519:b862409fb5c4c4123df2abf7462b88f041ad36dd6864ce872fd5472be363c5b1",
+        "nonce": "77777777777777777777777777777777",
+        "previous": [],
+        "version": 1
+      },
+      "id": "jve1:12743145e63c24aaa761fed31b3995ebb684bb3b18df121beceff27fb10708ca",
+      "signature": "U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAguGJAn7XExBI98qv3RiuI8EGtNt1oZM6HL9VHK+NjxbEAAAASamJvdmxhY2t1LWV2ZW50LXYxAAAAAAAAAAZzaGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5AAAAQAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAmwZtMhJ+K+E4XNmDc9OIglvV44HG7NpwTxfXT3GMDwE="
+    }
+  },
+  {
+    "body": {
+      "bio": [],
+      "links": [],
+      "name": "Signature variants"
+    },
+    "envelope": {
+      "header": {
+        "action": {
+          "kind": "identity.profile"
+        },
+        "content": {
+          "bytes": 49,
+          "hash": "sha256:cb1bd931eb774104cae28f67f9b7ef37ce0af131639106f61667e522b3ad4743"
+        },
+        "issuer": "ed25519:b862409fb5c4c4123df2abf7462b88f041ad36dd6864ce872fd5472be363c5b1",
+        "nonce": "77777777777777777777777777777777",
+        "previous": [],
+        "version": 1
+      },
+      "id": "jve1:12743145e63c24aaa761fed31b3995ebb684bb3b18df121beceff27fb10708ca",
+      "signature": "U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAguGJAn7XExBI98qv3RiuI8EGtNt1oZM6HL9VHK+NjxbEAAAASamJvdmxhY2t1LWV2ZW50LXYxAAAAAAAAAAZzaGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5AAAAQFhmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmjbCOXAQvVy1i2eOjluxaZN5fB+Z6YRlr/jnJfAwz2gg="
+    }
+  }
+]

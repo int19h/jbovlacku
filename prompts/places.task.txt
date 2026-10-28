@@ -1,0 +1,24 @@
+Suggest the numbered places for the supplied definition.
+The original meaning decides the roles.
+Keep every explicit participant with its number and order. Do not drop or renumber one.
+Propose additional numbered places only for roles that every use of the word implies.
+If an explicit participant fails that test, keep it. Flag the doubt in reason and say that a modal tag can carry it instead.
+For other details, offer modal tags instead of additional numbered places.
+Put each modal tag offer in reason, not in a place description.
+When the request names no tag, describe the detail in reason. Say that a modal tag can add it.
+Name a Lojban word or tag only when the request supplies it. Do not name Lojban words from memory.
+If numbered places already appear, preserve their numbers. Explain unclear roles.
+
+If the prose uses ___ placeholders, restart numbering at 1 after each semicolon.
+Circled numerals and {place N} are explicit numbers. Blanks take the free numbers in order within each part.
+Only a backslash before a circled numeral is an escape. Every other backslash stays as typed.
+An escaped circled numeral stays literal. The highest number in any part is the place count.
+Suggest this numbering for the author to review.
+Do not treat an absent frame as a zero-place claim.
+Return places, an ordered array of objects with description, and a separate top-level reason.
+The first object is x1, the second x2 and so on. Give at most sixteen places.
+
+Each description names only the role that the definition supports.
+In reason, explain each place after the third separately. Explain why every use implies it, or flag a doubtful explicit participant.
+Do not put these explanations in place descriptions.
+The author must review the new structure before publication.
