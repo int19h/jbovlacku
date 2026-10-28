@@ -941,6 +941,7 @@ After restart, reservations remain charged and appear as retained operations.
 An operation that was active at restart has unknown cost and retains the larger of its reservation and accumulated charges.
 Retained records do not establish whether an earlier request completed or lost its transport.
 Every error after an embedding reservation names its operation through the error's `operation` field.
+An error ID with no status record means that the service sent nothing.
 An operator can inspect these records and request a new bounded attempt through the same service after a limit clears.
 The earlier charge remains. A stuck transport requires its completion or a service restart before its slot returns.
 Job pause, resume, and explicit retry links belong to later indexing work.
