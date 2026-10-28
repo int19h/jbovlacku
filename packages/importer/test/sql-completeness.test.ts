@@ -424,12 +424,12 @@ test("IM-01 the Opus mask2 probe cannot turn missing mappings into known empty g
   assert.deepEqual(fresh.entries, {});
 });
 
-test("IM-01 a malformed mapping with a captured owner keeps the per-owner path", async () => {
+test("IM-01 a full-width malformed mapping with a captured owner keeps the per-owner path", async () => {
   const result = await run(await setup(), "unrelated-malformed", "", 2, {
     source:
       twoOwners +
       ownerMappings([
-        [20, 100],
+        [20, 100, "bad place"],
         [21, 101, 0],
       ]),
     counts: { definitions: 2 },
@@ -566,7 +566,7 @@ test("IM-01 the Opus split-row probe cannot hide another owner's missing keyword
   assert.equal(fresh.result.report.added, 0);
 });
 
-test("IM-01 a split row with no missing logical record keeps the per-owner path", async () => {
+test("IM-01 a split mapping cannot establish its owner even with matching logical counts", async () => {
   const source =
     twoOwners +
     ownerMappings([
@@ -580,13 +580,14 @@ test("IM-01 a split row with no missing logical record keeps the per-owner path"
   });
   assert.equal(result.result.report.table_rows.keywordmapping, 3);
   assert.equal(result.result.report.logical_table_rows.keywordmapping, 2);
-  assert.equal(result.result.report.added, 1);
-  assert.equal(result.entries["100"], undefined);
-  assert.ok(result.entries["101"]);
+  assert.equal(result.result.report.added, 0);
+  assert.deepEqual(result.entries, {});
+  assert.equal(result.result.report.incomplete, true);
   assert.deepEqual(result.result.report.notices, []);
-  assert.ok(
-    result.result.report.unresolved.every((issue) => issue.record === 100),
-  );
+  for (const record of [100, 101])
+    assert.ok(
+      result.result.report.unresolved.some((issue) => issue.record === record),
+    );
 });
 
 test("IM-01 surplus logical records remain reportable without freezing valid owners", async () => {
@@ -695,3 +696,127 @@ test("IM-01 declared counts for unread tables keep physical units", async () => 
   assert.doesNotMatch(notice!, /logical/);
   assert.equal(result.result.report.added, 1);
 });
+
+for (const damage of ["grouped", "ungrouped", "surplus"] as const)
+  test(`IM-01 dense captured owner IDs cannot hide a lost ${damage === "ungrouped" ? "place keyword" : "gloss"} (${damage})`, async () => {
+    const directory = await setup();
+    const grouped = damage === "grouped";
+    const place = damage === "ungrouped";
+    const owners = place ? [1, 10, 100, 101] : [1, 100, 101];
+    const source = replaceTable(
+      replaceTable(
+        common,
+        "definitions",
+        table(
+          "definitions",
+          [
+            "definitionid",
+            "valsiid",
+            "langid",
+            "definition",
+            "notes",
+            "etymology",
+            "selmaho",
+            "jargon",
+            "rafsi",
+            "userid",
+          ],
+          owners.map((id) => [
+            id,
+            10,
+            2,
+            `Definition ${id}.`,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+          ]),
+        ),
+      ),
+      "natlangwords",
+      table(
+        "natlangwords",
+        ["wordid", "langid", "word", "meaning"],
+        [
+          [20, 2, "gloss a", null],
+          [21, 2, "gloss b", null],
+          [22, 2, place ? "place one" : "gloss c", null],
+        ],
+      ),
+    );
+    const counts = { definitions: owners.length, natlangwords: 3 };
+    const first = await run(directory, "dense-complete", "", 3, {
+      source:
+        source +
+        ownerMappings([
+          [20, 101, 0],
+          [21, 100, 0],
+          [22, 101, place ? 1 : 0],
+        ]),
+      counts,
+    });
+    assert.equal(first.result.report.added, owners.length);
+    if (!place)
+      assert.deepEqual(first.entries["101"].baseline.glosses, {
+        known: [
+          { word: "gloss a", meaning: null },
+          { word: "gloss c", meaning: null },
+        ],
+      });
+    else
+      assert.deepEqual(first.entries["101"].baseline.place_keywords, {
+        known: [{ word: "place one", meaning: null }],
+      });
+    const damaged =
+      source +
+      ownerMappings(
+        grouped
+          ? [
+              [20, 101, 0],
+              [21, 100, 0],
+              [22, 1],
+              ["01", 0],
+            ]
+          : place
+            ? [
+                [20, 101, 0],
+                [22, 10],
+                [1, 1],
+              ]
+            : [
+                [20, 101, 0],
+                [21, 100, 0],
+                [22, 1, "01", 0],
+              ],
+      );
+    const second = await run(directory, "dense-damaged", "", 3, {
+      source: damaged,
+      counts,
+    });
+    assert.equal(second.result.report.logical_table_rows.keywordmapping, 3);
+    assert.equal(
+      second.result.report.table_rows.keywordmapping,
+      grouped ? 4 : 3,
+    );
+    assert.deepEqual(second.result.report.notices, []);
+    assert.equal(second.result.report.revised, 0);
+    assert.equal(second.result.report.incomplete, true);
+    assert.equal(second.result.selection, first.result.selection);
+    assert.deepEqual(second.entries, first.entries);
+    for (const owner of owners)
+      assert.ok(
+        second.result.report.unresolved.some(
+          (issue) =>
+            issue.record === owner &&
+            /keywordmapping.*incomplete/.test(issue.reason),
+        ),
+      );
+    const fresh = await run(await setup(), "dense-fresh", "", 3, {
+      source: damaged,
+      counts,
+    });
+    assert.equal(fresh.result.report.added, 0);
+    assert.deepEqual(fresh.entries, {});
+  });

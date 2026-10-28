@@ -485,7 +485,12 @@ async function stageSource(path: string, db: DatabaseSync, output: SqlReport) {
       const locator = (copy.fragments ?? [copy])
         .map(({ row, line }) => `${copy.table}/COPY-row=${row}/line=${line}`)
         .join(" + ");
-      const recovered = recoveredId(copy, issueKey(copy.table));
+      // A line break or extra tab can turn a partial owner into another captured definition ID.
+      const recovered =
+        copy.table === "keywordmapping" &&
+        (copy.values.length !== copy.columns.length || copy.fragments)
+          ? null
+          : recoveredId(copy, issueKey(copy.table));
       const definitionId =
         copy.table === "definitions" ? recoveredId(copy, "definitionid") : null;
       if (definitionId !== null && definitionId > 0)
