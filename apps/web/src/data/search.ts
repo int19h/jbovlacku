@@ -6,8 +6,17 @@ import {
   canonicalize,
   contentHash,
   wordId,
-  stripAcuteAccents,
 } from "../../../../packages/core/src/browser.ts";
+import {
+  selectMatches,
+  withSegmentation,
+  matchRank,
+  type SegmentationStatus,
+} from "../../../../packages/search/src/index.ts";
+export {
+  normalizeQuery,
+  matchKind,
+} from "../../../../packages/search/src/index.ts";
 import {
   getManifest,
   objectBytes,
@@ -21,7 +30,6 @@ import {
   languageTag,
   lexicalKinds,
   identityId,
-  type MatchKind,
   type PackageEntry,
   type PackageEntryV2,
   type SearchHit,
@@ -60,16 +68,6 @@ export function createPackageWordIndex(identify: typeof wordId = wordId) {
   );
 }
 export const packageWordEntries = createPackageWordIndex();
-
-// Alias matches belong to the local index. The API keeps its wire classes.
-const localMatchKinds: MatchKind[] = [
-  "headword",
-  "gloss",
-  "alias",
-  "headword-prefix",
-  "gloss-prefix",
-  "token",
-];
 
 export interface CachedPackage {
   snapshot: string;
@@ -404,31 +402,6 @@ async function downloadEntries(
   }
   return entries;
 }
-/** Search normalization for lookup only. It never rewrites signed text. */
-export function normalizeQuery(value: string): string {
-  return value
-    .normalize("NFC")
-    .toLocaleLowerCase("en")
-    .replaceAll("’", "'")
-    .trim();
-}
-export function matchKind(entry: PackageEntry, q: string): MatchKind | null {
-  const exact = q.normalize("NFC").trim();
-  if (stripAcuteAccents(entry.word.spelling) === stripAcuteAccents(exact))
-    return "headword";
-  if (entry.glosses.some((gloss) => gloss.text.normalize("NFC") === exact))
-    return "gloss";
-  q = normalizeQuery(q);
-  const spelling = stripAcuteAccents(normalizeQuery(entry.word.spelling));
-  const headwordQuery = stripAcuteAccents(q);
-  const glosses = entry.glosses.map((gloss) => normalizeQuery(gloss.text));
-  if (spelling === headwordQuery || glosses.includes(q)) return "alias";
-  if (headwordQuery && spelling.startsWith(headwordQuery))
-    return "headword-prefix";
-  if (glosses.some((gloss) => gloss.startsWith(q))) return "gloss-prefix";
-  if (normalizeQuery(entry.plain_text).includes(q)) return "token";
-  return null;
-}
 export interface LocalHit extends SearchHit {
   /** Every matching entry of the word, strongest first. */
   entries: PackageEntry[];
@@ -437,13 +410,10 @@ export interface LocalHit extends SearchHit {
 export function localSearch(
   entries: PackageEntry[],
   query: string,
-): LocalHit[] {
-  const q = normalizeQuery(query);
-  if (!q) return [];
-  const grouped = new Map<string, LocalHit>();
-  for (const entry of entries) {
-    const match = matchKind(entry, query);
-    if (!match) continue;
+): LocalHit[] & { segmentation: SegmentationStatus } {
+  const selected = selectMatches(entries, query);
+  const grouped = new Map<string, LocalHit & { position: number }>();
+  for (const { entry, match, position } of selected.rows) {
     const id = wordId({ language: "jbo", spelling: entry.word.spelling });
     const preview = {
       event: entry.event,
@@ -456,10 +426,11 @@ export function localSearch(
       old.definitions.push(entry.event);
       old.entries.push(entry);
       if (
-        localMatchKinds.indexOf(match) < localMatchKinds.indexOf(old.match) ||
+        matchRank(match) < matchRank(old.match) ||
         (match === old.match && entry.event < old.preview!.event)
       ) {
         old.match = match;
+        old.position = position;
         old.preview = preview;
         old.word = entry.word;
         old.entries.sort((a, b) =>
@@ -472,13 +443,22 @@ export function localSearch(
         word_id: id,
         definitions: [entry.event],
         match,
+        position,
         preview,
         entries: [entry],
       });
   }
-  return [...grouped.values()].sort(
+  const ordered = [...grouped.values()].sort(
     (a, b) =>
-      localMatchKinds.indexOf(a.match) - localMatchKinds.indexOf(b.match) ||
+      matchRank(a.match) - matchRank(b.match) ||
+      a.position - b.position ||
       a.word_id.localeCompare(b.word_id, "en"),
+  );
+  return withSegmentation(
+    ordered.map(({ position, ...hit }) => {
+      void position;
+      return hit;
+    }),
+    selected.segmentation,
   );
 }

@@ -117,12 +117,13 @@ function components(value: string, workLimit: number, runLimit = 128) {
   let foreign = 0;
   for (let index = 0; index < parsed.words.length; index++) {
     while (parsed.foreign[foreign]?.start < parsed.words[index].start) {
-      tokens.push(null);
+      if (tokens.at(-1) !== null) tokens.push(null);
       foreign++;
     }
     tokens.push(words[index]);
   }
-  if (foreign < parsed.foreign.length) tokens.push(null);
+  if (foreign < parsed.foreign.length && tokens.at(-1) !== null)
+    tokens.push(null);
   return {
     parsed,
     value: {

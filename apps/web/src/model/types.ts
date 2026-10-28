@@ -367,20 +367,12 @@ export interface SearchHit {
     status: string;
   };
 }
-export type MatchKind =
-  | "headword"
-  | "gloss"
-  | "alias"
-  | "headword-prefix"
-  | "gloss-prefix"
-  | "token";
-export const matchKinds: MatchKind[] = [
-  "headword",
-  "gloss",
-  "headword-prefix",
-  "gloss-prefix",
-  "token",
-];
+export { matchKinds } from "../../../../packages/search/src/index.ts";
+export type { MatchKind } from "../../../../packages/search/src/index.ts";
+import type {
+  MatchKind,
+  SegmentationStatus,
+} from "../../../../packages/search/src/index.ts";
 export interface SearchResponse {
   snapshot: string;
   view: string;
@@ -388,6 +380,8 @@ export interface SearchResponse {
   language: string;
   hits: SearchHit[];
   next: string | null;
+  /** Absent on older servers. */
+  segmentation?: SegmentationStatus;
 }
 export interface Capabilities {
   versions: number[];

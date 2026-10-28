@@ -134,13 +134,21 @@ test("local search separates exact NFC spellings from case and apostrophe aliase
       nfc: matchKind(make(6, "brodi", ["é"]) as any, "e\u0301"),
     };
   });
-  expect(result.hits).toEqual([
-    [".Alis", "headword"],
+  expect(
+    result.hits
+      .slice(0, 2)
+      .map(([spelling]: string[]) => spelling)
+      .sort(),
+  ).toEqual([".Alis", ".alis"]);
+  expect(result.hits.slice(0, 2).map(([, match]: string[]) => match)).toEqual([
+    "headword",
+    "headword",
+  ]);
+  expect(result.hits.slice(2)).toEqual([
     ["broda", "gloss"],
-    [".alis", "alias"],
     [".Alisa", "headword-prefix"],
   ]);
-  expect(result.apostrophe).toBe("alias");
+  expect(result.apostrophe).toBe("gloss");
   expect(result.nfc).toBe("gloss");
 });
 

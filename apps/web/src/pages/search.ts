@@ -72,6 +72,7 @@ interface SearchState {
   hits: SearchHit[];
   next: string | null;
   cursors: string[];
+  segmentation?: "complete" | "limited";
 }
 /**
  * Appends plain text with the query highlighted. Every character stays
@@ -276,7 +277,18 @@ export async function searchPage(
   let view: string | null = null;
   let localHits: LocalHit[] = [];
   let stopped = false;
-  if (cached) localHits = localSearch(cached.entries, query);
+  let segmentation: "complete" | "limited" | undefined;
+  const segmentationNote = p(
+    "Word segmentation reached a limit. Some sequence matches or word cards can be missing. Ordinary text matching remains available.",
+    "notice",
+  );
+  segmentationNote.hidden = true;
+  results.before(segmentationNote);
+  if (cached) {
+    const found = localSearch(cached.entries, query);
+    localHits = found;
+    segmentation = found.segmentation;
+  }
   const remember = () => {
     if (!context.live()) return;
     const state: SearchState = {
@@ -289,6 +301,7 @@ export async function searchPage(
       hits: displayed,
       next,
       cursors: [...cursors],
+      segmentation,
     };
     rememberState({ dictionarySearch: state });
   };
@@ -333,6 +346,7 @@ export async function searchPage(
   };
   const refreshCount = () => {
     refreshProvenance();
+    segmentationNote.hidden = segmentation !== "limited";
     const total = cached
       ? localHits.length
       : displayed.length + (next ? "+" : "");
@@ -431,6 +445,7 @@ export async function searchPage(
       snapshot = page.snapshot;
       view = page.view;
       next = page.next;
+      segmentation = page.segmentation;
       if (next) cursors.add(next);
       appendHits(page.hits);
     }
@@ -465,6 +480,7 @@ export async function searchPage(
       snapshot = saved.snapshot;
       view = saved.view;
       next = saved.next;
+      segmentation = saved.segmentation;
       for (const cursor of saved.cursors) cursors.add(cursor);
       appendHits(saved.hits);
       refreshCount();

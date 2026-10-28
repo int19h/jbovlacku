@@ -633,6 +633,7 @@ Run the available tests from the repository root after the core build:
 ```sh
 cargo test --workspace
 npm run typecheck
+npm run test:search
 npm run test:service
 JVC_TEST_ROOT="$PWD/.cache/adapter-tests" npm run test:adapters
 npx tsx --test packages/importer/test/*.test.ts

@@ -168,7 +168,11 @@ The third line shows author attribution, month and year, optional “notes,” m
 Native authors link to their signing identity. Imported authors link to source-account evidence when available, without impersonating a signing identity.
 The importer signer remains inspectable separately. A shared display name never merges the two.
 
-Search order follows exact headword, exact gloss, headword prefix, gloss prefix, and token matches, without class headings.
+Search order follows exact headword, exact component sequence, exact gloss, contiguous sequence, ordered subsequence, headword prefix, gloss prefix, and token matches.
+The list has no class headings. When no compound sequence joins, individual query-word cards follow in query order, with repeated identities grouped.
+Case and acute headword stress marks do not change the order.
+If segmentation reaches a resource limit, a visible notice states that some sequence matches or word cards can be missing.
+The notice stays through pagination and browser Back.
 The list ends with the remaining count and “show all,” then “Missing a word for this? Add it” and the retired-results filter.
 A rafsi query shows its word relation, for example “cku ← cukta,” and retains assignment conflicts.
 No official badge appears. No identity, key prompt, or general activity feed precedes reading.

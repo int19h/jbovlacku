@@ -159,11 +159,49 @@ Before its first remote query, the app states that queries reach the named serve
 A change of mode does not silently upload previously local query history.
 
 Search normalization affects lookup only. It never rewrites signed spellings or definition text.
-Use NFC, case folding for secondary matches, and explicit apostrophe aliases in search indexes.
+Use NFC, case folding, and explicit apostrophe aliases in search indexes.
+Case differences do not change match classes or their order.
 Headword matching ignores acute cmevla stress marks. Accented and plain queries find the same word identity.
 Each result keeps the display spelling of its selected definition. Alternative definitions can retain different stress marks.
-An exact spelling match remains distinguishable from a normalized alias.
-Rank result classes in this order: exact headword, exact gloss, headword prefix, gloss prefix, then token matches.
+A normalized exact headword match uses the same class as its display spelling.
+Rank result classes in this order: exact headword, exact component sequence, exact gloss, contiguous sequence, ordered subsequence, headword prefix, gloss prefix, then token matches.
+Ordinary text queries keep their existing lexical class order.
+
+Both local and server search split the query with the TypeScript text segmenter in `packages/morphology`.
+Each search index derives a component array for every headword that parses entirely as two or more cmavo.
+For example, `iseri'abo` has components `[i, se, ri'a, bo]`.
+The queries `i seri'a bo`, `ise ri'abo`, and `iseri'abo` find that exact sequence.
+A contiguous match contains every component of either the query or the headword in one uninterrupted run of the other.
+Thus `mi klama i seri'a bo` and `se ri'a` find `iseri'abo`.
+An ordered subsequence keeps the query components in order within a longer compound, with gaps allowed.
+For example, `i bo` finds `iseri'abo`. Reversed or missing repeated components do not match.
+A foreign or invalid run breaks a contiguous match. It never joins recognized words across that run.
+Only a complete query of cmavo can supply the shorter sequence or an ordered subsequence.
+
+If no compound sequence matches, search also returns exact headword cards for the recognized query words.
+For example, `ijebo` shows `i`, `je`, and `bo`, and `taia` shows `tai` and `a` when those compounds are absent.
+This fallback includes brivla and names. It keeps query order and groups repeated word identities into one card.
+It keeps alternative matching definitions and never creates a definition for an absent headword.
+Ordinary full-query matches precede these fallback cards.
+Both modes use the same matcher. Server eligibility, language, and retirement filters also apply to fallback cards.
+Local packages retain their stated status limits.
+
+The component index exists only in memory. Package entries and persistent server index rows keep their existing formats.
+Cached entries belong to an immutable package or generation and can be released with it.
+A query permits 16,384 UTF-8 bytes, 512 recognized words, and 300,000 parser steps.
+Each query run permits 128 normalized phonemes. The headword index permits 256 bytes and 256 phonemes, with 300,000 parser steps per headword.
+These bounds support full-size dictionary headwords without raising the ordinary text segmenter's default run limit.
+If query segmentation reaches a limit, search uses ordinary text matching without partial component results.
+If a headword reaches its indexing limit, ordinary matching remains available and sequence coverage is incomplete.
+The response and interface expose either limit through `segmentation: "limited"`.
+The interface preserves that notice through pagination and browser Back.
+
+Sequence matching never enumerates query subsets.
+For E entries, Q query tokens, and H maximum headword components, its comparison cost is O(E × (Q + H)).
+Tokens include foreign barriers. Consecutive barriers count once, so Q is at most 1,025 under the word limit.
+H is at most 256 under the headword byte limit. Linear prefix tables find contiguous matches, and one forward pass finds ordered subsequences.
+Index construction has at most 300,000 parser steps per headword. Later searches reuse each retained entry's index.
+The [measurement script](../scripts/measure-segmented-search.ts) reports cold and warm counts for contiguous, genuine subsequence, and repeated-prefix failure cases with 100 query words.
 
 Within a class, use lexical relevance and stable word-ID order. Search ordering does not consume editorial scores.
 The word page uses the format's definition layers and attributed score calculations. Show alternative definitions instead of collapsing them into one word-level score.
@@ -1296,6 +1334,7 @@ WordResponse = {
 }
 SearchResponse = {
   snapshot: ID, view: event-ID, query: string, language: string,
+  segmentation?: "complete" | "limited",
   hits: [{word: WordObject, word_id: word-ID, match: match-kind,
           definitions: [event-ID]}], next: cursor | null
 }
@@ -1407,7 +1446,12 @@ Changes cursors are server-specific and never transferable between peers. Empty 
 An empty-string cursor is invalid. A request without a changes cursor starts from that server's earliest retained receipt. An empty initial log returns its opaque initial cursor. Retention gaps require snapshot reconciliation through HTTP 410.
 Search accepts an optional `after` cursor tied to the same query, language, retired flag, view, and snapshot.
 
-Match kinds are `headword`, `gloss`, `headword-prefix`, `gloss-prefix`, and `token`, in that relevance order.
+Match kinds are `headword`, `sequence-exact`, `gloss`, `sequence-contiguous`, `sequence-subsequence`, `headword-prefix`, `gloss-prefix`, `token`, and `component`, in that relevance order.
+The `component` class uses the first occurrence of each query word before the stable word-ID tie break.
+New servers return `segmentation` on every page. Older servers can omit it.
+`complete` means that segmentation completed within its limits. It does not assert that every query run has a Lojban reading.
+`limited` states that a query or headword indexing limit prevents complete sequence coverage.
+Search cursors bind the matching version as well as their query, language, retired flag, view, and snapshot.
 Search responses identify candidates but carry no unqualified quality score. The word response supplies ranking when requested.
 A calculation failure leaves calculation null and lists every affected target in unavailable_scores. It does not replace unknown scores with zero.
 A no-judgment candidate has an exact zero score when complete graph inputs support that conclusion.
