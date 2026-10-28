@@ -44,6 +44,7 @@ import {
 } from "./checkpoint.ts";
 import {
   buildPackages,
+  preparePackageSearch,
   rebasePackages,
   sameEffectiveDefinitions,
   type MaterializedPackages,
@@ -648,6 +649,7 @@ export class DictionaryService {
             recoveredId === metadata.materialized_snapshot &&
             binding.position === metadata.materialized_position;
           try {
+            preparePackageSearch(payload.packages);
             if (restoresMaterialized) {
               await this.options.index?.restore?.(
                 recoveredId,

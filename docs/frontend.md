@@ -202,14 +202,17 @@ The component index exists only in memory. Package entries and persistent server
 The shared matcher rejects impossible cmavo shapes before parsing. It retains at most 4,096 parsed normalized spellings in a process-local LRU cache.
 An LRU cache removes the least recently used item when it reaches its limit.
 Each immutable server package array also retains its prepared entry index through a weak reference.
-A changed definition snapshot uses new entries and rebuilds their text index. Unchanged spellings reuse the bounded morphology cache.
+A changed definition snapshot uses new entries and rebuilds its text and component index during package materialization.
+Package construction and rebasing complete that index before publication. Checkpoint restore prepares recovered entries before readiness.
+The first search of a completed package does no headword parsing. Preparation still consumes CPU once during materialization. Unchanged spellings reuse the bounded morphology cache.
 The server's existing package and evaluation lifetimes bound those prepared indexes.
 
 Browser storage version 4 records a revision marker beside each language package in the same transaction as its write or deletion.
 Every package read checks that marker, including reads from another connection or tab.
 Each connection retains at most two package objects. A changed revision invalidates that connection's retained data, even when the snapshot ID stays equal.
 A failed download leaves the saved package and revision unchanged.
-One static module worker validates and searches packages outside the main thread.
+One static module worker validates and searches saved packages outside the main thread.
+Download hashing and entry checks retain their existing download path.
 It retains two prepared packages, keyed by database name, language, and durable revision. Separate connections can reuse the same prepared revision.
 Page reload closes that worker and its caches. The first search after reload reads, transfers, validates, and prepares the saved package again.
 Nearby lookup in the meaning step uses the same worker and prepared index.

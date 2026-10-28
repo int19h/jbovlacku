@@ -1,5 +1,5 @@
 import { packageStorageKey } from "./store.ts";
-/** Package validation and lexical work run in one static module worker. */
+/** Saved-package validation and lexical work run in one static module worker. */
 import type { CachedPackage, LocalHit } from "./search.ts";
 import type {
   SegmentationStatus,

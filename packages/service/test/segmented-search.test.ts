@@ -9,6 +9,7 @@ import {
   wordId,
   utf8,
 } from "../../core/src/index.ts";
+import { searchMetrics, selectMatches } from "../../search/src/index.ts";
 import { DictionaryService } from "../src/service.ts";
 import {
   FileObjectStore,
@@ -107,6 +108,16 @@ test("GET and POST share segmented ranking, fallback, cursors, and limits in a f
       [view, ...definitions].map((record) => utf8(JSON.stringify(record))),
     );
     await service.flushMaterialization();
+    const completed = await (service as any).current();
+    const built = await (service as any).packages(completed.snapshot);
+
+    const firstSearch = searchMetrics();
+    selectMatches(built.entries, "i bo", firstSearch);
+    assert.equal(
+      firstSearch.headwordsParsed,
+      0,
+      "A completed package must own a ready lexical index.",
+    );
     const get = async (q: string, extras: Record<string, string> = {}) => {
       const response = await service.fetch(
         new Request(

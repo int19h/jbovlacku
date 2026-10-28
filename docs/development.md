@@ -627,7 +627,9 @@ The [semantic index guide](semantic-search.md#handle-provider-rate-limits) descr
 The optional real-package search measurement accepts a local JSON export through `JVC_SEARCH_MEASURE_DATA`.
 It runs `apps/web/test/search-measure.test.ts` with actual IndexedDB reads, search routes, nearby lookup, and browser main-thread CPU counters.
 Run `scripts/measure-package-search.ts DATASET.json` through `tsx` and `/usr/bin/time -v` for server lexical CPU and memory.
-This server boundary starts after materialization and includes eligibility filtering and word grouping. It excludes HTTP and snapshot evaluation.
+The script runs actual derived-package construction from trusted synthetic projections of the retained search entries.
+It reports package construction and index preparation separately from first and warm lexical searches.
+The search boundary includes eligibility filtering and word grouping. It excludes authentication, HTTP, and snapshot evaluation.
 Both tools report the revision and input digest. They translate only historical `classification.kind: "fuivla"` to the current `fuhivla` spelling.
 They preserve every entry, headword, and definition text. Do not commit a private dataset or its path.
 

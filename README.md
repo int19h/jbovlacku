@@ -78,7 +78,8 @@ Punctuation, digits, and `h` aliases also find a single recognized word. One-wor
 Long lists offer “show all”. Case and acute headword stress marks do not change match classes.
 Queries permit 512 recognized words and 300,000 parser steps, with 128 phonemes per run. The index covers dictionary headwords through 256 bytes.
 A limit notice preserves ordinary text search and states incomplete sequence coverage.
-Local package validation and search run in a static module worker. Search pages and nearby lookup share two prepared package revisions.
+Saved-package validation and search run in a static module worker. Search pages and nearby lookup share two prepared package revisions.
+The server prepares lexical indexes during package materialization, before completed snapshots become readable.
 Storage reads check durable revision markers, so same-snapshot changes and another tab's writes invalidate retained data.
 The [search specification](docs/frontend.md#4-search-and-reading) defines the bounds, ranking, and fallback rules.
 A download keeps its requested language even when the language selector changes before it finishes.
