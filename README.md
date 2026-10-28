@@ -124,6 +124,7 @@ The browser does not load or save an unconfigured server view as a signed policy
 The lujvo builder says whether a candidate spelling is taken in the local package and on the server.
 The rafsi page lists known assignments across words from version 2 packages, and the claim page signs a claim with its pair blessing.
 The lujvo builder offers short rafsi, gismu stems, whole gismu, whole-word parts under the extended profile, locks, CLL scores, recovered parts, and every competing rafsi claim from the local package.
+A combination above 128 bytes enters the bounded rejected list and leaves shorter candidates available.
 If several parts share the same competing rafsi claim, the builder shows one acknowledgment for that claim.
 A word entered on Meaning gets local form detection and an exact identity lookup in the selected language package.
 Headword analysis lowercases author input, so capitals do not mark stress. Authors must write word breaks explicitly.

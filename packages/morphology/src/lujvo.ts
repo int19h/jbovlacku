@@ -748,8 +748,24 @@ export function buildLujvoWithDetailBudget(
         tokens.push(parts[index].text);
       }
     }
+    const spelling = tokens.join("");
+    const wordBytes = bytes(spelling);
+    if (wordBytes > MAX_WORD_BYTES) {
+      if (rejected.length < 64)
+        rejected.push({
+          spelling,
+          parts: chosen.map((choice) => choice.form),
+          reason: new BuilderError({
+            kind: "resource-limit",
+            measure: "word bytes",
+            value: wordBytes,
+            limit: MAX_WORD_BYTES,
+          }).message,
+        });
+      return;
+    }
     candidates.push({
-      spelling: tokens.join(""),
+      spelling,
       parts: chosen.map((choice, index) => ({
         id: request.components[index].id,
         form: choice.form,

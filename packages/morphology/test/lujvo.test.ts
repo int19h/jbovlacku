@@ -1167,3 +1167,77 @@ test("construction and validation preserve each resource diagnostic", () => {
     0,
   );
 });
+
+test("overlong combinations are rejected without hiding short lujvo candidates", () => {
+  for (const profile of [
+    "cll",
+    "extended-v2",
+    "extended",
+    "extended-v4",
+  ] as const) {
+    const result = buildLujvo({
+      profile,
+      components: ["a", "b", "c"].map((id) =>
+        component(id, "tca".repeat(20), ["bau"], "lujvo"),
+      ),
+      limits: { results: 1 },
+    });
+    assert.equal(result.complete, true);
+    assert.equal(result.candidates[0].spelling, "baurbaubau", profile);
+    assert.deepEqual(
+      result.candidates[0].recovered.map((part) => part.text),
+      ["bau", "bau", "bau"],
+    );
+    if (profile === "cll") assert.deepEqual(result.rejected, []);
+    else {
+      assert.equal(result.considered, 8);
+      assert.ok(
+        result.rejected.some(
+          (item) =>
+            item.spelling.length > 128 &&
+            item.reason ===
+              `word bytes is ${item.spelling.length}, above the limit of 128.`,
+        ),
+      );
+      assert.ok(result.candidates.every((item) => item.spelling.length <= 128));
+      const locked = buildLujvo({
+        profile,
+        components: ["a", "b", "c"].map((id) => ({
+          ...component(id, "tca".repeat(20), [], "lujvo"),
+          locked: "tca".repeat(20),
+        })),
+      });
+      assert.deepEqual(locked.candidates, []);
+      assert.equal(locked.complete, true);
+      assert.equal(locked.considered, 1);
+      assert.equal(locked.rejected.length, 1);
+      assert.equal(locked.rejected[0].spelling.length, 184);
+    }
+  }
+});
+
+test("explicit apostrophe-y-apostrophe joins rebuild vowel-initial cores in versions 3 and 4", () => {
+  for (const profile of ["extended", "extended-v4"] as const) {
+    const result = buildLujvo({
+      profile,
+      components: [
+        component("a", "leksiko", [], "fuhivla"),
+        component("b", "ismu", [], "fuhivla"),
+      ],
+      joins: ["'y'"],
+      spelling: "leksiko'y'ismu",
+    });
+    assert.equal(result.candidates.length, 1);
+    assert.deepEqual(result.candidates[0].tokens, ["leksiko", "'y'", "ismu"]);
+    assert.equal(result.candidates[0].recovered[1].join_before, "'y'");
+  }
+  const legacy = buildLujvo({
+    profile: "extended-v2",
+    components: [
+      component("a", "leksiko", [], "fuhivla"),
+      component("b", "ismu", [], "fuhivla"),
+    ],
+  });
+  assert.deepEqual(legacy.candidates, []);
+  assert.equal(legacy.rejected[0].spelling, "leksiko'yismu");
+});
