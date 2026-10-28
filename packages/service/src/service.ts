@@ -1,4 +1,5 @@
 import { BackgroundSemanticIndexer } from "./semantic/background.ts";
+import { languageTag } from "./language.ts";
 import { prepareAdmissionRecords } from "./admission-records.ts";
 import { eligibleSemanticSource } from "./semantic/source.ts";
 import type { EmbeddingProfile } from "./semantic/types.ts";
@@ -1142,11 +1143,7 @@ export class DictionaryService {
       );
   }
   private language(value: string | null): string {
-    if (
-      value === null ||
-      value.length > 63 ||
-      !/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(value)
-    )
+    if (!languageTag(value))
       throw new ApiError(400, "language", "Definition language is invalid.");
     return value;
   }

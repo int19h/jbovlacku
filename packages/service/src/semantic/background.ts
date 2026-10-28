@@ -36,7 +36,12 @@ export class BackgroundSemanticIndexer {
       report(error: unknown): void;
       status?(message: string): void;
     },
-  ) {}
+  ) {
+    const assistance = options.assistance;
+    options.store.registerOperationGuard(
+      (operation) => assistance.embeddingOperationPending?.(operation) ?? false,
+    );
+  }
 
   /** Tests call a bounded cycle directly. The host schedules the same cycle. */
   cycle(): Promise<void> {
@@ -72,19 +77,7 @@ export class BackgroundSemanticIndexer {
       if (this.initialized !== job.id) {
         this.initialized = job.id;
         await store.recoverBackground(job.id);
-        // A server start opens a new retry round. Provider and budget deadlines still apply.
-        if (
-          job.background_recovery?.exhausted &&
-          !job.background_recovery.batch
-        ) {
-          await store.setBackgroundRecovery(job.id, {
-            ...job.background_recovery,
-            sent_attempts: 0,
-            exhausted: false,
-            next_attempt: this.now(),
-          });
-        }
-        job = await store.generation(job.id);
+        job = await store.generation(job.id, true);
       }
       const recovery = job.background_recovery;
       if (
@@ -108,13 +101,21 @@ export class BackgroundSemanticIndexer {
           sent_attempts: 0,
           exhausted: false,
         });
-        job = await store.generation(job.id);
+        job = await store.generation(job.id, true);
       }
       if (retry) await store.retry(retry.id);
     }
-    const dueInputs =
-      job?.background_inputs &&
-      job.background_inputs.next_attempt <= this.now();
+    const schedule =
+      job?.state === "completed"
+        ? await store.backgroundSchedule(
+            job.id,
+            this.now(),
+            (operation) =>
+              this.options.assistance.embeddingOperationPending?.(operation) ??
+              false,
+          )
+        : null;
+    const dueInputs = schedule !== null && schedule <= this.now();
     if (
       (!job || job.state === "completed") &&
       !dueInputs &&
@@ -135,7 +136,7 @@ export class BackgroundSemanticIndexer {
         if (source!.context.snapshot === (job ?? current).snapshot) {
           if (!job || !dueInputs) return;
           await store.resumeBackground(job.id);
-          job = await store.generation(job.id);
+          job = await store.generation(job.id, true);
         } else {
           await store.pruneBackgroundGenerations(identity, view);
           job = await store.create(source!.context, profile);
@@ -156,7 +157,7 @@ export class BackgroundSemanticIndexer {
         return;
       if (((await store.retryAfter(identity)) ?? 0) > this.now()) {
         await store.pause(job.id, "embedding_rate_limited");
-        await this.defer(await store.generation(job.id), undefined);
+        await this.defer(await store.generation(job.id, true), undefined);
         return;
       }
       const coverage = await store.coverage(job.id);
@@ -210,7 +211,10 @@ export class BackgroundSemanticIndexer {
           } catch (replacementFailure) {
             await store.pause(old, this.code(replacementFailure));
             if (!this.stop.signal.aborted)
-              await this.defer(await store.generation(old), replacementFailure);
+              await this.defer(
+                await store.generation(old, true),
+                replacementFailure,
+              );
             return;
           }
           await store.setBackgroundGeneration(job.id);
@@ -224,7 +228,7 @@ export class BackgroundSemanticIndexer {
       }
       await store.pause(job.id, this.code(failure));
       if (!this.stop.signal.aborted)
-        await this.defer(await store.generation(job.id), failure);
+        await this.defer(await store.generation(job.id, true), failure);
     }
   }
   private now() {
@@ -329,7 +333,7 @@ export class BackgroundSemanticIndexer {
       // Finish a pass with held inputs so a later snapshot can proceed.
       await store.start(job.id);
       await store.finish(job.id);
-      if ((await store.generation(job.id)).state === "running")
+      if ((await store.generation(job.id, true)).state === "running")
         await store.pause(job.id, reason);
       recovery.next_attempt = Math.max(
         notBefore,

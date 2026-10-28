@@ -127,7 +127,7 @@ export class SemanticIndexer {
         );
       if ((await this.store.generation(id)).state === "completed")
         return {
-          generation: await this.store.generation(id),
+          generation: await this.store.generation(id, options.background),
           coverage: await this.store.coverage(id),
         };
       const profile = await this.store.profile(id);
@@ -165,7 +165,7 @@ export class SemanticIndexer {
           options.signal?.aborted ? "index_paused" : "embedding_rate_limited",
         );
         return {
-          generation: await this.store.generation(id),
+          generation: await this.store.generation(id, options.background),
           coverage: await this.store.coverage(id),
         };
       }
@@ -330,7 +330,7 @@ export class SemanticIndexer {
       const generation = await this.store.generation(id);
       if (generation.state === "running") await this.store.pause(id);
       return {
-        generation: await this.store.generation(id),
+        generation: await this.store.generation(id, options.background),
         coverage: await this.store.coverage(id),
       };
     } finally {

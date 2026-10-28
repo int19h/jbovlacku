@@ -271,7 +271,7 @@ async function main() {
         ),
       });
     } else if (command === "retire") await vectors.retire(id!);
-    const generation = await vectors.generation(id!);
+    const generation = await vectors.generation(id!, true);
     const batches = await vectors.batches(id!, args.get("after") ?? null);
     output({
       event: "status",

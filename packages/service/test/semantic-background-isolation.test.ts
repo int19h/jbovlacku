@@ -12,6 +12,7 @@ import {
   providerConfig,
   type ProviderConfig,
 } from "../src/inference.ts";
+import { SemanticSearch, type SearchContext } from "../src/semantic/search.ts";
 import { BackgroundSemanticIndexer } from "../src/semantic/background.ts";
 import {
   createQwenProfile,
@@ -649,7 +650,7 @@ test("R4-3 full storage before job creation keeps its cooldown and log state", a
   assert.equal(await charge(f.budget), 0);
 });
 
-test("R4-1 restart opens a probe round without shortening an unrelated input hold", async (t) => {
+test("R7 restart preserves an exhausted probe round and an unrelated input hold", async (t) => {
   const poison = new TextDecoder().decode(documents(2)[1].input!);
   let probeSends = 0;
   let brokenProbe = false;
@@ -694,13 +695,9 @@ test("R4-1 restart opens a probe round without shortening an unrelated input hol
   await background.close();
   background = f.host();
   await background.cycle();
-  assert.equal(
-    probeSends,
-    5,
-    "A parked input must not suppress a fresh probe round on restart",
-  );
+  assert.equal(probeSends, 4, "A restart must preserve the probe cooldown");
   assert.equal((await f.job()).background_inputs?.next_attempt, deadline);
-  assert.equal((await f.job()).background_recovery?.sent_attempts, 1);
+  assert.equal((await f.job()).background_recovery?.sent_attempts, 4);
 });
 
 test("R4-2 status finds one hold through indexed lookups among 59001 associations", async (t) => {
@@ -737,7 +734,7 @@ test("R4-2 status finds one hold through indexed lookups among 59001 association
     internal.sql,
     "exec",
     (sql: string, ...bindings: (string | number | Uint8Array | null)[]) => {
-      if (sql.includes("MIN(json_extract(h.value"))
+      if (sql.includes("AS held") && sql.includes("ORDER BY h.input LIMIT 128"))
         plan = db
           .prepare("EXPLAIN QUERY PLAN " + sql)
           .all(...bindings)
@@ -746,11 +743,11 @@ test("R4-2 status finds one hold through indexed lookups among 59001 association
     },
   );
   assert.equal(
-    (await f.store.generation(generation.id)).background_inputs?.count,
+    (await f.store.generation(generation.id, true)).background_inputs?.count,
     1,
   );
   assert(
-    plan.some((line) => /SEARCH h.*\(profile=\?\)/.test(line)),
+    plan.some((line) => /SEARCH h.*\(profile=\? AND input>\?\)/.test(line)),
     JSON.stringify(plan),
   );
   assert(
@@ -942,7 +939,7 @@ test("R4-2 a marked retry excludes an input parked by another view", async (t) =
     "The old marked batch must send only its unheld input",
   );
   assert.equal(
-    (await f.store.generation(old.id)).background_inputs?.next_attempt,
+    (await f.store.generation(old.id, true)).background_inputs?.next_attempt,
     deadline,
   );
   assert.deepEqual(await f.store.coverage(old.id), {
@@ -1042,4 +1039,258 @@ test("R4-3 capacity refusal during expired-source replacement waits and then rec
   assert.equal(sends, 1);
   assert.equal((await f.job()).state, "completed");
   assert.equal((await f.store.generation(old.id)).state, "retired");
+});
+
+test("R7 basic generation and public profile reads do no hold scans with 59125 parked inputs", async (t) => {
+  const f = await fixture(t, async () => success());
+  await f.host().cycle();
+  const job = await f.job();
+  const internal = f.store as unknown as {
+    database: import("node:sqlite").DatabaseSync;
+    sql: {
+      exec(
+        sql: string,
+        ...bindings: (string | number | Uint8Array | null)[]
+      ): Record<string, unknown>[];
+    };
+  };
+  const db = internal.database;
+  const deadline = Date.now() + 3600000;
+  db.prepare(
+    `WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<59125)
+    INSERT INTO semantic_background_inputs SELECT ?, 'synthetic:' || printf('%064d',x),'previous',? FROM n`,
+  ).run(job.profile, JSON.stringify({ next_attempt: deadline }));
+  db.prepare(
+    `WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<59125)
+    INSERT INTO semantic_associations SELECT generation,'synthetic:' || printf('%064d',x),envelope,body,extraction_version,word,language,'synthetic:' || printf('%064d',x),NULL
+    FROM semantic_associations,n WHERE generation=?`,
+  ).run(job.id);
+  const exec = internal.sql.exec.bind(internal.sql);
+  const holdReads: { sql: string; rows: number }[] = [];
+  t.mock.method(
+    internal.sql,
+    "exec",
+    (sql: string, ...bindings: (string | number | Uint8Array | null)[]) => {
+      const rows = exec(sql, ...bindings);
+      if (/FROM semantic_background_inputs/.test(sql))
+        holdReads.push({ sql, rows: rows.length });
+      return rows;
+    },
+  );
+  const context = {
+    snapshot: { snapshot: job.snapshot, events: {} },
+    evaluation: {
+      available: true,
+      selected_view: job.view,
+      publications: {},
+      receipts: {},
+    },
+    retained: async () => true,
+  } as unknown as SearchContext;
+  const search = new SemanticSearch(
+    {
+      profile: job.profile,
+      store: f.store,
+      cache: f.store.queryCache,
+      scanner: { scan: async () => [] },
+    },
+    {
+      embed: async () => {
+        throw new Error("No inference is allowed.");
+      },
+    },
+    true,
+  );
+  await search.profiles(context);
+  for (let i = 0; i < 3; i++) {
+    await f.store.generation(job.id);
+    await search.profiles(context);
+  }
+  assert.equal(
+    holdReads.length,
+    0,
+    "R7 ordinary generation and cached profile reads must not scan holds",
+  );
+  let callbackRan = false;
+  setImmediate(() => {
+    callbackRan = true;
+  });
+  const diagnostic = await f.store.generation(job.id, true);
+  assert.equal(diagnostic.background_inputs?.count, 59125);
+  assert.equal(diagnostic.background_inputs?.next_attempt, deadline);
+  assert(
+    callbackRan,
+    "R7 diagnostics must let an already queued callback run between pages",
+  );
+  assert(holdReads.length > 1);
+  assert(
+    holdReads.every(
+      (read) => read.rows <= 128 && read.sql.includes("LIMIT 128"),
+    ),
+  );
+  console.log(
+    JSON.stringify({
+      holds: 59125,
+      diagnosticPages: holdReads.length,
+      maximumRows: Math.max(...holdReads.map((read) => read.rows)),
+    }),
+  );
+});
+
+test("R7 a due hold waits for its old transport without source, resume, probe, or finish work", async (t) => {
+  const f = await fixture(
+    t,
+    async () => new Response("Unknown", { status: 503 }),
+  );
+  let pending = true;
+  t.mock.method(f.assistance, "embeddingOperationPending", () => pending);
+  Object.assign(f.options, { needed: async () => false });
+  // The first snapshot needs work. Later cycles have no new snapshot.
+  const needed = t.mock.method(
+    f.options as typeof f.options & { needed(): Promise<boolean> },
+    "needed",
+    async () => true,
+  );
+  const background = f.host();
+  await background.cycle();
+  // Let retries reach a completed pass with one held input, then make that input due.
+  pending = false;
+  for (let i = 0; i < 3; i++) await f.next(background);
+  const job = await f.job();
+  await f.store.resumeBackground(job.id);
+  await f.store.start(job.id);
+  await f.store.finish(job.id);
+  f.advance(job.background_inputs!.next_attempt - Date.now());
+  pending = true;
+  needed.mock.mockImplementation(async () => false);
+  const source = t.mock.method(f.options, "source");
+  const resume = t.mock.method(f.store, "resumeBackground");
+  const probe = t.mock.method(f.options, "probe");
+  const finish = t.mock.method(f.store, "finish");
+  for (let i = 0; i < 6; i++) {
+    await background.cycle();
+    f.advance(5000);
+  }
+  assert.equal(
+    source.mock.callCount(),
+    0,
+    "R7 a pending transport must not rebuild the source each cycle",
+  );
+  assert.equal(resume.mock.callCount(), 0);
+  assert.equal(probe.mock.callCount(), 0);
+  assert.equal(finish.mock.callCount(), 0);
+  pending = false;
+  await background.cycle();
+  assert.equal(
+    resume.mock.callCount(),
+    1,
+    "Settlement must wake the due hold on the next cycle",
+  );
+});
+
+test("R7 probe attempts and their cooldown survive repeated database and host restarts", async (t) => {
+  let sends = 0;
+  const f = await fixture(
+    t,
+    async () => {
+      sends++;
+      return new Response("Unknown", { status: 503 });
+    },
+    2,
+  );
+  await seedReference(f);
+  f.options.probe = async () => {
+    await f.assistance.embed([utf8("Probe")], { kind: "probe" });
+  };
+  let background = f.host();
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    await background.cycle();
+    const recovery = (await f.job()).background_recovery!;
+    assert.equal(recovery.sent_attempts, attempt);
+    const deadline = recovery.next_attempt;
+    for (let restart = 0; restart < 2; restart++) {
+      await background.close();
+      await f.reopen();
+      background = f.host();
+      await background.cycle();
+      const retained = (await f.job()).background_recovery!;
+      assert.equal(
+        sends,
+        attempt,
+        "R7 restarting during a saved delay must not pay for another probe",
+      );
+      assert.equal(retained.sent_attempts, attempt);
+      assert.equal(retained.next_attempt, deadline);
+    }
+    f.advance(deadline - Date.now());
+  }
+  await background.cycle();
+  assert.equal(
+    sends,
+    5,
+    "The expired cooldown permits the next bounded recovery round",
+  );
+  assert.equal((await f.job()).background_recovery?.sent_attempts, 1);
+  assert(Math.abs((await charge(f.budget)) - 5 * quote) < 1e-12);
+});
+
+test("R7 retirement keeps reader and old-host transport guards until exact background work is idle", async (t) => {
+  const f = await fixture(
+    t,
+    async () => new Response("Unknown", { status: 503 }),
+  );
+  let pending = false;
+  t.mock.method(f.assistance, "embeddingOperationPending", () => pending);
+  const background = f.host();
+  await background.cycle();
+  for (let i = 0; i < 3; i++) await f.next(background);
+  const job = await f.job();
+  await f.store.resumeBackground(job.id);
+  await f.store.start(job.id);
+  await f.store.finish(job.id);
+  await f.store.unpublish(job.profile, job.view, job.id);
+  const release = await f.store.retainGeneration(job.id);
+  await assert.rejects(f.store.retire(job.id), /active search/);
+  release();
+  const replacement = await f.store.create(
+    { ...f.source.context, snapshot: hash(1900) },
+    f.profile,
+  );
+  await f.store.stage(replacement.id, null, {
+    documents: f.docs,
+    next: f.docs[0].event,
+    done: true,
+  });
+  await f.store.setBackgroundGeneration(replacement.id);
+  await f.store.start(replacement.id);
+  await f.store.finish(replacement.id);
+  assert.equal((await f.store.batches(replacement.id)).length, 0);
+  pending = true;
+  await background.close();
+  // A second host uses a separate callback. It cannot erase the old host's pending transport.
+  const other = new BackgroundSemanticIndexer({
+    ...f.options,
+    assistance: {
+      embed: f.assistance.embed.bind(f.assistance),
+      embeddingOperationPending: () => false,
+    },
+  });
+  await assert.rejects(f.store.retire(job.id), /active provider transport/);
+  await assert.rejects(
+    f.store.retire(replacement.id),
+    /active provider transport/,
+  );
+  assert.equal(
+    (await f.store.backgroundGeneration(job.profile, job.view))?.id,
+    replacement.id,
+  );
+  pending = false;
+  await f.store.retire(replacement.id);
+  await f.store.retire(job.id);
+  assert.equal(await f.store.backgroundGeneration(job.profile, job.view), null);
+  await assert.rejects(f.store.setBackgroundGeneration(job.id), /retired/);
+  await assert.rejects(f.store.resumeBackground(job.id), /retired/);
+  await other.cycle();
+  await other.close();
+  assert.equal((await f.store.generation(job.id)).state, "retired");
 });

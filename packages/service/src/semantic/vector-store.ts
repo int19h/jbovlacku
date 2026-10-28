@@ -67,6 +67,8 @@ export interface ProbeEvidence {
   references: { input: string; distance: number }[];
 }
 export interface VectorStore {
+  /** Keep each host guard for this store's lifetime, including after a caller timeout. */
+  registerOperationGuard(pending: (operation: string) => boolean): void;
   retainGeneration(id: string): Promise<() => void>;
   backgroundGeneration(
     profile: string,
@@ -96,7 +98,11 @@ export interface VectorStore {
     split: boolean,
     now: number,
   ): Promise<void>;
-  backgroundSchedule(id: string, now: number): Promise<number | null>;
+  backgroundSchedule(
+    id: string,
+    now: number,
+    pending?: (operation: string) => boolean,
+  ): Promise<number | null>;
   resumeBackground(id: string): Promise<void>;
   retryableBatch(id: string): Promise<IndexBatch | null>;
   pruneBackgroundGenerations(profile: string, view: string): Promise<void>;
@@ -113,7 +119,10 @@ export interface VectorStore {
     context: IndexContext,
     profile: EmbeddingProfile,
   ): Promise<IndexGeneration>;
-  generation(id: string): Promise<IndexGeneration>;
+  generation(
+    id: string,
+    includeBackgroundInputs?: boolean,
+  ): Promise<IndexGeneration>;
   profile(id: string): Promise<EmbeddingProfile>;
   stage(id: string, after: string | null, page: DocumentPage): Promise<void>;
   coverage(id: string, language?: string): Promise<IndexCoverage>;

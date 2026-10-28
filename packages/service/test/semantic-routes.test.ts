@@ -47,7 +47,7 @@ const read = async (response: Response): Promise<any> => {
   return response.json();
 };
 
-test("routes advertise compatible partial indexes, retain lexical reads, and validate public inputs", async () => {
+test("routes advertise compatible partial indexes, retain lexical reads, and validate public inputs including R7 language tags", async () => {
   const base = process.env.JVC_TEST_ROOT ?? tmpdir();
   await mkdir(base, { recursive: true });
   const directory = await mkdtemp(join(base, "semantic-routes-"));
@@ -186,6 +186,76 @@ test("routes advertise compatible partial indexes, retain lexical reads, and val
       (await read(await service.fetch(request("/embedding-profiles"))))
         .profiles[0].query_available,
       true,
+    );
+    const languageRequest = {
+      query: "pending meaning",
+      language: "en",
+      snapshot: manifest.snapshot,
+      view: view.envelope.id,
+      profile: profileId(profile),
+      limit: 1,
+    };
+    for (const language of [
+      "constructor",
+      "__proto__",
+      "e",
+      "en-123456789",
+      "en-x",
+      "en-US",
+      "en-us-us",
+    ]) {
+      for (const response of [
+        await service.fetch(
+          request(`/embedding-profiles?language=${language}`),
+        ),
+        await service.fetch(
+          request("/search/semantic", { ...languageRequest, language }),
+        ),
+      ]) {
+        assert.equal(response.status, 400, `R7 must reject ${language}`);
+        assert.equal(
+          ((await response.json()) as { code: string }).code,
+          "language",
+        );
+      }
+    }
+    for (const language of [
+      "en",
+      "en-us",
+      "xyz-zzzz-zz",
+      "i-klingon",
+      "x-private-private",
+      "en-a-foobar-x-private-private",
+      "sl-rozaj-rozaj",
+      "en-a-foo-a-bar",
+    ]) {
+      const profiles = await read(
+        await service.fetch(
+          request(`/embedding-profiles?language=${language}`),
+        ),
+      );
+      for (const field of ["indexed", "eligible", "pending"])
+        assert.equal(
+          typeof profiles.profiles[0][field],
+          "number",
+          `R7 requires ${field}`,
+        );
+      const result = await read(
+        await service.fetch(
+          request("/search/semantic", { ...languageRequest, language }),
+        ),
+      );
+      assert.deepEqual(Object.keys(result.coverage).sort(), [
+        "eligible",
+        "failed",
+        "indexed",
+        "pending",
+      ]);
+    }
+    assert.equal(
+      sends,
+      0,
+      "R7 language validation and empty coverage must not pay for inference",
     );
     const pendingOnly = await read(
       await service.fetch(
