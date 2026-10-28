@@ -155,7 +155,7 @@ test("R3 nearby invalidates pending work during the input debounce", async ({
   expect(shown).toEqual([]);
 });
 
-test("R3 nearby returns to a saved language and recovers after deletion and replacement", async ({
+test("R3 nearby returns to a saved language after a package miss", async ({
   page,
 }) => {
   await seed(page);
@@ -173,6 +173,18 @@ test("R3 nearby returns to a saved language and recovers after deletion and repl
   await expect(panel).toContainText("Download a search package");
   await expect(panel.locator(".hw")).toHaveCount(0);
   await language.fill("");
+  await expect(panel.locator(".hw")).toHaveText("klama");
+});
+
+test("R3 nearby recovers after package deletion and replacement", async ({
+  page,
+}) => {
+  await seed(page);
+  await open(page, "/new/meaning?meaning=travel&lang=en");
+  const panel = page.getByRole("region", {
+    name: "Close in meaning",
+    exact: true,
+  });
   await expect(panel.locator(".hw")).toHaveText("klama");
   await page.evaluate(async () => {
     const { LocalStore } = await import(String("/src/data/store.ts"));
@@ -216,11 +228,12 @@ test("R3 an empty nearby meaning still reads the current package mode", async ({
   await expect(panel).toContainText("from the downloaded package");
 });
 
-for (const corrupt of [
-  { entries: [] },
-  { snapshot: "sha256:" + "a".repeat(64), entries: [{}] },
-])
-  test(`R3 empty search validates a corrupt package ${"snapshot" in corrupt ? "entry" : "snapshot"}`, async ({
+for (const [label, corrupt] of [
+  ["snapshot", { entries: [] }],
+  ["entry", { snapshot: "sha256:" + "a".repeat(64), entries: [{}] }],
+  ["primitive", "corrupt"],
+] as const)
+  test(`R3 empty search validates a corrupt package ${label}`, async ({
     page,
   }) => {
     await page.goto("/");
@@ -418,25 +431,86 @@ test("R3 worker pages compact hits and retains alternate definitions and preview
   expect(result.definitions).toEqual([event(1), event(1051)]);
 });
 
-test("R3 lujvo part lookup uses the package worker", async ({ page }) => {
-  await seed(page);
-  await page.evaluate(async () => {
-    const { LocalStore } = await import(String("/src/data/store.ts"));
-    const { newDraft } = await import(String("/src/model/draft.ts"));
-    const draft = newDraft({ meaning: "Synthetic", language: "en" });
-    draft.kind = "lujvo";
-    await new LocalStore().put("drafts", "current", draft);
+for (const language of ["en", "fr"])
+  test(`R3 lujvo part lookup uses the package worker for a ${language} draft`, async ({
+    page,
+  }) => {
+    await seed(page);
+    await page.evaluate(async (language) => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const { newDraft } = await import(String("/src/model/draft.ts"));
+      const draft = newDraft({ meaning: "Synthetic", language });
+      draft.kind = "lujvo";
+      await new LocalStore().put("drafts", "current", draft);
+    }, language);
+    const workers: string[] = [];
+    page.on("worker", (worker) => workers.push(worker.url()));
+    await open(page, "/new/lujvo");
+    await page
+      .getByRole("textbox", { name: "Add a part", exact: true })
+      .fill("klama");
+    await expect(
+      page.getByRole("button", { name: "Add klama", exact: true }),
+    ).toBeVisible();
+    expect(workers.some((url) => url.includes("package-search-worker"))).toBe(
+      true,
+    );
   });
-  const workers: string[] = [];
-  page.on("worker", (worker) => workers.push(worker.url()));
-  await open(page, "/new/lujvo");
-  await page
-    .getByRole("textbox", { name: "Add a part", exact: true })
-    .fill("klama");
-  await expect(
-    page.getByRole("button", { name: "Add klama", exact: true }),
-  ).toBeVisible();
-  expect(workers.some((url) => url.includes("package-search-worker"))).toBe(
-    true,
+
+test("R3 compact previews preserve Unicode within bounded main-thread work", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const texts = [
+    "😀".repeat(5000),
+    "a".repeat(239) + "😀" + "b".repeat(5000),
+    "😀a".repeat(3000),
+  ];
+  const observed = await page.evaluate(async (texts) => {
+    const { searchPackage } = await import(
+      String("/src/data/package-search.ts")
+    );
+    const pkg = {
+      snapshot: "sha256:" + "b".repeat(64),
+      entries: texts.map((plain_text, index) => ({
+        event: "jve1:" + (index + 1).toString(16).padStart(64, "0"),
+        word: { language: "jbo", spelling: ["broda", "brode", "brodi"][index] },
+        language: "en",
+        glosses: [{ language: "en", text: "needle", sense: null }],
+        plain_text,
+        classification: { kind: "other", selmaho: [] },
+        body: null,
+      })),
+    };
+    const original = Array.from;
+    let maximum = 0;
+    Array.from = function (input: any, ...args: any[]) {
+      if (typeof input === "string") {
+        maximum = Math.max(maximum, input.length);
+        if (input.length > 480)
+          throw new Error(
+            "A preview scanned the full definition on the main thread.",
+          );
+      }
+      return (original as any).call(Array, input, ...args);
+    };
+    try {
+      const found = await searchPackage(pkg, "en", ["needle"]);
+      return {
+        maximum,
+        previews: pkg.entries.map(
+          (entry) =>
+            found.hits[0].find(
+              (hit: any) => hit.word.spelling === entry.word.spelling,
+            )?.preview?.plain_text,
+        ),
+      };
+    } finally {
+      Array.from = original;
+    }
+  }, texts);
+  expect(observed.previews).toEqual(
+    texts.map((text) => Array.from(text).slice(0, 240).join("")),
   );
+  expect(observed.maximum).toBeLessThanOrEqual(480);
 });

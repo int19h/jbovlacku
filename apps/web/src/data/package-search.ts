@@ -96,6 +96,10 @@ export async function searchPackage(
   queries: string[],
   options: PackageSearchOptions = {},
 ): Promise<PackageSearchResult> {
+  if (!pkg || typeof pkg !== "object" || Array.isArray(pkg))
+    throw new PackageValidationError(
+      "The search package is invalid or exceeds the browser limit. Search this server or download another package.",
+    );
   const current = searchWorker();
   let identity: string | number | undefined =
     packageStorageKey(pkg) ?? packageIds.get(pkg);
@@ -154,7 +158,10 @@ export async function searchPackage(
           preview: {
             event: selected.event,
             word_kind: selected.classification.kind,
-            plain_text: Array.from(selected.plain_text).slice(0, 240).join(""),
+            // A code point uses at most two UTF-16 units. Read only the preview.
+            plain_text: Array.from(selected.plain_text.slice(0, 480))
+              .slice(0, 240)
+              .join(""),
             status: "unavailable",
           },
         };

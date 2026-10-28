@@ -34,6 +34,7 @@ test("measure real package routes and browser main-thread CPU", async ({
       .digest("hex"),
   };
   console.log(JSON.stringify({ kind: "browser dataset", ...identity }));
+  // CPU samples include serialization by this UTF-8 JSON reply-size hook.
   await page.addInitScript(() => {
     const original = Worker;
     (window as any).packageTransfers = [];
@@ -44,7 +45,8 @@ test("measure real package routes and browser main-thread CPU", async ({
           this.addEventListener("message", ({ data }) => {
             if (data.result)
               (window as any).packageTransfers.push({
-                bytes: new TextEncoder().encode(JSON.stringify(data)).length,
+                utf8_json_bytes: new TextEncoder().encode(JSON.stringify(data))
+                  .length,
                 rows: data.result.hits.map((hits: unknown[]) => hits.length),
                 totals: data.result.totals,
               });
@@ -181,11 +183,11 @@ test("measure real package routes and browser main-thread CPU", async ({
       transfers: firstTransfers,
     }),
   );
-  expect(firstCpu).toBeLessThan(400);
   expect(firstTransfers).toHaveLength(1);
   expect(firstTransfers[0].rows).toEqual([20]);
-  expect(firstTransfers[0].bytes).toBeLessThan(100_000);
+  expect(firstTransfers[0].utf8_json_bytes).toBeLessThan(100_000);
   expect(firstTransfers[0].totals[0]).toBeGreaterThan(1000);
+  expect(firstCpu).toBeLessThan(400);
   const showAllStart = await cpu();
   await page.getByRole("button", { name: "show all", exact: true }).click();
   await expect(page.locator("article.hit")).toHaveCount(1000);
@@ -202,5 +204,5 @@ test("measure real package routes and browser main-thread CPU", async ({
   );
   expect(showAllTransfers).toHaveLength(1);
   expect(showAllTransfers[0].rows).toEqual([980]);
-  expect(showAllTransfers[0].bytes).toBeLessThan(512_000);
+  expect(showAllTransfers[0].utf8_json_bytes).toBeLessThan(512_000);
 });
