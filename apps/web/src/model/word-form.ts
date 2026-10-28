@@ -73,6 +73,32 @@ export function wordFormProfile(draft: WordFormDraft): MorphologyProfile {
     return draft.lujvo.profile;
   return "extended-v4";
 }
+/** Match the format's bounded accent classification rule without parsing morphology. */
+function accentClassificationAllowed(spelling: string, kind: LexicalKind) {
+  if (kind === "cmevla") return true;
+  if (kind !== "lujvo") return false;
+  const tokens: string[] = [];
+  let token = "";
+  for (const char of spelling) {
+    if (
+      /\p{White_Space}/u.test(char) ||
+      ".?!".includes(char) ||
+      (char === "," && token.toLowerCase() === "zei")
+    ) {
+      if (token) tokens.push(token);
+      token = "";
+    } else if (char !== ",") token += char;
+  }
+  if (token) tokens.push(token);
+  return (
+    tokens.some((part) => part.toLowerCase() === "zei") &&
+    tokens.every((part) => {
+      const plain = stripAcuteAccents(part);
+      return plain === part || /[bcdfgjklmnprstvxz]$/i.test(plain);
+    })
+  );
+}
+
 export function wordFormFeedback(draft: WordFormDraft) {
   if (!draft.spelling.trim())
     return { text: "", mismatch: false, blocking: false, message: "" };
@@ -102,15 +128,14 @@ export function wordFormFeedback(draft: WordFormDraft) {
   const wrongAccentType =
     accented &&
     draft.kind !== null &&
-    draft.kind !== "cmevla" &&
-    !(draft.kind === "lujvo" && analysis.kind !== "cmevla");
+    !accentClassificationAllowed(draft.spelling, draft.kind);
   const invalidAccent = Boolean(accentDiagnostic) || wrongAccentType;
   const mismatch = invalidAccent || (checked && analysis.kind !== draft.kind);
   const experimental = isExperimental(draft.labels);
   const message =
     accentDiagnostic ??
     (wrongAccentType
-      ? "Acute name stress requires the cmevla type, or name components in a recognized zei lujvo. Choose the matching type."
+      ? "Acute name stress requires the cmevla type, or name components in a zei lujvo. Choose the matching type."
       : mismatch
         ? `The spelling does not match the selected ${kindLabel(draft.kind!)} type. ${experimental ? "The experimental label permits this classification." : "Choose another type or mark this classification as experimental."}`
         : "");

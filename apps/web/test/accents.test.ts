@@ -473,6 +473,18 @@ test("R2 experimental name feedback permits unknown names and blocks a wrong rec
     "Acute name stress requires the cmevla type",
   );
   await expect(feedback).not.toContainText("permits this classification");
+  await page.getByLabel("Type", { exact: true }).selectOption("lujvo");
+  await page.getByLabel("Headword", { exact: true }).fill("dján smit");
+  await expect(feedback).toContainText(
+    "Acute name stress requires the cmevla type",
+  );
+  await expect(feedback).not.toContainText("permits this classification");
+  await page
+    .getByLabel("Headword", { exact: true })
+    .fill("dján zei,blanu smit");
+  await expect(feedback).toContainText(
+    "The experimental label permits this classification.",
+  );
 });
 
 test("R2 zbalermorna renders accented names in word and search views", async ({

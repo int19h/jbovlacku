@@ -325,3 +325,51 @@ test("R2 Opus F4: package identity work runs once per package object", async () 
   assert.equal(lookup({ ...cached }, id).length, 30_000);
   assert.equal(calls, 60_000);
 });
+
+test("unknown accented lujvo without zei reports its classification block accurately", () => {
+  const draft = newDraft({
+    kind: "lujvo",
+    spelling: "dján smit",
+    labels: ["experimental"],
+    text: [["Synthetic."]],
+  });
+  const feedback = wordFormFeedback(draft);
+  assert.equal(feedback.blocking, true);
+  assert.match(feedback.message, /cmevla|zei/);
+  assert.doesNotMatch(feedback.message, /permits this classification/);
+  assert.ok(draftToBody(draft).problems.some((problem) => problem.blocking));
+  const plain = newDraft({
+    kind: "lujvo",
+    spelling: "djan smit",
+    labels: ["experimental"],
+    text: [["Synthetic."]],
+  });
+  assert.equal(wordFormFeedback(plain).blocking, false);
+  assert.deepEqual(
+    draftToBody(plain).problems.filter((problem) => problem.blocking),
+    [],
+  );
+});
+
+test("unknown accented zei compounds keep ordinary experimental classification through comma aliases", () => {
+  for (const spelling of [
+    "dján zei blanu smit",
+    "dján zei, blanu smit",
+    "dján zei,blanu smit",
+    "dján z,e,i blanu smit",
+    "DJÁN Z,E,I,blanu smit",
+  ]) {
+    const draft = newDraft({
+      kind: "lujvo",
+      spelling,
+      labels: ["experimental"],
+      text: [["Synthetic."]],
+    });
+    assert.equal(wordFormFeedback(draft).blocking, false, spelling);
+    assert.deepEqual(
+      draftToBody(draft).problems.filter((problem) => problem.blocking),
+      [],
+      spelling,
+    );
+  }
+});
