@@ -528,6 +528,9 @@ test("reviewed import comparison summarizes legacy evidence behind a disclosure"
   page,
 }) => {
   await page.goto("/");
+  await expect(
+    page.getByText("Type a word or a meaning to search.", { exact: true }),
+  ).toBeVisible();
   const result = await page.evaluate(async (path) => {
     const core = await import(path);
     await core.initializeCore();
@@ -619,6 +622,9 @@ test("comparison explains equal-looking prose and fits a narrow screen", async (
 }) => {
   await page.setViewportSize({ width: 360, height: 800 });
   await page.goto("/");
+  await expect(
+    page.getByText("Type a word or a meaning to search.", { exact: true }),
+  ).toBeVisible();
   await page.evaluate(async (path) => {
     const core = await import(path);
     await core.initializeCore();

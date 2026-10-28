@@ -61,6 +61,26 @@ const projection = (expected: Expected) => ({
   words: expected.words.map(({ classEvidence, ...word }) => word),
   foreign: expected.foreign,
 });
+// Keep external observations unchanged. These named product rules reject acute nonnames.
+const acuteOverrides: { cases: { id: string; text: string; error: string }[] } =
+  JSON.parse(
+    readFileSync(
+      new URL("../evidence/acute-accent-overrides.json", import.meta.url),
+      "utf8",
+    ),
+  );
+test("acute product overrides name exactly the affected external cases", () => {
+  assert.equal(acuteOverrides.cases.length, 27);
+  assert.equal(new Set(acuteOverrides.cases.map((row) => row.id)).size, 27);
+  for (const row of acuteOverrides.cases) {
+    assert.equal(
+      fixture.cases.find((source) => source.id === row.id)?.text,
+      row.text,
+    );
+    assert.ok(row.text.normalize("NFD").includes("\u0301"));
+    assert.match(row.error, /acute accent/i);
+  }
+});
 
 test("the pinned corpus retains every experimental case and its oracle source", () => {
   assert.equal(
@@ -130,6 +150,18 @@ test("the pinned corpus retains every experimental case and its oracle source", 
 
 for (const row of fixture.cases) {
   test(`experimental corpus: ${row.id}`, () => {
+    const override = acuteOverrides.cases.find((entry) => entry.id === row.id);
+    if (override) {
+      assert.throws(
+        () =>
+          segmentText(row.text, {
+            features: row.features,
+            withoutFeatures: row.withoutFeatures,
+          }),
+        { message: override.error },
+      );
+      return;
+    }
     const result = segmentText(row.text, {
       features: row.features,
       withoutFeatures: row.withoutFeatures,

@@ -747,9 +747,9 @@ test("older definition rows backfill semantic evidence and defaults without chan
       record.envelope.id,
       event,
     );
-    prior.version = 3;
+    prior.version = 6;
     prior.semantic = JSON.parse(evidence.projection).semantic;
-    db.prepare("UPDATE verified_records SET version=3,compact=?").run(
+    db.prepare("UPDATE verified_records SET version=6,compact=?").run(
       JSON.stringify(prior),
     );
     db.close();

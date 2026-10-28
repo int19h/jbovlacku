@@ -2,6 +2,7 @@
 import {
   analyzeWord,
   morphologyProfile,
+  stripAcuteAccents,
   type MorphologyProfile,
 } from "../../../../packages/core/src/browser.ts";
 import { kindLabel, type Compound, type LexicalKind } from "./types.ts";
@@ -72,6 +73,32 @@ export function wordFormProfile(draft: WordFormDraft): MorphologyProfile {
     return draft.lujvo.profile;
   return "extended-v4";
 }
+/** Match the format's bounded accent classification rule without parsing morphology. */
+function accentClassificationAllowed(spelling: string, kind: LexicalKind) {
+  if (kind === "cmevla") return true;
+  if (kind !== "lujvo") return false;
+  const tokens: string[] = [];
+  let token = "";
+  for (const char of spelling) {
+    if (
+      /\p{White_Space}/u.test(char) ||
+      ".?!".includes(char) ||
+      (char === "," && token.toLowerCase() === "zei")
+    ) {
+      if (token) tokens.push(token);
+      token = "";
+    } else if (char !== ",") token += char;
+  }
+  if (token) tokens.push(token);
+  return (
+    tokens.some((part) => part.toLowerCase() === "zei") &&
+    tokens.every((part) => {
+      const plain = stripAcuteAccents(part);
+      return plain === part || /[bcdfgjklmnprstvxz]$/i.test(plain);
+    })
+  );
+}
+
 export function wordFormFeedback(draft: WordFormDraft) {
   if (!draft.spelling.trim())
     return { text: "", mismatch: false, blocking: false, message: "" };
@@ -94,11 +121,24 @@ export function wordFormFeedback(draft: WordFormDraft) {
     "cmevla",
     "compound",
   ].includes(draft.kind ?? "");
-  const mismatch = checked && analysis.kind !== draft.kind;
+  const accentDiagnostic = analysis.diagnostics.find((message) =>
+    /^(Acute accents|An acute accent)/.test(message),
+  );
+  const accented = stripAcuteAccents(draft.spelling) !== draft.spelling;
+  const wrongAccentType =
+    accented &&
+    draft.kind !== null &&
+    !accentClassificationAllowed(draft.spelling, draft.kind);
+  const invalidAccent = Boolean(accentDiagnostic) || wrongAccentType;
+  const mismatch = invalidAccent || (checked && analysis.kind !== draft.kind);
   const experimental = isExperimental(draft.labels);
-  const message = mismatch
-    ? `The spelling does not match the selected ${kindLabel(draft.kind!)} type. ${experimental ? "The experimental label permits this classification." : "Choose another type or mark this classification as experimental."}`
-    : "";
+  const message =
+    accentDiagnostic ??
+    (wrongAccentType
+      ? "Acute name stress requires the cmevla type, or name components in a zei lujvo. Choose the matching type."
+      : mismatch
+        ? `The spelling does not match the selected ${kindLabel(draft.kind!)} type. ${experimental ? "The experimental label permits this classification." : "Choose another type or mark this classification as experimental."}`
+        : "");
   const words =
     analysis.words && analysis.words.length >= 2
       ? ` Words: ${analysis.words.map((word) => word.text).join(" · ")}.`
@@ -106,9 +146,14 @@ export function wordFormFeedback(draft: WordFormDraft) {
   const text = [
     `Detected form: ${kindLabel(analysis.kind)}.${words}`,
     message,
-    ...analysis.diagnostics,
+    ...analysis.diagnostics.filter((diagnostic) => diagnostic !== message),
   ]
     .filter(Boolean)
     .join(" ");
-  return { text, message, mismatch, blocking: mismatch && !experimental };
+  return {
+    text,
+    message,
+    mismatch,
+    blocking: invalidAccent || (mismatch && !experimental),
+  };
 }

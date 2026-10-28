@@ -8,6 +8,7 @@ import {
   wordId,
   canonicalize,
   rafsiPairId,
+  stripAcuteAccents,
   type WordAnalysis,
 } from "../../core/src/index.ts";
 import {
@@ -622,7 +623,8 @@ function checkComponentContext(
     if (
       !supplied ||
       supplied.body.word?.language !== component.word?.language ||
-      supplied.body.word?.spelling !== component.word?.spelling
+      stripAcuteAccents(supplied.body.word?.spelling ?? "") !==
+        stripAcuteAccents(component.word?.spelling ?? "")
     )
       throw new AssistanceError(
         400,
@@ -642,7 +644,8 @@ function mappingMetadata(request: AssistRequest, context: ContextDefinition[]) {
         (entry) =>
           entry.event === component.definition &&
           entry.body.word?.language === component.word?.language &&
-          entry.body.word?.spelling === component.word?.spelling,
+          stripAcuteAccents(entry.body.word?.spelling ?? "") ===
+            stripAcuteAccents(component.word?.spelling ?? ""),
       );
       const places = (source?.body.frame?.places ?? []).map(
         (place: Data) => place.index,
@@ -955,8 +958,9 @@ export async function runAssistance(
             answer.components.some(
               (component: Data) =>
                 component.definition !== null &&
-                byLabel.get(component.definition)?.body.word?.spelling !==
-                  component.spelling,
+                stripAcuteAccents(
+                  byLabel.get(component.definition)?.body.word?.spelling ?? "",
+                ) !== stripAcuteAccents(component.spelling),
             )
           )
             return [
@@ -975,7 +979,8 @@ export async function runAssistance(
             const index = components.findIndex(
               (component: Data, index: number) =>
                 index >= nextIndex &&
-                component.spelling === fixed.word?.spelling &&
+                stripAcuteAccents(component.spelling) ===
+                  stripAcuteAccents(fixed.word?.spelling ?? "") &&
                 (fixed.definition === null ||
                   component.definition === fixed.definition),
             );

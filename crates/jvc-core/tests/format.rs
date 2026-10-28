@@ -195,6 +195,75 @@ fn identifiers_preserve_spelling_and_require_nfc() {
 }
 
 #[test]
+fn acute_stress_changes_display_without_changing_word_or_pair_identity() {
+    for (marked, plain) in [
+        ("dján", "djan"),
+        ("ĺénan", "lenan"),
+        ("ḿa'an", "ma'an"),
+        ("b\u{301}an", "ban"),
+        ("DŹÁN", "DZAN"),
+        ("dján zei blanu", "djan zei blanu"),
+    ] {
+        let word = json!({"language":"jbo","spelling":marked});
+        let id = word_id(&word).unwrap();
+        assert_eq!(
+            id,
+            word_id(&json!({"language":"jbo","spelling":plain})).unwrap()
+        );
+        assert_eq!(
+            rafsi_pair_id(&id, "dja").unwrap(),
+            rafsi_pair_id(
+                &word_id(&json!({"language":"jbo","spelling":plain})).unwrap(),
+                "dja"
+            )
+            .unwrap()
+        );
+        assert_eq!(word["spelling"], marked);
+    }
+    assert_ne!(
+        word_id(&json!({"language":"jbo","spelling":"djän"})).unwrap(),
+        word_id(&json!({"language":"jbo","spelling":"djan"})).unwrap()
+    );
+    for marked in [
+        "\u{301}djan",
+        ".\u{301}djan",
+        "dja'\u{301}an",
+        "dja1\u{301}n",
+        "dja\u{301}\u{301}n",
+    ] {
+        assert!(
+            word_id(&json!({"language":"jbo","spelling":marked})).is_err(),
+            "{marked}"
+        );
+    }
+}
+
+#[test]
+fn definition_acutes_belong_to_names_and_name_components_of_zei() {
+    for (spelling, kind, valid) in [
+        ("dján", "cmevla", true),
+        ("ĺénan", "cmevla", true),
+        ("ḿa'an", "cmevla", true),
+        ("blánu", "gismu", false),
+        ("dján", "other", false),
+        ("dján zei blanu", "lujvo", true),
+        ("djan zei blánu", "lujvo", false),
+    ] {
+        let body = json!({"word":{"language":"jbo","spelling":spelling},"language":"en","text":[["A synthetic name."]],"classification":{"kind":kind},"license":{"expression":"CC0-1.0"}});
+        let mut h = header(
+            json!({"kind":"definition.publish","word":word_id(&body["word"]).unwrap(),"language":"en","parents":[],"origin":"native"}),
+            None,
+        );
+        h.content = Some(body_descriptor(&canonical_value(&body).unwrap()).unwrap());
+        assert_eq!(
+            validate_body(&h, &body).is_ok(),
+            valid,
+            "{spelling}: {kind}"
+        );
+    }
+}
+
+#[test]
 fn signed_header_survives_semantic_failure_and_missing_body() {
     let h = header(json!({"kind":"not.a.real.action"}), None);
     let event = sign_header(&[7; 32], h).unwrap();
@@ -1038,4 +1107,88 @@ fn lexical_kind_uses_fuhivla_without_a_legacy_alias() {
         );
         assert_eq!(validate_body(&action, &body).is_ok(), valid, "{kind}");
     }
+}
+
+#[test]
+fn r2_grok_1_comma_zei_accepts_accented_names_like_plain_names() {
+    for spelling in [
+        "dján zei, blanu",
+        "dján zei,blanu",
+        "dján z,e,i blanu",
+        "dján, zei blanu",
+    ] {
+        let body = json!({"word":{"language":"jbo","spelling":spelling},"language":"en","text":[["Synthetic."]],"classification":{"kind":"lujvo"},"license":{"expression":"CC0-1.0"}});
+        let h = header(
+            json!({"kind":"definition.publish","word":word_id(&body["word"]).unwrap(),"language":"en","parents":[],"origin":"native"}),
+            Some(body_descriptor(&canonical_value(&body).unwrap()).unwrap()),
+        );
+        let result = validate_body(&h, &body);
+        assert!(result.is_ok(), "{spelling}: {result:?}");
+    }
+}
+
+#[test]
+fn r2_grok_1_comma_zei_does_not_admit_an_accented_root() {
+    for spelling in ["djan zei, blánu", "djan zei,blánu"] {
+        let body = json!({"word":{"language":"jbo","spelling":spelling},"language":"en","text":[["Synthetic."]],"classification":{"kind":"lujvo"},"license":{"expression":"CC0-1.0"}});
+        let h = header(
+            json!({"kind":"definition.publish","word":word_id(&body["word"]).unwrap(),"language":"en","parents":[],"origin":"native"}),
+            Some(body_descriptor(&canonical_value(&body).unwrap()).unwrap()),
+        );
+        let result = validate_body(&h, &body);
+        assert!(result.is_err(), "{spelling}");
+    }
+}
+
+#[test]
+fn r2_opus_f7_rafsi_claims_require_plain_word_and_rafsi_spellings() {
+    for (spelling, rafsi, valid) in [
+        ("djan", "dja", true),
+        ("dján", "dja", false),
+        ("brodá", "bro", false),
+        ("djan", "djá", false),
+    ] {
+        let body = json!({"word":{"language":"jbo","spelling":spelling},"rafsi":rafsi,"rationale":[],"sources":[],"legacy":null});
+        let word = word_id(&body["word"]).unwrap();
+        let h = header(
+            json!({"kind":"rafsi.publish","word":word,"assignment":rafsi_pair_id(&word, rafsi).unwrap(),"origin":"native"}),
+            Some(body_descriptor(&canonical_value(&body).unwrap()).unwrap()),
+        );
+        let result = validate_body(&h, &body);
+        assert_eq!(result.is_ok(), valid, "{spelling}: {rafsi}: {result:?}");
+    }
+}
+
+fn assert_non_nfc_rafsi_claim_error(spelling: &str, rafsi: &str) {
+    let word = word_id(&json!({"language":"jbo","spelling":"djan"})).unwrap();
+    let body = json!({"word":{"language":"jbo","spelling":spelling},"rafsi":rafsi,"rationale":[],"sources":[],"legacy":null});
+    let h = header(
+        json!({"kind":"rafsi.publish","word":word,"assignment":rafsi_pair_id(&word, "dja").unwrap(),"origin":"native"}),
+        Some(body_descriptor(&canonical_value(&body).unwrap()).unwrap()),
+    );
+    let error = validate_body(&h, &body).unwrap_err();
+    assert_eq!(error.code, "spelling", "{error:?}");
+    assert_eq!(
+        error.message,
+        "spelling must be nonempty NFC text without controls or edge whitespace"
+    );
+}
+
+#[test]
+fn r3_opus_n2_non_nfc_word_without_acute_reports_spelling_error() {
+    assert_non_nfc_rafsi_claim_error("e\u{308}", "dja");
+}
+
+#[test]
+fn r3_opus_n2_non_nfc_rafsi_without_acute_reports_spelling_error() {
+    assert_non_nfc_rafsi_claim_error("djan", "e\u{308}");
+}
+
+#[test]
+fn r2_opus_f2_specification_states_the_prelaunch_accent_break() {
+    let spec = include_str!("../../../docs/format.md");
+    assert!(spec.contains(
+        "Former accented word IDs and the signed records that use them are not preserved."
+    ));
+    assert!(spec.contains("No migration is required."));
 }

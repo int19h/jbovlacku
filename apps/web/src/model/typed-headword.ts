@@ -8,6 +8,7 @@ import {
   morphologyProfile,
   rafsiPairId,
   wordId,
+  stripAcuteAccents,
   type LujvoCandidate,
   type LujvoResult,
   type LujvoRequest,
@@ -596,7 +597,11 @@ export function prepareLujvoBuilder(
         { text: component.locked ?? "", kind: "core", join_before: null },
         cached,
         true,
-      ).find((source) => source.spelling === component.spelling);
+      ).find(
+        (source) =>
+          wordId({ language: "jbo", spelling: source.spelling }) ===
+          wordId({ language: "jbo", spelling: component.spelling }),
+      );
       if (known) component.definitions = known.definitions;
     }
   }
@@ -665,18 +670,19 @@ export function sourceOptions(
     const spelling = entry.word.spelling;
     const listed =
       !wholeWord && "issuer" in entry ? (entry as PackageEntryV2).rafsi : [];
-    if (wholeWord && spelling !== part.text) continue;
+    const plain = stripAcuteAccents(spelling);
+    if (wholeWord && plain !== part.text) continue;
     if (
       !wholeWord &&
-      spelling !== part.text &&
+      plain !== part.text &&
       !(
-        entry.classification.kind === "gismu" &&
-        spelling.slice(0, 4) === part.text
+        entry.classification.kind === "gismu" && plain.slice(0, 4) === part.text
       ) &&
       !listed.includes(part.text)
     )
       continue;
-    let component = words.get(spelling);
+    const identity = wordId(entry.word);
+    let component = words.get(identity);
     if (!component) {
       component = {
         id: componentId(),
@@ -688,7 +694,7 @@ export function sourceOptions(
         locked: part.text,
         claims: [],
       };
-      words.set(spelling, component);
+      words.set(identity, component);
     }
     component.definitions!.push({
       event: entry.event,
@@ -716,6 +722,19 @@ export function typedLujvoState(
   const zei =
     parts.length > 1 &&
     parts.slice(1).every((part) => part.join_before === " zei ");
+  const displayed =
+    zei && stripAcuteAccents(spelling) !== spelling
+      ? buildLujvo({
+          profile,
+          components: parts.map((part, index) => ({
+            id: String(index),
+            spelling: part.text,
+            kind: "other",
+          })),
+          joins: parts.slice(1).map(() => " zei "),
+          spelling,
+        }).candidates[0]?.tokens.filter((_, index) => index % 2 === 0)
+      : undefined;
   return {
     ...newLujvoState(),
     profile,
@@ -723,13 +742,19 @@ export function typedLujvoState(
     typed: spelling,
     selected: spelling,
     joins: parts.slice(1).map((part) => part.join_before ?? ""),
-    components: parts.map((part) => {
+    components: parts.map((part, index) => {
       const choices = sourceOptions(part, cached, zei);
-      if (choices.length === 1) return choices[0];
+      const display = displayed?.[index]?.trim().normalize("NFC");
+      if (choices.length === 1)
+        return display &&
+          stripAcuteAccents(display) !== display &&
+          stripAcuteAccents(display) === stripAcuteAccents(choices[0].spelling)
+          ? { ...choices[0], spelling: display }
+          : choices[0];
       if (zei)
         return {
           id: componentId(),
-          spelling: part.text,
+          spelling: display ?? part.text,
           kind: detectWord(part.text, profile).kind,
           definition: null,
           definitions: [],

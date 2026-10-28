@@ -1,3 +1,5 @@
+import { packageWordEntries } from "../../data/search.ts";
+import { normalizeAcuteDisplay } from "../../../../../packages/morphology/src/accents.ts";
 import { kindLabel } from "../../model/types.ts";
 import {
   detectWord,
@@ -25,6 +27,7 @@ import {
   BuilderError,
   rafsiPairId,
   wordId,
+  stripAcuteAccents,
   type LujvoCandidate,
   type LujvoResult,
   type MorphologyProfile,
@@ -380,11 +383,26 @@ export async function lujvoPage(
     }
     // A recognized form without a dictionary entry.
     const analysis = analyzeWord(state.profile, query);
+    let queryIdentity: string | null = null;
+    try {
+      queryIdentity = wordId({
+        language: "jbo",
+        spelling: query.trim().normalize("NFC"),
+      });
+    } catch {
+      // An invalid query stays editable and cannot supply a component identity.
+    }
     if (
       analysis.normalized &&
-      !hits.some((h) => h.word.spelling === analysis.normalized)
+      queryIdentity &&
+      (stripAcuteAccents(query) === query || analysis.kind !== "unknown") &&
+      !hits.some((h) => wordId(h.word) === queryIdentity)
     ) {
       const item = el("li", { class: "similar-item" });
+      const enteredSpelling =
+        stripAcuteAccents(query) !== query && analysis.kind === "cmevla"
+          ? normalizeAcuteDisplay(query)
+          : analysis.normalized;
       const kind =
         analysis.kind === "fuhivla"
           ? "fuhivla"
@@ -398,7 +416,7 @@ export async function lujvoPage(
                   ? "cmevla"
                   : "other";
       item.append(
-        el("span", { class: "hw", lang: "jbo", text: analysis.normalized }),
+        el("span", { class: "hw", lang: "jbo", text: enteredSpelling }),
         text(` ${kindLabel(kind)}, not in the local package`, "meta"),
         analysis.diagnostics.length
           ? text(` · ${analysis.diagnostics[0]}`, "meta")
@@ -409,7 +427,7 @@ export async function lujvoPage(
             editLujvoRows(state, (rows) =>
               rows.push({
                 id: componentId(),
-                spelling: analysis.normalized!,
+                spelling: enteredSpelling!,
                 kind,
                 definition: null,
                 gloss: "",
@@ -425,7 +443,7 @@ export async function lujvoPage(
           },
           {
             class: "btn btn-quiet",
-            "aria-label": `Add ${analysis.normalized} as entered`,
+            "aria-label": `Add ${enteredSpelling} as entered`,
           },
         ),
       );
@@ -909,9 +927,13 @@ export async function lujvoPage(
     // Whether the spelling is taken is separate from rafsi conflicts. The
     // local package answers for its snapshot, and the server for the current one.
     const availability = el("p", { class: "small", role: "status" });
-    const taken = cached?.entries.some(
-      (e) => e.word.spelling === candidate.spelling,
-    );
+    const candidateId = wordId({
+      language: "jbo",
+      spelling: candidate.spelling.normalize("NFC"),
+    });
+    const taken = cached
+      ? packageWordEntries(cached, candidateId).length > 0
+      : false;
     availability.textContent = cached
       ? taken
         ? `Taken: ${candidate.spelling} is defined in the local package of snapshot ${cached.snapshot.slice(7, 19)}….`
@@ -920,7 +942,7 @@ export async function lujvoPage(
     resultCard.append(availability);
     const checked = candidate.spelling;
     if (!state.typed)
-      void getWord(wordId({ language: "jbo", spelling: checked }), {
+      void getWord(candidateId, {
         signal: context.signal,
       })
         .then((word) => {

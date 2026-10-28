@@ -5,6 +5,7 @@
  */
 import {
   rafsiPairId,
+  stripAcuteAccents,
   wordId as deriveWordId,
 } from "../../../../packages/core/src/browser.ts";
 import { el, p, text, link, button, field, describe } from "../lib/dom.ts";
@@ -63,7 +64,7 @@ export async function wordsWithRafsi(
     if (!pkg) continue;
     for (const entry of pkg.entries)
       if (isV2(entry) && (entry as PackageEntryV2).rafsi.includes(rafsi))
-        found.set(entry.word.spelling, {
+        found.set(deriveWordId(entry.word), {
           spelling: entry.word.spelling,
           language,
         });
@@ -293,6 +294,10 @@ export async function claimPage(
     event.preventDefault();
     const value = rafsi.input.value.trim().normalize("NFC");
     if (!value) return;
+    if (stripAcuteAccents(value) !== value) {
+      app.announce("Rafsi claims require a spelling without acute accents.");
+      return;
+    }
     if (new TextEncoder().encode(value).length > 64) {
       app.announce("The rafsi exceeds 64 bytes.");
       return;
@@ -301,7 +306,7 @@ export async function claimPage(
     competition.replaceChildren(p("Checking retained claims…", "meta"));
     try {
       const others = (await wordsWithRafsi(app, value, context.signal)).filter(
-        (w) => w.spelling !== spelling,
+        (w) => deriveWordId({ language: "jbo", spelling: w.spelling }) !== id,
       );
       if (!context.live()) return;
       competition.replaceChildren();
@@ -360,7 +365,10 @@ export async function claimPage(
               async () => {
                 if (!(await app.session.firstSignatureDisclosure())) return;
                 const body: RafsiBody = {
-                  word: { language: "jbo", spelling },
+                  word: {
+                    language: "jbo",
+                    spelling: stripAcuteAccents(spelling),
+                  },
                   rafsi: value,
                   rationale: rationale.input.value.trim()
                     ? [[rationale.input.value.trim()]]

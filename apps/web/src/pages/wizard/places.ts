@@ -2020,6 +2020,7 @@ export async function placesPage(
           rafsi.input.addEventListener("input", () => {
             claim.rafsi = rafsi.input.value;
             saver.touch();
+            refreshPreview();
           });
           const rationale = field(`Rationale for rafsi ${i + 1}`, {
             multiline: true,
