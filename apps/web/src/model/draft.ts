@@ -708,6 +708,20 @@ const TOKEN = new RegExp(
 );
 const unescape = (value: string, code = false) =>
   value.replace(code ? /\\([\\`])/gu : /\\([\\\]|`])/gu, "$1");
+/** Remove only characters that URL parsing ignores before reading the address. */
+const urlTarget = (value: string) =>
+  value
+    .replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/gu, "")
+    .replace(/[\t\n\r]/gu, "");
+/** Use the existing URL syntax for a stored address without its two slashes. */
+function editorUrl(value: string): string {
+  if (/^https?:\/\//iu.test(value)) return value;
+  try {
+    return new URL(value).href;
+  } catch {
+    return value;
+  }
+}
 /** Parse only an edited field. Line endings and plain whitespace normalize. */
 export function editorToRichText(
   source: string,
@@ -763,11 +777,17 @@ export function editorToRichText(
     else if (operand) nodes.push({ operand });
     else if (code !== undefined) nodes.push({ code: unescape(code, true) });
     else {
-      const spelling = unescape(target).trim().normalize("NFC");
-      const shown = label === undefined ? spelling : unescape(label);
-      if (/^https?:\/\//iu.test(spelling))
-        nodes.push({ url: spelling, label: shown });
-      else nodes.push({ word: { language: "jbo", spelling }, label: shown });
+      const raw = unescape(target);
+      const url = urlTarget(raw);
+      if (/^https?:\/\//iu.test(url))
+        nodes.push({ url, label: label === undefined ? url : unescape(label) });
+      else {
+        const spelling = raw.trim().normalize("NFC");
+        nodes.push({
+          word: { language: "jbo", spelling },
+          label: label === undefined ? spelling : unescape(label),
+        });
+      }
     }
   }
   pending += source.slice(index);
@@ -809,10 +829,13 @@ export function richTextToEditor(value: RichText): string {
             return node.label === node.word.spelling
               ? `[[${escapeInside(node.word.spelling)}]]`
               : `[[${escapeInside(node.word.spelling)}|${escapeInside(inlineBreaks(node.label))}]]`;
-          if ("url" in node)
-            return node.label === node.url
-              ? `[[${escapeInside(node.url)}]]`
-              : `[[${escapeInside(node.url)}|${escapeInside(inlineBreaks(node.label))}]]`;
+          if ("url" in node) {
+            const target = urlTarget(node.url);
+            const address = editorUrl(target);
+            return node.label === node.url && address === target
+              ? `[[${escapeInside(address)}]]`
+              : `[[${escapeInside(address)}|${escapeInside(inlineBreaks(node.label))}]]`;
+          }
           if ("code" in node)
             return `\`${inlineBreaks(node.code).replace(/[\\`]/gu, "\\$&")}\``;
           if ("operand" in node) return `{operand ${node.operand}}`;
@@ -1272,7 +1295,11 @@ function richProblems(
           }
         }
       } else if ("url" in node) {
-        if (!/^https:\/\/[^\s/]+/u.test(node.url))
+        let https = false;
+        try {
+          https = new URL(node.url).protocol === "https:";
+        } catch {}
+        if (!https)
           report(
             `${entry.label} links "${node.url}", which is not an HTTPS URL.`,
           );
