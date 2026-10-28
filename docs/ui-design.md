@@ -211,13 +211,16 @@ Both columns can start from a 360px basis and stack at narrow widths.
 “By words” uses a local package initially and does not inherit ordinary remote-search upload settings.
 If that package is missing, offer a download or continued manual editing.
 Changing the meaning or language discards pending nearby results and errors. Each lookup reads the current language package, so a later download restores local suggestions.
+
 An explicit remote lexical request and “By meaning” require consent before any private text leaves the browser.
 The best match offers “Add a definition” and “Revise this one.” Other matches offer “Use this word.”
 The author can continue despite every match. The bottom action area shows “Saved in this browser” and “New word.”
+
 Underscores remain draft placeholders until the author approves their numbering.
 The original meaning remains separate from later editable definition prose.
 Each semicolon restarts blank numbering at 1. The displayed count is the highest place number in any part.
 Unescaped circled numerals and `{place N}` reserve explicit numbers within each part. Blanks take the free numbers in order.
+
 Only a backslash before a circled character acts as an escape in Meaning. All other backslashes stay as typed.
 The count reports places rather than occurrences.
 

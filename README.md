@@ -69,19 +69,28 @@ Saved publication pages keep receiving delivery updates after a reload and stop 
 Updates keep focus on delivery controls and announce only short status changes. Try now stays disabled through the group retry and final refresh.
 If storage cannot be read, the saved page keeps known records and offers Retry reading. It reports missing records only after a successful read.
 Delivered records leave the list but keep their receipts in retained history. With no waiting or stopped records, the page shows a short empty state.
+
 Downloaded search packages permit local search without a request for each query. Version 2 packages carry authors, notes, and rafsi for result rows.
 Local and server search share TypeScript morphology and match ranking. Compound cmavo match exact component sequences, contiguous runs, and ordered subsequences.
 For example, `i seri'a bo`, `ise ri'abo`, and `iseri'abo` find the same compound. `i bo` also finds `iseri'abo`.
+
 Exact and contiguous compounds keep cards for uncovered query words. With `ije` present, `ijebo klama` keeps cards for `bo` and `klama`.
 Without a joined compound, `ijebo` shows `i`, `je`, and `bo`. Subsequence matches keep individual cards, and repeated words share one card.
+
 Punctuation, digits, and `h` aliases also find a single recognized word. One-word prefix families precede containing compounds.
 Long lists offer “show all”. Case and acute headword stress marks do not change match classes.
+
 Queries permit 512 recognized words and 300,000 parser steps, with 128 phonemes per run. The index covers dictionary headwords through 256 bytes.
 A limit notice preserves ordinary text search and states incomplete sequence coverage.
-Saved-package validation and search run in a static module worker. Search pages and nearby lookup share two prepared package revisions.
+
+Saved-package validation and search run in a static module worker. Search pages, nearby lookup, and lujvo part lookup share two prepared package revisions.
+Local search transfers references for 20 results initially. Show all fetches only the remaining results through the 1,000-word browser limit.
+Nearby lookup ignores late results after meaning or language edits and recovers when the current language package returns.
+
 The server prepares lexical indexes during package materialization, before completed snapshots become readable.
 Storage reads check durable revision markers, so same-snapshot changes and another tab's writes invalidate retained data.
 The [search specification](docs/frontend.md#4-search-and-reading) defines the bounds, ranking, and fallback rules.
+
 A download keeps its requested language even when the language selector changes before it finishes.
 Signing needs localhost or HTTPS. A plain HTTP Tailscale address supports reading only.
 

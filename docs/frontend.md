@@ -205,9 +205,11 @@ An exact headword or gloss for the whole query always precedes those sequence hi
 The component index exists only in memory. Package entries and persistent server index rows keep their existing formats.
 The shared matcher rejects impossible cmavo shapes before parsing. It retains at most 4,096 parsed normalized spellings in a process-local LRU cache.
 An LRU cache removes the least recently used item when it reaches its limit.
+
 Each immutable server package array also retains its prepared entry index through a weak reference.
 A changed definition snapshot uses new entries and rebuilds its text and component index during package materialization.
 Package construction and rebasing complete that index before publication. Checkpoint restore prepares recovered entries before readiness.
+
 The first search of a completed package does no headword parsing. Preparation still consumes CPU once during materialization.
 Inline or historical reads that must construct a package still include that work. Completed-package timings do not promise total HTTP latency. Unchanged spellings reuse the bounded morphology cache.
 The server's existing package and evaluation lifetimes bound those prepared indexes.
@@ -216,26 +218,35 @@ Browser storage version 4 records a revision marker beside each language package
 Every package read checks that marker, including reads from another connection or tab.
 Each connection retains at most two package objects. A changed revision invalidates that connection's retained data, even when the snapshot ID stays equal.
 A failed download leaves the saved package and revision unchanged.
+
 One static module worker validates and searches saved packages outside the main thread.
 Download hashing and entry checks retain their existing download path.
 It retains two prepared packages, keyed by database name, language, and durable revision. Separate connections can reuse the same prepared revision.
 Page reload closes that worker and its caches. The first search after reload reads, transfers, validates, and prepares the saved package again.
+
 Nearby lookup in the meaning step and part lookup in the lujvo builder use the same worker and prepared index.
 Each nearby call reads the package for its current language, including an empty meaning. A missing package never disables later local lookups.
 Changes to the meaning or language invalidate pending results and errors before the next debounced lookup starts.
 The worker ranks all nearby query lists before selecting six rows.
+
 Ordinary local search transfers 20 rows initially. Show all requests only the remaining rows within the browser's 1,000-word limit.
 Replies include total counts and entry references into the exact package captured by that request. They never copy full definition records back to the page.
 These references preserve matching alternatives, definition order, selected previews, and display spellings.
+
 An empty search page validates its saved package before displaying its snapshot.
 If queued cache churn removes a worker package, the client retries once with its captured package. Rejected packages keep their validation error.
 Worker startup or execution failure reports an error without sending a local query to a server.
 An invalid saved package retains the earlier disclosed remote fallback.
+
+Part lookup failures keep “Add as entered” available for recognized forms.
+The interface marks the dictionary lookup as unavailable.
+
 A query permits 16,384 UTF-8 bytes, 512 recognized words, and 300,000 parser steps.
 Each query run permits 128 normalized phonemes. The headword index permits 256 bytes and 256 phonemes, with 300,000 parser steps per headword.
 These bounds support full-size dictionary headwords without raising the ordinary text segmenter's default run limit.
 If query segmentation reaches a limit, search uses ordinary text matching without partial component results.
 If a headword reaches its indexing limit, ordinary matching remains available and sequence coverage is incomplete.
+
 The response and interface expose either limit through `segmentation: "limited"`.
 The interface preserves that notice through pagination and browser Back.
 
