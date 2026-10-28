@@ -18,6 +18,7 @@ test("private upload cancellation leaves pending dictionary materialization avai
   let state = emptyState();
   const objects = new Map<string, Uint8Array>();
   const snapshots = new Map<string, Snapshot>();
+  const snapshotRevisions = new Map<string, number>();
   let finishPublication!: () => void;
   const publication = new Promise<void>((resolve) => {
     finishPublication = resolve;
@@ -38,10 +39,14 @@ test("private upload cancellation leaves pending dictionary materialization avai
     {
       load: async () => state,
       getSnapshot: async (id) => snapshots.get(id) ?? null,
+      getSnapshotRevision: async (id) => snapshotRevisions.get(id) ?? null,
       compareAndSwap: async (revision, next, snapshot) => {
         if (revision !== state.revision) return false;
         state = next;
-        if (snapshot) snapshots.set(snapshot.snapshot, snapshot);
+        if (snapshot) {
+          snapshots.set(snapshot.snapshot, snapshot);
+          snapshotRevisions.set(snapshot.snapshot, next.revision);
+        }
         return true;
       },
     },

@@ -459,6 +459,8 @@ test("corrupt persisted selection bytes and unavailable selected bodies fail bef
           {
             load: () => retained.coordinator.load(),
             getSnapshot: (id) => retained.coordinator.getSnapshot(id),
+            getSnapshotRevision: (id) =>
+              retained.coordinator.getSnapshotRevision(id),
             compareAndSwap: async (revision, state, snapshot) => {
               commits++;
               return retained.coordinator.compareAndSwap(
@@ -777,6 +779,8 @@ test("a concurrent coordinator change refuses the load before pointer publicatio
         {
           load: () => state.coordinator.load(),
           getSnapshot: (id) => state.coordinator.getSnapshot(id),
+          getSnapshotRevision: (id) =>
+            state.coordinator.getSnapshotRevision(id),
           compareAndSwap: async () => false,
         },
         state.objects,

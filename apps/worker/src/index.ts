@@ -115,6 +115,9 @@ export class AdmissionCoordinator
   getSnapshot(id: string) {
     return this.coordinator.getSnapshot(id);
   }
+  getSnapshotRevision(id: string) {
+    return this.coordinator.getSnapshotRevision(id);
+  }
   getVerifiedRecord(binding: VerifiedRecordBinding) {
     return this.coordinator.getVerifiedRecord(binding);
   }

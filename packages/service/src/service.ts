@@ -371,7 +371,7 @@ export class DictionaryService {
   private async rememberSnapshotRevision(id: string, currentRevision?: number) {
     if (this.snapshotRevisions.has(id)) return;
     const revision =
-      (await this.coordinator.getSnapshotRevision?.(id)) ?? currentRevision;
+      (await this.coordinator.getSnapshotRevision(id)) ?? currentRevision;
     if (revision !== undefined) this.snapshotRevisions.set(id, revision);
   }
   private rememberDelta(

@@ -16,7 +16,7 @@ import {
 } from "../src/inference.ts";
 import { EMBEDDING_MODEL } from "../src/embedding.ts";
 import { DictionaryService } from "../src/service.ts";
-import { emptyState } from "../src/storage.ts";
+import { MemoryCoordinator } from "./fixtures/memory-coordinator.ts";
 import { nodeAssistance } from "../../../apps/server/src/assistance.ts";
 
 before(async () =>
@@ -907,11 +907,7 @@ test("unsent failures release their reservation and no disabled capability is in
   );
   const dictionary = new DictionaryService(
     { get: async () => null, put: async () => {} },
-    {
-      load: async () => emptyState(),
-      getSnapshot: async () => null,
-      compareAndSwap: async () => true,
-    },
+    new MemoryCoordinator(),
     {
       assistance: { provider: config() },
       serverId: "embedding-test",
@@ -1149,11 +1145,7 @@ test("invalid embedding settings leave Node generation and browser consent profi
   const capabilities = async (provider: ProviderConfig) => {
     const service = new DictionaryService(
       { get: async () => null, put: async () => {} },
-      {
-        load: async () => emptyState(),
-        getSnapshot: async () => null,
-        compareAndSwap: async () => true,
-      },
+      new MemoryCoordinator(),
       {
         serverId: "test",
         policyUrl: "https://example.test/policy",

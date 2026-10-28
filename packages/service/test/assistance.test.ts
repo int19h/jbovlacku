@@ -15,6 +15,7 @@ import {
 } from "../../core/src/index.ts";
 import { DictionaryService } from "../src/service.ts";
 import { emptyState } from "../src/storage.ts";
+import { MemoryCoordinator } from "./fixtures/memory-coordinator.ts";
 import {
   parseAssistRequest,
   runAssistance,
@@ -1276,11 +1277,7 @@ test("new places precede glosses and hints, and supplied components drive place 
 function service(options: AssistanceOptions = {}, publicOrigin?: string) {
   return new DictionaryService(
     { get: async () => null, put: async () => {} },
-    {
-      load: async () => emptyState(),
-      getSnapshot: async () => null,
-      compareAndSwap: async () => true,
-    },
+    new MemoryCoordinator(),
     {
       serverId: "private-test",
       policyUrl: "https://example.test/policy",
@@ -1481,11 +1478,7 @@ test("invalid retained definition bodies cannot enter inference context", async 
   };
   const instance = new DictionaryService(
     { get: async (hash) => objects.get(hash) ?? null, put: async () => {} },
-    {
-      load: async () => state,
-      getSnapshot: async () => null,
-      compareAndSwap: async () => true,
-    },
+    new MemoryCoordinator(state),
     {
       serverId: "invalid-context",
       policyUrl: "https://example.test/policy",
@@ -2684,11 +2677,7 @@ test("wrong-word selected context returns HTTP 400 before any provider turn", as
   let keyReads = 0;
   const instance = new DictionaryService(
     { get: async (hash) => objects.get(hash) ?? null, put: async () => {} },
-    {
-      load: async () => state,
-      getSnapshot: async () => null,
-      compareAndSwap: async () => true,
-    },
+    new MemoryCoordinator(state),
     {
       serverId: "wrong-word",
       policyUrl: "https://example.test/policy",
@@ -2985,11 +2974,7 @@ test("assistance interprets sparse draft and signed context values without chang
   let providerInput: any;
   const instance = new DictionaryService(
     { get: async (hash) => objects.get(hash) ?? null, put: async () => {} },
-    {
-      load: async () => state,
-      getSnapshot: async () => null,
-      compareAndSwap: async () => true,
-    },
+    new MemoryCoordinator(state),
     {
       serverId: "sparse-context",
       policyUrl: "https://example.test/policy",
@@ -3496,6 +3481,7 @@ for (const typed of ["brodu", "bródu"])
     records.push(view);
     let state = emptyState();
     const snapshots = new Map<string, any>();
+    const snapshotRevisions = new Map<string, number>();
     const objects = new Map<string, Uint8Array>();
     let providerInput: any;
     const instance = new DictionaryService(
@@ -3508,10 +3494,14 @@ for (const typed of ["brodu", "bródu"])
       {
         load: async () => state,
         getSnapshot: async (id) => snapshots.get(id) ?? null,
+        getSnapshotRevision: async (id) => snapshotRevisions.get(id) ?? null,
         compareAndSwap: async (revision, next, snapshot) => {
           if (state.revision !== revision) return false;
           state = next;
-          if (snapshot) snapshots.set(snapshot.snapshot, snapshot);
+          if (snapshot) {
+            snapshots.set(snapshot.snapshot, snapshot);
+            snapshotRevisions.set(snapshot.snapshot, next.revision);
+          }
           return true;
         },
       },
