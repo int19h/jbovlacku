@@ -346,7 +346,7 @@ export function selectMatches<T extends LexicalEntry>(
     if (!accept(entry)) continue;
     if (index.limited) segmentation = "limited";
     const sequence = sequenceMatch(index, prepared, coverage, metrics);
-    const prefix = single ?? prepared.headword;
+    const prefix = prepared.headword.replace(/[.,]/gu, "");
     const candidates: MatchKind[] = [];
     if (
       (prepared.headword && index.spelling === prepared.headword) ||
@@ -359,7 +359,7 @@ export function selectMatches<T extends LexicalEntry>(
     if (
       sequence !== "sequence-subsequence" &&
       ((prepared.headword && index.spelling.startsWith(prepared.headword)) ||
-        (prefix && index.canonical.startsWith(prefix)))
+        (prefix && index.spelling.replace(/[.,]/gu, "").startsWith(prefix)))
     )
       candidates.push("headword-prefix");
     if (index.glosses.some((gloss) => gloss.startsWith(prepared.text)))

@@ -31,6 +31,18 @@ test("R2 canonical single words keep the headword class", () => {
       query,
     );
 });
+test("R3 canonical aliases do not widen the raw prefix family", () => {
+  assert.deepEqual(search(["pa", "pai", "patfu"], "1"), [["pa", "headword"]]);
+  assert.deepEqual(search(["a'a", "a'anmo", "ahafoo"], "aha"), [
+    ["a'a", "headword"],
+    ["ahafoo", "headword-prefix"],
+  ]);
+  assert.deepEqual(search(["ri'a", "ri'anga"], "riha"), [["ri'a", "headword"]]);
+  assert.deepEqual(search(["klama", "klamaroi"], ".klama."), [
+    ["klama", "headword"],
+    ["klamaroi", "headword-prefix"],
+  ]);
+});
 test("R2 one recognized word beside a foreign run gets a card", () => {
   for (const query of ["klama mibaoz", "mibaoz klama"])
     assert.deepEqual(search(["klama"], query), [["klama", "component"]], query);
