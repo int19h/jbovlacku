@@ -218,7 +218,7 @@ It scores the remaining combinations before parsing candidates in score order. I
 The work limit can still stop long or repeatedly rejected forms before the window fills. It does not guarantee 512 results for every input. A shared build recognition error suggests a component lock. Per-word recognition errors give no lock advice. Resource errors return no partial result.
 
 The builder creates conflict details only for returned candidates. A complete result considers every combination for bonding and the byte limit.
-Its rejected list holds at most 64 entries. These include overlong spellings and candidates that fail parsing before the result window fills.
+Its rejected list holds at most 64 entries. Parse failures come first, followed by examples of overlong spellings while space remains.
 
 A gismu request accepts 1 through 64 source rows. Each raw scoring input and native source word accepts at most 256 bytes. A normalized scoring input accepts at most 64 letters. A language identifier accepts at most 64 bytes. Each weight part accepts at most 64 decimal digits. Exact weight arithmetic permits at most 4096 bits in its shared denominator and total weight. The search permits at most 60,000,000 candidate-input-letter operations. Each inventory list permits at most 20,000 rows. Caller limits can reduce these ceilings.
 

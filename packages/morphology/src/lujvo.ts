@@ -718,7 +718,8 @@ export function buildLujvoWithDetailBudget(
     Math.min(choiceProduct, 20_000),
   );
   const candidates: LujvoCandidate[] = [],
-    rejected: LujvoResult["rejected"] = [];
+    rejected: LujvoResult["rejected"] = [],
+    overlong: LujvoResult["rejected"] = [];
   let considered = 0;
   function walk(chosen: LujvoChoice[]): void {
     if (chosen.length !== perRow.length) {
@@ -751,8 +752,8 @@ export function buildLujvoWithDetailBudget(
     const spelling = tokens.join("");
     const wordBytes = bytes(spelling);
     if (wordBytes > MAX_WORD_BYTES) {
-      if (rejected.length < 64)
-        rejected.push({
+      if (overlong.length < 64)
+        overlong.push({
           spelling,
           parts: chosen.map((choice) => choice.form),
           reason: new BuilderError({
@@ -846,6 +847,8 @@ export function buildLujvoWithDetailBudget(
         });
     }
   }
+  // Keep parse failures visible before the bounded examples of overlong forms.
+  rejected.push(...overlong.slice(0, 64 - rejected.length));
   addConflictDetails(validated, inventory, detailBudget);
   return {
     rows,

@@ -1241,3 +1241,27 @@ test("explicit apostrophe-y-apostrophe joins rebuild vowel-initial cores in vers
   assert.deepEqual(legacy.candidates, []);
   assert.equal(legacy.rejected[0].spelling, "leksiko'yismu");
 });
+
+test("parse failures stay visible before overlong lujvo rejections", () => {
+  for (const profile of ["extended", "extended-v4"] as const) {
+    const result = buildLujvo({
+      profile,
+      joins: ["'y'", "'y'"],
+      components: ["a", "b", "c"].map((id) =>
+        component(id, "tca".repeat(30), ["bau", "bai"], "lujvo"),
+      ),
+    });
+    assert.equal(result.complete, true);
+    assert.equal(result.considered, 27);
+    assert.deepEqual(result.candidates, []);
+    assert.ok(result.rejected.length <= 64);
+    assert.ok(result.rejected.some((item) => item.spelling.length > 128));
+    assert.ok(
+      result.rejected.slice(0, 6).every((item) => item.spelling.length <= 128),
+    );
+    assert.match(
+      result.rejected[0].reason,
+      /does not read this form as one lujvo/,
+    );
+  }
+});
