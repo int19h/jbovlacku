@@ -52,17 +52,31 @@ export class BackgroundSemanticIndexer {
       (g) => g.profile === identity,
     );
     if (!current) return;
+    const wait = await store.backgroundWait(identity, view);
+    if (wait && Math.max(wait.next_attempt, wait.not_before) > this.now())
+      return;
     const profile = await store.profile(current.id);
     let job = await store.backgroundGeneration(identity, view);
     // An unfinished operator job can contain failed or ambiguous sends. Do not adopt or replay it.
     if (!job && current.state !== "completed") return;
     await store.pruneBackgroundGenerations(identity, view);
+    if (
+      job?.background_recovery &&
+      ["semantic_capacity", "snapshot_expired"].includes(
+        job.background_recovery.reason,
+      ) &&
+      job.background_recovery.next_attempt > this.now()
+    )
+      return;
     if (job && job.state !== "completed") {
       if (this.initialized !== job.id) {
         this.initialized = job.id;
         await store.recoverBackground(job.id);
         // A server start opens a new retry round. Provider and budget deadlines still apply.
-        if (job.background_recovery?.exhausted) {
+        if (
+          job.background_recovery?.exhausted &&
+          !job.background_recovery.batch
+        ) {
           await store.setBackgroundRecovery(job.id, {
             ...job.background_recovery,
             sent_attempts: 0,
@@ -98,14 +112,18 @@ export class BackgroundSemanticIndexer {
       }
       if (retry) await store.retry(retry.id);
     }
+    const dueInputs =
+      job?.background_inputs &&
+      job.background_inputs.next_attempt <= this.now();
     if (
       (!job || job.state === "completed") &&
+      !dueInputs &&
       this.options.needed &&
       !(await this.options.needed())
     )
       return;
     try {
-      const source =
+      let source =
         job?.source_done && job.state !== "completed"
           ? undefined
           : await this.options.source(
@@ -114,11 +132,17 @@ export class BackgroundSemanticIndexer {
             );
       if (this.stop.signal.aborted) return;
       if (!job || job.state === "completed") {
-        if (source!.context.snapshot === (job ?? current).snapshot) return;
-        await store.pruneBackgroundGenerations(identity, view);
-        job = await store.create(source!.context, profile);
-        await store.setBackgroundGeneration(job.id);
-        this.initialized = job.id;
+        if (source!.context.snapshot === (job ?? current).snapshot) {
+          if (!job || !dueInputs) return;
+          await store.resumeBackground(job.id);
+          job = await store.generation(job.id);
+        } else {
+          await store.pruneBackgroundGenerations(identity, view);
+          job = await store.create(source!.context, profile);
+          await store.setBackgroundGeneration(job.id);
+          await store.setBackgroundWait(identity, view, null);
+          this.initialized = job.id;
+        }
       }
       const indexer = new SemanticIndexer(store, this.options.assistance);
       // Bounded source pages yield through storage and do not hold the directory lock again.
@@ -149,19 +173,48 @@ export class BackgroundSemanticIndexer {
         concurrency: 1,
         signal: this.stop.signal,
         automaticRetries: false,
+        background: true,
         onFailure: (error, batch) => {
           failure = error;
           attempt = batch;
         },
       });
       if (result.generation.state === "completed") {
-        await store.setBackgroundRecovery(job.id, null);
+        if (!result.generation.background_inputs)
+          await store.setBackgroundRecovery(job.id, null);
       } else if (!this.stop.signal.aborted) {
         await this.defer(result.generation, failure, attempt);
       }
       await store.pruneBackgroundGenerations(identity, view);
     } catch (failure) {
-      if (!job) throw failure;
+      if (!job) {
+        await this.defer(current, failure, undefined, true);
+        return;
+      }
+      if (
+        this.code(failure) === "snapshot_expired" &&
+        !job.source_done &&
+        (await store.current(identity, view)) !== job.id &&
+        (await store.summary(job.id)).dispatch_intents === 0
+      ) {
+        let latest: SemanticSource | undefined;
+        try {
+          latest = await this.options.source(profile);
+        } catch {
+          /* Preserve the original refusal when the latest source is unavailable. */
+        }
+        if (latest && latest.context.snapshot !== job.snapshot) {
+          const old = job.id;
+          job = await store.create(latest.context, profile);
+          await store.setBackgroundGeneration(job.id);
+          this.initialized = job.id;
+          await store.retire(old);
+          this.options.status?.(
+            `Background semantic job ${old} replaced by ${job.id} after source expiry.`,
+          );
+          return;
+        }
+      }
       await store.pause(job.id, this.code(failure));
       if (!this.stop.signal.aborted)
         await this.defer(await store.generation(job.id), failure);
@@ -179,11 +232,46 @@ export class BackgroundSemanticIndexer {
     job: IndexGeneration,
     failure: unknown,
     batch?: IndexBatch,
+    beforeJob = false,
   ) {
     const { store } = this.options;
-    const previous = job.background_recovery;
-    const sent = batch?.state === "ambiguous";
-    const reason = job.error ?? this.code(failure);
+    const held = batch ? await store.backgroundInputRecovery(batch) : null;
+    const saved = beforeJob
+      ? await store.backgroundWait(job.profile, job.view)
+      : job.background_recovery;
+    const previous =
+      held ?? (batch && saved?.batch !== batch.previous ? undefined : saved);
+    const operation =
+      failure instanceof Error &&
+      "operation" in failure &&
+      typeof failure.operation === "string"
+        ? failure.operation
+        : batch?.operation;
+    const reason = beforeJob
+      ? this.code(failure)
+      : (job.error ?? this.code(failure));
+    // Only explicit local refusals prove that an untracked probe did not dispatch.
+    const unsent =
+      /^(billing_|embedding_busy$|embedding_disabled$|embedding_configuration$|embedding_input$|embedding_network$|feature_disabled$|inference_disabled$|index_paused$|semantic_capacity$|semantic_context$|semantic_progress$|semantic_profile_suspended$|semantic_profile$|snapshot_expired$)/.test(
+        reason,
+      );
+    const sent = batch
+      ? batch.state === "ambiguous"
+      : !!operation || (failure !== undefined && !unsent);
+    const permanent = [
+      "billing_request_too_large",
+      "semantic_capacity",
+      "snapshot_expired",
+      "feature_disabled",
+      "embedding_disabled",
+      "inference_disabled",
+      "embedding_configuration",
+      "embedding_input",
+      "embedding_network",
+      "semantic_context",
+      "semantic_progress",
+      "semantic_profile",
+    ].includes(reason);
     const hint =
       failure instanceof Error && "retryAfterMs" in failure
         ? Number(failure.retryAfterMs)
@@ -198,21 +286,20 @@ export class BackgroundSemanticIndexer {
               : Math.min(hint, MAX_PROFILE_COOLDOWN_MS))
         : 0,
     );
-    const sentAttempts = (previous?.sent_attempts ?? 0) + (sent ? 1 : 0);
+    const priorAttempts =
+      held?.exhausted && held.next_attempt <= now
+        ? 0
+        : (previous?.sent_attempts ?? 0);
+    const sentAttempts = priorAttempts + (sent ? 1 : 0);
     const refusals = sent ? 0 : Math.min(16, (previous?.refusals ?? 0) + 1);
     const exhausted = sentAttempts >= 4;
-    const delay = exhausted
-      ? LONG_COOLDOWN
-      : Math.min(
-          60000,
-          1000 * 2 ** Math.max(0, (sent ? sentAttempts : refusals) - 1),
-        );
-    const operation =
-      failure instanceof Error &&
-      "operation" in failure &&
-      typeof failure.operation === "string"
-        ? failure.operation
-        : batch?.operation;
+    const delay =
+      exhausted || permanent
+        ? LONG_COOLDOWN
+        : Math.min(
+            60000,
+            1000 * 2 ** Math.max(0, (sent ? sentAttempts : refusals) - 1),
+          );
     const recovery: BackgroundRecovery = {
       next_attempt: Math.max(now + delay, notBefore),
       not_before: notBefore,
@@ -223,11 +310,39 @@ export class BackgroundSemanticIndexer {
       ...(operation ? { operation } : {}),
       ...(batch ? { batch: batch.id } : {}),
     };
-    await store.setBackgroundRecovery(job.id, recovery);
-    if (exhausted) await store.pause(job.id, "background_retry_exhausted");
+    const isolate =
+      !!batch &&
+      (!!held || exhausted || reason === "billing_request_too_large");
+    const split =
+      isolate &&
+      batch!.inputs.length > 1 &&
+      (exhausted || reason === "billing_request_too_large");
+    if (isolate) {
+      await store.holdBackgroundInputs(batch!, recovery, split, now);
+      // Finish a pass with held inputs so a later snapshot can proceed.
+      await store.start(job.id);
+      await store.finish(job.id);
+      if ((await store.generation(job.id)).state === "running")
+        await store.pause(job.id, reason);
+      recovery.next_attempt = Math.max(
+        notBefore,
+        (await store.backgroundSchedule(job.id, now)) ?? recovery.next_attempt,
+      );
+    }
+    if (beforeJob)
+      await store.setBackgroundWait(job.profile, job.view, recovery);
+    else await store.setBackgroundRecovery(job.id, recovery);
+    if (exhausted && !beforeJob)
+      await store.pause(job.id, "background_retry_exhausted");
     const message = `Background semantic job ${job.id} paused: ${reason}. ${exhausted ? "Automatic retries exhausted. " : ""}Retry at ${new Date(recovery.next_attempt).toISOString()}.`;
-    if (this.options.status) this.options.status(message);
-    else this.options.report(new Error(message));
+    if (
+      previous?.reason !== reason ||
+      previous?.exhausted !== exhausted ||
+      split
+    ) {
+      if (this.options.status) this.options.status(message);
+      else this.options.report(new Error(message));
+    }
   }
   start() {
     if (this.timer || this.stop.signal.aborted) return;

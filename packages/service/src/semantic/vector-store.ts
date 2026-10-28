@@ -17,6 +17,7 @@ export interface BackgroundRecovery {
 
 export interface IndexGeneration extends IndexContext {
   background_recovery?: BackgroundRecovery;
+  background_inputs?: { count: number; next_attempt: number };
   id: string;
   state: "paused" | "running" | "completed" | "retired";
   cursor: string | null;
@@ -77,6 +78,26 @@ export interface VectorStore {
     recovery: BackgroundRecovery | null,
   ): Promise<void>;
   recoverBackground(id: string): Promise<void>;
+  backgroundWait(
+    profile: string,
+    view: string,
+  ): Promise<BackgroundRecovery | null>;
+  setBackgroundWait(
+    profile: string,
+    view: string,
+    recovery: BackgroundRecovery | null,
+  ): Promise<void>;
+  backgroundInputRecovery(
+    batch: IndexBatch,
+  ): Promise<BackgroundRecovery | null>;
+  holdBackgroundInputs(
+    batch: IndexBatch,
+    recovery: BackgroundRecovery,
+    split: boolean,
+    now: number,
+  ): Promise<void>;
+  backgroundSchedule(id: string, now: number): Promise<number | null>;
+  resumeBackground(id: string): Promise<void>;
   retryableBatch(id: string): Promise<IndexBatch | null>;
   pruneBackgroundGenerations(profile: string, view: string): Promise<void>;
   recordProbe(profile: string, evidence: ProbeEvidence): Promise<void>;
@@ -111,7 +132,10 @@ export interface VectorStore {
   start(id: string): Promise<void>;
   pause(id: string, error?: string): Promise<void>;
   recover(id: string): Promise<void>;
-  claim(id: string): Promise<IndexBatch | null>;
+  claim(
+    id: string,
+    background?: { now: number; pending(operation: string): boolean },
+  ): Promise<IndexBatch | null>;
   inputs(batch: string): Promise<Uint8Array[]>;
   sent(batch: string, operation: string): Promise<void>;
   complete(

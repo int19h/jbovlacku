@@ -239,6 +239,7 @@ A finished pass can retain failed coverage and advance to a newer snapshot.
 Due inputs return automatically even when the snapshot does not change. Inputs absent from the current generation do not dispatch.
 
 Sent probe failures pause the job with `background_retry_exhausted` after four attempts and wait one hour.
+A server restart can open a new probe recovery round. It preserves unrelated input holds.
 Node writes `semantic_index_status` messages when the recovery state changes, even when `JVC_LOG_ERRORS` is disabled.
 These messages omit provider response text. Repeated identical refusals do not write another status line.
 A restart never shortens a parked input deadline, provider cooldown, or budget window.
@@ -251,7 +252,8 @@ The five-second host schedule starts eligible attempts. Healthy work continues t
 A successful vector clears its input hold in the same transaction. Unrelated successes do not reset another input's retry count.
 A suspended profile still requires a compatible replacement profile.
 Fully staged jobs recover from retained inputs without reading their old source snapshot again.
-Storage exhaustion and an expired source snapshot during unfinished preparation receive a one-hour cooldown.
+Storage exhaustion, invalid provider configuration, and an expired source snapshot during unfinished preparation receive a one-hour cooldown.
+A refusal before job creation retains its deadline and log state under the profile and view.
 An unpublished preparation with no dispatched batch can move to a newer source snapshot after expiry.
 Automatic recovery cannot repair invalid provider configuration or create missing storage capacity.
 

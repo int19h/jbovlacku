@@ -94,6 +94,9 @@ export class SqlVectorStore implements VectorStore {
       "CREATE TABLE IF NOT EXISTS semantic_coverage_progress(scope TEXT PRIMARY KEY, revision INTEGER NOT NULL)",
       "CREATE TABLE IF NOT EXISTS semantic_retirements(generation TEXT PRIMARY KEY)",
       "CREATE TABLE IF NOT EXISTS semantic_background_recovery(generation TEXT PRIMARY KEY, value TEXT NOT NULL)",
+      "CREATE TABLE IF NOT EXISTS semantic_background_waits(profile TEXT NOT NULL, view TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(profile,view))",
+      "CREATE TABLE IF NOT EXISTS semantic_background_inputs(profile TEXT NOT NULL, input TEXT NOT NULL, previous TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(profile,input))",
+      "CREATE INDEX IF NOT EXISTS semantic_background_input_deadline ON semantic_background_inputs(profile,json_extract(value,'$.next_attempt'),input)",
       "CREATE TABLE IF NOT EXISTS semantic_background_owned(generation TEXT PRIMARY KEY)",
       "CREATE TABLE IF NOT EXISTS semantic_background(profile TEXT NOT NULL, view TEXT NOT NULL, generation TEXT NOT NULL, PRIMARY KEY(profile,view))",
       "CREATE TABLE IF NOT EXISTS semantic_current(profile TEXT NOT NULL, view TEXT NOT NULL, generation TEXT NOT NULL, rollback TEXT, PRIMARY KEY(profile,view))",
@@ -103,6 +106,9 @@ export class SqlVectorStore implements VectorStore {
       sql.exec(statement);
     // Transactional counters also see writes from another connection. No payload scan is needed.
     for (const [table, operation, owner, scope] of [
+      ["semantic_background_inputs", "INSERT", "NEW.profile", "profile"],
+      ["semantic_background_inputs", "UPDATE", "NEW.profile", "profile"],
+      ["semantic_background_inputs", "DELETE", "OLD.profile", "profile"],
       ["semantic_associations", "INSERT", "NEW.generation", "generation"],
       ["semantic_associations", "UPDATE", "NEW.generation", "generation"],
       ["semantic_associations", "DELETE", "OLD.generation", "generation"],
@@ -163,7 +169,23 @@ export class SqlVectorStore implements VectorStore {
       "SELECT value FROM semantic_background_recovery WHERE generation=?",
       id,
     )[0];
+    const held = this.sql.exec(
+      `SELECT COUNT(*) AS count, MIN(json_extract(h.value,'$.next_attempt')) AS next_attempt
+      FROM semantic_background_inputs h WHERE h.profile=?
+      AND EXISTS(SELECT 1 FROM semantic_associations a WHERE a.generation=? AND a.input=h.input AND a.error IS NULL)
+      AND NOT EXISTS(SELECT 1 FROM semantic_vectors v WHERE v.profile=h.profile AND v.input=h.input)`,
+      String(row.profile),
+      id,
+    )[0];
     return {
+      ...(Number(held.count)
+        ? {
+            background_inputs: {
+              count: Number(held.count),
+              next_attempt: Number(held.next_attempt),
+            },
+          }
+        : {}),
       ...(recovery
         ? {
             background_recovery: JSON.parse(
@@ -216,6 +238,7 @@ export class SqlVectorStore implements VectorStore {
        JOIN semantic_generations g ON g.id=i.generation
        LEFT JOIN semantic_vectors v ON v.profile=g.profile AND v.input=i.input
        WHERE i.generation=? AND b.state IN ('failed','ambiguous') AND v.input IS NULL
+       AND NOT EXISTS (SELECT 1 FROM semantic_background_inputs h WHERE h.profile=g.profile AND h.input=i.input)
        AND NOT EXISTS (SELECT 1 FROM json_each(b.inputs) j
          LEFT JOIN semantic_batch_inputs owner ON owner.generation=b.generation AND owner.input=j.value
          WHERE owner.batch IS NULL OR owner.batch!=b.id)
@@ -223,6 +246,107 @@ export class SqlVectorStore implements VectorStore {
       id,
     )[0];
     return row ? this.batch(String(row.id)) : null;
+  }
+  async backgroundWait(
+    profile: string,
+    view: string,
+  ): Promise<BackgroundRecovery | null> {
+    const row = this.sql.exec(
+      "SELECT value FROM semantic_background_waits WHERE profile=? AND view=?",
+      profile,
+      view,
+    )[0];
+    return row ? JSON.parse(String(row.value)) : null;
+  }
+  async setBackgroundWait(
+    profile: string,
+    view: string,
+    recovery: BackgroundRecovery | null,
+  ) {
+    if (recovery)
+      this.sql.exec(
+        "INSERT INTO semantic_background_waits VALUES(?,?,?) ON CONFLICT(profile,view) DO UPDATE SET value=excluded.value",
+        profile,
+        view,
+        JSON.stringify(recovery),
+      );
+    else
+      this.sql.exec(
+        "DELETE FROM semantic_background_waits WHERE profile=? AND view=?",
+        profile,
+        view,
+      );
+  }
+  async backgroundInputRecovery(
+    batch: IndexBatch,
+  ): Promise<BackgroundRecovery | null> {
+    const profile = this.generationRow(batch.generation).profile;
+    const row = this.sql.exec(
+      "SELECT value FROM semantic_background_inputs WHERE profile=? AND input=?",
+      profile,
+      batch.inputs[0],
+    )[0];
+    return row ? JSON.parse(String(row.value)) : null;
+  }
+  async holdBackgroundInputs(
+    batch: IndexBatch,
+    recovery: BackgroundRecovery,
+    split: boolean,
+    now: number,
+  ) {
+    const profile = this.active(batch.generation).profile;
+    this.sql.transaction(() => {
+      for (const input of batch.inputs) {
+        if (
+          this.sql.exec(
+            "SELECT 1 FROM semantic_vectors WHERE profile=? AND input=?",
+            profile,
+            input,
+          ).length
+        )
+          continue;
+        const value = split
+          ? {
+              ...recovery,
+              sent_attempts: 0,
+              refusals: 0,
+              exhausted: false,
+              next_attempt: Math.max(now, recovery.not_before),
+            }
+          : recovery;
+        this.sql.exec(
+          "INSERT INTO semantic_background_inputs VALUES(?,?,?,?) ON CONFLICT(profile,input) DO UPDATE SET previous=excluded.previous,value=excluded.value",
+          profile,
+          input,
+          batch.id,
+          JSON.stringify(value),
+        );
+      }
+      this.sql.exec("UPDATE semantic_batches SET retry=0 WHERE id=?", batch.id);
+    });
+  }
+  /** Only inputs in this generation can become due. A removed definition never dispatches. */
+  async backgroundSchedule(id: string, now: number): Promise<number | null> {
+    const generation = this.active(id);
+    const fresh = this.sql.exec(
+      `SELECT 1 FROM semantic_associations a
+      LEFT JOIN semantic_vectors v ON v.profile=? AND v.input=a.input
+      LEFT JOIN semantic_background_inputs h ON h.profile=? AND h.input=a.input
+      LEFT JOIN semantic_batch_inputs b ON b.generation=a.generation AND b.input=a.input
+      WHERE a.generation=? AND a.error IS NULL AND v.input IS NULL AND h.input IS NULL AND b.input IS NULL LIMIT 1`,
+      generation.profile,
+      generation.profile,
+      id,
+    ).length;
+    return fresh ? now : (generation.background_inputs?.next_attempt ?? null);
+  }
+  async resumeBackground(id: string) {
+    this.active(id);
+    this.sql.exec(
+      "UPDATE semantic_generations SET state='paused',error=NULL WHERE id=? AND state='completed' AND EXISTS(SELECT 1 FROM semantic_background_owned WHERE generation=?)",
+      id,
+      id,
+    );
   }
   async backgroundGeneration(profile: string, view: string) {
     const row = this.sql.exec(
@@ -327,11 +451,13 @@ export class SqlVectorStore implements VectorStore {
       if (offset) await new Promise<void>((resolve) => setTimeout(resolve, 0));
       const page = expected.slice(offset, offset + 128);
       const rows = this.sql.exec(
-        `SELECT a.*,v.input IS NOT NULL AS indexed,b.state AS batch_state FROM semantic_associations a
+        `SELECT a.*,v.input IS NOT NULL AS indexed,b.state AS batch_state,h.input AS held FROM semantic_associations a
         LEFT JOIN semantic_vectors v ON v.profile=? AND v.input=a.input
+        LEFT JOIN semantic_background_inputs h ON h.profile=? AND h.input=a.input
         LEFT JOIN semantic_batch_inputs bi ON bi.generation=a.generation AND bi.input=a.input
         LEFT JOIN semantic_batches b ON b.id=bi.batch
         WHERE a.generation=? AND a.event IN (${page.map(() => "?").join(",")})`,
+        generation.profile,
         generation.profile,
         id,
         ...page.map((row) => row.event),
@@ -353,6 +479,7 @@ export class SqlVectorStore implements VectorStore {
             ? "indexed"
             : row &&
                 (row.error ||
+                  row.held ||
                   ["failed", "ambiguous"].includes(String(row.batch_state)))
               ? "failed"
               : "pending";
@@ -656,10 +783,12 @@ export class SqlVectorStore implements VectorStore {
     const row = this.sql.exec(
       `SELECT COUNT(*) AS eligible,
       COALESCE(SUM(v.input IS NOT NULL),0) AS indexed,
-      COALESCE(SUM(a.error IS NOT NULL OR (v.input IS NULL AND b.state IN ('failed','ambiguous'))),0) AS failed
+      COALESCE(SUM(a.error IS NOT NULL OR (v.input IS NULL AND (h.input IS NOT NULL OR b.state IN ('failed','ambiguous')))),0) AS failed
       FROM semantic_associations a LEFT JOIN semantic_vectors v ON v.profile=? AND v.input=a.input
+      LEFT JOIN semantic_background_inputs h ON h.profile=? AND h.input=a.input
       LEFT JOIN semantic_batch_inputs bi ON bi.generation=a.generation AND bi.input=a.input
       LEFT JOIN semantic_batches b ON b.id=bi.batch WHERE a.generation=? ${language === undefined ? "" : "AND a.language=?"}`,
+      generation.profile,
       generation.profile,
       id,
       ...(language === undefined ? [] : [language]),
@@ -798,7 +927,10 @@ export class SqlVectorStore implements VectorStore {
       usage: row.usage === null ? null : JSON.parse(String(row.usage)),
     };
   }
-  async claim(id: string): Promise<IndexBatch | null> {
+  async claim(
+    id: string,
+    background?: { now: number; pending(operation: string): boolean },
+  ): Promise<IndexBatch | null> {
     return this.sql.transaction(() => {
       const generation = this.active(id);
       this.compatible(generation.profile);
@@ -841,12 +973,34 @@ export class SqlVectorStore implements VectorStore {
           LEFT JOIN semantic_vectors v ON v.profile=? AND v.input=a.input
           LEFT JOIN semantic_batch_inputs b ON b.generation=a.generation AND b.input=a.input
           WHERE a.generation=? AND a.input>? AND a.error IS NULL AND v.input IS NULL AND b.input IS NULL
+          ${background ? "AND NOT EXISTS(SELECT 1 FROM semantic_background_inputs h WHERE h.profile=? AND h.input=a.input)" : ""}
           ORDER BY a.input LIMIT 8`,
             generation.profile,
             id,
             cursor,
+            ...(background ? [generation.profile] : []),
           )
           .map((row) => String(row.input));
+      }
+      if (!inputs.length && background) {
+        const held = this.sql.exec(
+          `SELECT h.input,h.previous,b.operation FROM semantic_background_inputs h
+          JOIN semantic_batches b ON b.id=h.previous AND b.state IN ('failed','ambiguous')
+          WHERE h.profile=? AND json_extract(h.value,'$.next_attempt')<=?
+          AND EXISTS(SELECT 1 FROM semantic_associations a WHERE a.generation=? AND a.input=h.input AND a.error IS NULL)
+          AND NOT EXISTS(SELECT 1 FROM semantic_vectors v WHERE v.profile=h.profile AND v.input=h.input)
+          ORDER BY json_extract(h.value,'$.next_attempt'),h.input LIMIT 128`,
+          generation.profile,
+          background.now,
+          id,
+        );
+        const ready = held.find(
+          (row) => !row.operation || !background.pending(String(row.operation)),
+        );
+        if (ready) {
+          inputs = [String(ready.input)];
+          previous = String(ready.previous);
+        }
       }
       if (!inputs.length) return null;
       const profile = parseProfile(
@@ -895,6 +1049,15 @@ export class SqlVectorStore implements VectorStore {
           input,
           batch,
         );
+      if (background && previous) {
+        for (const input of inputs)
+          this.sql.exec(
+            "UPDATE semantic_background_inputs SET previous=? WHERE profile=? AND input=?",
+            batch,
+            generation.profile,
+            input,
+          );
+      }
       return this.batch(batch);
     });
   }
@@ -986,6 +1149,12 @@ export class SqlVectorStore implements VectorStore {
         JSON.stringify(usage),
         id,
       );
+      for (const input of batch.inputs)
+        this.sql.exec(
+          "DELETE FROM semantic_background_inputs WHERE profile=? AND input=?",
+          generation.profile,
+          input,
+        );
       // Reset recovery in the vector transaction so that a crash cannot restore the old failure streak.
       this.sql.exec(
         "DELETE FROM semantic_background_recovery WHERE generation=?",
@@ -1061,9 +1230,13 @@ export class SqlVectorStore implements VectorStore {
       if (generation.state !== "running" || inFlight) return;
       const missing = Number(
         this.sql.exec(
-          "SELECT COUNT(*) AS n FROM semantic_associations a LEFT JOIN semantic_vectors v ON v.profile=? AND v.input=a.input WHERE a.generation=? AND a.error IS NULL AND v.input IS NULL",
+          `SELECT COUNT(*) AS n FROM semantic_associations a LEFT JOIN semantic_vectors v ON v.profile=? AND v.input=a.input
+          WHERE a.generation=? AND a.error IS NULL AND v.input IS NULL
+          AND NOT (EXISTS(SELECT 1 FROM semantic_background_owned WHERE generation=a.generation)
+            AND EXISTS(SELECT 1 FROM semantic_background_inputs h WHERE h.profile=? AND h.input=a.input))`,
           generation.profile,
           id,
+          generation.profile,
         )[0].n,
       );
       this.sql.exec(
@@ -1242,6 +1415,11 @@ export class SqlVectorStore implements VectorStore {
           bytes += Number(vector?.bytes ?? 0) + Number(text?.bytes ?? 0);
           this.sql.exec(
             "DELETE FROM semantic_vectors WHERE profile=? AND input=?",
+            profile,
+            input,
+          );
+          this.sql.exec(
+            "DELETE FROM semantic_background_inputs WHERE profile=? AND input=?",
             profile,
             input,
           );

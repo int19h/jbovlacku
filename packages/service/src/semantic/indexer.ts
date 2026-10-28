@@ -88,6 +88,7 @@ export class SemanticIndexer {
       concurrency?: number;
       /** The background host schedules its own durable retries. The CLI keeps the default. */
       automaticRetries?: boolean;
+      background?: boolean;
       onFailure?: (failure: unknown, batch: IndexBatch) => void;
       maxBatches?: number;
       signal?: AbortSignal;
@@ -184,7 +185,17 @@ export class SemanticIndexer {
             }
             if (claims >= maximum || halted || options.signal?.aborted) break;
             claims++;
-            const batch = await this.store.claim(id);
+            const batch = await this.store.claim(
+              id,
+              options.background
+                ? {
+                    now: this.clock.now(),
+                    pending: (operation) =>
+                      this.assistance.embeddingOperationPending?.(operation) ??
+                      false,
+                  }
+                : undefined,
+            );
             if (!batch) {
               claims--;
               const generation = await this.store.generation(id);
