@@ -49,6 +49,7 @@ import {
 } from "../components/localview.ts";
 import { recomputePanel } from "../components/recompute.ts";
 import { describeProfile } from "../model/profiles.ts";
+import { appendReadRetry } from "../components/readretry.ts";
 
 export async function wordPage(route: Route, context: RenderContext, app: App) {
   const { main } = context;
@@ -94,6 +95,7 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
       );
       return;
     }
+    if (appendReadRetry(main, error, context)) return;
     if (spellingHint)
       main.append(
         p(

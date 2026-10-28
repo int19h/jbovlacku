@@ -45,6 +45,7 @@ The [carrier guide](crates/jvc-carrier/README.md) describes canonical files, imp
 The browser supports anonymous lookup, verified definition pages, encrypted key backups with a recovery test, and signed delivery with per-server receipts.
 Search sits in the header of every page. Result rows show the headword, rafsi, type, highlighted definition text, attribution, and a net score with Endorse and Oppose arrows.
 Word pages show every definition under the selected view, with place strips, revision notices, comparisons, source evidence, rafsi pair cards, and reviewer details.
+After an HTTP 503 read failure, word and search pages offer Retry reading with the same URL and selected view.
 Untouched rich-text fields keep their exact stored values. Edited fields normalize line endings, string fragments, trailing whitespace, and paragraph breaks. Ordinary TeX and backslashes stay literal. Code and links stay within one paragraph. The editor shows blank lines inside stored code and labels as single line breaks.
 Word-link and derivation spelling advice never blocks a format-valid reference. Invalid references show plain error sentences.
 Revision comparisons group changes by readable fields and numbered places, with rich text and complete place and source details.

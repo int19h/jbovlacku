@@ -45,6 +45,7 @@ import {
 import { PersonalCalculator } from "./data/personal.ts";
 import { classifyReceipt } from "./data/delivery.ts";
 import { watchReaderFocus } from "./app/focus.ts";
+import { appendReadRetry } from "./components/readretry.ts";
 
 const root = document.querySelector<HTMLDivElement>("#app")!;
 type Page = (
@@ -252,6 +253,7 @@ async function start() {
     } catch (error) {
       if (current === revision) {
         main.append(p(describe(error), "notice"));
+        appendReadRetry(main, error, context);
       }
     } finally {
       readerFocus.stop();

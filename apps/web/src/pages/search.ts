@@ -53,6 +53,7 @@ import {
 } from "../components/attribution.ts";
 import { zbalermorna } from "../lib/zbalermorna.ts";
 import { placeMarker } from "../model/richtext.ts";
+import { appendReadRetry } from "../components/readretry.ts";
 
 const PAGE_SIZE = 20;
 const RESULT_LIMIT = 1000;
@@ -490,6 +491,7 @@ export async function searchPage(
         ),
       );
     else results.append(p(describe(error), "notice"));
+    appendReadRetry(results, error, context);
     refreshCount();
   }
   if (!context.live()) return;
