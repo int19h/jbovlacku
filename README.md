@@ -251,13 +251,17 @@ Mocked tests cover partial progress, restart, failures, retirement, atomic publi
 The Node host serves meaning searches from compatible published vectors with exact event bindings in the requested snapshot and view.
 New definitions remain pending while unchanged definitions stay searchable. Optional background indexing uses the same host budgets without stopping dictionary reads.
 Background jobs retry transient failures with bounded backoff and linked retries. They preserve earlier charges and wait for provider cooldowns and budget windows.
-Paid or unknown probe failures receive three retries, then a one-hour cooldown. A restart can open a new probe round.
+Paid or unknown probe failures receive three retries, then a one-hour cooldown. Their counts and deadlines survive server restarts.
 Exhausted batches split into individual inputs. Failing inputs wait one hour while healthy inputs and newer snapshots proceed.
 Input holds preserve retry counts, prior batch links, and deadlines across restarts and snapshots. Due inputs return without a new snapshot.
+An unsettled earlier transport does not restart a completed pass. Other ready inputs and newer snapshots can still proceed.
 Oversized requests split before dispatch. Permanent refusals use long cooldowns and log only state changes. Operator CLI recovery remains manual.
 Cold coverage yields between bounded metadata pages. Concurrent requests share coverage work, and partial coverage stays cached until index progress changes.
+Ordinary generation and public profile reads do not scan parked inputs. Operator diagnostics yield between pages of at most 128 holds.
 Generation retirement yields between bounded deletion transactions and resumes interrupted cleanup.
+Operators can unpublish and retire an idle background generation, including a suspended profile, without retaining its background pointer.
 Each client network can hold at most one scan worker. Empty or absent networks share that same limit.
+The API rejects malformed language tags and retains the required coverage fields.
 `GET /embedding-profiles` reports coverage and query availability. `POST /search/semantic` returns definition events with cosine distances.
 Two worker threads scan bounded vector pages and keep only the requested best results. Lexical reads remain available during inference and scans.
 The persistent query cache stores complete profile hashes, exact input hashes, and vectors. Concurrent cache misses share one computation.

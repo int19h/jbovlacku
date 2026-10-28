@@ -218,6 +218,21 @@ Each transaction removes only inputs and vectors without a remaining association
 An interrupted retirement keeps its cleanup marker. A later background prune or explicit retirement continues that cleanup.
 Operator-created generations remain under explicit operator control. The existing capacity limits still apply.
 
+To remove a completed background generation, stop the server that holds its data directory lock.
+Set `JVC_DATA_DIR` to that directory and `JVC_INDEX_JOB` to the exact generation ID.
+Run these commands from the repository root:
+
+```sh
+npx tsx apps/server/src/semantic-cli.ts --data "$JVC_DATA_DIR" --command unpublish --job "$JVC_INDEX_JOB"
+npx tsx apps/server/src/semantic-cli.ts --data "$JVC_DATA_DIR" --command retire --job "$JVC_INDEX_JOB"
+```
+
+Retirement releases that generation's idle background pointer in the same transaction that marks it retired.
+A suspended profile uses the same procedure. Retirement preserves its suspension and retained accounting evidence.
+Active readers, running jobs, prepared or sent batches, and unsettled provider transports still block retirement.
+If another current or rollback reference retains the generation, remove that exact reference before retirement.
+A released pointer cannot resume or publish the retired generation. No command sends a provider request.
+
 A durable background pointer retains unfinished work across failures and restarts.
 The background server retries this work automatically. The operator CLI keeps its manual recovery and retry policy.
 A known refusal before dispatch creates no provider charge. Busy slots and temporary refusals receive exponential backoff from one second to one minute.
@@ -239,17 +254,20 @@ Parked inputs retain their exact profile, input hash, prior batch, failure count
 New generations reuse these holds. They do not send parked inputs early or replay completed vectors.
 A finished pass can retain failed coverage and advance to a newer snapshot.
 Due inputs return automatically even when the snapshot does not change. Inputs absent from the current generation do not dispatch.
+An unsettled earlier transport does not wake a finished pass. Other ready inputs and newer snapshots can still proceed.
 
 Sent probe failures pause the job with `background_retry_exhausted` after four attempts and wait one hour.
-A server restart can open a new probe recovery round. It preserves unrelated input holds.
+The sent failure count and cooldown survive server restarts, including restarts before the fourth failure.
+Only an expired cooldown opens a new probe recovery round. Unrelated input holds keep their own deadlines.
 
 Node writes `semantic_index_status` messages when the recovery state changes, even when `JVC_LOG_ERRORS` is disabled.
 These messages omit provider response text. Repeated identical refusals do not write another status line.
-A restart never shortens a parked input deadline, provider cooldown, or budget window.
+A restart never shortens a probe recovery cooldown, parked input deadline, provider cooldown, or budget window.
 
 Generation status includes `background_recovery` while the background job waits.
 It names `next_attempt`, `not_before`, `sent_attempts`, `refusals`, `exhausted`, and `reason`.
-Status also exposes the count and earliest deadline of retained input holds in `background_inputs`.
+Operator status also exposes the count and earliest deadline of retained input holds in `background_inputs`.
+This diagnostic reads at most 128 holds before yielding. Ordinary generation and public profile reads omit this scan.
 Times are Unix milliseconds. `not_before` preserves provider and budget deadlines separately from the recovery cooldown.
 
 The five-second host schedule starts eligible attempts. Healthy work continues through consecutive batches without that delay.
@@ -296,6 +314,8 @@ Coverage counts exact current event bindings, even when the generation began und
 ```
 
 Replace each placeholder with its complete lowercase hash.
+Language tags use lowercase BCP 47 syntax and at most 63 bytes, without a registry membership test.
+Malformed tags return HTTP 400 before inference. Every successful response keeps the required coverage fields.
 The API accepts limits from 1 through 100. Its general query limit is 16 KiB.
 This profile has a tighter limit of 4,096 UTF-8 bytes, including its exact query prefix. Oversized inputs fail before payment.
 The server rejects malformed Unicode and does not normalize, trim, or silently truncate the query.
