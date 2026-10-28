@@ -829,6 +829,7 @@ export class DictionaryService {
   }
   private packageCache = new Map<string, Promise<MaterializedPackages>>();
   private inFlightPackages = new Set<string>();
+  private failedPackageEvaluations = new Set<string>();
   private requiredIndexSnapshots(...snapshots: (string | null | undefined)[]) {
     return [
       ...new Set(
@@ -884,6 +885,7 @@ export class DictionaryService {
     this.inFlightPackages.add(snapshot.snapshot);
     const key =
       snapshot.snapshot + "|" + (this.options.selectedView ?? zeroView);
+    this.failedPackageEvaluations.delete(key);
     if (this.retiredSessions.has(key) && !this.sessions.has(key)) {
       this.retiredSessions.delete(key);
       this.evaluationCache.delete(key);
@@ -1033,8 +1035,16 @@ export class DictionaryService {
       },
       () => {
         this.inFlightPackages.delete(snapshot.snapshot);
-        if (this.packageCache.get(snapshot.snapshot) === pending)
+        if (this.packageCache.get(snapshot.snapshot) === pending) {
           this.packageCache.delete(snapshot.snapshot);
+          // A failed publication no longer protects its unpublished result.
+          // Ordinary eviction still waits for active session calls to finish.
+          if (
+            this.completed?.snapshot.snapshot !== snapshot.snapshot &&
+            this.evaluationCache.has(key)
+          )
+            this.failedPackageEvaluations.add(key);
+        }
         this.prunePackageRecords();
       },
     );
@@ -1313,7 +1323,11 @@ export class DictionaryService {
     if (this.evaluationCache.size >= 2) {
       const configured = this.options.selectedView ?? zeroView;
       const protectedKey = [...this.evaluationCache.keys()]
-        .filter((candidate) => candidate.endsWith("|" + configured))
+        .filter(
+          (candidate) =>
+            candidate.endsWith("|" + configured) &&
+            !this.failedPackageEvaluations.has(candidate),
+        )
         .at(-1);
       const evicted = [...this.evaluationCache.keys()].find(
         (candidate) =>
@@ -1332,6 +1346,7 @@ export class DictionaryService {
           ),
         );
       this.evaluationCache.delete(evicted);
+      this.failedPackageEvaluations.delete(evicted);
       this.retiredSessions.delete(evicted);
       this.sessions.get(evicted)?.free();
       this.sessions.delete(evicted);
@@ -1355,6 +1370,7 @@ export class DictionaryService {
         this.inFlightEvaluations.delete(key);
         if (this.evaluationCache.get(key) === result) {
           this.evaluationCache.delete(key);
+          this.failedPackageEvaluations.delete(key);
           this.retiredSessions.delete(key);
         }
       },

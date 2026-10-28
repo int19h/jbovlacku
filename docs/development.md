@@ -163,6 +163,10 @@ Requests for the same snapshot and view share evaluation work.
 An evaluation keeps its cache slot until its package publication finishes.
 An unknown or invalid requested view is rejected before full evaluation.
 Alternate views cannot evict the most recent configured-view evaluation.
+During publication, the preceding completed evaluation and the new configured evaluation can occupy both slots.
+An uncached alternate view then reports HTTP 503. Configured reads still use the preceding completed snapshot.
+A failed unpublished package job gives up its configured-view protection. Active session calls still keep that entry until they finish.
+Another package job for that snapshot restores its protection until publication settles.
 If a committed admission cannot obtain an evaluation slot, its receipt still reports the durable acceptance and cursor.
 It reports unavailable interpretation with `evaluation_resource_unavailable`. A later receipt read or retry can evaluate it.
 

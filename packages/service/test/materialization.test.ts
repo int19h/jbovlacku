@@ -1141,6 +1141,295 @@ test("package publication keeps its session until a third evaluation can use a f
   }
 });
 
+test("a public clear pins both configured slots until publication and then releases an alternate reader", async () => {
+  const { service, coordinator, view, profile } = await fixture();
+  service.options.evaluationRuntime = {
+    create: createEvaluationSession,
+    restore: restoreHostEvaluationSession,
+  };
+  const alternate = createEvent(
+    seed,
+    [],
+    "a".repeat(32),
+    { kind: "view.publish", parents: [] },
+    {
+      ...view.body,
+      name: "Alternate view",
+      calculation: "simple-routes-shun-v1",
+    },
+  );
+  const subject = identityFromSeed(new Uint8Array(32).fill(62));
+  const shun = createEvent(
+    seed,
+    [profile.envelope.id],
+    "b".repeat(32),
+    {
+      kind: "trust.set",
+      subject,
+      scope: { kind: "*", word: "*", language: "*" },
+      value: "shun",
+    },
+    null,
+  );
+  await service.admitMany(
+    [alternate, shun].map((record) => utf8(JSON.stringify(record))),
+  );
+  await service.flushMaterialization();
+  const before = coordinator.state.snapshot!;
+  const configuredKey = before + "|" + service.options.selectedView;
+  const alternatePath =
+    "/words/" + wordId(word) + "?view=" + alternate.envelope.id;
+  assert.equal((await read(service, alternatePath)).snapshot, before);
+  const internals = service as any;
+  assert.equal(internals.evaluationCache.size, 2);
+  const entered = deferred();
+  const gate = deferred();
+  service.options.index = {
+    async replace() {},
+    async publish(snapshot) {
+      if (snapshot !== before) {
+        entered.resolve();
+        await gate.promise;
+      }
+    },
+  };
+  const clear = createEvent(
+    seed,
+    [shun.envelope.id],
+    "c".repeat(32),
+    { ...shun.envelope.header.action, value: "clear" },
+    null,
+  );
+  try {
+    await service.admitMany([utf8(JSON.stringify(clear))]);
+    await entered.promise;
+    const pending = coordinator.state.snapshot!;
+    const pendingKey = pending + "|" + service.options.selectedView;
+    assert.deepEqual(
+      [...internals.evaluationCache.keys()],
+      [configuredKey, pendingKey],
+    );
+    assert.deepEqual([...internals.inFlightEvaluations], []);
+    assert.deepEqual([...internals.sessionUses], []);
+    assert.deepEqual([...internals.inFlightPackages], [pending]);
+    assert.deepEqual([...internals.sessionRepairs], []);
+    assert.equal((await read(service, "/manifest")).snapshot, before);
+    assert.equal(
+      (await read(service, "/words/" + wordId(word))).snapshot,
+      before,
+    );
+    const receipt = await read(service, "/receipts/" + clear.envelope.id);
+    assert.equal(receipt.snapshot, null);
+    assert.deepEqual(receipt.reasons, ["index_lag", "evaluation_pending"]);
+    const busy = await service.fetch(request(alternatePath));
+    assert.equal(busy.status, 503);
+    assert.equal(
+      ((await busy.json()) as any).message,
+      "Configured view evaluations occupy the available cache slots.",
+    );
+    assert.equal(internals.sessions.size, 2);
+    gate.resolve();
+    await service.flushMaterialization();
+    assert.equal(
+      (await read(service, "/receipts/" + clear.envelope.id)).snapshot,
+      pending,
+    );
+    assert.deepEqual([...internals.inFlightPackages], []);
+    assert.deepEqual([...internals.inFlightEvaluations], []);
+    assert.deepEqual([...internals.sessionUses], []);
+    assert.equal(internals.sessions.has(configuredKey), false);
+    assert.equal((await read(service, alternatePath)).snapshot, pending);
+    assert.equal(internals.evaluationCache.has(configuredKey), false);
+    assert.equal(internals.evaluationCache.size, 2);
+    assert.equal(internals.sessions.size, 2);
+  } finally {
+    gate.resolve();
+    await service.flushMaterialization();
+  }
+});
+
+test("a failed publication releases its configured protection for a retained alternate view", async () => {
+  const { service, coordinator, view, definition, profile } = await fixture();
+  const alternate = createEvent(
+    seed,
+    [],
+    "a".repeat(32),
+    { kind: "view.publish", parents: [] },
+    {
+      ...view.body,
+      name: "Alternate view",
+      calculation: "simple-routes-shun-v1",
+    },
+  );
+  await service.admitMany([utf8(JSON.stringify(alternate))]);
+  await service.flushMaterialization();
+  const before = coordinator.state.snapshot!;
+  service.options.index = {
+    async replace() {},
+    async publish(snapshot) {
+      if (snapshot !== before) throw new Error("Publication failed.");
+    },
+  };
+  const next = judgment(
+    definition.envelope.id,
+    "b",
+    [profile.envelope.id],
+    "bless",
+  );
+  await service.admitMany([utf8(JSON.stringify(next))]);
+  await assert.rejects(service.flushMaterialization(), /Publication failed/);
+  const internals = service as any;
+  assert.equal(coordinator.state.materialized_snapshot, before);
+  assert.equal(internals.evaluationCache.size, 2);
+  assert.deepEqual([...internals.inFlightEvaluations], []);
+  assert.deepEqual([...internals.inFlightPackages], []);
+  assert.deepEqual([...internals.sessionUses], []);
+  const failedKey =
+    coordinator.state.snapshot + "|" + service.options.selectedView;
+  assert.deepEqual([...internals.failedPackageEvaluations], [failedKey]);
+  const pinned = "?snapshot=" + before;
+  assert.equal(
+    (await read(service, "/words/" + wordId(word) + pinned)).snapshot,
+    before,
+  );
+  const alternatePath =
+    "/words/" + wordId(word) + pinned + "&view=" + alternate.envelope.id;
+  const session = internals.sessions.get(failedKey);
+  const lease = deferred();
+  const ranking = internals.useSession(failedKey, async () => {
+    await lease.promise;
+    return session.rankWord(wordId(word));
+  });
+  try {
+    const busy = await service.fetch(request(alternatePath));
+    assert.equal(busy.status, 503);
+    assert.equal(internals.sessions.get(failedKey), session);
+    assert.equal(internals.sessionUses.get(failedKey), 1);
+  } finally {
+    lease.resolve();
+    await ranking;
+  }
+  assert.equal((await read(service, alternatePath)).snapshot, before);
+  assert.equal(internals.evaluationCache.has(failedKey), false);
+  assert.equal(internals.sessions.has(failedKey), false);
+  assert.equal(internals.failedPackageEvaluations.size, 0);
+  // Failed later admissions do not retain markers for evicted evaluations.
+  let previous = next.envelope.id;
+  for (const nonce of ["c", "d", "e"]) {
+    const later = judgment(definition.envelope.id, nonce, [previous], "curse");
+    await service.admitMany([utf8(JSON.stringify(later))]);
+    await assert.rejects(service.flushMaterialization(), /Publication failed/);
+    assert.deepEqual(
+      [...internals.failedPackageEvaluations],
+      [coordinator.state.snapshot + "|" + service.options.selectedView],
+    );
+    assert.equal(internals.evaluationCache.size, 2);
+    previous = later.envelope.id;
+  }
+  const latest = coordinator.state.snapshot!;
+  const latestKey = latest + "|" + service.options.selectedView;
+  const entered = deferred();
+  const gate = deferred();
+  service.options.index.publish = async () => {
+    entered.resolve();
+    await gate.promise;
+  };
+  const rebuilding = internals.packages(await coordinator.getSnapshot(latest));
+  try {
+    await entered.promise;
+    assert.equal(internals.failedPackageEvaluations.size, 0);
+    assert.equal(internals.inFlightPackages.has(latest), true);
+    assert.equal((await service.fetch(request(alternatePath))).status, 503);
+    assert.equal(internals.evaluationCache.has(latestKey), true);
+    assert.equal(
+      (await read(service, "/words/" + wordId(word) + pinned)).snapshot,
+      before,
+    );
+  } finally {
+    gate.resolve();
+    await rebuilding;
+  }
+  assert.equal(coordinator.state.materialized_snapshot, latest);
+  assert.equal((await read(service, "/receipts/" + previous)).snapshot, latest);
+  assert.equal(internals.failedPackageEvaluations.size, 0);
+  assert.deepEqual([...internals.sessionUses], []);
+  assert.equal(internals.evaluationCache.size, 2);
+});
+
+test("an alternate reader keeps its lease while a write waits and releases it for later materialization", async () => {
+  const { service, coordinator, view, definition, profile } = await fixture();
+  const alternate = createEvent(
+    seed,
+    [],
+    "a".repeat(32),
+    { kind: "view.publish", parents: [] },
+    {
+      ...view.body,
+      name: "Alternate view",
+      calculation: "simple-routes-shun-v1",
+    },
+  );
+  await service.admitMany([utf8(JSON.stringify(alternate))]);
+  await service.flushMaterialization();
+  const before = coordinator.state.snapshot!;
+  const alternatePath =
+    "/words/" + wordId(word) + "?view=" + alternate.envelope.id;
+  await read(service, alternatePath);
+  const key = before + "|" + alternate.envelope.id;
+  const internals = service as any;
+  const session = internals.sessions.get(key);
+  const rank = session.rankWord.bind(session);
+  const gate = deferred();
+  const entered = deferred();
+  session.rankWord = async (...args: any[]) => {
+    entered.resolve();
+    await gate.promise;
+    return rank(...args);
+  };
+  const reading = read(service, alternatePath);
+  try {
+    await entered.promise;
+    const next = judgment(
+      definition.envelope.id,
+      "b",
+      [profile.envelope.id],
+      "bless",
+    );
+    await service.admitMany([utf8(JSON.stringify(next))]);
+    await assert.rejects(
+      service.flushMaterialization(),
+      (error: any) => error.code === "resource_unavailable",
+    );
+    assert.equal(coordinator.state.materialized_snapshot, before);
+    assert.equal(internals.sessionUses.get(key), 1);
+    assert.equal(internals.sessions.get(key), session);
+    assert.equal(internals.evaluationCache.size, 2);
+    assert.deepEqual([...internals.inFlightPackages], []);
+    assert.deepEqual([...internals.inFlightEvaluations], []);
+    gate.resolve();
+    assert.equal((await reading).snapshot, before);
+    assert.deepEqual([...internals.sessionUses], []);
+    // This ordinary receipt read resumes the saved accepted inventory.
+    const receipt = await read(service, "/receipts/" + next.envelope.id);
+    assert.equal(receipt.snapshot, null);
+    await service.flushMaterialization();
+    assert.equal(
+      coordinator.state.materialized_snapshot,
+      coordinator.state.snapshot,
+    );
+    assert.equal(
+      (await read(service, alternatePath)).snapshot,
+      coordinator.state.snapshot,
+    );
+    assert.equal(internals.evaluationCache.size, 2);
+    assert.deepEqual([...internals.sessionUses], []);
+  } finally {
+    gate.resolve();
+    await reading;
+    await service.flushMaterialization().catch(() => {});
+  }
+});
+
 test("an asynchronous historical ranking keeps its evaluation slot until the read settles", async () => {
   const { service, coordinator, definition, profile } = await fixture();
   const historical = coordinator.state.snapshot!;

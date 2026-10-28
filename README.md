@@ -375,6 +375,8 @@ After publication, the host releases the older runtime when its active calls fin
 It keeps that snapshot's completed state and packages in the bounded cache.
 Pinned reads use those results without restarting evaluation. Word scores remain unavailable after the older runtime stops.
 The next evaluation can evict the older cached result when it needs the slot.
+A failed unpublished package job releases its configured-view protection while active calls keep their cache entries.
+An alternate view can then use that slot after those calls finish. The completed snapshot keeps its protection.
 
 Workers transfer state bytes without retaining another parsed JavaScript state. Judgment updates share unchanged result objects on the main thread.
 
