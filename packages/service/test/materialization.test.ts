@@ -1153,7 +1153,7 @@ test("a public clear pins both configured slots until publication and then relea
     "a".repeat(32),
     { kind: "view.publish", parents: [] },
     {
-      ...view.body,
+      ...(view.body as Record<string, unknown>),
       name: "Alternate view",
       calculation: "simple-routes-shun-v1",
     },
@@ -1256,7 +1256,7 @@ test("a failed publication releases its configured protection for a retained alt
     "a".repeat(32),
     { kind: "view.publish", parents: [] },
     {
-      ...view.body,
+      ...(view.body as Record<string, unknown>),
       name: "Alternate view",
       calculation: "simple-routes-shun-v1",
     },
@@ -1364,7 +1364,7 @@ test("an alternate reader keeps its lease while a write waits and releases it fo
     "a".repeat(32),
     { kind: "view.publish", parents: [] },
     {
-      ...view.body,
+      ...(view.body as Record<string, unknown>),
       name: "Alternate view",
       calculation: "simple-routes-shun-v1",
     },
