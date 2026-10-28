@@ -810,7 +810,8 @@ for (const damage of ["grouped", "ungrouped", "surplus"] as const)
         second.result.report.unresolved.some(
           (issue) =>
             issue.record === owner &&
-            /keywordmapping.*incomplete/.test(issue.reason),
+            /keywordmapping.*incomplete/.test(issue.reason) &&
+            /has no reliable captured definition owner\./.test(issue.reason),
         ),
       );
     const fresh = await run(await setup(), "dense-fresh", "", 3, {

@@ -1622,7 +1622,7 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
         .prepare("INSERT OR IGNORE INTO incomplete_tables VALUES(?,?)")
         .run(
           "keywordmapping",
-          `The keywordmapping source evidence is incomplete. A malformed row at ${unownedMapping.locator} has no captured definition owner.`,
+          `The keywordmapping source evidence is incomplete. A malformed row at ${unownedMapping.locator} has no reliable captured definition owner.`,
         );
     }
     const stageBytes = (await stat(stagePath)).size;
