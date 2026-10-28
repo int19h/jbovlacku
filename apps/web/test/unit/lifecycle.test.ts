@@ -967,7 +967,7 @@ test("branch expiry keeps retry guidance when the fresh scan loses its connectio
     },
     "/api/v1/events/": () => expired(),
   });
-  const knowledge = await askPeers([peer], identity());
+  const knowledge = await askPeers([peer], identity(), null);
   const store = emptyHistory();
   const history = {
     identity: identity(),
