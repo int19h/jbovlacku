@@ -443,11 +443,13 @@ export class Session {
       const error = el("p", { class: "notice", role: "alert" });
       error.hidden = true;
       const current = () => dialog.isConnected && dialog.open;
+      let saving = false;
       const proceed = button(
         "Continue",
         async () => {
-          if (proceed.disabled) return;
-          proceed.disabled = true;
+          if (saving) return;
+          saving = true;
+          proceed.setAttribute("aria-disabled", "true");
           error.hidden = true;
           try {
             await this.setPreferences({ firstSignatureAcknowledged: true });
@@ -464,10 +466,11 @@ export class Session {
             error.textContent = `Not saved: ${describe(failure)}`;
             error.hidden = false;
           } finally {
-            if (current()) proceed.disabled = false;
+            saving = false;
+            if (current()) proceed.setAttribute("aria-disabled", "false");
           }
         },
-        { class: "btn btn-primary" },
+        { class: "btn btn-primary", "aria-disabled": "false" },
       );
       const cancel = button("Not now", () => dialog.close("cancel"), {
         class: "btn btn-quiet",

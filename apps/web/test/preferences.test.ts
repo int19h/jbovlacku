@@ -765,3 +765,36 @@ test("round 3: the latest failed theme choice restores the preceding committed t
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
   expect((await storedPreferences(page)).theme).toBe("light");
 });
+
+for (const focusOther of [false, true]) {
+  test(`round 3: a first-signature failure keeps focus on ${focusOther ? "another modal control" : "Continue"} and ignores repeated input`, async ({
+    page,
+  }) => {
+    await settings(page);
+    await holdEachSave(page);
+    const dialog = await firstSignatureDialog(page);
+    const proceed = dialog.getByRole("button", {
+      name: "Continue",
+      exact: true,
+    });
+    await proceed.focus();
+    await page.keyboard.press("Enter");
+    await page.keyboard.press("Enter");
+    await page.keyboard.press("Space");
+    await expect
+      .poll(() =>
+        page.evaluate(() => (window as any).heldPreferenceWrites.length),
+      )
+      .toBe(1);
+    const focused = focusOther
+      ? dialog.getByRole("button", { name: "Not now", exact: true })
+      : proceed;
+    if (focusOther) await focused.focus();
+    await releaseSave(page, 0, true);
+    await expect(dialog.getByRole("alert")).toContainText(
+      "Test preference write failed.",
+    );
+    await expect(focused).toBeFocused();
+    await expect(proceed).not.toBeDisabled();
+  });
+}
