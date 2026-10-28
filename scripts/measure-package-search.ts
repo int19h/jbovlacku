@@ -44,14 +44,17 @@ const evaluation = {
 } as unknown as Evaluation;
 console.log(
   JSON.stringify({
-    head: execFileSync("git", ["rev-parse", "HEAD"], {
-      encoding: "utf8",
-    }).trim(),
+    head:
+      process.env.JVC_SEARCH_MEASURE_REVISION ??
+      execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
     boundary:
-      "server lexicalSearch after actual package construction and index preparation, with eligibility filtering and word grouping",
+      "server lexicalSearch on completed buildPackages output, with eligibility filtering and word grouping; index preparation availability is reported separately",
     entries: entries.length,
     input_sha256: createHash("sha256").update(bytes).digest("hex"),
     corrected_classifications: corrected,
+    normalized_sha256: createHash("sha256")
+      .update(JSON.stringify(entries))
+      .digest("hex"),
   }),
 );
 const records = (rows: SearchEntry[]): PackageRecord[] =>
@@ -85,18 +88,41 @@ for (const [label, source] of [
   ["cold completed package", entries],
   ["new completed snapshot", structuredClone(entries)],
 ] as const) {
+  const changed = label === "new completed snapshot";
+  if (changed) {
+    source[0].event = "jve1:" + "0".repeat(63) + "1";
+    source[0].body = "sha256:" + "1".repeat(64);
+    source[0].plain_text += " Synthetic package revision.";
+    evaluation.publications[source[0].event] = {
+      ...evaluation.publications[entries[0].event],
+    };
+    evaluation.receipts[source[0].event] = {
+      interpretation: "effective",
+      body: "present",
+      reasons: [],
+    };
+  }
+  const currentSnapshot = {
+    ...snapshot,
+    snapshot: "sha256:" + (changed ? "e" : "d").repeat(64),
+  };
   const preparation = searchMetrics();
   let preparationStart: NodeJS.CpuUsage,
     preparationCpu: NodeJS.CpuUsage | undefined;
   const projected = records(source);
+  let packageWrites = 0,
+    packageBytes = 0;
   const buildStart = process.cpuUsage();
   const built = await buildPackages(
-    snapshot,
+    currentSnapshot,
     {
       async get() {
         throw new Error("Trusted projections must not read original objects.");
       },
-      async put() {},
+      async put(_hash, bytes) {
+        packageWrites++;
+        packageBytes += bytes.length;
+      },
     },
     projected,
     undefined,
@@ -115,11 +141,16 @@ for (const [label, source] of [
   console.log(
     JSON.stringify({
       label: label + " construction",
+      snapshot: currentSnapshot.snapshot,
+      synthetic_revised_definitions: changed ? 1 : 0,
+      package_writes: packageWrites,
+      package_bytes: packageBytes,
       boundary:
         "buildPackages from trusted synthetic projections of retained search entries, excluding authentication and evaluation",
       cpu_us: process.cpuUsage(buildStart),
-      index_preparation_cpu_us: preparationCpu,
-      preparation,
+      index_preparation_observed: preparationCpu !== undefined,
+      index_preparation_cpu_us: preparationCpu ?? null,
+      preparation: preparationCpu === undefined ? null : preparation,
     }),
   );
   if (
@@ -141,7 +172,8 @@ for (const [label, source] of [
         label: label + " " + temperature,
         hits: hits.length,
         cpu_us: process.cpuUsage(start),
-        metrics,
+        metrics: metrics.queryParses > 0 ? metrics : null,
+        metrics_available: metrics.queryParses > 0,
         rss_bytes: process.memoryUsage().rss,
       }),
     );

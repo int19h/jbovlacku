@@ -29,6 +29,9 @@ test("measure real package routes and browser main-thread CPU", async ({
     entries: entries.length,
     input_sha256: createHash("sha256").update(bytes).digest("hex"),
     corrected_classifications: corrected,
+    normalized_sha256: createHash("sha256")
+      .update(JSON.stringify(entries))
+      .digest("hex"),
   };
   console.log(JSON.stringify({ kind: "browser dataset", ...identity }));
   await page.goto("/");

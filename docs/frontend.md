@@ -204,7 +204,8 @@ An LRU cache removes the least recently used item when it reaches its limit.
 Each immutable server package array also retains its prepared entry index through a weak reference.
 A changed definition snapshot uses new entries and rebuilds its text and component index during package materialization.
 Package construction and rebasing complete that index before publication. Checkpoint restore prepares recovered entries before readiness.
-The first search of a completed package does no headword parsing. Preparation still consumes CPU once during materialization. Unchanged spellings reuse the bounded morphology cache.
+The first search of a completed package does no headword parsing. Preparation still consumes CPU once during materialization.
+Inline or historical reads that must construct a package still include that work. Completed-package timings do not promise total HTTP latency. Unchanged spellings reuse the bounded morphology cache.
 The server's existing package and evaluation lifetimes bound those prepared indexes.
 
 Browser storage version 4 records a revision marker beside each language package in the same transaction as its write or deletion.

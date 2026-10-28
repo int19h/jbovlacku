@@ -10,6 +10,7 @@ import {
   utf8,
 } from "../../core/src/index.ts";
 import { searchMetrics, selectMatches } from "../../search/src/index.ts";
+import type { MaterializedPackages } from "../src/packages.ts";
 import { DictionaryService } from "../src/service.ts";
 import {
   FileObjectStore,
@@ -98,6 +99,7 @@ test("GET and POST share segmented ranking, fallback, cursors, and limits in a f
     coordinator,
     {
       serverId: "segmented-test",
+      asyncMaterialization: true,
       selectedView: view.envelope.id,
       policyUrl: "https://example.invalid/policy",
     },
@@ -109,7 +111,18 @@ test("GET and POST share segmented ranking, fallback, cursors, and limits in a f
     );
     await service.flushMaterialization();
     const completed = await (service as any).current();
-    const built = await (service as any).packages(completed.snapshot);
+    assert.equal(
+      (service as any).completed.snapshot.snapshot,
+      completed.snapshot.snapshot,
+    );
+    const retained = (service as any).packageCache.get(
+      completed.snapshot.snapshot,
+    );
+    assert.ok(
+      retained,
+      "Materialization must retain its package before the first query.",
+    );
+    const built = (await retained) as MaterializedPackages;
 
     const firstSearch = searchMetrics();
     selectMatches(built.entries, "i bo", firstSearch);
@@ -215,6 +228,62 @@ test("GET and POST share segmented ranking, fallback, cursors, and limits in a f
     assert.equal(limitedMore.segmentation, "limited");
     assert.equal(limitedMore.next, null);
     assert.notEqual(limitedMore.hits[0].word_id, limited.hits[0].word_id);
+    const updatedWord = { language: "jbo" as const, spelling: "mimimibo" };
+    const update = createEvent(
+      seed,
+      [],
+      "f0".repeat(16),
+      {
+        kind: "definition.publish",
+        word: wordId(updatedWord),
+        language: "en",
+        parents: [],
+        origin: "native",
+      },
+      {
+        word: updatedWord,
+        language: "en",
+        text: [["A synthetic revisionneedle update."]],
+        classification: { kind: "cmavo" },
+        license: { expression: "CC0-1.0" },
+      },
+    );
+    await service.admitMany([utf8(JSON.stringify(update))]);
+    await service.flushMaterialization();
+    const nextSnapshot = await (service as any).current();
+    assert.equal(
+      (service as any).completed.snapshot.snapshot,
+      nextSnapshot.snapshot.snapshot,
+    );
+    const retainedUpdate = (service as any).packageCache.get(
+      nextSnapshot.snapshot.snapshot,
+    );
+    assert.ok(
+      retainedUpdate,
+      "The new snapshot must retain its package before the first query.",
+    );
+    const updatedPackage = (await retainedUpdate) as MaterializedPackages;
+    const afterUpdate = searchMetrics();
+    const updatedMatches = selectMatches(
+      updatedPackage.entries,
+      "revisionneedle",
+      afterUpdate,
+    );
+    assert.equal(
+      afterUpdate.headwordsParsed,
+      0,
+      "A new completed snapshot must prepare its new definition before queries.",
+    );
+    assert.deepEqual(
+      updatedMatches.rows.map((row) => row.entry.event),
+      [update.envelope.id],
+    );
+    const updatedResult = await get("revisionneedle");
+    assert.notEqual(updatedResult.snapshot, search.snapshot);
+    assert.deepEqual(
+      updatedResult.hits.map((hit: any) => hit.word.spelling),
+      [updatedWord.spelling],
+    );
   } finally {
     coordinator.close();
     await rm(directory, { recursive: true, force: true });
