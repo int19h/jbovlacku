@@ -9,7 +9,7 @@ It includes compile-time helpers. It does not claim that every listed package co
 Cargo metadata supplies versions, repositories, and license expressions. `Cargo.lock` pins the source packages.
 
 The npm inventory records every package in `package-lock.json`, including development tools and optional platform packages.
-The browser bundle uses `jose` for encrypted key backups. The standalone server uses Node.js built-in modules.
+The browser bundle uses `jose` for encrypted key backups and ProseMirror for rich-text editing. The standalone server uses Node.js built-in modules.
 The license texts below retain upstream wording. Shared text appears once with every corresponding source file listed.
 
 ## Rust source inventory
@@ -245,6 +245,7 @@ The license texts below retain upstream wording. Shared text appears once with e
 | `kleur` | 4.1.5 | MIT |
 | `miniflare` | 5.20261006.1-alpha | MIT |
 | `nanoid` | 3.3.20 | MIT |
+| `orderedmap` | 2.1.1 | MIT |
 | `path-to-regexp` | 6.3.0 | MIT |
 | `pathe` | 2.0.3 | MIT |
 | `picocolors` | 1.1.1 | ISC |
@@ -254,8 +255,17 @@ The license texts below retain upstream wording. Shared text appears once with e
 | `playwright/node_modules/fsevents` | 2.3.2 | MIT |
 | `postcss` | 8.5.29 | MIT |
 | `prettier` | 3.7.4 | MIT |
+| `prosemirror-commands` | 1.7.2 | MIT |
+| `prosemirror-history` | 1.5.1 | MIT |
+| `prosemirror-inputrules` | 1.5.1 | MIT |
+| `prosemirror-keymap` | 1.2.3 | MIT |
+| `prosemirror-model` | 1.25.12 | MIT |
+| `prosemirror-state` | 1.4.4 | MIT |
+| `prosemirror-transform` | 1.12.4 | MIT |
+| `prosemirror-view` | 1.42.8 | MIT |
 | `resolve-pkg-maps` | 1.0.0 | MIT |
 | `rollup` | 4.64.5 | MIT |
+| `rope-sequence` | 1.3.4 | MIT |
 | `semver` | 7.8.5 | ISC |
 | `sharp` | 0.35.5 | Apache-2.0 |
 | `source-map-js` | 1.2.2 | BSD-3-Clause |
@@ -295,6 +305,7 @@ The license texts below retain upstream wording. Shared text appears once with e
 | `undici-types` | 7.16.0 | MIT |
 | `unenv` | 2.0.0-rc.24 | MIT |
 | `vite` | 7.3.7 | MIT |
+| `w3c-keyname` | 2.2.8 | MIT |
 | `workerd` | 1.20261006.1 | Apache-2.0 |
 | `wrangler` | 4.149.0 | MIT OR Apache-2.0 |
 | `wrangler/node_modules/@esbuild/aix-ppc64` | 0.28.2 | MIT |
@@ -331,7 +342,6 @@ The license texts below retain upstream wording. Shared text appears once with e
 | `commander` | 14.0.3 | MIT |
 | `peggy` | 5.1.1 | MIT |
 | `source-map-generator` | 2.0.7 | BSD-3-Clause |
-
 ## License and copyright texts
 
 The text blocks reproduce local package and font files without edits.
@@ -8374,5 +8384,111 @@ SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
 CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+```
+
+
+## Rich-text editor dependencies
+
+The browser ships the following pinned editor packages and their dependencies. Each source text keeps its original bytes.
+
+### Source text 869c30f368eb
+
+Sources:
+
+- `orderedmap 2.1.1 / LICENSE`.
+- `w3c-keyname 2.2.8 / LICENSE`.
+
+SHA-256: `869c30f368eb08735e779027b9f4bc9fea2f39624351856aebe42741f0bc0884`.
+
+```text
+Copyright (C) 2016 by Marijn Haverbeke <marijn@haverbeke.berlin> and others
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+```
+
+### Source text ef0b452ced63
+
+Sources:
+
+- `prosemirror-commands 1.7.2 / LICENSE`.
+- `prosemirror-history 1.5.1 / LICENSE`.
+- `prosemirror-inputrules 1.5.1 / LICENSE`.
+- `prosemirror-keymap 1.2.3 / LICENSE`.
+- `prosemirror-model 1.25.12 / LICENSE`.
+- `prosemirror-state 1.4.4 / LICENSE`.
+- `prosemirror-transform 1.12.4 / LICENSE`.
+- `prosemirror-view 1.42.8 / LICENSE`.
+
+SHA-256: `ef0b452ced6304db2ce78ca66de1fc7b97bab05bc1750c95df359ed3fe1d65c8`.
+
+```text
+Copyright (C) 2015-2017 by Marijn Haverbeke <marijn@haverbeke.berlin> and others
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+```
+
+### Source text 530424aebdd0
+
+Sources:
+
+- `rope-sequence 1.3.4 / LICENSE`.
+
+SHA-256: `530424aebdd0e73f53238d1f89df250057bc8d8ce090cf5954197fadce5bf226`.
+
+```text
+Copyright (C) 2016 by Marijn Haverbeke <marijn@haverbeke.berlin>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
 
 ```

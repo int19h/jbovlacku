@@ -49,6 +49,8 @@ Keep that file with distributed WebAssembly artifacts, alongside the application
 `package-lock.json` pins npm packages. The lock inventory in the notices includes development tools and optional platform packages.
 A lock entry does not prove that the package appears in a runtime bundle.
 The browser uses `jose` 6.1.3 for encrypted key backups. Its full MIT license appears in the notices.
+The browser bundle ships ProseMirror for every rich-text editor. Its runtime dependencies include orderedmap, rope-sequence, and w3c-keyname.
+The notices retain their full MIT license texts. ProseMirror view stays at 1.42.3 or later for the paste security fix.
 The standalone server uses Node.js built-in modules and the generated WebAssembly bindings.
 The notices also retain Vite and esbuild license files for generated JavaScript helpers.
 Build tools produce the browser and standalone server bundles. They do not select the project software license.
@@ -64,6 +66,13 @@ The root manifest selects these direct npm packages:
 | `jose`                      | 6.1.3        | MIT               | Browser key backup encryption.                        |
 | `peggy`                     | 5.1.1        | MIT               | Word grammar compiler.                                |
 | `prettier`                  | 3.7.4        | MIT               | Source formatting.                                    |
+| `prosemirror-commands` | 1.7.2 | MIT | Rich-text editor. |
+| `prosemirror-history` | 1.5.1 | MIT | Rich-text editor. |
+| `prosemirror-inputrules` | 1.5.1 | MIT | Rich-text editor. |
+| `prosemirror-keymap` | 1.2.3 | MIT | Rich-text editor. |
+| `prosemirror-model` | 1.25.12 | MIT | Rich-text editor. |
+| `prosemirror-state` | 1.4.4 | MIT | Rich-text editor. |
+| `prosemirror-view` | 1.42.8 | MIT | Rich-text editor. |
 | `tsx`                       | 4.20.6       | MIT               | TypeScript execution for local development and tests. |
 | `typescript`                | 5.9.3        | Apache-2.0        | Type analysis.                                        |
 | `vite`                      | 7.3.7        | MIT               | Browser development and bundle.                       |

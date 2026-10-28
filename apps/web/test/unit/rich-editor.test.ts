@@ -1,0 +1,276 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { EditorState, TextSelection } from "prosemirror-state";
+import { undoInputRule } from "prosemirror-inputrules";
+import {
+  editorToRich,
+  nextAutomaticPlace,
+  pastedRichText,
+  placeInputPlugins,
+  richToEditor,
+} from "../../src/model/rich-editor.ts";
+import {
+  PLACE_GLYPHS,
+  circledPlace,
+  placeGlyph,
+} from "../../src/model/place-glyphs.ts";
+import type { RichNode, RichText } from "../../src/model/types.ts";
+import {
+  explicitMeaningPlaces,
+  placeSuggestionProblem,
+} from "../../../../packages/core/src/place-assistance.ts";
+
+test("stored nodes keep every boundary, empty label, and line ending", () => {
+  const value: RichText = [
+    [],
+    [
+      "a",
+      "b",
+      { code: "" },
+      { code: "first\r\n\r\n①" },
+      { code: "next" },
+      { word: { language: "jbo", spelling: "https://cukta" }, label: "" },
+      { url: "https:example.org", label: " \n\n " },
+      50,
+      65535,
+      { operand: "bridi" },
+    ],
+    [],
+  ];
+  const doc = richToEditor(value);
+  doc.check();
+  assert.deepEqual(editorToRich(doc), value);
+  assert.deepEqual(editorToRich(richToEditor([])), []);
+  assert.deepEqual(editorToRich(richToEditor([[]])), [[]]);
+});
+
+test("random stored rich values round trip exactly with a fixed seed", () => {
+  let seed = 0xcafe1234;
+  const random = (limit: number) => {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    return seed % limit;
+  };
+  const fragments = [
+    "",
+    "a",
+    " ",
+    "\n",
+    "\r\n",
+    "\n\n",
+    "①㊿⓪",
+    "\\{\\[\\\\",
+    "[[https://cukta]]",
+    "🙂",
+    "אב",
+    "`|]",
+  ];
+  const string = () =>
+    Array.from(
+      { length: random(5) },
+      () => fragments[random(fragments.length)],
+    ).join("");
+  const node = (): RichNode => {
+    switch (random(6)) {
+      case 0:
+        return string() || " ";
+      case 1:
+        return random(65535) + 1;
+      case 2:
+        return { operand: `operand-${random(10)}` };
+      case 3:
+        return { code: string() };
+      case 4:
+        return {
+          word: { language: "jbo", spelling: string() || "cukta" },
+          label: string(),
+        };
+      default:
+        return { url: `https://example.org/${random(10)}`, label: string() };
+    }
+  };
+  for (let sample = 0; sample < 2000; sample++) {
+    const value = Array.from({ length: random(7) }, () =>
+      Array.from({ length: random(12) }, node),
+    );
+    const doc = richToEditor(value);
+    doc.check();
+    assert.deepEqual(editorToRich(doc), value, `sample ${sample}`);
+  }
+});
+
+test("the circled lookup covers all 50 places and excludes zero", () => {
+  assert.equal(PLACE_GLYPHS.length, 50);
+  assert.equal(new Set(PLACE_GLYPHS).size, 50);
+  for (let index = 1; index <= 50; index++)
+    assert.equal(circledPlace(placeGlyph(index)), index);
+  assert.equal(placeGlyph(21), "㉑");
+  assert.equal(placeGlyph(36), "㊱");
+  assert.equal(placeGlyph(50), "㊿");
+  assert.equal(circledPlace("⓪"), null);
+});
+
+function harness(value: RichText = [], enabled = true) {
+  const plugins = placeInputPlugins({ enabled: () => enabled });
+  let state = EditorState.create({ doc: richToEditor(value), plugins });
+  state = state.apply(state.tr.setSelection(TextSelection.atEnd(state.doc)));
+  const dispatch = (tr: ReturnType<EditorState["tr"]["insertText"]>) => {
+    state = state.applyTransaction(tr).state;
+  };
+  const view = {
+    get state() {
+      return state;
+    },
+    composing: false,
+    dispatch,
+  };
+  const type = (text: string) => {
+    for (const char of text) {
+      const { from, to } = state.selection;
+      const handled = plugins[0].props.handleTextInput!.call(
+        plugins[0],
+        view as never,
+        from,
+        to,
+        char,
+        () => state.tr.insertText(char),
+      );
+      if (!handled) dispatch(state.tr.insertText(char));
+    }
+  };
+  const backspace = () =>
+    undoInputRule(state, (tr) => dispatch(tr.setMeta("richRuleUndo", true)));
+  return {
+    get state() {
+      return state;
+    },
+    dispatch,
+    type,
+    backspace,
+  };
+}
+
+test("typed rules convert on the final character and Backspace restores the complete token", () => {
+  for (const [token, index] of [
+    ["___", 1],
+    ["__1__", 1],
+    ["__50__", 50],
+    ["㊱", 36],
+  ] as const) {
+    const h = harness();
+    h.type(token);
+    assert.deepEqual(editorToRich(h.state.doc), [[index]], token);
+    assert.equal(h.backspace(), true);
+    assert.equal(h.state.doc.textContent, token);
+  }
+  const h = harness([["prefix "]]);
+  h.dispatch(
+    h.state.tr.setSelection(
+      TextSelection.create(h.state.doc, h.state.doc.content.size - 2),
+    ),
+  );
+  h.type("__21__");
+  assert.deepEqual(editorToRich(h.state.doc), [["prefix ", 21]]);
+  h.backspace();
+  assert.deepEqual(editorToRich(h.state.doc), [["prefix __21__"]]);
+});
+
+test("automatic numbering reserves explicit places and restarts after a semicolon", () => {
+  const h = harness([[1, " and ", 4, " then "]]);
+  h.type("___; ___ and ___");
+  assert.deepEqual(editorToRich(h.state.doc), [
+    [1, " and ", 4, " then ", 2, "; ", 1, " and ", 2],
+  ]);
+  const doc = richToEditor([
+    [
+      "; ",
+      { code: ";" },
+      1,
+      " ",
+      { word: { language: "jbo", spelling: "cukta" }, label: ";" },
+      4,
+    ],
+  ]);
+  assert.equal(nextAutomaticPlace(doc, doc.content.size - 1), 2);
+});
+
+test("IME fallback converts DOM insertions and undo restores them once", () => {
+  const h = harness();
+  h.dispatch(h.state.tr.insertText("__50__"));
+  assert.deepEqual(editorToRich(h.state.doc), [[50]]);
+  assert.equal(h.backspace(), true);
+  assert.equal(h.state.doc.textContent, "__50__");
+});
+
+test("literal mode, code labels, invalid numbers, and pasted text do not run rules", () => {
+  const literal = harness([], false);
+  literal.type("___ __50__ ㊿");
+  assert.equal(literal.state.doc.textContent, "___ __50__ ㊿");
+  const code = harness([[{ code: "" }]]);
+  code.dispatch(
+    code.state.tr.setSelection(TextSelection.create(code.state.doc, 2)),
+  );
+  code.type("___ ㊿");
+  assert.deepEqual(editorToRich(code.state.doc), [[{ code: "___ ㊿" }]]);
+  for (const token of ["__0__", "__51__", "__01__", "⓪"]) {
+    const h = harness();
+    h.type(token);
+    assert.equal(h.state.doc.textContent, token);
+  }
+  const paste = harness();
+  paste.dispatch(
+    paste.state.tr.insertText("___ ㊿").setMeta("uiEvent", "paste"),
+  );
+  assert.deepEqual(editorToRich(paste.state.doc), [["___ ㊿"]]);
+  assert.deepEqual(
+    pastedRichText(
+      "<img src=x onerror=alert(1)> [[cukta]] `code` ___ ㊿",
+      false,
+    ),
+    [["<img src=x onerror=alert(1)> [[cukta]] `code` ___ ㊿"]],
+  );
+  assert.deepEqual(pastedRichText("㉑㊱㊿⓪", true), [[21, 36, 50, "⓪"]]);
+});
+
+test("a backslash before a typed explicit place stays a literal backslash", () => {
+  const h = harness();
+  h.type("\\㊿ \\__4__");
+  assert.deepEqual(editorToRich(h.state.doc), [["\\", 50, " \\", 4]]);
+});
+
+test("manual frames keep more than 16 places and gaps without an impossible AI contract", () => {
+  const seventeen = Array.from({ length: 17 }, (_, index) => index + 1);
+  assert.match(placeSuggestionProblem("", [seventeen], null)!, /at most 16/);
+  assert.match(
+    placeSuggestionProblem(PLACE_GLYPHS.slice(0, 17).join(" "), [], null)!,
+    /at most 16/,
+  );
+  assert.match(placeSuggestionProblem("① and ④", [], null)!, /gaps/);
+  assert.match(placeSuggestionProblem("", [[1, " and ", 4]], null)!, /gaps/);
+  const frame = {
+    arity: { mode: "context" },
+    places: [
+      { index: 1, description: [] },
+      { index: 4, description: [] },
+    ],
+  };
+  assert.equal(
+    placeSuggestionProblem("① and ④", [[1, " and ", 4]], frame),
+    null,
+  );
+  assert.deepEqual(
+    frame.places.map((place) => place.index),
+    [1, 4],
+  );
+  assert.deepEqual(
+    frame.places.map((place) => place.description),
+    [[], []],
+  );
+  assert.equal(
+    placeSuggestionProblem("", [seventeen], {
+      places: seventeen.map((index) => ({ index })),
+    }),
+    null,
+  );
+  assert.equal(placeSuggestionProblem("① and ②", [], null), null);
+  assert.deepEqual(explicitMeaningPlaces("\\① ㊿ \\{place 4}"), [4, 50]);
+});
