@@ -708,8 +708,12 @@ const lojbanWord = /^[a-z',.]+(?: [a-z',.]+)*$/u;
  *   that character as literal text. Escaped line breaks stay inside a node.
  *   Escaped whitespace preserves a whitespace-only paragraph.
  */
-const TOKEN =
-  /\\([\\`[{①-⑳\sr])|([①-⑳])|\{place (\d{1,5})\}|\{operand ([a-z][a-z0-9_-]{0,31})\}|`((?:\\[\s\S]|(?!\n\s*\n)[^`\\])*)`|\[\[((?:\\[\s\S]|(?!\n\s*\n)[^\\\]|])+)(?:\|((?:\\[\s\S]|(?!\n\s*\n)[^\\\]])*))?\]\]/gu;
+// A CRLF pair is one line break. Do not backtrack into its separate characters.
+const PARAGRAPH_BREAK = String.raw`(?:\r\n|\r(?!\n)|(?<!\r)\n)\s*(?:\r\n|\r(?!\n)|(?<!\r)\n)`;
+const TOKEN = new RegExp(
+  String.raw`\\([\\\x60[{①-⑳\sr&])|([①-⑳])|\{place (\d{1,5})\}|\{operand ([a-z][a-z0-9_-]{0,31})\}|\x60((?:\\[\s\S]|(?!${PARAGRAPH_BREAK})[^\x60\\])*)\x60|\[\[((?:\\[\s\S]|(?!${PARAGRAPH_BREAK})[^\\\]|])+)(?:\|((?:\\[\s\S]|(?!${PARAGRAPH_BREAK})[^\\\]])*))?\]\]`,
+  "gu",
+);
 const unescape = (value: string, code = false) =>
   value.replace(
     code ? /\\([\\`\r\nr])/gu : /\\([\\\]|`\r\nr])/gu,
@@ -736,7 +740,7 @@ export function editorToRichText(
   };
   // Escaped line breaks belong to a node. Raw paragraph breaks bound tokens,
   // so an unmatched delimiter cannot consume a later paragraph.
-  const tokens = new RegExp(`${TOKEN.source}|(\\n\\s*\\n)`, "gu");
+  const tokens = new RegExp(`${TOKEN.source}|(${PARAGRAPH_BREAK})`, "gu");
   let index = 0;
   for (const match of source.matchAll(tokens)) {
     pending += source.slice(index, match.index);
@@ -757,7 +761,8 @@ export function editorToRichText(
       continue;
     }
     if (escaped !== undefined) {
-      pending += escaped === "r" ? "\r" : escaped;
+      if (escaped === "&") flush();
+      else pending += escaped === "r" ? "\r" : escaped;
       continue;
     }
     if (!local && (circled || placeNumber || operand)) {
@@ -806,9 +811,13 @@ export function richTextToEditor(value: RichText): string {
         (node) => typeof node === "string" && !node.trim(),
       );
       return paragraph
-        .map((node) => {
+        .map((node, index) => {
           if (typeof node === "string")
-            return escapeLiteral(node, true, protectSpaces);
+            return (
+              (index > 0 && typeof paragraph[index - 1] === "string"
+                ? "\\&"
+                : "") + escapeLiteral(node, true, protectSpaces)
+            );
           if (typeof node === "number")
             return node <= 20
               ? String.fromCodePoint(0x245f + node)

@@ -271,7 +271,7 @@ test("F6 an edit preserves saved string line breaks and whitespace", async ({
     const { newDraft } = await import(String("/src/model/draft.ts"));
     const { LocalStore } = await import(String("/src/data/store.ts"));
     const text = [
-      ["first\n\nsecond"],
+      ["first\n\nsecond", " adjacent ", "literal \\&"],
       [{ code: "x" }, " trailing "],
       ["\nleading"],
       [" "],

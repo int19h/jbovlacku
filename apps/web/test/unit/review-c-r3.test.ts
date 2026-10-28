@@ -137,3 +137,89 @@ test("F7 Unicode blank lines bound code and link tokens", () => {
     );
   }
 });
+
+const editorWhitespace = [
+  "\t",
+  "\v",
+  "\f",
+  " ",
+  "\u00a0",
+  "\u1680",
+  ...Array.from({ length: 11 }, (_, i) => String.fromCharCode(0x2000 + i)),
+  "\u2028",
+  "\u2029",
+  "\u202f",
+  "\u205f",
+  "\u3000",
+  "\ufeff",
+];
+test("F6 bounded round trips preserve whitespace, escaped contents, and adjacent strings", () => {
+  const payloads = [
+    ...editorWhitespace,
+    "\n",
+    "\r",
+    "\r\n",
+    "\n\r",
+    "\\r",
+    "\\&",
+    "&",
+    "\\\n",
+    "[[①|`x`]]",
+    "a\n\nb",
+    "a\r\nb",
+    "end ",
+  ];
+  for (const value of payloads) {
+    const values: RichText[] = [
+      [[value]],
+      [["prefix"], [value], ["suffix"]],
+      [[value, " adjacent ", value]],
+      [
+        [
+          { code: value },
+          " ",
+          { word: { language: "jbo", spelling: "CUKTA" }, label: value },
+          { url: "https://example.org/a|b", label: value },
+        ],
+      ],
+    ];
+    for (const rich of values)
+      assert.deepEqual(
+        editorToRichText(richTextToEditor(rich), true),
+        rich,
+        JSON.stringify(rich),
+      );
+  }
+});
+test("F7 tokenizer and remapping share every supported blank-line boundary", () => {
+  const boundaries = [
+    "\r\n\r\n",
+    "\r\r",
+    "\n\r\n",
+    "\r\n\n",
+    ...editorWhitespace.map((space) => `\n${space}\n`),
+  ];
+  for (const boundary of boundaries) {
+    assert.deepEqual(
+      editorToRichText(`a${boundary}b`, true),
+      [["a"], ["b"]],
+      JSON.stringify(boundary),
+    );
+    for (const [opening, closing] of [
+      ["Use the ` key.", "Then ` again."],
+      ["Use [[cukta|text.", "Then ]] again."],
+    ]) {
+      const source = `${opening}${boundary}① is the agent.${boundary}${closing}`;
+      assert.deepEqual(
+        editorToRichText(source, true),
+        [[opening], [1, " is the agent."], [closing]],
+        JSON.stringify(boundary),
+      );
+      assert.match(
+        remapPlaces(source, () => 2),
+        /② is the agent/,
+      );
+    }
+  }
+  assert.deepEqual(editorToRichText("one\r\ntwo", true), [["one\r\ntwo"]]);
+});
