@@ -62,12 +62,13 @@ export async function preferencesPage(
     const capabilities = await getCapabilities({ signal: context.signal });
     if (!context.live()) return;
     if (assistanceProfiles(capabilities).length) {
-      const saved = el("p", { class: "small", role: "status" });
+      const saved = el("p", { class: "small", role: "status", hidden: true });
       const choice = checkbox(
         "Use AI assistance",
         prefs.useAiAssistance !== false,
         async (value) => {
           input.disabled = true;
+          saved.hidden = false;
           saved.textContent = "Saving assistance setting.";
           try {
             await session.setPreferences({ useAiAssistance: value });
