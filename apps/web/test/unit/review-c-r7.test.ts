@@ -126,7 +126,7 @@ test("R7 a word link spelled https:example.org keeps the original typed syntax",
   const rich = [
     [
       {
-        word: { language: "jbo", spelling: "https:example.org" },
+        word: { language: "jbo" as const, spelling: "https:example.org" },
         label: "https:example.org",
       },
     ],
