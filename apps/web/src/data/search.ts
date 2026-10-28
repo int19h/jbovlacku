@@ -29,21 +29,35 @@ import {
 
 /** Package objects are immutable snapshots. Reuse their identity index across renders. */
 export function createPackageWordIndex(identify: typeof wordId = wordId) {
-  const indexes = new WeakMap<CachedPackage, Map<string, PackageEntry[]>>();
-  return (pkg: CachedPackage, identity: string): readonly PackageEntry[] => {
+  const indexes = new WeakMap<
+    CachedPackage,
+    { words: Map<string, PackageEntry[]>; invalidEntries: number }
+  >();
+  const indexFor = (pkg: CachedPackage) => {
     let index = indexes.get(pkg);
     if (!index) {
-      index = new Map();
+      index = { words: new Map(), invalidEntries: 0 };
       for (const entry of pkg.entries) {
-        const id = identify(entry.word);
-        const rows = index.get(id) ?? [];
+        let id;
+        try {
+          id = identify(entry.word);
+        } catch {
+          index.invalidEntries++;
+          continue;
+        }
+        const rows = index.words.get(id) ?? [];
         rows.push(entry);
-        index.set(id, rows);
+        index.words.set(id, rows);
       }
       indexes.set(pkg, index);
     }
-    return index.get(identity) ?? [];
+    return index;
   };
+  return Object.assign(
+    (pkg: CachedPackage, identity: string): readonly PackageEntry[] =>
+      indexFor(pkg).words.get(identity) ?? [],
+    { invalidEntryCount: (pkg: CachedPackage) => indexFor(pkg).invalidEntries },
+  );
 }
 export const packageWordEntries = createPackageWordIndex();
 

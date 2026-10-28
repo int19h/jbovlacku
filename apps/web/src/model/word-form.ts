@@ -146,7 +146,7 @@ export function wordFormFeedback(draft: WordFormDraft) {
   const text = [
     `Detected form: ${kindLabel(analysis.kind)}.${words}`,
     message,
-    ...analysis.diagnostics,
+    ...analysis.diagnostics.filter((diagnostic) => diagnostic !== message),
   ]
     .filter(Boolean)
     .join(" ");

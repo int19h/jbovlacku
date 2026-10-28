@@ -1151,6 +1151,8 @@ fn validate_body_fields(h: &Header, b: &Value) -> Result<()> {
             fields(b, &["word", "rafsi", "rationale", "sources", "legacy"])?;
             let spelling = string(&b["word"]["spelling"])?;
             let rafsi = string(&b["rafsi"])?;
+            validate_spelling(spelling, 256)?;
+            validate_spelling(rafsi, 64)?;
             if crate::strip_acute_accents(spelling) != spelling
                 || crate::strip_acute_accents(rafsi) != rafsi
             {

@@ -133,6 +133,7 @@ Different definitions of one name can retain different display stress. Their sha
 The wizard and `zei` builder preserve accented names and check the plain identity for existing definitions.
 Automatic `zei` construction normalizes case, commas, apostrophe aliases, and edge periods while retaining acute marks.
 Restored compounds and rafsi pages group accent variants by word ID. Rafsi claim bodies use plain source spellings.
+The wizard blocks accented rafsi before signing and keeps the entered text until the author changes it.
 Zbalermorna display converts the plain spelling. Foreign text without a word parse stays literal.
 Accents on other recognized words block authoring. They do not change the grammar or make a vowel-final form into a name.
 A remote exact-word check requires consent for that word and language. Missing coverage stays visible.

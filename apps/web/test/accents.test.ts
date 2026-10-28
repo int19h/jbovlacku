@@ -573,11 +573,11 @@ test("R3 wizard blocks accented rafsi before Publish and preserves the entered s
   });
   expect(
     records.find(
-      (row) => row.envelope.header.action.kind === "definition.publish",
+      (row: any) => row.envelope.header.action.kind === "definition.publish",
     ).body.word.spelling,
   ).toBe("dján");
   const claim = records.find(
-    (row) => row.envelope.header.action.kind === "rafsi.publish",
+    (row: any) => row.envelope.header.action.kind === "rafsi.publish",
   );
   expect(claim.body.word.spelling).toBe("djan");
   expect(claim.body.rafsi).toBe("dja");
