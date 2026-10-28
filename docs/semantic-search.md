@@ -218,30 +218,42 @@ Each transaction removes only inputs and vectors without a remaining association
 An interrupted retirement keeps its cleanup marker. A later background prune or explicit retirement continues that cleanup.
 Operator-created generations remain under explicit operator control. The existing capacity limits still apply.
 
-A durable background pointer retains the same job across failures, restarts, and later snapshots.
-The background server retries this job automatically. The operator CLI keeps its manual recovery and retry policy.
-A refusal before dispatch creates no provider charge. Busy slots, budget refusals, and probe errors receive exponential backoff from one second to one minute.
-A probe that reaches the provider retains its own charge, even when it fails before the indexing batch starts.
+A durable background pointer retains unfinished work across failures and restarts.
+The background server retries this work automatically. The operator CLI keeps its manual recovery and retry policy.
+A known refusal before dispatch creates no provider charge. Busy slots and temporary refusals receive exponential backoff from one second to one minute.
+A probe with an operation ID, or an unknown dispatch outcome, counts as a sent attempt.
+Each sent probe retains its own charge, even when it fails before the indexing batch starts.
 The server waits for saved provider cooldowns and hourly or daily budget windows. It never raises a spending cap.
 Provider hints keep the existing one-hour cooldown cap. Budget-window hints retain their full delay, including a daily window.
 
-An unknown indexing send receives at most three automatic linked retries in one recovery round.
-Each retry creates a new batch and shared-budget operation. Earlier batches and conservative charges remain intact.
+An unknown send receives at most three automatic retries in one recovery round.
+Each indexing retry creates a linked batch and a new shared-budget operation. Earlier batches and conservative charges remain intact.
 The delays are one, two, and four seconds, or longer when a provider or budget deadline requires it.
 A completed vector never enters another paid indexing batch. A retry waits until its earlier transport and settlement finish.
-When the round ends, the job pauses with `background_retry_exhausted` and writes a log line.
-Node writes `semantic_index_status` messages even when `JVC_LOG_ERRORS` is disabled. These messages omit provider response text.
-It opens another recovery round after one hour or at the next server start.
-A restart never shortens a provider cooldown or budget window.
+After four sent failures, the server splits a batch into individual inputs. Each input then has its own bounded retry round.
+After that round fails, the server parks the input for one hour. Healthy inputs continue while it waits.
+A request that exceeds an empty spending limit splits immediately. An individual input that still exceeds that limit waits one hour.
+Parked inputs retain their exact profile, input hash, prior batch, failure count, and deadline across restarts and newer snapshots.
+New generations reuse these holds. They do not send parked inputs early or replay completed vectors.
+A finished pass can retain failed coverage and advance to a newer snapshot.
+Due inputs return automatically even when the snapshot does not change. Inputs absent from the current generation do not dispatch.
+
+Sent probe failures pause the job with `background_retry_exhausted` after four attempts and wait one hour.
+Node writes `semantic_index_status` messages when the recovery state changes, even when `JVC_LOG_ERRORS` is disabled.
+These messages omit provider response text. Repeated identical refusals do not write another status line.
+A restart never shortens a parked input deadline, provider cooldown, or budget window.
 
 Generation status includes `background_recovery` while the background job waits.
 It names `next_attempt`, `not_before`, `sent_attempts`, `refusals`, `exhausted`, and `reason`.
+Status also exposes the count and earliest deadline of retained input holds in `background_inputs`.
 Times are Unix milliseconds. `not_before` preserves provider and budget deadlines separately from the recovery cooldown.
 The five-second host schedule starts eligible attempts. Healthy work continues through consecutive batches without that delay.
-A successful batch resets the failure sequence. A suspended profile still requires a compatible replacement profile.
+A successful vector clears its input hold in the same transaction. Unrelated successes do not reset another input's retry count.
+A suspended profile still requires a compatible replacement profile.
 Fully staged jobs recover from retained inputs without reading their old source snapshot again.
-An unfinished preparation still requires its pinned source snapshot. If that snapshot expires, automatic backoff cannot repair the missing source.
-The job preserves its error for operator repair. Automatic recovery also cannot repair storage exhaustion or an invalid provider configuration.
+Storage exhaustion and an expired source snapshot during unfinished preparation receive a one-hour cooldown.
+An unpublished preparation with no dispatched batch can move to a newer source snapshot after expiry.
+Automatic recovery cannot repair invalid provider configuration or create missing storage capacity.
 
 Shutdown stops scheduling and new claims, then drains admitted transports before closing storage and releasing the directory lock.
 A stop after a claim and before dispatch retains that unsent batch as failed and pauses the job with `index_paused`.
