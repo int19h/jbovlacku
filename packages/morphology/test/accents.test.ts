@@ -45,8 +45,6 @@ test("acute marks on nonnames or separators return a clear error", () => {
       "blánu",
       "lé",
       "ckúsni",
-      "ĺéna",
-      "ḿa'a",
       "\u0301djan",
       "dja'\u0301an",
       "dja1\u0301n",
@@ -99,7 +97,7 @@ test("zei construction keeps accented names visible and recovers plain component
         ],
         joins: [" zei "],
       }).candidates[0].spelling,
-      spelling,
+      spelling.toLowerCase().normalize("NFC"),
     );
   }
   assert.equal(analyzeWord("extended-v4", "djan zei blánu").kind, "unknown");
@@ -167,4 +165,92 @@ test("text segmentation ignores acute name stress and keeps original source offs
     segmentText("mi .café漢.").foreign.map((run) => run.text),
     ["café漢"],
   );
+});
+
+test("R2 Opus F1: implicit zei candidates normalize every spelling alias and keep only acute display marks", () => {
+  const build = (name: string, spelling?: string) =>
+    buildLujvo({
+      profile: "extended-v4",
+      components: [
+        { id: "name", spelling: name, kind: "cmevla" },
+        { id: "root", spelling: "blanu", kind: "gismu" },
+      ],
+      joins: [" zei "],
+      ...(spelling ? { spelling } : {}),
+    }).candidates[0];
+  for (const [marked, plain] of [
+    ["DŹÁN", "DZAN"],
+    ["Dján", "Djan"],
+    [".dján.", ".djan."],
+    ["dja,ń", "dja,n"],
+    ["djáhan", "djahan"],
+  ]) {
+    assert.equal(
+      stripAcuteAccents(build(marked).spelling),
+      build(plain).spelling,
+      marked,
+    );
+    assert.equal(
+      build(marked, `${marked} zei blanu`).spelling,
+      `${marked} zei blanu`,
+    );
+  }
+});
+
+test("R2 Astra 1: a plain lock and fixed zei spelling cannot admit an invalid marked source", () => {
+  for (const spelling of ["blánu", "\u0301blanu"]) {
+    assert.throws(
+      () =>
+        buildLujvo({
+          profile: "extended-v4",
+          components: [
+            { id: "source", spelling, locked: "blanu", kind: "gismu" },
+            { id: "root", spelling: "klama", kind: "gismu" },
+          ],
+          joins: [" zei "],
+          spelling: "blanu zei klama",
+        }),
+      /source|component/,
+      spelling,
+    );
+  }
+  const positive = buildLujvo({
+    profile: "extended-v4",
+    components: [
+      { id: "name", spelling: "dján bu", locked: "djan bu", kind: "letteral" },
+      { id: "root", spelling: "blanu", kind: "gismu" },
+    ],
+    joins: [" zei "],
+    spelling: "djan bu zei blanu",
+  });
+  assert.equal(positive.candidates.length, 1);
+});
+
+test("R2 Opus F6: accented runs without a word parse remain literal foreign text", () => {
+  for (const source of ["mi .cáfeee.", "mi .café漢."]) {
+    const result = segmentText(source);
+    assert.ok(result.foreign.length, source);
+    for (const run of result.foreign)
+      assert.equal(source.slice(run.start, run.end), run.text);
+  }
+  for (const source of ["mi blánu", "café", "klamá"])
+    assert.throws(
+      () => segmentText(source),
+      /Acute accents are allowed only on cmevla/,
+    );
+});
+
+test("R2 Opus F8: unknown plain headwords keep their original diagnostics without a false accent error", () => {
+  for (const profile of ["cll", "extended-v4"] as const) {
+    for (const spelling of [".dján.", "dján smit"]) {
+      const marked = analyzeWord(profile, spelling);
+      const plain = analyzeWord(profile, stripAcuteAccents(spelling));
+      assert.equal(marked.kind, plain.kind, `${profile}: ${spelling}`);
+      assert.deepEqual(
+        marked.diagnostics,
+        plain.diagnostics,
+        `${profile}: ${spelling}`,
+      );
+    }
+  }
 });

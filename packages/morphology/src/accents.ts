@@ -8,7 +8,19 @@ export function stripAcuteAccents(spelling: string): string {
   return spelling.normalize("NFD").replaceAll("\u0301", "").normalize("NFC");
 }
 
-/** Reject detached marks and marks on words whose plain parse is not a name. */
+/** Normalize a component like the plain parser, while keeping acute display marks. */
+export function normalizeAcuteDisplay(spelling: string): string {
+  return spelling
+    .trim()
+    .toLowerCase()
+    .replaceAll("’", "'")
+    .replaceAll("h", "'")
+    .replaceAll(",", "")
+    .replace(/^\.|\.$/g, "")
+    .normalize("NFC");
+}
+
+/** Reject detached marks and marks on recognized words other than names. */
 export function applyAcuteRules(analysis: WordAnalysis): WordAnalysis {
   const decomposed = analysis.original.normalize("NFD");
   if (!decomposed.includes("\u0301")) return analysis;
@@ -29,14 +41,13 @@ export function applyAcuteRules(analysis: WordAnalysis): WordAnalysis {
   let names = true;
   for (const char of marked) {
     if (char === "\u0301") {
+      const word = analysis.words?.find(
+        (word) => word.start <= offset - 1 && word.end >= offset,
+      );
       if (
-        analysis.kind !== "cmevla" &&
-        !analysis.words?.some(
-          (word) =>
-            word.kind === "cmevla" &&
-            word.start <= offset - 1 &&
-            word.end >= offset,
-        )
+        word
+          ? word.kind !== "cmevla"
+          : !["unknown", "cmevla"].includes(analysis.kind)
       )
         names = false;
     } else offset += char.length;

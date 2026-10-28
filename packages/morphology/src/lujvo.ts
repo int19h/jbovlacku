@@ -42,6 +42,7 @@ import { analyzePeggyWord, parsePeggyMetered } from "./recognize.ts";
 import {
   ACUTE_ACCENT_ERROR,
   applyAcuteRules,
+  normalizeAcuteDisplay,
   stripAcuteAccents,
 } from "./accents.ts";
 import {
@@ -880,7 +881,16 @@ function buildZeiLujvo(request: LujvoRequest): LujvoResult {
       invalid("Each zei component must be one word or a word followed by bu.");
     if (component.spelling) {
       const source = analyze(component.spelling);
-      if (source.normalized !== part.text)
+      const operand =
+        source.normalized === null
+          ? null
+          : zeiOperand(source.words ?? [], source.normalized);
+      if (
+        !operand ||
+        operand.start !== 0 ||
+        operand.end !== source.normalized!.length ||
+        operand.text !== part.text
+      )
         invalid("A linked zei source must match its whole component spelling.");
     }
     forms.push(part.text);
@@ -912,9 +922,9 @@ function buildZeiLujvo(request: LujvoRequest): LujvoResult {
       .map((component, index) => {
         const selected = component.locked ?? component.spelling;
         return stripAcuteAccents(selected) !== selected
-          ? selected
+          ? normalizeAcuteDisplay(selected)
           : stripAcuteAccents(component.spelling) !== component.spelling
-            ? component.spelling
+            ? normalizeAcuteDisplay(component.spelling)
             : forms[index];
       })
       .join(ZEI_JOIN);

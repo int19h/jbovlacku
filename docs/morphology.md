@@ -124,7 +124,8 @@ Headword analysis lowercases input before parsing. Capitals never mark stress in
 Analysis removes acute accents before parsing. Precomposed letters and a letter followed by U+0301 have the same plain reading.
 Only cmevla can carry these display marks, on vowels or consonants. Examples include `dján`, `ĺénan`, and `ḿa'an`.
 The grammar still requires the same name shape, including a final consonant. Vowel-final `ĺéna` and `ḿa'a` do not become names.
-An acute on another word, a detached acute, or an acute after punctuation produces a clear error.
+An acute on a recognized nonname, a detached acute, or an acute after punctuation produces a clear error.
+An unknown plain spelling keeps its existing diagnostics. A valid name mark adds no error of its own.
 Other diacritics keep their existing behavior. Acute marks do not create new rafsi or change construction scores.
 These display rules also apply before analysis under the retained headword profiles. Their unaccented parses and construction rules stay unchanged.
 For example, `BROdaku` normalizes to `brodaku` and reads as one fu'ivla.
@@ -155,6 +156,8 @@ Foreign text retains the original spelling.
 
 The text API ignores acute name marks instead of treating them as capital stress. It keeps the source offsets, including combining marks.
 An acute on a recognized word other than a cmevla produces an error. Foreign runs stay literal and do not establish a name reading.
+For example, `cáfeee` stays foreign. Accent removal makes `klamá` a recognized gismu and `café` two cmavo, so those runs produce errors.
+The named gencmu override for `klamá` remains necessary because gencmu treats that acute as parsing stress.
 Capital stress in this separate text API keeps its existing behavior. The low-level reference orthography helper retains its original conversion by default.
 
 Text segmentation permits at most 1 MiB of original UTF-8 input and 5,000,000 parser rule entries across all runs.
@@ -185,6 +188,8 @@ The imported spelling `zo si si zei fa'o` falls outside these rules and remains 
 
 The builder links the whole component words to dictionary sources and optional exact definitions.
 Name components can keep acute display marks. Analysis, source matching, and construction use their plain forms.
+Without an explicit result spelling, construction lowercases components and normalizes commas, apostrophe aliases, and edge periods while retaining acute marks.
+An explicit result spelling stays exact. A locked plain form never bypasses validation of its source spelling.
 The candidate keeps the entered accented spelling. Signed component word objects keep their chosen display spelling, while recovered parts remain plain.
 It preserves the entered lujvo spelling. It offers no rafsi choices and reports no rafsi claims or conflicts for these components.
 This path supplies no construction score. Its internal candidate uses `0` only as a placeholder, and signed compound metadata records `score: null`.

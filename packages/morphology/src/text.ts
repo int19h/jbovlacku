@@ -53,8 +53,6 @@ export function segmentText(
     if (!run.spans.length) continue;
     const start = run.spans[0].start;
     const end = run.spans.at(-1)!.end;
-    const original = input.slice(start, end);
-    const accented = original.normalize("NFD").includes("\u0301");
     if (run.foreign) {
       foreign.push({ text: input.slice(start, end), start, end });
       continue;
@@ -78,7 +76,6 @@ export function segmentText(
     }
     spent += parsed.spent;
     if (!parsed.words.length) {
-      if (accented) invalid(ACUTE_ACCENT_ERROR);
       foreign.push({ text: input.slice(start, end), start, end });
       continue;
     }
