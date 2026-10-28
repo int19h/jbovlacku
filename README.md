@@ -190,6 +190,7 @@ Draft reload preserves private `stem` and `ipa` values. Neither enters a signed 
 Publication keeps each source row's word, `word_ipa`, scoring input, weight, and notes.
 New signatures omit unknown `word_ipa` values. Retained signed bodies and private revision markers preserve original field presence without copying it into fresh source rows.
 Known weights, including zero, survive regardless of private `stem` or `ipa` values.
+Revise also keeps a signed source that names only a language, including an empty or whitespace-only word with null input and weight.
 The gismu source editor has seven readable columns inside its own scrolling region at 360 and 1280 CSS pixels.
 Each Remove action includes a row number and names its source language when known, including after a custom language edit.
 The names stay unique for alternatives and rows with no language yet.
