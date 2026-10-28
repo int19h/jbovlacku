@@ -168,6 +168,7 @@ function hintEditor(
   current: TypeHint | null,
   structured: boolean,
   onChange: (hint: TypeHint | null) => void,
+  draft: Draft,
 ): HTMLElement {
   const box = el("div", { class: "sunk", style: "margin-top:8px" });
   const alternatives = current?.alternatives.map((a) => ({
@@ -359,6 +360,11 @@ function hintEditor(
     const noteField = richField("Type note", {
       multiline: true,
       structured,
+      places: () =>
+        draft.frameMode === "none"
+          ? []
+          : draft.places.map((place) => place.index),
+      operands: () => draft.operands.map((operand) => operand.id),
       rows: 2,
       value: note,
       wrapperClass: "",
@@ -1009,6 +1015,7 @@ export async function placesPage(
               saver.touch();
               refreshPreview();
             },
+            draft,
           ),
         );
     };
@@ -1279,11 +1286,16 @@ export async function placesPage(
         custom.replaceChildren();
         if (draft.tail?.kind === "custom")
           custom.append(
-            hintEditor(draft.tail.hint, draft.structured, (hint) => {
-              draft.tail!.hint = hint;
-              saver.touch();
-              refreshPreview();
-            }),
+            hintEditor(
+              draft.tail.hint,
+              draft.structured,
+              (hint) => {
+                draft.tail!.hint = hint;
+                saver.touch();
+                refreshPreview();
+              },
+              draft,
+            ),
           );
       };
       renderTailCustom();

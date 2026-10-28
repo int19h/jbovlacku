@@ -438,6 +438,14 @@ test("every definition rich field edits nodes and preserves untouched multiline 
     "Explanation of derivation 1 for place 1",
     "Rationale for rafsi 1",
   ];
+  const hintPlaces = page
+    .getByRole("toolbar", { name: "Type note formatting", exact: true })
+    .first()
+    .getByLabel("More places");
+  await hintPlaces.focus();
+  await expect(hintPlaces.locator('option[value="4"]')).toHaveText(
+    "Place 4 (declared)",
+  );
   for (const label of labels) {
     const field = page
       .getByRole("textbox", { name: label, exact: true })
@@ -477,10 +485,15 @@ test("manual declarations keep 17 places and a context frame keeps explicit gaps
     page.getByLabel("Description for place 3", { exact: true }),
   ).toHaveCount(0);
   await page.getByRole("button", { name: "Approve the numbering" }).click();
-  const stored = await page.evaluate(async () => {
-    const { LocalStore } = await import(String("/src/data/store.ts"));
-    return new LocalStore().get("drafts", "current");
-  });
+  const read = () =>
+    page.evaluate(async () => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      return new LocalStore().get("drafts", "current");
+    });
+  await expect
+    .poll(async () => (await read()).text)
+    .toEqual([["\\", 1, " and ", 4]]);
+  const stored = await read();
   expect(stored.text).toEqual([["\\", 1, " and ", 4]]);
   expect(
     stored.places.map((place: any) => [place.index, place.description]),
