@@ -324,16 +324,19 @@ export class SqlVectorStore implements VectorStore {
     pending?: (operation: string) => boolean,
   ): Promise<number | null> {
     const generation = this.active(id);
-    const fresh = this.sql.exec(
-      `SELECT 1 FROM semantic_associations a
+    // finish() proves that a completed pass has no fresh eligible inputs.
+    const fresh =
+      generation.state !== "completed" &&
+      this.sql.exec(
+        `SELECT 1 FROM semantic_associations a
       LEFT JOIN semantic_vectors v ON v.profile=? AND v.input=a.input
       LEFT JOIN semantic_background_inputs h ON h.profile=? AND h.input=a.input
       LEFT JOIN semantic_batch_inputs b ON b.generation=a.generation AND b.input=a.input
       WHERE a.generation=? AND a.error IS NULL AND v.input IS NULL AND h.input IS NULL AND b.input IS NULL LIMIT 1`,
-      generation.profile,
-      generation.profile,
-      id,
-    ).length;
+        generation.profile,
+        generation.profile,
+        id,
+      ).length;
     if (fresh) return now;
     // This is the same bounded candidate set as claim(). Pending parents cannot wake a completed pass.
     const held = this.heldCandidates(id, generation.profile, now);

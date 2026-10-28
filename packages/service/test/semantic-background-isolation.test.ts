@@ -1294,3 +1294,43 @@ test("R7 retirement keeps reader and old-host transport guards until exact backg
   await other.close();
   assert.equal((await f.store.generation(job.id)).state, "retired");
 });
+
+test("R7 completed schedules skip the fresh association search", async (t) => {
+  const f = await fixture(t, async () => success());
+  await f.host().cycle();
+  const job = await f.job();
+  assert.equal(job.state, "completed");
+  const internal = f.store as unknown as {
+    sql: {
+      exec(
+        sql: string,
+        ...bindings: (string | number | Uint8Array | null)[]
+      ): Record<string, unknown>[];
+    };
+  };
+  const exec = internal.sql.exec.bind(internal.sql);
+  let freshQueries = 0;
+  t.mock.method(
+    internal.sql,
+    "exec",
+    (sql: string, ...bindings: (string | number | Uint8Array | null)[]) => {
+      if (
+        sql.includes(
+          "LEFT JOIN semantic_batch_inputs b ON b.generation=a.generation",
+        )
+      )
+        freshQueries++;
+      return exec(sql, ...bindings);
+    },
+  );
+  for (let i = 0; i < 10; i++)
+    assert.equal(
+      await f.store.backgroundSchedule(job.id, Date.now(), () => false),
+      null,
+    );
+  assert.equal(
+    freshQueries,
+    0,
+    "R7 an idle completed pass must not scan fresh associations every cycle",
+  );
+});
