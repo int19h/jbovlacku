@@ -177,6 +177,9 @@ An ordered subsequence keeps the query components in order within a longer compo
 For example, `i bo` and `se ri'a` find `iseri'abo`. Reversed or missing repeated components do not match.
 A shorter query inside a compound uses this class even when its components are adjacent.
 Ordinary prefix families precede compounds that contain a one-word query such as `se`.
+A complete component relation keeps the subsequence class even when the compound starts with the query.
+For example, `se'a` and `selbri` precede `sefa'e` for `se`. A literal headword prefix never promotes that compound.
+A partial query without a full component relation still uses ordinary prefix matching, including `sef` for `sefa'e`.
 A foreign or invalid run breaks a contiguous match. It never joins recognized words across that run.
 Only a complete query of cmavo can supply the shorter sequence or an ordered subsequence.
 

@@ -120,3 +120,13 @@ test("R2 parser counters cover every query in a nearby batch", () => {
   assert.equal(metrics.queryWords, 2);
   assert.equal(metrics.queryParserWork, first * 2);
 });
+
+test("R2 prefix-shaped compounds keep the weaker component class", () => {
+  assert.deepEqual(search(["sefa'e", "selbri", "se'a", "se"], "se"), [
+    ["se", "headword"],
+    ["selbri", "headword-prefix"],
+    ["se'a", "headword-prefix"],
+    ["sefa'e", "sequence-subsequence"],
+  ]);
+  assert.deepEqual(search(["sefa'e"], "sef"), [["sefa'e", "headword-prefix"]]);
+});

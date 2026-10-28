@@ -355,9 +355,11 @@ export function selectMatches<T extends LexicalEntry>(
       candidates.push("headword");
     if (index.glosses.includes(prepared.text)) candidates.push("gloss");
     if (sequence) candidates.push(sequence);
+    // A complete component relation keeps its subsequence class even at the start.
     if (
-      (prepared.headword && index.spelling.startsWith(prepared.headword)) ||
-      (prefix && index.canonical.startsWith(prefix))
+      sequence !== "sequence-subsequence" &&
+      ((prepared.headword && index.spelling.startsWith(prepared.headword)) ||
+        (prefix && index.canonical.startsWith(prefix)))
     )
       candidates.push("headword-prefix");
     if (index.glosses.some((gloss) => gloss.startsWith(prepared.text)))

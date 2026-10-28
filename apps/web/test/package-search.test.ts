@@ -233,3 +233,38 @@ test("built assets start a static local-search worker under the server CSP", asy
   ).toBe(true);
   expect(uploads).toEqual([]);
 });
+
+test("stored-package search keeps a prefix-shaped compound after ordinary prefixes", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const hits = await page.evaluate(async () => {
+    const { searchPackage } = await import(
+      String("/src/data/package-search.ts")
+    );
+    const pkg = {
+      snapshot: "sha256:" + "a".repeat(64),
+      entries: ["sefa'e", "selbri", "se'a", "se"].map((spelling, index) => ({
+        event: "jve1:" + (index + 1).toString(16).padStart(64, "0"),
+        word: { language: "jbo", spelling },
+        language: "en",
+        glosses: [],
+        plain_text: "Synthetic definition.",
+        classification: { kind: index === 1 ? "lujvo" : "cmavo", selmaho: [] },
+        body: null,
+      })),
+    };
+    return (await searchPackage(pkg, "en", ["se", "sef"])).hits.map(
+      (rows: any[]) => rows.map((hit: any) => [hit.word.spelling, hit.match]),
+    );
+  });
+  expect(hits[0][0]).toEqual(["se", "headword"]);
+  expect(
+    hits[0]
+      .slice(1, 3)
+      .map(([word]: string[]) => word)
+      .sort(),
+  ).toEqual(["se'a", "selbri"]);
+  expect(hits[0][3]).toEqual(["sefa'e", "sequence-subsequence"]);
+  expect(hits[1]).toEqual([["sefa'e", "headword-prefix"]]);
+});
