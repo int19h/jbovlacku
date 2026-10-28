@@ -1,6 +1,6 @@
 import { navigate, rememberState, type RenderContext } from "../app/router.ts";
 import { RequestError } from "../data/api.ts";
-import { button, p } from "../lib/dom.ts";
+import { button, describe, p } from "../lib/dom.ts";
 
 const stateKey = "jvcReadRetry";
 const currentTarget = () => location.pathname + location.search + location.hash;
@@ -26,14 +26,14 @@ export function appendReadRetry(
   context: RenderContext,
   announce: (message: string) => void,
 ): boolean {
-  if (!(error instanceof RequestError) || error.status !== 503) return false;
-  const target = currentTarget();
   const attempt = context.readRetryAttempt ?? 0;
   if (attempt > 0) {
-    const message = `Still unavailable after read attempt ${attempt}.`;
+    const message = `Still unavailable after retry ${attempt}.`;
     container.append(p(message, "notice"));
-    announce(message);
+    announce(`${message} ${describe(error)}`);
   }
+  if (!(error instanceof RequestError) || error.status !== 503) return false;
+  const target = currentTarget();
   container.append(
     button("Retry reading", () => {
       if (context.live() && !context.signal.aborted)
