@@ -1142,6 +1142,7 @@ HTTP 413 reports size limits. HTTP 429 reports a quota and retry interval.
 HTTP 403 reports local admission refusal. HTTP 503 reports temporary service failure or unavailable computation.
 After an HTTP 503 read failure, a word or search page keeps the reason visible and offers “Retry reading”.
 The retry preserves the route, language, and selected view. It replaces the current history entry and performs no signed write.
+If another attempt fails, the page shows its attempt number and announces the failure through the shell status region.
 
 A semantic no-op or unauthorized action inside a signature-valid causal header is retained as `inert`, not misreported as a bad signature.
 

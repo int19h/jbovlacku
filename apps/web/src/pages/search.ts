@@ -491,7 +491,7 @@ export async function searchPage(
         ),
       );
     else results.append(p(describe(error), "notice"));
-    appendReadRetry(results, error, context);
+    appendReadRetry(results, error, context, app.announce);
     refreshCount();
   }
   if (!context.live()) return;

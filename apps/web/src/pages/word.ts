@@ -95,7 +95,7 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
       );
       return;
     }
-    if (appendReadRetry(main, error, context)) return;
+    if (appendReadRetry(main, error, context, app.announce)) return;
     if (spellingHint)
       main.append(
         p(
