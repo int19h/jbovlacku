@@ -866,3 +866,89 @@ test("R4-2 each claim loads at most 128 due holds through the deadline index", a
     JSON.stringify({ dueHolds: 257, loadedRows: rows, claimQueryPlan: plan }),
   );
 });
+
+test("R4-2 a marked retry excludes an input parked by another view", async (t) => {
+  let fixed = false;
+  const sends: string[][] = [];
+  const f = await fixture(
+    t,
+    async (_url, init) => {
+      const inputs = JSON.parse(String(init?.body)).input as string[];
+      sends.push(inputs);
+      return fixed
+        ? success(inputs.length)
+        : new Response("Unknown", { status: 503 });
+    },
+    2,
+  );
+  let background = f.host();
+  await background.cycle();
+  const old = await f.job();
+  await background.close();
+  const originalSource = { ...f.source, context: { ...f.source.context } };
+  const otherView = hash(1300, "jve1:");
+  const initial = await f.store.create(
+    { ...f.source.context, view: otherView, snapshot: hash(1301), eligible: 0 },
+    f.profile,
+  );
+  await f.store.stage(initial.id, null, {
+    documents: [],
+    next: null,
+    done: true,
+  });
+  await f.store.start(initial.id);
+  await f.store.finish(initial.id);
+  await f.store.publish(initial.id, null);
+  const isolated = f.docs[0];
+  const otherSource = {
+    context: {
+      ...f.source.context,
+      view: otherView,
+      snapshot: hash(1302),
+      eligible: 1,
+    },
+    page: async () => ({
+      documents: [isolated],
+      next: isolated.event,
+      done: true,
+    }),
+  };
+  f.options.view = otherView;
+  f.options.source = async () => otherSource;
+  background = f.host();
+  await background.cycle();
+  const otherJob = () => f.store.backgroundGeneration(old.profile, otherView);
+  for (let i = 0; i < 3; i++) {
+    f.advance(
+      (await otherJob())!.background_recovery!.next_attempt - Date.now(),
+    );
+    await background.cycle();
+  }
+  assert.equal(
+    (await otherJob())?.background_inputs?.count,
+    1,
+    "The second view must park its failed singleton",
+  );
+  const deadline = (await otherJob())!.background_inputs!.next_attempt;
+  await background.close();
+  f.options.view = old.view;
+  f.options.source = async () => originalSource;
+  fixed = true;
+  background = f.host();
+  await background.cycle();
+  assert.deepEqual(
+    sends.at(-1),
+    [new TextDecoder().decode(f.docs[1].input!)],
+    "The old marked batch must send only its unheld input",
+  );
+  assert.equal(
+    (await f.store.generation(old.id)).background_inputs?.next_attempt,
+    deadline,
+  );
+  assert.deepEqual(await f.store.coverage(old.id), {
+    eligible: 2,
+    indexed: 1,
+    failed: 1,
+    pending: 0,
+  });
+});

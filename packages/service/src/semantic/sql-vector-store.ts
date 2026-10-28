@@ -950,7 +950,13 @@ export class SqlVectorStore implements VectorStore {
               "SELECT 1 FROM semantic_vectors WHERE profile=? AND input=?",
               generation.profile,
               input,
-            ).length,
+            ).length &&
+            (!background ||
+              !this.sql.exec(
+                "SELECT 1 FROM semantic_background_inputs WHERE profile=? AND input=?",
+                generation.profile,
+                input,
+              ).length),
         );
         if (inputs.length) break;
         // Another generation can finish every input while this retry waits.
