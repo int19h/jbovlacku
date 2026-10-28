@@ -43,11 +43,15 @@ for (const [name, node] of [
   ],
   ["web label spaces", { url: "https://example.org/", label: " label " }],
 ] as const) {
-  test(`editing beside ${name} preserves its exact content`, () => {
+  test(`editing beside ${name} keeps its type and normalizes blank lines`, () => {
     const rich = [[node]] as RichText;
+    const normalized =
+      "code" in node
+        ? { code: node.code.replace(/\n\s*\n/gu, "\n") }
+        : { ...node, label: node.label.replace(/\n\s*\n/gu, "\n") };
     assert.deepEqual(
       editorToRichText(richTextToEditor(rich) + " appended", true),
-      [[node, " appended"]],
+      [[normalized, " appended"]],
     );
   });
 }
@@ -142,12 +146,12 @@ test("paragraph breaks outside tokens keep local and literal editing rules", () 
   const source = `before\n\n${richTextToEditor([[code]])} after\n\n① {operand bridi}`;
   assert.deepEqual(editorToRichText(source, true), [
     ["before"],
-    [code, " after"],
+    [{ code: "first\n①" }, " after"],
     [1, " ", { operand: "bridi" }],
   ]);
   assert.deepEqual(editorToRichText(source, true, false), [
     ["before"],
-    [code, " after"],
+    [{ code: "first\n①" }, " after"],
     ["① {operand bridi}"],
   ]);
   assert.deepEqual(editorToRichText("literal ①\n\nnext", false), [

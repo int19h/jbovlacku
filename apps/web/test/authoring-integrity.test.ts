@@ -1,11 +1,11 @@
 import { expect, test } from "@playwright/test";
 import { corePath, createIdentity } from "./helpers.ts";
 
-test("editing a revision preserves multiline code and exact link labels", async ({
+test("editing a revision keeps code and labels with normalized blank lines", async ({
   page,
 }) => {
   await page.goto("/");
-  const original = await page.evaluate(async (path) => {
+  await page.evaluate(async (path) => {
     const core = await import(path);
     await core.initializeCore();
     const model = await import(String("/src/model/draft.ts"));
@@ -30,7 +30,6 @@ test("editing a revision preserves multiline code and exact link labels", async 
     ).body;
     const draft = model.draftFromBody(body, "jve1:" + "a".repeat(64), "native");
     await new LocalStore().put("drafts", "current", draft);
-    return text;
   }, corePath);
   await page.goto("/new/places");
   const editor = page.getByRole("textbox", {
@@ -45,7 +44,14 @@ test("editing a revision preserves multiline code and exact link labels", async 
     const { LocalStore } = await import(String("/src/data/store.ts"));
     return (await new LocalStore().get("drafts", "current")).text;
   });
-  expect(saved).toEqual([[...original[0], " appended"]]);
+  expect(saved).toEqual([
+    [
+      { code: "first\n①" },
+      " ",
+      { url: "https://example.org/", label: " label\n① " },
+      " appended",
+    ],
+  ]);
 });
 
 test("comparison exposes nested changes and distinct rich text nodes", async ({

@@ -555,8 +555,8 @@ In structured editing, typed circled numerals insert integer place references. P
 Structured editing uses `①` or `{place N}` for a place reference, `{operand ID}` for an operand reference, `[[spelling|label]]` for a word link, `[[https://host/path|label]]` for a web link, and backticks for code.
 A backslash before `\`, `[`, `{`, a backtick, or a circled numeral keeps that character literal. Code and links also escape their own delimiters.
 Every other backslash stays literal, including TeX commands and a backslash before whitespace or a raw blank line.
-Complete links can contain blank lines. Code that crosses a blank line must touch non-whitespace text at both backticks. Other code stays within its paragraph, so an unmatched backtick cannot consume a later paragraph.
-When a field is edited, CRLF and CR become LF, adjacent strings merge, and trailing plain whitespace is trimmed. Blank lines separate paragraphs outside complete code spans and links, and whitespace-only paragraphs disappear.
+Blank lines always separate paragraphs, so code and links never cross them and unmatched delimiters stay literal within their paragraph. When the editor shows stored code or a link label, each run of blank lines becomes one line break and the node keeps its type.
+When a field is edited, CRLF and CR become LF, adjacent strings merge, and trailing plain whitespace is trimmed. Whitespace-only paragraphs disappear.
 The draft holds each rich text field as its exact rich text value. The editor shows a field in its text form and parses the text back only when the author edits that field, so an untouched value never changes. Literal mode turns the place references of every field into circled characters after a confirmation, and structured mode reads circled characters in text as references again. Links and code stay in both modes; a field edited in literal mode becomes plain text.
 Literal mode preserves circled characters and underscores as text. Both modes produce the same compact rich-text schema.
 In literal mode, removing or moving a place updates the visible circled characters in unchanged fields to keep their saved references aligned.

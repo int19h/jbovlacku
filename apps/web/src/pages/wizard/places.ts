@@ -1006,6 +1006,8 @@ export async function placesPage(
     }
     const grid = el("div", { class: "place-grid" });
     const description = field(`Description for place ${place.index}`, {
+      multiline: true,
+      rows: 2,
       value: editorText(place.description, draft.structured),
       wrapperClass: "span-3",
       labelClass: "field-label",
@@ -1286,6 +1288,8 @@ export async function placesPage(
       const tailDescription = field(
         `Places ${draft.places.length + 1} and on`,
         {
+          multiline: true,
+          rows: 2,
           value: editorText(draft.tail?.description ?? [], draft.structured),
           placeholder: "what the repeated places are",
           wrapperClass: "",
@@ -1616,6 +1620,8 @@ export async function placesPage(
           saver.touch();
         });
         const translation = field(`Translation of example ${i + 1}`, {
+          multiline: true,
+          rows: 2,
           value: editorText(example.translation, draft.structured),
           wrapperClass: "",
         });
@@ -1634,6 +1640,8 @@ export async function placesPage(
           saver.touch();
         });
         const notesField = field(`Notes for example ${i + 1}`, {
+          multiline: true,
+          rows: 2,
           value: editorText(example.notes, draft.structured),
           wrapperClass: "",
         });
@@ -1887,6 +1895,8 @@ export async function placesPage(
             saver.touch();
           });
           const description = field(`Operand ${i + 1} description`, {
+            multiline: true,
+            rows: 2,
             value: editorText(operand.description, draft.structured),
             wrapperClass: "",
           });
@@ -2012,6 +2022,8 @@ export async function placesPage(
             saver.touch();
           });
           const rationale = field(`Rationale for rafsi ${i + 1}`, {
+            multiline: true,
+            rows: 2,
             value: claim.rationale,
             wrapperClass: "",
           });
@@ -2280,6 +2292,8 @@ function derivationEditor(
       const explanation = field(
         `Explanation of derivation ${n} for place ${place.index}`,
         {
+          multiline: true,
+          rows: 2,
           value: editorText(derivation.explanation, structured),
           wrapperClass: "span-3",
           placeholder: "optional, without place references",

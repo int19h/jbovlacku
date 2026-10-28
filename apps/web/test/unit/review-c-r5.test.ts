@@ -85,10 +85,12 @@ test("R5 merging string fragments never creates a place or operand reference", (
   ]);
 });
 
-test("R5 multiline code uses tight backticks and keeps ordinary inline padding", () => {
+test("R5 stored multiline code keeps its type and ordinary inline padding", () => {
   const code = { code: "first\n\n① `quoted` \\ end" };
   const source = richTextToEditor([[code]]);
-  assert.deepEqual(editorToRichText(source, true), [[code]]);
+  assert.deepEqual(editorToRichText(source, true), [
+    [{ code: "first\n① `quoted` \\ end" }],
+  ]);
   assert.equal(
     remapPlaces(source, () => 2),
     source,
@@ -123,7 +125,17 @@ test("R5 complete multiline labels keep padding and literal notation", () => {
   ];
   assert.deepEqual(
     editorToRichText(richTextToEditor(rich) + " appended", true),
-    [[...rich[0], " appended"]],
+    [
+      [
+        {
+          word: { language: "jbo", spelling: "CUKTA" },
+          label: " first\n① | ] \\ last ",
+        },
+        " ",
+        { url: "https://example.org/", label: " first\n① | ] \\ last " },
+        " appended",
+      ],
+    ],
   );
 });
 

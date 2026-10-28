@@ -696,14 +696,14 @@ function referenceAdvice(spelling: string): string | null {
 const lojbanWord = /^[a-z',.]+(?: [a-z',.]+)*$/u;
 /**
  * Structured editing uses place and operand references, links, and code.
- * A multiline code span touches non-whitespace text at both backticks.
- * Other backticks stay within their paragraph. Complete links can span lines.
+ * Code and links stay within one paragraph. Unmatched delimiters stay literal.
  */
 const PARAGRAPH_BREAK = String.raw`(?:\r\n|\r(?!\n)|(?<!\r)\n)\s*(?:\r\n|\r(?!\n)|(?<!\r)\n)`;
-const CODE_CONTENT = String.raw`(?:\\[^\r\n]|\\(?=[\r\n])|[^\x60\\])`;
-const INLINE_CODE_CONTENT = String.raw`(?:\\[^\r\n]|\\(?=[\r\n])|(?!${PARAGRAPH_BREAK})[^\x60\\])`;
+const CODE_CONTENT = String.raw`(?!${PARAGRAPH_BREAK})(?:\\[^\r\n]|\\(?=[\r\n])|[^\x60\\])`;
+const LINK_TARGET = String.raw`(?!${PARAGRAPH_BREAK})(?:\\[^\r\n]|\\(?=[\r\n])|[^\\\]|])`;
+const LINK_LABEL = String.raw`(?!${PARAGRAPH_BREAK})(?:\\[^\r\n]|\\(?=[\r\n])|[^\\\]])`;
 const TOKEN = new RegExp(
-  String.raw`\\([\\\x60[{①-⑳])|([①-⑳])|\{place (\d{1,5})\}|\{operand ([a-z][a-z0-9_-]{0,31})\}|\x60((?=\S)${CODE_CONTENT}*(?<=\S)|${INLINE_CODE_CONTENT}*)\x60|\[\[((?:\\[\s\S]|[^\\\]|])+)(?:\|((?:\\[\s\S]|[^\\\]])*))?\]\]`,
+  String.raw`\\([\\\x60[{①-⑳])|([①-⑳])|\{place (\d{1,5})\}|\{operand ([a-z][a-z0-9_-]{0,31})\}|\x60((?:${CODE_CONTENT})*)\x60|\[\[((?:${LINK_TARGET})+)(?:\|((?:${LINK_LABEL})*))?\]\]`,
   "gu",
 );
 const unescape = (value: string, code = false) =>
@@ -782,6 +782,11 @@ function escapeLiteral(value: string): string {
   );
 }
 const escapeInside = (value: string) => value.replace(/[\\\]|`]/gu, "\\$&");
+/** Keep code and labels in one paragraph without changing their node type. */
+const inlineBreaks = (value: string) =>
+  value
+    .replace(/\r\n?/gu, "\n")
+    .replace(new RegExp(PARAGRAPH_BREAK, "gu"), "\n");
 /** Show stored rich text without changing the draft. Edits normalize it. */
 export function richTextToEditor(value: RichText): string {
   return value
@@ -803,13 +808,13 @@ export function richTextToEditor(value: RichText): string {
           if ("word" in node)
             return node.label === node.word.spelling
               ? `[[${escapeInside(node.word.spelling)}]]`
-              : `[[${escapeInside(node.word.spelling)}|${escapeInside(node.label)}]]`;
+              : `[[${escapeInside(node.word.spelling)}|${escapeInside(inlineBreaks(node.label))}]]`;
           if ("url" in node)
             return node.label === node.url
               ? `[[${escapeInside(node.url)}]]`
-              : `[[${escapeInside(node.url)}|${escapeInside(node.label)}]]`;
+              : `[[${escapeInside(node.url)}|${escapeInside(inlineBreaks(node.label))}]]`;
           if ("code" in node)
-            return `\`${node.code.replace(/[\\`]/gu, "\\$&")}\``;
+            return `\`${inlineBreaks(node.code).replace(/[\\`]/gu, "\\$&")}\``;
           if ("operand" in node) return `{operand ${node.operand}}`;
           return "";
         })
