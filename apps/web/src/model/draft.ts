@@ -14,6 +14,7 @@ import {
   utf8,
   validateAction,
   wordId,
+  stripAcuteAccents,
 } from "../../../../packages/core/src/browser.ts";
 import {
   CIRCLED,
@@ -1906,7 +1907,7 @@ export function draftToBody(input: Draft): {
       message: "Enter the Lojban word.",
       blocking: true,
     });
-  else if (!lojbanWord.test(spelling))
+  else if (!lojbanWord.test(stripAcuteAccents(spelling)))
     problems.push({
       field: "spelling",
       message:
@@ -2158,13 +2159,21 @@ export function draftToBody(input: Draft): {
         "Places are filled in but the structure is unspecified. Choose a structure or the places are not published.",
       blocking: false,
     });
-  for (const claim of draft.rafsiClaims)
-    if (!claim.rafsi.trim())
+  draft.rafsiClaims.forEach((claim, index) => {
+    const rafsi = claim.rafsi.trim().normalize("NFC");
+    if (!rafsi)
       problems.push({
         field: "rafsi",
         message: "A rafsi claim needs a spelling.",
         blocking: true,
       });
+    else if (stripAcuteAccents(rafsi) !== rafsi)
+      problems.push({
+        field: "rafsi",
+        message: `Rafsi claim ${index + 1} requires a spelling without acute accents.`,
+        blocking: true,
+      });
+  });
   // Formation evidence describes one exact form. Another spelling needs new evidence.
   if (
     (draft.formation || draft.compound) &&

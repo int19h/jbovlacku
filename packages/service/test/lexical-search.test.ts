@@ -5,6 +5,37 @@ import { rankNearby } from "../src/nearby.ts";
 import type { SearchEntry } from "../src/packages.ts";
 import type { Evaluation } from "../../core/src/index.ts";
 
+test("accent aliases share one hit whose display follows the selected definition", () => {
+  const entries: SearchEntry[] = ["djan", "dján"].map((spelling, index) => ({
+    event: index ? "a" : "b",
+    word: { language: "jbo", spelling },
+    language: "en",
+    glosses: [],
+    plain_text: "A synthetic name.",
+    classification: { kind: "cmevla" },
+    body: "body",
+  }));
+  const evaluation = {
+    publications: Object.fromEntries(
+      entries.map((entry) => [
+        entry.event,
+        { word: "name", eligible: "eligible", status: "active" },
+      ]),
+    ),
+    receipts: Object.fromEntries(
+      entries.map((entry) => [entry.event, { interpretation: "effective" }]),
+    ),
+  } as unknown as Evaluation;
+  for (const query of ["djan", "dján", "dja\u0301n", "DJÁN"]) {
+    const hits = lexicalSearch(entries, query, "en", evaluation);
+    assert.equal(hits.length, 1);
+    assert.equal(hits[0].preview.event, "a");
+    assert.equal((hits[0].word as { spelling: string }).spelling, "dján");
+    assert.equal(hits[0].definitions.length, 2);
+  }
+  assert.deepEqual(lexicalSearch(entries, "\u0301", "en", evaluation), []);
+});
+
 test("related lexical queries scan every entry once even above ten HTTP pages", () => {
   const entries: SearchEntry[] = Array.from({ length: 1205 }, (_, index) => ({
     event: `event-${index}`,

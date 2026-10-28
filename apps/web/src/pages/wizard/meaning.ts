@@ -20,7 +20,11 @@ import {
   type Route,
 } from "../../app/router.ts";
 import type { App } from "../../app/context.ts";
-import { localSearch, type CachedPackage } from "../../data/search.ts";
+import {
+  localSearch,
+  packageWordEntries,
+  type CachedPackage,
+} from "../../data/search.ts";
 import { getWord, loadRecord, remoteDraftSearch } from "../../data/api.ts";
 import { placeholderCount, type Draft } from "../../model/draft.ts";
 import { countNodes, placeMarker } from "../../model/richtext.ts";
@@ -377,14 +381,7 @@ export async function meaningPage(
       return definitionsList;
     };
     if (packageData) {
-      const entries = packageData.entries.filter(
-        (entry) =>
-          entry.word.spelling.normalize("NFC") === spelling &&
-          wordId({
-            ...entry.word,
-            spelling: entry.word.spelling.normalize("NFC"),
-          }) === id,
-      );
+      const entries = packageWordEntries(packageData, id);
       if (entries.length)
         showExisting(
           entries.map((entry) => ({

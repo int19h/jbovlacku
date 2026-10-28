@@ -1,4 +1,5 @@
 import { kindLabel } from "../model/types.ts";
+import { wordId } from "../../../../packages/core/src/browser.ts";
 import { changeTypedWord } from "../model/typed-headword.ts";
 /** Optional assistance. Provider data is inert, private, and separate from publication. */
 import {
@@ -791,7 +792,11 @@ export function assistanceAction(
         if (!context.live()) return;
         if (
           !publication.body ||
-          publication.body.word.spelling !== existing.word
+          wordId(publication.body.word) !==
+            wordId({
+              language: "jbo",
+              spelling: existing.word.normalize("NFC"),
+            })
         )
           throw new Error("The existing definition is unavailable.");
         const origin =

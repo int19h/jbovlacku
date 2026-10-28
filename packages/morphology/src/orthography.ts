@@ -17,6 +17,8 @@ export interface OrthographyRun {
 export interface OrthographyOptions {
   features?: readonly string[];
   withoutFeatures?: readonly string[];
+  /** The text segmenter treats acute marks as name display, without stress. */
+  acuteAsDisplay?: boolean;
 }
 
 interface Scalar extends OrthographySpan {
@@ -149,6 +151,7 @@ function readLetter(
   items: Scalar[],
   index: number,
   cllCyrillic = false,
+  acuteAsDisplay = false,
 ): { letter: Letter; next: number } | undefined {
   const first = items[index]!;
   const lower = first.value.toLowerCase();
@@ -165,7 +168,7 @@ function readLetter(
     while (next < items.length && mark.test(items[next]!.value))
       marks += items[next++]!.value;
   let end = items[next - 1]!.end;
-  const accented = /[\u0300\u0301]/u.test(marks);
+  const accented = (acuteAsDisplay ? /\u0300/u : /[\u0300\u0301]/u).test(marks);
   const capital = first.value !== lower;
   const result = (
     text: string,
@@ -276,7 +279,7 @@ function readLetter(
     next < items.length &&
     zbalCode(items[next]!.value) !== 0xed8b
   ) {
-    const vowel = readLetter(items, next, cllCyrillic);
+    const vowel = readLetter(items, next, cllCyrillic, acuteAsDisplay);
     if (
       vowel?.letter.vowel &&
       vowel.letter.text.length === 1 &&
@@ -301,6 +304,7 @@ function normalizeRun(
   input: string,
   items: Scalar[],
   cllCyrillic: boolean,
+  acuteAsDisplay: boolean,
 ): OrthographyRun | undefined {
   let first = 0;
   let last = items.length;
@@ -335,7 +339,7 @@ function normalizeRun(
       index++;
       continue;
     }
-    const read = readLetter(items, index, cllCyrillic);
+    const read = readLetter(items, index, cllCyrillic, acuteAsDisplay);
     if (!read) {
       const start = items[0]!.start;
       const end = items[items.length - 1]!.end;
@@ -390,7 +394,12 @@ export function normalizeTextOrthography(
   const runs: OrthographyRun[] = [];
   let current: Scalar[] = [];
   const finish = () => {
-    const run = normalizeRun(input, current, cllCyrillic);
+    const run = normalizeRun(
+      input,
+      current,
+      cllCyrillic,
+      options.acuteAsDisplay ?? false,
+    );
     if (run) runs.push(run);
     current = [];
   };

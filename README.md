@@ -127,6 +127,15 @@ The lujvo builder offers short rafsi, gismu stems, whole gismu, whole-word parts
 If several parts share the same competing rafsi claim, the builder shows one acknowledgment for that claim.
 A word entered on Meaning gets local form detection and an exact identity lookup in the selected language package.
 Headword analysis lowercases author input, so capitals do not mark stress. Authors must write word breaks explicitly.
+Acute accents mark cmevla display stress on vowels or consonants, as in `dján`, `ĺénan`, and `ḿa'an`.
+Definitions and imported source records keep their accented spelling. Identity, search, matching, and morphology ignore those marks.
+Different definitions of one name can retain different display stress. Their shared word ID does not merge the definitions or their judgments.
+The wizard and `zei` builder preserve accented names and check the plain identity for existing definitions.
+Automatic `zei` construction normalizes case, commas, apostrophe aliases, and edge periods while retaining acute marks.
+Restored compounds and rafsi pages group accent variants by word ID. Rafsi claim bodies use plain source spellings.
+The wizard blocks accented rafsi before signing and keeps the entered text until the author changes it.
+Zbalermorna display converts the plain spelling. Foreign text without a word parse stays literal.
+Accents on other recognized words block authoring. They do not change the grammar or make a vowel-final form into a name.
 A remote exact-word check requires consent for that word and language. Missing coverage stays visible.
 Type confirmation opens Places for a typed gismu or fu'ivla, source linking for a lujvo, and Form for the other kinds.
 The typed lujvo path locks the exact analyzed parts and joins, including [optional hyphens and experimental forms](docs/morphology.md).

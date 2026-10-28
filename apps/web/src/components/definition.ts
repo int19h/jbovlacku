@@ -29,6 +29,7 @@ import { routes } from "../app/router.ts";
 import { getIdentity } from "../data/api.ts";
 import { isZeiCompound } from "../model/builders.ts";
 import type { LoadedRecord } from "../data/api.ts";
+import { stripAcuteAccents } from "../../../../packages/core/src/browser.ts";
 
 export interface DefinitionBlockOptions {
   score: ScoreRecord | null;
@@ -291,6 +292,8 @@ export function definitionBlock(
     }),
   );
   if (body) {
+    if (stripAcuteAccents(body.word.spelling) !== body.word.spelling)
+      article.append(p(body.word.spelling, "meta definition-spelling"));
     const prose = renderRichText(body.text, {
       language: body.language,
       className: "prose",

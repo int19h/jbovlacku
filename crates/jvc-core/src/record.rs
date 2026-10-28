@@ -160,11 +160,32 @@ pub fn event_message(header: &Header) -> Result<Vec<u8>> {
 }
 pub fn word_id(word: &Value) -> Result<String> {
     schema::validate_word(word)?;
+    let mut identity = word.clone();
+    identity["spelling"] = Value::String(strip_acute_accents(word["spelling"].as_str().unwrap()));
+    validate_spelling(identity["spelling"].as_str().unwrap(), 256)?;
     Ok(hash_id(
         "jvw1:",
         b"jbovlacku-word-v1\n",
-        &canonical_value(word)?,
+        &canonical_value(&identity)?,
     ))
+}
+/// Acute stress marks affect display only. Keep every other diacritic.
+pub fn strip_acute_accents(spelling: &str) -> String {
+    spelling.nfd().filter(|c| *c != '\u{301}').nfc().collect()
+}
+/// A stress mark must follow a Lojban vowel or consonant.
+pub fn validate_acute_accents(spelling: &str) -> Result<()> {
+    let mut letter = false;
+    for c in spelling.nfd() {
+        if c == '\u{301}' && !letter {
+            return Err(Error::new(
+                "spelling",
+                "An acute accent must follow a Lojban vowel or consonant.",
+            ));
+        }
+        letter = "abcdefgijklmnoprstuvxyz".contains(c.to_ascii_lowercase());
+    }
+    Ok(())
 }
 pub fn rafsi_pair_id(word: &str, rafsi: &str) -> Result<String> {
     if !valid_id(word, "jvw1:") {

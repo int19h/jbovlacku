@@ -12,6 +12,7 @@ export type {
 export type * from "./types.ts";
 export { BuilderError } from "./errors.ts";
 export { builderPresets } from "./presets.ts";
+export { stripAcuteAccents } from "./accents.ts";
 import {
   analyzeWord as analyzeLegacyWord,
   buildLujvo as construct,

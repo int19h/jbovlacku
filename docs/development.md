@@ -346,7 +346,7 @@ The first admission after a restart or Worker eviction needs no retained envelop
 
 
 An extraction format or body-validation change requires another projection of existing data.
-Compact extraction version 5 and semantic extraction version 2 apply the `fuhivla` lexical kind.
+Compact extraction version 7 and semantic extraction version 4 apply the current acute-accent word identity and body rules.
 Earlier derived rows require backfill before reuse. Original signed records remain unchanged.
 Missing or older compact records trigger a parse-only backfill from private original bytes.
 Backfill does not repeat signature checks, body hashing, or canonical JSON checks.

@@ -8,6 +8,7 @@ import {
   utf8,
   evaluate,
   interpretDefinition,
+  wordId,
 } from "../../core/src/index.ts";
 import {
   importCapture,
@@ -56,7 +57,7 @@ const run = (journal?: Journal) =>
   importCapture({ sourceBytes: source, manifest, seed, roots: [], journal });
 function capture(
   rows: Record<string, any>[],
-  journal: Journal,
+  journal?: Journal,
   unavailable_fields = manifest.unavailable_fields,
 ) {
   const bytes = utf8(JSON.stringify({ definitions: rows }));
@@ -75,6 +76,39 @@ function capture(
 }
 const rows = () =>
   JSON.parse(source.toString()).definitions as Record<string, any>[];
+
+test("REST imports preserve acute cmevla display and plain word identity", () => {
+  for (const spelling of ["dján", "m\u0301a'an", "ḾA'AN"]) {
+    const row: Record<string, any> = {
+      ...rows()[0],
+      valsiword: spelling,
+      type_name: "cmevla",
+    };
+    const result = capture([row]);
+    assert.equal(result.report.added, 1, JSON.stringify(result.report));
+    const carrier =
+      result.journal.entries[String(row.definitionid)].versions[0].carrier;
+    assert.equal(carrier.body.word.spelling, spelling.normalize("NFC"));
+    assert.equal(carrier.body.legacy.original.valsiword, spelling);
+    const plain = spelling
+      .normalize("NFD")
+      .replaceAll("\u0301", "")
+      .normalize("NFC");
+    assert.equal(
+      carrier.envelope.header.action.word,
+      wordId({ language: "jbo", spelling: plain }),
+    );
+  }
+  const invalid = capture([
+    { ...rows()[0], valsiword: "blánu", type_name: "gismu" },
+  ]);
+  assert.equal(invalid.report.added, 0);
+  assert.ok(
+    invalid.report.unresolved.some((item) =>
+      /action and body rules/.test(item.reason),
+    ),
+  );
+});
 
 test("source extraction preserves exact numbers and reserved-key source objects", () => {
   const raw =

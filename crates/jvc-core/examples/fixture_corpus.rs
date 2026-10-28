@@ -49,7 +49,26 @@ fn main() {
             .unwrap_or(Value::Null);
         add(&format!("depth-{depth}"), "json", input.as_bytes(), result);
     }
-    for spelling in ["banli", "Banli", "banli\u{202e}", " banli", "e\u{301}", "é"] {
+    for spelling in [
+        "banli",
+        "Banli",
+        "banli\u{202e}",
+        " banli",
+        "e\u{301}",
+        "é",
+        "djan",
+        "dján",
+        "ĺénan",
+        "ḿa'an",
+        "m\u{301}a'an",
+        "b\u{301}an",
+        "\u{301}djan",
+        ".\u{301}djan",
+        "dja'\u{301}an",
+        "dja1\u{301}n",
+        "djän",
+        "dján zei blanu",
+    ] {
         let input = serde_json::to_vec(&json!({"language":"jbo","spelling":spelling})).unwrap();
         let result = word_id(&parse_json(&input).unwrap())
             .map(|id| json!(id))
@@ -122,6 +141,28 @@ fn main() {
         let event = make(
             "05",
             json!({"kind":"definition.publish","word":word_id(&minimal["word"]).unwrap(),"language":"en","parents":[],"origin":"native"}),
+            Some(&bytes),
+        );
+        let availability = inspect_body(&event, Some(&bytes));
+        assert_eq!(
+            matches!(availability, BodyAvailability::Valid { .. }),
+            valid,
+            "{name}"
+        );
+        add(name, "body", &serde_json::to_vec(&json!({"envelope":hex::encode(event.canonical_envelope().unwrap()),"body":hex::encode(bytes)})).unwrap(), serde_json::to_value(availability).unwrap());
+    }
+    for (name, spelling, kind, valid) in [
+        ("acute-name-vowel", "dján", "cmevla", true),
+        ("acute-name-consonant", "ḿa'an", "cmevla", true),
+        ("acute-gismu", "blánu", "gismu", false),
+        ("acute-zei-name", "dján zei blanu", "lujvo", true),
+        ("acute-zei-gismu", "djan zei blánu", "lujvo", false),
+    ] {
+        let value = json!({"word":{"language":"jbo","spelling":spelling},"language":"en","text":[["Synthetic accent fixture"]],"classification":{"kind":kind},"license":{"expression":"CC0-1.0"}});
+        let bytes = canonical_value(&value).unwrap();
+        let event = make(
+            "06",
+            json!({"kind":"definition.publish","word":word_id(&value["word"]).unwrap(),"language":"en","parents":[],"origin":"native"}),
             Some(&bytes),
         );
         let availability = inspect_body(&event, Some(&bytes));

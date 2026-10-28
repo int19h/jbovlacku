@@ -40,6 +40,12 @@ import type { Reading } from "./legacy-recognize.ts";
 
 import { analyzePeggyWord, parsePeggyMetered } from "./recognize.ts";
 import {
+  ACUTE_ACCENT_ERROR,
+  applyAcuteRules,
+  normalizeAcuteDisplay,
+  stripAcuteAccents,
+} from "./accents.ts";
+import {
   ZEI_JOIN,
   ZEI_SCORING_ID,
   zeiOperand,
@@ -410,7 +416,15 @@ export function rowChoicesWithParser(
     );
     return row("", false);
   }
-  const normalized = normalizeWord(component.spelling);
+  if (
+    stripAcuteAccents(component.spelling) !== component.spelling &&
+    (profile === "extended-v4"
+      ? analyzePeggyWord(component.spelling)
+      : analyzeWord(profile, component.spelling)
+    ).kind !== "cmevla"
+  )
+    invalid(ACUTE_ACCENT_ERROR);
+  const normalized = normalizeWord(stripAcuteAccents(component.spelling));
   if (normalized === null) {
     diagnostics.push("The spelling uses characters outside Lojban letters.");
     return row("", locked === null);
@@ -549,12 +563,12 @@ export function analyzeWord(profile: Profile, spelling: string): WordAnalysis {
     }
     return analysis;
   }
-  const normalized = normalizeWord(spelling);
+  const normalized = normalizeWord(stripAcuteAccents(spelling));
   if (normalized === null) {
     analysis.diagnostics.push(
       "The spelling uses characters outside Lojban letters, apostrophes, and commas.",
     );
-    return analysis;
+    return applyAcuteRules(analysis);
   }
   try {
     const reading = parseFor(profile, normalized).reading;
@@ -590,7 +604,7 @@ export function analyzeWord(profile: Profile, spelling: string): WordAnalysis {
     );
   }
   analysis.normalized = normalized;
-  return analysis;
+  return applyAcuteRules(analysis);
 }
 export function buildLujvo(request: LujvoRequest): LujvoResult {
   return buildLujvoWithDetailBudget(request, new DetailBudget());
@@ -867,7 +881,16 @@ function buildZeiLujvo(request: LujvoRequest): LujvoResult {
       invalid("Each zei component must be one word or a word followed by bu.");
     if (component.spelling) {
       const source = analyze(component.spelling);
-      if (source.normalized !== part.text)
+      const operand =
+        source.normalized === null
+          ? null
+          : zeiOperand(source.words ?? [], source.normalized);
+      if (
+        !operand ||
+        operand.start !== 0 ||
+        operand.end !== source.normalized!.length ||
+        operand.text !== part.text
+      )
         invalid("A linked zei source must match its whole component spelling.");
     }
     forms.push(part.text);
@@ -893,8 +916,18 @@ function buildZeiLujvo(request: LujvoRequest): LujvoResult {
     1,
     Math.min(request.limits?.choice_product ?? 20_000, 20_000),
   );
-  const canonical = forms.join(ZEI_JOIN);
-  const spelling = request.spelling ?? canonical;
+  const spelling =
+    request.spelling ??
+    request.components
+      .map((component, index) => {
+        const selected = component.locked ?? component.spelling;
+        return stripAcuteAccents(selected) !== selected
+          ? normalizeAcuteDisplay(selected)
+          : stripAcuteAccents(component.spelling) !== component.spelling
+            ? normalizeAcuteDisplay(component.spelling)
+            : forms[index];
+      })
+      .join(ZEI_JOIN);
   requireLimit("word bytes", bytes(spelling), 128);
   const analysis = analyze(spelling);
   const operands =
@@ -915,8 +948,13 @@ function buildZeiLujvo(request: LujvoRequest): LujvoResult {
   for (const original of spelling) {
     const start = offset;
     offset += original.length;
-    if (original === ",") continue;
-    const char = asciiLower(original).replace(/[h’]/g, "'");
+    const plain = stripAcuteAccents(original);
+    if (!plain) {
+      if (positions.length) positions[positions.length - 1].end = offset;
+      continue;
+    }
+    if (plain === ",") continue;
+    const char = asciiLower(plain).replace(/[h’]/g, "'");
     positions.push({ start, end: offset, char });
   }
   if (positions[0]?.char === ".") positions.shift();

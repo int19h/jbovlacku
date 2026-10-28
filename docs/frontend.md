@@ -160,6 +160,8 @@ A change of mode does not silently upload previously local query history.
 
 Search normalization affects lookup only. It never rewrites signed spellings or definition text.
 Use NFC, case folding for secondary matches, and explicit apostrophe aliases in search indexes.
+Headword matching ignores acute cmevla stress marks. Accented and plain queries find the same word identity.
+Each result keeps the display spelling of its selected definition. Alternative definitions can retain different stress marks.
 An exact spelling match remains distinguishable from a normalized alias.
 Rank result classes in this order: exact headword, exact gloss, headword prefix, gloss prefix, then token matches.
 
@@ -229,7 +231,12 @@ Each step saves the draft in this browser and exposes its save state.
 
 The first step asks for a freeform definition and its language. A headword is optional at this point.
 The optional “Lojban word” field keeps a spelling that the author already chose.
-The app normalizes the spelling to NFC for word identity and analyses its form locally with `analyzeWord`.
+The app normalizes the spelling to NFC and uses the format's plain spelling for word identity.
+It analyses that plain form locally with `analyzeWord`. Analysis lowercases input, while the draft keeps the entered display spelling.
+Acute stress marks are permitted only on cmevla, including name components of a `zei` lujvo.
+An acute on a recognized nonname or a misplaced acute blocks signing, including an experimental classification.
+An unknown spelling with a valid name mark follows the ordinary experimental classification rules.
+An accented spelling requires the `cmevla` classification, or `lujvo` under the format's [bounded `zei` rule](format.md#definition-payload).
 The app compares its `wordId` with the local language package. Remote lookup requires explicit consent for that word and language.
 An existing word shows “Already exists”, its linked word page, its definitions, and “Add a definition”.
 The author can continue with another definition of that word. An unavailable check says that the word could not be checked.
