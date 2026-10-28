@@ -434,6 +434,7 @@ export async function searchPage(
       const limit = Math.min(
         allLocal ? localTotal - displayed.length : PAGE_SIZE,
         RESULT_LIMIT - displayed.length,
+        Math.max(0, localTotal - displayed.length),
       );
       if (displayed.length || limit > localHits.length) {
         const page = await searchPackage(cached, language, [query], {

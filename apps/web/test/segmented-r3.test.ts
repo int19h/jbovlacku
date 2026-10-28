@@ -359,11 +359,11 @@ test("R3 a broad local page keeps its total and show-all cap", async ({
     ),
   );
   await open(page, "/search?q=shared&lang=en");
-  await expect(page.locator(".count")).toHaveText("1005 words");
+  await expect(page.locator("main .count")).toHaveText("1005 words");
   await expect(page.locator("article.hit")).toHaveCount(20);
   await page.getByRole("button", { name: "show all", exact: true }).click();
   await expect(page.locator("article.hit")).toHaveCount(1000);
-  await expect(page.locator(".count")).toHaveText("1005 words");
+  await expect(page.locator("main .count")).toHaveText("1005 words");
   await expect(
     page.getByRole("button", { name: "show all", exact: true }),
   ).toBeDisabled();
@@ -513,4 +513,71 @@ test("R3 compact previews preserve Unicode within bounded main-thread work", asy
     texts.map((text) => Array.from(text).slice(0, 240).join("")),
   );
   expect(observed.maximum).toBeLessThanOrEqual(480);
+});
+
+test("R3 a short local page uses one worker reply", async ({ page }) => {
+  await page.addInitScript(() => {
+    const Original = Worker;
+    (window as any).packageReplies = 0;
+    window.Worker = class extends Original {
+      constructor(url: string | URL, options?: WorkerOptions) {
+        super(url, options);
+        if (String(url).includes("package-search-worker"))
+          this.addEventListener(
+            "message",
+            () => (window as any).packageReplies++,
+          );
+      }
+    };
+  });
+  await seed(page);
+  await open(page, "/search?q=klama&lang=en");
+  await expect(page.locator("article.hit")).toHaveCount(1);
+  expect(await page.evaluate(() => (window as any).packageReplies)).toBe(1);
+});
+
+test("R3 a failed part lookup preserves unchecked manual addition", async ({
+  page,
+}) => {
+  await seed(page);
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { newDraft } = await import(String("/src/model/draft.ts"));
+    const draft = newDraft({ meaning: "Synthetic", language: "en" });
+    draft.kind = "lujvo";
+    await new LocalStore().put("drafts", "current", draft);
+  });
+  const uploads: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().includes("/api/v1/search")) uploads.push(request.url());
+  });
+  await page.route("**/package-search-worker.ts*", (route) => route.abort());
+  await open(page, "/new/lujvo");
+  const field = page.getByRole("textbox", { name: "Add a part", exact: true });
+  await field.fill("barda");
+  const matches = page.getByRole("list", {
+    name: "Matching words",
+    exact: true,
+  });
+  await expect(matches).toContainText("Local search could not start.");
+  await expect(matches).toContainText("local dictionary lookup is unavailable");
+  await expect(matches).not.toContainText("not in the local package");
+  await page
+    .getByRole("button", { name: "Add barda as entered", exact: true })
+    .click();
+  await expect(field).toHaveValue("");
+  await expect
+    .poll(async () =>
+      page.evaluate(async () => {
+        const { LocalStore } = await import(String("/src/data/store.ts"));
+        const draft = await new LocalStore().get("drafts", "current");
+        return draft.lujvo.components.map((part: any) => ({
+          spelling: part.spelling,
+          definition: part.definition,
+          claims: part.claims,
+        }));
+      }),
+    )
+    .toEqual([{ spelling: "barda", definition: null, claims: [] }]);
+  expect(uploads).toEqual([]);
 });

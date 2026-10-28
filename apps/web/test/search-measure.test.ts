@@ -97,6 +97,10 @@ test("measure real package routes and browser main-thread CPU", async ({
       return packageSearchStats();
     });
     console.log(JSON.stringify({ label, main_thread_cpu_ms: elapsed, stats }));
+    if (label === "cold stored package route") {
+      expect(stats?.prepared).toBe(true);
+      expect(stats?.metrics.headwordsParsed).toBeGreaterThan(0);
+    }
     if (label === "second query route") {
       const start = await cpu();
       const stats = await page.evaluate(async () => {

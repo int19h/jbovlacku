@@ -333,6 +333,7 @@ export async function lujvoPage(
       request === partSearch &&
       addField.input.value.trim() === query;
     let hits: LocalHit[] = [];
+    let lookupUnavailable = false;
     try {
       if (cached)
         hits = (
@@ -344,9 +345,9 @@ export async function lujvoPage(
           )
         ).hits[0];
     } catch (error) {
+      lookupUnavailable = true;
       if (current())
         addResults.append(el("li", { class: "notice", text: describe(error) }));
-      return;
     }
     if (!current()) return;
     for (const hit of hits) {
@@ -440,7 +441,10 @@ export async function lujvoPage(
                   : "other";
       item.append(
         el("span", { class: "hw", lang: "jbo", text: enteredSpelling }),
-        text(` ${kindLabel(kind)}, not in the local package`, "meta"),
+        text(
+          ` ${kindLabel(kind)}, ${lookupUnavailable ? "local dictionary lookup is unavailable" : "not in the local package"}`,
+          "meta",
+        ),
         analysis.diagnostics.length
           ? text(` · ${analysis.diagnostics[0]}`, "meta")
           : text(""),
