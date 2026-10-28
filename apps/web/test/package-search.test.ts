@@ -26,19 +26,19 @@ test("package search survives fresh storage reads and invalidates same-snapshot 
       ],
     });
     await writer.put("packages", "en", pkg("old meaning"));
-    const first = await store.get<any>("packages", "en");
+    const first = await store.get("packages", "en");
     const cold = await searchPackage(first, "en", ["old"]);
-    const second = await store.get<any>("packages", "en");
+    const second = await store.get("packages", "en");
     const warm = await searchPackage(second, "en", ["old"]);
-    const otherRead = await writer.get<any>("packages", "en");
+    const otherRead = await writer.get("packages", "en");
     const shared = await searchPackage(otherRead, "en", ["old"]);
     await writer.put("packages", "en", pkg("new meaning"));
-    const replacement = await store.get<any>("packages", "en");
+    const replacement = await store.get("packages", "en");
     const updated = await searchPackage(replacement, "en", ["new", "old"]);
     try {
       await writer.put("packages", "en", () => {});
     } catch {}
-    const afterFailure = await store.get<any>("packages", "en");
+    const afterFailure = await store.get("packages", "en");
     const random = crypto.getRandomValues;
     crypto.getRandomValues = () => {
       throw new Error("Synthetic revision failure.");
@@ -53,7 +53,7 @@ test("package search survives fresh storage reads and invalidates same-snapshot 
     } finally {
       crypto.getRandomValues = random;
     }
-    const afterNonceFailure = await store.get<any>("packages", "en");
+    const afterNonceFailure = await store.get("packages", "en");
     await writer.delete("packages", "en");
     const deleted = await store.get("packages", "en");
     return {
@@ -65,8 +65,8 @@ test("package search survives fresh storage reads and invalidates same-snapshot 
       warmParses: warm.metrics.headwordsParsed,
       reusedAcrossConnections: !shared.prepared,
       keptAfterNonceFailure: afterNonceFailure === replacement,
-      updated: updated.hits.map((rows) =>
-        rows.map((hit) => hit.preview?.plain_text),
+      updated: updated.hits.map((rows: any[]) =>
+        rows.map((hit: any) => hit.preview?.plain_text),
       ),
       keptAfterFailure: afterFailure === replacement,
       deleted: deleted === undefined,
@@ -103,9 +103,7 @@ test("another tab invalidates the retained package and its worker index", async 
       snapshot: "sha256:" + "a".repeat(64),
       entries: [],
     });
-    await searchPackage((await store.get<any>("packages", "en"))!, "en", [
-      "klama",
-    ]);
+    await searchPackage((await store.get("packages", "en"))!, "en", ["klama"]);
   });
   const other = await context.newPage();
   await other.goto("/");

@@ -95,7 +95,7 @@ test("measure real package routes and browser main-thread CPU", async ({
   await page.evaluate(async () => {
     const { LocalStore } = await import(String("/src/data/store.ts"));
     const store = new LocalStore();
-    const pkg = await store.get<any>("packages", "en");
+    const pkg = await store.get("packages", "en");
     pkg.entries[0].plain_text = "replacementmarker";
     pkg.entries[0].classification.kind = "other";
     await store.put("packages", "en", pkg);
