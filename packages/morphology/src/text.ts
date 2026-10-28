@@ -8,10 +8,13 @@ import { ACUTE_ACCENT_ERROR } from "./accents.ts";
 export const TEXT_BYTE_LIMIT = 1024 * 1024;
 export const TEXT_WORK_LIMIT = 5_000_000;
 export const TEXT_RUN_LIMIT = 128;
+export const TEXT_RUN_LIMIT_MAX = 256;
 
 export interface TextSegmentationOptions {
   byteLimit?: number;
   workLimit?: number;
+  /** The default is 128. Search indexes can cover 256-byte headwords. */
+  runLimit?: number;
   features?: readonly string[];
   withoutFeatures?: readonly string[];
 }
@@ -35,10 +38,12 @@ export function segmentText(
 ): TextSegmentation {
   const byteLimit = options.byteLimit ?? TEXT_BYTE_LIMIT;
   const workLimit = options.workLimit ?? TEXT_WORK_LIMIT;
-  for (const limit of [byteLimit, workLimit]) {
+  const runLimit = options.runLimit ?? TEXT_RUN_LIMIT;
+  for (const limit of [byteLimit, workLimit, runLimit]) {
     if (!Number.isSafeInteger(limit) || limit < 0)
       invalid("Text segmentation limits must be nonnegative safe integers.");
   }
+  requireLimit("text run limit", runLimit, TEXT_RUN_LIMIT_MAX);
   requireLimit("text byte limit", byteLimit, TEXT_BYTE_LIMIT);
   requireLimit("text work limit", workLimit, TEXT_WORK_LIMIT);
   requireLimit("text bytes", utf8Length(input), byteLimit);
@@ -57,7 +62,7 @@ export function segmentText(
       foreign.push({ text: input.slice(start, end), start, end });
       continue;
     }
-    requireLimit("text run phonemes", run.text.length, TEXT_RUN_LIMIT);
+    requireLimit("text run phonemes", run.text.length, runLimit);
     let parsed: ReturnType<typeof readPeggyWords>;
     try {
       parsed = readPeggyWords(run.text, workLimit - spent, true);
