@@ -45,7 +45,9 @@ test("N5 keyboard batches focus the first new row through the final batch", asyn
   page,
 }) => {
   await page.goto("/");
-  await expect(page.getByRole("region", { name: "Search results" })).toBeVisible();
+  await expect(
+    page.getByRole("region", { name: "Search results" }),
+  ).toBeVisible();
   await page.evaluate(async () => {
     const { changedValues } = await import(
       String("/src/components/comparison.ts")
@@ -116,7 +118,7 @@ test("N2 and N4 saved prose stays readable and typed trailing whitespace is trim
   });
   const source = await editor.inputValue();
   expect(source.split("\n\n")[0]).toBe(prose);
-  await editor.fill(source + "\n\nNext. \\{cr} \\{join} \\{char 0020}\n\n  ");
+  await editor.fill(source + "\n\nNext.\n\n  ");
   await expect(
     page.getByText("Saved in this browser", { exact: true }),
   ).toBeVisible();
@@ -124,14 +126,16 @@ test("N2 and N4 saved prose stays readable and typed trailing whitespace is trim
     const { LocalStore } = await import(String("/src/data/store.ts"));
     return (await new LocalStore().get("drafts", "current")).text;
   });
-  expect(saved).toEqual([[prose], ["  "], ["Next. {cr} {join} {char 0020}"]]);
+  expect(saved).toEqual([[prose], ["Next."]]);
 });
 
 test("N3 distant edits in a long list render only the two changes", async ({
   page,
 }) => {
   await page.goto("/");
-  await expect(page.getByRole("region", { name: "Search results" })).toBeVisible();
+  await expect(
+    page.getByRole("region", { name: "Search results" }),
+  ).toBeVisible();
   await page.evaluate(async () => {
     const { changedValues } = await import(
       String("/src/components/comparison.ts")

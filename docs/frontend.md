@@ -552,16 +552,11 @@ The wizard can suggest placeholder mappings, but the author approves numbering b
 Repeated references can name the same place. Textual order does not determine final place order.
 
 In structured editing, typed circled numerals insert integer place references. Pasting offers literal text or explicit token conversion.
-Every rich text node has a text form in structured editing, so a published body converts to editor text and back without loss: `①` or `{place N}` is a place reference, `{operand ID}` an operand reference, `[[spelling|label]]` a word link, `[[https://host/path|label]]` a web link, and `` `text` `` code. A backslash before `\`, `[`, `{`, `` ` ``, or a circled numeral keeps that character as literal text.
-The tokens `{cr}` and `{lf}` preserve a carriage return and a newline inside a node. The token `{char HHHH}` preserves one character, where `HHHH` is its four-digit hexadecimal code.
-The editor writes these tokens for stored carriage returns, trailing whitespace, and newlines that can form or join a blank line. Ordinary single line breaks stay readable.
-The token `{join}` separates adjacent string nodes without adding text. This keeps the original text fragments separate after an edit.
-These forms are reserved syntax, like `{place N}`. To type literal token text in prose, escape its opening brace, for example `\{cr}` or `\{join}`.
-The editor protects stored literal braces before it writes a value. In code and link labels, it uses `{char 007b}` for the opening brace of a character token.
-Code recognizes backslash escapes only for `\` and backticks. Link targets and labels also recognize escapes for `]` and `|`.
-Every other backslash stays literal, including `\r`, `\&`, a backslash before whitespace, and a backslash before a raw blank line.
-Unescaped blank lines separate paragraphs. The boundary accepts Unicode whitespace and treats CRLF as one line break. A code span or link cannot cross that boundary, so an unmatched delimiter stays in its paragraph.
-Structured editing trims raw trailing whitespace from each paragraph and the end of a field. Explicit character tokens retain stored whitespace, including whitespace-only paragraphs.
+Structured editing uses `①` or `{place N}` for a place reference, `{operand ID}` for an operand reference, `[[spelling|label]]` for a word link, `[[https://host/path|label]]` for a web link, and backticks for code.
+A backslash before `\`, `[`, `{`, a backtick, or a circled numeral keeps that character literal. Code and links also escape their own delimiters.
+Every other backslash stays literal, including TeX commands and a backslash before whitespace or a raw blank line.
+Complete links can contain blank lines. Code that crosses a blank line must touch non-whitespace text at both backticks. Other code stays within its paragraph, so an unmatched backtick cannot consume a later paragraph.
+When a field is edited, CRLF and CR become LF, adjacent strings merge, and trailing plain whitespace is trimmed. Blank lines separate paragraphs outside complete code spans and links, and whitespace-only paragraphs disappear.
 The draft holds each rich text field as its exact rich text value. The editor shows a field in its text form and parses the text back only when the author edits that field, so an untouched value never changes. Literal mode turns the place references of every field into circled characters after a confirmation, and structured mode reads circled characters in text as references again. Links and code stay in both modes; a field edited in literal mode becomes plain text.
 Literal mode preserves circled characters and underscores as text. Both modes produce the same compact rich-text schema.
 In literal mode, removing or moving a place updates the visible circled characters in unchanged fields to keep their saved references aligned.

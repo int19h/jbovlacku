@@ -261,52 +261,6 @@ for (const mode of ["trust", "ignore"] as const)
     expect(result.saved).toEqual(result.expected);
   });
 
-test("F6 an edit preserves saved string line breaks and whitespace", async ({
-  page,
-}) => {
-  await page.goto("/");
-  const original = await page.evaluate(async (path) => {
-    const core = await import(path);
-    await core.initializeCore();
-    const { newDraft } = await import(String("/src/model/draft.ts"));
-    const { LocalStore } = await import(String("/src/data/store.ts"));
-    const text = [
-      ["first\n\nsecond", " adjacent ", "literal \\&"],
-      [{ code: "x" }, " trailing "],
-      ["\nleading"],
-      [" "],
-      ["last"],
-    ];
-    await new LocalStore().put(
-      "drafts",
-      "current",
-      newDraft({
-        spelling: "broda",
-        kind: "gismu",
-        text,
-        structured: true,
-        numberingApproved: true,
-      }),
-    );
-    return text;
-  }, corePath);
-  await page.goto("/new/places");
-  const editor = page.getByRole("textbox", {
-    name: "Definition text",
-    exact: true,
-  });
-  await editor.fill((await editor.inputValue()) + " added");
-  await expect(
-    page.getByText("Saved in this browser", { exact: true }),
-  ).toBeVisible();
-  const saved = await page.evaluate(async () => {
-    const { LocalStore } = await import(String("/src/data/store.ts"));
-    return (await new LocalStore().get("drafts", "current")).text;
-  });
-  original[4] = ["last added"];
-  expect(saved).toEqual(original);
-});
-
 test("F5 reference spelling advice stays visible while Publish stays enabled", async ({
   page,
 }) => {
@@ -341,49 +295,4 @@ test("F5 reference spelling advice stays visible while Publish stays enabled", a
   await expect(
     page.getByRole("button", { name: "Publish", exact: true }).first(),
   ).toBeEnabled();
-});
-
-test("F6 real editing preserves carriage returns in strings code and labels", async ({
-  page,
-}) => {
-  await page.goto("/");
-  const original = await page.evaluate(async (path) => {
-    const core = await import(path);
-    await core.initializeCore();
-    const { newDraft } = await import(String("/src/model/draft.ts"));
-    const { LocalStore } = await import(String("/src/data/store.ts"));
-    const text = [
-      ["before\rafter"],
-      [{ code: "x\ry" }],
-      [{ url: "https://example.org/", label: "left\rright" }],
-      ["last"],
-    ];
-    await new LocalStore().put(
-      "drafts",
-      "current",
-      newDraft({
-        spelling: "broda",
-        kind: "gismu",
-        text,
-        structured: true,
-        numberingApproved: true,
-      }),
-    );
-    return text;
-  }, corePath);
-  await page.goto("/new/places");
-  const editor = page.getByRole("textbox", {
-    name: "Definition text",
-    exact: true,
-  });
-  await editor.fill((await editor.inputValue()) + " added");
-  await expect(
-    page.getByText("Saved in this browser", { exact: true }),
-  ).toBeVisible();
-  const saved = await page.evaluate(async () => {
-    const { LocalStore } = await import(String("/src/data/store.ts"));
-    return (await new LocalStore().get("drafts", "current")).text;
-  });
-  original[3] = ["last added"];
-  expect(saved).toEqual(original);
 });

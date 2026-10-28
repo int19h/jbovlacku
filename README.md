@@ -45,7 +45,7 @@ The [carrier guide](crates/jvc-carrier/README.md) describes canonical files, imp
 The browser supports anonymous lookup, verified definition pages, encrypted key backups with a recovery test, and signed delivery with per-server receipts.
 Search sits in the header of every page. Result rows show the headword, rafsi, type, highlighted definition text, attribution, and a net score with Endorse and Oppose arrows.
 Word pages show every definition under the selected view, with place strips, revision notices, comparisons, source evidence, rafsi pair cards, and reviewer details.
-Structured editing preserves saved line breaks and whitespace through explicit character tokens. Ordinary TeX and backslashes stay literal, and raw trailing whitespace is trimmed. Unmatched code and link delimiters stay within their paragraph.
+Untouched rich-text fields keep their exact stored values. Edited fields normalize line endings, string fragments, trailing whitespace, and paragraph breaks. Ordinary TeX and backslashes stay literal. Multiline code and link labels remain editable, and unmatched backticks stay within their paragraph.
 Word-link and derivation spelling advice never blocks a format-valid reference. Invalid references show plain error sentences.
 Revision comparisons group changes by readable fields and numbered places, with rich text and complete place and source details.
 They align inserted and removed list items and keep exact structured values in closed disclosures.
