@@ -208,7 +208,21 @@ async function signPublic(
 const PENDING_NOTE =
   "Your personal view includes it after delivery, when you recompute for the snapshot that holds it.";
 async function recomputeForSnapshot(page: Page, path: string) {
+  // Delivery confirms storage before package publication finishes. Keep this
+  // document alive while its matching accepted receipts wait for that view.
+  const snapshot = await page.evaluate(async () => {
+    const { getManifest } = await import(String("/src/data/api.ts"));
+    return (await getManifest({ fresh: true })).snapshot;
+  });
+  const wordResponse = page.waitForResponse(
+    (response) =>
+      response.url().includes("/api/v1/words/") &&
+      response.request().method() === "GET",
+  );
   await page.goto(path);
+  const response = await wordResponse;
+  expect(response.status()).toBe(200);
+  expect((await response.json()).snapshot).toBe(snapshot);
   await page
     .getByRole("button", { name: "Recompute for this snapshot" })
     .click();
