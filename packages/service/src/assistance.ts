@@ -1400,7 +1400,15 @@ export class AssistanceService {
           code: string;
           message: string;
         };
-        throw new AssistanceError(limit.status, failure.code, failure.message);
+        const error = new AssistanceError(
+          limit.status,
+          failure.code,
+          failure.message,
+        );
+        const seconds = Number(limit.headers.get("retry-after"));
+        if (Number.isFinite(seconds) && seconds > 0)
+          error.retryAfterMs = seconds * 1000;
+        throw error;
       }
       signal.throwIfAborted();
       callerSignal?.throwIfAborted();
@@ -1499,6 +1507,11 @@ export class AssistanceService {
   async drainEmbeddingTransports(): Promise<void> {
     while (this.embeddingLifetimes.size)
       await Promise.all([...this.embeddingLifetimes]);
+  }
+
+  /** A retry must wait for this operation's transport and settlement, even after its caller times out. */
+  embeddingOperationPending(id: string): boolean {
+    return this.embeddingSlots.has(id);
   }
 
   /** Bounded diagnostics contain no inputs, vectors, network addresses, or keys. */

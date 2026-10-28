@@ -1,4 +1,10 @@
-import { kindLabel } from "../model/types.ts";
+import { interpretDefinition } from "../../../../packages/core/src/browser.ts";
+import { sameValue } from "../model/comparison.ts";
+import {
+  changedValues,
+  exactValues,
+  fieldLabels,
+} from "../components/comparison.ts";
 /** One immutable definition revision, with its receipt and an optional comparison. */
 import { el, p, link, text, describe } from "../lib/dom.ts";
 import { routes, type RenderContext, type Route } from "../app/router.ts";
@@ -17,8 +23,8 @@ import {
   type RafsiBody,
   type WordResponse,
 } from "../model/types.ts";
-import { definitionBlock, describeArity } from "../components/definition.ts";
-import { plainText, renderRichText } from "../model/richtext.ts";
+import { definitionBlock } from "../components/definition.ts";
+import { renderRichText } from "../model/richtext.ts";
 import { identityLink } from "../components/attribution.ts";
 
 export async function definitionPage(
@@ -195,103 +201,108 @@ export function comparison(
     );
     return section;
   }
-  const rows: [string, string, string][] = [];
-  const add = (label: string, before: string, after: string) => {
-    if (before !== after) rows.push([label, before, after]);
+  const rows: {
+    label: string;
+    field: string;
+    before: unknown;
+    after: unknown;
+  }[] = [];
+  const add = (
+    label: string,
+    field: string,
+    before: unknown,
+    after: unknown,
+  ) => {
+    if (!sameValue(before, after)) rows.push({ label, field, before, after });
   };
-  add("Definition", plainText(a.text), plainText(b.text));
-  add(
-    "Glosses",
-    a.glosses.map((g) => g.text).join(", "),
-    b.glosses.map((g) => g.text).join(", "),
-  );
-  add("Language", a.language, b.language);
-  add(
-    "Type",
-    `${kindLabel(a.classification.kind)} ${a.classification.selmaho.join(" ")}`.trim(),
-    `${kindLabel(b.classification.kind)} ${b.classification.selmaho.join(" ")}`.trim(),
-  );
-  const frameText = (body: DefinitionBody) =>
-    body.frame
-      ? `${describeArity(body.frame.arity)}: ${body.frame.places
-          .map((pl) => {
-            const gloss = pl.glosses.map((g) => g.text).join("/");
-            const description = plainText(pl.description).trim();
-            const extras = [
-              pl.defaults.length
-                ? `defaults ${pl.defaults.map((d) => d.value.text).join("; ")}`
-                : null,
-              pl.derivation.length
-                ? `from ${pl.derivation.map((d) => `${d.word.spelling} ${d.place}`).join(", ")}`
-                : null,
-            ].filter(Boolean);
-            return `${pl.index} ${gloss || "—"}${description ? ` (${description})` : ""}${extras.length ? ` [${extras.join("; ")}]` : ""}`;
-          })
-          .join(" · ")}`
-      : "no frame";
-  add("Places", frameText(a), frameText(b));
-  add("Notes", plainText(a.notes), plainText(b.notes));
-  add("Etymology", plainText(a.etymology.text), plainText(b.etymology.text));
-  add(
-    "Examples",
-    a.examples.map((e) => e.text).join(" | "),
-    b.examples.map((e) => e.text).join(" | "),
-  );
-  add(
-    "Sources",
-    a.sources.map((s) => s.label).join(" | "),
-    b.sources.map((s) => s.label).join(" | "),
-  );
-  add("Labels", a.labels.join(", "), b.labels.join(", "));
-  add(
-    "Rights",
-    `${a.license.expression} ${a.license.attribution}`.trim(),
-    `${b.license.expression} ${b.license.attribution}`.trim(),
-  );
+  // Defaults and all nested values decide whether a field changed. Rendering
+  // never decides equality and never changes either authenticated body.
+  const before = interpretDefinition(a) as unknown as DefinitionBody;
+  const after = interpretDefinition(b) as unknown as DefinitionBody;
+  const readerOrder = [
+    "text",
+    "word",
+    "language",
+    "frame",
+    "operands",
+    "glosses",
+    "notes",
+    "examples",
+    "etymology",
+    "sources",
+    "classification",
+    "labels",
+    "license",
+  ];
+  const fieldsInOrder = [
+    ...new Set([...readerOrder, ...Object.keys(before), ...Object.keys(after)]),
+  ].filter((field) => field !== "legacy");
+  fieldsInOrder.push("legacy");
+  for (const field of fieldsInOrder as (keyof DefinitionBody)[]) {
+    if (field !== "frame") {
+      add(fieldLabels[field] ?? field, field, before[field], after[field]);
+      continue;
+    }
+    const { places: left = [], ...leftFrame } = before.frame ?? {};
+    const { places: right = [], ...rightFrame } = after.frame ?? {};
+    add(
+      "Place structure",
+      "frame",
+      before.frame === null ? null : leftFrame,
+      after.frame === null ? null : rightFrame,
+    );
+    const leftPlaces = new Map(left.map((place) => [place.index, place]));
+    const rightPlaces = new Map(right.map((place) => [place.index, place]));
+    const indices = [
+      ...new Set([...left, ...right].map((place) => place.index)),
+    ].sort((a, b) => a - b);
+    for (const index of indices)
+      add(
+        `Place ${index}`,
+        "place",
+        leftPlaces.get(index),
+        rightPlaces.get(index),
+      );
+    // Place numbers provide identity. Retain order changes separately if present.
+    if (left.length === right.length && indices.length === left.length)
+      add(
+        "Place order",
+        "order",
+        left.map((place) => place.index),
+        right.map((place) => place.index),
+      );
+  }
   if (!rows.length) {
     section.append(
       p("The two revisions have identical content fields.", "small"),
     );
     return section;
   }
-  const table = el("table", { class: "small" });
-  table.append(
-    el(
-      "thead",
-      {},
-      el(
-        "tr",
-        {},
-        el("th", { scope: "col", text: "Field" }),
-        el("th", { scope: "col", text: "Parent" }),
-        el("th", { scope: "col", text: "This revision" }),
-      ),
-    ),
-  );
-  const body = el("tbody");
-  for (const [label, before, after] of rows)
-    body.append(
-      el(
-        "tr",
-        {},
-        el("th", { scope: "row", text: label }),
-        el("td", {}, el("bdi", { text: before || "—" })),
-        el("td", {}, el("bdi", { text: after || "—" })),
-      ),
+  const fields = el("div", {
+    role: "region",
+    "aria-label": "Changed fields",
+    class: "comparison-fields",
+  });
+  for (const { label, field, before, after } of rows) {
+    const row = el(
+      "section",
+      { class: "comparison-field", "data-field": label },
+      el("h3", { text: label }),
     );
-  table.append(body);
-  section.append(
-    el(
-      "div",
-      {
-        class: "table-scroll",
-        tabindex: "0",
-        role: "region",
-        "aria-label": "Changed fields",
-      },
-      table,
-    ),
-  );
+    if (field === "legacy") {
+      row.append(
+        p(
+          `Import evidence is ${before === null ? "absent" : "present"} in the parent and ${after === null ? "absent" : "present"} in this revision.${before !== null && after !== null ? " The evidence changed." : ""}`,
+        ),
+        exactValues(before, after),
+      );
+      fields.append(row);
+      continue;
+    }
+    row.append(changedValues(before, after, field));
+    fields.append(row);
+  }
+  section.append(fields);
   section.append(
     el(
       "p",

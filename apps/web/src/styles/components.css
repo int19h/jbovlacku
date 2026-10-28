@@ -828,6 +828,43 @@ dialog.sheet h2 {
   outline: 3px solid var(--focus);
 }
 
+.comparison-field {
+  border-top: 1px solid var(--line);
+  padding: 16px 0;
+}
+.comparison-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+}
+.comparison-pair > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.comparison-pair h4,
+.comparison-details dt {
+  color: var(--ink2);
+  font-size: 13px;
+  font-weight: 400;
+}
+.comparison-details dd {
+  margin: 0 0 12px 12px;
+}
+.comparison-pair p,
+.comparison-prose code {
+  white-space: pre-wrap;
+}
+.comparison-exact {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 640px) {
+  .comparison-pair {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+}
+
 /* Wizard */
 .step-bar {
   border-bottom: 1px solid var(--line);

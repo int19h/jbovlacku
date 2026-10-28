@@ -27,6 +27,7 @@ import {
 } from "../../app/router.ts";
 import type { App } from "../../app/context.ts";
 import { draftToBody } from "../../model/draft.ts";
+import { textToRichText } from "../../model/richtext.ts";
 import {
   cachedPackage,
   inventoryFromPackage,
@@ -709,7 +710,7 @@ export async function publishPage(
         body: {
           word: body!.word,
           rafsi: claim.rafsi,
-          rationale: claim.rationale ? [[claim.rationale]] : [],
+          rationale: textToRichText(claim.rationale, false),
           sources: [],
           legacy: null,
         },

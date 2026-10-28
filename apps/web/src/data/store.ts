@@ -784,6 +784,37 @@ export class LocalStore {
     await this.put("prefs", "overlay", overlay);
     this.onOverlayChange?.();
   }
+  /** Applies one synchronous edit to the latest overlay in one transaction. */
+  async updateOverlay(change: (overlay: Overlay) => void): Promise<Overlay> {
+    const db = await this.database;
+    const next = await new Promise<Overlay>((resolve, reject) => {
+      const tx = db.transaction("prefs", "readwrite");
+      const prefs = tx.objectStore("prefs");
+      const request = prefs.get("overlay");
+      let overlay: Overlay;
+      let failure: unknown;
+      request.onsuccess = () => {
+        try {
+          overlay = request.result ?? emptyOverlay();
+          change(overlay);
+          prefs.put(overlay, "overlay");
+        } catch (error) {
+          failure = error;
+          tx.abort();
+        }
+      };
+      tx.oncomplete = () => resolve(overlay);
+      tx.onabort = () =>
+        reject(
+          failure ??
+            tx.error ??
+            new Error("Local storage did not save this private choice."),
+        );
+      tx.onerror = () => {};
+    });
+    this.onOverlayChange?.();
+    return next;
+  }
   /** Installs or restores the selected identity without replacing another one. */
   async installIdentity(
     backup: KeyBackup,

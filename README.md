@@ -45,8 +45,16 @@ The [carrier guide](crates/jvc-carrier/README.md) describes canonical files, imp
 The browser supports anonymous lookup, verified definition pages, encrypted key backups with a recovery test, and signed delivery with per-server receipts.
 Search sits in the header of every page. Result rows show the headword, rafsi, type, highlighted definition text, attribution, and a net score with Endorse and Oppose arrows.
 Word pages show every definition under the selected view, with place strips, revision notices, comparisons, source evidence, rafsi pair cards, and reviewer details.
+Untouched rich-text fields keep their exact stored values. Edited fields normalize line endings, string fragments, trailing whitespace, and paragraph breaks. Ordinary TeX and backslashes stay literal. Code and links stay within one paragraph. The editor shows blank lines inside stored code and labels as single line breaks.
+Word-link and derivation spelling advice never blocks a format-valid reference. Invalid references show plain error sentences.
+Revision comparisons group changes by readable fields and numbered places, with rich text and complete place and source details.
+They align inserted and removed list items and keep exact structured values in closed disclosures.
+Import evidence changes use a short presence or absence line. Comparisons still detect every change in the interpreted body.
+Comparison fields follow reader order and show invisible controls as escapes. Nested lists align their changed items, with bounded alignment work and batches of 50 displayed changes. Sparse edits in long lists retain alignment within the edit budget. Keyboard batches focus the first new row, including the final batch.
+Direct revision reads retry unavailable bodies on the next visit. A known missing body stays missing within its pinned snapshot.
 Settings can show Zbalermorna beside Latin headwords on word and search pages. A local preference puts definitions with your judgments first without changing scores.
 Public identity pages show the signed profile, counts, and activity. Trust actions offer a private rule or a public signed record.
+Private trust and Ignore controls apply each addition or removal in one storage transaction, so concurrent unrelated choices remain saved.
 The local key edits its public profile, with a signed preview of the name, biography, and HTTPS links under the format limits. A rafsi pair link opens the pair's word and rafsi from the local search packages.
 The browser keeps the key's own records that it fetched from a server, so later signatures read them locally. It handles at most 4,096 own events per key and 64 concurrent branches. Above those limits it refuses to sign in this browser and says so.
 The Not delivered page lists waiting and stopped records. The header marker counts both, and stopped rows offer Resume and Save as file.
@@ -62,6 +70,7 @@ Updates keep focus on delivery controls and announce only short status changes. 
 If storage cannot be read, the saved page keeps known records and offers Retry reading. It reports missing records only after a successful read.
 Delivered records leave the list but keep their receipts in retained history. With no waiting or stopped records, the page shows a short empty state.
 Downloaded search packages permit local search without a request for each query. Version 2 packages carry authors, notes, and rafsi for result rows.
+A download keeps its requested language even when the language selector changes before it finishes.
 Signing needs localhost or HTTPS. A plain HTTP Tailscale address supports reading only.
 
 The importer prepares signed proposals from pinned local Lensisku JSON captures and SQL snapshots. Repeat imports reuse signed records and retain source evidence.
@@ -98,6 +107,9 @@ The Places step and the full editor offer hideable advice above three declared p
 A repeating tail counts once. The advice applies to every word type and never blocks publication or enters signed records.
 Revise copies a publication into a new draft with its exact parent and keeps every field: links, code, operands, literal circled characters, every gloss with its language and sense, every derivation, and the frame role. The page names the only changes a native revision makes. A revision of imported text cites the imported publication and copies the source-rights reference once.
 Each rich text field of a draft holds its exact value, and only an edit of that field parses text, so an untouched field never changes. In structured editing every rich text node has a text form, and a backslash keeps a circled numeral or a token character literal. Pasted circled numbers stay literal unless the author chooses references. Removing a place keeps the referent of every other reference. The shared core checks the finished body before Publish is enabled, and every blocking problem names its field.
+Editing beside multiline code or link labels keeps their node types, literal circled numbers, and edge spacing. Runs of blank lines become single line breaks. All rich-text controls support multiple lines.
+URL targets remove only characters ignored by URL parsing, so edited links keep their destination. Rafsi rationales publish blank lines as separate paragraphs.
+Word links and place derivations use the shared format rules. Valid uppercase references retain their exact targets and do not block publication.
 A draft saved by the earlier prototype opens a choice to export it, convert it into a wizard draft, or discard it. The old license and attribution fields stay in the export only, because new definitions publish under CC0 1.0.
 Remote lexical search, word pages, and downloaded language packages exclude definitions whose receipts are not effective.
 Word pages and language packages retain effective deprecated definitions.
@@ -260,7 +272,27 @@ HTTP 429 responses use bounded backoff that respects `Retry-After` and retains e
 The saved profile cooldown survives restart and has a one-hour cap. Operators can clear it without changing batches or charges.
 Known usage remains available even when a returned model or vector is invalid.
 Mocked tests cover partial progress, restart, failures, retirement, atomic publication, rollback, and explicit removal of current pointers.
-Semantic search routes, query caching, and Worker vector storage remain unfinished. The semantic capability stays disabled.
+The Node host serves meaning searches from compatible published vectors with exact event bindings in the requested snapshot and view.
+New definitions remain pending while unchanged definitions stay searchable. Optional background indexing uses the same host budgets without stopping dictionary reads.
+Background jobs retry transient failures with bounded backoff and linked retries. They preserve earlier charges and wait for provider cooldowns and budget windows.
+Paid or unknown probe failures receive three retries, then a one-hour cooldown. Their counts and deadlines survive server restarts.
+Exhausted batches split into individual inputs. Failing inputs wait one hour while healthy inputs and newer snapshots proceed.
+Input holds preserve retry counts, prior batch links, and deadlines across restarts and snapshots. Due inputs return without a new snapshot.
+An unsettled earlier transport does not restart a completed pass. Other ready inputs and newer snapshots can still proceed.
+Oversized requests split before dispatch. Permanent refusals use long cooldowns and log only state changes. Operator CLI recovery remains manual.
+Cold coverage yields between bounded metadata pages. Concurrent requests share coverage work, and partial coverage stays cached until index progress changes.
+Ordinary generation and public profile reads do not scan parked inputs. Operator diagnostics yield between pages of at most 128 holds.
+Generation retirement yields between bounded deletion transactions and resumes interrupted cleanup.
+Operators can unpublish and retire an idle background generation, including a suspended profile, without retaining its background pointer.
+Each client network can hold at most one scan worker. Empty or absent networks share that same limit.
+The API rejects malformed language tags and retains the required coverage fields.
+`GET /embedding-profiles` reports coverage and query availability. `POST /search/semantic` returns definition events with cosine distances.
+Two worker threads scan bounded vector pages and keep only the requested best results. Lexical reads remain available during inference and scans.
+The persistent query cache stores complete profile hashes, exact input hashes, and vectors. Concurrent cache misses share one computation.
+Cache hits require no provider request or spending reservation. Each search still filters the selected view and excludes inert definitions.
+Public reference probes detect model drift before new query computations. A detected mismatch suspends that profile, including its cached queries.
+Cancellation stops the caller's wait. Admitted embedding work still settles and can fill the shared cache without a replacement request.
+Worker vector storage and the browser meaning controls remain unfinished. An unconfigured host reports meaning search as unavailable.
 A discarded result returns a clear status. Spending failures distinguish pending costs, timed limits, and requests that cannot fit.
 The default spending share admits every enabled operation at each reasoning effort, with decision reports enabled or disabled.
 Each task uses an output cap based on recorded prompt tests. An explicit operator limit replaces the automatic caps.
@@ -268,7 +300,7 @@ Every output limit stays at or below 20,480 tokens, including explicit limits an
 Mocked providers cover the request and correction loop. These tests do not establish live model accuracy.
 The [development guide](docs/development.md#optional-ai-assistance) gives the configuration and retention limits.
 
-The status editor, transfer editor, semantic search, and Lensisku cross-posting remain target features.
+The status editor, transfer editor, browser meaning search, and Lensisku cross-posting remain target features.
 The site view is the server's selected signed view, and the Trust page can use another retained signed view by its event ID. A signed view names its calculation profile, `simple-routes-bounds-v1` or `simple-routes-shun-v1`; the pages name the profile of each result and its route rule, and an unknown profile leaves scores unavailable.
 Site calculation metadata uses the digest of canonical JSON null for its absent overlay. An explicit empty overlay keeps its own digest.
 The personal view downloads the snapshot records, verifies each envelope and body in a Web Worker, and ranks words locally with the private overlay.

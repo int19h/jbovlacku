@@ -271,7 +271,7 @@ async function main() {
         ),
       });
     } else if (command === "retire") await vectors.retire(id!);
-    const generation = await vectors.generation(id!);
+    const generation = await vectors.generation(id!, true);
     const batches = await vectors.batches(id!, args.get("after") ?? null);
     output({
       event: "status",
@@ -280,6 +280,7 @@ async function main() {
         generation.state === "retired" ? null : await vectors.coverage(id!),
       summary: await vectors.summary(id!),
       compatibility: await vectors.compatibility(generation.profile),
+      probe: await vectors.probeEvidence(generation.profile),
       retry_after: await vectors.retryAfter(generation.profile),
       current: await vectors.current(generation.profile, generation.view),
       batches,

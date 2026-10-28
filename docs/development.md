@@ -124,6 +124,7 @@ The Node adapter accepts these environment variables:
 | `JVC_VIEW`                  | Explicit selected view event ID. A fresh service has no dictionary view.                      |
 | `JVC_STATE_TRAVERSAL_LIMIT` | Explicit state work budget from 1 through 1,000,000,000. It overrides the saved import limit. |
 | `JVC_PUBLIC_ORIGIN`         | Explicit public origin permitted to submit browser writes through a reverse proxy.            |
+| `JVC_SEMANTIC_INDEXING`     | Set `enabled` to index pending definitions in the running Node server under its shared budgets. |
 | `JVC_SNAPSHOT_LIMIT`        | Retained snapshot count. The default is 16. Allowed values are 1 through 64.                  |
 | `JVC_CORS_ORIGINS`          | Comma-separated additional permitted origins.                                                 |
 | `JVC_POLICY_URL`            | Operator policy URL. The prototype placeholder is not a published policy.                     |
@@ -594,6 +595,11 @@ A refusal does not prove physical deletion from Git history, peers, or backups.
 If a write fails, treat partial output as unusable until inspected.
 
 ## Semantic index cooldown recovery
+
+The Node server accepts `JVC_SEMANTIC_PROFILE` as a complete `sha256:` profile hash.
+It enables meaning search only for a matching complete published generation and a configured embedding provider.
+The [semantic search guide](semantic-search.md#enable-node-meaning-search) describes the routes, query cache, compatibility probes, and limits.
+The local Worker adapter has no vector backend and continues to report the capability as unavailable.
 
 The Node indexing command saves a rate-limit deadline for each complete embedding profile.
 It caps each saved deadline at one hour from the provider failure, including an invalidly large `Retry-After` value.

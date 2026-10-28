@@ -1644,3 +1644,32 @@ test("a signed view selects its calculation profile, and the bounds view keeps i
     },
   );
 });
+
+test("F4 inventory objects with absent Node storage bytes are unavailable and recover", async () => {
+  const { service, objects, coordinator, directory } = await instance();
+  const entry = event("identity.profile", {
+    name: "Storage recovery",
+    bio: [],
+    links: [],
+  });
+  await service.admit(utf8(JSON.stringify(entry)));
+  const state = await coordinator.load();
+  const hash = entry.envelope.header.content!.hash;
+  const bytes = await objects.get(hash);
+  const path = `/bodies/${hash}?snapshot=${state.snapshot}`;
+  assert.equal((await service.fetch(request(path))).status, 200);
+  await rm(join(directory, "objects", hash.replaceAll(":", "-")));
+  const unavailable = await service.fetch(request(path));
+  assert.equal(unavailable.status, 503);
+  assert.equal(
+    ((await unavailable.json()) as any).code,
+    "storage_unavailable",
+  );
+  await objects.put(hash, bytes!);
+  assert.equal((await service.fetch(request(path))).status, 200);
+  const missing = await service.fetch(
+    request(`/bodies/sha256:${"f".repeat(64)}?snapshot=${state.snapshot}`),
+  );
+  assert.equal(missing.status, 404);
+  assert.equal(((await missing.json()) as any).code, "missing");
+});

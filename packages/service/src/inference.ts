@@ -924,8 +924,10 @@ export function taskMessages(
 ) {
   const files = ["common.system.txt", `${spec.task}.task.txt`];
   if (spec.task === "sources") {
-    const language =
-      sourceLanguages[spec.language?.toLowerCase().split("-")[0] ?? ""];
+    const primary = spec.language?.toLowerCase().split("-")[0] ?? "";
+    const language = Object.hasOwn(sourceLanguages, primary)
+      ? sourceLanguages[primary]
+      : undefined;
     if (!language)
       throw new AssistanceError(
         400,
