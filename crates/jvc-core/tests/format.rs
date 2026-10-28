@@ -1108,3 +1108,62 @@ fn lexical_kind_uses_fuhivla_without_a_legacy_alias() {
         assert_eq!(validate_body(&action, &body).is_ok(), valid, "{kind}");
     }
 }
+
+#[test]
+fn r2_grok_1_comma_zei_accepts_accented_names_like_plain_names() {
+    for spelling in [
+        "dján zei, blanu",
+        "dján zei,blanu",
+        "dján z,e,i blanu",
+        "dján, zei blanu",
+    ] {
+        let body = json!({"word":{"language":"jbo","spelling":spelling},"language":"en","text":[["Synthetic."]],"classification":{"kind":"lujvo"},"license":{"expression":"CC0-1.0"}});
+        let h = header(
+            json!({"kind":"definition.publish","word":word_id(&body["word"]).unwrap(),"language":"en","parents":[],"origin":"native"}),
+            Some(body_descriptor(&canonical_value(&body).unwrap()).unwrap()),
+        );
+        let result = validate_body(&h, &body);
+        assert!(result.is_ok(), "{spelling}: {result:?}");
+    }
+}
+
+#[test]
+fn r2_grok_1_comma_zei_does_not_admit_an_accented_root() {
+    for spelling in ["djan zei, blánu", "djan zei,blánu"] {
+        let body = json!({"word":{"language":"jbo","spelling":spelling},"language":"en","text":[["Synthetic."]],"classification":{"kind":"lujvo"},"license":{"expression":"CC0-1.0"}});
+        let h = header(
+            json!({"kind":"definition.publish","word":word_id(&body["word"]).unwrap(),"language":"en","parents":[],"origin":"native"}),
+            Some(body_descriptor(&canonical_value(&body).unwrap()).unwrap()),
+        );
+        let result = validate_body(&h, &body);
+        assert!(result.is_err(), "{spelling}");
+    }
+}
+
+#[test]
+fn r2_opus_f7_rafsi_claims_require_plain_word_and_rafsi_spellings() {
+    for (spelling, rafsi, valid) in [
+        ("djan", "dja", true),
+        ("dján", "dja", false),
+        ("brodá", "bro", false),
+        ("djan", "djá", false),
+    ] {
+        let body = json!({"word":{"language":"jbo","spelling":spelling},"rafsi":rafsi,"rationale":[],"sources":[],"legacy":null});
+        let word = word_id(&body["word"]).unwrap();
+        let h = header(
+            json!({"kind":"rafsi.publish","word":word,"assignment":rafsi_pair_id(&word, rafsi).unwrap(),"origin":"native"}),
+            Some(body_descriptor(&canonical_value(&body).unwrap()).unwrap()),
+        );
+        let result = validate_body(&h, &body);
+        assert_eq!(result.is_ok(), valid, "{spelling}: {rafsi}: {result:?}");
+    }
+}
+
+#[test]
+fn r2_opus_f2_specification_states_the_prelaunch_accent_break() {
+    let spec = include_str!("../../../docs/format.md");
+    assert!(spec.contains(
+        "Former accented word IDs and the signed records that use them are not preserved."
+    ));
+    assert!(spec.contains("No migration is required."));
+}

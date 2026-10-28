@@ -908,15 +908,28 @@ fn definition(h: &Header, b: &Value, r: &mut Rich) -> Result<()> {
     let spelling = string(&b["word"]["spelling"])?;
     if crate::strip_acute_accents(spelling) != spelling && b["classification"]["kind"] != "cmevla" {
         // Zei links whole words. Only its name components can carry stress marks.
-        let words: Vec<_> = spelling
-            .split(|c: char| c.is_whitespace() || ".?!".contains(c))
-            .filter(|s| !s.is_empty())
-            .collect();
+        let mut words = Vec::new();
+        let mut token = String::new();
+        for c in spelling.chars() {
+            if c.is_whitespace()
+                || ".?!".contains(c)
+                || (c == ',' && token.eq_ignore_ascii_case("zei"))
+            {
+                if !token.is_empty() {
+                    words.push(std::mem::take(&mut token));
+                }
+            } else if c != ',' {
+                token.push(c);
+            }
+        }
+        if !token.is_empty() {
+            words.push(token);
+        }
         let linked_names = b["classification"]["kind"] == "lujvo"
             && words.iter().any(|s| s.eq_ignore_ascii_case("zei"))
             && words
                 .iter()
-                .filter(|s| crate::strip_acute_accents(s) != **s)
+                .filter(|s| crate::strip_acute_accents(s) != s.as_str())
                 .all(|s| {
                     crate::strip_acute_accents(s)
                         .trim_end_matches(',')
@@ -1136,6 +1149,15 @@ fn validate_body_fields(h: &Header, b: &Value) -> Result<()> {
         "definition.publish" => definition(h, &crate::interpret_definition(b), &mut r)?,
         "rafsi.publish" => {
             fields(b, &["word", "rafsi", "rationale", "sources", "legacy"])?;
+            let spelling = string(&b["word"]["spelling"])?;
+            let rafsi = string(&b["rafsi"])?;
+            if crate::strip_acute_accents(spelling) != spelling
+                || crate::strip_acute_accents(rafsi) != rafsi
+            {
+                return Err(bad(
+                    "Rafsi claims require plain body.word.spelling and body.rafsi without acute accents.",
+                ));
+            }
             let word = word_id(&b["word"])?;
             if word != h.action["word"] {
                 return Err(bad("rafsi word differs from its action"));
