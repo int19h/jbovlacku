@@ -779,7 +779,7 @@ export function editorToRichText(
     else {
       const raw = unescape(target);
       const url = urlTarget(raw);
-      if (/^https?:\/\//iu.test(url))
+      if (/^https?:\/\//iu.test(url.trim()))
         nodes.push({ url, label: label === undefined ? url : unescape(label) });
       else {
         const spelling = raw.trim().normalize("NFC");
