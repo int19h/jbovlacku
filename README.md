@@ -377,6 +377,7 @@ Pinned reads use those results without restarting evaluation. Word scores remain
 The next evaluation can evict the older cached result when it needs the slot.
 A failed unpublished package job releases its configured-view protection while active calls keep their cache entries.
 An alternate view can then use that slot after those calls finish. The completed snapshot keeps its protection.
+Recomputing an older retained snapshot does not give it newer protection than the completed snapshot.
 
 Workers transfer state bytes without retaining another parsed JavaScript state. Judgment updates share unchanged result objects on the main thread.
 

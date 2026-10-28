@@ -1356,6 +1356,75 @@ test("a failed publication releases its configured protection for a retained alt
   assert.equal(internals.evaluationCache.size, 2);
 });
 
+test("a rebuilt historical configured view does not protect an idle slot from the current alternate view", async () => {
+  const { service, coordinator, view, definition, profile } = await fixture();
+  const alternate = createEvent(
+    seed,
+    [],
+    "a".repeat(32),
+    { kind: "view.publish", parents: [] },
+    {
+      ...(view.body as Record<string, unknown>),
+      name: "Alternate view",
+      calculation: "simple-routes-shun-v1",
+    },
+  );
+  await service.admitMany([utf8(JSON.stringify(alternate))]);
+  await service.flushMaterialization();
+  const before = coordinator.state.snapshot!;
+  const next = judgment(
+    definition.envelope.id,
+    "b",
+    [profile.envelope.id],
+    "bless",
+  );
+  await service.admitMany([utf8(JSON.stringify(next))]);
+  await service.flushMaterialization();
+  const latest = coordinator.state.snapshot!;
+  const alternatePath =
+    "/words/" + wordId(word) + "?view=" + alternate.envelope.id;
+  await read(service, alternatePath);
+  assert.equal(
+    (await read(service, "/words/" + wordId(word) + "?snapshot=" + before))
+      .snapshot,
+    before,
+  );
+  const internals = service as any;
+  assert.deepEqual([...internals.inFlightEvaluations], []);
+  assert.deepEqual([...internals.inFlightPackages], []);
+  assert.deepEqual([...internals.sessionUses], []);
+  assert.equal(internals.evaluationCache.size, 2);
+  const historicalKey = before + "|" + service.options.selectedView;
+  const session = internals.sessions.get(historicalKey);
+  const rank = session.rankWord.bind(session);
+  const entered = deferred();
+  const gate = deferred();
+  session.rankWord = async (...args: any[]) => {
+    entered.resolve();
+    await gate.promise;
+    return rank(...args);
+  };
+  const reading = read(
+    service,
+    "/words/" + wordId(word) + "?snapshot=" + before,
+  );
+  try {
+    await entered.promise;
+    assert.equal((await service.fetch(request(alternatePath))).status, 503);
+    assert.equal(internals.sessions.get(historicalKey), session);
+    assert.equal(internals.sessionUses.get(historicalKey), 1);
+  } finally {
+    gate.resolve();
+    assert.equal((await reading).snapshot, before);
+  }
+  assert.equal((await read(service, alternatePath)).snapshot, latest);
+  assert.equal(
+    internals.evaluationCache.has(latest + "|" + service.options.selectedView),
+    true,
+  );
+  assert.deepEqual([...internals.sessionUses], []);
+});
+
 test("an alternate reader keeps its lease while a write waits and releases it for later materialization", async () => {
   const { service, coordinator, view, definition, profile } = await fixture();
   const alternate = createEvent(

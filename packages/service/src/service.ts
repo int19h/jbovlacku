@@ -1328,6 +1328,12 @@ export class DictionaryService {
             candidate.endsWith("|" + configured) &&
             !this.failedPackageEvaluations.has(candidate),
         )
+        // A historical read can compute an older snapshot after publication.
+        .sort(
+          (left, right) =>
+            (this.snapshotPositions.get(left.split("|")[0]) ?? -1) -
+            (this.snapshotPositions.get(right.split("|")[0]) ?? -1),
+        )
         .at(-1);
       const evicted = [...this.evaluationCache.keys()].find(
         (candidate) =>
