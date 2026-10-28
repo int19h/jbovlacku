@@ -1671,9 +1671,15 @@ The common API adds the following endpoints. Both standalone and Workers hosts i
 
 Embedding-profile responses contain exactly profiles. Each entry contains id, label, query_available, indexed, eligible, pending, and limitations.
 Id is a profile hash. Counts are nonnegative integers. Limitations is an array of strings. Query_available is a boolean.
+Optional snapshot, view, and language parameters select the profile response's coverage context.
+Without them, coverage uses the completed snapshot, configured view, and all languages.
+Query availability requires a compatible published index for the requested view and selected profile.
+Each result must match the exact event, envelope, body, word, language, and extraction version in the requested snapshot.
+Pending or failed entries remain outside the results. Other indexed definitions remain searchable.
 
 The semantic request contains query, language, snapshot, view, profile, and limit. Query is nonempty text of at most 16 KiB.
 Language is a definition-language tag. Snapshot and profile are hashes. View is an event ID. Limit ranges from 1 through 100.
+The selected profile can impose a tighter input limit, including its literal prefix. The server rejects that limit before paid dispatch.
 
 The response contains snapshot, view, profile, query_hash, hits, and coverage.
 Each hit contains event, word, distance, and position. Word is its word ID. Distance is a finite JSON number under this external API.

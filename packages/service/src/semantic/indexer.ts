@@ -5,9 +5,10 @@ import { createQwenProfile, profileId } from "./profile.ts";
 import type { SemanticSource } from "./source.ts";
 import type { EmbeddingProfile } from "./types.ts";
 import { SemanticError } from "./types.ts";
-import type { VectorStore } from "./vector-store.ts";
+import type { IndexBatch, VectorStore } from "./vector-store.ts";
 
-export type IndexEmbedder = Pick<AssistanceService, "embed">;
+export type IndexEmbedder = Pick<AssistanceService, "embed"> &
+  Partial<Pick<AssistanceService, "embeddingOperationPending">>;
 
 export interface IndexBackoff {
   /** Zero waits for a saved profile cooldown. One through three name retry rounds. */
@@ -85,6 +86,10 @@ export class SemanticIndexer {
     id: string,
     options: {
       concurrency?: number;
+      /** The background host schedules its own durable retries. The CLI keeps the default. */
+      automaticRetries?: boolean;
+      background?: boolean;
+      onFailure?: (failure: unknown, batch: IndexBatch) => void;
       maxBatches?: number;
       signal?: AbortSignal;
       /** Called after all workers settle and before each bounded retry wait. */
@@ -122,7 +127,7 @@ export class SemanticIndexer {
         );
       if ((await this.store.generation(id)).state === "completed")
         return {
-          generation: await this.store.generation(id),
+          generation: await this.store.generation(id, options.background),
           coverage: await this.store.coverage(id),
         };
       const profile = await this.store.profile(id);
@@ -160,7 +165,7 @@ export class SemanticIndexer {
           options.signal?.aborted ? "index_paused" : "embedding_rate_limited",
         );
         return {
-          generation: await this.store.generation(id),
+          generation: await this.store.generation(id, options.background),
           coverage: await this.store.coverage(id),
         };
       }
@@ -180,7 +185,17 @@ export class SemanticIndexer {
             }
             if (claims >= maximum || halted || options.signal?.aborted) break;
             claims++;
-            const batch = await this.store.claim(id);
+            const batch = await this.store.claim(
+              id,
+              options.background
+                ? {
+                    now: this.clock.now(),
+                    pending: (operation) =>
+                      this.assistance.embeddingOperationPending?.(operation) ??
+                      false,
+                  }
+                : undefined,
+            );
             if (!batch) {
               claims--;
               const generation = await this.store.generation(id);
@@ -195,16 +210,27 @@ export class SemanticIndexer {
             }
             if (options.signal?.aborted) {
               await this.store.fail(batch.id, "index_paused");
+              await this.store.pause(id, "index_paused");
               break;
             }
             let usage: EmbeddingUsage | undefined;
+            let operation: string | null = null;
             try {
+              const inputs = await this.store.inputs(batch.id);
+              if (options.signal?.aborted) {
+                await this.store.fail(batch.id, "index_paused");
+                await this.store.pause(id, "index_paused");
+                break;
+              }
               // Do not detach provider settlement when an operator pauses or exits.
               const result = await this.assistance.embed(
-                await this.store.inputs(batch.id),
+                inputs,
                 { kind: "index" },
                 undefined,
-                (operation) => this.store.sent(batch.id, operation),
+                async (id) => {
+                  await this.store.sent(batch.id, id);
+                  operation = id;
+                },
               );
               usage = result.usage;
               await this.store.complete(
@@ -230,7 +256,10 @@ export class SemanticIndexer {
               else stopCode = code;
               if (
                 rateLimited ||
-                (typeof hint === "number" && Number.isFinite(hint) && hint >= 0)
+                (!code.startsWith("billing_") &&
+                  typeof hint === "number" &&
+                  Number.isFinite(hint) &&
+                  hint >= 0)
               ) {
                 const delayMs = Math.max(
                   rateLimited ? 1000 * 2 ** round : 0,
@@ -251,6 +280,12 @@ export class SemanticIndexer {
               )
                 await this.store.suspend(identity, code);
               await this.store.fail(batch.id, code, usage);
+              options.onFailure?.(failure, {
+                ...batch,
+                operation,
+                state: operation ? "ambiguous" : "failed",
+                error: code,
+              });
               const generation = await this.store.generation(id);
               if (
                 generation.state === "paused" &&
@@ -269,6 +304,7 @@ export class SemanticIndexer {
         const failed = results.find((result) => result.status === "rejected");
         if (failed?.status === "rejected") throw failed.reason;
         if (
+          options.automaticRetries === false ||
           !retries.length ||
           stopCode ||
           round >= 3 ||
@@ -294,7 +330,7 @@ export class SemanticIndexer {
       const generation = await this.store.generation(id);
       if (generation.state === "running") await this.store.pause(id);
       return {
-        generation: await this.store.generation(id),
+        generation: await this.store.generation(id, options.background),
         coverage: await this.store.coverage(id),
       };
     } finally {

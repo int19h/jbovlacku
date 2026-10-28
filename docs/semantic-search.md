@@ -1,8 +1,9 @@
-# Semantic indexing
+# Semantic indexing and search
 
 The Node operator command builds a fresh vector index from the dictionary's private semantic records.
 A vector represents a definition for later meaning comparisons. A generation binds its associations to one snapshot, view, and profile.
-Semantic search routes and query caching remain unavailable. Both hosts keep `semantic_search` disabled.
+The Node host can search a published generation with partial coverage and a configured query provider.
+The Worker host has no configured vector backend and keeps `semantic_search` disabled.
 
 The command uses the application recipe from the [format specification](format.md#optional-derived-embeddings).
 It never reads historical research vectors. It retains complete profile metadata and the original event, envelope, body, and input hashes.
@@ -156,7 +157,7 @@ npx tsx apps/server/src/semantic-cli.ts --data "$JVC_DATA_DIR" --command rollbac
 ```
 
 Rollback requires the named generation to remain current and a retained rollback generation.
-Publication changes only the derived index pointer. It does not enable public semantic routes.
+Publication changes only the derived index pointer. Public queries also require the compatible profile and host configuration described below.
 Current generations, rollback generations, and jobs with active batches cannot retire.
 Use the exact current generation ID to remove its publication pointer:
 
@@ -183,5 +184,188 @@ The final write also enforces capacity and rolls back every vector if it fails.
 Older stores migrate their claim position and active reservations when the command opens them.
 
 SQLite metadata, page overhead, and WAL files need additional physical disk space.
-Query vectors require a separate cache in later work.
-Node exposes bounded vector pages for that later service. It does not load the complete vector set for one page read.
+Query vectors use a separate allocation of at most 2,048 entries and 32 MiB of vector bytes.
+Node scans at most 128 associations per page. One extra row determines whether another page remains.
+
+## Enable Node meaning search
+
+Set `JVC_SEMANTIC_PROFILE` to the complete profile hash from the indexing status.
+Keep the existing AI configuration and key-file path. Restart the server with its indexed data directory.
+The server reads `semantic-vectors.sqlite` beside its dictionary and spending databases.
+No key reaches the browser. The browser never receives query or document vectors.
+
+The selected generation must match the requested view and complete profile.
+Search checks every event against its exact envelope, body, word, language, and semantic extraction version in the requested snapshot.
+Unchanged definitions remain searchable after other events change the snapshot. New definitions remain pending until their vectors exist.
+Missing or mismatched associations cannot enter the results. A failed entry does not disable unrelated indexed definitions.
+The profile must remain compatible. A context with no indexed definitions returns empty hits with its pending and failed counts, without paid inference.
+
+Set `JVC_SEMANTIC_INDEXING=enabled` to index new definitions while the server runs.
+The server checks the latest completed snapshot every five seconds after each cycle ends.
+It uses its existing directory lock and AssistanceService, including the same execution slots, spending ledger, and limits.
+The operator must first publish a completed generation for the selected profile and view.
+The server does not adopt unfinished operator jobs, which can contain failed or ambiguous sends.
+The background job stages bounded pages, publishes partial coverage, probes the retained profile, and embeds one batch at a time.
+Existing exact input hashes reuse retained vectors. Other inputs receive fresh vectors.
+The server does not create a new generation when all eligible events already have vectors.
+Completed background generations leave storage when no current, rollback, active background pointer, or in-flight search retains them.
+A search retains its generation through inference, scanning, and final retention checks. Cancellation releases it after the worker stops reading.
+Profile coverage reads also retain their generation until their shared calculation finishes.
+Retirement marks an unreferenced generation as retired before it deletes rows.
+Each transaction deletes at most 128 associations or batch-input links.
+It yields between transactions. New readers and publication cannot select that generation.
+Each transaction removes only inputs and vectors without a remaining association. It updates storage counts in the same transaction.
+An interrupted retirement keeps its cleanup marker. A later background prune or explicit retirement continues that cleanup.
+Operator-created generations remain under explicit operator control. The existing capacity limits still apply.
+
+To remove a completed background generation, stop the server that holds its data directory lock.
+Set `JVC_DATA_DIR` to that directory and `JVC_INDEX_JOB` to the exact generation ID.
+Run these commands from the repository root:
+
+```sh
+npx tsx apps/server/src/semantic-cli.ts --data "$JVC_DATA_DIR" --command unpublish --job "$JVC_INDEX_JOB"
+npx tsx apps/server/src/semantic-cli.ts --data "$JVC_DATA_DIR" --command retire --job "$JVC_INDEX_JOB"
+```
+
+Retirement releases that generation's idle background pointer in the same transaction that marks it retired.
+A suspended profile uses the same procedure. Retirement preserves its suspension and retained accounting evidence.
+Active readers, running jobs, prepared or sent batches, and unsettled provider transports still block retirement.
+If another current or rollback reference retains the generation, remove that exact reference before retirement.
+A released pointer cannot resume or publish the retired generation. No command sends a provider request.
+
+A durable background pointer retains unfinished work across failures and restarts.
+The background server retries this work automatically. The operator CLI keeps its manual recovery and retry policy.
+A known refusal before dispatch creates no provider charge. Busy slots and temporary refusals receive exponential backoff from one second to one minute.
+A probe with an operation ID, or an unknown dispatch outcome, counts as a sent attempt.
+Each sent probe retains its own charge, even when it fails before the indexing batch starts.
+The server waits for saved provider cooldowns and hourly or daily budget windows. It never raises a spending cap.
+Provider hints keep the existing one-hour cooldown cap. Budget-window hints retain their full delay, including a daily window.
+
+An unknown send receives at most three automatic retries in one recovery round.
+Each indexing retry creates a linked batch and a new shared-budget operation. Earlier batches and conservative charges remain intact.
+The delays are one, two, and four seconds, or longer when a provider or budget deadline requires it.
+A completed vector never enters another paid indexing batch. A retry waits until its earlier transport and settlement finish.
+
+After four sent failures, the server splits a batch into individual inputs. Each input then has its own bounded retry round.
+After that round fails, the server parks the input for one hour. Healthy inputs continue while it waits.
+A request that exceeds an empty spending limit splits immediately. An individual input that still exceeds that limit waits one hour.
+
+Parked inputs retain their exact profile, input hash, prior batch, failure count, and deadline across restarts and newer snapshots.
+New generations reuse these holds. They do not send parked inputs early or replay completed vectors.
+A finished pass can retain failed coverage and advance to a newer snapshot.
+Due inputs return automatically even when the snapshot does not change. Inputs absent from the current generation do not dispatch.
+An unsettled earlier transport does not wake a finished pass. Other ready inputs and newer snapshots can still proceed.
+
+Sent probe failures pause the job with `background_retry_exhausted` after four attempts and wait one hour.
+The sent failure count and cooldown survive server restarts, including restarts before the fourth failure.
+Only an expired cooldown opens a new probe recovery round. Unrelated input holds keep their own deadlines.
+
+Node writes `semantic_index_status` messages when the recovery state changes, even when `JVC_LOG_ERRORS` is disabled.
+These messages omit provider response text. Repeated identical refusals do not write another status line.
+A restart never shortens a probe recovery cooldown, parked input deadline, provider cooldown, or budget window.
+
+Generation status includes `background_recovery` while the background job waits.
+It names `next_attempt`, `not_before`, `sent_attempts`, `refusals`, `exhausted`, and `reason`.
+Operator status also exposes the count and earliest deadline of retained input holds in `background_inputs`.
+This diagnostic reads at most 128 holds before yielding. Ordinary generation and public profile reads omit this scan.
+Times are Unix milliseconds. `not_before` preserves provider and budget deadlines separately from the recovery cooldown.
+
+The five-second host schedule starts eligible attempts. Healthy work continues through consecutive batches without that delay.
+A successful vector clears its input hold in the same transaction. Unrelated successes do not reset another input's retry count.
+A suspended profile still requires a compatible replacement profile.
+
+Fully staged jobs recover from retained inputs without reading their old source snapshot again.
+Storage exhaustion, invalid provider configuration, and an expired source snapshot during unfinished preparation receive a one-hour cooldown.
+A refusal before job creation retains its deadline and log state under the profile and view.
+An unpublished preparation with no dispatched batch can move to a newer source snapshot after expiry.
+Automatic recovery cannot repair invalid provider configuration or create missing storage capacity.
+
+Shutdown stops scheduling and new claims, then drains admitted transports before closing storage and releasing the directory lock.
+A stop after a claim and before dispatch retains that unsent batch as failed and pauses the job with `index_paused`.
+The next server start recovers that background job, including a stop during a rate-limit wait.
+Operator jobs still require their existing explicit recovery and retry commands.
+
+Cold coverage reads at most 128 metadata bindings before yielding to the main event loop.
+Requests for the same exact evaluation and generation share one coverage calculation.
+Settled coverage stays cached until association or batch progress changes, or the profile gains or loses a vector.
+Failure, recovery, and retry selection invalidate that cache. A vector completed by another generation also invalidates it.
+If progress changes during a shared calculation, the next request after completion refreshes its counts.
+Coverage reads use bounded pages and do not claim an atomic snapshot across those pages.
+A failure on this optional path makes capabilities report meaning search as unavailable. Other capabilities remain present.
+
+`GET /api/v1/embedding-profiles` returns exactly one `profiles` array.
+Each entry reports its profile hash, label, query availability, indexed count, eligible count, pending count, and limitations.
+Optional `snapshot`, `view`, and `language` parameters select the coverage context.
+Without those parameters, the request uses the latest completed snapshot, configured view, and all languages.
+An absent current generation returns an empty array.
+Coverage counts exact current event bindings, even when the generation began under an older snapshot.
+
+`POST /api/v1/search/semantic` accepts these JSON fields:
+
+```json
+{
+  "query": "x1 buys x2 from x3",
+  "language": "en",
+  "snapshot": "sha256:SNAPSHOT_HASH",
+  "view": "jve1:VIEW_HASH",
+  "profile": "sha256:PROFILE_HASH",
+  "limit": 30
+}
+```
+
+Replace each placeholder with its complete lowercase hash.
+Language tags use lowercase BCP 47 syntax and at most 63 bytes, without a registry membership test.
+Malformed tags return HTTP 400 before inference. Every successful response keeps the required coverage fields.
+The API accepts limits from 1 through 100. Its general query limit is 16 KiB.
+This profile has a tighter limit of 4,096 UTF-8 bytes, including its exact query prefix. Oversized inputs fail before payment.
+The server rejects malformed Unicode and does not normalize, trim, or silently truncate the query.
+Query fields belong in the JSON body, not the URL.
+
+The response names its snapshot, view, profile, and exact query input hash.
+Each hit names an event, word ID, cosine distance, and one-based position.
+Equal distances use event-ID order. Several definitions of one word can appear in the public results.
+Coverage reports indexed, eligible, pending, and failed counts for the selected language.
+Distance measures related meaning. It is not a dictionary score, endorsement, or calibrated probability.
+
+The scanner uses the same effective, selected, active definitions as ordinary lexical search.
+It runs in at most two reusable Node workers. Each worker has a bounded SQLite page cache and keeps at most 100 best hits.
+Each client network can hold at most one scan worker, including after cancellation until that worker acknowledges completion.
+Requests with an empty or absent network share one client identity and the same limit.
+Another scan from that network returns `semantic_busy` before it can take the second worker.
+A third client also receives `semantic_busy` while both workers are busy. There is no unbounded scan queue.
+Neither the scanner nor a query cache hit reads original definition bodies.
+Expiry during inference or scanning returns `snapshot_expired`, without exposing a result from a different snapshot.
+
+## Query cache, probes, and cancellation
+
+The query cache stores only the full profile hash, exact prefixed input hash, vector bytes, and last-use time.
+It stores no query text, definition body, or cross-snapshot search result.
+Least recently used entries leave when the entry or byte limit is reached. Ties use profile and input hash order.
+Every search applies its requested dictionary context, including when another snapshot computed the cached query vector.
+
+Concurrent misses for one profile and input share one computation.
+At most sixteen distinct computations wait at once. Provider work uses the existing shared execution and spending limits.
+A cache hit creates no provider request or reservation, including when paid work has exhausted its budget.
+The first caller's network owns a shared query computation. Later waiters do not incur another charge.
+Cache timing can reveal that someone recently used the same public-dictionary query.
+
+Before the first new query computation after restart, the server recomputes up to two public document reference inputs.
+It repeats this probe before a new computation when the last successful probe is at least one hour old.
+Cache hits do not trigger paid probes. They still consult the durable profile suspension state before returning results.
+The probe compares current vectors with retained vectors under a fixed cosine-distance tolerance of 0.0005.
+Independent public reference tests found ordinary same-provider differences up to about 0.0002, including repeated identical batches.
+This tolerance allows that numerical variation. It is not fitted to dictionary search targets and does not adapt after failures.
+The operator status command reports the latest probe's operation, model, input hashes, distances, time, and tolerance.
+It stores no query text or provider key.
+Confirmed drift or an unexpected model name suspends the profile, including its cached queries.
+The hosted revision remains unknown. A passing sample cannot prove that every input remains compatible or that the alias never changes.
+Financial refusals and transient provider failures do not suspend a compatible profile.
+
+New query computations respect the saved provider cooldown. They never automatically retry a failed provider request.
+Cancellation ends one caller's wait and stops its vector scan.
+An admitted shared embedding computation continues to settle and can fill the cache after all callers leave.
+Shutdown waits for those computations and actual provider transports before closing stores and releasing the data-directory lock.
+An expired or canceled search does not refund an already sent request or start a replacement.
+
+The browser meaning mode and AI dictionary tools are separate features.
+Downloaded document vectors alone do not provide offline meaning search. Derived-vector exchange remains unavailable.

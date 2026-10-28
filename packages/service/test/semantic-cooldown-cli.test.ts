@@ -335,3 +335,152 @@ globalThis.fetch = async (url, init) => {
     await rm(directory, { recursive: true });
   }
 });
+
+test("R7 the CLI retires a suspended completed background job after exact unpublication", async () => {
+  const base = process.env.JVC_TEST_ROOT ?? tmpdir();
+  await mkdir(base, { recursive: true });
+  const directory = await mkdtemp(join(base, "semantic-retirement-cli-"));
+  const path = join(directory, "semantic-vectors.sqlite");
+  const coordinator = new DatabaseSync(join(directory, "coordinator.sqlite"));
+  coordinator.close();
+  let store: SqliteVectorStore | undefined = new SqliteVectorStore(path);
+  try {
+    const { BackgroundSemanticIndexer } =
+      await import("../src/semantic/background.ts");
+    const prepared = await prepare(store, 200);
+    const profile = await store.profile(prepared.id);
+    const input = utf8("Completed background retirement fixture.");
+    const initial = await store.create(
+      { ...prepared, eligible: 0, snapshot: hash(199) },
+      profile,
+    );
+    await store.stage(initial.id, null, {
+      documents: [],
+      next: null,
+      done: true,
+    });
+    await store.start(initial.id);
+    await store.finish(initial.id);
+    await store.publish(initial.id, null);
+    const background = new BackgroundSemanticIndexer({
+      store,
+      profile: prepared.profile,
+      view: prepared.view,
+      assistance: {
+        embed: async (inputs, _caller, _signal, before) => {
+          const operation = "embedding:index:retirement-fixture";
+          await before?.(operation);
+          return {
+            operation,
+            model: profile.model,
+            vectors: inputs.map(() =>
+              Float32Array.from({ length: 4096 }, (_, i) => (i ? 0 : 1)),
+            ),
+            usage: { inputTokens: 0, totalTokens: 0, costUsd: 0 },
+          };
+        },
+      },
+      source: async () => ({
+        context: { ...prepared, eligible: 1 },
+        page: async () => ({
+          documents: [
+            {
+              event: hash(200, "jve1:"),
+              envelope: hash(300),
+              body: hash(400),
+              extraction_version: 2,
+              word: hash(200, "jvw1:"),
+              language: "en",
+              input,
+              input_hash: inputHash(input),
+              error: null,
+            },
+          ],
+          next: hash(200, "jve1:"),
+          done: true,
+        }),
+      }),
+      probe: async () => {},
+      report: (error) => {
+        throw error;
+      },
+    });
+    await background.cycle();
+    const job = (await store.backgroundGeneration(
+      prepared.profile,
+      prepared.view,
+    ))!;
+    assert.equal(job.state, "completed");
+    assert.equal((await store.coverage(job.id)).indexed, 1);
+    await store.suspend(job.profile, "embedding_model_mismatch");
+    await background.close();
+    store.close();
+    store = undefined;
+    async function cli(command: string) {
+      const child = spawn(
+        process.execPath,
+        [
+          "--import",
+          "tsx",
+          fileURLToPath(
+            new URL(
+              "../../../apps/server/src/semantic-cli.ts",
+              import.meta.url,
+            ),
+          ),
+          "--data",
+          directory,
+          "--command",
+          command,
+          "--job",
+          job.id,
+        ],
+        {
+          cwd: fileURLToPath(new URL("../../../", import.meta.url)),
+          env: {
+            PATH: process.env.PATH,
+            TMPDIR: directory,
+          } as unknown as NodeJS.ProcessEnv,
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+      let stdout = "";
+      let stderr = "";
+      child.stdout.setEncoding("utf8").on("data", (chunk) => {
+        stdout += chunk;
+      });
+      child.stderr.setEncoding("utf8").on("data", (chunk) => {
+        stderr += chunk;
+      });
+      const timer = setTimeout(() => child.kill("SIGKILL"), 10000);
+      const code = await new Promise((resolve, reject) => {
+        child.once("error", reject);
+        child.once("close", resolve);
+      }).finally(() => clearTimeout(timer));
+      assert.equal(code, 0, `R7 ${command} must succeed: ${stdout} ${stderr}`);
+      return stdout
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line))
+        .at(-1);
+    }
+    const unpublished = await cli("unpublish");
+    assert.equal(unpublished.current, null);
+    const retired = await cli("retire");
+    assert.equal(retired.generation.state, "retired");
+    assert.equal(retired.coverage, null);
+    assert.equal(retired.compatibility, "embedding_model_mismatch");
+    store = new SqliteVectorStore(path);
+    assert.equal(await store.backgroundGeneration(job.profile, job.view), null);
+    assert.equal(
+      (store as unknown as { database: DatabaseSync }).database
+        .prepare("SELECT COUNT(*) AS n FROM semantic_vectors WHERE profile=?")
+        .get(job.profile)?.n,
+      0,
+    );
+    await assert.rejects(store.setBackgroundGeneration(job.id), /retired/);
+  } finally {
+    store?.close();
+    await rm(directory, { recursive: true });
+  }
+});

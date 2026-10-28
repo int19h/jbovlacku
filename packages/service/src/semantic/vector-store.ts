@@ -4,7 +4,20 @@ import type { DocumentPage, IndexContext, IndexDocument } from "./source.ts";
 
 export const MAX_PROFILE_COOLDOWN_MS = 60 * 60 * 1000;
 
+export interface BackgroundRecovery {
+  next_attempt: number;
+  not_before: number;
+  operation?: string;
+  batch?: string;
+  refusals: number;
+  sent_attempts: number;
+  exhausted: boolean;
+  reason: string;
+}
+
 export interface IndexGeneration extends IndexContext {
+  background_recovery?: BackgroundRecovery;
+  background_inputs?: { count: number; next_attempt: number };
   id: string;
   state: "paused" | "running" | "completed" | "retired";
   cursor: string | null;
@@ -42,12 +55,74 @@ export interface IndexSummary {
 export interface VectorAssociation extends Omit<IndexDocument, "input"> {
   vector: Uint8Array | null;
 }
+export type ExpectedAssociation = Pick<
+  IndexDocument,
+  "event" | "envelope" | "body" | "extraction_version" | "word" | "language"
+>;
+export interface ProbeEvidence {
+  operation: string;
+  checked_at: number;
+  tolerance: number;
+  model: string;
+  references: { input: string; distance: number }[];
+}
 export interface VectorStore {
+  /** Keep each host guard for this store's lifetime, including after a caller timeout. */
+  registerOperationGuard(pending: (operation: string) => boolean): void;
+  retainGeneration(id: string): Promise<() => void>;
+  backgroundGeneration(
+    profile: string,
+    view: string,
+  ): Promise<IndexGeneration | null>;
+  setBackgroundGeneration(id: string): Promise<void>;
+  setBackgroundRecovery(
+    id: string,
+    recovery: BackgroundRecovery | null,
+  ): Promise<void>;
+  recoverBackground(id: string): Promise<void>;
+  backgroundWait(
+    profile: string,
+    view: string,
+  ): Promise<BackgroundRecovery | null>;
+  setBackgroundWait(
+    profile: string,
+    view: string,
+    recovery: BackgroundRecovery | null,
+  ): Promise<void>;
+  backgroundInputRecovery(
+    batch: IndexBatch,
+  ): Promise<BackgroundRecovery | null>;
+  holdBackgroundInputs(
+    batch: IndexBatch,
+    recovery: BackgroundRecovery,
+    split: boolean,
+    now: number,
+  ): Promise<void>;
+  backgroundSchedule(
+    id: string,
+    now: number,
+    pending?: (operation: string) => boolean,
+  ): Promise<number | null>;
+  resumeBackground(id: string): Promise<void>;
+  retryableBatch(id: string): Promise<IndexBatch | null>;
+  pruneBackgroundGenerations(profile: string, view: string): Promise<void>;
+  recordProbe(profile: string, evidence: ProbeEvidence): Promise<void>;
+  probeEvidence(profile: string): Promise<ProbeEvidence | null>;
+  coverageRevision(id: string): Promise<string>;
+  coverageFor(
+    id: string,
+    expected: ExpectedAssociation[],
+  ): Promise<{ all: IndexCoverage; languages: Record<string, IndexCoverage> }>;
+  published(view: string): Promise<IndexGeneration[]>;
+  references(id: string): Promise<{ input: Uint8Array; vector: Uint8Array }[]>;
   create(
     context: IndexContext,
     profile: EmbeddingProfile,
   ): Promise<IndexGeneration>;
-  generation(id: string): Promise<IndexGeneration>;
+  generation(
+    id: string,
+    includeBackgroundInputs?: boolean,
+  ): Promise<IndexGeneration>;
   profile(id: string): Promise<EmbeddingProfile>;
   stage(id: string, after: string | null, page: DocumentPage): Promise<void>;
   coverage(id: string, language?: string): Promise<IndexCoverage>;
@@ -66,7 +141,10 @@ export interface VectorStore {
   start(id: string): Promise<void>;
   pause(id: string, error?: string): Promise<void>;
   recover(id: string): Promise<void>;
-  claim(id: string): Promise<IndexBatch | null>;
+  claim(
+    id: string,
+    background?: { now: number; pending(operation: string): boolean },
+  ): Promise<IndexBatch | null>;
   inputs(batch: string): Promise<Uint8Array[]>;
   sent(batch: string, operation: string): Promise<void>;
   complete(
