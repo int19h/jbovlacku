@@ -353,6 +353,7 @@ Backfill does not repeat signature checks, body hashing, or canonical JSON check
 It preserves invalid body schema diagnostics. It commits at most 256 rows per batch and reads at most 16 records at once.
 The native golden test pins the complete projection output to `HOST_RECORD_VERSION`.
 Its immutable fixtures live under `crates/jvc-runtime/tests/fixtures` with a separate digest file for each extraction version.
+Versions 3 and 4 were used by unmerged development builds. Do not reuse them. Their unused golden files are removed.
 A projection change requires a new version and golden digest. The test covers all body statuses, action kinds, and both publication projections.
 It includes legacy account evidence and attribution fields that the two projections retain differently.
 

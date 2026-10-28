@@ -837,6 +837,7 @@ fn required_semantic<'de, D: serde::Deserializer<'de>>(
     Option::deserialize(deserializer)
 }
 // Versioned golden files in tests/fixtures are immutable. A projection change needs a new version.
+// Versions 3 and 4 were used by unmerged development builds. Do not reuse them.
 pub const HOST_RECORD_VERSION: u32 = 7;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
