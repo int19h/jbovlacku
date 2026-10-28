@@ -277,6 +277,7 @@ export async function searchPage(
   let view: string | null = null;
   let localHits: LocalHit[] = [];
   let stopped = false;
+  let expanding = false;
   let segmentation: "complete" | "limited" | undefined;
   const segmentationNote = p(
     "Word segmentation reached a limit. Some sequence matches or word cards can be missing. Ordinary text matching remains available.",
@@ -368,21 +369,33 @@ export async function searchPage(
       const more = button(
         "show all",
         async () => {
-          more.disabled = true;
+          if (expanding || stopped || !context.live()) return;
+          expanding = true;
+          refreshCount();
           try {
-            await loadNext();
+            if (cached) await loadNext(true);
+            else {
+              while (
+                context.live() &&
+                !stopped &&
+                next &&
+                displayed.length < RESULT_LIMIT
+              )
+                await loadNext();
+            }
           } catch (error) {
             if (context.live()) {
               results.append(p(describe(error), "notice"));
               refreshCount();
             }
           } finally {
-            more.disabled = stopped;
+            expanding = false;
+            if (context.live()) refreshCount();
           }
         },
         { class: "btn btn-quiet" },
       );
-      more.disabled = stopped || displayed.length >= RESULT_LIMIT;
+      more.disabled = expanding || stopped || displayed.length >= RESULT_LIMIT;
       endLine.append(more);
       if (displayed.length >= RESULT_LIMIT)
         endLine.append(
@@ -406,12 +419,16 @@ export async function searchPage(
       );
     }
   };
-  const loadNext = async () => {
+  const loadNext = async (allLocal = false) => {
+    if (!context.live() || stopped || displayed.length >= RESULT_LIMIT) return;
     if (cached) {
       appendHits(
         localHits.slice(
           displayed.length,
-          Math.min(displayed.length + PAGE_SIZE, RESULT_LIMIT),
+          Math.min(
+            allLocal ? localHits.length : displayed.length + PAGE_SIZE,
+            RESULT_LIMIT,
+          ),
         ),
       );
     } else {
@@ -420,7 +437,7 @@ export async function searchPage(
       const page = await remoteSearch(
         query,
         language,
-        PAGE_SIZE,
+        Math.min(PAGE_SIZE, RESULT_LIMIT - displayed.length),
         snapshot ? { snapshot, view: view! } : null,
         next,
         { signal: context.signal, retired: includeRetired },
@@ -475,7 +492,7 @@ export async function searchPage(
       /^sha256:[0-9a-f]{64}$/.test(saved.snapshot) &&
       typeof saved.view === "string" &&
       Array.isArray(saved.cursors) &&
-      saved.cursors.length <= 50
+      saved.cursors.length <= RESULT_LIMIT
     ) {
       snapshot = saved.snapshot;
       view = saved.view;

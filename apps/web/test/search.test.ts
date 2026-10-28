@@ -614,13 +614,10 @@ test("local search pages through many results in stable order, keeps equal-class
     results.getByRole("link", { name: "also: 2 other matching definitions" }),
   ).toBeVisible();
   await page.getByRole("button", { name: "show all" }).click();
-  await expect(results.locator("article")).toHaveCount(40);
-  // Browser back restores the loaded pages.
+  await expect(results.locator("article")).toHaveCount(121);
+  // Browser Back restores every result revealed by show all.
   await page.getByRole("link", { name: "Add a word" }).click();
   await page.goBack();
-  await expect(results.locator("article")).toHaveCount(40);
-  while ((await results.locator("article").count()) < 121)
-    await page.getByRole("button", { name: "show all" }).click();
   await expect(results.locator("article")).toHaveCount(121);
   expect(await results.locator("article .hw").allTextContents()).toEqual(
     expected,

@@ -219,6 +219,8 @@ A text link labeled “notes” opens existing notes. An “also:” link expose
 Language filters never erase the existence of alternatives. Search classes have no visible group headings.
 
 The list offers “show all” with the remaining count, “Missing a word for this? Add it,” and a retired-results filter.
+One click reveals all remaining local hits or fetches remote pages in sequence, up to the browser limit of 1,000 hits.
+Only one expansion runs at once. Navigation cancels it, and repeated cursors or results stop it.
 A rafsi lookup identifies the related word, for example “cku ← cukta,” and exposes competing assignments when present.
 Rafsi lookup does not silently pick an unresolved assignment.
 A single unreviewed definition remains visible. A lack of endorsements is not a negative judgment.

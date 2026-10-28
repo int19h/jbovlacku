@@ -23,7 +23,7 @@ test("local sequences share rank across spellings, fall back to query words, and
       "iseri'abo",
       "mibo",
       ...Array.from(
-        { length: 35 },
+        { length: 55 },
         (_, index) => "i" + "se".repeat(index + 2) + "bo",
       ),
     ];
@@ -128,15 +128,27 @@ test("remote sequence classes and a limited-segmentation notice survive paginati
     match,
   }));
   let requests = 0;
-  await page.route("**/api/v1/search?**", (route) => {
+  let releaseSecond!: () => void;
+  const secondPending = new Promise<void>((resolve) => {
+    releaseSecond = resolve;
+  });
+  await page.route("**/api/v1/search?**", async (route) => {
     requests++;
-    const later = new URL(route.request().url()).searchParams.has("after");
+    const after = new URL(route.request().url()).searchParams.get("after");
+    const offset =
+      after === "sequence-page-3" ? 3 : after === "sequence-page-2" ? 2 : 0;
+    if (offset === 2) await secondPending;
     return route.fulfill({
       json: {
         snapshot,
         view,
-        hits: later ? hits.slice(2) : hits.slice(0, 2),
-        next: later ? null : "sequence-page",
+        hits: offset === 0 ? hits.slice(0, 2) : hits.slice(offset, offset + 1),
+        next:
+          offset === 0
+            ? "sequence-page-2"
+            : offset === 2
+              ? "sequence-page-3"
+              : null,
         segmentation: "limited",
       },
     });
@@ -149,6 +161,11 @@ test("remote sequence classes and a limited-segmentation notice survive paginati
   await expect(results.locator("article .hw")).toHaveText(["ibo", "iboku"]);
   await expect(notice).toContainText("Word segmentation reached a limit.");
   await page.getByRole("button", { name: "show all" }).click();
+  await expect(page.getByRole("button", { name: "show all" })).toBeDisabled();
+  // Even a synthetic duplicate click cannot start another expansion loop.
+  await page.getByRole("button", { name: "show all" }).dispatchEvent("click");
+  await expect.poll(() => requests).toBe(2);
+  releaseSecond();
   await expect(results.locator("article .hw")).toHaveText([
     "ibo",
     "iboku",
@@ -160,5 +177,5 @@ test("remote sequence classes and a limited-segmentation notice survive paginati
   await page.goBack();
   await expect(results.locator("article")).toHaveCount(4);
   await expect(notice).toBeVisible();
-  expect(requests).toBe(2);
+  expect(requests).toBe(3);
 });
