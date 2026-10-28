@@ -552,7 +552,12 @@ The wizard can suggest placeholder mappings, but the author approves numbering b
 Repeated references can name the same place. Textual order does not determine final place order.
 
 In structured editing, typed circled numerals insert integer place references. Pasting offers literal text or explicit token conversion.
-Every rich text node has a text form in structured editing, so a published body converts to editor text and back without loss: `①` or `{place N}` is a place reference, `{operand ID}` an operand reference, `[[spelling|label]]` a word link, `[[https://host/path|label]]` a web link, and `` `text` `` code. A backslash before `\`, `[`, `{`, `` ` ``, or a circled numeral keeps that character as literal text.
+Structured editing uses `①` or `{place N}` for a place reference, `{operand ID}` for an operand reference, `[[spelling|label]]` for a word link, `[[https://host/path|label]]` for a web link, and backticks for code.
+A backslash before `\`, `[`, `{`, a backtick, or a circled numeral keeps that character literal. Code and links also escape their own delimiters.
+Every other backslash stays literal, including TeX commands and a backslash before whitespace or a raw blank line.
+Blank lines always separate paragraphs, so code and links never cross them and unmatched delimiters stay literal within their paragraph. When the editor shows stored code or a link label, each run of blank lines becomes one line break and the node keeps its type.
+Ordinary URL targets remove only characters ignored by [URL parsing](https://url.spec.whatwg.org/#concept-basic-url-parser): ASCII tab, CR, LF, and C0 controls or space at the edges. Spaces inside paths or queries, non-ASCII whitespace, and Unicode spelling stay significant. A link whose label equals its original URL keeps the short form with that normalized target. If a stored target lacks `//`, the writer uses its parsed URL and keeps the original label explicit.
+When a field is edited, CRLF and CR become LF, adjacent strings merge, and trailing plain whitespace is trimmed. Whitespace-only paragraphs disappear.
 The draft holds each rich text field as its exact rich text value. The editor shows a field in its text form and parses the text back only when the author edits that field, so an untouched value never changes. Literal mode turns the place references of every field into circled characters after a confirmation, and structured mode reads circled characters in text as references again. Links and code stay in both modes; a field edited in literal mode becomes plain text.
 Literal mode preserves circled characters and underscores as text. Both modes produce the same compact rich-text schema.
 In literal mode, removing or moving a place updates the visible circled characters in unchanged fields to keep their saved references aligned.
@@ -724,6 +729,7 @@ The draft preserves attribution through source references to that imported publi
 Anyone can propose a revision. The resulting card identifies its signer and whether accepted continuity connects that signer to the original author.
 The UI never says that a proposal replaced its parent merely because it has a later timestamp.
 It shows branching revisions and lets readers compare text, places, defaults, sources, and other changed fields.
+Comparison fields show changes in batches of 50. Each requested batch moves keyboard focus to its first new row, including the final batch.
 
 Publishing a revision creates its own author endorsement. It inherits no judgments from its parent.
 If its body is unavailable, the parent still shows that a proposed revision exists.

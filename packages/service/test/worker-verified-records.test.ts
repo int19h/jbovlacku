@@ -123,6 +123,32 @@ test("Worker admission persists compact rows across object restart and never rec
     assert.equal(response.status, 201, await response.clone().text());
     const state = await first.load();
     const event = state.events[record.envelope.id];
+    // F4: the inventory retains the body while R2 temporarily returns no bytes.
+    const bodyHash = record.envelope.header.content!.hash;
+    const bodyBytes = objects.get(bodyHash)!;
+    const bodyRequest = () =>
+      new Request(
+        `http://localhost/api/v1/bodies/${bodyHash}?snapshot=${state.snapshot}`,
+      );
+    assert.equal((await first.fetch(bodyRequest())).status, 200);
+    objects.delete(bodyHash);
+    const unavailable = await first.fetch(bodyRequest());
+    assert.equal(
+      unavailable.status,
+      503,
+      "F4: an inventoried Worker body is unavailable, not missing",
+    );
+    assert.equal((await unavailable.json()).code, "storage_unavailable");
+    objects.set(bodyHash, bodyBytes);
+    assert.equal((await first.fetch(bodyRequest())).status, 200);
+    const missing = await first.fetch(
+      new Request(
+        `http://localhost/api/v1/bodies/sha256:${"f".repeat(64)}?snapshot=${state.snapshot}`,
+      ),
+    );
+    assert.equal(missing.status, 404);
+    assert.equal((await missing.json()).code, "missing");
+
     const binding = {
       id: record.envelope.id,
       envelope_hash: event.envelope_hash,

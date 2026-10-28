@@ -256,13 +256,23 @@ export function loadRecord<B = unknown>(
           body = null;
           bodyError =
             error instanceof Error ? error.message : "The body is unavailable.";
-          if (error instanceof TransportError) recordCache.delete(key);
+          // A missing body in an immutable snapshot stays missing there.
+          // Other failures, and unpinned absence, can recover on the next read.
+          const snapshotAbsence =
+            snapshot &&
+            error instanceof RequestError &&
+            error.status === 404 &&
+            error.code === "missing";
+          if (!snapshotAbsence && recordCache.get(key) === pending)
+            recordCache.delete(key);
         }
       }
       return { envelope, body, rawBody, bodyError };
     })();
     recordCache.set(key, pending);
-    pending.catch(() => recordCache.delete(key));
+    pending.catch(() => {
+      if (recordCache.get(key) === pending) recordCache.delete(key);
+    });
   }
   return pending as Promise<LoadedRecord<B>>;
 }

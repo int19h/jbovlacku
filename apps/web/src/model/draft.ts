@@ -22,7 +22,7 @@ import {
   richTextToText,
   textToRichText,
 } from "./richtext.ts";
-import { wordFormFeedback } from "./word-form.ts";
+import { wordFormFeedback, detectWord } from "./word-form.ts";
 import { placeGlyph } from "../lib/format.ts";
 import { cloneAssistance } from "./assistance.ts";
 import {
@@ -684,106 +684,165 @@ export interface DraftProblem {
   /** Problems that block signing. Warnings do not. */
   blocking: boolean;
 }
+function referenceAdvice(spelling: string): string | null {
+  try {
+    return detectWord(spelling.toLowerCase()).kind === "unknown"
+      ? "This reference spelling does not match a recognized Lojban word form. You can still publish it."
+      : null;
+  } catch {
+    return "The reference spelling could not be checked. You can still publish it.";
+  }
+}
 const lojbanWord = /^[a-z',.]+(?: [a-z',.]+)*$/u;
 /**
- * The editor's token syntax in structured mode. Every rich text node has a
- * text form, so a published body converts to editor text and back without
- * loss.
- *
- * - `①` through `⑳` or `{place N}`: a place reference.
- * - `{operand ID}`: an operand reference.
- * - `[[spelling]]` or `[[spelling|label]]`: a word link.
- * - `[[https://host/path]]` or `[[https://host/path|label]]`: a web link.
- * - `` `text` ``: code.
- * - A backslash before `\`, `[`, `{`, `` ` ``, or a circled numeral keeps
- *   that character as literal text.
+ * Structured editing uses place and operand references, links, and code.
+ * Code and links stay within one paragraph. Unmatched delimiters stay literal.
  */
-const TOKEN =
-  /\\([\\`[{①-⑳])|([①-⑳])|\{place (\d{1,5})\}|\{operand ([a-z][a-z0-9_-]{0,31})\}|`((?:\\.|[^`])*)`|\[\[((?:\\.|[^\]|])+)(?:\|((?:\\.|[^\]])*))?\]\]/gu;
+const PARAGRAPH_BREAK = String.raw`(?:\r\n|\r(?!\n)|(?<!\r)\n)\s*(?:\r\n|\r(?!\n)|(?<!\r)\n)`;
+const CODE_CONTENT = String.raw`(?!${PARAGRAPH_BREAK})(?:\\[^\r\n]|\\(?=[\r\n])|[^\x60\\])`;
+const LINK_TARGET = String.raw`(?!${PARAGRAPH_BREAK})(?:\\[^\r\n]|\\(?=[\r\n])|[^\\\]|])`;
+const LINK_LABEL = String.raw`(?!${PARAGRAPH_BREAK})(?:\\[^\r\n]|\\(?=[\r\n])|[^\\\]])`;
+const TOKEN = new RegExp(
+  String.raw`\\([\\\x60[{①-⑳])|([①-⑳])|\{place (\d{1,5})\}|\{operand ([a-z][a-z0-9_-]{0,31})\}|\x60((?:${CODE_CONTENT})*)\x60|\[\[((?:${LINK_TARGET})+)(?:\|((?:${LINK_LABEL})*))?\]\]`,
+  "gu",
+);
 const unescape = (value: string, code = false) =>
   value.replace(code ? /\\([\\`])/gu : /\\([\\\]|`])/gu, "$1");
-/** Editor text to rich text. Structured mode reads the token syntax. */
+/** Remove only characters that URL parsing ignores before reading the address. */
+const urlTarget = (value: string) =>
+  value
+    .replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/gu, "")
+    .replace(/[\t\n\r]/gu, "");
+/** Use the existing URL syntax for a stored address without its two slashes. */
+function editorUrl(value: string): string {
+  if (/^https?:\/\//iu.test(value)) return value;
+  try {
+    return new URL(value).href;
+  } catch {
+    return value;
+  }
+}
+/** Parse only an edited field. Line endings and plain whitespace normalize. */
 export function editorToRichText(
   source: string,
   structured: boolean,
   local = true,
 ): RichText {
+  source = source.replace(/\r\n?/gu, "\n");
   if (!structured) return textToRichText(source, false);
-  const paragraphs = source
-    .split(/\n\s*\n/)
-    .map((paragraph) => paragraph.replace(/\s+$/u, ""))
-    .filter((paragraph) => paragraph.length);
-  return paragraphs.map((paragraph) => {
-    const nodes: RichNode[] = [];
-    let pending = "";
-    const flush = () => {
-      if (pending) nodes.push(pending);
-      pending = "";
-    };
-    let index = 0;
-    for (const match of paragraph.matchAll(TOKEN)) {
-      pending += paragraph.slice(index, match.index);
-      index = match.index! + match[0].length;
-      const [, escaped, circled, placeNumber, operand, code, target, label] =
-        match;
-      if (escaped !== undefined) {
-        pending += escaped;
-        continue;
-      }
-      if (!local && (circled || placeNumber || operand)) {
-        pending += match[0];
-        continue;
-      }
-      flush();
-      if (circled) nodes.push(circled.codePointAt(0)! - 0x245f);
-      else if (placeNumber) nodes.push(Number(placeNumber));
-      else if (operand) nodes.push({ operand });
-      else if (code !== undefined) nodes.push({ code: unescape(code, true) });
+  const paragraphs: RichText = [];
+  let nodes: RichNode[] = [];
+  let pending = "";
+  const flush = () => {
+    if (pending) nodes.push(pending);
+    pending = "";
+  };
+  const finishParagraph = () => {
+    pending = pending.trimEnd();
+    flush();
+    if (nodes.length) paragraphs.push(nodes);
+    nodes = [];
+  };
+  const tokens = new RegExp(`${TOKEN.source}|(${PARAGRAPH_BREAK})`, "gu");
+  let index = 0;
+  for (const match of source.matchAll(tokens)) {
+    pending += source.slice(index, match.index);
+    index = match.index! + match[0].length;
+    const [
+      ,
+      escaped,
+      circled,
+      placeNumber,
+      operand,
+      code,
+      target,
+      label,
+      paragraphBreak,
+    ] = match;
+    if (paragraphBreak !== undefined) {
+      finishParagraph();
+      continue;
+    }
+    if (escaped !== undefined) {
+      pending += escaped;
+      continue;
+    }
+    if (!local && (circled || placeNumber || operand)) {
+      pending += match[0];
+      continue;
+    }
+    flush();
+    if (circled) nodes.push(circled.codePointAt(0)! - 0x245f);
+    else if (placeNumber) nodes.push(Number(placeNumber));
+    else if (operand) nodes.push({ operand });
+    else if (code !== undefined) nodes.push({ code: unescape(code, true) });
+    else {
+      const raw = unescape(target);
+      const url = urlTarget(raw);
+      if (/^https?:\/\//iu.test(url.trim()))
+        nodes.push({ url, label: label === undefined ? url : unescape(label) });
       else {
-        const spelling = unescape(target).trim().normalize("NFC");
-        const shown = label === undefined ? spelling : unescape(label).trim();
-        if (/^https?:\/\//iu.test(spelling))
-          nodes.push({ url: spelling, label: shown });
-        else nodes.push({ word: { language: "jbo", spelling }, label: shown });
+        const spelling = raw.trim().normalize("NFC");
+        nodes.push({
+          word: { language: "jbo", spelling },
+          label: label === undefined ? spelling : unescape(label),
+        });
       }
     }
-    pending += paragraph.slice(index);
-    flush();
-    return nodes;
-  });
+  }
+  pending += source.slice(index);
+  finishParagraph();
+  return paragraphs;
 }
-/** Escapes characters that the token syntax reads, so text stays literal. */
+/** Escape syntax characters and literal place or operand tokens. */
 function escapeLiteral(value: string): string {
-  return value.replace(/[\\`[{①-⑳]/gu, (c) => `\\${c}`);
+  return value.replace(
+    /[\\`[①-⑳]|\{(?=(?:place \d{1,5}|operand [a-z][a-z0-9_-]{0,31})\})/gu,
+    (c) => `\\${c}`,
+  );
 }
 const escapeInside = (value: string) => value.replace(/[\\\]|`]/gu, "\\$&");
-/** Rich text to editor text in the token syntax. Lossless. */
+/** Keep code and labels in one paragraph without changing their node type. */
+const inlineBreaks = (value: string) =>
+  value
+    .replace(/\r\n?/gu, "\n")
+    .replace(new RegExp(PARAGRAPH_BREAK, "gu"), "\n");
+/** Show stored rich text without changing the draft. Edits normalize it. */
 export function richTextToEditor(value: RichText): string {
   return value
-    .map((paragraph) =>
-      paragraph
+    .map((paragraph) => {
+      const merged: RichNode[] = [];
+      for (const node of paragraph) {
+        const last = merged.length - 1;
+        if (typeof node === "string" && typeof merged[last] === "string")
+          merged[last] = (merged[last] as string) + node;
+        else merged.push(node);
+      }
+      return merged
         .map((node) => {
           if (typeof node === "string") return escapeLiteral(node);
           if (typeof node === "number")
             return node <= 20
               ? String.fromCodePoint(0x245f + node)
               : `{place ${node}}`;
-          // An empty label is written as `[[target|]]`. It is valid in the format.
           if ("word" in node)
             return node.label === node.word.spelling
               ? `[[${escapeInside(node.word.spelling)}]]`
-              : `[[${escapeInside(node.word.spelling)}|${escapeInside(node.label)}]]`;
-          if ("url" in node)
-            return node.label === node.url
-              ? `[[${escapeInside(node.url)}]]`
-              : `[[${escapeInside(node.url)}|${escapeInside(node.label)}]]`;
+              : `[[${escapeInside(node.word.spelling)}|${escapeInside(inlineBreaks(node.label))}]]`;
+          if ("url" in node) {
+            const target = urlTarget(node.url);
+            const address = editorUrl(target);
+            return node.label === node.url && address === target
+              ? `[[${escapeInside(address)}]]`
+              : `[[${escapeInside(address)}|${escapeInside(inlineBreaks(node.label))}]]`;
+          }
           if ("code" in node)
-            return `\`${node.code.replace(/[\\`]/gu, "\\$&")}\``;
+            return `\`${inlineBreaks(node.code).replace(/[\\`]/gu, "\\$&")}\``;
           if ("operand" in node) return `{operand ${node.operand}}`;
           return "";
         })
-        .join(""),
-    )
+        .join("");
+    })
     .join("\n\n");
 }
 /** The literal text form of one place number. */
@@ -1164,6 +1223,13 @@ interface RichField {
   value: RichText;
   local: boolean;
 }
+/** A Unicode regex matches lone surrogates without matching valid pairs. */
+function invalidUnicode(value: unknown): boolean {
+  if (typeof value === "string") return /[\ud800-\udfff]/u.test(value);
+  if (value && typeof value === "object")
+    return Object.values(value).some(invalidUnicode);
+  return false;
+}
 /** Checks the nodes of one rich text field against the format rules. */
 function richProblems(
   entry: RichField,
@@ -1171,7 +1237,11 @@ function richProblems(
   problems: DraftProblem[],
 ) {
   const seen = new Map<string, DraftProblem>();
-  const report = (message: string, convertPlaceReference = false) => {
+  const report = (
+    message: string,
+    convertPlaceReference = false,
+    blocking = true,
+  ) => {
     const key = `${entry.field}:${message}`;
     const existing = seen.get(key);
     if (existing) {
@@ -1181,7 +1251,7 @@ function richProblems(
     const problem: DraftProblem = {
       field: entry.field,
       message,
-      blocking: true,
+      blocking,
       ...(convertPlaceReference ? { richFieldKey: entry.key } : {}),
     };
     seen.set(key, problem);
@@ -1189,6 +1259,12 @@ function richProblems(
   };
   for (const paragraph of entry.value)
     for (const node of paragraph) {
+      if (invalidUnicode(node)) {
+        report(
+          `${entry.label} contains an invalid Unicode character. Replace that character before publishing.`,
+        );
+        continue;
+      }
       if (typeof node === "string") continue;
       if (typeof node === "number") {
         if (!entry.local)
@@ -1207,12 +1283,23 @@ function richProblems(
       } else if ("word" in node) {
         if (!node.word.spelling)
           report(`${entry.label} has a word link without a spelling.`);
-        else if (!lojbanWord.test(node.word.spelling))
-          report(
-            `${entry.label} links the word "${node.word.spelling}", which is not a Lojban spelling.`,
-          );
+        else {
+          try {
+            wordId(node.word);
+            const advice = referenceAdvice(node.word.spelling);
+            if (advice) report(`${entry.label}: ${advice}`, false, false);
+          } catch {
+            report(
+              `${entry.label} has an invalid word link. Use a spelling of at most 256 UTF-8 bytes, without controls or edge spaces.`,
+            );
+          }
+        }
       } else if ("url" in node) {
-        if (!/^https:\/\/[^\s/]+/u.test(node.url))
+        let https = false;
+        try {
+          https = new URL(node.url).protocol === "https:";
+        } catch {}
+        if (!https)
           report(
             `${entry.label} links "${node.url}", which is not an HTTPS URL.`,
           );
@@ -1483,12 +1570,24 @@ function buildFrame(draft: Draft, problems: DraftProblem[], rich: RichField[]) {
             message: `${which} needs a source word.`,
             blocking: true,
           });
-        else if (!lojbanWord.test(word))
-          problems.push({
-            field,
-            message: `${which} names "${word}", which is not a Lojban spelling.`,
-            blocking: true,
-          });
+        else {
+          try {
+            wordId({ language: "jbo", spelling: word });
+            const advice = referenceAdvice(word);
+            if (advice)
+              problems.push({
+                field,
+                message: `${which}: ${advice}`,
+                blocking: false,
+              });
+          } catch {
+            problems.push({
+              field,
+              message: `${which} has an invalid source word. Use a spelling of at most 256 UTF-8 bytes, without controls or edge spaces.`,
+              blocking: true,
+            });
+          }
+        }
         if (
           d.place === null ||
           !Number.isInteger(d.place) ||
@@ -1696,7 +1795,9 @@ export function coreProblems(
     return [
       {
         field: "body",
-        message: `The shared core could not check the body: ${error instanceof Error ? error.message : String(error)}.`,
+        message: invalidUnicode(body)
+          ? "The definition contains an invalid Unicode character. Replace that character before publishing."
+          : `The shared core could not check the body: ${error instanceof Error ? error.message : String(error)}.`,
         blocking: true,
       },
     ];
@@ -2145,8 +2246,9 @@ export function draftToBody(input: Draft): {
   } catch (error) {
     problems.push({
       field: "spelling",
-      message:
-        error instanceof Error
+      message: invalidUnicode(spelling)
+        ? "The spelling contains an invalid Unicode character. Replace that character before publishing."
+        : error instanceof Error
           ? error.message
           : "The spelling is not a valid word.",
       blocking: true,

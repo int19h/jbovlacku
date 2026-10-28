@@ -169,14 +169,15 @@ export async function preferencesPage(
       const go = button(
         "Download",
         async () => {
+          const language = pick.input.value;
           go.disabled = true;
           try {
-            const pkg = await downloadPackage(pick.input.value);
-            await app.store.put("packages", pick.input.value, pkg);
+            const pkg = await downloadPackage(language);
+            await app.store.put("packages", language, pkg);
             app.announce(
               pkg.downgrade
-                ? `The ${languageName(pick.input.value)} search package is saved in this browser as version 1. ${pkg.downgrade}`
-                : `The ${languageName(pick.input.value)} search package is saved in this browser.`,
+                ? `The ${languageName(language)} search package is saved in this browser as version 1. ${pkg.downgrade}`
+                : `The ${languageName(language)} search package is saved in this browser.`,
             );
             await renderPackages();
           } catch (error) {

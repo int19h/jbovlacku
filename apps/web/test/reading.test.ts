@@ -164,9 +164,13 @@ test("the word page orders definitions by the two-root view and exposes the scor
       `/definition/${f.definitions.cuktaRev.replace(":", "%3A")}\\?compare=`,
     ),
   );
+  const changedFields = page.getByRole("region", { name: "Changed fields" });
   await expect(
-    page.getByRole("region", { name: "Changed fields" }),
-  ).toContainText("Places");
+    changedFields.getByRole("heading", { name: "Place 5", exact: true }),
+  ).toBeVisible();
+  await expect(
+    changedFields.locator('[data-field="Place 5"] .comparison-pair'),
+  ).toContainText("the medium");
   await page.goBack();
   await expect(page).toHaveTitle("cukta · jbovlacku");
   // The zero-reviewer revision shows "no judgments yet" rather than a fabricated opposition.
