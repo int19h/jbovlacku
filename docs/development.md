@@ -354,7 +354,7 @@ Backfill does not repeat signature checks, body hashing, or canonical JSON check
 It preserves invalid body schema diagnostics. It commits at most 256 rows per batch and reads at most 16 records at once.
 The native golden test pins the complete projection output to `HOST_RECORD_VERSION`.
 Its immutable fixtures live under `crates/jvc-runtime/tests/fixtures` with a separate digest file for each extraction version.
-Versions 3 and 4 were used by unmerged development builds. Do not reuse them. Their unused golden files are removed.
+Versions 3 and 4 were used by intermediate commits of PR #35 and never released. Do not reuse them. Their unused golden files are removed.
 A projection change requires a new version and golden digest. The test covers all body statuses, action kinds, and both publication projections.
 It includes legacy account evidence and attribution fields that the two projections retain differently.
 
@@ -941,7 +941,10 @@ After restart, reservations remain charged and appear as retained operations.
 An operation that was active at restart has unknown cost and retains the larger of its reservation and accumulated charges.
 Retained records do not establish whether an earlier request completed or lost its transport.
 Every error after an embedding reservation names its operation through the error's `operation` field.
-An error ID with no status record means that the service sent nothing.
+Before diagnostic retention loss on the same service instance, an error ID with no status record means that nothing was sent.
+The 64-record diagnostic limit can hide finished operations. Inactive spending entries can expire after 24 hours.
+A restart can also lose records for finished operations, including sent failures with a known zero charge.
+After any such loss, an absent ID leaves it unknown whether the service sent the request.
 An operator can inspect these records and request a new bounded attempt through the same service after a limit clears.
 The earlier charge remains. A stuck transport requires its completion or a service restart before its slot returns.
 Job pause, resume, and explicit retry links belong to later indexing work.
