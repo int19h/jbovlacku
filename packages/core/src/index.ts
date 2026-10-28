@@ -444,6 +444,7 @@ export {
   BuilderError,
   builderPresets,
   analyzeWord,
+  stripAcuteAccents,
   buildLujvo,
   generateGismu,
 } from "../../morphology/src/index.ts";

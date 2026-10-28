@@ -5,6 +5,7 @@ import { asciiLower, trimWord, utf8Length } from "./phonotactics.ts";
 import { zeiOperands, zeiReading } from "./zei.ts";
 import { gismuShape, isShortRafsiForm } from "./rafsi.ts";
 import type { MorphologyWord, RecoveredPart, WordAnalysis } from "./types.ts";
+import { applyAcuteRules, stripAcuteAccents } from "./accents.ts";
 
 export const CGV_WARNING =
   "This form is not valid under the current BPFK morphology.";
@@ -127,7 +128,7 @@ export function analyzePeggyWord(
   };
   try {
     requireLimit("word bytes", utf8Length(original), 128);
-    const input = asciiLower(trimWord(original))
+    const input = asciiLower(trimWord(stripAcuteAccents(original)))
       .replaceAll("’", "'")
       .replaceAll("h", "'")
       .replaceAll(",", "");
@@ -135,7 +136,7 @@ export function analyzePeggyWord(
       analysis.diagnostics.push(
         "The spelling uses characters outside Lojban letters, apostrophes, commas, and word separators.",
       );
-      return analysis;
+      return applyAcuteRules(analysis);
     }
     analysis.normalized = input.replace(/^\.|\.$/g, "");
     const { nodes, words, spent } = recognizeWords(analysis.normalized);
@@ -196,5 +197,5 @@ export function analyzePeggyWord(
     analysis.words = [];
     analysis.diagnostics = [error.message];
   }
-  return analysis;
+  return applyAcuteRules(analysis);
 }

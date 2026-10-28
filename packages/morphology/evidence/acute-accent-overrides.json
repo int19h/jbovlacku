@@ -1,0 +1,141 @@
+{
+  "profile": "Acute accents are name display marks, not parsing stress.",
+  "reference": "gencmu-corpus.json remains the unchanged external observation.",
+  "cases": [
+    {
+      "id": "adhoc.v0.morphology.case-insensitive.uppercase-stress-disabled-keeps-explicit-accent-stress",
+      "text": "klÁma",
+      "error": "Acute accents are allowed only on cmevla. Remove the accent or use a name that the selected profile recognizes."
+    },
+    {
+      "id": "adhoc.words.orthography.cyrillic.accent-after-e-variant",
+      "text": "ми кла́ма лэ́ зарши",
+      "error": "Acute accents are allowed only on cmevla. Remove the accent or use a name that the selected profile recognizes."
+    },
+    {
+      "id": "adhoc.words.orthography.cyrillic.accent-after-i-variant",
+      "text": "мі́ клама",
+      "error": "Acute accents are allowed only on cmevla. Remove the accent or use a name that the selected profile recognizes."
+    },
+    {
+      "id": "adhoc.words.orthography.nfd.tone-mark-stresses.experimental",
+      "text": "kláma",
+      "error": "Acute accents are allowed only on cmevla. Remove the accent or use a name that the selected profile recognizes."
+    },
+    {
+      "id": "adhoc.words.orthography.capital-run.accent-stresses.experimental",
+      "text": "KLÁMA",
+      "error": "Acute accents are allowed only on cmevla. Remove the accent or use a name that the selected profile recognizes."
+    },
+    {
+      "id": "adhoc.words.orthography.capital-run.accent-stresses-cyrillic.experimental",
+      "text": "КЛА́МА",
+      "error": "Acute accents are allowed only on cmevla. Remove the accent or use a name that the selected profile recognizes."
+    },
+    {
+      "id": "adhoc.words.orthography.capital-run.one-group-stays-ordinary.experimental",
+      "text": "MÍ KLAMA",
+      "error": "Acute accents are allowed only on cmevla. Remove the accent or use a name that the selected profile recognizes."
+    },
+    {
+      "id": "adhoc.words.foreign.unsegmentable-run-never-closes.experimental",
+      "text": "zoi klama. klamá .klama.",
+      "error": "Acute accents are allowed only on cmevla. Remove the accent or use a name that the selected profile recognizes."
+    },
+    {
+      "id": "adhoc.words.orthography.experimental.mark.accent-on-consonant.experimental",
+      "text": "mi ćmila",
+      "error": "Acute accents are allowed only on cmevla. Remove the accent or use a name that the selected profile recognizes."
+    },
+    {
+      "id": "adhoc.words.orthography.experimental.glide.accent-ignored.experimental",
+      "text": "ĭ́a",
+      "error": "An acute accent must follow a Lojban vowel or consonant."
+    },
+    {
+      "id": "adhoc.words.orthography.experimental.krulermorna.stressed.experimental",
+      "text": ".ą́",
+      "error": "An acute accent must follow a Lojban vowel or consonant."
+    },
+    {
+      "id": "adhoc.words.orthography.experimental.quote-mark.after-marked-letter.experimental",
+      "text": "lé'i",
+      "error": "Acute accents are allowed only on cmevla. Remove the accent or use a name that the selected profile recognizes."
+    },
+    {
+      "id": "adhoc.words.orthography.experimental.length.after-stress-mark.experimental",
+      "text": "bró~da",
+      "error": "Acute accents are allowed only on cmevla. Remove the accent or use a name that the selected profile recognizes."
+    },
+    {
+      "id": "adhoc.words.orthography.experimental.middle-dot.after-stress-mark.experimental",
+      "text": "bró·da",
+      "error": "Acute accents are allowed only on cmevla. Remove the accent or use a name that the selected profile recognizes."
+    },
+    {
+      "id": "adhoc.words.orthography.experimental.mark.class-zero-barrier.experimental",
+      "text": "ká͏̨",
+      "error": "Acute accents are allowed only on cmevla. Remove the accent or use a name that the selected profile recognizes."
+    },
+    {
+      "id": "adhoc.words.orthography.experimental.cyrillic.mark-on-consonant.experimental",
+      "text": "ќлама",
+      "error": "Acute accents are allowed only on cmevla. Remove the accent or use a name that the selected profile recognizes."
+    },
+    {
+      "id": "adhoc.words.orthography.experimental.cyrillic.accent-on-glide.experimental",
+      "text": "й́а",
+      "error": "An acute accent must follow a Lojban vowel or consonant."
+    },
+    {
+      "id": "adhoc.words.orthography.experimental.cyrillic-cll.accent.experimental",
+      "text": "ма́и",
+      "error": "Acute accents are allowed only on cmevla. Remove the accent or use a name that the selected profile recognizes."
+    },
+    {
+      "id": "adhoc.decision-b.split-diphthong.experimental",
+      "text": "ą́",
+      "error": "An acute accent must follow a Lojban vowel or consonant."
+    },
+    {
+      "id": "i218.experimental.control-16",
+      "text": "mi cá`o klama",
+      "error": "Acute accents are allowed only on cmevla. Remove the accent or use a name that the selected profile recognizes."
+    },
+    {
+      "id": "i218.experimental.acute-review-15",
+      "text": "mi cá´o klama",
+      "error": "Acute accents are allowed only on cmevla. Remove the accent or use a name that the selected profile recognizes."
+    },
+    {
+      "id": "adhoc.experimental.fr4-w3.13",
+      "text": "koʼ́a",
+      "error": "Acute accents are allowed only on cmevla. Remove the accent or use a name that the selected profile recognizes."
+    },
+    {
+      "id": "adhoc.experimental.fr4-w3.15",
+      "text": "koh́a",
+      "error": "Acute accents are allowed only on cmevla. Remove the accent or use a name that the selected profile recognizes."
+    },
+    {
+      "id": "merge223.context.backtick.combining-left",
+      "text": "zo lá`o",
+      "error": "Acute accents are allowed only on cmevla. Remove the accent or use a name that the selected profile recognizes."
+    },
+    {
+      "id": "merge223.context.backtick.combining-right",
+      "text": "zo la`ó",
+      "error": "Acute accents are allowed only on cmevla. Remove the accent or use a name that the selected profile recognizes."
+    },
+    {
+      "id": "merge223.context.acute.combining-left",
+      "text": "zo lá´o",
+      "error": "Acute accents are allowed only on cmevla. Remove the accent or use a name that the selected profile recognizes."
+    },
+    {
+      "id": "merge223.context.acute.combining-right",
+      "text": "zo la´ó",
+      "error": "Acute accents are allowed only on cmevla. Remove the accent or use a name that the selected profile recognizes."
+    }
+  ]
+}

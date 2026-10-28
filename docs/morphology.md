@@ -121,6 +121,12 @@ Offsets refer to the returned normalized spelling. Lujvo readings retain exact c
 The API makes no spelling changes to signed records.
 
 Headword analysis lowercases input before parsing. Capitals never mark stress in author headwords, so authors must write word breaks explicitly.
+Analysis removes acute accents before parsing. Precomposed letters and a letter followed by U+0301 have the same plain reading.
+Only cmevla can carry these display marks, on vowels or consonants. Examples include `dján`, `ĺénan`, and `ḿa'an`.
+The grammar still requires the same name shape, including a final consonant. Vowel-final `ĺéna` and `ḿa'a` do not become names.
+An acute on another word, a detached acute, or an acute after punctuation produces a clear error.
+Other diacritics keep their existing behavior. Acute marks do not create new rafsi or change construction scores.
+These display rules also apply before analysis under the retained headword profiles. Their unaccented parses and construction rules stay unchanged.
 For example, `BROdaku` normalizes to `brodaku` and reads as one fu'ivla.
 Gencmu instead reads two words from that spelling, `BROda` and `ku`.
 This difference is deliberate. To mark that boundary, write `broda ku`.
@@ -146,6 +152,10 @@ Thus `segmentText("BROdaku")` returns `brOda` and `ku`, while author headword an
 `features` and `withoutFeatures` carry orthography options, including `case-insensitive` and `cll-cyrillic`.
 Word text uses the normalized spelling. Each `start` and `end` refers to the original input in UTF-16 code units.
 Foreign text retains the original spelling.
+
+The text API ignores acute name marks instead of treating them as capital stress. It keeps the source offsets, including combining marks.
+An acute on a recognized word other than a cmevla produces an error. Foreign runs stay literal and do not establish a name reading.
+Capital stress in this separate text API keeps its existing behavior. The low-level reference orthography helper retains its original conversion by default.
 
 Text segmentation permits at most 1 MiB of original UTF-8 input and 5,000,000 parser rule entries across all runs.
 Each nonforeign run permits at most 128 normalized phonemes, which bounds the parser's recursive depth.
@@ -174,6 +184,8 @@ Arbitrary sequences of cmavo do not form one component. Quote and erasure words 
 The imported spelling `zo si si zei fa'o` falls outside these rules and remains unsupported.
 
 The builder links the whole component words to dictionary sources and optional exact definitions.
+Name components can keep acute display marks. Analysis, source matching, and construction use their plain forms.
+The candidate keeps the entered accented spelling. Signed component word objects keep their chosen display spelling, while recovered parts remain plain.
 It preserves the entered lujvo spelling. It offers no rafsi choices and reports no rafsi claims or conflicts for these components.
 This path supplies no construction score. Its internal candidate uses `0` only as a placeholder, and signed compound metadata records `score: null`.
 The linking identifier and version above distinguish this evidence from rafsi construction scores.

@@ -37,6 +37,7 @@ export {
   type RecoveredPart,
   type WordAnalysis,
   analyzeWord,
+  stripAcuteAccents,
   type LujvoComponentRequest,
   type RafsiInventoryClaim,
   type LujvoRequest,
