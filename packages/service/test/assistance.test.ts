@@ -3402,7 +3402,7 @@ test("type check 9 corrects cmavo answers for parsed compound spellings", async 
   }
 });
 
-for (const typed of ["brodu", "bródu"])
+for (const typed of ["brodu", "brödun", "bródun"])
   test(`server type retrieval pins its snapshot and applies exact word priority, caps and exclusions (${typed})`, async () => {
     const { nearbyQuery } = await import("../src/nearby.ts");
     const seed = new Uint8Array(32).fill(173);
@@ -3431,7 +3431,7 @@ for (const typed of ["brodu", "bródu"])
           language,
           text: [[text]],
           notes: [["Do not include these notes."]],
-          classification: { kind: "gismu" },
+          classification: { kind: spelling === "bródun" ? "cmevla" : "gismu" },
           license: { expression: "CC0-1.0" },
         },
       );

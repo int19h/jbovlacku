@@ -59,6 +59,7 @@ import {
   utf8,
   inspectHostStoredBody,
   interpretDefinition,
+  stripAcuteAccents,
   type Evaluation,
   type EvaluationRequest,
 } from "../../core/src/index.ts";
@@ -327,6 +328,7 @@ export class DictionaryService {
       packages.entries.map((entry) => [entry.event, entry]),
     );
     const spelling = request.current.spelling?.trim().normalize("NFC");
+    const plainSpelling = spelling && stripAcuteAccents(spelling);
     signal.throwIfAborted();
     const searches = query_words.map((query) => {
       signal.throwIfAborted();
@@ -361,7 +363,7 @@ export class DictionaryService {
     const exactCandidates = spelling
       ? packages.entries.filter(
           (entry) =>
-            entry.word.spelling.normalize("NFC") === spelling &&
+            stripAcuteAccents(entry.word.spelling) === plainSpelling &&
             entry.language === request.language &&
             active(entry.event) &&
             !supplied.has(entry.event),
@@ -406,12 +408,15 @@ export class DictionaryService {
     };
     // Exact senses retain their separate definitions. Search words appear once.
     exact.forEach(append);
-    const words = new Set(exact.map((entry) => entry.word.spelling));
+    const words = new Set(
+      exact.map((entry) => evaluation.publications[entry.event].word),
+    );
     for (const hit of rankNearby(searches)) {
       if (result.related.length === 30) break;
       const entry = byEvent.get(hit.preview.event)!;
-      if (supplied.has(entry.event) || words.has(entry.word.spelling)) continue;
-      words.add(entry.word.spelling);
+      const identity = evaluation.publications[entry.event].word;
+      if (supplied.has(entry.event) || words.has(identity)) continue;
+      words.add(identity);
       append(entry);
     }
     return result;

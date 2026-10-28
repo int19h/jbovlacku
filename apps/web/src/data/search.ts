@@ -6,6 +6,7 @@ import {
   canonicalize,
   contentHash,
   wordId,
+  stripAcuteAccents,
 } from "../../../../packages/core/src/browser.ts";
 import {
   getManifest,
@@ -379,14 +380,17 @@ export function normalizeQuery(value: string): string {
 }
 export function matchKind(entry: PackageEntry, q: string): MatchKind | null {
   const exact = q.normalize("NFC").trim();
-  if (entry.word.spelling.normalize("NFC") === exact) return "headword";
+  if (stripAcuteAccents(entry.word.spelling) === stripAcuteAccents(exact))
+    return "headword";
   if (entry.glosses.some((gloss) => gloss.text.normalize("NFC") === exact))
     return "gloss";
   q = normalizeQuery(q);
-  const spelling = normalizeQuery(entry.word.spelling);
+  const spelling = stripAcuteAccents(normalizeQuery(entry.word.spelling));
+  const headwordQuery = stripAcuteAccents(q);
   const glosses = entry.glosses.map((gloss) => normalizeQuery(gloss.text));
-  if (spelling === q || glosses.includes(q)) return "alias";
-  if (spelling.startsWith(q)) return "headword-prefix";
+  if (spelling === headwordQuery || glosses.includes(q)) return "alias";
+  if (headwordQuery && spelling.startsWith(headwordQuery))
+    return "headword-prefix";
   if (glosses.some((gloss) => gloss.startsWith(q))) return "gloss-prefix";
   if (normalizeQuery(entry.plain_text).includes(q)) return "token";
   return null;
@@ -423,6 +427,7 @@ export function localSearch(
       ) {
         old.match = match;
         old.preview = preview;
+        old.word = entry.word;
         old.entries.sort((a, b) =>
           a.event === preview.event ? -1 : b.event === preview.event ? 1 : 0,
         );

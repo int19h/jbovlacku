@@ -20,6 +20,7 @@ import {
   evaluate,
   prepareAdmission,
   interpretDefinition,
+  wordId,
 } from "../../core/src/index.ts";
 import { canonical, type Carrier } from "../src/index.ts";
 import { decodeCopyField, readCopyRows } from "../src/sql-copy.ts";
@@ -635,6 +636,27 @@ function tableMutation(
       .join("\r\n"),
   );
 }
+test("SQL imports keep acute cmevla display, source spelling, and plain identity", async () => {
+  const spelling = "m\u0301a'an";
+  const input = await setup(
+    tableMutation(fixture, "valsi", (fields) => {
+      if (fields[0] === "26591") fields[1] = spelling;
+      return fields;
+    }),
+  );
+  const result = await importSqlSnapshot(input);
+  assert.equal(result.report.added, 4, JSON.stringify(result.report));
+  const record = (await carriers(input.output)).find(
+    (item) => item.body.legacy?.record.id === 74481,
+  )!;
+  assert.equal(record.body.word.spelling, spelling.normalize("NFC"));
+  assert.equal(record.body.legacy.original.valsi.word, spelling);
+  assert.equal(
+    record.envelope.header.action.word,
+    wordId({ language: "jbo", spelling: "ma'an" }),
+  );
+});
+
 function withSyntheticRelatedRows(bytes: Buffer): Buffer {
   return Buffer.from(
     bytes

@@ -4,7 +4,12 @@ import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
-import { initializeCore, utf8, type Evaluation } from "../../core/src/index.ts";
+import {
+  initializeCore,
+  semanticProjectionVersion,
+  utf8,
+  type Evaluation,
+} from "../../core/src/index.ts";
 import { SqliteVectorStore } from "../../../apps/server/src/semantic.ts";
 import { NodeVectorScanner } from "../../../apps/server/src/semantic-scanner.ts";
 import { SqlQueryCache } from "../src/semantic/query-cache.ts";
@@ -41,7 +46,7 @@ function rows(count = 4): IndexDocument[] {
       event: hash(i + 1, "jve1:"),
       envelope: hash(i + 100),
       body: hash(i + 200),
-      extraction_version: 2,
+      extraction_version: semanticProjectionVersion(),
       word: hash(i + 300, "jvw1:"),
       language: "en",
       input,
@@ -536,7 +541,7 @@ test("current coverage filters old inert associations and checks exact extractio
         );
         sql
           .prepare(
-            "UPDATE semantic_associations SET extraction_version=2,body=? WHERE event=?",
+            `UPDATE semantic_associations SET extraction_version=${semanticProjectionVersion()},body=? WHERE event=?`,
           )
           .run(docs[2].body, docs[2].event);
       }

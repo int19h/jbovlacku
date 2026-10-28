@@ -2,6 +2,7 @@
 import {
   analyzeWord,
   morphologyProfile,
+  stripAcuteAccents,
   type MorphologyProfile,
 } from "../../../../packages/core/src/browser.ts";
 import { kindLabel, type Compound, type LexicalKind } from "./types.ts";
@@ -94,11 +95,17 @@ export function wordFormFeedback(draft: WordFormDraft) {
     "cmevla",
     "compound",
   ].includes(draft.kind ?? "");
-  const mismatch = checked && analysis.kind !== draft.kind;
+  const invalidAccent =
+    stripAcuteAccents(draft.spelling) !== draft.spelling &&
+    analysis.kind === "unknown";
+  const mismatch = invalidAccent || (checked && analysis.kind !== draft.kind);
   const experimental = isExperimental(draft.labels);
-  const message = mismatch
-    ? `The spelling does not match the selected ${kindLabel(draft.kind!)} type. ${experimental ? "The experimental label permits this classification." : "Choose another type or mark this classification as experimental."}`
-    : "";
+  const message = invalidAccent
+    ? (analysis.diagnostics.at(-1) ??
+      "Acute accents are allowed only on cmevla.")
+    : mismatch
+      ? `The spelling does not match the selected ${kindLabel(draft.kind!)} type. ${experimental ? "The experimental label permits this classification." : "Choose another type or mark this classification as experimental."}`
+      : "";
   const words =
     analysis.words && analysis.words.length >= 2
       ? ` Words: ${analysis.words.map((word) => word.text).join(" · ")}.`
@@ -110,5 +117,10 @@ export function wordFormFeedback(draft: WordFormDraft) {
   ]
     .filter(Boolean)
     .join(" ");
-  return { text, message, mismatch, blocking: mismatch && !experimental };
+  return {
+    text,
+    message,
+    mismatch,
+    blocking: invalidAccent || (mismatch && !experimental),
+  };
 }

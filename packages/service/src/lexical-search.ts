@@ -1,4 +1,4 @@
-import type { Evaluation } from "../../core/src/index.ts";
+import { stripAcuteAccents, type Evaluation } from "../../core/src/index.ts";
 import type { SearchEntry } from "./packages.ts";
 
 /** Scan each entry once and retain the public lexical match tiers and order. */
@@ -9,7 +9,8 @@ export function lexicalSearch(
   evaluation: Evaluation,
   includeRetired = false,
 ) {
-  const q = query.toLocaleLowerCase("en");
+  const q = query.normalize("NFC").toLocaleLowerCase("en");
+  const headwordQuery = stripAcuteAccents(q);
   const kinds = [
     "headword",
     "gloss",
@@ -42,14 +43,16 @@ export function lexicalSearch(
       (publication.status !== "active" && !includeRetired)
     )
       continue;
-    const spelling = entry.word.spelling.toLocaleLowerCase("en");
+    const spelling = stripAcuteAccents(entry.word.spelling).toLocaleLowerCase(
+      "en",
+    );
     const glosses = entry.glosses.map((g) => g.text.toLocaleLowerCase("en"));
     const match =
-      spelling === q
+      spelling === headwordQuery
         ? "headword"
         : glosses.includes(q)
           ? "gloss"
-          : spelling.startsWith(q)
+          : headwordQuery && spelling.startsWith(headwordQuery)
             ? "headword-prefix"
             : glosses.some((g) => g.startsWith(q))
               ? "gloss-prefix"
@@ -84,6 +87,7 @@ export function lexicalSearch(
       ) {
         old.match = match;
         old.preview = preview;
+        old.word = entry.word;
       }
     } else
       hits.set(wordId, {

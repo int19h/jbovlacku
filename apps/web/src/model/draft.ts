@@ -14,6 +14,7 @@ import {
   utf8,
   validateAction,
   wordId,
+  stripAcuteAccents,
 } from "../../../../packages/core/src/browser.ts";
 import {
   CIRCLED,
@@ -1906,7 +1907,7 @@ export function draftToBody(input: Draft): {
       message: "Enter the Lojban word.",
       blocking: true,
     });
-  else if (!lojbanWord.test(spelling))
+  else if (!lojbanWord.test(stripAcuteAccents(spelling)))
     problems.push({
       field: "spelling",
       message:

@@ -554,7 +554,10 @@ export function compoundMetadata(
     components: candidate.parts.map((part) => {
       const component = components.find((c) => c.id === part.id);
       return {
-        word: { language: "jbo", spelling: component?.spelling.trim() ?? "" },
+        word: {
+          language: "jbo",
+          spelling: component?.spelling.trim().normalize("NFC") ?? "",
+        },
         definition: component?.definition ?? null,
         rafsi: part.form,
       };

@@ -379,7 +379,6 @@ export async function meaningPage(
     if (packageData) {
       const entries = packageData.entries.filter(
         (entry) =>
-          entry.word.spelling.normalize("NFC") === spelling &&
           wordId({
             ...entry.word,
             spelling: entry.word.spelling.normalize("NFC"),
