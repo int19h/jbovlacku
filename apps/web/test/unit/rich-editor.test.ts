@@ -9,6 +9,7 @@ import {
   pastedRichText,
   placeInputPlugins,
   richToEditor,
+  richValue,
 } from "../../src/model/rich-editor.ts";
 import {
   PLACE_GLYPHS,
@@ -48,6 +49,26 @@ test("stored nodes keep every boundary, empty label, and line ending", () => {
   assert.deepEqual(editorToRich(richToEditor([[]])), []);
   const copied = richToEditor([[1, " ", { operand: "bridi" }, " ", 50]]);
   assert.equal(copied.textBetween(0, copied.content.size), "① [bridi] ㊿");
+});
+
+test("legacy plain-string imports omit empty paragraphs and keep stored arrays exact", () => {
+  assert.deepEqual(richValue(""), []);
+  assert.deepEqual(richValue("\n\n\n\n"), []);
+  assert.deepEqual(richValue("\n\nFirst\n\n\n\nSecond\n\n"), [
+    ["First"],
+    ["Second"],
+  ]);
+  assert.deepEqual(richValue("\r\n\r\nFirst\r\n\r\n"), [["First"]]);
+  const stored: RichText = [
+    [
+      "a",
+      "b",
+      { code: "\r\n\r\n" },
+      { word: { language: "jbo", spelling: "cukta" }, label: "" },
+    ],
+  ];
+  assert.equal(richValue(stored), stored);
+  assert.deepEqual(richValue(stored), stored);
 });
 
 test("random stored rich values round trip exactly with a fixed seed", () => {

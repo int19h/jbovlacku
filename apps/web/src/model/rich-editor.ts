@@ -361,7 +361,7 @@ export function pastedRichText(text: string, convertPlaces: boolean): RichText {
 export function richValue(value: RichText | string | undefined): RichText {
   return typeof value === "string"
     ? value
-      ? pastedRichText(value, false)
+      ? pastedRichText(value, false).filter((paragraph) => paragraph.length > 0)
       : []
     : (value ?? []);
 }
