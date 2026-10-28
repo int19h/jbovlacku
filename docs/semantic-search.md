@@ -230,9 +230,11 @@ An unknown send receives at most three automatic retries in one recovery round.
 Each indexing retry creates a linked batch and a new shared-budget operation. Earlier batches and conservative charges remain intact.
 The delays are one, two, and four seconds, or longer when a provider or budget deadline requires it.
 A completed vector never enters another paid indexing batch. A retry waits until its earlier transport and settlement finish.
+
 After four sent failures, the server splits a batch into individual inputs. Each input then has its own bounded retry round.
 After that round fails, the server parks the input for one hour. Healthy inputs continue while it waits.
 A request that exceeds an empty spending limit splits immediately. An individual input that still exceeds that limit waits one hour.
+
 Parked inputs retain their exact profile, input hash, prior batch, failure count, and deadline across restarts and newer snapshots.
 New generations reuse these holds. They do not send parked inputs early or replay completed vectors.
 A finished pass can retain failed coverage and advance to a newer snapshot.
@@ -240,6 +242,7 @@ Due inputs return automatically even when the snapshot does not change. Inputs a
 
 Sent probe failures pause the job with `background_retry_exhausted` after four attempts and wait one hour.
 A server restart can open a new probe recovery round. It preserves unrelated input holds.
+
 Node writes `semantic_index_status` messages when the recovery state changes, even when `JVC_LOG_ERRORS` is disabled.
 These messages omit provider response text. Repeated identical refusals do not write another status line.
 A restart never shortens a parked input deadline, provider cooldown, or budget window.
@@ -248,9 +251,11 @@ Generation status includes `background_recovery` while the background job waits.
 It names `next_attempt`, `not_before`, `sent_attempts`, `refusals`, `exhausted`, and `reason`.
 Status also exposes the count and earliest deadline of retained input holds in `background_inputs`.
 Times are Unix milliseconds. `not_before` preserves provider and budget deadlines separately from the recovery cooldown.
+
 The five-second host schedule starts eligible attempts. Healthy work continues through consecutive batches without that delay.
 A successful vector clears its input hold in the same transaction. Unrelated successes do not reset another input's retry count.
 A suspended profile still requires a compatible replacement profile.
+
 Fully staged jobs recover from retained inputs without reading their old source snapshot again.
 Storage exhaustion, invalid provider configuration, and an expired source snapshot during unfinished preparation receive a one-hour cooldown.
 A refusal before job creation retains its deadline and log state under the profile and view.
