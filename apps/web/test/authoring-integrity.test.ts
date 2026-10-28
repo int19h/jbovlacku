@@ -428,7 +428,7 @@ test("a package download keeps its requested language after the selector changes
     );
   });
   expect(result).toEqual([{ key: "en", valid: true, languages: ["en"] }]);
-  await expect(page.getByRole("status")).toContainText(
+  await expect(page.locator("#app > [role=status]")).toContainText(
     "English search package is saved",
   );
 });
