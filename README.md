@@ -88,6 +88,7 @@ Present tables without declared counts are accepted with an unknown-count notice
 Absent tables and declared logical row deficits leave dependent definitions unresolved and preserve their selected publications and known baselines.
 Grouped split records count once, so extra physical lines cannot hide a missing record.
 If a keyword table contains malformed rows, definitions without well-formed mapping rows remain unresolved instead of acquiring known empty glosses.
+If a damaged mapping has no owner in the capture, the whole mapping table remains incomplete even when its row count matches.
 A complete empty table can still establish a real source change.
 Unsupported rows receive unresolved notices. The source archive keeps the original manifest and records the digest and path of the external dump.
 Split rows retain their owner across breaks in different fields. The size estimate counts new publications separately from staged observations.

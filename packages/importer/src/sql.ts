@@ -1606,6 +1606,20 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
         );
       }
     }
+    const unownedMapping = stage
+      .prepare(
+        "SELECT locator FROM issues AS issue WHERE table_name='keywordmapping' AND (source_key IS NULL OR NOT EXISTS (SELECT 1 FROM rows WHERE table_name='definitions' AND source_id=issue.source_key)) LIMIT 1",
+      )
+      .get();
+    if (unownedMapping) {
+      result.incomplete = true;
+      stage
+        .prepare("INSERT OR IGNORE INTO incomplete_tables VALUES(?,?)")
+        .run(
+          "keywordmapping",
+          `The keywordmapping source evidence is incomplete. A malformed row at ${unownedMapping.locator} has no captured definition owner.`,
+        );
+    }
     const stageBytes = (await stat(stagePath)).size;
     const definitionRows = Number(
       (

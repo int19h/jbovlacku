@@ -413,7 +413,7 @@ test("IM-01 the Opus mask2 probe cannot turn missing mappings into known empty g
       second.result.report.unresolved.some(
         (issue) =>
           issue.record === record &&
-          /no well-formed mapping rows/.test(issue.reason),
+          /keywordmapping source evidence is incomplete/.test(issue.reason),
       ),
     );
   const fresh = await run(await setup(), "ungrouped-split-and-missing", "", 2, {
@@ -424,12 +424,12 @@ test("IM-01 the Opus mask2 probe cannot turn missing mappings into known empty g
   assert.deepEqual(fresh.entries, {});
 });
 
-test("IM-01 an unrelated malformed mapping blocks only owners without valid mappings", async () => {
+test("IM-01 a malformed mapping with a captured owner keeps the per-owner path", async () => {
   const result = await run(await setup(), "unrelated-malformed", "", 2, {
     source:
       twoOwners +
       ownerMappings([
-        [20, 10],
+        [20, 100],
         [21, 101, 0],
       ]),
     counts: { definitions: 2 },
@@ -444,13 +444,81 @@ test("IM-01 an unrelated malformed mapping blocks only owners without valid mapp
     result.result.report.unresolved.some(
       (issue) =>
         issue.record === 100 &&
-        /no well-formed mapping rows/.test(issue.reason),
+        /keywordmapping source evidence is incomplete/.test(issue.reason),
     ),
   );
   assert.ok(
     result.result.report.unresolved.every((issue) => issue.record !== 101),
   );
 });
+
+for (const damaged of [
+  [
+    [20, 10],
+    [0, 0],
+  ],
+  [
+    ["broken", 100],
+    [0, 0],
+  ],
+])
+  test(`IM-01 the mask3 probe preserves all glosses with damaged mappings ${JSON.stringify(damaged)}`, async () => {
+    const directory = await setup();
+    const source = replaceTable(
+      twoOwners,
+      "natlangwords",
+      table(
+        "natlangwords",
+        ["wordid", "langid", "word", "meaning"],
+        [
+          [20, 2, "synthetic gloss", null],
+          [21, 2, "second gloss", null],
+          [22, 2, "third gloss", null],
+        ],
+      ),
+    );
+    const counts = { definitions: 2, natlangwords: 3 };
+    const first = await run(directory, "mask3-complete", "", 3, {
+      source:
+        source +
+        ownerMappings([
+          [20, 100, 0],
+          [21, 101, 0],
+          [22, 101, 0],
+        ]),
+      counts,
+    });
+    assert.equal(first.result.report.added, 2);
+    const incomplete = source + ownerMappings([...damaged, [21, 101, 0]]);
+    const second = await run(directory, "mask3-damaged", "", 3, {
+      source: incomplete,
+      counts,
+    });
+    assert.equal(second.result.report.logical_table_rows.keywordmapping, 3);
+    assert.deepEqual(second.result.report.notices, []);
+    assert.equal(second.result.report.incomplete, true);
+    assert.equal(second.result.report.revised, 0);
+    assert.equal(second.result.selection, first.result.selection);
+    assert.deepEqual(second.entries, first.entries);
+    assert.deepEqual(second.entries["101"].baseline.glosses, {
+      known: [
+        { word: "second gloss", meaning: null },
+        { word: "third gloss", meaning: null },
+      ],
+    });
+    for (const record of [100, 101])
+      assert.ok(
+        second.result.report.unresolved.some(
+          (issue) => issue.record === record,
+        ),
+      );
+    const fresh = await run(await setup(), "mask3-fresh", "", 3, {
+      source: incomplete,
+      counts,
+    });
+    assert.equal(fresh.result.report.added, 0);
+    assert.deepEqual(fresh.entries, {});
+  });
 
 test("IM-01 the Opus split-row probe cannot hide another owner's missing keyword row", async () => {
   const directory = await setup();

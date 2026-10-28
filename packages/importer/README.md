@@ -94,6 +94,8 @@ The REST command requires a complete local capture instead of fetching live page
 ## SQL snapshots
 
 The SQL command streams PostgreSQL COPY blocks and joins source rows through a temporary SQLite database.
+If a damaged mapping has no captured definition owner, the importer treats the whole mapping table as incomplete.
+An equal declared row count cannot establish complete gloss evidence in that case.
 It reads the dump as data. It never executes SQL from the dump.
 The extraction uses the source language table and retains separate tags such as `en`, `en-simple`, and `en-bpfk`.
 Wiki pages, phrases, and nonwords remain outside the lexical import.

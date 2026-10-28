@@ -280,6 +280,7 @@ Each table that the importer reads needs a complete COPY block, even when the ta
 Present tables without declared counts are accepted with a visible unknown-count notice. The archived manifest remains unchanged.
 Missing tables remain incomplete evidence. Grouped split records count once when the importer compares declared counts.
 Malformed keyword rows also block definitions that have no well-formed mapping rows. Damaged fragments cannot establish known empty glosses.
+A damaged mapping with no captured definition owner makes the whole mapping table incomplete, even when the declared row count matches.
 The report keeps physical counts in `table_rows` and logical counts in `logical_table_rows`.
 Missing lookup rows block only their dependent definitions.
 The importer guide describes both extraction commands, source manifests, and unresolved reports.
