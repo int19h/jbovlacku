@@ -147,22 +147,23 @@ export function changedValues(
   const container = el("div");
   const items = changes(before, after, field);
   let shown = 0;
-  const more = button("", () => appendBatch(), { class: "btn btn-quiet" });
-  const appendBatch = () => {
+  const more = button("", () => appendBatch(true), { class: "btn btn-quiet" });
+  const appendBatch = (focus = false) => {
     more.remove();
+    let first: HTMLElement | undefined;
     for (const item of items.slice(shown, shown + 50)) {
       if (item.path.length)
         container.append(el("h4", { text: item.path.join(" · ") }));
       const oldValue = readableValue(item.before, item.field),
         newValue = readableValue(item.after, item.field);
-      container.append(
-        el(
-          "div",
-          { class: "comparison-pair" },
-          el("div", {}, el("h4", { text: "Parent" }), oldValue),
-          el("div", {}, el("h4", { text: "This revision" }), newValue),
-        ),
+      const pair = el(
+        "div",
+        { class: "comparison-pair", tabindex: "-1" },
+        el("div", {}, el("h4", { text: "Parent" }), oldValue),
+        el("div", {}, el("h4", { text: "This revision" }), newValue),
       );
+      first ??= pair;
+      container.append(pair);
       if (oldValue.textContent === newValue.textContent)
         container.append(
           p(
@@ -177,6 +178,7 @@ export function changedValues(
       more.textContent = `${items.length - shown} more changes. Show the next 50`;
       container.append(more);
     }
+    if (focus) first?.focus();
   };
   appendBatch();
   return container;

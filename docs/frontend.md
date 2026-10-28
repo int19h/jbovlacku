@@ -553,10 +553,15 @@ Repeated references can name the same place. Textual order does not determine fi
 
 In structured editing, typed circled numerals insert integer place references. Pasting offers literal text or explicit token conversion.
 Every rich text node has a text form in structured editing, so a published body converts to editor text and back without loss: `①` or `{place N}` is a place reference, `{operand ID}` an operand reference, `[[spelling|label]]` a word link, `[[https://host/path|label]]` a web link, and `` `text` `` code. A backslash before `\`, `[`, `{`, `` ` ``, or a circled numeral keeps that character as literal text.
-A backslash before an actual line break keeps that line break inside its string, code, or link label. The editor writes these escapes when it loads a saved value. The sequence `\r` preserves a carriage return without the browser converting it to a newline.
-The sequence `\&` separates adjacent string nodes without adding text. This keeps the original text fragments separate after an edit.
+The tokens `{cr}` and `{lf}` preserve a carriage return and a newline inside a node. The token `{char HHHH}` preserves one character, where `HHHH` is its four-digit hexadecimal code.
+The editor writes these tokens for stored carriage returns, trailing whitespace, and newlines that can form or join a blank line. Ordinary single line breaks stay readable.
+The token `{join}` separates adjacent string nodes without adding text. This keeps the original text fragments separate after an edit.
+These forms are reserved syntax, like `{place N}`. To type literal token text in prose, escape its opening brace, for example `\{cr}` or `\{join}`.
+The editor protects stored literal braces before it writes a value. In code and link labels, it uses `{char 007b}` for the opening brace of a character token.
+Code recognizes backslash escapes only for `\` and backticks. Link targets and labels also recognize escapes for `]` and `|`.
+Every other backslash stays literal, including `\r`, `\&`, a backslash before whitespace, and a backslash before a raw blank line.
 Unescaped blank lines separate paragraphs. The boundary accepts Unicode whitespace and treats CRLF as one line break. A code span or link cannot cross that boundary, so an unmatched delimiter stays in its paragraph.
-Structured editing preserves trailing spaces. A backslash before a space or tab keeps it as literal whitespace, including in a paragraph that contains only whitespace.
+Structured editing trims raw trailing whitespace from each paragraph and the end of a field. Explicit character tokens retain stored whitespace, including whitespace-only paragraphs.
 The draft holds each rich text field as its exact rich text value. The editor shows a field in its text form and parses the text back only when the author edits that field, so an untouched value never changes. Literal mode turns the place references of every field into circled characters after a confirmation, and structured mode reads circled characters in text as references again. Links and code stay in both modes; a field edited in literal mode becomes plain text.
 Literal mode preserves circled characters and underscores as text. Both modes produce the same compact rich-text schema.
 In literal mode, removing or moving a place updates the visible circled characters in unchanged fields to keep their saved references aligned.
@@ -728,6 +733,7 @@ The draft preserves attribution through source references to that imported publi
 Anyone can propose a revision. The resulting card identifies its signer and whether accepted continuity connects that signer to the original author.
 The UI never says that a proposal replaced its parent merely because it has a later timestamp.
 It shows branching revisions and lets readers compare text, places, defaults, sources, and other changed fields.
+Comparison fields show changes in batches of 50. Each requested batch moves keyboard focus to its first new row, including the final batch.
 
 Publishing a revision creates its own author endorsement. It inherits no judgments from its parent.
 If its body is unavailable, the parent still shows that a proposed revision exists.

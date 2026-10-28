@@ -705,19 +705,31 @@ const lojbanWord = /^[a-z',.]+(?: [a-z',.]+)*$/u;
  * - `[[https://host/path]]` or `[[https://host/path|label]]`: a web link.
  * - `` `text` ``: code.
  * - A backslash before `\`, `[`, `{`, `` ` ``, or a circled numeral keeps
- *   that character as literal text. Escaped line breaks stay inside a node.
- *   Escaped whitespace preserves a whitespace-only paragraph.
+ *   that character as literal text.
+ * - `{cr}`, `{lf}`, and `{char HHHH}`: stored characters. `{join}` keeps
+ *   adjacent string nodes separate. The writer protects literal token text.
  */
 // A CRLF pair is one line break. Do not backtrack into its separate characters.
 const PARAGRAPH_BREAK = String.raw`(?:\r\n|\r(?!\n)|(?<!\r)\n)\s*(?:\r\n|\r(?!\n)|(?<!\r)\n)`;
 const TOKEN = new RegExp(
-  String.raw`\\([\\\x60[{①-⑳\sr&])|([①-⑳])|\{place (\d{1,5})\}|\{operand ([a-z][a-z0-9_-]{0,31})\}|\x60((?:\\[\s\S]|(?!${PARAGRAPH_BREAK})[^\x60\\])*)\x60|\[\[((?:\\[\s\S]|(?!${PARAGRAPH_BREAK})[^\\\]|])+)(?:\|((?:\\[\s\S]|(?!${PARAGRAPH_BREAK})[^\\\]])*))?\]\]`,
+  String.raw`\\([\\\x60[{①-⑳])|([①-⑳])|\{place (\d{1,5})\}|\{operand ([a-z][a-z0-9_-]{0,31})\}|\x60((?:\\[^\r\n]|\\(?=[\r\n])|(?!${PARAGRAPH_BREAK})[^\x60\\])*)\x60|\[\[((?:\\[^\r\n]|\\(?=[\r\n])|(?!${PARAGRAPH_BREAK})[^\\\]|])+)(?:\|((?:\\[^\r\n]|\\(?=[\r\n])|(?!${PARAGRAPH_BREAK})[^\\\]])*))?\]\]|\{(cr|lf|join|char [\da-fA-F]{4})\}`,
   "gu",
 );
+const storedCharacter = (token: string) =>
+  token === "cr"
+    ? "\r"
+    : token === "lf"
+      ? "\n"
+      : String.fromCharCode(parseInt(token.slice(5), 16));
 const unescape = (value: string, code = false) =>
   value.replace(
-    code ? /\\([\\`\r\nr])/gu : /\\([\\\]|`\r\nr])/gu,
-    (_, escaped: string) => (escaped === "r" ? "\r" : escaped),
+    /\\([\s\S])|\{(cr|lf|char [\da-fA-F]{4})\}/gu,
+    (whole, escaped: string | undefined, token: string) =>
+      escaped === undefined
+        ? storedCharacter(token)
+        : (code ? "\\`" : "\\]|`").includes(escaped)
+          ? escaped
+          : whole,
   );
 /** Editor text to rich text. Structured mode reads the token syntax. */
 export function editorToRichText(
@@ -729,21 +741,29 @@ export function editorToRichText(
   const paragraphs: RichText = [];
   let nodes: RichNode[] = [];
   let pending = "";
+  let trailing = 0;
+  const append = (value: string, explicit = false) => {
+    pending += value;
+    const whitespace = explicit ? 0 : value.match(/\s*$/u)![0].length;
+    trailing = whitespace === value.length ? trailing + whitespace : whitespace;
+  };
   const flush = () => {
     if (pending) nodes.push(pending);
     pending = "";
+    trailing = 0;
   };
   const finishParagraph = () => {
+    pending = pending.slice(0, pending.length - trailing);
     flush();
     if (nodes.length) paragraphs.push(nodes);
     nodes = [];
   };
-  // Escaped line breaks belong to a node. Raw paragraph breaks bound tokens,
+  // Stored character tokens belong to a node. Raw paragraph breaks bound tokens,
   // so an unmatched delimiter cannot consume a later paragraph.
   const tokens = new RegExp(`${TOKEN.source}|(${PARAGRAPH_BREAK})`, "gu");
   let index = 0;
   for (const match of source.matchAll(tokens)) {
-    pending += source.slice(index, match.index);
+    append(source.slice(index, match.index));
     index = match.index! + match[0].length;
     const [
       ,
@@ -754,6 +774,7 @@ export function editorToRichText(
       code,
       target,
       label,
+      stored,
       paragraphBreak,
     ] = match;
     if (paragraphBreak !== undefined) {
@@ -761,12 +782,16 @@ export function editorToRichText(
       continue;
     }
     if (escaped !== undefined) {
-      if (escaped === "&") flush();
-      else pending += escaped === "r" ? "\r" : escaped;
+      append(escaped, true);
+      continue;
+    }
+    if (stored !== undefined) {
+      if (stored === "join") flush();
+      else append(storedCharacter(stored), true);
       continue;
     }
     if (!local && (circled || placeNumber || operand)) {
-      pending += match[0];
+      append(match[0]);
       continue;
     }
     flush();
@@ -782,41 +807,59 @@ export function editorToRichText(
       else nodes.push({ word: { language: "jbo", spelling }, label: shown });
     }
   }
-  pending += source.slice(index);
+  append(source.slice(index));
   finishParagraph();
   return paragraphs;
 }
 /** Escapes characters that the token syntax reads, so text stays literal. */
-function escapeLiteral(
-  value: string,
-  preserveLines = false,
-  protectSpaces = false,
-): string {
-  return value.replace(
-    preserveLines
-      ? protectSpaces
-        ? /[\\`[{①-⑳\s]/gu
-        : /[\\`[{①-⑳\r\n]/gu
-      : /[\\`[{①-⑳]/gu,
-    (c) => (c === "\r" ? "\\r" : `\\${c}`),
-  );
+function escapeLiteral(value: string): string {
+  return value.replace(/[\\`[{①-⑳]/gu, (c) => `\\${c}`);
 }
-const escapeInside = (value: string) =>
-  value.replace(/[\\\]|`\r\n]/gu, (c) => (c === "\r" ? "\\r" : `\\${c}`));
+/** Protect only line breaks that can meet a paragraph boundary. */
+function storedText(
+  value: string,
+  mode: "text" | "code" | "link",
+  protectTrailing = false,
+): string {
+  const lineBreaks = new Set<number>();
+  let start = 0;
+  for (const match of value.matchAll(/\n/gu)) {
+    const index = match.index;
+    const next = value.indexOf("\n", index + 1);
+    if (
+      !value.slice(start, index).trim() ||
+      !value.slice(index + 1, next < 0 ? value.length : next).trim()
+    )
+      lineBreaks.add(index);
+    start = index + 1;
+  }
+  const trailing = value.length - value.match(/\s*$/u)![0].length;
+  return value.replace(/[\s\S]/gu, (c, index: number) => {
+    if (c === "\r") return "{cr}";
+    if (c === "\n" && lineBreaks.has(index)) return "{lf}";
+    if (protectTrailing && index >= trailing && /\s/u.test(c))
+      return `{char ${c.charCodeAt(0).toString(16).padStart(4, "0")}}`;
+    if (
+      mode !== "text" &&
+      c === "{" &&
+      /^\{(?:cr|lf|char [\da-fA-F]{4})\}/u.test(value.slice(index))
+    )
+      return "{char 007b}";
+    if (mode === "text") return escapeLiteral(c);
+    return (mode === "code" ? /[\\`]/u : /[\\\]|`]/u).test(c) ? `\\${c}` : c;
+  });
+}
 /** Rich text to editor text in the token syntax. Lossless. */
 export function richTextToEditor(value: RichText): string {
   return value
     .map((paragraph) => {
-      const protectSpaces = paragraph.every(
-        (node) => typeof node === "string" && !node.trim(),
-      );
       return paragraph
         .map((node, index) => {
           if (typeof node === "string")
             return (
               (index > 0 && typeof paragraph[index - 1] === "string"
-                ? "\\&"
-                : "") + escapeLiteral(node, true, protectSpaces)
+                ? "{join}"
+                : "") + storedText(node, "text", index === paragraph.length - 1)
             );
           if (typeof node === "number")
             return node <= 20
@@ -825,14 +868,13 @@ export function richTextToEditor(value: RichText): string {
           // An empty label is written as `[[target|]]`. It is valid in the format.
           if ("word" in node)
             return node.label === node.word.spelling
-              ? `[[${escapeInside(node.word.spelling)}]]`
-              : `[[${escapeInside(node.word.spelling)}|${escapeInside(node.label)}]]`;
+              ? `[[${storedText(node.word.spelling, "link")}]]`
+              : `[[${storedText(node.word.spelling, "link")}|${storedText(node.label, "link")}]]`;
           if ("url" in node)
             return node.label === node.url
-              ? `[[${escapeInside(node.url)}]]`
-              : `[[${escapeInside(node.url)}|${escapeInside(node.label)}]]`;
-          if ("code" in node)
-            return `\`${node.code.replace(/[\\`\r\n]/gu, (c) => (c === "\r" ? "\\r" : `\\${c}`))}\``;
+              ? `[[${storedText(node.url, "link")}]]`
+              : `[[${storedText(node.url, "link")}|${storedText(node.label, "link")}]]`;
+          if ("code" in node) return `\`${storedText(node.code, "code")}\``;
           if ("operand" in node) return `{operand ${node.operand}}`;
           return "";
         })

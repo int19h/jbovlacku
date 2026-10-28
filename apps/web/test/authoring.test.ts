@@ -2702,7 +2702,7 @@ test("a type note follows the selected mode and keeps an unchanged rich note thr
         .note;
     });
   const note = page.getByLabel("Type note");
-  await expect(note).toHaveValue("`keep\\\n\\\nthis` and ①");
+  await expect(note).toHaveValue("`keep{lf}{lf}this` and ①");
   // Literal mode: the reference in the note becomes a circled character, and the code node stays.
   page.once("dialog", (dialog) => void dialog.accept());
   await page.getByLabel("Read circled numbers as place references").uncheck();

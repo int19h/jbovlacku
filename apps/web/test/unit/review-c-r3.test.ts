@@ -116,7 +116,7 @@ test("F6 editor syntax keeps carriage returns out of textarea normalization", ()
   ];
   const editor = richTextToEditor(rich);
   assert.doesNotMatch(editor, /\r/);
-  assert.match(editor, /\\r/);
+  assert.match(editor, /\{cr\}/);
   assert.deepEqual(editorToRichText(editor, true), rich);
 });
 

@@ -35,15 +35,21 @@ export function changedItems<T>(
   }
   a = a.slice(start, endA);
   b = b.slice(start, endB);
-  // Above this cell budget, compare in order. This bounds work for unrelated
-  // long lists. Prefix and suffix trimming still isolates ordinary small edits.
+  let anchors: [number, number][] = [];
+  // Myers alignment handles distant sparse edits in long lists. Bound both
+  // edit distance and equality checks before the fallback compares in order.
   if (a.length * b.length > 40_000) {
-    const result: [T | undefined, T | undefined][] = [];
-    for (let i = 0; i < Math.max(a.length, b.length); i++)
-      if (!sameValue(a[i], b[i])) result.push([a[i], b[i]]);
-    return result;
+    anchors = sparseAnchors(a, b) ?? [];
+    if (!anchors.length) {
+      const result: [T | undefined, T | undefined][] = [];
+      for (let i = 0; i < Math.max(a.length, b.length); i++)
+        if (!sameValue(a[i], b[i])) result.push([a[i], b[i]]);
+      return result;
+    }
+  } else {
+    align(a, b, 0, 0);
   }
-  const lengths = (left: T[], right: T[]) => {
+  function lengths(left: T[], right: T[]) {
     let row = new Uint32Array(right.length + 1);
     for (const value of left) {
       const next = new Uint32Array(right.length + 1);
@@ -54,9 +60,8 @@ export function changedItems<T>(
       row = next;
     }
     return row;
-  };
-  const anchors: [number, number][] = [];
-  const align = (left: T[], right: T[], ai: number, bi: number) => {
+  }
+  function align(left: T[], right: T[], ai: number, bi: number) {
     if (!left.length || !right.length) return;
     if (left.length === 1) {
       const index = right.findIndex((value) => sameValue(left[0], value));
@@ -78,8 +83,7 @@ export function changedItems<T>(
         split = j;
     align(left.slice(0, middle), right.slice(0, split), ai, bi);
     align(left.slice(middle), right.slice(split), ai + middle, bi + split);
-  };
-  align(a, b, 0, 0);
+  }
   anchors.push([a.length, b.length]);
   const result: [T | undefined, T | undefined][] = [];
   let ai = 0,
@@ -94,4 +98,41 @@ export function changedItems<T>(
     bi = nextB + 1;
   }
   return result;
+}
+
+/** Return matching positions when the shortest edit path fits the budget. */
+function sparseAnchors<T>(a: T[], b: T[]): [number, number][] | null {
+  const frontier = new Map<number, number>([[1, 0]]);
+  const trace: Map<number, number>[] = [];
+  let checks = 0;
+  const predecessor = (row: Map<number, number>, d: number, k: number) =>
+    k === -d || (k !== d && row.get(k - 1)! < row.get(k + 1)!) ? k + 1 : k - 1;
+  for (let distance = 0; distance <= 64; distance++) {
+    trace.push(new Map(frontier));
+    for (let k = -distance; k <= distance; k += 2) {
+      const previous = predecessor(frontier, distance, k);
+      let x = frontier.get(previous)! + (previous === k - 1 ? 1 : 0);
+      let y = x - k;
+      while (x < a.length && y < b.length) {
+        if (++checks > 40_000) return null;
+        if (!sameValue(a[x], b[y])) break;
+        x++;
+        y++;
+      }
+      frontier.set(k, x);
+      if (x < a.length || y < b.length) continue;
+      const anchors: [number, number][] = [];
+      for (let d = distance; d >= 0; d--) {
+        const row = trace[d];
+        const previous = predecessor(row, d, x - y);
+        const previousX = row.get(previous)!;
+        const previousY = previousX - previous;
+        while (x > previousX && y > previousY) anchors.push([--x, --y]);
+        x = previousX;
+        y = previousY;
+      }
+      return anchors.reverse();
+    }
+  }
+  return null;
 }
