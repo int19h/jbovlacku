@@ -39,6 +39,7 @@ export interface LexicalEntry {
 export interface SearchMetrics {
   entries: number;
   queryWords: number;
+  queryParses: number;
   queryParserWork: number;
   headwordsParsed: number;
   headwordParserWork: number;
@@ -47,6 +48,7 @@ export interface SearchMetrics {
 export const searchMetrics = (): SearchMetrics => ({
   entries: 0,
   queryWords: 0,
+  queryParses: 0,
   queryParserWork: 0,
   headwordsParsed: 0,
   headwordParserWork: 0,
@@ -252,10 +254,11 @@ export function prepareQuery(
     return result;
   }
   try {
+    if (metrics) metrics.queryParses++;
     const segmented = components(headword, SEARCH_SEGMENT_WORK_LIMIT);
     if (metrics) {
-      metrics.queryParserWork = segmented.parsed.spent;
-      metrics.queryWords = segmented.value.words.length;
+      metrics.queryParserWork += segmented.parsed.spent;
+      metrics.queryWords += segmented.value.words.length;
     }
     if (segmented.value.words.length > SEARCH_QUERY_WORD_LIMIT) {
       result.segmentation = "limited";
@@ -268,7 +271,8 @@ export function prepareQuery(
   } catch (error) {
     if (!(error instanceof BuilderError)) throw error;
     result.segmentation = "limited";
-    if (metrics) metrics.queryParserWork = error.failure.value ?? 0;
+    if (metrics && error.failure.measure === "text recognition work")
+      metrics.queryParserWork += error.failure.value ?? 0;
   }
   return result;
 }

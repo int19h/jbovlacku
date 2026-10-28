@@ -109,3 +109,14 @@ test("R2 canonical aliases preserve literal prefix lookup", () => {
   assert.equal(search(["haskell"], "has")[0]?.[1], "headword-prefix");
   assert.equal(search([".djan."], ".")[0]?.[1], "headword-prefix");
 });
+
+test("R2 parser counters cover every query in a nearby batch", () => {
+  const rows = [entry("klama")];
+  const metrics = searchMetrics();
+  selectMatches(rows, "klama", metrics);
+  const first = metrics.queryParserWork;
+  selectMatches(rows, "klama", metrics);
+  assert.equal(metrics.queryParses, 2);
+  assert.equal(metrics.queryWords, 2);
+  assert.equal(metrics.queryParserWork, first * 2);
+});
