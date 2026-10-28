@@ -223,8 +223,10 @@ async function mockAssistant(page: Page, options: MockOptions = {}) {
   let result: any;
   let released = !options.delay;
   let capabilityReads = 0;
+  let capabilityGate: Promise<void> | undefined;
   await page.route("**/api/v1/capabilities", async (route) => {
     capabilityReads++;
+    await capabilityGate;
     const actual = await route.fetch();
     const caps = await actual.json();
     await route.fulfill({
@@ -388,6 +390,16 @@ async function mockAssistant(page: Page, options: MockOptions = {}) {
     },
     deletions: () => deleted,
     capabilityReads: () => capabilityReads,
+    holdCapabilities: () => {
+      let release!: () => void;
+      capabilityGate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return () => {
+        capabilityGate = undefined;
+        release();
+      };
+    },
   };
 }
 async function draft(
@@ -661,17 +673,34 @@ test("cancel, navigation, and the off setting cancel jobs without applying delay
   await expect.poll(mock.deletions).toBe(2);
   await page.getByRole("checkbox", { name: "Use AI assistance" }).uncheck();
   await expect(
-    page.getByText("Assistance setting saved in this browser.", {
-      exact: true,
-    }),
+    page
+      .locator("main")
+      .getByText("Assistance setting saved in this browser.", {
+        exact: true,
+      }),
   ).toBeVisible();
   mock.release();
+  const releaseCapabilities = mock.holdCapabilities();
+  let capabilityResponded = false;
+  const capabilities = page
+    .waitForResponse("**/api/v1/capabilities")
+    .then((response) => {
+      capabilityResponded = true;
+      return response;
+    });
   await page.goto("/new/type");
   await expect(
     page.getByRole("heading", { name: "What kind of word?" }),
   ).toBeVisible();
+  expect(capabilityResponded).toBe(false);
+  releaseCapabilities();
+  await (await capabilities).finished();
   await expect(page.locator(".ai-action:visible")).toHaveCount(0);
   expect((await stored(page)).kind).toBe("gismu");
+  await page.getByRole("link", { name: "Settings", exact: true }).click();
+  await expect(
+    page.getByRole("checkbox", { name: "Use AI assistance" }),
+  ).not.toBeChecked();
 });
 
 test("assistance settings keep navigation on the page until the choice is saved", async ({
@@ -681,6 +710,8 @@ test("assistance settings keep navigation on the page until the choice is saved"
   await draft(page);
   await page.getByRole("link", { name: "Settings", exact: true }).click();
   await page.getByRole("checkbox", { name: "Use AI assistance" }).waitFor();
+  await page.clock.install({ time: new Date("2026-10-27T12:00:00Z") });
+  await page.clock.pauseAt(new Date("2026-10-27T12:00:01Z"));
   await page.evaluate(async () => {
     const { LocalStore } = await import(String("/src/data/store.ts"));
     const original = LocalStore.prototype.setPreferences;
@@ -717,10 +748,13 @@ test("assistance settings keep navigation on the page until the choice is saved"
       return event.defaultPrevented;
     }),
   ).toBe(false);
+  await page.clock.resume();
+  const capabilities = page.waitForResponse("**/api/v1/capabilities");
   await page.goto("/new/type");
   await expect(
     page.getByRole("heading", { name: "What kind of word?" }),
   ).toBeVisible();
+  await (await capabilities).finished();
   await expect(page.locator(".ai-action:visible")).toHaveCount(0);
   await page.getByRole("link", { name: "Settings", exact: true }).click();
   await expect(
@@ -753,12 +787,13 @@ test("an assistance setting save failure restores the choice and releases naviga
     };
   });
   await choice.uncheck();
-  await page.getByRole("link", { name: "Add a word", exact: true }).click();
-  expect(new URL(page.url()).pathname).toBe("/preferences");
   await page.evaluate(() => (window as any).failPreferenceSave());
   await expect(
-    page.getByText("Not saved: Test preference write failed.", { exact: true }),
+    page
+      .locator("main")
+      .getByText("Not saved: Test preference write failed.", { exact: true }),
   ).toBeVisible();
+  expect(new URL(page.url()).pathname).toBe("/preferences");
   await expect(choice).toBeChecked();
   await expect(choice).toBeEnabled();
   expect(
