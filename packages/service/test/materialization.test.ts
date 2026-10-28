@@ -20,6 +20,7 @@ import {
   createEvaluationSession,
 } from "../../core/src/index.ts";
 import { DictionaryService } from "../src/service.ts";
+import { MemoryCoordinator } from "./fixtures/memory-coordinator.ts";
 import type {
   EvaluationBuilder,
   EvaluationSession,
@@ -57,49 +58,6 @@ function deferred() {
     resolve = done;
   });
   return { promise, resolve };
-}
-class MemoryCoordinator {
-  state = emptyState();
-  snapshots = new Map<string, Snapshot>();
-  async load() {
-    return this.state;
-  }
-  async loadMetadata() {
-    const {
-      revision,
-      position,
-      snapshot,
-      materialized_position,
-      materialized_snapshot,
-    } = this.state;
-    return {
-      revision,
-      position,
-      snapshot,
-      materialized_position,
-      materialized_snapshot,
-    };
-  }
-  async getSnapshot(id: string) {
-    return this.snapshots.get(id) ?? null;
-  }
-  async compareAndSwap(revision: number, state: State, snapshot?: Snapshot) {
-    if (this.state.revision !== revision) return false;
-    this.state = state;
-    if (snapshot) this.snapshots.set(snapshot.snapshot, snapshot);
-    return true;
-  }
-  async markMaterialized(snapshot: string, position: number) {
-    if (this.state.snapshot !== snapshot || this.state.position !== position)
-      return false;
-    this.state = {
-      ...this.state,
-      revision: this.state.revision + 1,
-      materialized_snapshot: snapshot,
-      materialized_position: position,
-    };
-    return true;
-  }
 }
 class MemoryCheckpoints implements CheckpointStore {
   saved?: { binding: CheckpointBinding; payload: ServiceCheckpoint };
@@ -1600,6 +1558,181 @@ for (const runtime of [false, true]) {
   });
 }
 
+for (const runtime of [false, true]) {
+  for (const missingRevision of [false, true]) {
+    test(`SQLite restart orders historical and completed snapshots behind newer acceptance (runtime=${runtime}, null getter=${missingRevision})`, async (t) => {
+      const source = await fixture();
+      await source.service.prepareEvaluationShutdown();
+      const directory = await mkdtemp(join(tmpdir(), "jvc-revision-backlog-"));
+      const database = join(directory, "coordinator.sqlite");
+      const checkpoints = new MemoryCheckpoints();
+      let coordinator = new SqliteCoordinator(database);
+      const options = {
+        ...source.options,
+        checkpoints,
+        ...(runtime
+          ? {
+              evaluationRuntime: {
+                create: createEvaluationSession,
+                restore: restoreHostEvaluationSession,
+              },
+            }
+          : {}),
+      };
+      let service = new DictionaryService(source.objects, coordinator, options);
+      try {
+        const alternate = createEvent(
+          seed,
+          [],
+          "a".repeat(32),
+          { kind: "view.publish", parents: [] },
+          { ...(source.view.body as object), name: "Alternate view" },
+        );
+        await service.admitMany(
+          [...source.records, alternate].map((record) =>
+            utf8(JSON.stringify(record)),
+          ),
+        );
+        await service.flushMaterialization();
+        let historical = "";
+        let completed = "";
+        let completedPosition = 0;
+        for (let i = 0; i < 16; i++) {
+          const late = createEvent(
+            seed,
+            [source.profile.envelope.id],
+            (20 + i).toString(16).padStart(32, "0"),
+            { kind: "identity.profile" },
+            { name: `Backlog profile ${i}`, bio: [], links: [] },
+          );
+          await service.admitMany([
+            utf8(JSON.stringify({ ...late, body: null })),
+          ]);
+          await service.flushMaterialization();
+          const before = await coordinator.load();
+          historical = before.snapshot!;
+          await service.admitMany([utf8(JSON.stringify(late))]);
+          await service.flushMaterialization();
+          const after = await coordinator.load();
+          completed = after.snapshot!;
+          completedPosition = after.position;
+          assert.equal(before.position, after.position);
+          if (historical > completed) break;
+        }
+        assert.ok(
+          historical > completed,
+          "The historical hash must sort above the completed hash.",
+        );
+        assert.equal(checkpoints.saved?.binding.snapshot, completed);
+        const historicalRevision =
+          (await coordinator.getSnapshotRevision(historical))!;
+        const completedRevision =
+          (await coordinator.getSnapshotRevision(completed))!;
+        assert.ok(historicalRevision < completedRevision);
+        // Accept N without publishing packages. The saved checkpoint remains C.
+        service.options.asyncMaterialization = false;
+        const next = createEvent(
+          seed,
+          [],
+          "f".repeat(32),
+          { kind: "identity.merge" },
+          null,
+        );
+        await service.admitMany([utf8(JSON.stringify(next))]);
+        const accepted = await coordinator.load();
+        assert.notEqual(accepted.snapshot, completed);
+        assert.ok(accepted.position > completedPosition);
+        assert.equal(accepted.materialized_snapshot, completed);
+        await service.prepareEvaluationShutdown();
+        coordinator.close();
+        coordinator = new SqliteCoordinator(database);
+        const revisionReads: string[] = [];
+        const getRevision = coordinator.getSnapshotRevision.bind(coordinator);
+        t.mock.method(
+          coordinator,
+          "getSnapshotRevision",
+          async (id: string) => {
+            revisionReads.push(id);
+            // This fault control removes the only source of order for H and C.
+            return missingRevision ? null : getRevision(id);
+          },
+        );
+        service = new DictionaryService(source.objects, coordinator, {
+          ...options,
+          asyncMaterialization: false,
+        });
+        const internals = service as any;
+        assert.deepEqual([...internals.snapshotRevisions], []);
+        await service.initialize();
+        assert.equal(internals.completed.snapshot.snapshot, completed);
+        assert.equal(
+          internals.snapshotRevisions.get(completed),
+          missingRevision ? undefined : completedRevision,
+        );
+        const path = "/words/" + wordId(word);
+        assert.equal(
+          (await read(service, path + "?snapshot=" + historical)).snapshot,
+          historical,
+        );
+        assert.ok(revisionReads.includes(completed));
+        assert.ok(revisionReads.includes(historical));
+        assert.equal(
+          internals.snapshotRevisions.get(historical),
+          missingRevision ? undefined : historicalRevision,
+        );
+        assert.deepEqual([...internals.inFlightEvaluations], []);
+        assert.deepEqual([...internals.inFlightPackages], []);
+        assert.deepEqual([...internals.sessionUses], []);
+        const response = await service.fetch(
+          request(
+            path + "?snapshot=" + completed + "&view=" + alternate.envelope.id,
+          ),
+        );
+        const body = (await response.json()) as any;
+        t.diagnostic(
+          JSON.stringify({
+            historical,
+            completed,
+            accepted: accepted.snapshot,
+            historicalRevision,
+            completedRevision,
+            missingRevision,
+            status: response.status,
+          }),
+        );
+        assert.equal(
+          response.status,
+          missingRevision ? 503 : 200,
+          JSON.stringify(body),
+        );
+        if (missingRevision) assert.equal(body.code, "resource_unavailable");
+        else {
+          assert.equal(body.snapshot, completed);
+          assert.equal(
+            internals.evaluationCache.has(
+              historical + "|" + options.selectedView,
+            ),
+            false,
+          );
+        }
+        assert.equal(
+          internals.evaluationCache.has(completed + "|" + options.selectedView),
+          true,
+        );
+        assert.equal(
+          (await coordinator.load()).materialized_snapshot,
+          completed,
+        );
+        assert.equal((await coordinator.load()).snapshot, accepted.snapshot);
+      } finally {
+        await service.prepareEvaluationShutdown();
+        coordinator.close();
+        await rm(directory, { recursive: true });
+      }
+    });
+  }
+}
+
 test("an alternate reader keeps its lease while a write waits and releases it for later materialization", async () => {
   const { service, coordinator, view, definition, profile } = await fixture();
   const alternate = createEvent(
@@ -2163,6 +2296,7 @@ test("fallback publication rechecks the snapshot after loading full state", asyn
     loadMetadata: async () =>
       ++metadataReads <= 2 ? captured : coordinator.loadMetadata(),
     getSnapshot: coordinator.getSnapshot.bind(coordinator),
+    getSnapshotRevision: coordinator.getSnapshotRevision.bind(coordinator),
     compareAndSwap: coordinator.compareAndSwap.bind(coordinator),
   };
   let indexSnapshot = completed;
