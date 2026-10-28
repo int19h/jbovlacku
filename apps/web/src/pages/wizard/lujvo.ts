@@ -281,7 +281,10 @@ export async function lujvoPage(
     rows: 4,
     value: draft.text,
     structured: () => draft.structured,
-    places: () => draft.places.map((place) => place.index),
+    places: () =>
+      draft.frameMode === "none"
+        ? []
+        : draft.places.map((place) => place.index),
     lang: draft.language,
   });
   definitionField.input.addEventListener("input", () => {

@@ -639,7 +639,10 @@ export async function placesPage(
   const editor = richField("Definition text", {
     multiline: true,
     structured: () => draft.structured,
-    places: () => draft.places.map((place) => place.index),
+    places: () =>
+      draft.frameMode === "none"
+        ? []
+        : draft.places.map((place) => place.index),
     operands: () => draft.operands.map((operand) => operand.id),
     rows: 4,
     value: draft.text,
@@ -947,7 +950,10 @@ export async function placesPage(
     const description = richField(`Description for place ${place.index}`, {
       multiline: true,
       structured: () => draft.structured,
-      places: () => draft.places.map((place) => place.index),
+      places: () =>
+        draft.frameMode === "none"
+          ? []
+          : draft.places.map((place) => place.index),
       operands: () => draft.operands.map((operand) => operand.id),
       rows: 2,
       value: place.description,
@@ -1229,7 +1235,10 @@ export async function placesPage(
         {
           multiline: true,
           structured: () => draft.structured,
-          places: () => draft.places.map((place) => place.index),
+          places: () =>
+            draft.frameMode === "none"
+              ? []
+              : draft.places.map((place) => place.index),
           operands: () => draft.operands.map((operand) => operand.id),
           rows: 2,
           value: draft.tail?.description ?? [],
@@ -1396,7 +1405,10 @@ export async function placesPage(
             {
               multiline: true,
               structured: () => draft.structured,
-              places: () => draft.places.map((place) => place.index),
+              places: () =>
+                draft.frameMode === "none"
+                  ? []
+                  : draft.places.map((place) => place.index),
               operands: () => draft.operands.map((operand) => operand.id),
               rows: 2,
               value: d.condition,
@@ -1413,7 +1425,10 @@ export async function placesPage(
             {
               multiline: true,
               structured: () => draft.structured,
-              places: () => draft.places.map((place) => place.index),
+              places: () =>
+                draft.frameMode === "none"
+                  ? []
+                  : draft.places.map((place) => place.index),
               operands: () => draft.operands.map((operand) => operand.id),
               rows: 2,
               value: d.explanation,
@@ -1511,7 +1526,10 @@ export async function placesPage(
     const notes = richField("Notes", {
       multiline: true,
       structured: () => draft.structured,
-      places: () => draft.places.map((place) => place.index),
+      places: () =>
+        draft.frameMode === "none"
+          ? []
+          : draft.places.map((place) => place.index),
       operands: () => draft.operands.map((operand) => operand.id),
       rows: 3,
       value: draft.notes,
@@ -1564,7 +1582,10 @@ export async function placesPage(
         const translation = richField(`Translation of example ${i + 1}`, {
           multiline: true,
           structured: () => draft.structured,
-          places: () => draft.places.map((place) => place.index),
+          places: () =>
+            draft.frameMode === "none"
+              ? []
+              : draft.places.map((place) => place.index),
           operands: () => draft.operands.map((operand) => operand.id),
           local: false,
           rows: 2,
@@ -1581,7 +1602,10 @@ export async function placesPage(
         const notesField = richField(`Notes for example ${i + 1}`, {
           multiline: true,
           structured: () => draft.structured,
-          places: () => draft.places.map((place) => place.index),
+          places: () =>
+            draft.frameMode === "none"
+              ? []
+              : draft.places.map((place) => place.index),
           operands: () => draft.operands.map((operand) => operand.id),
           local: false,
           rows: 2,
@@ -1642,7 +1666,10 @@ export async function placesPage(
       const etym = richField("Etymology", {
         multiline: true,
         structured: () => draft.structured,
-        places: () => draft.places.map((place) => place.index),
+        places: () =>
+          draft.frameMode === "none"
+            ? []
+            : draft.places.map((place) => place.index),
         operands: () => draft.operands.map((operand) => operand.id),
         local: false,
         rows: 3,
@@ -1836,7 +1863,10 @@ export async function placesPage(
           const description = richField(`Operand ${i + 1} description`, {
             multiline: true,
             structured: () => draft.structured,
-            places: () => draft.places.map((place) => place.index),
+            places: () =>
+              draft.frameMode === "none"
+                ? []
+                : draft.places.map((place) => place.index),
             operands: () => draft.operands.map((operand) => operand.id),
             rows: 2,
             value: operand.description,
@@ -2320,7 +2350,10 @@ function constraintEditor(
       const input = richField(`Constraint ${i + 1} ${suffix}`, {
         multiline: true,
         structured: () => draft.structured,
-        places: () => draft.places.map((place) => place.index),
+        places: () =>
+          draft.frameMode === "none"
+            ? []
+            : draft.places.map((place) => place.index),
         operands: () => draft.operands.map((operand) => operand.id),
         rows: 2,
         value: value,

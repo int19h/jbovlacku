@@ -173,6 +173,31 @@ test("clearing a preexisting field and editing blank paragraphs keep valid store
   expect((await inspect()).core).toEqual([]);
 });
 
+test("the dropdown marks only places in the active frame as declared", async ({
+  page,
+}) => {
+  await seed(page);
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore();
+    const draft = await store.get("drafts", "current");
+    draft.frameMode = "none";
+    await store.put("drafts", "current", draft);
+  });
+  await page.reload();
+  const more = toolbar(page).getByLabel("More places");
+  await more.focus();
+  await expect(more.locator('option[value="4"]')).toHaveText("Place 4");
+  await page
+    .getByLabel("Number of places", { exact: true })
+    .selectOption("context");
+  await more.focus();
+  await expect(more.locator('option[value="4"]')).toHaveText(
+    "Place 4 (declared)",
+  );
+  await expect(more.locator('option[value="5"]')).toHaveText("Place 5");
+});
+
 test("word links and code use accessible dialogs and preserve empty labels", async ({
   page,
 }) => {
