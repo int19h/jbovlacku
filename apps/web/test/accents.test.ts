@@ -478,18 +478,18 @@ test("R2 experimental name feedback permits unknown names and blocks a wrong rec
 test("R2 zbalermorna renders accented names in word and search views", async ({
   page,
 }) => {
-  await seedName(page, "dján");
+  await seedName(page, "dzántan");
   await download(page);
   await page
     .getByLabel("Lojban orthography beside headwords")
     .selectOption("zbalermorna");
-  await page.goto("/word/djan?lang=en");
+  await page.goto("/word/dzantan?lang=en");
   await expect(page.locator(".word-head .zbalermorna")).toBeVisible();
-  await page.goto("/search?q=djan&lang=en");
+  await page.goto("/search?q=dzantan&lang=en");
   await expect(
     page
       .locator("article.hit")
-      .filter({ has: page.getByRole("link", { name: "dján", exact: true }) })
+      .filter({ has: page.getByRole("link", { name: "dzántan", exact: true }) })
       .locator(".zbalermorna"),
   ).toBeVisible();
 });

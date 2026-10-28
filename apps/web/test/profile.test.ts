@@ -463,6 +463,41 @@ test("a judgment control built before its card joins the page keeps its subscrip
 }) => {
   const f = fixture();
   await createIdentity(page);
+  const competingClaim = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    const word = { language: "jbo" as const, spelling: "vlacku" };
+    const id = core.wordId(word);
+    const record = core.createEvent(
+      new Uint8Array(32).fill(238),
+      [],
+      "e".repeat(32),
+      {
+        kind: "rafsi.publish",
+        word: id,
+        assignment: core.rafsiPairId(id, "cku"),
+        origin: "native",
+      },
+      { word, rafsi: "cku", rationale: [], sources: [], legacy: null },
+    );
+    const response = await fetch("/api/v1/events", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(record),
+    });
+    if (!response.ok) throw new Error(await response.text());
+    return record.envelope.id;
+  }, corePath);
+  await expect
+    .poll(async () => {
+      const response = await page.request.get(
+        `/api/v1/words/${f.words.vlacku}`,
+      );
+      return (
+        response.ok() && (await response.json()).rafsi.includes(competingClaim)
+      );
+    })
+    .toBe(true);
   await page.evaluate(async () => {
     const { OwnState } = await import(String("/src/app/context.ts"));
     const original = OwnState.prototype.subscribe;
@@ -517,8 +552,15 @@ test("a judgment control built before its card joins the page keeps its subscrip
   release!();
   const card = page.getByRole("region", { name: "cku for cukta" });
   await expect(card).toBeVisible();
+  // The final paragraph appears after every sequential card joins the page.
+  await expect(
+    page.getByText(
+      "A rafsi is not reserved by the first server that receives a claim. Judgments on a pair apply across all its publishers.",
+    ),
+  ).toBeVisible();
   // Other tests can add words with this rafsi, so one subscription per card is the rule.
   const pairCards = await page.getByRole("region", { name: / for / }).count();
+  expect(pairCards).toBeGreaterThanOrEqual(2);
   await expect.poll(listeners).toBe(baseline + pairCards);
   // The attached control responds to a later own-state change.
   await card.getByRole("button", { name: "Endorse" }).click();
