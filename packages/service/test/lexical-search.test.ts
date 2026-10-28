@@ -163,7 +163,7 @@ const segmentedEvaluation = (entries: SearchEntry[]) =>
     ),
   }) as unknown as Evaluation;
 
-test("segmented results rank exact, contiguous, and ordered subsequence before prefixes", () => {
+test("segmented results rank exact sequences before prefixes and containing subsequences", () => {
   const entries = ["iseri'abo", "iboku", "i bo", "ibo", "i", "bo"].map(
     (spelling) => segmentedEntry(spelling),
   );

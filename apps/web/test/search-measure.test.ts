@@ -63,6 +63,7 @@ test("measure real package routes and browser main-thread CPU", async ({
       timeout: 120_000,
     });
     const elapsed = 1000 * ((await cpu()) - start);
+    console.log(JSON.stringify({ label, main_thread_cpu_ms: elapsed }));
     expect(elapsed, label).toBeLessThan(400);
     const stats = await page.evaluate(async () => {
       const { packageSearchStats } = await import(
