@@ -766,10 +766,13 @@ for (const alwaysExpire of [false, true]) {
     const store = emptyHistory();
     const operation = fetchBranches(store as any, history, knowledge);
     if (alwaysExpire) {
-      await assert.rejects(
-        operation,
-        /snapshots kept expiring.*Retry before signing/,
-      );
+      await assert.rejects(operation, (error: Error) => {
+        assert.equal(
+          error.message,
+          `${peer.label}: incomplete: the server snapshots kept expiring. Retry before signing.`,
+        );
+        return true;
+      });
       assert.equal(captures, 3);
       assert.equal(knowledge[0].outcome, "partial");
       assert.equal(knowledge[0].complete, false);

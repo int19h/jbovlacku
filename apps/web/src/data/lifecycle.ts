@@ -509,7 +509,7 @@ export async function fetchBranches(
           k.status =
             "incomplete: the server snapshots kept expiring. Retry before signing";
         }
-        throw new Error(`${k.peer.label}: ${k.status}. Retry before signing.`);
+        throw new Error(`${k.peer.label}: ${k.status}.`);
       }
       if (!learned.size) break;
       // Keep the complete verified branch and its heads locally in one write, so
