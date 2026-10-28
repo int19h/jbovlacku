@@ -286,13 +286,14 @@ for (const recovery of ["cooldown", "restart"] as const) {
     for (let i = 0; i < 3; i++) await f.next(background);
     assert.equal(calls, 4, "Unknown sends must receive three linked retries");
     const exhausted = await f.job();
-    assert.equal(exhausted.error, "background_retry_exhausted");
+    assert.equal(exhausted.state, "completed");
+    assert.equal(exhausted.background_inputs?.count, 1);
     assert.equal(exhausted.background_recovery!.exhausted, true);
     assert.equal(
       exhausted.background_recovery!.next_attempt - Date.now(),
       3600000,
     );
-    assert.equal(f.reports.length, 4);
+    assert.equal(f.reports.length, 2);
     assert.match(String(f.reports.at(-1)), /Automatic retries exhausted/);
     await background.cycle();
     if (recovery === "cooldown") {
@@ -303,6 +304,13 @@ for (const recovery of ["cooldown", "restart"] as const) {
     if (recovery === "restart") {
       await background.close();
       background = f.host();
+      await background.cycle();
+      assert.equal(
+        calls,
+        4,
+        "A restart must preserve the parked input deadline",
+      );
+      f.advance(3600000);
     } else f.advance(1);
     await background.cycle();
     assert.equal(calls, 5);
@@ -786,6 +794,9 @@ test("background restart after exhaustion preserves the provider deadline", asyn
   assert.equal(calls, 4);
   f.advance(1);
   await background.cycle();
+  assert.equal(calls, 4);
+  f.advance(3480000);
+  await background.cycle();
   assert.equal(calls, 5);
   assert.equal((await f.job()).state, "completed");
 });
@@ -881,7 +892,7 @@ test("background exhaustion writes safe status even when raw error reporting is 
       "The background job must finish its automatic retry round",
     );
     assert.equal(rawErrors, 0);
-    assert.equal(status.length, 4);
+    assert.equal(status.length, 2);
     assert.match(status.at(-1)!, /Automatic retries exhausted/);
     assert.match(status.at(-1)!, /Retry at/);
     assert(!status.join(" ").includes("Private provider response"));

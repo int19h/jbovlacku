@@ -251,7 +251,10 @@ Mocked tests cover partial progress, restart, failures, retirement, atomic publi
 The Node host serves meaning searches from compatible published vectors with exact event bindings in the requested snapshot and view.
 New definitions remain pending while unchanged definitions stay searchable. Optional background indexing uses the same host budgets without stopping dictionary reads.
 Background jobs retry transient failures with bounded backoff and linked retries. They preserve earlier charges and wait for provider cooldowns and budget windows.
-After three unsuccessful retries, a job waits one hour or until the next server start. Operator CLI recovery remains manual.
+Paid or unknown probe failures receive three retries, then a one-hour cooldown. A restart can open a new probe round.
+Exhausted batches split into individual inputs. Failing inputs wait one hour while healthy inputs and newer snapshots proceed.
+Input holds preserve retry counts, prior batch links, and deadlines across restarts and snapshots. Due inputs return without a new snapshot.
+Oversized requests split before dispatch. Permanent refusals use long cooldowns and log only state changes. Operator CLI recovery remains manual.
 Cold coverage yields between bounded metadata pages. Concurrent requests share coverage work, and partial coverage stays cached until index progress changes.
 Generation retirement yields between bounded deletion transactions and resumes interrupted cleanup.
 Each client network can hold at most one scan worker. Empty or absent networks share that same limit.
