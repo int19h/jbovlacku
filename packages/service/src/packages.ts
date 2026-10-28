@@ -1,3 +1,4 @@
+import { placeGlyph } from "../../core/src/place-glyphs.ts";
 import {
   canonicalize,
   contentHash,
@@ -87,8 +88,8 @@ export function plainDefinitionText(value: unknown): string {
         .map((node) => {
           if (typeof node === "string") return node;
           if (typeof node === "number" && Number.isInteger(node) && node > 0)
-            return node <= 20
-              ? String.fromCodePoint(0x245f + node)
+            return node <= 50
+              ? placeGlyph(node)
               : `[place ${node}]`;
           if (node && typeof node === "object" && !Array.isArray(node)) {
             if (typeof node.label === "string") return node.label;

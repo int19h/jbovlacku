@@ -1,3 +1,4 @@
+import { placeSuggestionProblem } from "../../../../packages/core/src/place-assistance.ts";
 import { kindLabel } from "../model/types.ts";
 import { wordId } from "../../../../packages/core/src/browser.ts";
 import { changeTypedWord } from "../model/typed-headword.ts";
@@ -1289,6 +1290,18 @@ export function assistanceAction(
     if (!draft.meaning.trim()) {
       app.announce("Write the meaning before asking for a suggestion.");
       return false;
+    }
+    if (options.operation === "places-glosses") {
+      const current = options.current?.() ?? currentDraft(draft);
+      const problem = placeSuggestionProblem(
+        draft.meaning,
+        current.text,
+        current.frame,
+      );
+      if (problem) {
+        app.announce(problem);
+        return false;
+      }
     }
     const controller = new AbortController();
     const run: Run = {

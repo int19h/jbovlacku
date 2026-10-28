@@ -1,3 +1,4 @@
+import { placeSuggestionProblem } from "../../core/src/place-assistance.ts";
 import {
   analyzeWord,
   buildLujvo,
@@ -307,6 +308,14 @@ export function parseAssistRequest(value: unknown): AssistRequest {
       "current",
       "The current draft has invalid fields.",
     );
+  if (request.operation === "places-glosses") {
+    const problem = placeSuggestionProblem(
+      request.meaning,
+      current.text,
+      current.frame,
+    );
+    if (problem) throw new AssistanceError(400, "explicit_places", problem);
+  }
   if (
     current.classification &&
     (!lexicalKinds.includes(current.classification.kind) ||

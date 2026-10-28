@@ -1,5 +1,6 @@
+import { CIRCLED, circledPlace } from "./place-glyphs.ts";
 /**
- * Shared rich-text rendering and the editor's text conventions.
+ * Shared rich-text rendering and plain-text imports.
  * Rendering never evaluates markup. Every string renders inside a bidi isolate.
  */
 import { markRichProse, el, link, sr, text } from "../lib/dom.ts";
@@ -171,9 +172,9 @@ export function visibleText(value: string): string {
 export function visibleJson(value: unknown): string {
   return visibleText(JSON.stringify(value, null, 2));
 }
-export const CIRCLED = /([①-⑳])/u;
+export { CIRCLED } from "./place-glyphs.ts";
 /**
- * Editor text to rich text. In structured mode, circled numerals ① through ⑳
+ * Editor text to rich text. In structured mode, circled numerals ① through ㊿
  * become integer place nodes. In literal mode they stay text.
  * Paragraphs split on blank lines.
  */
@@ -187,8 +188,8 @@ export function textToRichText(source: string, structured: boolean): RichText {
     const nodes: RichNode[] = [];
     for (const fragment of paragraph.split(CIRCLED)) {
       if (!fragment) continue;
-      const code = fragment.codePointAt(0)! - 0x245f;
-      if (fragment.length === 1 && code >= 1 && code <= 20) nodes.push(code);
+      const code = circledPlace(fragment);
+      if (code !== null) nodes.push(code);
       else nodes.push(fragment);
     }
     return nodes;
@@ -202,7 +203,7 @@ export function richTextToText(value: RichText): string {
         .map((node) => {
           if (typeof node === "string") return node;
           if (typeof node === "number")
-            return node <= 20 ? placeGlyph(node) : `{place ${node}}`;
+            return placeGlyph(node);
           if ("label" in node && typeof node.label === "string")
             return node.label;
           if ("code" in node) return node.code;

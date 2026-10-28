@@ -1,3 +1,5 @@
+import { richField } from "../../components/rich-field.ts";
+import { richValue } from "../../model/rich-editor.ts";
 import { wordFormStatus } from "../../components/word-form-feedback.ts";
 import { changeTypedWord, useManualForm } from "../../model/typed-headword.ts";
 import { assistanceAction } from "../../components/assistance.ts";
@@ -143,10 +145,11 @@ export async function formPage(route: Route, context: RenderContext, app: App) {
         : el("span", { hidden: true }),
     );
   }
-  const notes = field("Morphology notes", {
+  const notes = richField("Morphology notes", {
+    local: false,
     multiline: true,
     rows: 3,
-    value: draft.formNotes,
+    value: richValue(draft.formNotes),
     hint: "Optional. Why this form, which parts it comes from, or an experimental classification. Saved as etymology text under your name, after any etymology kept from a revised parent.",
   });
   notes.input.addEventListener("input", () => {

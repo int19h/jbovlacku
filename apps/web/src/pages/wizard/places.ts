@@ -1,3 +1,5 @@
+import { richValue } from "../../model/rich-editor.ts";
+import { richField } from "../../components/rich-field.ts";
 import { wordFormStatus } from "../../components/word-form-feedback.ts";
 import { isZeiCompound } from "../../model/builders.ts";
 import { kindLabel } from "../../model/types.ts";
@@ -48,7 +50,6 @@ import {
   newPlace,
   rewriteReferences,
   remapRich,
-  richTextToEditor,
   switchMode,
   type DraftGloss,
   numberPlaceholders,
@@ -85,9 +86,10 @@ import {
 } from "./common.ts";
 import { describeArity } from "../../components/definition.ts";
 
-function numberingParts(
-  parts: ReturnType<typeof numberPlaceholders>["parts"],
-): HTMLElement {
+type NumberingPart = ReturnType<typeof numberPlaceholders>["parts"][number] & {
+  rich?: RichText;
+};
+function numberingParts(parts: NumberingPart[]): HTMLElement {
   const breakdown = el("ol", { "aria-label": "Places used in each part" });
   for (const [index, part] of parts.entries()) {
     breakdown.append(
@@ -98,7 +100,9 @@ function numberingParts(
           `Part ${index + 1}: ${part.places.length ? `places ${part.places.join(", ")}` : "no places"}`,
           "meta",
         ),
-        renderRichText(editorToRichText(part.text, true), { placeHref: null }),
+        renderRichText(part.rich ?? editorToRichText(part.text, true), {
+          placeHref: null,
+        }),
       ),
     );
   }
@@ -106,9 +110,7 @@ function numberingParts(
 }
 
 /** Splits edited prose without treating literal glyphs as place references. */
-function definitionParts(
-  value: RichText,
-): ReturnType<typeof numberPlaceholders>["parts"] {
+function definitionParts(value: RichText): NumberingPart[] {
   const parts: { rich: RichText; places: Set<number> }[] = [
     { rich: [[]], places: new Set() },
   ];
@@ -128,7 +130,8 @@ function definitionParts(
     }
   }
   return parts.map((part) => ({
-    text: richTextToEditor(part.rich),
+    text: "",
+    rich: part.rich,
     places: [...part.places].sort((a, b) => a - b),
   }));
 }
@@ -160,13 +163,6 @@ const standardAbstractors = [
   "za'i",
   "zu'o",
 ];
-function insertAtCursor(input: HTMLTextAreaElement, value: string) {
-  const start = input.selectionStart ?? input.value.length;
-  const end = input.selectionEnd ?? start;
-  input.setRangeText(value, start, end, "end");
-  input.dispatchEvent(new Event("input", { bubbles: true }));
-  input.focus();
-}
 /** The complete type hint editor, for custom kinds. */
 function hintEditor(
   current: TypeHint | null,
@@ -178,7 +174,7 @@ function hintEditor(
     ...a,
     tags: [...a.tags],
   })) ?? [{ tags: [], abstractor: null, relation_arity: null }];
-  // The note keeps its exact rich value. Only an edit of the note field parses text.
+  // The note keeps its exact rich value through direct node edits.
   let note: RichText = current ? current.note : [];
   const emit = () => {
     const cleaned = alternatives
@@ -359,16 +355,17 @@ function hintEditor(
       );
     });
     // The note follows the selected mode like every other rich field.
-    // A text area, so a note with paragraphs keeps its blank lines in the editor.
-    const noteField = field("Type note", {
+    // Each paragraph stays a separate node.
+    const noteField = richField("Type note", {
       multiline: true,
+      structured,
       rows: 2,
-      value: editorText(note, structured),
+      value: note,
       wrapperClass: "",
       placeholder: "optional",
     });
     noteField.input.addEventListener("input", () => {
-      note = editorToRichText(noteField.input.value, structured);
+      note = noteField.input.value;
       emit();
     });
     box.append(
@@ -634,63 +631,24 @@ export async function placesPage(
       text: "Definition",
     }),
   );
-  const toolbar = el("div", {
-    role: "toolbar",
-    "aria-label": "Insert",
-    style:
-      "display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px;align-items:center",
-  });
   /** Inputs that mirror draft fields a reference rewrite can change. */
   const mirrors = new Set<() => void>();
   const syncMirrors = () => {
     for (const sync of mirrors) sync();
   };
-  const editor = field("Definition text", {
+  const editor = richField("Definition text", {
     multiline: true,
+    structured: () => draft.structured,
+    places: () => draft.places.map((place) => place.index),
+    operands: () => draft.operands.map((operand) => operand.id),
     rows: 4,
-    value: editorText(draft.text, draft.structured),
+    value: draft.text,
     labelClass: "sr",
   });
   editor.input.style.fontSize = "19px";
   editor.input.style.lineHeight = "1.7";
   const nextPlaceNumber = () =>
-    draft.places.length
-      ? Math.max(...draft.places.map((pl) => pl.index)) + 1
-      : 1;
-  toolbar.append(
-    button(
-      "Place",
-      () => {
-        const n = draft.places.length
-          ? draft.places[draft.places.length - 1].index
-          : nextPlaceNumber();
-        if (!draft.places.length) addPlace();
-        insertAtCursor(
-          editor.input,
-          n <= 20 ? String.fromCodePoint(0x245f + n) : `{place ${n}}`,
-        );
-      },
-      {
-        class: "btn btn-quiet",
-        style: "font-size:14px",
-        title: "Insert a reference to the last declared place",
-      },
-    ),
-    button(
-      "Link a word",
-      () => {
-        const spelling = prompt("Lojban word to link");
-        if (spelling?.trim())
-          insertAtCursor(editor.input, `[[${spelling.trim()}]]`);
-      },
-      { class: "btn btn-quiet", style: "font-size:14px" },
-    ),
-    el("span", {
-      class: "meta",
-      style: "margin-left:6px",
-      text: "or type ① ② ③. Places above 20 use {place N}.",
-    }),
-  );
+    Math.max(0, ...draft.places.map((place) => place.index)) + 1;
   const structured = checkbox(
     "Read circled numbers as place references",
     draft.structured,
@@ -702,7 +660,7 @@ export async function placesPage(
       if (
         lost.length &&
         !confirm(
-          `Literal mode turns the place references in ${lost.join(", ")} into circled characters as text, or into {place N} above 20. Links, code, and operands stay. Continue?`,
+          `Literal mode turns the place references in ${lost.join(", ")} into circled characters as text, or into {place N} above 50. Links, code, and operands stay. Continue?`,
         )
       ) {
         structured.querySelector("input")!.checked = true;
@@ -717,7 +675,6 @@ export async function placesPage(
     },
   );
   defSection.append(
-    toolbar,
     editor.wrapper,
     structured,
     p(
@@ -772,29 +729,11 @@ export async function placesPage(
       preview.append(note);
     }
   };
-  // Pasted text is inert text. In structured mode, circled numerals in it
-  // stay literal unless the author chooses to read them as references.
-  editor.input.addEventListener("paste", (event) => {
-    if (!draft.structured) return;
-    const pasted = event.clipboardData?.getData("text/plain") ?? "";
-    if (!/[①-⑳]|\{place \d/u.test(pasted)) return;
-    event.preventDefault();
-    const asReferences = confirm(
-      "The pasted text contains circled numbers. OK reads them as place references. Cancel keeps them as literal text.",
-    );
-    const insert = asReferences ? pasted : literalize(pasted);
-    const { selectionStart, selectionEnd, value } = editor.input;
-    editor.input.value =
-      value.slice(0, selectionStart) + insert + value.slice(selectionEnd);
-    const caret = selectionStart + insert.length;
-    editor.input.setSelectionRange(caret, caret);
-    editor.input.dispatchEvent(new Event("input"));
-  });
   mirrors.add(() => {
-    editor.input.value = editorText(draft.text, draft.structured);
+    editor.input.value = draft.text;
   });
   editor.input.addEventListener("input", () => {
-    draft.text = editorToRichText(editor.input.value, draft.structured);
+    draft.text = editor.input.value;
     draft.numberingApproved = false;
     saver.touch();
     refreshPreview();
@@ -818,7 +757,7 @@ export async function placesPage(
           draft.text = editorToRichText(proposal.text, true);
           if (!draft.structured)
             draft.text = remapRich(draft.text, () => "literal");
-          editor.input.value = editorText(draft.text, draft.structured);
+          editor.input.value = draft.text;
           if (proposal.count && !draft.places.length) {
             draft.places = Array.from(
               { length: Math.min(256, proposal.count) },
@@ -1005,10 +944,13 @@ export async function placesPage(
       marker.append(idx);
     }
     const grid = el("div", { class: "place-grid" });
-    const description = field(`Description for place ${place.index}`, {
+    const description = richField(`Description for place ${place.index}`, {
       multiline: true,
+      structured: () => draft.structured,
+      places: () => draft.places.map((place) => place.index),
+      operands: () => draft.operands.map((operand) => operand.id),
       rows: 2,
-      value: editorText(place.description, draft.structured),
+      value: place.description,
       wrapperClass: "span-3",
       labelClass: "field-label",
     });
@@ -1017,10 +959,7 @@ export async function placesPage(
       el("span", { class: "sr", text: ` for place ${place.index}` }),
     );
     description.input.addEventListener("input", () => {
-      place.description = editorToRichText(
-        description.input.value,
-        draft.structured,
-      );
+      place.description = description.input.value;
       saver.touch();
     });
     const gloss = {
@@ -1285,12 +1224,15 @@ export async function placesPage(
       minimum.input.addEventListener("change", () => {
         minimum.input.value = String(draft.variadicMinimum);
       });
-      const tailDescription = field(
+      const tailDescription = richField(
         `Places ${draft.places.length + 1} and on`,
         {
           multiline: true,
+          structured: () => draft.structured,
+          places: () => draft.places.map((place) => place.index),
+          operands: () => draft.operands.map((operand) => operand.id),
           rows: 2,
-          value: editorText(draft.tail?.description ?? [], draft.structured),
+          value: draft.tail?.description ?? [],
           placeholder: "what the repeated places are",
           wrapperClass: "",
         },
@@ -1298,10 +1240,7 @@ export async function placesPage(
       tailDescription.input.addEventListener("input", () => {
         draft.tail = {
           ...draft.tail,
-          description: editorToRichText(
-            tailDescription.input.value,
-            draft.structured,
-          ),
+          description: tailDescription.input.value,
           kind: draft.tail?.kind ?? "unspecified",
           hint: draft.tail?.hint ?? null,
         };
@@ -1452,37 +1391,37 @@ export async function placesPage(
             d.text = value.input.value;
             saver.touch();
           });
-          const condition = field(
+          const condition = richField(
             `Condition ${i + 1} for place ${place.index}`,
             {
               multiline: true,
+              structured: () => draft.structured,
+              places: () => draft.places.map((place) => place.index),
+              operands: () => draft.operands.map((operand) => operand.id),
               rows: 2,
-              value: editorText(d.condition, draft.structured),
+              value: d.condition,
               wrapperClass: "",
               placeholder: "when…",
             },
           );
           condition.input.addEventListener("input", () => {
-            d.condition = editorToRichText(
-              condition.input.value,
-              draft.structured,
-            );
+            d.condition = condition.input.value;
             saver.touch();
           });
-          const explanation = field(
+          const explanation = richField(
             `Explanation of default ${i + 1} for place ${place.index}`,
             {
               multiline: true,
+              structured: () => draft.structured,
+              places: () => draft.places.map((place) => place.index),
+              operands: () => draft.operands.map((operand) => operand.id),
               rows: 2,
-              value: editorText(d.explanation, draft.structured),
+              value: d.explanation,
               wrapperClass: "",
             },
           );
           explanation.input.addEventListener("input", () => {
-            d.explanation = editorToRichText(
-              explanation.input.value,
-              draft.structured,
-            );
+            d.explanation = explanation.input.value;
             saver.touch();
           });
           for (const f of [
@@ -1569,18 +1508,21 @@ export async function placesPage(
   };
   rebuildHooks.push(rebuildDefaults);
   open("Notes", () => {
-    const notes = field("Notes", {
+    const notes = richField("Notes", {
       multiline: true,
+      structured: () => draft.structured,
+      places: () => draft.places.map((place) => place.index),
+      operands: () => draft.operands.map((operand) => operand.id),
       rows: 3,
-      value: editorText(draft.notes, draft.structured),
+      value: draft.notes,
       labelClass: "sr",
       wrapperClass: "",
     });
     mirrors.add(() => {
-      notes.input.value = editorText(draft.notes, draft.structured);
+      notes.input.value = draft.notes;
     });
     notes.input.addEventListener("input", () => {
-      draft.notes = editorToRichText(notes.input.value, draft.structured);
+      draft.notes = notes.input.value;
       saver.touch();
       refreshPreview();
     });
@@ -1619,41 +1561,38 @@ export async function placesPage(
           example.text = textField.input.value;
           saver.touch();
         });
-        const translation = field(`Translation of example ${i + 1}`, {
+        const translation = richField(`Translation of example ${i + 1}`, {
           multiline: true,
+          structured: () => draft.structured,
+          places: () => draft.places.map((place) => place.index),
+          operands: () => draft.operands.map((operand) => operand.id),
+          local: false,
           rows: 2,
-          value: editorText(example.translation, draft.structured),
+          value: example.translation,
           wrapperClass: "",
         });
         mirrors.add(() => {
-          translation.input.value = editorText(
-            example.translation,
-            draft.structured,
-          );
+          translation.input.value = example.translation;
         });
         translation.input.addEventListener("input", () => {
-          example.translation = editorToRichText(
-            translation.input.value,
-            draft.structured,
-            false,
-          );
+          example.translation = translation.input.value;
           saver.touch();
         });
-        const notesField = field(`Notes for example ${i + 1}`, {
+        const notesField = richField(`Notes for example ${i + 1}`, {
           multiline: true,
+          structured: () => draft.structured,
+          places: () => draft.places.map((place) => place.index),
+          operands: () => draft.operands.map((operand) => operand.id),
+          local: false,
           rows: 2,
-          value: editorText(example.notes, draft.structured),
+          value: example.notes,
           wrapperClass: "",
         });
         mirrors.add(() => {
-          notesField.input.value = editorText(example.notes, draft.structured);
+          notesField.input.value = example.notes;
         });
         notesField.input.addEventListener("input", () => {
-          example.notes = editorToRichText(
-            notesField.input.value,
-            draft.structured,
-            false,
-          );
+          example.notes = notesField.input.value;
           saver.touch();
         });
         for (const f of [language, textField, translation, notesField]) {
@@ -1700,23 +1639,23 @@ export async function placesPage(
   open(
     "Etymology",
     () => {
-      const etym = field("Etymology", {
+      const etym = richField("Etymology", {
         multiline: true,
+        structured: () => draft.structured,
+        places: () => draft.places.map((place) => place.index),
+        operands: () => draft.operands.map((operand) => operand.id),
+        local: false,
         rows: 3,
-        value: editorText(draft.etymologyText, draft.structured),
+        value: draft.etymologyText,
         labelClass: "sr",
         wrapperClass: "",
         hint: "Descriptive text without place references. Morphology notes from the Form step are added after it.",
       });
       mirrors.add(() => {
-        etym.input.value = editorText(draft.etymologyText, draft.structured);
+        etym.input.value = draft.etymologyText;
       });
       etym.input.addEventListener("input", () => {
-        draft.etymologyText = editorToRichText(
-          etym.input.value,
-          draft.structured,
-          false,
-        );
+        draft.etymologyText = etym.input.value;
         saver.touch();
       });
       const nodes: Node[] = [etym.wrapper];
@@ -1894,23 +1833,20 @@ export async function placesPage(
             operand.category = category.input.value;
             saver.touch();
           });
-          const description = field(`Operand ${i + 1} description`, {
+          const description = richField(`Operand ${i + 1} description`, {
             multiline: true,
+            structured: () => draft.structured,
+            places: () => draft.places.map((place) => place.index),
+            operands: () => draft.operands.map((operand) => operand.id),
             rows: 2,
-            value: editorText(operand.description, draft.structured),
+            value: operand.description,
             wrapperClass: "",
           });
           mirrors.add(() => {
-            description.input.value = editorText(
-              operand.description,
-              draft.structured,
-            );
+            description.input.value = operand.description;
           });
           description.input.addEventListener("input", () => {
-            operand.description = editorToRichText(
-              description.input.value,
-              draft.structured,
-            );
+            operand.description = description.input.value;
             saver.touch();
           });
           const minimum = field(`Operand ${i + 1} minimum`, {
@@ -2022,10 +1958,11 @@ export async function placesPage(
             saver.touch();
             refreshPreview();
           });
-          const rationale = field(`Rationale for rafsi ${i + 1}`, {
+          const rationale = richField(`Rationale for rafsi ${i + 1}`, {
+            local: false,
             multiline: true,
             rows: 2,
-            value: claim.rationale,
+            value: richValue(claim.rationale),
             wrapperClass: "",
           });
           rationale.input.addEventListener("input", () => {
@@ -2056,7 +1993,7 @@ export async function placesPage(
             button(
               "Add a rafsi claim",
               () => {
-                draft.rafsiClaims.push({ rafsi: "", rationale: "" });
+                draft.rafsiClaims.push({ rafsi: "", rationale: [] });
                 saver.touch();
                 render();
               },
@@ -2290,12 +2227,14 @@ function derivationEditor(
         refreshMapping();
         changed();
       });
-      const explanation = field(
+      const explanation = richField(
         `Explanation of derivation ${n} for place ${place.index}`,
         {
           multiline: true,
+          structured,
+          local: false,
           rows: 2,
-          value: editorText(derivation.explanation, structured),
+          value: derivation.explanation,
           wrapperClass: "span-3",
           placeholder: "optional, without place references",
         },
@@ -2308,11 +2247,7 @@ function derivationEditor(
         }),
       );
       explanation.input.addEventListener("input", () => {
-        derivation.explanation = editorToRichText(
-          explanation.input.value,
-          structured,
-          false,
-        );
+        derivation.explanation = explanation.input.value;
         refreshMapping();
         changed();
       });
@@ -2382,14 +2317,17 @@ function constraintEditor(
   const render = () => {
     box.replaceChildren();
     values.forEach((value, i) => {
-      const input = field(`Constraint ${i + 1} ${suffix}`, {
+      const input = richField(`Constraint ${i + 1} ${suffix}`, {
         multiline: true,
+        structured: () => draft.structured,
+        places: () => draft.places.map((place) => place.index),
+        operands: () => draft.operands.map((operand) => operand.id),
         rows: 2,
-        value: editorText(value, draft.structured),
+        value: value,
         wrapperClass: "",
       });
       input.input.addEventListener("input", () => {
-        values[i] = editorToRichText(input.input.value, draft.structured);
+        values[i] = input.input.value;
         changed();
       });
       box.append(

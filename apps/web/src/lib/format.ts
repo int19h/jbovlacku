@@ -193,9 +193,4 @@ export function languageName(tag: string): string {
     return tag;
   }
 }
-/** Circled numeral for places 1 through 20. Larger numbers use a numeric badge. */
-export function placeGlyph(index: number): string {
-  return index >= 1 && index <= 20
-    ? String.fromCodePoint(0x245f + index)
-    : String(index);
-}
+export { placeGlyph } from "../model/place-glyphs.ts";

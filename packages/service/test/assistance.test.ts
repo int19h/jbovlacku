@@ -1087,6 +1087,66 @@ test("draft validation enforces operation fields, schema and exact context IDs",
     ),
   );
 });
+test("explicit place limits fail before a provider request and preserve manual gaps", async () => {
+  let calls = 0;
+  const instance = service({
+    provider: makeConfig({
+      fetch: (async () => {
+        calls++;
+        throw new Error("The provider must not run.");
+      }) as typeof fetch,
+    }),
+  });
+  const headers = await session(instance);
+  for (const [meaning, text, message] of [
+    ["① ⑰", [], "at most 16"],
+    [
+      "test",
+      [Array.from({ length: 17 }, (_, index) => index + 1)],
+      "at most 16",
+    ],
+    ["① and ④", [], "gaps"],
+    ["test", [[1, " and ", 4]], "gaps"],
+  ] as const) {
+    const request = draft("places-glosses");
+    request.meaning = meaning;
+    request.current.text = structuredClone(
+      text,
+    ) as unknown as AssistRequest["current"]["text"];
+    const response = await instance.fetch(
+      privateRequest("/assist", headers, request),
+    );
+    assert.equal(response.status, 400);
+    const error = (await response.json()) as any;
+    assert.equal(error.code, "explicit_places");
+    assert.match(error.message, new RegExp(message));
+  }
+  assert.equal(calls, 0);
+  const request = draft("places-glosses", {
+    text: [[1, " and ", 4]],
+    frame: {
+      ...structuredClone(frame),
+      arity: { mode: "context" },
+      places: [1, 4].map((index) => ({
+        ...structuredClone(frame.places[0]),
+        index,
+        description: [],
+      })),
+    },
+  });
+  request.meaning = "① and ④";
+  assert.doesNotThrow(() => parseAssistRequest(request));
+  assert.deepEqual(
+    request.current.frame!.places.map((place: any) => [
+      place.index,
+      place.description,
+    ]),
+    [
+      [1, []],
+      [4, []],
+    ],
+  );
+});
 test("all operations return only permitted proposals and preserve non-English glosses", async () => {
   const cases: [AssistRequest, unknown[]][] = [
     [draft("type"), [{ word_type: "lujvo", reason: "A compound fits." }]],

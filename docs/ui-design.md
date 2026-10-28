@@ -299,6 +299,11 @@ The bottom actions are Back and “Use <form>.”
 
 The top shows headword, type, definition language, and “AI Fill in places and glosses.”
 The definition uses an actual accessible rich-text editor, with Place insertion, Link a word, and typed circled-number guidance.
+Places and operands use inline chips. Code and both link types use separate inline nodes.
+The toolbar inserts places 1 to 3 directly. A dropdown offers places 4 to 50 and identifies declared places.
+Link a word opens an accessible dialog. The toolbar also offers code insertion.
+Typed `___` and `__N__` convert on the final underscore. Backspace restores the typed characters.
+Literal mode and text-only paste follow the frontend specification.
 Glosses appear as removable chips with an add field. Every removal target meets the 44px rule.
 Place rows show Description, Gloss, Kind of thing, and From, followed by “Add a place.”
 Repeated field labels include the place number in their accessible names.

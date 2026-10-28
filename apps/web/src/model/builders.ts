@@ -1,3 +1,4 @@
+import { richValue } from "./rich-editor.ts";
 /**
  * Builder state kept in the draft, inventories from the local package, and
  * the formation and compound metadata that a chosen form records.
@@ -340,7 +341,7 @@ export interface GismuState {
   manual: string;
   /** Root conflict keys bound to the chosen spelling and snapshot. */
   acknowledged: string[];
-  reason: string;
+  reason: string | RichText;
   window: number;
 }
 export const newLujvoState = (): LujvoState => ({
@@ -694,7 +695,7 @@ export function formationMetadata(options: {
     rule: "identical" | "final-vowel" | "similar-consonant";
     snapshot: string;
   }[];
-  reason: string;
+  reason: string | RichText;
   /** True when the form is the candidate the author chose from the run or entered under it. */
 }): Formation {
   const { result, candidate, rows, preset } = options;
@@ -725,7 +726,7 @@ export function formationMetadata(options: {
       denominator: candidate.score.denominator,
     },
     selected_rank: candidate.rank,
-    selection_reason: textToRichText(options.reason, false),
+    selection_reason: richValue(options.reason),
     candidates: result.candidates.slice(0, 32).map((c) => ({
       form: c.form,
       score: {
@@ -740,10 +741,10 @@ export function formationMetadata(options: {
 /** Formation metadata for a manual gismu without a run: no algorithm, no fabricated scores. */
 export function manualFormation(
   rows: GismuRowState[],
-  reason: string,
+  reason: string | RichText,
 ): Formation | null {
   const sources = formationSourcesFromRows(rows);
-  if (!sources.length && !reason.trim()) return null;
+  if (!sources.length && !richValue(reason).flat().length) return null;
   return {
     method: "non-algorithmic",
     algorithm: null,
@@ -752,7 +753,7 @@ export function manualFormation(
     generated: null,
     selected_score: null,
     selected_rank: null,
-    selection_reason: textToRichText(reason, false),
+    selection_reason: richValue(reason),
     candidates: [],
     conflicts: [],
   };

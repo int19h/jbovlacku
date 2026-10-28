@@ -7,7 +7,7 @@ import {
   type Transaction,
 } from "prosemirror-state";
 import { InputRule, inputRules } from "prosemirror-inputrules";
-import { CIRCLED_SOURCE, circledPlace } from "./place-glyphs.ts";
+import { CIRCLED_SOURCE, circledPlace, placeGlyph } from "./place-glyphs.ts";
 import type { RichNode, RichText } from "./types.ts";
 
 const inlineText = (tag: string, className: string) => ({
@@ -30,6 +30,7 @@ export const richEditorSchema = new Schema({
       group: "inline",
       atom: true,
       attrs: { index: {} },
+      leafText: (node) => placeGlyph(node.attrs.index),
       toDOM: (node) => [
         "span",
         {
@@ -47,6 +48,7 @@ export const richEditorSchema = new Schema({
       group: "inline",
       atom: true,
       attrs: { id: {} },
+      leafText: (node) => `[${node.attrs.id}]`,
       toDOM: (node) => [
         "span",
         {

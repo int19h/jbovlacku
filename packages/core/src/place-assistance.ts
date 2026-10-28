@@ -18,7 +18,7 @@ export function explicitMeaningPlaces(meaning: string): number[] {
 /** The AI's positional answer can generate at most 16 consecutive places. */
 export function placeSuggestionProblem(
   meaning: string,
-  text: unknown[][],
+  text: unknown[],
   frame: unknown,
 ): string | null {
   if (frame !== null) return null;

@@ -1,3 +1,5 @@
+import { richValue } from "../../model/rich-editor.ts";
+import type { RichText } from "../../model/types.ts";
 import { stripAcuteAccents } from "../../../../../packages/morphology/src/accents.ts";
 import { kindLabel } from "../../model/types.ts";
 import { detectWord } from "../../model/typed-headword.ts";
@@ -28,7 +30,6 @@ import {
 } from "../../app/router.ts";
 import type { App } from "../../app/context.ts";
 import { draftToBody } from "../../model/draft.ts";
-import { textToRichText } from "../../model/richtext.ts";
 import {
   cachedPackage,
   inventoryFromPackage,
@@ -64,7 +65,7 @@ import {
 interface RequestedClaim {
   rafsi: string;
   pair: string;
-  rationale: string;
+  rationale: RichText;
   competitors: { word: string; spelling: string }[];
 }
 export async function publishPage(
@@ -262,7 +263,7 @@ export async function publishPage(
       claims.push({
         rafsi,
         pair: rafsiPairId(wordId, rafsi),
-        rationale: claim.rationale.trim(),
+        rationale: richValue(claim.rationale),
         competitors: [],
       });
     }
@@ -714,7 +715,7 @@ export async function publishPage(
             spelling: stripAcuteAccents(body!.word.spelling),
           },
           rafsi: claim.rafsi,
-          rationale: textToRichText(claim.rationale, false),
+          rationale: claim.rationale,
           sources: [],
           legacy: null,
         },
