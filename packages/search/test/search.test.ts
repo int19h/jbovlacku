@@ -31,7 +31,10 @@ test("compound headwords use the same components across joined and spaced querie
     matchKind(entry("iseri'abo"), "mi klama i seri'a bo do"),
     "sequence-contiguous",
   );
-  assert.equal(matchKind(entry("iseri'abo"), "se ri'a"), "sequence-contiguous");
+  assert.equal(
+    matchKind(entry("iseri'abo"), "se ri'a"),
+    "sequence-subsequence",
+  );
   assert.equal(matchKind(entry("iseri'abo"), "i bo"), "sequence-subsequence");
   assert.equal(matchKind(entry("iseri'abo"), "bo i"), null);
   assert.equal(matchKind(entry("iseri'abo"), "i i bo"), null);
@@ -151,7 +154,7 @@ test("resource limits keep ordinary search and never use a partial component que
 test("the component index covers legal headwords through 256 bytes", () => {
   for (const count of [65, 80, 128]) {
     const headword = entry("ba".repeat(count));
-    assert.equal(matchKind(headword, "ba ba"), "sequence-contiguous");
+    assert.equal(matchKind(headword, "ba ba"), "sequence-subsequence");
     assert.equal(selectMatches([headword], "ba ba").segmentation, "complete");
   }
 });

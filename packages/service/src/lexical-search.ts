@@ -4,6 +4,7 @@ import {
   matchRank,
   withSegmentation,
   type MatchKind,
+  type SearchMetrics,
 } from "../../search/src/index.ts";
 import type { SearchEntry } from "./packages.ts";
 
@@ -14,6 +15,7 @@ export function lexicalSearch(
   language: string,
   evaluation: Evaluation,
   includeRetired = false,
+  metrics?: SearchMetrics,
 ) {
   const hits = new Map<
     string,
@@ -31,20 +33,16 @@ export function lexicalSearch(
       };
     }
   >();
-  function* eligibleEntries() {
-    for (const entry of entries) {
-      const publication = evaluation.publications[entry.event];
-      if (
-        entry.language === language &&
-        publication &&
-        evaluation.receipts[entry.event]?.interpretation === "effective" &&
-        publication.eligible === "eligible" &&
-        (publication.status === "active" || includeRetired)
-      )
-        yield entry;
-    }
-  }
-  const selected = selectMatches(eligibleEntries(), query);
+  const selected = selectMatches(entries, query, metrics, (entry) => {
+    const publication = evaluation.publications[entry.event];
+    return (
+      entry.language === language &&
+      !!publication &&
+      evaluation.receipts[entry.event]?.interpretation === "effective" &&
+      publication.eligible === "eligible" &&
+      (publication.status === "active" || includeRetired)
+    );
+  });
   for (const { entry, match, position } of selected.rows) {
     const publication = evaluation.publications[entry.event];
     const wordId = publication.word;

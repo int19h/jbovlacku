@@ -122,7 +122,7 @@ test("GET and POST share segmented ranking, fallback, cursors, and limits in a f
       search.hits.map((hit: any) => [hit.word.spelling, hit.match]),
       [
         ["ibo", "sequence-exact"],
-        ["iboku", "sequence-contiguous"],
+        ["iseri'abo", "sequence-subsequence"],
       ],
     );
     assert.equal(search.segmentation, "complete");
@@ -135,7 +135,7 @@ test("GET and POST share segmented ranking, fallback, cursors, and limits in a f
     assert.equal(more.segmentation, "complete");
     assert.deepEqual(
       more.hits.map((hit: any) => [hit.word.spelling, hit.match]),
-      [["iseri'abo", "sequence-subsequence"]],
+      [["iboku", "sequence-subsequence"]],
     );
     assert.equal(more.next, null);
     const post = await service.fetch(

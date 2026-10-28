@@ -11,12 +11,12 @@ export const SEARCH_HEADWORD_WORK_LIMIT = 300_000;
 export type SegmentationStatus = "complete" | "limited";
 export const matchKinds = [
   "headword",
-  "sequence-exact",
   "gloss",
+  "sequence-exact",
   "sequence-contiguous",
-  "sequence-subsequence",
   "headword-prefix",
   "gloss-prefix",
+  "sequence-subsequence",
   "token",
   "component",
 ] as const;
@@ -69,6 +69,7 @@ interface Components {
 }
 interface PreparedEntry {
   spelling: string;
+  canonical: string;
   glosses: string[];
   text: string;
   components: Components | null;
@@ -90,21 +91,29 @@ function prefixTable(pattern: string[], metrics?: SearchMetrics): number[] {
   }
   return table;
 }
-function contains(
+function coverOccurrences(
   text: readonly (string | null)[],
   pattern: string[],
   prefix: number[],
+  coverage: Int32Array,
   metrics?: SearchMetrics,
 ): boolean {
   if (text.length < pattern.length) return false;
-  let matched = 0;
-  for (const word of text) {
+  let matched = 0,
+    found = false;
+  for (let index = 0; index < text.length; index++) {
+    const word = text[index];
     while (matched && !equal(word, pattern[matched], metrics))
       matched = prefix[matched - 1];
     if (equal(word, pattern[matched], metrics)) matched++;
-    if (matched === pattern.length) return true;
+    if (matched === pattern.length) {
+      coverage[index - pattern.length + 1]++;
+      coverage[index + 1]--;
+      found = true;
+      matched = prefix[matched - 1];
+    }
   }
-  return false;
+  return found;
 }
 function components(value: string, workLimit: number, runLimit = 128) {
   const parsed = segmentText(value, {
@@ -136,6 +145,50 @@ function components(value: string, workLimit: number, runLimit = 128) {
     } satisfies Components,
   };
 }
+export const SPELLING_CACHE_LIMIT = 4096;
+const spellingIndex = new Map<
+  string,
+  { components: Components | null; limited: boolean }
+>();
+const canonicalWord = (value: string) =>
+  value.replaceAll("h", "'").replace(/[.,]/gu, "").trim();
+/** Cmavo have no consonant clusters and cannot end in a consonant. */
+function canBeCompound(value: string): boolean {
+  const plain = canonicalWord(value);
+  if (/[^a-z'0-9\s]/u.test(plain)) return true;
+  if (/[bcdfgjklmnprstvxz]{2}|[bcdfgjklmnprstvxz](?:\s|$)/u.test(plain))
+    return false;
+  return (plain.match(/[aeiouy0-9]/gu)?.length ?? 0) >= 2;
+}
+function indexedComponents(spelling: string, metrics?: SearchMetrics) {
+  if (new TextEncoder().encode(spelling).length > 256)
+    return { components: null, limited: true };
+  if (!canBeCompound(spelling)) return { components: null, limited: false };
+  const cached = spellingIndex.get(spelling);
+  if (cached) {
+    spellingIndex.delete(spelling);
+    spellingIndex.set(spelling, cached);
+    return cached;
+  }
+  let sequence: Components | null = null;
+  let limited = false;
+  if (metrics) metrics.headwordsParsed++;
+  try {
+    const result = components(spelling, SEARCH_HEADWORD_WORK_LIMIT, 256);
+    if (metrics) metrics.headwordParserWork += result.parsed.spent;
+    if (!result.parsed.foreign.length && result.value.cmavo)
+      sequence = result.value;
+  } catch (error) {
+    if (!(error instanceof BuilderError)) throw error;
+    limited = error.failure.kind === "resource-limit";
+    if (metrics) metrics.headwordParserWork += error.failure.value ?? 0;
+  }
+  const result = { components: sequence, limited };
+  spellingIndex.set(spelling, result);
+  if (spellingIndex.size > SPELLING_CACHE_LIMIT)
+    spellingIndex.delete(spellingIndex.keys().next().value!);
+  return result;
+}
 function prepareEntry(
   entry: LexicalEntry,
   metrics?: SearchMetrics,
@@ -143,29 +196,35 @@ function prepareEntry(
   const cached = entryIndex.get(entry);
   if (cached) return cached;
   const spelling = headwordKey(entry.word.spelling);
-  let sequence: Components | null = null;
-  let limited = false;
-  if (new TextEncoder().encode(spelling).length <= 256) {
-    if (metrics) metrics.headwordsParsed++;
-    try {
-      const result = components(spelling, SEARCH_HEADWORD_WORK_LIMIT, 256);
-      if (metrics) metrics.headwordParserWork += result.parsed.spent;
-      if (!result.parsed.foreign.length) sequence = result.value;
-    } catch (error) {
-      if (!(error instanceof BuilderError)) throw error;
-      limited = error.failure.kind === "resource-limit";
-      if (metrics) metrics.headwordParserWork += error.failure.value ?? 0;
-    }
-  }
   const indexed = {
     spelling,
+    canonical: canonicalWord(spelling),
     glosses: entry.glosses.map((gloss) => normalizeQuery(gloss.text)),
     text: normalizeQuery(entry.plain_text),
-    components: sequence,
-    limited,
+    ...indexedComponents(spelling, metrics),
   };
   entryIndex.set(entry, indexed);
   return indexed;
+}
+export interface SearchIndex<T extends LexicalEntry> {
+  rows: { entry: T; indexed: PreparedEntry }[];
+}
+const preparedIndexes = new WeakMap<object, SearchIndex<LexicalEntry>>();
+/** The caller retains an immutable array for its package or materialized generation. */
+export function prepareIndex<T extends LexicalEntry>(
+  entries: readonly T[],
+  metrics?: SearchMetrics,
+): SearchIndex<T> {
+  const previous = preparedIndexes.get(entries);
+  if (previous) return previous as SearchIndex<T>;
+  const index = {
+    rows: entries.map((entry) => ({
+      entry,
+      indexed: prepareEntry(entry, metrics),
+    })),
+  };
+  preparedIndexes.set(entries, index);
+  return index;
 }
 export interface PreparedQuery {
   text: string;
@@ -216,21 +275,22 @@ export function prepareQuery(
 function sequenceMatch(
   entry: PreparedEntry,
   query: PreparedQuery,
+  coverage: Int32Array,
   metrics?: SearchMetrics,
 ): MatchKind | null {
-  const head = entry.components;
-  const q = query.components;
+  const head = entry.components,
+    q = query.components;
   if (!head?.cmavo || head.words.length < 2 || !q?.words.length) return null;
   if (
     q.cmavo &&
     head.words.length === q.words.length &&
     head.words.every((word, index) => equal(word, q.words[index], metrics))
-  )
+  ) {
+    coverage[0]++;
+    coverage[q.tokens.length]--;
     return "sequence-exact";
-  if (
-    contains(q.tokens, head.words, head.prefix, metrics) ||
-    (q.cmavo && contains(head.words, q.words, q.prefix, metrics))
-  )
+  }
+  if (coverOccurrences(q.tokens, head.words, head.prefix, coverage, metrics))
     return "sequence-contiguous";
   if (q.cmavo && q.words.length <= head.words.length) {
     let matched = 0;
@@ -249,54 +309,76 @@ export interface LexicalMatch<T> {
 }
 /** One scan. Sequence searches use linear passes and never enumerate subsets. */
 export function selectMatches<T extends LexicalEntry>(
-  entries: Iterable<T>,
+  entries: Iterable<T> | SearchIndex<T>,
   query: string | PreparedQuery,
   metrics?: SearchMetrics,
+  accept: (entry: T) => boolean = () => true,
 ): { rows: LexicalMatch<T>[]; segmentation: SegmentationStatus } {
   const prepared =
     typeof query === "string" ? prepareQuery(query, metrics) : query;
   const rows: LexicalMatch<T>[] = [];
-  const fallback: LexicalMatch<T>[] = [];
-  let joined = false;
+  const fallback: { entry: T; key: string }[] = [];
+  const coverage = new Int32Array(
+    (prepared.components?.tokens.length ?? 0) + 1,
+  );
   let segmentation = prepared.segmentation;
-  if (!prepared.text) return { rows, segmentation: prepared.segmentation };
-  for (const entry of entries) {
+  if (!prepared.text) return { rows, segmentation };
+  const single =
+    prepared.components?.words.length === 1 &&
+    !prepared.components.tokens.includes(null)
+      ? prepared.components.words[0]
+      : null;
+  const source =
+    "rows" in entries
+      ? entries.rows
+      : Array.isArray(entries)
+        ? prepareIndex(entries, metrics).rows
+        : (function* () {
+            for (const entry of entries as Iterable<T>)
+              yield { entry, indexed: prepareEntry(entry, metrics) };
+          })();
+  for (const { entry, indexed: index } of source) {
     if (metrics) metrics.entries++;
-    const index = prepareEntry(entry, metrics);
+    if (!accept(entry)) continue;
     if (index.limited) segmentation = "limited";
-    const sequence = sequenceMatch(index, prepared, metrics);
-    if (sequence) joined = true;
-    const match: MatchKind | null =
-      index.spelling === prepared.headword && prepared.headword
-        ? "headword"
-        : sequence === "sequence-exact"
-          ? sequence
-          : index.glosses.includes(prepared.text)
-            ? "gloss"
-            : (sequence ??
-              (prepared.headword && index.spelling.startsWith(prepared.headword)
-                ? "headword-prefix"
-                : index.glosses.some((gloss) => gloss.startsWith(prepared.text))
-                  ? "gloss-prefix"
-                  : index.text.includes(prepared.text)
-                    ? "token"
-                    : null));
-    if (match) rows.push({ entry, match, position: 0 });
-    if ((prepared.components?.words.length ?? 0) > 1) {
-      const key =
-        index.components?.words.length === 1
-          ? index.components.words[0]
-          : index.spelling;
-      const position = prepared.positions.get(key);
-      if (position !== undefined)
-        fallback.push({ entry, match: "component", position });
-    }
+    const sequence = sequenceMatch(index, prepared, coverage, metrics);
+    const prefix = single ?? prepared.headword;
+    const candidates: MatchKind[] = [];
+    if (
+      (prepared.headword && index.spelling === prepared.headword) ||
+      (single && index.canonical === single)
+    )
+      candidates.push("headword");
+    if (index.glosses.includes(prepared.text)) candidates.push("gloss");
+    if (sequence) candidates.push(sequence);
+    if (
+      (prepared.headword && index.spelling.startsWith(prepared.headword)) ||
+      (prefix && index.canonical.startsWith(prefix))
+    )
+      candidates.push("headword-prefix");
+    if (index.glosses.some((gloss) => gloss.startsWith(prepared.text)))
+      candidates.push("gloss-prefix");
+    if (index.text.includes(prepared.text)) candidates.push("token");
+    candidates.sort((a, b) => matchRank(a) - matchRank(b));
+    if (candidates.length)
+      rows.push({ entry, match: candidates[0], position: 0 });
+    if (prepared.positions.has(index.canonical))
+      fallback.push({ entry, key: index.canonical });
   }
-  // Ordinary full-query matches remain visible. Component cards follow them.
-  if (!joined) {
-    const matchedEntries = new Set(rows.map((row) => row.entry));
-    for (const row of fallback)
-      if (!matchedEntries.has(row.entry)) rows.push(row);
+  const positions = new Map<string, number>();
+  let covered = 0,
+    position = 0;
+  for (const [index, token] of (prepared.components?.tokens ?? []).entries()) {
+    covered += coverage[index];
+    if (token === null) continue;
+    if (!covered && !positions.has(token)) positions.set(token, position);
+    position++;
+  }
+  const matchedEntries = new Set(rows.map((row) => row.entry));
+  for (const { entry, key } of fallback) {
+    const position = positions.get(key);
+    if (position !== undefined && !matchedEntries.has(entry))
+      rows.push({ entry, match: "component", position });
   }
   return { rows, segmentation };
 }

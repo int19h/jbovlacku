@@ -178,7 +178,7 @@ test("segmented results rank exact, contiguous, and ordered subsequence before p
     [
       ["i bo", "headword"],
       ["ibo", "sequence-exact"],
-      ["iboku", "sequence-contiguous"],
+      ["iboku", "sequence-subsequence"],
       ["iseri'abo", "sequence-subsequence"],
     ],
   );

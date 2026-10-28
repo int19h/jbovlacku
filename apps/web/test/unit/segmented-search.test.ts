@@ -50,6 +50,13 @@ test("local and server search share sequence rank, fallback order, display, and 
     "iseri'abo",
     "dján",
     "djan",
+    "pa",
+    "ri'a",
+    "ije",
+    "le",
+    "nu",
+    "lenu",
+    "mi",
   ]);
   const evaluation = {
     publications: Object.fromEntries(
@@ -77,6 +84,15 @@ test("local and server search share sequence rank, fallback order, display, and 
       definitions,
     }));
   for (const query of [
+    "klama.",
+    "(klama)",
+    ".i",
+    "1",
+    "riha",
+    "klama mibaoz",
+    "mibaoz klama",
+    "ijebo klama",
+    "le nu klama",
     "i seri'a bo",
     "ise ri'abo",
     "iseri'abo",
@@ -103,7 +119,7 @@ test("local and server search share sequence rank, fallback order, display, and 
   }
   assert.deepEqual(
     localSearch(source, "ijebo").map((hit) => hit.word.spelling),
-    ["i", "je", "bo"],
+    ["ije", "bo"],
   );
   assert.deepEqual(
     localSearch(source, "i klama i").map((hit) => hit.word.spelling),
