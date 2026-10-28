@@ -168,8 +168,9 @@ The third line shows author attribution, month and year, optional “notes,” m
 Native authors link to their signing identity. Imported authors link to source-account evidence when available, without impersonating a signing identity.
 The importer signer remains inspectable separately. A shared display name never merges the two.
 
-Search order follows exact headword, exact component sequence, exact gloss, contiguous sequence, ordered subsequence, headword prefix, gloss prefix, and token matches.
-The list has no class headings. When no compound sequence joins, individual query-word cards follow in query order, with repeated identities grouped.
+Search order follows exact headword, exact gloss, exact component sequence, contiguous sequence, headword prefix, gloss prefix, ordered subsequence, and token matches.
+The list has no class headings. Individual cards follow in query order for words outside exact or contiguous compound spans, with repeated identities grouped.
+Subsequence matches keep those cards. A one-word query shows its exact word and prefix family before compounds that contain it.
 Case and acute headword stress marks do not change the order.
 If segmentation reaches a resource limit, a visible notice states that some sequence matches or word cards can be missing.
 The notice stays through pagination and browser Back.

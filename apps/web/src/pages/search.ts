@@ -1,3 +1,8 @@
+import {
+  searchPackage,
+  PackageValidationError,
+  type PackageSearchResult,
+} from "../data/package-search.ts";
 import { kindLabel } from "../model/types.ts";
 /**
  * Search results. The header holds the query. The page shows a count line,
@@ -25,8 +30,6 @@ import type { App } from "../app/context.ts";
 import {
   downloadPackage,
   isV2,
-  localSearch,
-  validateCachedPackage,
   type CachedPackage,
   type LocalHit,
 } from "../data/search.ts";
@@ -200,6 +203,7 @@ export async function searchPage(
   });
   // Search source: the downloaded package in local mode, otherwise this server.
   let cached: CachedPackage | undefined;
+  let initialLocal: PackageSearchResult | undefined;
   if (
     app.session.preferences.searchMode === "local" &&
     app.session.storageAvailable
@@ -207,12 +211,18 @@ export async function searchPage(
     cached = await app.store
       .get<CachedPackage>("packages", language)
       .catch(() => undefined);
-    if (cached) {
-      try {
-        validateCachedPackage(cached, language);
-      } catch (error) {
+  }
+  if (cached && query) {
+    try {
+      initialLocal = await searchPackage(cached, language, [query]);
+    } catch (error) {
+      if (!context.live()) return;
+      if (error instanceof PackageValidationError) {
         cached = undefined;
         app.announce(describe(error));
+      } else {
+        results.append(p(describe(error), "notice"));
+        return;
       }
     }
   }
@@ -285,10 +295,9 @@ export async function searchPage(
   );
   segmentationNote.hidden = true;
   results.before(segmentationNote);
-  if (cached) {
-    const found = localSearch(cached.entries, query);
-    localHits = found;
-    segmentation = found.segmentation;
+  if (initialLocal) {
+    localHits = initialLocal.hits[0];
+    segmentation = initialLocal.segmentation;
   }
   const remember = () => {
     if (!context.live()) return;

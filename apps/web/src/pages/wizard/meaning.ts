@@ -1,3 +1,4 @@
+import { searchPackage } from "../../data/package-search.ts";
 import { kindLabel } from "../../model/types.ts";
 import {
   nearbyQuery as meaningQueries,
@@ -20,11 +21,7 @@ import {
   type Route,
 } from "../../app/router.ts";
 import type { App } from "../../app/context.ts";
-import {
-  localSearch,
-  packageWordEntries,
-  type CachedPackage,
-} from "../../data/search.ts";
+import { packageWordEntries, type CachedPackage } from "../../data/search.ts";
 import { getWord, loadRecord, remoteDraftSearch } from "../../data/api.ts";
 import { placeholderCount, type Draft } from "../../model/draft.ts";
 import { countNodes, placeMarker } from "../../model/richtext.ts";
@@ -660,10 +657,24 @@ export async function meaningPage(
     if (cached) {
       // Rank by the number of matching query words.
       const words = query.toLocaleLowerCase("en").split(" ");
-      renderHits(
-        rankNearby(words.map((word) => localSearch(cached.entries, word))),
-        "local",
-      );
+      try {
+        const current = await app.store.get<CachedPackage>(
+          "packages",
+          draft.language,
+        );
+        if (!context.live()) return;
+        if (!current) {
+          cached = null;
+          renderHits([], "local");
+          renderMode();
+          return;
+        }
+        cached = current;
+        const found = await searchPackage(current, draft.language, words);
+        if (context.live()) renderHits(rankNearby(found.hits), "local");
+      } catch (error) {
+        if (context.live()) note.textContent = describe(error);
+      }
       return;
     }
     if (remoteConsent !== consentKey()) {

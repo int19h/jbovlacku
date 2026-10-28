@@ -42,10 +42,10 @@ test("local sequences share rank across spellings, fall back to query words, and
     });
     return [
       "ibo",
-      "iboku",
       ...entries
         .filter(
           (row) =>
+            row.word.spelling === "iboku" ||
             row.word.spelling === "iseri'abo" ||
             /^i(?:se){2,}bo$/.test(row.word.spelling),
         )
@@ -76,7 +76,9 @@ test("local sequences share rank across spellings, fall back to query words, and
     "mi klama i seri'a bo",
   ]) {
     await page.goto("/search?" + new URLSearchParams({ q: query, lang: "en" }));
-    await expect(results.locator("article .hw")).toHaveText(["iseri'abo"]);
+    await expect(results.locator("article .hw")).toHaveText(
+      query.startsWith("mi klama") ? ["iseri'abo", "klama"] : ["iseri'abo"],
+    );
   }
   for (const [query, spellings] of [
     ["ijebo", ["i", "je", "bo"]],

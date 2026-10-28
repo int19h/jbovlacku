@@ -624,6 +624,13 @@ The [semantic index guide](semantic-search.md#handle-provider-rate-limits) descr
 
 ## Tests and evidence
 
+The optional real-package search measurement accepts a local JSON export through `JVC_SEARCH_MEASURE_DATA`.
+It runs `apps/web/test/search-measure.test.ts` with actual IndexedDB reads, search routes, nearby lookup, and browser main-thread CPU counters.
+Run `scripts/measure-package-search.ts DATASET.json` through `tsx` and `/usr/bin/time -v` for server lexical CPU and memory.
+This server boundary starts after materialization and includes eligibility filtering and word grouping. It excludes HTTP and snapshot evaluation.
+Both tools report the revision and input digest. They translate only historical `classification.kind: "fuivla"` to the current `fuhivla` spelling.
+They preserve every entry, headword, and definition text. Do not commit a private dataset or its path.
+
 Install Git, Node.js 24, and `ssh-keygen` before the Rust tests.
 The core interoperability tests use Node WebCrypto and OpenSSH.
 On Ubuntu, the `openssh-client` package supplies `ssh-keygen`.

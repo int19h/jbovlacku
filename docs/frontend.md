@@ -164,30 +164,57 @@ Case differences do not change match classes or their order.
 Headword matching ignores acute cmevla stress marks. Accented and plain queries find the same word identity.
 Each result keeps the display spelling of its selected definition. Alternative definitions can retain different stress marks.
 A normalized exact headword match uses the same class as its display spelling.
-Rank result classes in this order: exact headword, exact component sequence, exact gloss, contiguous sequence, ordered subsequence, headword prefix, gloss prefix, then token matches.
+Rank result classes in this order: exact headword, exact gloss, exact component sequence, contiguous sequence, headword prefix, gloss prefix, ordered subsequence, then token matches.
 Ordinary text queries keep their existing lexical class order.
 
 Both local and server search split the query with the TypeScript text segmenter in `packages/morphology`.
 Each search index derives a component array for every headword that parses entirely as two or more cmavo.
 For example, `iseri'abo` has components `[i, se, ri'a, bo]`.
 The queries `i seri'a bo`, `ise ri'abo`, and `iseri'abo` find that exact sequence.
-A contiguous match contains every component of either the query or the headword in one uninterrupted run of the other.
-Thus `mi klama i seri'a bo` and `se ri'a` find `iseri'abo`.
+A contiguous match contains every headword component in one uninterrupted run of a longer query.
+For example, `mi klama i seri'a bo` finds `iseri'abo`.
 An ordered subsequence keeps the query components in order within a longer compound, with gaps allowed.
-For example, `i bo` finds `iseri'abo`. Reversed or missing repeated components do not match.
+For example, `i bo` and `se ri'a` find `iseri'abo`. Reversed or missing repeated components do not match.
+A shorter query inside a compound uses this class even when its components are adjacent.
+Ordinary prefix families precede compounds that contain a one-word query such as `se`.
 A foreign or invalid run breaks a contiguous match. It never joins recognized words across that run.
 Only a complete query of cmavo can supply the shorter sequence or an ordered subsequence.
 
-If no compound sequence matches, search also returns exact headword cards for the recognized query words.
-For example, `ijebo` shows `i`, `je`, and `bo`, and `taia` shows `tai` and `a` when those compounds are absent.
-This fallback includes brivla and names. It keeps query order and groups repeated word identities into one card.
+Search returns exact headword cards for recognized query words outside matched exact or contiguous compound spans.
+For example, with `ije` present, `ijebo` shows `ije` and a card for `bo`.
+The query `ijebo klama` also keeps `klama`. The query `le nu klama` keeps `klama` after `lenu`.
+If no compound joins, `ijebo` shows `i`, `je`, and `bo`, and `taia` shows `tai` and `a`.
+Subsequence matches never suppress individual word cards.
+This fallback includes a single recognized word beside a foreign run, brivla, and names.
+It keeps query order and groups repeated word identities into one card, including repeated words outside a covered span.
 It keeps alternative matching definitions and never creates a definition for an absent headword.
-Ordinary full-query matches precede these fallback cards.
-Both modes use the same matcher. Server eligibility, language, and retirement filters also apply to fallback cards.
+A complete single-word query uses the segmenter's canonical reading as an exact headword alias.
+Thus `klama.`, `(klama)`, `.i`, `1`, and `riha` find `klama`, `klama`, `i`, `pa`, and `ri'a` respectively.
+Ordinary whole-query matches precede fallback cards. Raw prefix lookup also remains available.
+Both modes use the same matcher. Server eligibility, language, and retirement filters apply before query-span coverage.
 Local packages retain their stated status limits.
 
+The shared search box can read short English phrases as Lojban cmavo.
+For example, `to go` can also return cards for `to` and `go`, and `so no` can find `sono`.
+An exact headword or gloss for the whole query always precedes those sequence hits.
+
 The component index exists only in memory. Package entries and persistent server index rows keep their existing formats.
-Cached entries belong to an immutable package or generation and can be released with it.
+The shared matcher rejects impossible cmavo shapes before parsing. It retains at most 4,096 parsed normalized spellings in a process-local LRU cache.
+An LRU cache removes the least recently used item when it reaches its limit.
+Each immutable server package array also retains its prepared entry index through a weak reference.
+A changed definition snapshot uses new entries and rebuilds their text index. Unchanged spellings reuse the bounded morphology cache.
+The server's existing package and evaluation lifetimes bound those prepared indexes.
+
+Browser storage version 4 records a revision marker beside each language package in the same transaction as its write or deletion.
+Every package read checks that marker, including reads from another connection or tab.
+Each connection retains at most two package objects. A changed revision invalidates that connection's retained data, even when the snapshot ID stays equal.
+A failed download leaves the saved package and revision unchanged.
+One static module worker validates and searches packages outside the main thread.
+It retains two prepared packages, keyed by database name, language, and durable revision. Separate connections can reuse the same prepared revision.
+Page reload closes that worker and its caches. The first search after reload reads, transfers, validates, and prepares the saved package again.
+Nearby lookup in the meaning step uses the same worker and prepared index.
+Worker startup or execution failure reports an error without sending a local query to a server.
+An invalid saved package retains the earlier disclosed remote fallback.
 A query permits 16,384 UTF-8 bytes, 512 recognized words, and 300,000 parser steps.
 Each query run permits 128 normalized phonemes. The headword index permits 256 bytes and 256 phonemes, with 300,000 parser steps per headword.
 These bounds support full-size dictionary headwords without raising the ordinary text segmenter's default run limit.
@@ -200,8 +227,11 @@ Sequence matching never enumerates query subsets.
 For E entries, Q query tokens, and H maximum headword components, its comparison cost is O(E × (Q + H)).
 Tokens include foreign barriers. Consecutive barriers count once, so Q is at most 1,025 under the word limit.
 H is at most 256 under the headword byte limit. Linear prefix tables find contiguous matches, and one forward pass finds ordered subsequences.
-Index construction has at most 300,000 parser steps per headword. Later searches reuse each retained entry's index.
-The [measurement script](../scripts/measure-segmented-search.ts) reports cold and warm counts for contiguous, genuine subsequence, and repeated-prefix failure cases with 100 query words.
+Index construction has at most 300,000 parser steps per candidate headword. Warm searches reuse the prepared package index.
+Fresh server snapshot objects can reuse only the bounded spelling cache, while unchanged package objects reuse the full index.
+The [sequence measurement script](../scripts/measure-segmented-search.ts) reports linear comparison counts with 100 query words.
+The [package measurement script](../scripts/measure-package-search.ts) measures server lexical search after materialization, including filtering and grouping.
+The optional [browser measurement](../apps/web/test/search-measure.test.ts) measures actual search and nearby routes with stored packages and main-thread CPU counters.
 
 Within a class, use lexical relevance and stable word-ID order. Search ordering does not consume editorial scores.
 The word page uses the format's definition layers and attributed score calculations. Show alternative definitions instead of collapsing them into one word-level score.
@@ -1448,7 +1478,7 @@ Changes cursors are server-specific and never transferable between peers. Empty 
 An empty-string cursor is invalid. A request without a changes cursor starts from that server's earliest retained receipt. An empty initial log returns its opaque initial cursor. Retention gaps require snapshot reconciliation through HTTP 410.
 Search accepts an optional `after` cursor tied to the same query, language, retired flag, view, and snapshot.
 
-Match kinds are `headword`, `sequence-exact`, `gloss`, `sequence-contiguous`, `sequence-subsequence`, `headword-prefix`, `gloss-prefix`, `token`, and `component`, in that relevance order.
+Match kinds are `headword`, `gloss`, `sequence-exact`, `sequence-contiguous`, `headword-prefix`, `gloss-prefix`, `sequence-subsequence`, `token`, and `component`, in that relevance order.
 The `component` class uses the first occurrence of each query word before the stable word-ID tie break.
 New servers return `segmentation` on every page. Older servers can omit it.
 `complete` means that segmentation completed within its limits. It does not assert that every query run has a Lojban reading.

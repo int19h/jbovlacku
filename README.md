@@ -72,10 +72,14 @@ Delivered records leave the list but keep their receipts in retained history. Wi
 Downloaded search packages permit local search without a request for each query. Version 2 packages carry authors, notes, and rafsi for result rows.
 Local and server search share TypeScript morphology and match ranking. Compound cmavo match exact component sequences, contiguous runs, and ordered subsequences.
 For example, `i seri'a bo`, `ise ri'abo`, and `iseri'abo` find the same compound. `i bo` also finds `iseri'abo`.
-When no compound joins, `ijebo` shows individual cards for `i`, `je`, and `bo`. Repeated query words share one card.
+Exact and contiguous compounds keep cards for uncovered query words. With `ije` present, `ijebo klama` keeps cards for `bo` and `klama`.
+Without a joined compound, `ijebo` shows `i`, `je`, and `bo`. Subsequence matches keep individual cards, and repeated words share one card.
+Punctuation, digits, and `h` aliases also find a single recognized word. One-word prefix families precede containing compounds.
 Long lists offer “show all”. Case and acute headword stress marks do not change match classes.
 Queries permit 512 recognized words and 300,000 parser steps, with 128 phonemes per run. The index covers dictionary headwords through 256 bytes.
 A limit notice preserves ordinary text search and states incomplete sequence coverage.
+Local package validation and search run in a static module worker. Search pages and nearby lookup share two prepared package revisions.
+Storage reads check durable revision markers, so same-snapshot changes and another tab's writes invalidate retained data.
 The [search specification](docs/frontend.md#4-search-and-reading) defines the bounds, ranking, and fallback rules.
 A download keeps its requested language even when the language selector changes before it finishes.
 Signing needs localhost or HTTPS. A plain HTTP Tailscale address supports reading only.

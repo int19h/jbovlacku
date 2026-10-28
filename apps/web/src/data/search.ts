@@ -12,6 +12,7 @@ import {
   withSegmentation,
   matchRank,
   type SegmentationStatus,
+  type SearchMetrics,
 } from "../../../../packages/search/src/index.ts";
 export {
   normalizeQuery,
@@ -410,8 +411,9 @@ export interface LocalHit extends SearchHit {
 export function localSearch(
   entries: PackageEntry[],
   query: string,
+  metrics?: SearchMetrics,
 ): LocalHit[] & { segmentation: SegmentationStatus } {
-  const selected = selectMatches(entries, query);
+  const selected = selectMatches(entries, query, metrics);
   const grouped = new Map<string, LocalHit & { position: number }>();
   for (const { entry, match, position } of selected.rows) {
     const id = wordId({ language: "jbo", spelling: entry.word.spelling });
