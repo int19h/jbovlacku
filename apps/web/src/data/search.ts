@@ -27,6 +27,26 @@ import {
   type SearchHit,
 } from "../model/types.ts";
 
+/** Package objects are immutable snapshots. Reuse their identity index across renders. */
+export function createPackageWordIndex(identify: typeof wordId = wordId) {
+  const indexes = new WeakMap<CachedPackage, Map<string, PackageEntry[]>>();
+  return (pkg: CachedPackage, identity: string): readonly PackageEntry[] => {
+    let index = indexes.get(pkg);
+    if (!index) {
+      index = new Map();
+      for (const entry of pkg.entries) {
+        const id = identify(entry.word);
+        const rows = index.get(id) ?? [];
+        rows.push(entry);
+        index.set(id, rows);
+      }
+      indexes.set(pkg, index);
+    }
+    return index.get(identity) ?? [];
+  };
+}
+export const packageWordEntries = createPackageWordIndex();
+
 // Alias matches belong to the local index. The API keeps its wire classes.
 const localMatchKinds: MatchKind[] = [
   "headword",

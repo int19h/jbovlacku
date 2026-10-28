@@ -1,3 +1,5 @@
+import { packageWordEntries } from "../../data/search.ts";
+import { normalizeAcuteDisplay } from "../../../../../packages/morphology/src/accents.ts";
 import { kindLabel } from "../../model/types.ts";
 import {
   detectWord,
@@ -399,7 +401,7 @@ export async function lujvoPage(
       const item = el("li", { class: "similar-item" });
       const enteredSpelling =
         stripAcuteAccents(query) !== query && analysis.kind === "cmevla"
-          ? query.normalize("NFC")
+          ? normalizeAcuteDisplay(query)
           : analysis.normalized;
       const kind =
         analysis.kind === "fuhivla"
@@ -925,14 +927,13 @@ export async function lujvoPage(
     // Whether the spelling is taken is separate from rafsi conflicts. The
     // local package answers for its snapshot, and the server for the current one.
     const availability = el("p", { class: "small", role: "status" });
-    const taken = cached?.entries.some(
-      (e) =>
-        wordId(e.word) ===
-        wordId({
-          language: "jbo",
-          spelling: candidate.spelling.normalize("NFC"),
-        }),
-    );
+    const candidateId = wordId({
+      language: "jbo",
+      spelling: candidate.spelling.normalize("NFC"),
+    });
+    const taken = cached
+      ? packageWordEntries(cached, candidateId).length > 0
+      : false;
     availability.textContent = cached
       ? taken
         ? `Taken: ${candidate.spelling} is defined in the local package of snapshot ${cached.snapshot.slice(7, 19)}….`
@@ -941,7 +942,7 @@ export async function lujvoPage(
     resultCard.append(availability);
     const checked = candidate.spelling;
     if (!state.typed)
-      void getWord(wordId({ language: "jbo", spelling: checked }), {
+      void getWord(candidateId, {
         signal: context.signal,
       })
         .then((word) => {

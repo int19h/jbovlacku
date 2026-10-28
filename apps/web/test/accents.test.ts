@@ -6,10 +6,14 @@ import {
   PASSPHRASE,
 } from "./helpers.ts";
 
-async function seedName(page: Page, spelling: string) {
+async function seedName(
+  page: Page,
+  spelling: string,
+  kind: "cmevla" | "lujvo" = "cmevla",
+) {
   await page.goto("/new/meaning");
   const seeded = await page.evaluate(
-    async ({ corePath, spelling }) => {
+    async ({ corePath, spelling, kind }) => {
       const core = await import(corePath);
       await core.initializeCore();
       const record = core.createEvent(
@@ -29,7 +33,7 @@ async function seedName(page: Page, spelling: string) {
           word: { language: "jbo", spelling },
           language: "en",
           text: [["A synthetic accented name."]],
-          classification: { kind: "cmevla" },
+          classification: { kind },
           license: { expression: "CC0-1.0" },
         },
       );
@@ -44,7 +48,7 @@ async function seedName(page: Page, spelling: string) {
         word: record.envelope.header.action.word,
       };
     },
-    { corePath, spelling },
+    { corePath, spelling, kind },
   );
   await expect
     .poll(async () => {
@@ -257,4 +261,235 @@ test("ordinary component entry keeps name accents and handles invalid accented q
     )
     .toBe("ḿark");
   expect(errors).toEqual([]);
+});
+
+test("R2 automatic component entry normalizes accent aliases and reports the plain compound as taken", async ({
+  page,
+}) => {
+  await seedName(page, "dzan zei blanu", "lujvo");
+  await download(page);
+  await page.goto("/new/meaning");
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { newDraft } = await import(String("/src/model/draft.ts"));
+    await new LocalStore().put(
+      "drafts",
+      "current",
+      newDraft({
+        kind: "lujvo",
+        meaning: "Synthetic compound.",
+        text: [["Synthetic compound."]],
+      }),
+    );
+  });
+  await page.goto("/new/lujvo");
+  await page.getByLabel("Add a part", { exact: true }).fill(".DŹÁN.");
+  await page
+    .getByRole("button", { name: "Add dźán as entered", exact: true })
+    .click();
+  await page.getByLabel("Add a part", { exact: true }).fill("blanu");
+  await page
+    .getByRole("button", { name: /^Add blanu(?: as entered)?$/ })
+    .click();
+  await expect
+    .poll(() =>
+      page.evaluate(async () => {
+        const { LocalStore } = await import(String("/src/data/store.ts"));
+        return (await new LocalStore().get("drafts", "current"))?.lujvo
+          ?.components?.length;
+      }),
+    )
+    .toBe(2);
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore();
+    const draft = await store.get("drafts", "current");
+    if (draft.lujvo.components[0].spelling !== "dźán")
+      throw new Error("Entered component was not normalized.");
+    draft.lujvo.joins = [" zei "];
+    await store.put("drafts", "current", draft);
+  });
+  await page.reload();
+  await expect(
+    page.getByLabel("Form dźán zei blanu", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("status").filter({ hasText: "Taken:" }),
+  ).toContainText("dźán zei blanu is defined in the local package");
+});
+
+test("R2 restored accented source keeps its exact-definition selector", async ({
+  page,
+}) => {
+  const plain = await seedName(page, "djan");
+  const marked = await seedName(page, "dján");
+  await download(page);
+  await page.evaluate(async (corePath) => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { newDraft, draftToBody, draftFromBody } = await import(
+      String("/src/model/draft.ts")
+    );
+    const {
+      changeTypedWord,
+      prepareLujvoBuilder,
+      buildLujvoState,
+      selectLujvoCandidate,
+    } = await import(String("/src/model/typed-headword.ts"));
+    const { interpretDefinition } = await import(corePath);
+    const store = new LocalStore();
+    const cached = await store.get("packages", "en");
+    cached.entries.sort(
+      (a: any, b: any) =>
+        Number(a.word.spelling === "dján") - Number(b.word.spelling === "dján"),
+    );
+    await store.put("packages", "en", cached);
+    const draft = newDraft({
+      kind: "lujvo",
+      spelling: "dján zei blanu",
+      text: [["Synthetic compound."]],
+    });
+    changeTypedWord(draft, draft.spelling);
+    const state = prepareLujvoBuilder(draft, cached);
+    const built = buildLujvoState(state);
+    selectLujvoCandidate(draft, built, built.candidates[0], true);
+    const restored = draftFromBody(
+      interpretDefinition(draftToBody(draft).body),
+      "jve1:" + "c".repeat(64),
+      "native",
+    );
+    await store.put("drafts", "current", restored);
+  }, corePath);
+  await page.goto("/new/lujvo");
+  const choices = page.getByLabel("Exact definition of dján", { exact: true });
+  await expect(choices).toBeVisible();
+  await expect(choices.locator(`option[value="${plain.event}"]`)).toHaveCount(
+    1,
+  );
+  await expect(choices.locator(`option[value="${marked.event}"]`)).toHaveCount(
+    1,
+  );
+  await choices.selectOption(plain.event);
+  await choices.selectOption(marked.event);
+  await expect
+    .poll(() =>
+      page.evaluate(async () => {
+        const { LocalStore } = await import(String("/src/data/store.ts"));
+        return (await new LocalStore().get("drafts", "current"))?.lujvo
+          ?.components?.[0]?.definition;
+      }),
+    )
+    .toBe(marked.event);
+  await page.reload();
+  await expect(choices).toHaveValue(marked.event);
+});
+
+test("R2 rafsi pages group name displays and publish plain claim sources without self-conflicts", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  const plain = await seedName(page, "djans");
+  await seedName(page, "djáns");
+  const claim = await page.evaluate(
+    async ({ corePath }) => {
+      const core = await import(corePath);
+      const word = { language: "jbo" as const, spelling: "djans" };
+      const id = core.wordId(word);
+      const record = core.createEvent(
+        new Uint8Array(32).fill(95),
+        [],
+        "f".repeat(32),
+        {
+          kind: "rafsi.publish",
+          word: id,
+          assignment: core.rafsiPairId(id, "dzaz"),
+          origin: "native",
+        },
+        { word, rafsi: "dzaz", rationale: [], sources: [], legacy: null },
+      );
+      const response = await fetch("/api/v1/events", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(record),
+      });
+      if (!response.ok) throw new Error(await response.text());
+      return record.envelope.id;
+    },
+    { corePath },
+  );
+  await expect
+    .poll(async () => {
+      const response = await page.request.get(`/api/v1/words/${plain.word}`);
+      return response.ok() && (await response.json()).rafsi.includes(claim);
+    })
+    .toBe(true);
+  await download(page);
+  await page.goto("/rafsi/dzaz");
+  await expect(page.locator("section.definition")).toHaveCount(1);
+  await page.goto("/claim/dj%C3%A1ns");
+  await page.getByLabel("Rafsi spelling").fill("dzáz");
+  await page.getByRole("button", { name: "Check claims and preview" }).click();
+  await expect(page.getByRole("status")).toContainText("without acute accents");
+  await page.getByLabel("Rafsi spelling").fill("dzaz");
+  await page.getByRole("button", { name: "Check claims and preview" }).click();
+  await expect(
+    page.getByText(/No retained claim of dzaz for another word/),
+  ).toBeVisible();
+  await expect(page.getByText(/Conflict: dzaz/)).toHaveCount(0);
+  await page
+    .getByRole("button", { name: "Sign and publish the claim" })
+    .click();
+  const unlock = page.getByRole("dialog", { name: "Unlock your key" });
+  if (await unlock.isVisible()) {
+    await unlock.getByLabel("Passphrase").fill(PASSPHRASE);
+    await unlock.getByRole("button", { name: "Unlock", exact: true }).click();
+  }
+  await acceptFirstSignature(page);
+  await expect(page).toHaveURL(/\/word\//);
+  const record = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    return (await new LocalStore().list("outbox"))
+      .map((row: any) => JSON.parse(row.transport))
+      .find((row: any) => row.envelope.header.action.kind === "rafsi.publish");
+  });
+  expect(record.body.word.spelling).toBe("djans");
+  expect(record.body.rafsi).toBe("dzaz");
+});
+
+test("R2 experimental name feedback permits unknown names and blocks a wrong recognized type accurately", async ({
+  page,
+}) => {
+  await page.goto("/new/editor");
+  await page.getByLabel("Type", { exact: true }).selectOption("cmevla");
+  await page.getByLabel("Headword", { exact: true }).fill("dján smit");
+  await page.getByLabel("Labels", { exact: true }).fill("experimental");
+  const feedback = page.getByRole("status", { name: "Word form", exact: true });
+  await expect(feedback).toContainText(
+    "The experimental label permits this classification.",
+  );
+  await expect(feedback).not.toContainText("Acute accents are allowed only");
+  await page.getByLabel("Headword", { exact: true }).fill("dján");
+  await page.getByLabel("Type", { exact: true }).selectOption("gismu");
+  await expect(feedback).toContainText(
+    "Acute name stress requires the cmevla type",
+  );
+  await expect(feedback).not.toContainText("permits this classification");
+});
+
+test("R2 zbalermorna renders accented names in word and search views", async ({
+  page,
+}) => {
+  await seedName(page, "dján");
+  await download(page);
+  await page
+    .getByLabel("Lojban orthography beside headwords")
+    .selectOption("zbalermorna");
+  await page.goto("/word/djan?lang=en");
+  await expect(page.locator(".word-head .zbalermorna")).toBeVisible();
+  await page.goto("/search?q=djan&lang=en");
+  await expect(
+    page
+      .locator("article.hit")
+      .filter({ has: page.getByRole("link", { name: "dján", exact: true }) })
+      .locator(".zbalermorna"),
+  ).toBeVisible();
 });

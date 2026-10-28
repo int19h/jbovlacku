@@ -131,6 +131,9 @@ Acute accents mark cmevla display stress on vowels or consonants, as in `dján`,
 Definitions and imported source records keep their accented spelling. Identity, search, matching, and morphology ignore those marks.
 Different definitions of one name can retain different display stress. Their shared word ID does not merge the definitions or their judgments.
 The wizard and `zei` builder preserve accented names and check the plain identity for existing definitions.
+Automatic `zei` construction normalizes case, commas, apostrophe aliases, and edge periods while retaining acute marks.
+Restored compounds and rafsi pages group accent variants by word ID. Rafsi claim bodies use plain source spellings.
+Zbalermorna display converts the plain spelling. Foreign text without a word parse stays literal.
 Accents on other recognized words block authoring. They do not change the grammar or make a vowel-final form into a name.
 A remote exact-word check requires consent for that word and language. Missing coverage stays visible.
 Type confirmation opens Places for a typed gismu or fu'ivla, source linking for a lujvo, and Form for the other kinds.

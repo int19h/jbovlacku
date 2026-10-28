@@ -1,3 +1,4 @@
+import { stripAcuteAccents } from "../../../../packages/morphology/src/accents.ts";
 /**
  * Zbalermorna rendering for display only. The Crisa font maps Latin Lojban
  * letters into the Private Use Area. Signed spellings are never changed.
@@ -35,7 +36,7 @@ const vowels: Record<string, number> = {
 /** Returns the zbalermorna string, or null when the spelling has other characters. */
 export function zbalermorna(spelling: string): string | null {
   let result = "";
-  for (const ch of spelling.toLowerCase()) {
+  for (const ch of stripAcuteAccents(spelling).toLowerCase()) {
     if (ch === " " || ch === ",") {
       result += ch === " " ? " " : "";
       continue;

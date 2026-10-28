@@ -95,17 +95,25 @@ export function wordFormFeedback(draft: WordFormDraft) {
     "cmevla",
     "compound",
   ].includes(draft.kind ?? "");
-  const invalidAccent =
-    stripAcuteAccents(draft.spelling) !== draft.spelling &&
-    analysis.kind === "unknown";
+  const accentDiagnostic = analysis.diagnostics.find((message) =>
+    /^(Acute accents|An acute accent)/.test(message),
+  );
+  const accented = stripAcuteAccents(draft.spelling) !== draft.spelling;
+  const wrongAccentType =
+    accented &&
+    draft.kind !== null &&
+    draft.kind !== "cmevla" &&
+    !(draft.kind === "lujvo" && analysis.kind !== "cmevla");
+  const invalidAccent = Boolean(accentDiagnostic) || wrongAccentType;
   const mismatch = invalidAccent || (checked && analysis.kind !== draft.kind);
   const experimental = isExperimental(draft.labels);
-  const message = invalidAccent
-    ? (analysis.diagnostics.at(-1) ??
-      "Acute accents are allowed only on cmevla.")
-    : mismatch
-      ? `The spelling does not match the selected ${kindLabel(draft.kind!)} type. ${experimental ? "The experimental label permits this classification." : "Choose another type or mark this classification as experimental."}`
-      : "";
+  const message =
+    accentDiagnostic ??
+    (wrongAccentType
+      ? "Acute name stress requires the cmevla type, or name components in a recognized zei lujvo. Choose the matching type."
+      : mismatch
+        ? `The spelling does not match the selected ${kindLabel(draft.kind!)} type. ${experimental ? "The experimental label permits this classification." : "Choose another type or mark this classification as experimental."}`
+        : "");
   const words =
     analysis.words && analysis.words.length >= 2
       ? ` Words: ${analysis.words.map((word) => word.text).join(" · ")}.`

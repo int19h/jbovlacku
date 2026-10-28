@@ -234,7 +234,9 @@ The optional “Lojban word” field keeps a spelling that the author already ch
 The app normalizes the spelling to NFC and uses the format's plain spelling for word identity.
 It analyses that plain form locally with `analyzeWord`. Analysis lowercases input, while the draft keeps the entered display spelling.
 Acute stress marks are permitted only on cmevla, including name components of a `zei` lujvo.
-An acute on another word blocks signing, including an experimental classification.
+An acute on a recognized nonname or a misplaced acute blocks signing, including an experimental classification.
+An unknown spelling with a valid name mark follows the ordinary experimental classification rules.
+An accented name requires the cmevla classification, or a recognized name component in a zei lujvo.
 The app compares its `wordId` with the local language package. Remote lookup requires explicit consent for that word and language.
 An existing word shows “Already exists”, its linked word page, its definitions, and “Add a definition”.
 The author can continue with another definition of that word. An unavailable check says that the word could not be checked.

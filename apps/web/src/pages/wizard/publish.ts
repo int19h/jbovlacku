@@ -1,3 +1,4 @@
+import { stripAcuteAccents } from "../../../../../packages/morphology/src/accents.ts";
 import { kindLabel } from "../../model/types.ts";
 import { detectWord } from "../../model/typed-headword.ts";
 /**
@@ -708,7 +709,10 @@ export async function publishPage(
           origin: "native",
         },
         body: {
-          word: body!.word,
+          word: {
+            ...body!.word,
+            spelling: stripAcuteAccents(body!.word.spelling),
+          },
           rafsi: claim.rafsi,
           rationale: textToRichText(claim.rationale, false),
           sources: [],

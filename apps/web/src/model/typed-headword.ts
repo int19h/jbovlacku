@@ -597,7 +597,11 @@ export function prepareLujvoBuilder(
         { text: component.locked ?? "", kind: "core", join_before: null },
         cached,
         true,
-      ).find((source) => source.spelling === component.spelling);
+      ).find(
+        (source) =>
+          wordId({ language: "jbo", spelling: source.spelling }) ===
+          wordId({ language: "jbo", spelling: component.spelling }),
+      );
       if (known) component.definitions = known.definitions;
     }
   }
