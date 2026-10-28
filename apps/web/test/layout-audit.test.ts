@@ -1516,9 +1516,9 @@ for (const viewport of [
       await page
         .getByRole("button", { name: "Test the backup", exact: true })
         .click();
-      await expect(page.getByRole("status").last()).toContainText(
-        "recovers the new key",
-      );
+      await expect(
+        page.locator("main").getByRole("status").last(),
+      ).toContainText("recovers the new key");
       await check("handover-successor-ready");
       for (const box of await page.getByRole("checkbox").all())
         await box.check();

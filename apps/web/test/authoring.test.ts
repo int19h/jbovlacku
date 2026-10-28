@@ -102,7 +102,7 @@ test("a first-time contributor writes a short literal definition and publishes i
     releaseReceipts();
   }
   await expect(page).toHaveTitle("brodu · jbovlacku");
-  await expect(page.getByRole("status")).toContainText(
+  await expect(page.locator("#app > [role=status]")).toContainText(
     "Published brodu with your endorsement.",
   );
   // The definition is found by its text, so other publications of the word do not matter.
@@ -542,7 +542,7 @@ test("a standalone rafsi claim shows competing words, signs the claim with its p
     .click();
   await acceptFirstSignature(page);
   await expect(page).toHaveTitle("vlacku · jbovlacku");
-  await expect(page.getByRole("status")).toContainText(
+  await expect(page.locator("#app > [role=status]")).toContainText(
     "Published the claim cku for vlacku with your endorsement.",
   );
   const actions = await outboxActions(page);
@@ -719,7 +719,7 @@ test("a requested rafsi claim is signed even when every lookup fails, and a know
   // A claim that the local package already lists for another word: the full editor's claim collides with cukta's cku.
   await page.goto("/preferences");
   await page.getByRole("button", { name: "Download", exact: true }).click();
-  await expect(page.getByRole("status")).toHaveText(
+  await expect(page.locator("#app > [role=status]")).toHaveText(
     "The English search package is saved in this browser.",
   );
   await openPublishWithClaim(page, "brodi", "cku");
@@ -867,7 +867,9 @@ test("a failed local group write keeps the real draft, reports the failure, and 
   await unlock.getByLabel("Passphrase").fill(PASSPHRASE);
   await unlock.getByRole("button", { name: "Unlock" }).click();
   await acceptFirstSignature(page);
-  await expect(page.getByRole("status").last()).toContainText("Storage failed");
+  await expect(page.locator("#app > [role=status]")).toContainText(
+    "Storage failed",
+  );
   await expect(
     page.getByRole("region", { name: "Saved publication" }),
   ).toHaveCount(0);
@@ -1073,7 +1075,7 @@ test("a failure right after the group commits still recovers the same group afte
     .getByRole("button", { name: "Publish", exact: true })
     .click();
   await acceptFirstSignature(page);
-  await expect(page.getByRole("status").last()).toContainText(
+  await expect(page.locator("#app > [role=status]")).toContainText(
     "Injected commit failure",
   );
   expect(await outboxRecords(page)).toHaveLength(0);
@@ -1222,7 +1224,7 @@ test("two tabs that publish the same reviewed revision keep one group, and a new
   const savedGroup = other.getByRole("region", { name: "Saved publication" });
   await expect(consent.or(savedGroup)).toBeVisible();
   if (await consent.isVisible()) await acceptFirstSignature(other);
-  await expect(other.getByRole("status").last()).toContainText(
+  await expect(other.locator("#app > [role=status]")).toContainText(
     "already published",
   );
   await expect(
@@ -1267,7 +1269,7 @@ test("two tabs that publish the same reviewed revision keep one group, and a new
     .locator("aside")
     .getByRole("button", { name: "Publish", exact: true })
     .click();
-  await expect(page.getByRole("status").last()).toContainText(
+  await expect(page.locator("#app > [role=status]")).toContainText(
     "The draft changed in another tab while signing",
   );
   await expect(
@@ -1372,7 +1374,7 @@ test("a delayed automatic save never replaces newer content from another tab, an
   await page.getByRole("link", { name: "Add a word" }).click();
   const box = page.getByRole("textbox", { name: "Meaning", exact: true });
   await box.fill("First text.");
-  await expect(page.getByRole("status").last()).toHaveText(
+  await expect(page.locator("main").getByRole("status").last()).toHaveText(
     "Saved in this browser",
   );
   const storedMeaning = () =>
@@ -1395,7 +1397,7 @@ test("a delayed automatic save never replaces newer content from another tab, an
   });
   // The delayed save from this page conflicts and writes nothing.
   await box.fill("First text, edited here.");
-  const status = page.getByRole("status").last();
+  const status = page.locator("main").getByRole("status").last();
   await expect(status).toContainText(
     "Not saved: The draft changed in another tab.",
   );
@@ -1489,7 +1491,7 @@ test("a failed save keeps the editor on internal links and browser Back, and lea
   await page.getByRole("link", { name: "Add a word" }).click();
   const box = page.getByRole("textbox", { name: "Meaning", exact: true });
   await box.fill("Saved original.");
-  const status = page.getByRole("status").last();
+  const status = page.locator("main").getByRole("status").last();
   await expect(status).toHaveText("Saved in this browser");
   const saved = await storedDraft(page);
   await failDraftSaves(page, "Injected save failure");
@@ -1543,7 +1545,7 @@ test("a conflicting save keeps the editor on navigation and keeps its feedback w
   await page.getByRole("link", { name: "Add a word" }).click();
   const box = page.getByRole("textbox", { name: "Meaning", exact: true });
   await box.fill("Original.");
-  const status = page.getByRole("status").last();
+  const status = page.locator("main").getByRole("status").last();
   await expect(status).toHaveText("Saved in this browser");
   const newer = await page.evaluate(async () => {
     const { LocalStore } = await import(String("/src/data/store.ts"));
@@ -1602,7 +1604,7 @@ test("discard in a stale tab keeps newer work that another tab saved, and discar
   await page.getByRole("link", { name: "Add a word" }).click();
   const box = page.getByRole("textbox", { name: "Meaning", exact: true });
   await box.fill("Old draft text.");
-  await expect(page.getByRole("status").last()).toHaveText(
+  await expect(page.locator("main").getByRole("status").last()).toHaveText(
     "Saved in this browser",
   );
   const other = await context.newPage();
@@ -1610,7 +1612,7 @@ test("discard in a stale tab keeps newer work that another tab saved, and discar
   await other
     .getByRole("textbox", { name: "Meaning", exact: true })
     .fill("Newer work in another tab.");
-  await expect(other.getByRole("status").last()).toHaveText(
+  await expect(other.locator("main").getByRole("status").last()).toHaveText(
     "Saved in this browser",
   );
   const newer = await storedDraft(other);
@@ -1621,7 +1623,7 @@ test("discard in a stale tab keeps newer work that another tab saved, and discar
   await page
     .getByRole("button", { name: "Discard draft", exact: true })
     .click();
-  await expect(page.getByRole("status").last()).toContainText(
+  await expect(page.locator("#app > [role=status]")).toContainText(
     "The draft changed in another tab. Nothing was discarded.",
   );
   await expect(box).toHaveValue("Newer work in another tab.");
@@ -1643,7 +1645,7 @@ test("a failed save makes the browser ask before the page unloads, and dismissin
   await page.goto("/new/meaning");
   const box = page.getByRole("textbox", { name: "Meaning", exact: true });
   await box.fill("Saved original.");
-  const status = page.getByRole("status").last();
+  const status = page.locator("main").getByRole("status").last();
   await expect(status).toHaveText("Saved in this browser");
   await failDraftSaves(page, "Injected save failure");
   await box.fill("Unsaved valuable edit.");
@@ -1667,7 +1669,7 @@ test("a fresh edit before the automatic save asks before a reload, and a fully s
   await createIdentity(page);
   await page.goto("/new/meaning");
   const box = page.getByRole("textbox", { name: "Meaning", exact: true });
-  const status = page.getByRole("status").last();
+  const status = page.locator("main").getByRole("status").last();
   const dialogs: string[] = [];
   page.on("dialog", (dialog) => {
     dialogs.push(dialog.type());
@@ -1700,7 +1702,7 @@ test("edits made while a navigation waits for a slow save reach storage before t
   await createIdentity(page);
   await page.getByRole("link", { name: "Add a word" }).click();
   const box = page.getByRole("textbox", { name: "Meaning", exact: true });
-  const status = page.getByRole("status").last();
+  const status = page.locator("main").getByRole("status").last();
   await box.fill("Original.");
   await expect(status).toHaveText("Saved in this browser");
   // The next save waits until the test releases it.
@@ -1851,13 +1853,13 @@ test("a draft from the old prototype's version 1 database opens a choice instead
   await page
     .getByRole("button", { name: "Convert it into a new draft" })
     .click();
-  await expect(page.getByRole("status").last()).toContainText(
+  await expect(page.locator("main").getByRole("status").last()).toContainText(
     "Nothing was converted or discarded",
   );
   expect(await rawRow()).toEqual(changedOld);
   page.once("dialog", (dialog) => void dialog.accept());
   await page.getByRole("button", { name: "Discard the old draft" }).click();
-  await expect(page.getByRole("status").last()).toContainText(
+  await expect(page.locator("main").getByRole("status").last()).toContainText(
     "Nothing was converted or discarded",
   );
   expect(await rawRow()).toEqual(changedOld);
@@ -1879,13 +1881,13 @@ test("a draft from the old prototype's version 1 database opens a choice instead
   await page
     .getByRole("button", { name: "Convert it into a new draft" })
     .click();
-  await expect(page.getByRole("status").last()).toContainText(
+  await expect(page.locator("main").getByRole("status").last()).toContainText(
     "Nothing was converted or discarded",
   );
   expect((await rawRow()).revision).toBe(newer);
   page.once("dialog", (dialog) => void dialog.accept());
   await page.getByRole("button", { name: "Discard the old draft" }).click();
-  await expect(page.getByRole("status").last()).toContainText(
+  await expect(page.locator("main").getByRole("status").last()).toContainText(
     "Nothing was converted or discarded",
   );
   expect((await rawRow()).revision).toBe(newer);
@@ -1948,7 +1950,7 @@ test("the full editor keeps referents on removal, saves type notes and derivatio
       const { LocalStore } = await import(String("/src/data/store.ts"));
       return new LocalStore().get("drafts", "current");
     });
-  const status = page.getByRole("status").last();
+  const status = page.locator("main").getByRole("status").last();
   // A type change retains the independent selma'o claim.
   await page.getByLabel("Type", { exact: true }).selectOption("gismu");
   await expect(page.getByLabel("Type", { exact: true })).toHaveValue("gismu");
@@ -2086,7 +2088,7 @@ test("Revise of an independently signed rich parent with compound evidence publi
     .toContain(competing.id);
   await page.goto("/preferences");
   await page.getByRole("button", { name: "Download", exact: true }).click();
-  await expect(page.getByRole("status")).toHaveText(
+  await expect(page.locator("#app > [role=status]")).toHaveText(
     "The English search package is saved in this browser.",
   );
   // An independent key signs a rich lujvo body and uploads it to the test server.
@@ -2265,7 +2267,7 @@ test("Revise of an independently signed rich parent with compound evidence publi
   await page.reload();
   await expect(page.getByLabel("Headword")).toHaveValue(parent.spelling);
   await page.getByLabel("Labels").fill("parent, revised");
-  await expect(page.getByRole("status").last()).toHaveText(
+  await expect(page.locator("main").getByRole("status").last()).toHaveText(
     "Saved in this browser",
   );
   await page.getByRole("button", { name: "Review" }).click();
@@ -2286,7 +2288,7 @@ test("Revise of an independently signed rich parent with compound evidence publi
   await unlock.getByLabel("Passphrase").fill(PASSPHRASE);
   await unlock.getByRole("button", { name: "Unlock" }).click();
   await acceptFirstSignature(page);
-  await expect(page.getByRole("status")).toContainText(/Published/);
+  await expect(page.locator("#app > [role=status]")).toContainText(/Published/);
   const records = await outboxRecords(page);
   const published = records
     .map((r: any) => JSON.parse(r.transport))
@@ -2373,7 +2375,7 @@ test("root conflicts of a gismu are checked again against the current package be
   await createIdentity(page);
   await page.goto("/preferences");
   await page.getByRole("button", { name: "Download", exact: true }).click();
-  await expect(page.getByRole("status")).toHaveText(
+  await expect(page.locator("#app > [role=status]")).toHaveText(
     "The English search package is saved in this browser.",
   );
   // A reviewed gismu draft whose recorded run acknowledged no conflict, for a form the package now holds.
@@ -2631,7 +2633,7 @@ test("a place number that another place holds is refused before anything changes
   });
   await first.fill("2");
   await first.press("Tab");
-  await expect(page.getByRole("status").last()).toContainText(
+  await expect(page.locator("#app > [role=status]")).toContainText(
     "Place 2 is already declared (the gift). Give that place another number first.",
   );
   await expect(first).toHaveValue("1");

@@ -173,7 +173,7 @@ test("the lujvo builder offers long forms beside listed rafsi, recovers parts, h
   // The evidence describes one exact form. Another spelling blocks publication until the form is built again.
   await page.goto("/new/editor");
   await page.getByLabel("Headword").fill("ckusinxe");
-  await expect(page.getByRole("status").last()).toHaveText(
+  await expect(page.locator("main").getByRole("status").last()).toHaveText(
     "Saved in this browser",
   );
   await page.goto("/new/publish");

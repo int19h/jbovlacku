@@ -188,7 +188,7 @@ test("recompute from records compares a local site view calculation with the ser
   await page.goto("/word/cukta");
   await page.getByText("Check the scores locally").click();
   await page.getByRole("button", { name: "Recompute from records" }).click();
-  await expect(page.getByRole("status").last()).toContainText(
+  await expect(page.locator("main").getByRole("status").last()).toContainText(
     /The local calculation from \d+ verified records matches the server's \d+ scores and layers for this word\./,
   );
   await expect(
