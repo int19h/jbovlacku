@@ -20,7 +20,7 @@ const inlineText = (tag: string, className: string) => ({
 });
 export const richEditorSchema = new Schema({
   nodes: {
-    doc: { content: "paragraph+", attrs: { empty: { default: false } } },
+    doc: { content: "paragraph+" },
     paragraph: { content: "inline*", toDOM: () => ["p", 0] },
     text: { group: "inline" },
     // Containers preserve boundaries between adjacent stored strings.
@@ -112,7 +112,7 @@ export function richToEditor(value: RichText): EditorNode {
     );
   };
   return schema.nodes.doc.create(
-    { empty: value.length === 0 },
+    null,
     value.length
       ? value.map((paragraph) =>
           schema.nodes.paragraph.create(null, paragraph.map(inline)),
@@ -121,8 +121,6 @@ export function richToEditor(value: RichText): EditorNode {
   );
 }
 export function editorToRich(doc: EditorNode): RichText {
-  if (doc.attrs.empty && doc.childCount === 1 && !doc.firstChild!.childCount)
-    return [];
   const value: RichText = [];
   doc.forEach((paragraph) => {
     const nodes: RichNode[] = [];
@@ -149,7 +147,7 @@ export function editorToRich(doc: EditorNode): RichText {
           break;
       }
     });
-    value.push(nodes);
+    if (nodes.length) value.push(nodes);
   });
   return value;
 }

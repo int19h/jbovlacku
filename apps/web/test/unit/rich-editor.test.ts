@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { EditorState, TextSelection } from "prosemirror-state";
 import { undoInputRule } from "prosemirror-inputrules";
+import { baseKeymap } from "prosemirror-commands";
 import {
   editorToRich,
   nextAutomaticPlace,
@@ -27,7 +28,6 @@ import {
 
 test("stored nodes keep every boundary, empty label, and line ending", () => {
   const value: RichText = [
-    [],
     [
       "a",
       "b",
@@ -40,13 +40,12 @@ test("stored nodes keep every boundary, empty label, and line ending", () => {
       65535,
       { operand: "bridi" },
     ],
-    [],
   ];
   const doc = richToEditor(value);
   doc.check();
   assert.deepEqual(editorToRich(doc), value);
   assert.deepEqual(editorToRich(richToEditor([])), []);
-  assert.deepEqual(editorToRich(richToEditor([[]])), [[]]);
+  assert.deepEqual(editorToRich(richToEditor([[]])), []);
   const copied = richToEditor([[1, " ", { operand: "bridi" }, " ", 50]]);
   assert.equal(copied.textBetween(0, copied.content.size), "① [bridi] ㊿");
 });
@@ -88,7 +87,10 @@ test("random stored rich values round trip exactly with a fixed seed", () => {
         return { code: string() };
       case 4:
         return {
-          word: { language: "jbo", spelling: string() || "cukta" },
+          word: {
+            language: "jbo",
+            spelling: ["cukta", "CUKTA", "https://cukta", "co'e"][random(4)],
+          },
           label: string(),
         };
       default:
@@ -97,12 +99,30 @@ test("random stored rich values round trip exactly with a fixed seed", () => {
   };
   for (let sample = 0; sample < 2000; sample++) {
     const value = Array.from({ length: random(7) }, () =>
-      Array.from({ length: random(12) }, node),
+      Array.from({ length: 1 + random(12) }, node),
     );
     const doc = richToEditor(value);
     doc.check();
     assert.deepEqual(editorToRich(doc), value, `sample ${sample}`);
   }
+});
+
+test("cleared fields and editable blank paragraphs serialize without empty stored paragraphs", () => {
+  let state = EditorState.create({ doc: richToEditor([["existing"]]) });
+  state = state.apply(state.tr.delete(0, state.doc.content.size));
+  assert.deepEqual(editorToRich(state.doc), []);
+  state = EditorState.create({ doc: richToEditor([["first"]]) });
+  state = state.apply(state.tr.setSelection(TextSelection.atEnd(state.doc)));
+  assert.equal(
+    baseKeymap.Enter(state, (tr) => {
+      state = state.apply(tr);
+    }),
+    true,
+  );
+  assert.equal(state.doc.childCount, 2);
+  assert.deepEqual(editorToRich(state.doc), [["first"]]);
+  state = state.apply(state.tr.insertText("second"));
+  assert.deepEqual(editorToRich(state.doc), [["first"], ["second"]]);
 });
 
 test("the circled lookup covers all 50 places and excludes zero", () => {

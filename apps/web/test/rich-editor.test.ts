@@ -1,5 +1,5 @@
 import { test, expect, type Page, type Locator } from "@playwright/test";
-import { createIdentity } from "./helpers.ts";
+import { createIdentity, corePath } from "./helpers.ts";
 import { setRichNodes } from "./rich-helpers.ts";
 
 async function seed(page: Page, fields = false) {
@@ -138,6 +138,39 @@ test("typed places, exact TeX, undo, keyboard toolbar, and 50-place dropdown", a
     expect(box!.width).toBeGreaterThanOrEqual(44);
     expect(box!.height).toBeGreaterThanOrEqual(44);
   }
+});
+
+test("clearing a preexisting field and editing blank paragraphs keep valid stored arrays", async ({
+  page,
+}) => {
+  await seed(page, true);
+  const field = editor(page);
+  await field.fill("");
+  expect(await nodes(field)).toEqual([]);
+  const inspect = async () =>
+    page.evaluate(async (path) => {
+      const core = await import(path);
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const { draftToBody, coreProblems } = await import(
+        String("/src/model/draft.ts")
+      );
+      const draft = await new LocalStore().get("drafts", "current");
+      const body = draftToBody(draft).body;
+      return {
+        text: draft.text,
+        core: coreProblems(body, core.wordId(body.word), [], "native"),
+      };
+    }, corePath);
+  await expect.poll(async () => (await inspect()).text).toEqual([]);
+  expect((await inspect()).core).toEqual([]);
+  await field.pressSequentially("first");
+  await field.press("Enter");
+  expect(await nodes(field)).toEqual([["first"]]);
+  await field.pressSequentially("second");
+  await expect
+    .poll(async () => (await inspect()).text)
+    .toEqual([["first"], ["second"]]);
+  expect((await inspect()).core).toEqual([]);
 });
 
 test("word links and code use accessible dialogs and preserve empty labels", async ({
