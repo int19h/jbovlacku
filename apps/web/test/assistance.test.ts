@@ -660,10 +660,117 @@ test("cancel, navigation, and the off setting cancel jobs without applying delay
   await page.getByRole("link", { name: "Settings", exact: true }).click();
   await expect.poll(mock.deletions).toBe(2);
   await page.getByRole("checkbox", { name: "Use AI assistance" }).uncheck();
+  await expect(
+    page.getByText("Assistance setting saved in this browser.", {
+      exact: true,
+    }),
+  ).toBeVisible();
   mock.release();
   await page.goto("/new/type");
+  await expect(
+    page.getByRole("heading", { name: "What kind of word?" }),
+  ).toBeVisible();
   await expect(page.locator(".ai-action:visible")).toHaveCount(0);
   expect((await stored(page)).kind).toBe("gismu");
+});
+
+test("assistance settings keep navigation on the page until the choice is saved", async ({
+  page,
+}) => {
+  await mockAssistant(page);
+  await draft(page);
+  await page.getByRole("link", { name: "Settings", exact: true }).click();
+  await page.getByRole("checkbox", { name: "Use AI assistance" }).waitFor();
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const original = LocalStore.prototype.setPreferences;
+    const held = new Promise<void>((resolve) => {
+      (window as any).releasePreferenceSave = resolve;
+    });
+    LocalStore.prototype.setPreferences = async function (patch: {
+      useAiAssistance?: boolean;
+    }) {
+      if (patch.useAiAssistance === false) await held;
+      return original.call(this, patch);
+    };
+  });
+  await page.getByRole("checkbox", { name: "Use AI assistance" }).uncheck();
+  await page.getByRole("link", { name: "Add a word", exact: true }).click();
+  expect(new URL(page.url()).pathname).toBe("/preferences");
+  await expect(
+    page.getByText("Saving assistance setting.", { exact: true }),
+  ).toBeVisible();
+  const warning = page.waitForEvent("dialog");
+  const reload = page.evaluate(() => location.reload());
+  const dialog = await warning;
+  expect(dialog.type()).toBe("beforeunload");
+  await dialog.dismiss();
+  await reload;
+  expect(new URL(page.url()).pathname).toBe("/preferences");
+  await page.evaluate(() => (window as any).releasePreferenceSave());
+  await expect(page).toHaveURL(/\/new\/meaning$/);
+  await expect(page.getByLabel("Meaning", { exact: true })).toBeVisible();
+  expect(
+    await page.evaluate(() => {
+      const event = new Event("beforeunload", { cancelable: true });
+      window.dispatchEvent(event);
+      return event.defaultPrevented;
+    }),
+  ).toBe(false);
+  await page.goto("/new/type");
+  await expect(
+    page.getByRole("heading", { name: "What kind of word?" }),
+  ).toBeVisible();
+  await expect(page.locator(".ai-action:visible")).toHaveCount(0);
+  await page.getByRole("link", { name: "Settings", exact: true }).click();
+  await expect(
+    page.getByRole("checkbox", { name: "Use AI assistance" }),
+  ).not.toBeChecked();
+});
+
+test("an assistance setting save failure restores the choice and releases navigation", async ({
+  page,
+}) => {
+  await mockAssistant(page);
+  await draft(page);
+  await page.getByRole("link", { name: "Settings", exact: true }).click();
+  const choice = page.getByRole("checkbox", { name: "Use AI assistance" });
+  await choice.waitFor();
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const original = LocalStore.prototype.setPreferences;
+    const held = new Promise<void>((resolve) => {
+      (window as any).failPreferenceSave = resolve;
+    });
+    LocalStore.prototype.setPreferences = async function (patch: {
+      useAiAssistance?: boolean;
+    }) {
+      if (patch.useAiAssistance === false) {
+        await held;
+        throw new Error("Test preference write failed.");
+      }
+      return original.call(this, patch);
+    };
+  });
+  await choice.uncheck();
+  await page.getByRole("link", { name: "Add a word", exact: true }).click();
+  expect(new URL(page.url()).pathname).toBe("/preferences");
+  await page.evaluate(() => (window as any).failPreferenceSave());
+  await expect(
+    page.getByText("Not saved: Test preference write failed.", { exact: true }),
+  ).toBeVisible();
+  await expect(choice).toBeChecked();
+  await expect(choice).toBeEnabled();
+  expect(
+    await page.evaluate(() => {
+      const event = new Event("beforeunload", { cancelable: true });
+      window.dispatchEvent(event);
+      return event.defaultPrevented;
+    }),
+  ).toBe(false);
+  await page.getByRole("link", { name: "Add a word", exact: true }).click();
+  await expect(page).toHaveURL(/\/new\/meaning$/);
+  await expect(page.getByLabel("Meaning", { exact: true })).toBeVisible();
 });
 
 test("failures and rejected proposal paths leave the manual editor available and retain the log", async ({

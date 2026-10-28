@@ -218,6 +218,9 @@ Component suggestions keep selected exact source definitions.
 Place mappings also preserve exact definitions for repeated component words.
 The model keeps studied names such as `klama[2]`. Ambiguous repeated definitions require an `unclear` mapping.
 Turning assistance off reaches other open tabs and cancels their active jobs.
+Settings shows when the assistance choice reaches browser storage and reports a failed save.
+Internal navigation waits for pending preference writes. Reload or exit warns while a write remains pending.
+Browser tests cover pending and failed preference saves, saved off-state reloads, and receipt waits before personal recomputation.
 
 The private attempt log offers Markdown and JSON export. Signed publications omit AI logs.
 Both local adapters offer operator-controlled assistance, off by default, with server-held keys and bounded private jobs.

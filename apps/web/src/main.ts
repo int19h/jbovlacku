@@ -262,7 +262,14 @@ async function start() {
     commitDraftNavigation();
     void render(route, options);
   });
-  if (session.storageAvailable) setNavigationGuard(guardDraftNavigation);
+  if (session.storageAvailable)
+    setNavigationGuard((target) =>
+      session.preferencesSaving
+        ? session
+            .waitForPreferences()
+            .then((saved) => saved && guardDraftNavigation(target))
+        : guardDraftNavigation(target),
+    );
   installRouter();
   await render(currentRoute(), { focusHeading: false });
 }

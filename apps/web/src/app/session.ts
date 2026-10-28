@@ -36,6 +36,7 @@ export class Session {
   private unlockAttempt: AbortController | undefined;
   private listeners = new Set<SessionListener>();
   private preferenceChannel: BroadcastChannel | undefined;
+  private preferenceWrites = new Set<Promise<Preferences>>();
   /** A pending action to resume after the key is created or unlocked. */
   pending: { description: string; run: () => Promise<void> } | null = null;
   constructor(public store: LocalStore) {
@@ -48,6 +49,12 @@ export class Session {
     }
     window.addEventListener("pagehide", () => {
       this.lock();
+    });
+    window.addEventListener("beforeunload", (event) => {
+      if (this.preferencesSaving) {
+        event.preventDefault();
+        event.returnValue = "";
+      }
     });
   }
   async load() {
@@ -103,11 +110,30 @@ export class Session {
     return this.preferences;
   }
   async setPreferences(patch: Partial<Preferences>) {
-    this.preferences = await this.store.setPreferences(patch);
-    this.preferenceChannel?.postMessage("changed");
-    if ("view" in patch) setPreferredView(this.preferences.view);
-    this.changed();
-    return this.preferences;
+    const writing = this.store.setPreferences(patch);
+    this.preferenceWrites.add(writing);
+    try {
+      this.preferences = await writing;
+      this.preferenceChannel?.postMessage("changed");
+      if ("view" in patch) setPreferredView(this.preferences.view);
+      this.changed();
+      return this.preferences;
+    } finally {
+      this.preferenceWrites.delete(writing);
+    }
+  }
+  get preferencesSaving() {
+    return this.preferenceWrites.size > 0;
+  }
+  /** A page change waits for the saved choice before it reads session state. */
+  async waitForPreferences(): Promise<boolean> {
+    try {
+      while (this.preferencesSaving)
+        await Promise.all([...this.preferenceWrites]);
+      return true;
+    } catch {
+      return false;
+    }
   }
   async backupTested(): Promise<boolean> {
     if (!this.backup) return false;

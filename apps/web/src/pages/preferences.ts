@@ -61,15 +61,28 @@ export async function preferencesPage(
   try {
     const capabilities = await getCapabilities({ signal: context.signal });
     if (!context.live()) return;
-    main.append(
-      assistanceProfiles(capabilities).length
-        ? checkbox(
-            "Use AI assistance",
-            prefs.useAiAssistance !== false,
-            (value) => void session.setPreferences({ useAiAssistance: value }),
-          )
-        : p("Not available on this server.", "small"),
-    );
+    if (assistanceProfiles(capabilities).length) {
+      const saved = el("p", { class: "small", role: "status" });
+      const choice = checkbox(
+        "Use AI assistance",
+        prefs.useAiAssistance !== false,
+        async (value) => {
+          input.disabled = true;
+          saved.textContent = "Saving assistance setting.";
+          try {
+            await session.setPreferences({ useAiAssistance: value });
+            saved.textContent = "Assistance setting saved in this browser.";
+          } catch (error) {
+            input.checked = session.preferences.useAiAssistance !== false;
+            saved.textContent = `Not saved: ${describe(error)}`;
+          } finally {
+            input.disabled = false;
+          }
+        },
+      );
+      const input = choice.querySelector("input")!;
+      main.append(choice, saved);
+    } else main.append(p("Not available on this server.", "small"));
   } catch {
     if (context.live())
       main.append(p("Not available on this server.", "small"));
