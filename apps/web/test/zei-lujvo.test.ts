@@ -153,7 +153,7 @@ test("zei exact definition links survive publication, revision, and reload", asy
   await createIdentity(page);
   await page.goto("/preferences");
   await page.getByRole("button", { name: "Download", exact: true }).click();
-  await expect(page.getByRole("status")).toHaveText(
+  await expect(page.locator("#app > [role=status]")).toHaveText(
     "The English search package is saved in this browser.",
   );
   const spelling = "CUKTA  ZEI dunda";

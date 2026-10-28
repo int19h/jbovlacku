@@ -357,6 +357,13 @@ export class SqlRowsCoordinator {
   async getSnapshot(id: string): Promise<Snapshot | null> {
     return this.sql.transaction(() => this.readSnapshot(id));
   }
+  async getSnapshotRevision(id: string): Promise<number | null> {
+    const row = this.sql.exec(
+      "SELECT revision FROM cached_snapshots WHERE hash=?",
+      id,
+    )[0];
+    return row ? Number(row.revision) : null;
+  }
   async getCheckpointSnapshot(id: string): Promise<Snapshot | null> {
     return this.sql.transaction(() => {
       const row = this.sql.exec(

@@ -239,6 +239,18 @@ Component suggestions keep selected exact source definitions.
 Place mappings also preserve exact definitions for repeated component words.
 The model keeps studied names such as `klama[2]`. Ambiguous repeated definitions require an `unclear` mapping.
 Turning assistance off reaches other open tabs and cancels their active jobs.
+Settings shows when the assistance choice reaches browser storage and reports a failed save.
+The assistance checkbox keeps keyboard focus and ignores repeated input while its save runs.
+Internal navigation waits up to two seconds for pending preference writes, then continues while storage keeps working.
+A visible notice explains a pending save. The app announces late success and every save failure after navigation too.
+Reload or exit warns while a write remains pending. A failed save keeps the committed preference and permits navigation.
+A late save keeps the page that the reader chose. Earlier save completions preserve newer control choices.
+The empty shell announcement region stays available to assistive software. Fast assistance saves use inline feedback without a toast.
+The inline assistance status also stays available while empty and announces a fast save.
+A failed assistance save uses one live status region. A result after navigation uses the shell status.
+The first-signature dialog shows storage errors inside the dialog and permits another attempt.
+Browser tests cover these outcomes, focus, saved off-state reloads, and receipt waits before personal recomputation.
+The assistance tests bind delayed capability responses to held requests and cover an older response that finishes during a newer hold.
 
 The private attempt log offers Markdown and JSON export. Signed publications omit AI logs.
 Both local adapters offer operator-controlled assistance, off by default, with server-held keys and bounded private jobs.
@@ -407,6 +419,13 @@ After publication, the host releases the older runtime when its active calls fin
 It keeps that snapshot's completed state and packages in the bounded cache.
 Pinned reads use those results without restarting evaluation. Word scores remain unavailable after the older runtime stops.
 The next evaluation can evict the older cached result when it needs the slot.
+A failed unpublished package job releases its configured-view protection while active calls keep their cache entries.
+An alternate view can then use that slot after those calls finish. The completed snapshot keeps its protection.
+Recomputing an older retained snapshot does not give it newer protection than the completed snapshot.
+This also applies after a late body changes the snapshot without advancing the event position.
+The cache uses the saved coordinator revision, including after restart, with snapshot ID as a fixed tie breaker.
+Pinned reads load this revision on Node and Worker before any unpinned current read.
+Node also retains this order when newer accepted records wait behind a completed checkpoint.
 
 Workers transfer state bytes without retaining another parsed JavaScript state. Judgment updates share unchanged result objects on the main thread.
 

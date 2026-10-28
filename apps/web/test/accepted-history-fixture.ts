@@ -33,6 +33,7 @@ export async function acceptedHistoryFixture(page: Page, base = "/api/v1") {
   );
   let state = emptyState();
   const snapshots = new Map<string, Snapshot>();
+  const snapshotRevisions = new Map<string, number>();
   const bytes = new Map<string, Uint8Array>();
   const service = new DictionaryService(
     {
@@ -50,10 +51,16 @@ export async function acceptedHistoryFixture(page: Page, base = "/api/v1") {
       async getSnapshot(id) {
         return snapshots.get(id) ?? null;
       },
+      async getSnapshotRevision(id) {
+        return snapshotRevisions.get(id) ?? null;
+      },
       async compareAndSwap(revision: number, next: State, snapshot?: Snapshot) {
         if (state.revision !== revision) return false;
         state = next;
-        if (snapshot) snapshots.set(snapshot.snapshot, snapshot);
+        if (snapshot) {
+          snapshots.set(snapshot.snapshot, snapshot);
+          snapshotRevisions.set(snapshot.snapshot, next.revision);
+        }
         return true;
       },
       async markMaterialized(snapshot, position) {

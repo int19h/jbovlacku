@@ -263,9 +263,11 @@ async function consent(
               },
             ],
           });
-          dialog.close("allowed");
+          if (!signal.aborted && dialog.isConnected && dialog.open)
+            dialog.close("allowed");
         } catch (error) {
-          status.textContent = describe(error);
+          if (!signal.aborted && dialog.isConnected && dialog.open)
+            status.textContent = describe(error);
         }
       },
       { class: "btn btn-primary" },

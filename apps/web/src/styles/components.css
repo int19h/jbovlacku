@@ -260,7 +260,8 @@ main.surface-publish {
   z-index: 10;
 }
 .status:empty {
-  display: none;
+  opacity: 0;
+  pointer-events: none;
 }
 .notice {
   padding: 12px 14px;

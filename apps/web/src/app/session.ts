@@ -23,8 +23,10 @@ import {
   type Preferences,
 } from "../data/store.ts";
 import { navigate } from "./router.ts";
+import { applyTheme } from "./theme.ts";
 
 export const IDLE_LOCK_MS = 15 * 60 * 1000;
+export const PREFERENCE_NAVIGATION_WAIT_MS = 2000;
 export type SessionListener = (session: Session) => void;
 export class Session {
   backup: KeyBackup | undefined;
@@ -36,6 +38,11 @@ export class Session {
   private unlockAttempt: AbortController | undefined;
   private listeners = new Set<SessionListener>();
   private preferenceChannel: BroadcastChannel | undefined;
+  private themeRequest = 0;
+  private preferenceWrites = new Set<Promise<Preferences>>();
+  private preferenceWait: Promise<void> | undefined;
+  private preferenceWaitExpired = false;
+  private preferenceStatusListeners = new Set<(message: string) => void>();
   /** A pending action to resume after the key is created or unlocked. */
   pending: { description: string; run: () => Promise<void> } | null = null;
   constructor(public store: LocalStore) {
@@ -48,6 +55,12 @@ export class Session {
     }
     window.addEventListener("pagehide", () => {
       this.lock();
+    });
+    window.addEventListener("beforeunload", (event) => {
+      if (this.preferencesSaving) {
+        event.preventDefault();
+        event.returnValue = "";
+      }
     });
   }
   async load() {
@@ -102,12 +115,89 @@ export class Session {
     }
     return this.preferences;
   }
-  async setPreferences(patch: Partial<Preferences>) {
-    this.preferences = await this.store.setPreferences(patch);
-    this.preferenceChannel?.postMessage("changed");
-    if ("view" in patch) setPreferredView(this.preferences.view);
-    this.changed();
-    return this.preferences;
+  subscribePreferenceStatus(listener: (message: string) => void) {
+    this.preferenceStatusListeners.add(listener);
+    return () => this.preferenceStatusListeners.delete(listener);
+  }
+  private preferenceStatus(message: string) {
+    for (const listener of this.preferenceStatusListeners) listener(message);
+  }
+  setPreferences(
+    patch: Partial<Preferences>,
+    // A true result means that the live caller showed the failure.
+    onFailure?: (error: unknown) => boolean,
+  ): Promise<Preferences> {
+    const themeRequest = "theme" in patch ? ++this.themeRequest : undefined;
+    const writing = Promise.resolve()
+      .then(() => this.store.setPreferences(patch))
+      .then((preferences) => {
+        this.preferences = preferences;
+        this.preferenceChannel?.postMessage("changed");
+        if ("view" in patch) setPreferredView(this.preferences.view);
+        if (themeRequest === this.themeRequest) applyTheme(preferences.theme);
+        this.changed();
+        if (this.preferenceWaitExpired)
+          this.preferenceStatus(
+            "useAiAssistance" in patch
+              ? "Assistance setting saved in this browser."
+              : "Settings change saved in this browser.",
+          );
+        return preferences;
+      })
+      .catch((error: unknown) => {
+        if (themeRequest === this.themeRequest)
+          applyTheme(this.preferences.theme);
+        if (!onFailure?.(error))
+          this.preferenceStatus(`Not saved: ${describe(error)}`);
+        throw error;
+      })
+      .finally(() => {
+        this.preferenceWrites.delete(writing);
+        if (!this.preferencesSaving) {
+          this.preferenceWait = undefined;
+          this.preferenceWaitExpired = false;
+        }
+      });
+    this.preferenceWrites.add(writing);
+    // Ignored writes still report failures. Awaited writes keep their rejection.
+    void writing.catch(() => {});
+    return writing;
+  }
+  get preferencesSaving() {
+    return this.preferenceWrites.size > 0;
+  }
+  /** Wait briefly for storage. A stalled write keeps running after navigation. */
+  async waitForPreferences(): Promise<void> {
+    if (!this.preferencesSaving) return;
+    this.preferenceWait ??= this.waitForPreferenceWrites();
+    await this.preferenceWait;
+  }
+  private async waitForPreferenceWrites(): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<"pending">((resolve) => {
+      timer = setTimeout(
+        () => resolve("pending"),
+        PREFERENCE_NAVIGATION_WAIT_MS,
+      );
+    });
+    try {
+      while (this.preferencesSaving) {
+        const result = await Promise.race([
+          Promise.allSettled([...this.preferenceWrites]),
+          deadline,
+        ]);
+        if (result === "pending") {
+          this.preferenceWaitExpired = true;
+          if (this.preferencesSaving)
+            this.preferenceStatus(
+              "Settings are still saving in this browser. You can keep using the app. Reloading now can lose this change.",
+            );
+          return;
+        }
+      }
+    } finally {
+      clearTimeout(timer);
+    }
   }
   async backupTested(): Promise<boolean> {
     if (!this.backup) return false;
@@ -353,13 +443,39 @@ export class Session {
         class: "sheet",
         "aria-labelledby": "first-sign-title",
       });
+      const origin = document.querySelector("main")?.firstElementChild;
+      const originLive = () => !origin || origin.isConnected;
+      const error = el("p", { class: "notice", role: "alert" });
+      error.hidden = true;
+      const current = () => dialog.isConnected && dialog.open;
+      let saving = false;
       const proceed = button(
         "Continue",
         async () => {
-          await this.setPreferences({ firstSignatureAcknowledged: true });
-          dialog.close("ok");
+          if (saving) return;
+          saving = true;
+          proceed.setAttribute("aria-disabled", "true");
+          error.hidden = true;
+          try {
+            await this.setPreferences({ firstSignatureAcknowledged: true });
+            if (!current()) return;
+            dialog.close(
+              originLive() && (!opener || opener.isConnected) ? "ok" : "cancel",
+            );
+          } catch (failure) {
+            if (!current()) return;
+            if (!originLive()) {
+              dialog.close("cancel");
+              return;
+            }
+            error.textContent = `Not saved: ${describe(failure)}`;
+            error.hidden = false;
+          } finally {
+            saving = false;
+            if (current()) proceed.setAttribute("aria-disabled", "false");
+          }
         },
-        { class: "btn btn-primary" },
+        { class: "btn btn-primary", "aria-disabled": "false" },
       );
       const cancel = button("Not now", () => dialog.close("cancel"), {
         class: "btn btn-quiet",
@@ -392,6 +508,7 @@ export class Session {
             ),
           ),
         ),
+        error,
         el(
           "div",
           { class: "actions", style: "margin-top:14px" },
@@ -402,7 +519,7 @@ export class Session {
       dialog.addEventListener("close", () => {
         resolve(dialog.returnValue === "ok");
         dialog.remove();
-        opener?.focus();
+        if (originLive() && opener?.isConnected) opener.focus();
       });
       document.body.append(dialog);
       dialog.showModal();

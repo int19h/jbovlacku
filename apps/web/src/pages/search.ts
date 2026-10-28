@@ -167,6 +167,7 @@ export async function searchPage(
     main.append(
       calculationPanel(app, {
         mode: "personal",
+        context,
         label: "Personal view",
         onRefresh: () =>
           navigate(location.pathname + location.search, { replace: true }),
@@ -191,11 +192,21 @@ export async function searchPage(
       );
   };
   fillLanguages();
+  let languageRequest = 0;
   languageSelect.addEventListener("change", async () => {
-    await app.session.setPreferences({
-      definitionLanguage: languageSelect.value,
-    });
-    navigate(routes.search(query, languageSelect.value));
+    const request = ++languageRequest;
+    const value = languageSelect.value;
+    try {
+      await app.session.setPreferences({
+        definitionLanguage: value,
+      });
+    } catch {
+      if (context.live() && request === languageRequest)
+        languageSelect.value = app.session.preferences.definitionLanguage;
+      return;
+    }
+    if (context.live() && request === languageRequest)
+      navigate(routes.search(query, value));
   });
   // Search source: the downloaded package in local mode, otherwise this server.
   let cached: CachedPackage | undefined;

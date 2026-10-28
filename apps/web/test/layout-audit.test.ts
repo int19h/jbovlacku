@@ -602,7 +602,7 @@ for (const viewport of [
       test.setTimeout(180000);
       await open(page, "/preferences");
       await page.getByRole("button", { name: "Download", exact: true }).click();
-      await expect(page.getByRole("status")).toContainText(
+      await expect(page.locator("#app > [role=status]")).toContainText(
         "saved in this browser",
       );
       await addCompetingClaimFixture(page);
@@ -1516,9 +1516,9 @@ for (const viewport of [
       await page
         .getByRole("button", { name: "Test the backup", exact: true })
         .click();
-      await expect(page.getByRole("status").last()).toContainText(
-        "recovers the new key",
-      );
+      await expect(
+        page.locator("main").getByRole("status").last(),
+      ).toContainText("recovers the new key");
       await check("handover-successor-ready");
       for (const box of await page.getByRole("checkbox").all())
         await box.check();
@@ -1919,7 +1919,7 @@ for (const viewport of [
       await expandDetails(page);
       await check("preferences");
       await page.getByRole("button", { name: "Download", exact: true }).click();
-      await expect(page.getByRole("status")).toContainText(
+      await expect(page.locator("#app > [role=status]")).toContainText(
         "saved in this browser",
       );
       const expectedClaimants = await addCompetingClaimFixture(page);

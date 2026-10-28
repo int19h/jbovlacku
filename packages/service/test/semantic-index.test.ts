@@ -737,14 +737,23 @@ test("private source paging uses evaluator eligibility and exact record bindings
     };
   }
   let retained = true;
-  const coordinator = {
-    async getSnapshot() {
-      return retained ? snapshot : null;
+  const coordinator: Coordinator = {
+    async load() {
+      throw new Error("This source fixture supports retained reads only.");
+    },
+    async compareAndSwap() {
+      throw new Error("This source fixture supports retained reads only.");
+    },
+    async getSnapshot(id) {
+      return retained && id === snapshot.snapshot ? snapshot : null;
+    },
+    async getSnapshotRevision(id) {
+      return retained && id === snapshot.snapshot ? 1 : null;
     },
     async getSemanticRecord(binding: any) {
       return records.get(binding.id)!;
     },
-  } as unknown as Coordinator;
+  };
   const objects = {
     async get() {
       throw new Error("The source must reuse its private record.");

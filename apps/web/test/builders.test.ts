@@ -14,7 +14,7 @@ function claimCheckboxName(spelling: string): RegExp {
 async function downloadPackage(page: Page) {
   await page.goto("/preferences");
   await page.getByRole("button", { name: "Download", exact: true }).click();
-  await expect(page.getByRole("status")).toHaveText(
+  await expect(page.locator("#app > [role=status]")).toHaveText(
     "The English search package is saved in this browser.",
   );
 }
@@ -173,7 +173,7 @@ test("the lujvo builder offers long forms beside listed rafsi, recovers parts, h
   // The evidence describes one exact form. Another spelling blocks publication until the form is built again.
   await page.goto("/new/editor");
   await page.getByLabel("Headword").fill("ckusinxe");
-  await expect(page.getByRole("status").last()).toHaveText(
+  await expect(page.locator("main").getByRole("status").last()).toHaveText(
     "Saved in this browser",
   );
   await page.goto("/new/publish");

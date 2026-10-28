@@ -188,7 +188,7 @@ test("recompute from records compares a local site view calculation with the ser
   await page.goto("/word/cukta");
   await page.getByText("Check the scores locally").click();
   await page.getByRole("button", { name: "Recompute from records" }).click();
-  await expect(page.getByRole("status").last()).toContainText(
+  await expect(page.locator("main").getByRole("status").last()).toContainText(
     /The local calculation from \d+ verified records matches the server's \d+ scores and layers for this word\./,
   );
   await expect(
@@ -199,7 +199,7 @@ test("recompute from records compares a local site view calculation with the ser
 test("the personal view adds the signing identity as a root so its own endorsement counts after a refresh", async ({
   page,
 }) => {
-  await createIdentity(page);
+  const identity = (await createIdentity(page)).identity;
   await choosePersonal(page);
   await openWord(page, "cukta");
   const third = page.locator("article.definition", {
@@ -207,8 +207,31 @@ test("the personal view adds the signing identity as a root so its own endorseme
   });
   await expect(third.getByRole("img")).toHaveAttribute(
     "aria-label",
-    /^Score minus 3: 0 for, 3 against, 2 reviewers, in your personal view$/,
+    /^Score minus 3: 0 for, 3 against, \d+ reviewers, in your personal view$/,
   );
+  const reviewersBefore = Number(
+    (await third.getByRole("img").getAttribute("aria-label"))!.match(
+      /(\d+) reviewers/,
+    )![1],
+  );
+  // Later repeats keep earlier endorsements, but each new key adds exactly one reviewer.
+  expect(reviewersBefore).toBeGreaterThanOrEqual(2);
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const original = LocalStore.prototype.list;
+    const state = { hold: false, waiting: false, release: () => {} };
+    const held = new Promise<void>((resolve) => {
+      state.release = resolve;
+    });
+    (window as any).ownRefreshGate = state;
+    LocalStore.prototype.list = async function (name: string) {
+      if (name === "ownhistory" && state.hold) {
+        state.waiting = true;
+        await held;
+      }
+      return original.call(this, name);
+    };
+  });
   let releaseReceipts!: () => void;
   const receiptsReady = new Promise<void>((resolve) => {
     releaseReceipts = resolve;
@@ -216,6 +239,9 @@ test("the personal view adds the signing identity as a root so its own endorseme
   await page.route("**/api/v1/events", async (route) => {
     const response = await route.fetch();
     const receipt = await response.json();
+    await page.evaluate(() => {
+      (window as any).ownRefreshGate.hold = true;
+    });
     await route.fulfill({
       response,
       json: {
@@ -226,40 +252,62 @@ test("the personal view adds the signing identity as a root so its own endorseme
       },
     });
   });
+  let receiptReads = 0;
   await page.route("**/api/v1/receipts/*", async (route) => {
+    receiptReads++;
     await receiptsReady;
     await route.continue();
   });
+  let manifests = 0;
   try {
     await third.getByRole("button", { name: "Endorse" }).click();
     await acceptFirstSignature(page);
     await expect(page.getByRole("status")).toHaveText(
       "Your endorsement is published.",
     );
-    let manifests = 0;
+    // Publishing also reloads own history, which reads a manifest independently.
+    await expect
+      .poll(() => page.evaluate(() => (window as any).ownRefreshGate.waiting))
+      .toBe(true);
+    await page.evaluate(() => (window as any).ownRefreshGate.release());
+    await expect(
+      third.getByRole("button", { name: "Endorse" }),
+    ).toHaveAttribute("aria-pressed", "true");
     await page.route("**/api/v1/manifest", async (route) => {
       manifests++;
       await route.continue();
     });
     const panel = page.getByRole("region", { name: "Personal view" });
+    const receiptsBeforeRecompute = receiptReads;
     await panel.getByRole("button", { name: "Recompute from records" }).click();
     await expect(
       panel.getByRole("button", { name: "Cancel", exact: true }),
     ).toBeVisible();
+    await expect
+      .poll(() => receiptReads)
+      .toBeGreaterThan(receiptsBeforeRecompute);
     expect(manifests).toBe(0);
   } finally {
     releaseReceipts();
+    await page.evaluate(() => (window as any).ownRefreshGate.release());
   }
+  await expect.poll(() => manifests).toBeGreaterThan(0);
   await expect(
     page
       .locator("article.definition", { hasText: "Third meaning" })
       .getByRole("img"),
-  ).toHaveAttribute("aria-label", /3 reviewers, in your personal view$/);
+  ).toHaveAttribute(
+    "aria-label",
+    new RegExp(`, ${reviewersBefore + 1} reviewers, in your personal view$`),
+  );
   const details = page
     .locator("article.definition", { hasText: "Third meaning" })
     .locator("details.judgment-details");
   await details.locator("summary").click();
-  await expect(details).toContainText("root of the view (q=1)");
+  const ownReviewer = details.getByRole("row").filter({
+    has: page.locator(`a[href="/identity/${encodeURIComponent(identity)}"]`),
+  });
+  await expect(ownReviewer).toContainText("root of the view (q=1)");
 });
 
 test("a body that became available is fetched for a cached record, and malformed transports are refused", async ({

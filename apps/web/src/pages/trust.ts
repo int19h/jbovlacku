@@ -43,6 +43,7 @@ export async function trustPage(
     role: "radiogroup",
     "aria-label": "Active view",
   });
+  let modeRequest = 0;
   for (const [value, label] of [
     ["personal", "Mine: site view + my choices"],
     ["site", "Site view only"],
@@ -56,12 +57,16 @@ export async function trustPage(
       text(label),
     );
     input.addEventListener("change", async () => {
-      await app.session.setPreferences({ viewMode: value });
+      const request = ++modeRequest;
+      try {
+        await app.session.setPreferences({ viewMode: value });
+      } catch {}
+      if (!context.live() || request !== modeRequest) return;
+      const saved = app.session.preferences.viewMode;
+      for (const radio of seg.querySelectorAll("input"))
+        radio.checked = radio.value === saved;
       for (const l of seg.querySelectorAll("label"))
         l.classList.toggle("on", l.querySelector("input")!.checked);
-      app.shell.setViewLabel(
-        value === "personal" ? "Trust: personal view" : "Trust: site view",
-      );
     });
     seg.append(wrapper);
   }
@@ -84,6 +89,7 @@ export async function trustPage(
     ),
     calculationPanel(app, {
       mode: "personal",
+      context,
       label: "Local calculation",
       onRefresh: rerender,
     }),
@@ -583,7 +589,9 @@ function viewChooser(app: App, current: string, context: RenderContext) {
     spellcheck: "false",
   });
   const status = el("p", { class: "meta", role: "status" });
+  let viewRequest = 0;
   const apply = async () => {
+    const request = ++viewRequest;
     const id = input.value.trim();
     if (!eventId(id)) {
       status.textContent =
@@ -601,11 +609,14 @@ function viewChooser(app: App, current: string, context: RenderContext) {
       if (!record.body)
         throw new Error(record.bodyError ?? "The view body is unavailable.");
       const profile = describeProfile(record.body.calculation);
+      if (!context.live() || request !== viewRequest) return;
       await app.session.setPreferences({ view: id });
       await app.personal.forgetView();
+      if (!context.live() || request !== viewRequest) return;
       status.textContent = `Using "${record.body.name}" with calculation profile ${record.body.calculation}.${profile.known ? "" : " This client does not know that profile, so scores stay unavailable."}`;
       navigate(routes.trust, { replace: true });
     } catch (error) {
+      if (!context.live() || request !== viewRequest) return;
       status.textContent = `That view cannot be used: ${describe(error)}`;
     }
   };
@@ -619,9 +630,15 @@ function viewChooser(app: App, current: string, context: RenderContext) {
       button(
         "Back to the server's view",
         async () => {
-          await app.session.setPreferences({ view: null });
+          const request = ++viewRequest;
+          try {
+            await app.session.setPreferences({ view: null });
+          } catch {
+            return;
+          }
           await app.personal.forgetView();
-          navigate(routes.trust, { replace: true });
+          if (context.live() && request === viewRequest)
+            navigate(routes.trust, { replace: true });
         },
         { class: "btn btn-quiet" },
       ),

@@ -307,6 +307,7 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
     main.append(
       calculationPanel(app, {
         mode: "personal",
+        context,
         label: "Personal view",
         onRefresh: rerender,
       }),

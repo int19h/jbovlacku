@@ -85,7 +85,7 @@ test("downloaded local search removes inert definitions after a transfer-only re
     })
     .toBe(true);
   await page.getByRole("button", { name: "Download", exact: true }).click();
-  await expect(page.getByRole("status")).toHaveText(
+  await expect(page.locator("#app > [role=status]")).toHaveText(
     "The English search package is saved in this browser.",
   );
   const cached = () =>
@@ -118,7 +118,7 @@ test("downloaded local search removes inert definitions after a transfer-only re
   await page
     .getByRole("button", { name: "Refresh English", exact: true })
     .click();
-  await expect(page.getByRole("status")).toHaveText(
+  await expect(page.locator("#app > [role=status]")).toHaveText(
     "The English package is refreshed.",
   );
   const forbidden: string[] = [];

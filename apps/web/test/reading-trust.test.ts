@@ -87,7 +87,7 @@ test("private trust needs a key while private Ignore stays available", async ({
     panel.getByRole("link", { name: "Create or restore your key" }),
   ).toBeVisible();
   await panel.getByRole("button", { name: "Trust", exact: true }).click();
-  await expect(page.getByRole("status")).toContainText(
+  await expect(page.locator("#app > [role=status]")).toContainText(
     "Create or restore a key",
   );
   expect(
@@ -112,7 +112,7 @@ test("private scopes convert spellings and reject bad language tags before stora
   await panel.getByLabel("Word ID").fill("klama");
   await panel.getByLabel("Definition language").fill("a-en");
   await panel.getByRole("button", { name: "Ignore", exact: true }).click();
-  await expect(page.getByRole("status")).toContainText("BCP 47");
+  await expect(page.locator("#app > [role=status]")).toContainText("BCP 47");
   await panel.getByLabel("Definition language").fill("en");
   await panel.getByRole("button", { name: "Ignore", exact: true }).click();
   const result = await page.evaluate(async (corePath) => {
@@ -286,7 +286,7 @@ test("an ordinary signature keeps the loaded personal calculation for its snapsh
     .getByRole("button", { name: "Endorse" })
     .click();
   await acceptFirstSignature(page);
-  await expect(page.getByRole("status")).toContainText("published");
+  await expect(page.locator("#app > [role=status]")).toContainText("published");
   await expect(panel).toContainText("Personal view calculated in this browser");
   expect(await panel.innerText()).toBe(before);
 });
@@ -327,7 +327,7 @@ test("a complete negative acceptance scan allows one warned recovery and retires
   for (const checkbox of await form.getByRole("checkbox").all())
     await checkbox.check();
   await sign.dblclick();
-  await expect(page.getByRole("status")).toContainText(
+  await expect(page.locator("#app > [role=status]")).toContainText(
     "One recovery acceptance is saved",
   );
   const result = await page.evaluate(
@@ -667,9 +667,9 @@ for (const change of ["judgment", "transfer", "compromise"] as const) {
       await page.getByLabel("Backup file").setInputFiles(backupPath!);
       await page.getByLabel("Its passphrase").fill(PASSPHRASE);
       await page.getByRole("button", { name: "Test the backup" }).click();
-      await expect(page.getByRole("status").last()).toContainText(
-        "recovers the new key",
-      );
+      await expect(
+        page.locator("main").getByRole("status").last(),
+      ).toContainText("recovers the new key");
       await expect(page.getByRole("checkbox")).toHaveCount(3);
       for (const box of await page.getByRole("checkbox").all())
         await box.check();
@@ -821,7 +821,7 @@ test("a peer compromise during the notice unlock wait resets approval before any
     await mirror.watchSignatures();
     await dialog.getByLabel("Passphrase of the retired key").fill(PASSPHRASE);
     await dialog.getByRole("button", { name: "Unlock", exact: true }).click();
-    await expect(page.getByRole("status")).toContainText(
+    await expect(page.locator("#app > [role=status]")).toContainText(
       "The known history changed",
     );
     await expect(records.getByRole("checkbox")).toHaveCount(2);
@@ -888,7 +888,7 @@ test("changing the compromise key during unlock cannot replace the approved prev
     await history.watchSignatures();
     await dialog.getByLabel("Passphrase of the retired key").fill(PASSPHRASE);
     await dialog.getByRole("button", { name: "Unlock", exact: true }).click();
-    await expect(page.getByRole("status")).toContainText(
+    await expect(page.locator("#app > [role=status]")).toContainText(
       "The known history changed",
     );
     for (const box of await page.getByRole("checkbox").all())
@@ -956,7 +956,7 @@ test("a late acceptance found by the final recovery scan prevents a new signatur
     await expect(
       page.getByRole("region", { name: "Acceptance recovery" }),
     ).toContainText(acceptance);
-    await expect(page.getByRole("status")).toContainText(
+    await expect(page.locator("#app > [role=status]")).toContainText(
       "acceptance search changed",
     );
     expect(
@@ -1058,7 +1058,7 @@ test("a late acceptance held only by a mirror blocks recovery before any signatu
     await form
       .getByRole("button", { name: "Sign one recovery acceptance" })
       .click();
-    await expect(page.getByRole("status")).toContainText(
+    await expect(page.locator("#app > [role=status]")).toContainText(
       /acceptance search changed|One recovery acceptance is saved/,
     );
     expect(await mirror.signatures()).toBe(0);
@@ -1068,7 +1068,7 @@ test("a late acceptance held only by a mirror blocks recovery before any signatu
         return (await new LocalStore().list("outbox")).length;
       }),
     ).toBe(0);
-    await expect(page.getByRole("status")).toContainText(
+    await expect(page.locator("#app > [role=status]")).toContainText(
       "acceptance search changed",
     );
     const recovery = page.getByRole("region", { name: "Acceptance recovery" });
@@ -1128,7 +1128,7 @@ test("recovery blocks signatures when a peer's final accepted snapshot keeps exp
     await form
       .getByRole("button", { name: "Sign one recovery acceptance" })
       .click();
-    await expect(page.getByRole("status")).toContainText(
+    await expect(page.locator("#app > [role=status]")).toContainText(
       "acceptance search changed",
     );
     await expect(page.locator("main")).toContainText(

@@ -1232,6 +1232,7 @@ test("current snapshot reads retry if its wrapper expires after the pointer read
   let changed = false;
   const racing = {
     load: coordinator.load.bind(coordinator),
+    getSnapshotRevision: coordinator.getSnapshotRevision.bind(coordinator),
     compareAndSwap: coordinator.compareAndSwap.bind(coordinator),
     async getSnapshot(id: string) {
       if (!changed) {

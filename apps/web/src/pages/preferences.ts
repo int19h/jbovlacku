@@ -15,7 +15,7 @@ import type { RenderContext, Route } from "../app/router.ts";
 import type { App } from "../app/context.ts";
 import { downloadPackage, type CachedPackage } from "../data/search.ts";
 import { getCapabilities, getManifest, selfPeer } from "../data/api.ts";
-import { applyTheme } from "../app/theme.ts";
+import type { Preferences } from "../data/store.ts";
 
 export async function preferencesPage(
   _route: Route,
@@ -28,6 +28,21 @@ export async function preferencesPage(
   main.className = "";
   main.append(el("h1", { class: "page", text: "Settings" }));
   const prefs = session.preferences;
+  // Only the latest failed choice restores a control. Success keeps newer input.
+  const saves = new Map<keyof Preferences, symbol>();
+  const save = async (
+    key: keyof Preferences,
+    patch: Partial<Preferences>,
+    restore: () => void,
+  ) => {
+    const request = Symbol();
+    saves.set(key, request);
+    try {
+      await session.setPreferences(patch);
+    } catch {
+      if (context.live() && saves.get(key) === request) restore();
+    }
+  };
   // Languages.
   const languages = new Set<string>(["en", prefs.definitionLanguage]);
   let manifestLanguages: string[] = [];
@@ -49,9 +64,15 @@ export async function preferencesPage(
   languageField.input.addEventListener(
     "change",
     () =>
-      void session.setPreferences({
-        definitionLanguage: languageField.input.value,
-      }),
+      void save(
+        "definitionLanguage",
+        {
+          definitionLanguage: languageField.input.value,
+        },
+        () => {
+          languageField.input.value = session.preferences.definitionLanguage;
+        },
+      ),
   );
   main.append(
     el("h2", { class: "section", text: "Languages" }),
@@ -61,15 +82,54 @@ export async function preferencesPage(
   try {
     const capabilities = await getCapabilities({ signal: context.signal });
     if (!context.live()) return;
-    main.append(
-      assistanceProfiles(capabilities).length
-        ? checkbox(
-            "Use AI assistance",
-            prefs.useAiAssistance !== false,
-            (value) => void session.setPreferences({ useAiAssistance: value }),
-          )
-        : p("Not available on this server.", "small"),
-    );
+    if (assistanceProfiles(capabilities).length) {
+      const saved = el("p", {
+        id: "assistance-save-status",
+        class: "small",
+        role: "status",
+      });
+      let saving = false;
+      let pendingValue = prefs.useAiAssistance !== false;
+      const choice = checkbox(
+        "Use AI assistance",
+        prefs.useAiAssistance !== false,
+        async (value) => {
+          if (saving) {
+            input.checked = pendingValue;
+            return;
+          }
+          saving = true;
+          pendingValue = value;
+          input.setAttribute("aria-disabled", "true");
+          saved.textContent = "Saving assistance setting.";
+          try {
+            await session.setPreferences(
+              { useAiAssistance: value },
+              (error) => {
+                if (!context.live()) return false;
+                input.checked = session.preferences.useAiAssistance !== false;
+                saved.textContent = `Not saved: ${describe(error)}`;
+                return true;
+              },
+            );
+            if (context.live())
+              saved.textContent = "Assistance setting saved in this browser.";
+          } catch {
+            // The live inline status or the session reports the failure.
+          } finally {
+            saving = false;
+            if (context.live()) input.setAttribute("aria-disabled", "false");
+          }
+        },
+      );
+      const input = choice.querySelector("input")!;
+      input.setAttribute("aria-describedby", saved.id);
+      input.setAttribute("aria-disabled", "false");
+      input.addEventListener("click", (event) => {
+        if (saving) event.preventDefault();
+      });
+      main.append(choice, saved);
+    } else main.append(p("Not available on this server.", "small"));
   } catch {
     if (context.live())
       main.append(p("Not available on this server.", "small"));
@@ -96,9 +156,17 @@ export async function preferencesPage(
       app.announce(
         `Remote search sends each query to ${selfPeer.label}. Earlier local queries are not uploaded.`,
       );
-      await session.setPreferences({ remoteSearchDisclosed: true });
     }
-    await session.setPreferences({ searchMode: mode });
+    await save(
+      "searchMode",
+      {
+        searchMode: mode,
+        ...(mode === "remote" ? { remoteSearchDisclosed: true } : {}),
+      },
+      () => {
+        modeField.input.value = session.preferences.searchMode;
+      },
+    );
   });
   main.append(modeField.wrapper);
   const packages = el("div", { class: "stack" });
@@ -330,8 +398,9 @@ export async function preferencesPage(
   });
   theme.input.addEventListener("change", async () => {
     const value = theme.input.value as "system" | "light" | "dark";
-    await session.setPreferences({ theme: value });
-    applyTheme(value);
+    await save("theme", { theme: value }, () => {
+      theme.input.value = session.preferences.theme;
+    });
   });
   main.append(theme.wrapper);
   const orthography = field("Lojban orthography beside headwords", {
@@ -348,18 +417,28 @@ export async function preferencesPage(
   orthography.input.addEventListener(
     "change",
     () =>
-      void session.setPreferences({
-        orthography: orthography.input.value as "latin" | "zbalermorna",
-      }),
+      void save(
+        "orthography",
+        {
+          orthography: orthography.input.value as "latin" | "zbalermorna",
+        },
+        () => {
+          orthography.input.value = session.preferences.orthography;
+        },
+      ),
   );
   main.append(orthography.wrapper);
-  main.append(
-    checkbox(
-      "Show my judgments first on word pages",
-      prefs.myJudgmentsFirst,
-      (value) => void session.setPreferences({ myJudgmentsFirst: value }),
-    ),
+  const judgments = checkbox(
+    "Show my judgments first on word pages",
+    prefs.myJudgmentsFirst,
+    async (value) => {
+      await save("myJudgmentsFirst", { myJudgmentsFirst: value }, () => {
+        judgments.querySelector("input")!.checked =
+          session.preferences.myJudgmentsFirst;
+      });
+    },
   );
+  main.append(judgments);
   // Optional services.
   main.append(el("h2", { class: "section", text: "Optional services" }));
   try {
