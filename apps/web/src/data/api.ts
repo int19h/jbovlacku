@@ -597,9 +597,12 @@ export function forgetWord(id: string) {
 const validCursor = (value: unknown): value is string =>
   typeof value === "string" && value.length > 0 && value.length <= 512;
 export function validateHits(hits: unknown, pageLimit: number): SearchHit[] {
+  if (Array.isArray(hits) && hits.length > pageLimit)
+    throw new Error(
+      "Search pagination returned too many results. Start a new search to retry.",
+    );
   if (
     !Array.isArray(hits) ||
-    hits.length > pageLimit ||
     !hits.every(
       (hit) =>
         isObject(hit) &&

@@ -179,3 +179,45 @@ test("remote sequence classes and a limited-segmentation notice survive paginati
   await expect(notice).toBeVisible();
   expect(requests).toBe(3);
 });
+
+test("an oversized remote page keeps prior hits and reports a pagination error", async ({
+  page,
+}) => {
+  const snapshot = "sha256:" + "a".repeat(64);
+  const view = "jve1:" + "b".repeat(64);
+  const hit = (index: number) => ({
+    word: { language: "jbo", spelling: "i" + "se".repeat(index) + "bo" },
+    word_id: "jvw1:" + index.toString(16).padStart(64, "0"),
+    definitions: ["jve1:" + index.toString(16).padStart(64, "0")],
+    match: "sequence-subsequence",
+  });
+  let requests = 0;
+  await page.route("**/api/v1/search?**", (route) => {
+    requests++;
+    const params = new URL(route.request().url()).searchParams;
+    const later = params.has("after");
+    expect(params.get("limit")).toBe("20");
+    return route.fulfill({
+      json: {
+        snapshot,
+        view,
+        hits: later
+          ? Array.from({ length: 21 }, (_, index) => hit(index + 3))
+          : [hit(1), hit(2)],
+        next: later ? null : "oversized-page",
+      },
+    });
+  });
+  await page.route("**/api/v1/words/**", (route) => route.abort());
+  await page.route("**/api/v1/events/**", (route) => route.abort());
+  await page.goto("/search?q=i%20bo&lang=en");
+  const results = page.getByRole("region", { name: "Search results" });
+  await expect(results.locator("article")).toHaveCount(2);
+  const original = await results.locator("article .hw").allTextContents();
+  await page.getByRole("button", { name: "show all" }).click();
+  await expect(results.locator(".notice")).toContainText(
+    "Search pagination returned too many results.",
+  );
+  await expect(results.locator("article .hw")).toHaveText(original);
+  expect(requests).toBe(2);
+});

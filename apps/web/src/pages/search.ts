@@ -434,15 +434,25 @@ export async function searchPage(
     } else {
       await discloseRemote();
       if (!context.live()) return;
+      const pageLimit = Math.min(PAGE_SIZE, RESULT_LIMIT - displayed.length);
       const page = await remoteSearch(
         query,
         language,
-        Math.min(PAGE_SIZE, RESULT_LIMIT - displayed.length),
+        pageLimit,
         snapshot ? { snapshot, view: view! } : null,
         next,
         { signal: context.signal, retired: includeRetired },
       );
       if (!context.live()) return;
+      if (
+        page.hits.length > pageLimit ||
+        page.hits.length > RESULT_LIMIT - displayed.length
+      ) {
+        stopped = true;
+        throw new Error(
+          "Search pagination returned too many results. Start a new search to retry.",
+        );
+      }
       if (
         (page.next !== null && (cursors.has(page.next) || !page.hits.length)) ||
         page.hits.some(
