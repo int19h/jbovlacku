@@ -213,7 +213,7 @@ test("built assets start a static local-search worker under the server CSP", asy
   page.on("worker", (worker) => workers.push(worker.url()));
   await page.goto(origin + "/preferences");
   await page.getByRole("button", { name: "Download", exact: true }).click();
-  await expect(page.getByRole("status")).toContainText(
+  await expect(page.locator("div.status[role=status]")).toContainText(
     "search package is saved",
   );
   const uploads: string[] = [];
