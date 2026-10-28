@@ -278,11 +278,14 @@ test("the personal view adds the signing identity as a root so its own endorseme
       await route.continue();
     });
     const panel = page.getByRole("region", { name: "Personal view" });
+    const receiptsBeforeRecompute = receiptReads;
     await panel.getByRole("button", { name: "Recompute from records" }).click();
     await expect(
       panel.getByRole("button", { name: "Cancel", exact: true }),
     ).toBeVisible();
-    await expect.poll(() => receiptReads).toBeGreaterThan(0);
+    await expect
+      .poll(() => receiptReads)
+      .toBeGreaterThan(receiptsBeforeRecompute);
     expect(manifests).toBe(0);
   } finally {
     releaseReceipts();
