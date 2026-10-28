@@ -8,7 +8,19 @@ import {
   validateCachedPackage,
   type CachedPackage,
 } from "./search.ts";
-const packages = new Map<string | number, CachedPackage>();
+import { rankNearby } from "../../../../packages/service/src/nearby.ts";
+import type {
+  PackageSearchOptions,
+  PackageHitReferences,
+} from "./package-search.ts";
+const packages = new Map<
+  string | number,
+  {
+    pkg: CachedPackage;
+    entries: Map<CachedPackage["entries"][number], number>;
+    events: Map<string, number>;
+  }
+>();
 const ready = initializeCore();
 let queue = Promise.resolve();
 // Keep messages ordered while the initial Wasm module loads.
@@ -29,19 +41,32 @@ self.onmessage = ({ data }) => {
           });
           return;
         }
-        packages.set(data.key, data.pkg);
         prepareIndex(data.pkg.entries, metrics);
+        const pkg: CachedPackage = data.pkg;
+        packages.set(data.key, {
+          pkg,
+          entries: new Map(pkg.entries.map((entry, index) => [entry, index])),
+          events: new Map(
+            pkg.entries.map((entry, index) => [entry.event, index]),
+          ),
+        });
       }
-      const pkg = packages.get(data.key);
-      if (!pkg)
-        throw new Error(
-          "The local search package expired. Start a new search to retry.",
-        );
+      const stored = packages.get(data.key);
+      if (!stored) {
+        self.postMessage({
+          request: data.request,
+          key: data.key,
+          code: "package-missing",
+          error:
+            "The local search package is unavailable. Start a new search to retry.",
+        });
+        return;
+      }
       packages.delete(data.key);
-      packages.set(data.key, pkg);
+      packages.set(data.key, stored);
       if (packages.size > 2) packages.delete(packages.keys().next().value!);
-      const hits = data.queries.map((query: string) =>
-        localSearch(pkg.entries, query, metrics),
+      const hits: ReturnType<typeof localSearch>[] = data.queries.map(
+        (query: string) => localSearch(stored.pkg.entries, query, metrics),
       );
       const segmentation = hits.some(
         (rows: ReturnType<typeof localSearch>) =>
@@ -49,9 +74,35 @@ self.onmessage = ({ data }) => {
       )
         ? "limited"
         : "complete";
+      const options: PackageSearchOptions = data.options ?? {};
+      const offset = Number.isSafeInteger(options.offset)
+        ? Math.min(1000, Math.max(0, options.offset!))
+        : 0;
+      const limit = Math.min(
+        1000 - offset,
+        Number.isSafeInteger(options.limit) ? Math.max(0, options.limit!) : 20,
+      );
+      const ranked = options.nearby ? [rankNearby(hits)] : hits;
+      const pages: PackageHitReferences[][] = ranked.map((rows) =>
+        rows.slice(offset, offset + limit).map((hit) => ({
+          word_id: hit.word_id,
+          match: hit.match,
+          entries: hit.entries.map((entry) => stored.entries.get(entry)!),
+          definitions: hit.definitions.map(
+            (event) => stored.events.get(event)!,
+          ),
+          preview: stored.events.get(hit.preview!.event)!,
+        })),
+      );
       self.postMessage({
         request: data.request,
-        result: { hits, segmentation, metrics, prepared: !!data.pkg },
+        result: {
+          hits: pages,
+          totals: ranked.map((rows) => rows.length),
+          segmentation,
+          metrics,
+          prepared: !!data.pkg,
+        },
       });
     } catch (error) {
       self.postMessage({

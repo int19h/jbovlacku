@@ -212,9 +212,13 @@ export async function searchPage(
       .get<CachedPackage>("packages", language)
       .catch(() => undefined);
   }
-  if (cached && query) {
+  if (cached) {
     try {
-      initialLocal = await searchPackage(cached, language, [query]);
+      initialLocal = await searchPackage(
+        cached,
+        language,
+        query ? [query] : [],
+      );
     } catch (error) {
       if (!context.live()) return;
       if (error instanceof PackageValidationError) {
@@ -286,6 +290,7 @@ export async function searchPage(
   let snapshot = cached?.snapshot ?? "";
   let view: string | null = null;
   let localHits: LocalHit[] = [];
+  let localTotal = 0;
   let stopped = false;
   let expanding = false;
   let segmentation: "complete" | "limited" | undefined;
@@ -297,6 +302,7 @@ export async function searchPage(
   results.before(segmentationNote);
   if (initialLocal) {
     localHits = initialLocal.hits[0];
+    localTotal = initialLocal.totals[0];
     segmentation = initialLocal.segmentation;
   }
   const remember = () => {
@@ -357,18 +363,12 @@ export async function searchPage(
   const refreshCount = () => {
     refreshProvenance();
     segmentationNote.hidden = segmentation !== "limited";
-    const total = cached
-      ? localHits.length
-      : displayed.length + (next ? "+" : "");
+    const total = cached ? localTotal : displayed.length + (next ? "+" : "");
     count.textContent = cached
-      ? plural(localHits.length, "word")
+      ? plural(localTotal, "word")
       : `${displayed.length}${next ? " or more" : ""} ${displayed.length === 1 && !next ? "word" : "words"}`;
     void total;
-    const remaining = cached
-      ? localHits.length - displayed.length
-      : next
-        ? null
-        : 0;
+    const remaining = cached ? localTotal - displayed.length : next ? null : 0;
     endLine.hidden = !(remaining === null || remaining > 0);
     endLine.replaceChildren();
     if (remaining === null || remaining > 0) {
@@ -431,15 +431,21 @@ export async function searchPage(
   const loadNext = async (allLocal = false) => {
     if (!context.live() || stopped || displayed.length >= RESULT_LIMIT) return;
     if (cached) {
-      appendHits(
-        localHits.slice(
-          displayed.length,
-          Math.min(
-            allLocal ? localHits.length : displayed.length + PAGE_SIZE,
-            RESULT_LIMIT,
-          ),
-        ),
+      const limit = Math.min(
+        allLocal ? localTotal - displayed.length : PAGE_SIZE,
+        RESULT_LIMIT - displayed.length,
       );
+      if (displayed.length || limit > localHits.length) {
+        const page = await searchPackage(cached, language, [query], {
+          offset: displayed.length,
+          limit,
+        });
+        if (!context.live()) return;
+        localHits = page.hits[0];
+        localTotal = page.totals[0];
+        segmentation = page.segmentation;
+      }
+      appendHits(localHits.slice(0, limit));
     } else {
       await discloseRemote();
       if (!context.live()) return;
@@ -503,6 +509,13 @@ export async function searchPage(
     saved.hits.length <= RESULT_LIMIT;
   try {
     if (restorable && cached && saved.snapshot === cached.snapshot) {
+      if (saved.hits.length > localHits.length) {
+        const page = await searchPackage(cached, language, [query], {
+          limit: saved.hits.length,
+        });
+        if (!context.live()) return;
+        localHits = page.hits[0];
+      }
       appendHits(localHits.slice(0, saved.hits.length));
       refreshCount();
     } else if (

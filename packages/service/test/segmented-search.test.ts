@@ -162,6 +162,36 @@ test("GET and POST share segmented ranking, fallback, cursors, and limits in a f
       [["iboku", "sequence-subsequence"]],
     );
     assert.equal(more.next, null);
+    const oldCursor =
+      (service as any)
+        .hashJson({
+          search: "segmented-v2",
+          query: "i bo",
+          language: "en",
+          snapshot: search.snapshot,
+          view: search.view,
+          retired: false,
+        })
+        .slice(7) + ".2";
+    const oldPage = await service.fetch(
+      new Request(
+        "http://local.invalid/api/v1/search?" +
+          new URLSearchParams({
+            q: "i bo",
+            language: "en",
+            limit: "2",
+            after: oldCursor,
+            snapshot: search.snapshot,
+            view: search.view,
+          }),
+      ),
+    );
+    assert.equal(
+      oldPage.status,
+      400,
+      "Cursors from canonical-prefix matching must be rejected.",
+    );
+    assert.equal(((await oldPage.json()) as any).code, "bad_cursor");
     const post = await service.fetch(
       new Request("http://local.invalid/api/v1/search", {
         method: "POST",

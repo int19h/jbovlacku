@@ -47,7 +47,8 @@ import { navigate, type RenderContext, type Route } from "../../app/router.ts";
 import type { App } from "../../app/context.ts";
 import { getWord, RequestError } from "../../data/api.ts";
 import type { Draft } from "../../model/draft.ts";
-import { localSearch, type CachedPackage } from "../../data/search.ts";
+import type { CachedPackage, LocalHit } from "../../data/search.ts";
+import { searchPackage } from "../../data/package-search.ts";
 import { isV2 } from "../../data/search.ts";
 import {
   cachedPackage,
@@ -321,11 +322,33 @@ export async function lujvoPage(
   main.append(columns);
   // Search for parts.
   let searchTimer: ReturnType<typeof setTimeout> | undefined;
-  const renderSearch = () => {
+  let partSearch = 0;
+  const renderSearch = async () => {
+    const request = ++partSearch;
     addResults.replaceChildren();
     const query = addField.input.value.trim();
     if (!query) return;
-    const hits = cached ? localSearch(cached.entries, query).slice(0, 6) : [];
+    const current = () =>
+      context.live() &&
+      request === partSearch &&
+      addField.input.value.trim() === query;
+    let hits: LocalHit[] = [];
+    try {
+      if (cached)
+        hits = (
+          await searchPackage(
+            cached,
+            cached.entries[0]?.language ?? draft.language,
+            [query],
+            { limit: 6 },
+          )
+        ).hits[0];
+    } catch (error) {
+      if (current())
+        addResults.append(el("li", { class: "notice", text: describe(error) }));
+      return;
+    }
+    if (!current()) return;
     for (const hit of hits) {
       const entry = hit.entries[0];
       const kind =
@@ -458,8 +481,9 @@ export async function lujvoPage(
       );
   };
   addField.input.addEventListener("input", () => {
+    partSearch++;
     clearTimeout(searchTimer);
-    searchTimer = setTimeout(renderSearch, 200);
+    searchTimer = setTimeout(() => void renderSearch(), 200);
   });
   let result: LujvoResult | null = null;
   let failure: string | null = null;

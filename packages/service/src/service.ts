@@ -2494,7 +2494,7 @@ export class DictionaryService {
         includeRetired,
       );
       const cursorHash = this.hashJson({
-        search: "segmented-v2",
+        search: "segmented-v3",
         query,
         language,
         snapshot: snapshot.snapshot,

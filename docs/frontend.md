@@ -193,7 +193,8 @@ It keeps query order and groups repeated word identities into one card, includin
 It keeps alternative matching definitions and never creates a definition for an absent headword.
 A complete single-word query uses the segmenter's canonical reading as an exact headword alias.
 Thus `klama.`, `(klama)`, `.i`, `1`, and `riha` find `klama`, `klama`, `i`, `pa`, and `ri'a` respectively.
-Ordinary whole-query matches precede fallback cards. Raw prefix lookup also remains available.
+Ordinary whole-query matches precede fallback cards. Canonical aliases apply only to exact matches.
+Prefix lookup uses the typed spelling after normal case, stress, and apostrophe normalization. It can ignore pause and comma characters, but never rewrites digits or `h`.
 Both modes use the same matcher. Server eligibility, language, and retirement filters apply before query-span coverage.
 Local packages retain their stated status limits.
 
@@ -219,7 +220,15 @@ One static module worker validates and searches saved packages outside the main 
 Download hashing and entry checks retain their existing download path.
 It retains two prepared packages, keyed by database name, language, and durable revision. Separate connections can reuse the same prepared revision.
 Page reload closes that worker and its caches. The first search after reload reads, transfers, validates, and prepares the saved package again.
-Nearby lookup in the meaning step uses the same worker and prepared index.
+Nearby lookup in the meaning step and part lookup in the lujvo builder use the same worker and prepared index.
+Each nearby call reads the package for its current language, including an empty meaning. A missing package never disables later local lookups.
+Changes to the meaning or language invalidate pending results and errors before the next debounced lookup starts.
+The worker ranks all nearby query lists before selecting six rows.
+Ordinary local search transfers 20 rows initially. Show all requests only the remaining rows within the browser's 1,000-word limit.
+Replies include total counts and entry references into the exact package captured by that request. They never copy full definition records back to the page.
+These references preserve matching alternatives, definition order, selected previews, and display spellings.
+An empty search page validates its saved package before displaying its snapshot.
+If queued cache churn removes a worker package, the client retries once with its captured package. Rejected packages keep their validation error.
 Worker startup or execution failure reports an error without sending a local query to a server.
 An invalid saved package retains the earlier disclosed remote fallback.
 A query permits 16,384 UTF-8 bytes, 512 recognized words, and 300,000 parser steps.
@@ -1486,7 +1495,7 @@ An empty-string cursor is invalid. A request without a changes cursor starts fro
 Search accepts an optional `after` cursor tied to the same query, language, retired flag, view, and snapshot.
 
 Match kinds are `headword`, `gloss`, `sequence-exact`, `sequence-contiguous`, `headword-prefix`, `gloss-prefix`, `sequence-subsequence`, `token`, and `component`, in that relevance order.
-The `component` class uses the first occurrence of each query word before the stable word-ID tie break.
+The `component` class uses the first uncovered occurrence of each query word before the stable word-ID tie break.
 New servers return `segmentation` on every page. Older servers can omit it.
 `complete` means that segmentation completed within its limits. It does not assert that every query run has a Lojban reading.
 `limited` states that a query or headword indexing limit prevents complete sequence coverage.

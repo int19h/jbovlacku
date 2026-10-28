@@ -34,6 +34,24 @@ test("measure real package routes and browser main-thread CPU", async ({
       .digest("hex"),
   };
   console.log(JSON.stringify({ kind: "browser dataset", ...identity }));
+  await page.addInitScript(() => {
+    const original = Worker;
+    (window as any).packageTransfers = [];
+    window.Worker = class extends original {
+      constructor(url: string | URL, options?: WorkerOptions) {
+        super(url, options);
+        if (String(url).includes("package-search-worker"))
+          this.addEventListener("message", ({ data }) => {
+            if (data.result)
+              (window as any).packageTransfers.push({
+                bytes: new TextEncoder().encode(JSON.stringify(data)).length,
+                rows: data.result.hits.map((hits: unknown[]) => hits.length),
+                totals: data.result.totals,
+              });
+          });
+      }
+    };
+  });
   await page.goto("/");
   await page.evaluate(async (entries) => {
     const { LocalStore } = await import(String("/src/data/store.ts"));
@@ -145,4 +163,44 @@ test("measure real package routes and browser main-thread CPU", async ({
       ),
     }),
   );
+  const transferStart = await page.evaluate(
+    () => (window as any).packageTransfers.length,
+  );
+  const broadStart = await cpu();
+  await navigate("/search?q=a&lang=en");
+  await expect(page.locator("article.hit")).toHaveCount(20);
+  const firstCpu = 1000 * ((await cpu()) - broadStart);
+  const firstTransfers = await page.evaluate(
+    (start) => (window as any).packageTransfers.slice(start),
+    transferStart,
+  );
+  console.log(
+    JSON.stringify({
+      label: "broad a first page",
+      main_thread_cpu_ms: firstCpu,
+      transfers: firstTransfers,
+    }),
+  );
+  expect(firstCpu).toBeLessThan(400);
+  expect(firstTransfers).toHaveLength(1);
+  expect(firstTransfers[0].rows).toEqual([20]);
+  expect(firstTransfers[0].bytes).toBeLessThan(100_000);
+  expect(firstTransfers[0].totals[0]).toBeGreaterThan(1000);
+  const showAllStart = await cpu();
+  await page.getByRole("button", { name: "show all", exact: true }).click();
+  await expect(page.locator("article.hit")).toHaveCount(1000);
+  const showAllTransfers = await page.evaluate(
+    (start) => (window as any).packageTransfers.slice(start + 1),
+    transferStart,
+  );
+  console.log(
+    JSON.stringify({
+      label: "broad a show all",
+      main_thread_cpu_ms: 1000 * ((await cpu()) - showAllStart),
+      transfers: showAllTransfers,
+    }),
+  );
+  expect(showAllTransfers).toHaveLength(1);
+  expect(showAllTransfers[0].rows).toEqual([980]);
+  expect(showAllTransfers[0].bytes).toBeLessThan(512_000);
 });
