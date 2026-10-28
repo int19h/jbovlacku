@@ -229,6 +229,7 @@ The inline assistance status also stays available while empty and announces a fa
 A failed assistance save uses one live status region. A result after navigation uses the shell status.
 The first-signature dialog shows storage errors inside the dialog and permits another attempt.
 Browser tests cover these outcomes, focus, saved off-state reloads, and receipt waits before personal recomputation.
+The assistance tests bind delayed capability responses to held requests and cover an older response that finishes during a newer hold.
 
 The private attempt log offers Markdown and JSON export. Signed publications omit AI logs.
 Both local adapters offer operator-controlled assistance, off by default, with server-held keys and bounded private jobs.

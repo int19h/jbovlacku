@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page, type Request } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 import {
   fixture,
@@ -223,10 +223,16 @@ async function mockAssistant(page: Page, options: MockOptions = {}) {
   let result: any;
   let released = !options.delay;
   let capabilityReads = 0;
-  let capabilityGate: Promise<void> | undefined;
+  let capabilityGate:
+    | { released: Promise<void>; reached: (request: Request) => void }
+    | undefined;
   await page.route("**/api/v1/capabilities", async (route) => {
+    const gate = capabilityGate;
     capabilityReads++;
-    await capabilityGate;
+    if (gate) {
+      gate.reached(route.request());
+      await gate.released;
+    }
     const actual = await route.fetch();
     const caps = await actual.json();
     await route.fulfill({
@@ -392,12 +398,31 @@ async function mockAssistant(page: Page, options: MockOptions = {}) {
     capabilityReads: () => capabilityReads,
     holdCapabilities: () => {
       let release!: () => void;
-      capabilityGate = new Promise<void>((resolve) => {
-        release = resolve;
+      let reached!: (request: Request) => void;
+      const request = new Promise<Request>((resolve) => {
+        reached = resolve;
       });
-      return () => {
-        capabilityGate = undefined;
-        release();
+      const gate = {
+        released: new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+        reached,
+      };
+      capabilityGate = gate;
+      const response = request.then((held) => held.response());
+      return {
+        request,
+        response,
+        release: () => {
+          if (capabilityGate === gate) capabilityGate = undefined;
+          release();
+        },
+        finished: async () => {
+          const actual = await response;
+          expect(actual).not.toBeNull();
+          expect(await actual!.finished()).toBeNull();
+          return actual!;
+        },
       };
     },
   };
@@ -679,22 +704,28 @@ test("cancel, navigation, and the off setting cancel jobs without applying delay
         exact: true,
       }),
   ).toBeVisible();
+  await expect(
+    page.getByText(
+      "Manual authoring and local search work without these services.",
+      {
+        exact: true,
+      },
+    ),
+  ).toBeVisible();
   mock.release();
-  const releaseCapabilities = mock.holdCapabilities();
+  const capabilities = mock.holdCapabilities();
   let capabilityResponded = false;
-  const capabilities = page
-    .waitForResponse("**/api/v1/capabilities")
-    .then((response) => {
-      capabilityResponded = true;
-      return response;
-    });
+  void capabilities.response.then(() => {
+    capabilityResponded = true;
+  });
   await page.goto("/new/type");
   await expect(
     page.getByRole("heading", { name: "What kind of word?" }),
   ).toBeVisible();
+  await capabilities.request;
   expect(capabilityResponded).toBe(false);
-  releaseCapabilities();
-  await (await capabilities).finished();
+  capabilities.release();
+  await capabilities.finished();
   await expect(page.locator(".ai-action:visible")).toHaveCount(0);
   expect((await stored(page)).kind).toBe("gismu");
   await page.getByRole("link", { name: "Settings", exact: true }).click();
@@ -706,10 +737,18 @@ test("cancel, navigation, and the off setting cancel jobs without applying delay
 test("assistance settings keep navigation on the page until the choice is saved", async ({
   page,
 }) => {
-  await mockAssistant(page);
+  const mock = await mockAssistant(page);
   await draft(page);
   await page.getByRole("link", { name: "Settings", exact: true }).click();
   await page.getByRole("checkbox", { name: "Use AI assistance" }).waitFor();
+  await expect(
+    page.getByText(
+      "Manual authoring and local search work without these services.",
+      {
+        exact: true,
+      },
+    ),
+  ).toBeVisible();
   await page.clock.install({ time: new Date("2026-10-27T12:00:00Z") });
   await page.clock.pauseAt(new Date("2026-10-27T12:00:01Z"));
   await page.evaluate(async () => {
@@ -749,12 +788,14 @@ test("assistance settings keep navigation on the page until the choice is saved"
     }),
   ).toBe(false);
   await page.clock.resume();
-  const capabilities = page.waitForResponse("**/api/v1/capabilities");
+  const capabilities = mock.holdCapabilities();
   await page.goto("/new/type");
   await expect(
     page.getByRole("heading", { name: "What kind of word?" }),
   ).toBeVisible();
-  await (await capabilities).finished();
+  await capabilities.request;
+  capabilities.release();
+  await capabilities.finished();
   await expect(page.locator(".ai-action:visible")).toHaveCount(0);
   await page.getByRole("link", { name: "Settings", exact: true }).click();
   await expect(
@@ -4441,4 +4482,84 @@ test("orphan saved rows migrate without current and Export drafts excludes only 
     text: "A raw legacy draft.",
   });
   expect(rows.some((row: any) => row.kind === "saved-drafts")).toBe(false);
+});
+
+test("a capabilities hold ignores an older response", async ({
+  page,
+}, testInfo) => {
+  const mock = await mockAssistant(page);
+  await page.goto("/preferences");
+  await expect(
+    page.getByText(
+      "Manual authoring and local search work without these services.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  let releaseOlder!: () => void;
+  let olderReached!: () => void;
+  const olderReady = new Promise<void>((resolve) => {
+    olderReached = resolve;
+  });
+  const olderGate = new Promise<void>((resolve) => {
+    releaseOlder = resolve;
+  });
+  await page.route("**/api/v1/capabilities", async (route) => {
+    if (route.request().headers()["x-test-capabilities"] !== "older")
+      return route.fallback();
+    const response = await route.fetch();
+    olderReached();
+    await olderGate;
+    await route.fulfill({ response });
+  });
+  const olderRequest = page.waitForRequest(
+    (request) => request.headers()["x-test-capabilities"] === "older",
+  );
+  const olderFetch = page.evaluate(async () => {
+    const response = await fetch("/api/v1/capabilities", {
+      headers: { "X-Test-Capabilities": "older" },
+    });
+    await response.json();
+  });
+  const older = await olderRequest;
+  await olderReady;
+  const capabilities = mock.holdCapabilities();
+  let capabilityResponded = false;
+  void capabilities.response.then(() => {
+    capabilityResponded = true;
+  });
+  const newerRequest = page.waitForRequest(
+    (request) => request.headers()["x-test-capabilities"] === "newer",
+  );
+  const newerFetch = page.evaluate(async () => {
+    const response = await fetch("/api/v1/capabilities", {
+      headers: { "X-Test-Capabilities": "newer" },
+    });
+    await response.json();
+  });
+  try {
+    const newer = await newerRequest;
+    expect(await capabilities.request).toBe(newer);
+    expect(newer).not.toBe(older);
+    releaseOlder();
+    await olderFetch;
+    const olderResponse = await older.response();
+    expect(olderResponse).not.toBeNull();
+    expect(await olderResponse!.finished()).toBeNull();
+    expect(capabilityResponded).toBe(false);
+    capabilities.release();
+    const response = await capabilities.finished();
+    expect(response.request()).toBe(newer);
+    await testInfo.attach("capabilities-control", {
+      body: JSON.stringify({
+        distinctRequests: older !== newer,
+        olderFinishedWhileNewerHeld: true,
+        responseIsNewer: response.request() === newer,
+      }),
+      contentType: "application/json",
+    });
+  } finally {
+    releaseOlder();
+    capabilities.release();
+    await newerFetch;
+  }
 });
