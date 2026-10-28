@@ -1159,6 +1159,31 @@ fn r2_opus_f7_rafsi_claims_require_plain_word_and_rafsi_spellings() {
     }
 }
 
+fn assert_non_nfc_rafsi_claim_error(spelling: &str, rafsi: &str) {
+    let word = word_id(&json!({"language":"jbo","spelling":"djan"})).unwrap();
+    let body = json!({"word":{"language":"jbo","spelling":spelling},"rafsi":rafsi,"rationale":[],"sources":[],"legacy":null});
+    let h = header(
+        json!({"kind":"rafsi.publish","word":word,"assignment":rafsi_pair_id(&word, "dja").unwrap(),"origin":"native"}),
+        Some(body_descriptor(&canonical_value(&body).unwrap()).unwrap()),
+    );
+    let error = validate_body(&h, &body).unwrap_err();
+    assert_eq!(error.code, "spelling", "{error:?}");
+    assert_eq!(
+        error.message,
+        "spelling must be nonempty NFC text without controls or edge whitespace"
+    );
+}
+
+#[test]
+fn r3_opus_n2_non_nfc_word_without_acute_reports_spelling_error() {
+    assert_non_nfc_rafsi_claim_error("e\u{308}", "dja");
+}
+
+#[test]
+fn r3_opus_n2_non_nfc_rafsi_without_acute_reports_spelling_error() {
+    assert_non_nfc_rafsi_claim_error("djan", "e\u{308}");
+}
+
 #[test]
 fn r2_opus_f2_specification_states_the_prelaunch_accent_break() {
     let spec = include_str!("../../../docs/format.md");

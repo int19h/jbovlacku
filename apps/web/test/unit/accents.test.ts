@@ -373,3 +373,81 @@ test("unknown accented zei compounds keep ordinary experimental classification t
     );
   }
 });
+
+test("R3 Grok: wizard rafsi accents block publication without changing the draft", () => {
+  for (const rafsi of ["djá", "dja\u0301", "\u0301dja"]) {
+    const draft = newDraft({
+      kind: "cmevla",
+      spelling: "dján",
+      text: [["Synthetic."]],
+      rafsiClaims: [{ rafsi, rationale: "Synthetic." }],
+    });
+    const result = draftToBody(draft);
+    assert.ok(
+      result.problems.some(
+        (problem) =>
+          problem.field === "rafsi" &&
+          problem.blocking &&
+          /without acute accents/.test(problem.message),
+      ),
+      rafsi,
+    );
+    assert.equal(draft.rafsiClaims[0].rafsi, rafsi);
+    assert.equal(result.body?.word.spelling, "dján");
+    draft.rafsiClaims[0].rafsi = "dja";
+    assert.deepEqual(
+      draftToBody(draft).problems.filter((problem) => problem.blocking),
+      [],
+    );
+  }
+});
+
+test("R3 Opus N1: the word index skips and counts invalid cached entries once", async () => {
+  const { createPackageWordIndex } = await import("../../src/data/search.ts");
+  let calls = 0;
+  const lookup = createPackageWordIndex((word) => {
+    calls++;
+    return wordId(word);
+  });
+  const cached: CachedPackage = {
+    ...cache(),
+    entries: [
+      entry("djan", "a"),
+      entry("h\u0301a", "b"),
+      entry("dján", "c"),
+      entry("e\u0308", "d"),
+      entry("blanu", "e"),
+    ],
+  };
+  const id = wordId({ language: "jbo", spelling: "djan" });
+  assert.deepEqual(lookup(cached, id), [cached.entries[0], cached.entries[2]]);
+  assert.equal(lookup.invalidEntryCount(cached), 2);
+  assert.deepEqual(
+    lookup(cached, wordId({ language: "jbo", spelling: "blanu" })),
+    [cached.entries[4]],
+  );
+  assert.deepEqual(
+    lookup(cached, wordId({ language: "jbo", spelling: "klama" })),
+    [],
+  );
+  assert.equal(lookup.invalidEntryCount(cached), 2);
+  assert.equal(calls, 5);
+  const replacement = cache();
+  assert.equal(lookup.invalidEntryCount(replacement), 0);
+  assert.equal(lookup(replacement, id).length, 2);
+  assert.equal(calls, 7);
+  assert.equal(lookup.invalidEntryCount(cached), 2);
+  assert.equal(calls, 7);
+});
+
+test("R3 Opus N3: word feedback shows the accent error once and keeps other diagnostics", () => {
+  for (const spelling of ["blánu", "\u0301djan"]) {
+    const draft = newDraft({ kind: "cmevla", spelling });
+    const feedback = wordFormFeedback(draft);
+    assert.equal(feedback.blocking, true);
+    assert.match(feedback.message, /^(Acute accents|An acute accent)/);
+    assert.equal(feedback.text.split(feedback.message).length - 1, 1, spelling);
+    for (const diagnostic of detectWord(spelling).diagnostics)
+      assert.ok(feedback.text.includes(diagnostic), diagnostic);
+  }
+});

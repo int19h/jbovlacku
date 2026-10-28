@@ -505,3 +505,91 @@ test("R2 zbalermorna renders accented names in word and search views", async ({
       .locator(".zbalermorna"),
   ).toBeVisible();
 });
+
+test("R3 wizard blocks accented rafsi before Publish and preserves the entered spelling", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await typed(page, "dján");
+  await page.getByRole("button", { name: "New word", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Enter the form", exact: true })
+    .click();
+  await page.getByRole("button", { name: "Use dján", exact: true }).click();
+  await page.getByRole("link", { name: "Full editor", exact: true }).click();
+  await page
+    .getByLabel("Definition text", { exact: true })
+    .fill("A synthetic signed name.");
+  await page
+    .getByRole("button", { name: "Add a rafsi claim", exact: true })
+    .click();
+  await page.getByLabel("Rafsi 1", { exact: true }).fill("djá");
+  await expect(
+    page.getByRole("region", { name: "Rendered definition" }),
+  ).toContainText("Rafsi claim 1 requires a spelling without acute accents.");
+  await page.getByRole("button", { name: "Review", exact: true }).click();
+  await expect(page.locator("main")).toContainText(
+    "Rafsi claim 1 requires a spelling without acute accents.",
+  );
+  await expect(
+    page.getByRole("button", { name: "Publish", exact: true }),
+  ).toHaveCount(2);
+  for (const publish of await page
+    .getByRole("button", { name: "Publish", exact: true })
+    .all())
+    await expect(publish).toBeDisabled();
+  expect(
+    await page.evaluate(async () => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const store = new LocalStore();
+      return {
+        rafsi: (await store.get("drafts", "current")).rafsiClaims[0].rafsi,
+        outbox: (await store.list("outbox")).length,
+      };
+    }),
+  ).toEqual({ rafsi: "djá", outbox: 0 });
+  await page.getByRole("link", { name: "Edit", exact: true }).click();
+  await page.getByRole("link", { name: "Full editor", exact: true }).click();
+  await expect(page.getByLabel("Rafsi 1", { exact: true })).toHaveValue("djá");
+  await page.getByLabel("Rafsi 1", { exact: true }).fill("dja");
+  await page.getByRole("button", { name: "Review", exact: true }).click();
+  const publish = page
+    .locator("aside")
+    .getByRole("button", { name: "Publish", exact: true });
+  await expect(publish).toBeEnabled();
+  await publish.click();
+  const unlock = page.getByRole("dialog", { name: "Unlock your key" });
+  if (await unlock.isVisible()) {
+    await unlock.getByLabel("Passphrase").fill(PASSPHRASE);
+    await unlock.getByRole("button", { name: "Unlock", exact: true }).click();
+  }
+  await acceptFirstSignature(page);
+  await expect(page).toHaveURL(/\/word\//);
+  const records = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    return (await new LocalStore().list("outbox")).map((row: any) =>
+      JSON.parse(row.transport),
+    );
+  });
+  expect(
+    records.find(
+      (row) => row.envelope.header.action.kind === "definition.publish",
+    ).body.word.spelling,
+  ).toBe("dján");
+  const claim = records.find(
+    (row) => row.envelope.header.action.kind === "rafsi.publish",
+  );
+  expect(claim.body.word.spelling).toBe("djan");
+  expect(claim.body.rafsi).toBe("dja");
+});
+
+test("R3 word-form panel shows an accent error once", async ({ page }) => {
+  await page.goto("/new/editor");
+  await page.getByLabel("Type", { exact: true }).selectOption("gismu");
+  await page.getByLabel("Headword", { exact: true }).fill("blánu");
+  const feedback = page.getByRole("status", { name: "Word form", exact: true });
+  const message =
+    "Acute accents are allowed only on cmevla. Remove the accent or use a name that the selected profile recognizes.";
+  await expect(feedback).toContainText(message);
+  expect((await feedback.innerText()).split(message).length - 1).toBe(1);
+});
