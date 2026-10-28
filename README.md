@@ -226,6 +226,7 @@ Reload or exit warns while a write remains pending. A failed save keeps the comm
 A late save keeps the page that the reader chose. Earlier save completions preserve newer control choices.
 The empty shell announcement region stays available to assistive software. Fast assistance saves use inline feedback without a toast.
 The inline assistance status also stays available while empty and announces a fast save.
+A failed assistance save uses one live status region. A result after navigation uses the shell status.
 The first-signature dialog shows storage errors inside the dialog and permits another attempt.
 Browser tests cover these outcomes, focus, saved off-state reloads, and receipt waits before personal recomputation.
 
@@ -381,6 +382,8 @@ An alternate view can then use that slot after those calls finish. The completed
 Recomputing an older retained snapshot does not give it newer protection than the completed snapshot.
 This also applies after a late body changes the snapshot without advancing the event position.
 The cache uses the saved coordinator revision, including after restart, with snapshot ID as a fixed tie breaker.
+Pinned reads load this revision on Node and Worker before any unpinned current read.
+Node also retains this order when newer accepted records wait behind a completed checkpoint.
 
 Workers transfer state bytes without retaining another parsed JavaScript state. Judgment updates share unchanged result objects on the main thread.
 

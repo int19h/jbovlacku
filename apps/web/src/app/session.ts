@@ -122,7 +122,11 @@ export class Session {
   private preferenceStatus(message: string) {
     for (const listener of this.preferenceStatusListeners) listener(message);
   }
-  setPreferences(patch: Partial<Preferences>): Promise<Preferences> {
+  setPreferences(
+    patch: Partial<Preferences>,
+    // A true result means that the live caller showed the failure.
+    onFailure?: (error: unknown) => boolean,
+  ): Promise<Preferences> {
     const themeRequest = "theme" in patch ? ++this.themeRequest : undefined;
     const writing = Promise.resolve()
       .then(() => this.store.setPreferences(patch))
@@ -143,7 +147,8 @@ export class Session {
       .catch((error: unknown) => {
         if (themeRequest === this.themeRequest)
           applyTheme(this.preferences.theme);
-        this.preferenceStatus(`Not saved: ${describe(error)}`);
+        if (!onFailure?.(error))
+          this.preferenceStatus(`Not saved: ${describe(error)}`);
         throw error;
       })
       .finally(() => {

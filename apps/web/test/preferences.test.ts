@@ -86,9 +86,11 @@ for (const fail of [false, true]) {
     expect(await page.evaluate(() => (window as any).preferenceWrites)).toBe(1);
     await page.evaluate(() => (window as any).releasePreferenceSave());
     await expect(page.locator("main")).toContainText(fail ? failed : saved);
-    await expect(page.locator("#app > [role=status]")).toHaveText(
-      fail ? failed : "",
-    );
+    await expect(page.locator("#app > [role=status]")).toBeEmpty();
+    if (fail)
+      await expect(
+        page.getByRole("status").filter({ hasText: failed }),
+      ).toHaveCount(1);
     await expect(choice).toBeFocused();
     await expect(choice).toHaveAttribute("aria-disabled", "false");
     if (fail) await expect(choice).toBeChecked();
@@ -139,6 +141,10 @@ for (const fail of [false, true]) {
     await expect(page.locator("#app > [role=status]")).toHaveText(
       fail ? failed : saved,
     );
+    if (fail)
+      await expect(
+        page.getByRole("status").filter({ hasText: failed }),
+      ).toHaveCount(1);
     expect(new URL(page.url()).pathname).toBe("/about");
     await expect(search).toBeFocused();
     expect(await unloadWarns(page)).toBe(false);
@@ -486,6 +492,49 @@ test("round 3: the empty shell status stays exposed in Chromium accessibility be
   await expect(page.locator("#app > [role=status]")).toBeEmpty();
   await exposed();
   await cdp.detach();
+});
+
+test("a fast failed assistance save announces exactly one live failure status", async ({
+  page,
+}) => {
+  const choice = await settings(page);
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    LocalStore.prototype.setPreferences = async function () {
+      throw new Error("Test preference write failed.");
+    };
+    const previous = new Map<Element, string>();
+    const announcements: { id: string; message: string }[] = [];
+    (window as any).failureAnnouncements = announcements;
+    new MutationObserver(() => {
+      for (const region of document.querySelectorAll('[role="status"]')) {
+        const message = region.textContent ?? "";
+        if (
+          message !== previous.get(region) &&
+          message.startsWith("Not saved:")
+        )
+          announcements.push({ id: region.id, message });
+        previous.set(region, message);
+      }
+    }).observe(document.querySelector("#app")!, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+    });
+  });
+  await choice.focus();
+  await choice.press("Space");
+  await expect(page.locator("#assistance-save-status")).toHaveText(failed);
+  expect(
+    await page.getByRole("status").filter({ hasText: failed }).count(),
+  ).toBe(1);
+  await expect(page.locator("#app > [role=status]")).toBeEmpty();
+  expect(
+    await page.evaluate(() => (window as any).failureAnnouncements),
+  ).toEqual([{ id: "assistance-save-status", message: failed }]);
+  await expect(choice).toBeFocused();
+  await expect(choice).toBeChecked();
+  await expect(choice).toHaveAttribute("aria-disabled", "false");
 });
 
 test("a fast assistance save announces inline feedback from an exposed empty status region", async ({

@@ -103,13 +103,19 @@ export async function preferencesPage(
           input.setAttribute("aria-disabled", "true");
           saved.textContent = "Saving assistance setting.";
           try {
-            await session.setPreferences({ useAiAssistance: value });
+            await session.setPreferences(
+              { useAiAssistance: value },
+              (error) => {
+                if (!context.live()) return false;
+                input.checked = session.preferences.useAiAssistance !== false;
+                saved.textContent = `Not saved: ${describe(error)}`;
+                return true;
+              },
+            );
             if (context.live())
               saved.textContent = "Assistance setting saved in this browser.";
-          } catch (error) {
-            if (!context.live()) return;
-            input.checked = session.preferences.useAiAssistance !== false;
-            saved.textContent = `Not saved: ${describe(error)}`;
+          } catch {
+            // The live inline status or the session reports the failure.
           } finally {
             saving = false;
             if (context.live()) input.setAttribute("aria-disabled", "false");
