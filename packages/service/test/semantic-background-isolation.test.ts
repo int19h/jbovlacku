@@ -952,3 +952,94 @@ test("R4-2 a marked retry excludes an input parked by another view", async (t) =
     pending: 0,
   });
 });
+
+test("R4-3 capacity refusal during expired-source replacement waits and then recovers", async (t) => {
+  let sends = 0;
+  let attempts = 0;
+  let full = true;
+  const f = await fixture(t, async () => {
+    sends++;
+    return success();
+  });
+  f.source.page = async () => {
+    throw new AssistanceError(
+      410,
+      "snapshot_expired",
+      "Expired synthetic source",
+    );
+  };
+  let background = f.host();
+  await background.cycle();
+  const old = await f.job();
+  const fresh = {
+    context: { ...f.source.context, snapshot: hash(1400) },
+    page: async () => ({
+      documents: f.docs,
+      next: f.docs[0].event,
+      done: true,
+    }),
+  };
+  f.options.source = async (_profile?: unknown, snapshot?: string) => {
+    if (snapshot === old.snapshot)
+      throw new AssistanceError(
+        410,
+        "snapshot_expired",
+        "Expired synthetic source",
+      );
+    return fresh;
+  };
+  const create = f.store.create.bind(f.store);
+  t.mock.method(
+    f.store,
+    "create",
+    async (
+      context: Parameters<typeof create>[0],
+      profile: Parameters<typeof create>[1],
+    ) => {
+      if (context.snapshot === fresh.context.snapshot) {
+        attempts++;
+        if (full)
+          throw new AssistanceError(
+            409,
+            "semantic_capacity",
+            "Full synthetic replacement store",
+          );
+      }
+      return create(context, profile);
+    },
+  );
+  f.advance(3600000);
+  await background.cycle().catch(() => {});
+  assert.equal(
+    (await f.job()).background_recovery?.reason,
+    "semantic_capacity",
+    "Replacement capacity must replace the expired-source refusal as the recovery reason",
+  );
+  assert.equal(
+    (await f.job()).background_recovery?.next_attempt,
+    Date.now() + 3600000,
+  );
+  assert.equal(f.reports.length, 2);
+  assert.equal(attempts, 1);
+  await background.close();
+  background = f.host();
+  for (let i = 0; i < 12; i++) {
+    f.advance(5000);
+    await background.cycle();
+  }
+  assert.equal(attempts, 1);
+  assert.equal(f.reports.length, 2);
+  f.advance(3540000);
+  await background.cycle();
+  assert.equal(attempts, 2);
+  assert.equal(f.reports.length, 2);
+  full = false;
+  f.advance(3600000);
+  await background.cycle();
+  assert.equal(attempts, 3);
+  assert.notEqual((await f.job()).id, old.id);
+  await background.cycle();
+  assert.equal(sends, 1);
+  assert.equal((await f.job()).state, "completed");
+  assert.equal((await f.store.generation(old.id)).state, "retired");
+});

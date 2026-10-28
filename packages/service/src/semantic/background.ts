@@ -205,7 +205,14 @@ export class BackgroundSemanticIndexer {
         }
         if (latest && latest.context.snapshot !== job.snapshot) {
           const old = job.id;
-          job = await store.create(latest.context, profile);
+          try {
+            job = await store.create(latest.context, profile);
+          } catch (replacementFailure) {
+            await store.pause(old, this.code(replacementFailure));
+            if (!this.stop.signal.aborted)
+              await this.defer(await store.generation(old), replacementFailure);
+            return;
+          }
           await store.setBackgroundGeneration(job.id);
           this.initialized = job.id;
           await store.retire(old);
