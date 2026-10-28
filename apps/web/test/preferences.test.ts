@@ -148,7 +148,7 @@ for (const fail of [false, true]) {
   });
 }
 
-test("assistance save text describes the checkbox and uses the existing shell status", async ({
+test("assistance save text describes the checkbox and keeps separate inline and shell status regions", async ({
   page,
 }) => {
   const choice = await settings(page);
@@ -158,7 +158,7 @@ test("assistance save text describes the checkbox and uses the existing shell st
   });
   await holdSave(page);
   await choice.uncheck();
-  await expect(page.locator("[role=status]")).toHaveCount(1);
+  await expect(page.locator("[role=status]")).toHaveCount(2);
   const description = await choice.getAttribute("aria-describedby");
   expect(description).toBeTruthy();
   await expect(page.locator(`[id="${description}"]`)).toHaveText(
@@ -488,17 +488,40 @@ test("round 3: the empty shell status stays exposed in Chromium accessibility be
   await cdp.detach();
 });
 
-test("round 3: a fast assistance save keeps inline feedback without a toast", async ({
+test("a fast assistance save announces inline feedback from an exposed empty status region", async ({
   page,
 }) => {
   const choice = await settings(page);
-  await pauseClock(page);
-  await holdSave(page);
+  const status = page.locator("#assistance-save-status");
+  await expect(status).toBeEmpty();
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Accessibility.enable");
+  const { root } = await cdp.send("DOM.getDocument");
+  const { nodeId } = await cdp.send("DOM.querySelector", {
+    nodeId: root.nodeId,
+    selector: "#assistance-save-status",
+  });
+  const exposed = async () => {
+    const { nodes } = await cdp.send("Accessibility.getPartialAXTree", {
+      nodeId,
+      fetchRelatives: false,
+    });
+    expect(nodes[0].ignored).toBe(false);
+    expect(nodes[0].role?.value).toBe("status");
+    expect(nodes[0].properties).toContainEqual(
+      expect.objectContaining({
+        name: "live",
+        value: expect.objectContaining({ value: "polite" }),
+      }),
+    );
+  };
+  await exposed();
   await choice.uncheck();
-  await page.evaluate(() => (window as any).releasePreferenceSave());
-  await expect(page.locator("#assistance-save-status")).toHaveText(saved);
+  await expect(status).toHaveText(saved);
+  await exposed();
   await expect(page.locator("#app > [role=status]")).toBeEmpty();
   await expect(choice).toBeFocused();
+  await cdp.detach();
 });
 
 async function firstSignatureDialog(page: Page) {

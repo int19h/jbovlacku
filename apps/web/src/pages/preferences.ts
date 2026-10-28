@@ -83,7 +83,11 @@ export async function preferencesPage(
     const capabilities = await getCapabilities({ signal: context.signal });
     if (!context.live()) return;
     if (assistanceProfiles(capabilities).length) {
-      const saved = el("p", { id: "assistance-save-status", class: "small" });
+      const saved = el("p", {
+        id: "assistance-save-status",
+        class: "small",
+        role: "status",
+      });
       let saving = false;
       let pendingValue = prefs.useAiAssistance !== false;
       const choice = checkbox(

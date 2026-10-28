@@ -225,6 +225,7 @@ A visible notice explains a pending save. The app announces late success and eve
 Reload or exit warns while a write remains pending. A failed save keeps the committed preference and permits navigation.
 A late save keeps the page that the reader chose. Earlier save completions preserve newer control choices.
 The empty shell announcement region stays available to assistive software. Fast assistance saves use inline feedback without a toast.
+The inline assistance status also stays available while empty and announces a fast save.
 The first-signature dialog shows storage errors inside the dialog and permits another attempt.
 Browser tests cover these outcomes, focus, saved off-state reloads, and receipt waits before personal recomputation.
 
