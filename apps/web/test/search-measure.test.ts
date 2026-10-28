@@ -21,9 +21,11 @@ test("measure real package routes and browser main-thread CPU", async ({
       corrected++;
     }
   const identity = {
-    head: execFileSync("git", ["rev-parse", "HEAD"], {
-      encoding: "utf8",
-    }).trim(),
+    head:
+      process.env.JVC_SEARCH_MEASURE_REVISION ??
+      execFileSync("git", ["rev-parse", "HEAD"], {
+        encoding: "utf8",
+      }).trim(),
     entries: entries.length,
     input_sha256: createHash("sha256").update(bytes).digest("hex"),
     corrected_classifications: corrected,
