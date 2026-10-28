@@ -342,6 +342,7 @@ export class DictionaryService {
   >();
   private completed?: { snapshot: Snapshot; position: number };
   private snapshotPositions = new Map<string, number>();
+  private snapshotRevisions = new Map<string, number>();
   private snapshotDeltas = new Map<
     string,
     { base: string | null; changed: string[] }
@@ -366,6 +367,12 @@ export class DictionaryService {
   private publication: Promise<void> = Promise.resolve();
   private metadata(): Promise<StateMetadata> {
     return this.coordinator.loadMetadata?.() ?? this.coordinator.load();
+  }
+  private async rememberSnapshotRevision(id: string, currentRevision?: number) {
+    if (this.snapshotRevisions.has(id)) return;
+    const revision =
+      (await this.coordinator.getSnapshotRevision?.(id)) ?? currentRevision;
+    if (revision !== undefined) this.snapshotRevisions.set(id, revision);
   }
   private rememberDelta(
     snapshot: string,
@@ -579,6 +586,11 @@ export class DictionaryService {
           if (restoresMaterialized)
             this.completed = { snapshot, position: binding.position };
           this.snapshotPositions.set(recoveredId, binding.position);
+          // A private historical base must not inherit the current revision.
+          await this.rememberSnapshotRevision(
+            recoveredId,
+            recoveredId === metadata.snapshot ? metadata.revision : undefined,
+          );
         }
       }
     }
@@ -1088,6 +1100,10 @@ export class DictionaryService {
         const cached = await this.coordinator.getSnapshot(metadata.snapshot);
         if (cached) {
           this.snapshotPositions.set(cached.snapshot, metadata.position);
+          await this.rememberSnapshotRevision(
+            cached.snapshot,
+            metadata.revision,
+          );
           return { state: metadata, snapshot: cached };
         }
         // Another writer may expire the pointer between these two reads.
@@ -1114,8 +1130,10 @@ export class DictionaryService {
           snapshot,
           state.snapshot === null ? undefined : [],
         )
-      )
+      ) {
+        this.snapshotRevisions.set(snapshot.snapshot, next.revision);
         return { state: next, snapshot };
+      }
     }
     throw new ApiError(503, "busy", "Snapshot publication is busy.");
   }
@@ -1131,6 +1149,7 @@ export class DictionaryService {
         "snapshot_expired",
         "Snapshot is not published or retained.",
       );
+    await this.rememberSnapshotRevision(cached.snapshot);
     return cached;
   }
   private identifier(value: string, prefix: string) {
@@ -1328,11 +1347,13 @@ export class DictionaryService {
             candidate.endsWith("|" + configured) &&
             !this.failedPackageEvaluations.has(candidate),
         )
-        // A historical read can compute an older snapshot after publication.
+        // Late bodies change snapshots without advancing event positions.
+        // Durable revisions keep historical reads from gaining newer protection.
         .sort(
           (left, right) =>
-            (this.snapshotPositions.get(left.split("|")[0]) ?? -1) -
-            (this.snapshotPositions.get(right.split("|")[0]) ?? -1),
+            (this.snapshotRevisions.get(left.split("|")[0]) ?? -1) -
+              (this.snapshotRevisions.get(right.split("|")[0]) ?? -1) ||
+            (left < right ? -1 : left > right ? 1 : 0),
         )
         .at(-1);
       const evicted = [...this.evaluationCache.keys()].find(
@@ -1778,6 +1799,7 @@ export class DictionaryService {
           semanticRecords,
         )
       ) {
+        this.snapshotRevisions.set(snapshot.snapshot, next.revision);
         if (!this.coordinator.saveVerifiedRecords)
           await retainVerifiedRecords(this.coordinator, verified);
         if (!this.coordinator.saveSemanticRecords)
@@ -2015,6 +2037,7 @@ export class DictionaryService {
             [],
           )
         ) {
+          this.snapshotRevisions.set(snapshot.snapshot, next.revision);
           this.rememberDelta(snapshot.snapshot, state.snapshot, []);
           if (this.options.asyncMaterialization)
             this.queueMaterialization(snapshot);

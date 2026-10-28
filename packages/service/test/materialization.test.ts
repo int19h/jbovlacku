@@ -4,7 +4,10 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { SqliteIndexStore } from "../../../apps/server/src/storage.ts";
+import {
+  SqliteCoordinator,
+  SqliteIndexStore,
+} from "../../../apps/server/src/storage.ts";
 import {
   initializeCore,
   createEvent,
@@ -1424,6 +1427,178 @@ test("a rebuilt historical configured view does not protect an idle slot from th
   );
   assert.deepEqual([...internals.sessionUses], []);
 });
+
+for (const runtime of [false, true]) {
+  test(`a late body leaves equal-position historical evaluations evictable after active calls finish (runtime=${runtime})`, async () => {
+    const { service, coordinator, view, profile } = await fixture();
+    if (runtime)
+      service.options.evaluationRuntime = {
+        create: createEvaluationSession,
+        restore: restoreHostEvaluationSession,
+      };
+    const alternate = createEvent(
+      seed,
+      [],
+      "a".repeat(32),
+      { kind: "view.publish", parents: [] },
+      {
+        ...(view.body as Record<string, unknown>),
+        name: "Alternate view",
+        calculation: "simple-routes-shun-v1",
+      },
+    );
+    const late = createEvent(
+      seed,
+      [profile.envelope.id],
+      "8".repeat(32),
+      { kind: "identity.profile" },
+      { name: "Late profile", bio: [], links: [] },
+    );
+    await service.admitMany([
+      utf8(JSON.stringify(alternate)),
+      utf8(JSON.stringify({ ...late, body: null })),
+    ]);
+    await service.flushMaterialization();
+    const historical = coordinator.state.snapshot!;
+    const position = coordinator.state.position;
+    await service.admitMany([utf8(JSON.stringify(late))]);
+    await service.flushMaterialization();
+    const latest = coordinator.state.snapshot!;
+    assert.notEqual(latest, historical);
+    assert.equal(coordinator.state.position, position);
+    const path = "/words/" + wordId(word);
+    const alternatePath = path + "?view=" + alternate.envelope.id;
+    assert.equal((await read(service, alternatePath)).snapshot, latest);
+    assert.equal(
+      (await read(service, path + "?snapshot=" + historical)).snapshot,
+      historical,
+    );
+    const internals = service as any;
+    assert.deepEqual([...internals.inFlightEvaluations], []);
+    assert.deepEqual([...internals.inFlightPackages], []);
+    assert.deepEqual([...internals.sessionUses], []);
+    assert.deepEqual([...internals.sessionRepairs], []);
+    assert.equal(internals.evaluationCache.size, 2);
+    const historicalKey = historical + "|" + service.options.selectedView;
+    const completedKey = latest + "|" + service.options.selectedView;
+    assert.deepEqual(
+      [...internals.evaluationCache.keys()],
+      [completedKey, historicalKey],
+    );
+    const session = internals.sessions.get(historicalKey);
+    const rank = session.rankWord.bind(session);
+    const entered = deferred();
+    const gate = deferred();
+    session.rankWord = async (...args: any[]) => {
+      entered.resolve();
+      await gate.promise;
+      return rank(...args);
+    };
+    const reading = read(service, path + "?snapshot=" + historical);
+    try {
+      await entered.promise;
+      assert.equal((await service.fetch(request(alternatePath))).status, 503);
+      assert.equal(internals.sessionUses.get(historicalKey), 1);
+      assert.equal(internals.sessions.get(historicalKey), session);
+    } finally {
+      gate.resolve();
+      assert.equal((await reading).snapshot, historical);
+    }
+    assert.equal((await read(service, alternatePath)).snapshot, latest);
+    assert.equal(internals.evaluationCache.has(historicalKey), false);
+    assert.equal(internals.evaluationCache.has(completedKey), true);
+    assert.equal(internals.evaluationCache.size, 2);
+    assert.deepEqual([...internals.sessionUses], []);
+  });
+
+  test(`equal-position snapshot protection survives SQLite restart and historical-first access (runtime=${runtime})`, async () => {
+    const source = await fixture();
+    await source.service.prepareEvaluationShutdown();
+    const directory = await mkdtemp(join(tmpdir(), "jvc-snapshot-order-"));
+    const database = join(directory, "coordinator.sqlite");
+    let coordinator = new SqliteCoordinator(database);
+    const options = {
+      ...source.options,
+      ...(runtime
+        ? {
+            evaluationRuntime: {
+              create: createEvaluationSession,
+              restore: restoreHostEvaluationSession,
+            },
+          }
+        : {}),
+    };
+    let service = new DictionaryService(source.objects, coordinator, options);
+    try {
+      await service.admitMany(
+        source.records.map((record) => utf8(JSON.stringify(record))),
+      );
+      const alternate = createEvent(
+        seed,
+        [],
+        "a".repeat(32),
+        { kind: "view.publish", parents: [] },
+        { ...(source.view.body as object), name: "Alternate view" },
+      );
+      const late = createEvent(
+        seed,
+        [source.profile.envelope.id],
+        "8".repeat(32),
+        { kind: "identity.profile" },
+        { name: "Late profile", bio: [], links: [] },
+      );
+      await service.admitMany([
+        utf8(JSON.stringify(alternate)),
+        utf8(JSON.stringify({ ...late, body: null })),
+      ]);
+      await service.flushMaterialization();
+      const historicalState = await coordinator.load();
+      const historical = historicalState.snapshot!;
+      await service.admitMany([utf8(JSON.stringify(late))]);
+      await service.flushMaterialization();
+      const latestState = await coordinator.load();
+      const latest = latestState.snapshot!;
+      assert.notEqual(latest, historical);
+      assert.equal(latestState.position, historicalState.position);
+      await service.prepareEvaluationShutdown();
+      coordinator.close();
+      coordinator = new SqliteCoordinator(database);
+      // Read history before current state without starting background publication.
+      service = new DictionaryService(source.objects, coordinator, {
+        ...options,
+        asyncMaterialization: false,
+      });
+      const path = "/words/" + wordId(word);
+      const alternatePath = path + "?view=" + alternate.envelope.id;
+      assert.equal(
+        (await read(service, path + "?snapshot=" + historical)).snapshot,
+        historical,
+      );
+      assert.equal((await read(service, path)).snapshot, latest);
+      assert.equal((await read(service, alternatePath)).snapshot, latest);
+      assert.equal(
+        (await read(service, path + "?snapshot=" + historical)).snapshot,
+        historical,
+      );
+      assert.equal((await read(service, alternatePath)).snapshot, latest);
+      const internals = service as any;
+      assert.equal(internals.completed.snapshot.snapshot, latest);
+      assert.equal(
+        internals.evaluationCache.has(latest + "|" + options.selectedView),
+        true,
+      );
+      assert.equal(internals.evaluationCache.size, 2);
+      assert.deepEqual([...internals.inFlightEvaluations], []);
+      assert.deepEqual([...internals.inFlightPackages], []);
+      assert.deepEqual([...internals.sessionUses], []);
+      assert.deepEqual([...internals.sessionRepairs], []);
+    } finally {
+      await service.prepareEvaluationShutdown();
+      coordinator.close();
+      await rm(directory, { recursive: true });
+    }
+  });
+}
 
 test("an alternate reader keeps its lease while a write waits and releases it for later materialization", async () => {
   const { service, coordinator, view, definition, profile } = await fixture();
