@@ -334,7 +334,10 @@ export class BackgroundSemanticIndexer {
     else await store.setBackgroundRecovery(job.id, recovery);
     if (exhausted && !beforeJob)
       await store.pause(job.id, "background_retry_exhausted");
-    const message = `Background semantic job ${job.id} paused: ${reason}. ${exhausted ? "Automatic retries exhausted. " : ""}Retry at ${new Date(recovery.next_attempt).toISOString()}.`;
+    const subject = beforeJob
+      ? `Background semantic indexing for profile ${job.profile} and view ${job.view}`
+      : `Background semantic job ${job.id}`;
+    const message = `${subject} paused: ${reason}. ${exhausted ? "Automatic retries exhausted. " : ""}Retry at ${new Date(recovery.next_attempt).toISOString()}.`;
     if (
       previous?.reason !== reason ||
       previous?.exhausted !== exhausted ||

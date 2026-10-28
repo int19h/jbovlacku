@@ -456,6 +456,7 @@ for (const reason of [
 
 test("R4-2 split children wait for their parent's timed-out transport across a newer snapshot", async (t) => {
   const gate = deferred();
+  t.after(() => gate.resolve());
   let calls = 0;
   let held = false;
   const f = await fixture(
@@ -475,7 +476,6 @@ test("R4-2 split children wait for their parent's timed-out transport across a n
     8,
     { timeoutMs: 100, concurrency: 2 },
   );
-  t.after(() => gate.resolve());
   const background = f.host();
   await background.cycle();
   for (let i = 0; i < 3; i++) await f.next(background);
