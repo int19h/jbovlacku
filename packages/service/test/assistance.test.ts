@@ -2282,15 +2282,16 @@ test("global session capacity evicts idle sessions for a new network", async () 
     await session(instance, `network-${index}`);
 });
 
-test("GET session refreshes its real lifetime and cookie", async () => {
+test("GET session extends its expiry and refreshes its cookie", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
   const instance = service({ sessionTtlMs: 100, provider: makeConfig() });
   const headers = await session(instance);
-  await new Promise((resolve) => setTimeout(resolve, 65));
+  t.mock.timers.tick(65);
   const refresh = await instance.fetch(privateRequest("/session", headers));
   assert.equal(refresh.status, 200);
   assert.equal(((await refresh.json()) as any).csrf, headers["x-csrf-token"]);
   assert.match(refresh.headers.get("set-cookie")!, /Max-Age=1(?:;|$)/);
-  await new Promise((resolve) => setTimeout(resolve, 65));
+  t.mock.timers.tick(65);
   const again = await instance.fetch(privateRequest("/session", headers));
   assert.equal(((await again.json()) as any).csrf, headers["x-csrf-token"]);
 });

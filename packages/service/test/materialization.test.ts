@@ -2145,7 +2145,10 @@ for (const interval of [null, 1000]) {
   });
 }
 
-test("automatic checkpoint failures consume the interval and a forced flush attempts only the newest snapshot", async () => {
+test("automatic checkpoint failures consume the interval and a forced flush attempts only the newest snapshot", async (t) => {
+  let now = 0;
+  t.mock.method(performance, "now", () => now);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
   const checkpoints = new MemoryCheckpoints();
   const { service, coordinator, definition, profile } = await fixture(
     checkpoints,
@@ -2184,7 +2187,9 @@ test("automatic checkpoint failures consume the interval and a forced flush atte
     await service.admitMany([utf8(JSON.stringify(first))]);
     while ((service as any).background) await (service as any).background;
     const firstSnapshot = coordinator.state.snapshot!;
-    await new Promise((resolve) => setTimeout(resolve, 600));
+    now += 600;
+    t.mock.timers.tick(600);
+    await (service as any).checkpointJob;
     assert.deepEqual(attempts, [firstSnapshot]);
     assert.deepEqual(exports, [firstSnapshot]);
     assert.equal((service as any).checkpointTimer, undefined);
@@ -2197,7 +2202,8 @@ test("automatic checkpoint failures consume the interval and a forced flush atte
     await service.admitMany([utf8(JSON.stringify(second))]);
     while ((service as any).background) await (service as any).background;
     const latest = coordinator.state.snapshot!;
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    now += 150;
+    t.mock.timers.tick(150);
     assert.deepEqual(attempts, [firstSnapshot]);
     assert.deepEqual(exports, [firstSnapshot]);
     assert.equal(checkpoints.saved!.binding.snapshot, initial);
