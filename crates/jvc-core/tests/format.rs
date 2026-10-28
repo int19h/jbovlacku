@@ -195,6 +195,75 @@ fn identifiers_preserve_spelling_and_require_nfc() {
 }
 
 #[test]
+fn acute_stress_changes_display_without_changing_word_or_pair_identity() {
+    for (marked, plain) in [
+        ("dján", "djan"),
+        ("ĺénan", "lenan"),
+        ("ḿa'an", "ma'an"),
+        ("b\u{301}an", "ban"),
+        ("DŹÁN", "DZAN"),
+        ("dján zei blanu", "djan zei blanu"),
+    ] {
+        let word = json!({"language":"jbo","spelling":marked});
+        let id = word_id(&word).unwrap();
+        assert_eq!(
+            id,
+            word_id(&json!({"language":"jbo","spelling":plain})).unwrap()
+        );
+        assert_eq!(
+            rafsi_pair_id(&id, "dja").unwrap(),
+            rafsi_pair_id(
+                &word_id(&json!({"language":"jbo","spelling":plain})).unwrap(),
+                "dja"
+            )
+            .unwrap()
+        );
+        assert_eq!(word["spelling"], marked);
+    }
+    assert_ne!(
+        word_id(&json!({"language":"jbo","spelling":"djän"})).unwrap(),
+        word_id(&json!({"language":"jbo","spelling":"djan"})).unwrap()
+    );
+    for marked in [
+        "\u{301}djan",
+        ".\u{301}djan",
+        "dja'\u{301}an",
+        "dja1\u{301}n",
+        "dja\u{301}\u{301}n",
+    ] {
+        assert!(
+            word_id(&json!({"language":"jbo","spelling":marked})).is_err(),
+            "{marked}"
+        );
+    }
+}
+
+#[test]
+fn definition_acutes_belong_to_names_and_name_components_of_zei() {
+    for (spelling, kind, valid) in [
+        ("dján", "cmevla", true),
+        ("ĺénan", "cmevla", true),
+        ("ḿa'an", "cmevla", true),
+        ("blánu", "gismu", false),
+        ("dján", "other", false),
+        ("dján zei blanu", "lujvo", true),
+        ("djan zei blánu", "lujvo", false),
+    ] {
+        let body = json!({"word":{"language":"jbo","spelling":spelling},"language":"en","text":[["A synthetic name."]],"classification":{"kind":kind},"license":{"expression":"CC0-1.0"}});
+        let mut h = header(
+            json!({"kind":"definition.publish","word":word_id(&body["word"]).unwrap(),"language":"en","parents":[],"origin":"native"}),
+            None,
+        );
+        h.content = Some(body_descriptor(&canonical_value(&body).unwrap()).unwrap());
+        assert_eq!(
+            validate_body(&h, &body).is_ok(),
+            valid,
+            "{spelling}: {kind}"
+        );
+    }
+}
+
+#[test]
 fn signed_header_survives_semantic_failure_and_missing_body() {
     let h = header(json!({"kind":"not.a.real.action"}), None);
     let event = sign_header(&[7; 32], h).unwrap();

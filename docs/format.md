@@ -57,7 +57,19 @@ Identifiers have these forms:
 The `\n` notation above means one LF byte. Hash inputs contain no trailing LF unless specified.
 A word object contains exactly `language: "jbo"` and `spelling`.
 A rafsi pair object contains exactly `word`, as its word ID, and `rafsi`, as its NFC spelling.
-New spellings use NFC. Preserve case, apostrophes, periods, and internal spaces.
+Stored spellings use NFC. Preserve case, apostrophes, periods, and internal spaces.
+
+Acute accents mark display stress on cmevla vowels or consonants. They never change word identity or parsing.
+For a word ID, normalize the spelling to NFD, remove U+0301 COMBINING ACUTE ACCENT, then normalize the remainder to NFC.
+Hash a canonical word-object copy with that plain spelling. This removes both precomposed acute forms and combining acute marks.
+Keep every other diacritic. An acute mark must directly follow a Lojban vowel or consonant, with no intervening punctuation or mark.
+These rules keep earlier unaccented word IDs unchanged. Case and the other spelling distinctions above still affect identity.
+
+Each definition keeps its accented display spelling in its existing `word.spelling` field.
+Different definitions of one word can supply different display stress. A reader shows the spelling from the definition that it displays.
+This field keeps the display claim with its definition and needs no second spelling field or new absence default.
+The body hash, signature, exports, and retained bytes use the exact accented body. Only the word-ID preimage uses the plain copy.
+Word references and rafsi claims use the same word-ID normalization. A rafsi spelling itself gains no accent alias.
 
 Reject empty spellings, control characters, and leading or trailing whitespace. Limit a spelling to 256 UTF-8 bytes.
 Search aliases do not change word identity. Morphology disagreement does not invalidate a word.
@@ -393,6 +405,13 @@ A lexical kind is an author's classification, not a morphology admission rule.
 The permitted labels are `gismu`, `cmavo`, `lujvo`, `fuhivla`, `cmevla`, `compound`, `letteral`, and `other`.
 Experimental and obsolete status belongs in labels. Import mappings retain the original classification in legacy source fields.
 A selmaho is a Lojban grammatical class. Preserve its spelling, including experimental markers.
+
+An accented headword requires classification `cmevla`.
+A `lujvo` can also contain accented name components in a `zei` chain.
+For this exception, split the spelling at whitespace and `.`, `?`, or `!`. At least one token must be `zei`, without case distinctions.
+Each accented token must end in a Lojban consonant after accent removal and removal of final commas.
+This bounded spelling rule does not establish a complete morphology parse. The client checks each marked component as a cmevla.
+Other lexical kinds reject accented headwords. Classification remains an author claim, and the server does not run a morphology parser.
 
 ### Absent fields and compatibility
 
@@ -1399,7 +1418,8 @@ A view can adopt a corrected import selection. Its previous selection remains av
 The default view pins exact accepted publications through the import selections in section 8. It does not accept arbitrary new imports because they claim official status.
 
 Retain definitions, notes, etymology, glosses, place keywords, grammatical class, scores, source dates, and available history.
-Form imported word IDs from NFC source spellings. Retain the exact original spelling in legacy source fields.
+Form imported word IDs from NFC source spellings with the word-ID normalization in section 3.
+Keep acute cmevla display marks in `word.spelling`. Retain the exact original spelling in legacy source fields.
 If the normalized spelling fails the word rules, retain the row in the source archive with an unresolved-mapping notice.
 Keep exact SQL place indices when available. Preserve missing API indices as unassigned legacy keywords.
 

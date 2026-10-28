@@ -118,7 +118,9 @@ fn bounded_string(v: &Value, max: usize) -> Result<()> {
 pub(crate) fn validate_word(v: &Value) -> Result<()> {
     fields(v, &["language", "spelling"])?;
     oneof(&v["language"], &["jbo"])?;
-    validate_spelling(string(&v["spelling"])?, 256)
+    let spelling = string(&v["spelling"])?;
+    validate_spelling(spelling, 256)?;
+    crate::validate_acute_accents(spelling)
 }
 pub fn validate_scope(v: &Value) -> Result<()> {
     fields(v, &["kind", "word", "language"])?;
@@ -903,6 +905,31 @@ fn definition(h: &Header, b: &Value, r: &mut Rich) -> Result<()> {
             "gismu", "cmavo", "lujvo", "fuhivla", "cmevla", "compound", "letteral", "other",
         ],
     )?;
+    let spelling = string(&b["word"]["spelling"])?;
+    if crate::strip_acute_accents(spelling) != spelling && b["classification"]["kind"] != "cmevla" {
+        // Zei links whole words. Only its name components can carry stress marks.
+        let words: Vec<_> = spelling
+            .split(|c: char| c.is_whitespace() || ".?!".contains(c))
+            .filter(|s| !s.is_empty())
+            .collect();
+        let linked_names = b["classification"]["kind"] == "lujvo"
+            && words.iter().any(|s| s.eq_ignore_ascii_case("zei"))
+            && words
+                .iter()
+                .filter(|s| crate::strip_acute_accents(s) != **s)
+                .all(|s| {
+                    crate::strip_acute_accents(s)
+                        .trim_end_matches(',')
+                        .chars()
+                        .last()
+                        .is_some_and(|c| "bcdfgjklmnprstvxz".contains(c.to_ascii_lowercase()))
+                });
+        if !linked_names {
+            return Err(bad(
+                "Acute accents are allowed only on cmevla, including name components of a zei lujvo.",
+            ));
+        }
+    }
     for s in array(&b["classification"]["selmaho"], usize::MAX)? {
         string(s)?;
     }
