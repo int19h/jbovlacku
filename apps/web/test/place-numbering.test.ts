@@ -1,3 +1,5 @@
+import { setRichNodes } from "./rich-helpers.ts";
+import { expectRichText, typeRichText } from "./rich-helpers.ts";
 import { test, expect, type Page } from "@playwright/test";
 import {
   acceptFirstSignature,
@@ -81,7 +83,8 @@ test("semicolon parts restart blank numbering before approval and preserve the s
   await page
     .getByRole("button", { name: "Use the meaning with numbered places" })
     .click();
-  await expect(page.getByLabel("Definition text")).toHaveValue(
+  await expectRichText(
+    page.getByLabel("Definition text"),
     "① seemingly has property ②; ① seems to have property ② but actually doesn't",
   );
   await expect(
@@ -155,15 +158,19 @@ test("explicit numbers reserve places per part and escaped numbers stay literal"
   await page
     .getByRole("button", { name: "Use the meaning with numbered places" })
     .click();
-  await expect(page.getByLabel("Definition text")).toHaveValue(
-    String.raw`② sees ① with ③; \③ stays literal beside ① and ④`,
+  await expectRichText(
+    page.getByLabel("Definition text"),
+    "② sees ① with ③; ③ stays literal beside ① and ④",
   );
   await expect(note(page)).toContainText(ordinary);
   await expect(
     parts(page).getByRole("listitem").nth(1).locator(".pl"),
   ).toHaveCount(2);
   // The breakdown follows edits to the definition before approval.
-  await page.getByLabel("Definition text").fill("① sees ②; ③ stays with ④");
+  await typeRichText(
+    page.getByLabel("Definition text"),
+    "① sees ②; ③ stays with ④",
+  );
   await expect(
     parts(page).getByRole("listitem").nth(0).locator("p.meta"),
   ).toHaveText("Part 1: places 1, 2");
@@ -172,7 +179,7 @@ test("explicit numbers reserve places per part and escaped numbers stay literal"
   ).toHaveText("Part 2: places 3, 4");
 });
 
-test("places above twenty use the explicit editor token", async ({ page }) => {
+test("places through fifty use circled literal glyphs", async ({ page }) => {
   await page.goto("/");
   await seed(page, { meaning: Array(21).fill("___").join(" with ") });
   await page.goto("/new/meaning");
@@ -183,9 +190,7 @@ test("places above twenty use the explicit editor token", async ({ page }) => {
   await page
     .getByRole("button", { name: "Use the meaning with numbered places" })
     .click();
-  await expect(page.getByLabel("Definition text")).toHaveValue(
-    /⑳ with \{place 21\}$/u,
-  );
+  await expectRichText(page.getByLabel("Definition text"), /⑳ with ㉑$/u);
   await expect(
     page.getByLabel("Description for place 21", { exact: true }),
   ).toBeVisible();
@@ -384,9 +389,17 @@ test("edited code, links, and escaped glyphs do not add places to the breakdown"
   await page.goto("/");
   await seed(page, { count: 2 });
   await page.goto("/new/places");
-  await page
-    .getByLabel("Definition text")
-    .fill(String.raw`① sees \③ with ` + "`④; literal` [[cukta|⑤; literal]]; ②");
+  await setRichNodes(page.getByLabel("Definition text"), [
+    [
+      1,
+      " sees ③ with ",
+      { code: "④; literal" },
+      " ",
+      { word: { language: "jbo", spelling: "cukta" }, label: "⑤; literal" },
+      "; ",
+      2,
+    ],
+  ]);
   await expect(parts(page).getByRole("listitem")).toHaveCount(2);
   await expect(
     parts(page).getByRole("listitem").nth(0).locator("p.meta"),

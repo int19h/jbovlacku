@@ -1,3 +1,4 @@
+import { expectRichText } from "./rich-helpers.ts";
 import { test, expect, type Page } from "@playwright/test";
 import {
   corePath,
@@ -1598,15 +1599,17 @@ test("signed record disclosures retain each body's original omitted or explicit 
   }
   await page.goto(`/definition/${encodeURIComponent(publications[0].id)}`);
   await page.getByRole("link", { name: "Revise", exact: true }).click();
-  await expect(
+  await expectRichText(
     page.getByRole("textbox", { name: "Definition text" }),
-  ).toHaveValue("Definition defaults disclosure fixture.");
-  await expect(page.getByLabel("Description for place 1")).toHaveValue("");
+    "Definition defaults disclosure fixture.",
+  );
+  await expectRichText(page.getByLabel("Description for place 1"), "");
   await page.reload();
-  await expect(
+  await expectRichText(
     page.getByRole("textbox", { name: "Definition text" }),
-  ).toHaveValue("Definition defaults disclosure fixture.");
-  await expect(page.getByLabel("Description for place 1")).toHaveValue("");
+    "Definition defaults disclosure fixture.",
+  );
+  await expectRichText(page.getByLabel("Description for place 1"), "");
 });
 
 test("revision comparisons display fu'ivla for the fuhivla classification", async ({

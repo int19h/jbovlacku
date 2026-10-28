@@ -1,7 +1,8 @@
+import { appendRichText } from "./rich-helpers.ts";
 import { expect, test } from "@playwright/test";
 import { corePath, createIdentity } from "./helpers.ts";
 
-test("editing a revision keeps code and labels with normalized blank lines", async ({
+test("editing a revision keeps code and labels with exact blank lines", async ({
   page,
 }) => {
   await page.goto("/");
@@ -36,7 +37,7 @@ test("editing a revision keeps code and labels with normalized blank lines", asy
     name: "Definition text",
     exact: true,
   });
-  await editor.fill((await editor.inputValue()) + " appended");
+  await appendRichText(editor, " appended");
   await expect(
     page.getByText("Saved in this browser", { exact: true }),
   ).toBeVisible();
@@ -46,9 +47,9 @@ test("editing a revision keeps code and labels with normalized blank lines", asy
   });
   expect(saved).toEqual([
     [
-      { code: "first\n①" },
+      { code: "first\n\n①" },
       " ",
-      { url: "https://example.org/", label: " label\n① " },
+      { url: "https://example.org/", label: " label\n\n① " },
       " appended",
     ],
   ]);

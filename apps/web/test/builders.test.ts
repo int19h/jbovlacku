@@ -334,6 +334,10 @@ test("the gismu generator scores exactly, shares ranks, lists conflicts, and rec
   await expect(primary).toBeDisabled();
   await selected.getByRole("checkbox").check();
   await expect(primary).toBeEnabled();
+  await expect(page.getByLabel("Why this form")).toHaveAttribute(
+    "contenteditable",
+    "true",
+  );
   await page.getByLabel("Why this form").fill("Only a test.");
   await primary.click();
   await expect(page).toHaveURL(/\/new\/places$/);
@@ -362,6 +366,7 @@ test("the gismu generator scores exactly, shares ranks, lists conflicts, and rec
   ]);
   expect(typeof draft.formation.selected_rank).toBe("number");
   expect(draft.formation.candidates.length).toBeGreaterThan(0);
+  expect(draft.formation.selection_reason).toEqual([["Only a test."]]);
 });
 
 test("a custom profile needs a positive weight and an unfinished row never gets an invented value", async ({

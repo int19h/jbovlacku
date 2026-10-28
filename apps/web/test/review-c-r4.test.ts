@@ -1,3 +1,4 @@
+import { richText, typeRichText } from "./rich-helpers.ts";
 import { expect, test } from "@playwright/test";
 import { corePath } from "./helpers.ts";
 
@@ -116,9 +117,9 @@ test("N2 and N4 saved prose stays readable and typed trailing whitespace is trim
     name: "Definition text",
     exact: true,
   });
-  const source = await editor.inputValue();
+  const source = await richText(editor);
   expect(source.split("\n\n")[0]).toBe(prose);
-  await editor.fill(source + "\n\nNext.\n\n  ");
+  await typeRichText(editor, source + "\n\nNext.\n\n  ");
   await expect(
     page.getByText("Saved in this browser", { exact: true }),
   ).toBeVisible();
@@ -126,7 +127,7 @@ test("N2 and N4 saved prose stays readable and typed trailing whitespace is trim
     const { LocalStore } = await import(String("/src/data/store.ts"));
     return (await new LocalStore().get("drafts", "current")).text;
   });
-  expect(saved).toEqual([[prose], ["Next."]]);
+  expect(saved).toEqual([[prose], ["  "], ["Next."], ["  "]]);
 });
 
 test("N3 distant edits in a long list render only the two changes", async ({

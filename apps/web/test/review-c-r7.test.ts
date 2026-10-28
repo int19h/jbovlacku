@@ -1,3 +1,4 @@
+import { appendRichText, typeRichText } from "./rich-helpers.ts";
 import { expect, test } from "@playwright/test";
 import { acceptFirstSignature, corePath, createIdentity } from "./helpers.ts";
 
@@ -54,24 +55,9 @@ for (const short of [false, true]) {
         return (await new LocalStore().get("drafts", "current")).text;
       });
     expect(await read()).toEqual(original);
-    await editor.fill((await editor.inputValue()) + " appended");
-    const urls = [
-      "https://example.org/path",
-      "https://example.org/a ①?q=x y\u00a0",
-      "https://example.org/a%E2%91%A0",
-    ];
-    await expect
-      .poll(read)
-      .toEqual([
-        [
-          { url: urls[0], label: short ? urls[0] : "①" },
-          " ",
-          { url: urls[1], label: short ? urls[1] : "①" },
-          " ",
-          { url: urls[2], label: short ? "https:\nexample.org/a①" : "①" },
-          " appended",
-        ],
-      ]);
+    await appendRichText(editor, " appended");
+    await expect.poll(read).toEqual([[...original[0], " appended"]]);
+    const urls = original[0].filter((node) => typeof node === "object");
     const links = page
       .getByRole("region", { name: "Rendered definition" })
       .locator('a[target="_blank"]');
@@ -100,9 +86,10 @@ test("R7 the full editor signs separate rafsi rationale paragraphs with literal 
     .fill("A disposable test definition.");
   await page.getByRole("button", { name: "Add a rafsi claim" }).click();
   await page.getByLabel("Rafsi 1", { exact: true }).fill("rod");
-  await page
-    .getByLabel("Rationale for rafsi 1")
-    .fill(" First ① paragraph.\nAnother line.\n\n \t\nSecond paragraph.\n\n  ");
+  await typeRichText(
+    page.getByLabel("Rationale for rafsi 1"),
+    " First ① paragraph.\nAnother line.\n\n \t\nSecond paragraph.\n\n  ",
+  );
   await page.getByRole("button", { name: "Review" }).click();
   await page
     .locator("aside")
@@ -123,7 +110,8 @@ test("R7 the full editor signs separate rafsi rationale paragraphs with literal 
   expect(claim.state).toBe("accepted");
   expect(claim.signed.envelope.signature.length).toBeGreaterThan(0);
   expect(claim.signed.body.rationale).toEqual([
-    ["First ① paragraph.\nAnother line."],
-    ["Second paragraph."],
+    [" First ① paragraph.\nAnother line."],
+    [" \t\nSecond paragraph."],
+    ["  "],
   ]);
 });

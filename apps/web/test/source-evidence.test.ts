@@ -1,3 +1,4 @@
+import { expectRichText, typeRichText } from "./rich-helpers.ts";
 import { test, expect, type Page } from "@playwright/test";
 import { acceptFirstSignature, corePath, createIdentity } from "./helpers.ts";
 test.setTimeout(20000);
@@ -191,7 +192,8 @@ test("accepted source notes stay editable with AI off and every signed field rea
   await allow(page);
   await page.getByRole("button", { name: "Use this", exact: true }).click();
   const notes = page.getByLabel("Source notes for English", { exact: true });
-  await expect(notes).toHaveValue(
+  await expectRichText(
+    notes,
     "Sense: work 1\n\nNote: first line 1\nsecond line\n\nlast line",
   );
   await expect(notes).toHaveJSProperty("tagName", "TEXTAREA");
@@ -202,7 +204,8 @@ test("accepted source notes stay editable with AI off and every signed field rea
     .getByRole("button", { name: "Suggest source for English", exact: true })
     .click();
   await page.getByRole("button", { name: "Use this", exact: true }).click();
-  await expect(notes).toHaveValue(
+  await expectRichText(
+    notes,
     "Sense: work 2\n\nNote: first line 2\nsecond line\n\nlast line",
   );
   const review = page.getByRole("region", {
@@ -232,7 +235,7 @@ test("accepted source notes stay editable with AI off and every signed field rea
     .toBe(false);
   await page.goto("/new/gismu");
   await expect(notes).toBeVisible();
-  await notes.fill("Author note line 1\nline 2");
+  await typeRichText(notes, "Author note line 1\nline 2");
   await page
     .getByLabel("Native word for English", { exact: true })
     .fill("author word");
@@ -241,7 +244,7 @@ test("accepted source notes stay editable with AI off and every signed field rea
       exact: true,
     }),
   ).toBeVisible();
-  await notes.fill("Reviewed author note\nsecond line");
+  await typeRichText(notes, "Reviewed author note\nsecond line");
   await page
     .getByRole("link", { name: "Enter without generation", exact: true })
     .click();
@@ -547,9 +550,10 @@ test("saved source notes remain ordinary author fields when assistance is unavai
     },
     false,
   );
-  await expect(
+  await expectRichText(
     page.getByLabel("Source notes for English", { exact: true }),
-  ).toHaveValue("Sense: a work\n\nNote: line one\nline two");
+    "Sense: a work\n\nNote: line one\nline two",
+  );
 });
 
 test("manual selection keeps scores after descriptive source edits", async ({
@@ -642,9 +646,8 @@ test("Suggest again replaces the accepted source notes before the author edits t
     .getByRole("button", { name: "Suggest source for English", exact: true })
     .click();
   await page.getByRole("button", { name: "Use this", exact: true }).click();
-  await expect(
+  await expectRichText(
     page.getByLabel("Source notes for English", { exact: true }),
-  ).toHaveValue(
     "Sense: work 2\n\nNote: first line 2\nsecond line\n\nlast line",
   );
   expect((await stored(page)).gismu.rows[0].notes).toEqual([
@@ -968,8 +971,8 @@ test("source notes edit plain text without token escapes", async ({ page }) => {
   formation.sources[0].notes = [[value]];
   await seed(page, { formation, evidenceForm: "brodu" }, false);
   const notes = page.getByLabel("Source notes for en", { exact: true });
-  await expect(notes).toHaveValue(value);
-  await notes.fill(value + "\nsecond line");
+  await expectRichText(notes, value);
+  await typeRichText(notes, value + "\nsecond line");
   await page
     .locator(".step-bar")
     .getByRole("link", { name: /^Publish/ })

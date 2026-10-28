@@ -16,6 +16,11 @@ import {
 } from "../../src/model/place-glyphs.ts";
 import type { RichNode, RichText } from "../../src/model/types.ts";
 import {
+  plainText,
+  richTextToText,
+  textToRichText,
+} from "../../src/model/richtext.ts";
+import {
   explicitMeaningPlaces,
   placeSuggestionProblem,
 } from "../../../../packages/core/src/place-assistance.ts";
@@ -42,6 +47,8 @@ test("stored nodes keep every boundary, empty label, and line ending", () => {
   assert.deepEqual(editorToRich(doc), value);
   assert.deepEqual(editorToRich(richToEditor([])), []);
   assert.deepEqual(editorToRich(richToEditor([[]])), [[]]);
+  const copied = richToEditor([[1, " ", { operand: "bridi" }, " ", 50]]);
+  assert.equal(copied.textBetween(0, copied.content.size), "① [bridi] ㊿");
 });
 
 test("random stored rich values round trip exactly with a fixed seed", () => {
@@ -107,6 +114,9 @@ test("the circled lookup covers all 50 places and excludes zero", () => {
   assert.equal(placeGlyph(36), "㊱");
   assert.equal(placeGlyph(50), "㊿");
   assert.equal(circledPlace("⓪"), null);
+  assert.equal(plainText([[21, 35, 36, 50]]), "㉑㉟㊱㊿");
+  assert.equal(richTextToText([[21, 35, 36, 50]]), "㉑㉟㊱㊿");
+  assert.deepEqual(textToRichText("㉑㉟㊱㊿⓪", true), [[21, 35, 36, 50, "⓪"]]);
 });
 
 function harness(value: RichText = [], enabled = true) {

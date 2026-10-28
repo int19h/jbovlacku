@@ -1,3 +1,4 @@
+import { expectRichText } from "./rich-helpers.ts";
 import { test, expect, type Page } from "@playwright/test";
 
 test.afterEach(async ({ page }) => {
@@ -372,9 +373,7 @@ test("Undo restores the AI note layout and Keep cannot replace Tail through a st
   });
   await accept(page);
   const field = page.getByLabel("Source notes for English", { exact: true });
-  await expect(field).toHaveValue(
-    "Sense: AI1\n\nNote: AI2\n\nAuthor note\n\nTail",
-  );
+  await expectRichText(field, "Sense: AI1\n\nNote: AI2\n\nAuthor note\n\nTail");
   await expect(
     page.getByRole("button", {
       name: "Keep Notes paragraph 3 for English",
@@ -396,7 +395,7 @@ test("Undo restores the AI note layout and Keep cannot replace Tail through a st
       exact: true,
     })
     .click();
-  await expect(field).toHaveValue("Note: AI0\n\nAuthor note\n\nTail");
+  await expectRichText(field, "Note: AI0\n\nAuthor note\n\nTail");
   await expect
     .poll(async () => (await stored(page)).gismu.rows[0].notes)
     .toEqual(notes);
@@ -426,7 +425,7 @@ test("Undo restores the AI note layout and Keep cannot replace Tail through a st
       exact: true,
     })
     .click();
-  await expect(field).toHaveValue("Note: AI0\n\nAuthor note\n\nTail");
+  await expectRichText(field, "Note: AI0\n\nAuthor note\n\nTail");
   await expect
     .poll(async () => (await stored(page)).gismu.rows[0].notes)
     .toEqual(notes);

@@ -1,3 +1,4 @@
+import { expectRichText, typeRichText } from "./rich-helpers.ts";
 import { test, expect, type Page, type Request } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 import {
@@ -652,23 +653,26 @@ test("a delayed answer reports retries, compares stale fields, and requires rene
     .fill("A second human edit.");
   await panel.getByRole("button", { name: "Use this", exact: true }).click();
   await expect(reviewed).not.toBeChecked();
-  await expect(
+  await expectRichText(
     page.getByLabel("Current definition", { exact: true }),
-  ).toHaveValue("A second human edit.");
+    "A second human edit.",
+  );
   await reviewed.check();
   await panel.getByRole("button", { name: "Use this", exact: true }).click();
-  await expect(
+  await expectRichText(
     page.getByLabel("Current definition", { exact: true }),
-  ).toHaveValue("An improved definition.");
+    "An improved definition.",
+  );
   await page
     .getByLabel("Current definition", { exact: true })
     .fill("A later author replacement.");
   await page
     .getByRole("button", { name: "Undo Draft definition for this form" })
     .click();
-  await expect(
+  await expectRichText(
     page.getByLabel("Current definition", { exact: true }),
-  ).toHaveValue("A later author replacement.");
+    "A later author replacement.",
+  );
 });
 
 test("cancel, navigation, and the off setting cancel jobs without applying delayed answers", async ({
@@ -1072,9 +1076,10 @@ test("source requests cover each language and retain empty rows, pronunciation, 
   await expect(
     page.getByLabel("Native word for Japanese", { exact: true }),
   ).toHaveValue("");
-  await expect(
+  await expectRichText(
     page.getByLabel("Source notes for Japanese", { exact: true }),
-  ).toHaveValue("Note: No single source word is known.");
+    "Note: No single source word is known.",
+  );
   expect((await stored(page)).gismu.rows).toHaveLength(2);
   await page.reload();
   await page
@@ -1735,24 +1740,23 @@ test("source preview preserves omitted values and replaces only the tracked AI n
   await expect(panel).toContainText("Earlier AI notes replaced");
   await expect(panel).toContainText("Authored first");
   await panel.getByRole("button", { name: "Use this", exact: true }).click();
-  await expect(
+  await expectRichText(
     page.getByLabel("Source notes for English", { exact: true }),
-  ).toHaveValue(
     "Authored first\n\nSense: new meaning\n\nNote: new AI note\n\nAuthored last",
   );
-  await page
-    .getByLabel("Source notes for English", { exact: true })
-    .fill(
-      "Authored first\n\nSense: edited by author\n\nNote: new AI note\n\nAuthored last",
-    );
+  await typeRichText(
+    page.getByLabel("Source notes for English", { exact: true }),
+    "Authored first\n\nSense: edited by author\n\nNote: new AI note\n\nAuthored last",
+  );
   await page
     .getByRole("button", { name: "Suggest again", exact: true })
     .click();
   const next = await sourceSuggestion(page, false);
   await next.getByRole("button", { name: "Use this", exact: true }).click();
-  await expect(
+  await expectRichText(
     page.getByLabel("Source notes for English", { exact: true }),
-  ).toHaveValue("Authored first\n\nSense: edited by author\n\nAuthored last");
+    "Authored first\n\nSense: edited by author\n\nAuthored last",
+  );
   const row = (await stored(page)).gismu.rows[0];
   expect(row).toMatchObject({
     word: "book",
@@ -1899,9 +1903,10 @@ test("legacy source notes require an explicit earlier AI group choice", async ({
     "The draft changed while this suggestion was made.",
   );
   await panel.getByRole("button", { name: "Use this", exact: true }).click();
-  await expect(
+  await expectRichText(
     page.getByLabel("Source notes for English", { exact: true }),
-  ).toHaveValue("Sense: authored prefix\n\nNote: replacement");
+    "Sense: authored prefix\n\nNote: replacement",
+  );
 });
 
 test("a changed suggested word reviews retained identical values and original IPA input through reload and undo", async ({
@@ -2007,9 +2012,10 @@ test("a changed suggested word reviews retained identical values and original IP
       exact: true,
     })
     .click();
-  await expect(
+  await expectRichText(
     page.getByLabel("Source notes for English", { exact: true }),
-  ).toHaveValue("Authored two\n\nNote: new source");
+    "Authored two\n\nNote: new source",
+  );
   while (await review.getByRole("button", { name: /^Keep / }).count())
     await review
       .getByRole("button", { name: /^Keep / })
@@ -2134,9 +2140,10 @@ test("operator-disabled assistance hides saved AI decorations and preserves acce
     await expect(page.locator(decoration)).toBeVisible();
     expect(mock.capabilityReads() - before).toBe(1);
     if (path === "/new/gismu")
-      await expect(
+      await expectRichText(
         page.getByLabel("Source notes for English", { exact: true }),
-      ).toHaveValue("Sense: written work\n\nNote: Accepted source note.");
+        "Sense: written work\n\nNote: Accepted source note.",
+      );
     options.disabled = true;
     const disabledCapabilities = page.waitForResponse((response) =>
       response.url().endsWith("/api/v1/capabilities"),
@@ -2159,9 +2166,10 @@ test("operator-disabled assistance hides saved AI decorations and preserves acce
       ).toBeVisible();
     }
     if (path === "/new/places")
-      await expect(
+      await expectRichText(
         page.getByRole("textbox", { name: "Definition text", exact: true }),
-      ).toHaveValue("Original prose.");
+        "Original prose.",
+      );
   }
   expect(mock.calls).toHaveLength(0);
   await page.goto("/preferences");
@@ -2180,9 +2188,10 @@ test("operator-disabled assistance hides saved AI decorations and preserves acce
     page.getByRole("checkbox", { name: "Use AI assistance", exact: true }),
   ).toBeChecked();
   await page.goto("/new/gismu");
-  await expect(
+  await expectRichText(
     page.getByLabel("Source notes for English", { exact: true }),
-  ).toHaveValue("Sense: written work\n\nNote: Accepted source note.");
+    "Sense: written work\n\nNote: Accepted source note.",
+  );
 });
 
 for (const mode of ["Cancel", "navigation"] as const) {

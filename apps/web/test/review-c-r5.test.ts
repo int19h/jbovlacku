@@ -1,3 +1,5 @@
+import { setRichNodes } from "./rich-helpers.ts";
+import { appendRichText } from "./rich-helpers.ts";
 import { expect, test } from "@playwright/test";
 import { corePath } from "./helpers.ts";
 
@@ -18,9 +20,17 @@ test("R5 an edit keeps TeX and reserved-looking text literal in prose code and l
   }, corePath);
   await page.goto("/new/places");
   const value = String.raw`$T_{cr}$ {join} {char d800} \rightarrow \rho Tom \& Jerry`;
-  await page
-    .getByRole("textbox", { name: "Definition text", exact: true })
-    .fill(`${value} \`${value}\` [[https://example.org/|${value}]]`);
+  await setRichNodes(
+    page.getByRole("textbox", { name: "Definition text", exact: true }),
+    [
+      [
+        value + " ",
+        { code: value },
+        " ",
+        { url: "https://example.org/", label: value },
+      ],
+    ],
+  );
   await expect(
     page.getByText("Saved in this browser", { exact: true }),
   ).toBeVisible();
@@ -38,9 +48,7 @@ test("R5 an edit keeps TeX and reserved-looking text literal in prose code and l
   ]);
 });
 
-test("R5 only the edited field normalizes rare stored values", async ({
-  page,
-}) => {
+test("R5 nearby edits preserve rare stored values", async ({ page }) => {
   await page.goto("/");
   const original = await page.evaluate(async (path) => {
     const core = await import(path);
@@ -75,12 +83,12 @@ test("R5 only the edited field normalizes rare stored values", async ({
       return { text: draft.text, notes: draft.notes };
     });
   expect(await read()).toEqual(original);
-  await editor.fill((await editor.inputValue()) + " added");
+  await appendRichText(editor, " added");
   await expect(
     page.getByText("Saved in this browser", { exact: true }),
   ).toBeVisible();
   expect(await read()).toEqual({
-    text: [["one"], ["two adjacent"], ["last added"]],
+    text: [["one\r\n\r\ntwo ", "adjacent "], ["  "], ["last", " added"]],
     notes: original.notes,
   });
 });
@@ -106,10 +114,7 @@ test("R5 an invalid Unicode character shows a plain definition error", async ({
     exact: true,
   });
   await expect(editor).toBeVisible();
-  await editor.evaluate((element: HTMLTextAreaElement) => {
-    element.value = "bad" + String.fromCharCode(0xd800);
-    element.dispatchEvent(new Event("input", { bubbles: true }));
-  });
+  await setRichNodes(editor, [["bad" + String.fromCharCode(0xd800)]]);
   await expect(
     page.getByText(
       "The definition contains an invalid Unicode character. Replace that character before publishing.",
