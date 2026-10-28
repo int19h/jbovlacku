@@ -103,6 +103,7 @@ async function start() {
       personal.invalidate();
     }
   });
+  let preferenceMessage: string | undefined;
   const app: App = {
     store,
     personal,
@@ -112,8 +113,15 @@ async function start() {
     shell,
     own,
     offlineSigning,
-    announce: (message) => shell.announce(message),
+    announce: (message) => {
+      preferenceMessage = undefined;
+      shell.announce(message);
+    },
   };
+  session.subscribePreferenceStatus((message) => {
+    app.announce(message);
+    preferenceMessage = message;
+  });
   shell.setViewLabel(
     session.preferences.viewMode === "personal"
       ? "Trust: personal view"
@@ -152,7 +160,8 @@ async function start() {
     controller.abort();
     controller = new AbortController();
     const signal = controller.signal;
-    shell.announce("");
+    // Keep save outcomes visible when a waiting navigation replaces the page.
+    if (shell.status.textContent !== preferenceMessage) shell.announce("");
     syncSearchField(shell, route);
     if (session.storageAvailable) void delivery.invalidate();
     const main = shell.main;
@@ -265,9 +274,7 @@ async function start() {
   if (session.storageAvailable)
     setNavigationGuard((target) =>
       session.preferencesSaving
-        ? session
-            .waitForPreferences()
-            .then((saved) => saved && guardDraftNavigation(target))
+        ? session.waitForPreferences().then(() => guardDraftNavigation(target))
         : guardDraftNavigation(target),
     );
   installRouter();

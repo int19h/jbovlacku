@@ -25,6 +25,7 @@ import {
 import { navigate } from "./router.ts";
 
 export const IDLE_LOCK_MS = 15 * 60 * 1000;
+export const PREFERENCE_NAVIGATION_WAIT_MS = 2000;
 export type SessionListener = (session: Session) => void;
 export class Session {
   backup: KeyBackup | undefined;
@@ -37,6 +38,9 @@ export class Session {
   private listeners = new Set<SessionListener>();
   private preferenceChannel: BroadcastChannel | undefined;
   private preferenceWrites = new Set<Promise<Preferences>>();
+  private preferenceWait: Promise<void> | undefined;
+  private preferenceWaitExpired = false;
+  private preferenceStatusListeners = new Set<(message: string) => void>();
   /** A pending action to resume after the key is created or unlocked. */
   pending: { description: string; run: () => Promise<void> } | null = null;
   constructor(public store: LocalStore) {
@@ -109,30 +113,79 @@ export class Session {
     }
     return this.preferences;
   }
-  async setPreferences(patch: Partial<Preferences>) {
-    const writing = this.store.setPreferences(patch);
+  subscribePreferenceStatus(listener: (message: string) => void) {
+    this.preferenceStatusListeners.add(listener);
+    return () => this.preferenceStatusListeners.delete(listener);
+  }
+  private preferenceStatus(message: string) {
+    for (const listener of this.preferenceStatusListeners) listener(message);
+  }
+  setPreferences(patch: Partial<Preferences>): Promise<Preferences> {
+    const writing = Promise.resolve()
+      .then(() => this.store.setPreferences(patch))
+      .then((preferences) => {
+        this.preferences = preferences;
+        this.preferenceChannel?.postMessage("changed");
+        if ("view" in patch) setPreferredView(this.preferences.view);
+        this.changed();
+        if ("useAiAssistance" in patch || this.preferenceWaitExpired)
+          this.preferenceStatus(
+            "useAiAssistance" in patch
+              ? "Assistance setting saved in this browser."
+              : "Settings change saved in this browser.",
+          );
+        return preferences;
+      })
+      .catch((error: unknown) => {
+        this.preferenceStatus(`Not saved: ${describe(error)}`);
+        throw error;
+      })
+      .finally(() => {
+        this.preferenceWrites.delete(writing);
+        if (!this.preferencesSaving) {
+          this.preferenceWait = undefined;
+          this.preferenceWaitExpired = false;
+        }
+      });
     this.preferenceWrites.add(writing);
-    try {
-      this.preferences = await writing;
-      this.preferenceChannel?.postMessage("changed");
-      if ("view" in patch) setPreferredView(this.preferences.view);
-      this.changed();
-      return this.preferences;
-    } finally {
-      this.preferenceWrites.delete(writing);
-    }
+    // Ignored writes still report failures. Awaited writes keep their rejection.
+    void writing.catch(() => {});
+    return writing;
   }
   get preferencesSaving() {
     return this.preferenceWrites.size > 0;
   }
-  /** A page change waits for the saved choice before it reads session state. */
-  async waitForPreferences(): Promise<boolean> {
+  /** Wait briefly for storage. A stalled write keeps running after navigation. */
+  async waitForPreferences(): Promise<void> {
+    if (!this.preferencesSaving) return;
+    this.preferenceWait ??= this.waitForPreferenceWrites();
+    await this.preferenceWait;
+  }
+  private async waitForPreferenceWrites(): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<"pending">((resolve) => {
+      timer = setTimeout(
+        () => resolve("pending"),
+        PREFERENCE_NAVIGATION_WAIT_MS,
+      );
+    });
     try {
-      while (this.preferencesSaving)
-        await Promise.all([...this.preferenceWrites]);
-      return true;
-    } catch {
-      return false;
+      while (this.preferencesSaving) {
+        const result = await Promise.race([
+          Promise.allSettled([...this.preferenceWrites]),
+          deadline,
+        ]);
+        if (result === "pending") {
+          this.preferenceWaitExpired = true;
+          if (this.preferencesSaving)
+            this.preferenceStatus(
+              "Settings are still saving in this browser. You can keep using the app. Reloading now can lose this change.",
+            );
+          return;
+        }
+      }
+    } finally {
+      clearTimeout(timer);
     }
   }
   async backupTested(): Promise<boolean> {
@@ -382,7 +435,11 @@ export class Session {
       const proceed = button(
         "Continue",
         async () => {
-          await this.setPreferences({ firstSignatureAcknowledged: true });
+          try {
+            await this.setPreferences({ firstSignatureAcknowledged: true });
+          } catch {
+            return;
+          }
           dialog.close("ok");
         },
         { class: "btn btn-primary" },

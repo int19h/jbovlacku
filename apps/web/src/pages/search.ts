@@ -192,9 +192,14 @@ export async function searchPage(
   };
   fillLanguages();
   languageSelect.addEventListener("change", async () => {
-    await app.session.setPreferences({
-      definitionLanguage: languageSelect.value,
-    });
+    try {
+      await app.session.setPreferences({
+        definitionLanguage: languageSelect.value,
+      });
+    } catch {
+      languageSelect.value = app.session.preferences.definitionLanguage;
+      return;
+    }
     navigate(routes.search(query, languageSelect.value));
   });
   // Search source: the downloaded package in local mode, otherwise this server.

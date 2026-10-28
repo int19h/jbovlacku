@@ -153,7 +153,11 @@ export function calculationPanel(
   const useSite = button(
     "Use the site view",
     async () => {
-      await app.session.setPreferences({ viewMode: "site" });
+      try {
+        await app.session.setPreferences({ viewMode: "site" });
+      } catch {
+        return;
+      }
       app.shell.setViewLabel("Trust: site view");
       navigate(location.pathname + location.search, { replace: true });
     },

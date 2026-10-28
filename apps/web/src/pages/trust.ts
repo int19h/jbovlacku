@@ -56,11 +56,16 @@ export async function trustPage(
       text(label),
     );
     input.addEventListener("change", async () => {
-      await app.session.setPreferences({ viewMode: value });
+      try {
+        await app.session.setPreferences({ viewMode: value });
+      } catch {}
+      const saved = app.session.preferences.viewMode;
+      for (const radio of seg.querySelectorAll("input"))
+        radio.checked = radio.value === saved;
       for (const l of seg.querySelectorAll("label"))
         l.classList.toggle("on", l.querySelector("input")!.checked);
       app.shell.setViewLabel(
-        value === "personal" ? "Trust: personal view" : "Trust: site view",
+        saved === "personal" ? "Trust: personal view" : "Trust: site view",
       );
     });
     seg.append(wrapper);
@@ -611,7 +616,11 @@ function viewChooser(app: App, current: string, context: RenderContext) {
       button(
         "Back to the server's view",
         async () => {
-          await app.session.setPreferences({ view: null });
+          try {
+            await app.session.setPreferences({ view: null });
+          } catch {
+            return;
+          }
           await app.personal.forgetView();
           navigate(routes.trust, { replace: true });
         },

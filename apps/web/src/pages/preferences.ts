@@ -16,6 +16,7 @@ import type { App } from "../app/context.ts";
 import { downloadPackage, type CachedPackage } from "../data/search.ts";
 import { getCapabilities, getManifest, selfPeer } from "../data/api.ts";
 import { applyTheme } from "../app/theme.ts";
+import type { Preferences } from "../data/store.ts";
 
 export async function preferencesPage(
   _route: Route,
@@ -28,6 +29,9 @@ export async function preferencesPage(
   main.className = "";
   main.append(el("h1", { class: "page", text: "Settings" }));
   const prefs = session.preferences;
+  // The session announces failures. Controls then show the committed value.
+  const save = (patch: Partial<Preferences>) =>
+    session.setPreferences(patch).catch(() => session.preferences);
   // Languages.
   const languages = new Set<string>(["en", prefs.definitionLanguage]);
   let manifestLanguages: string[] = [];
@@ -49,8 +53,10 @@ export async function preferencesPage(
   languageField.input.addEventListener(
     "change",
     () =>
-      void session.setPreferences({
+      void save({
         definitionLanguage: languageField.input.value,
+      }).then((saved) => {
+        languageField.input.value = saved.definitionLanguage;
       }),
   );
   main.append(
@@ -62,13 +68,20 @@ export async function preferencesPage(
     const capabilities = await getCapabilities({ signal: context.signal });
     if (!context.live()) return;
     if (assistanceProfiles(capabilities).length) {
-      const saved = el("p", { class: "small", role: "status", hidden: true });
+      const saved = el("p", { id: "assistance-save-status", class: "small" });
+      let saving = false;
+      let pendingValue = prefs.useAiAssistance !== false;
       const choice = checkbox(
         "Use AI assistance",
         prefs.useAiAssistance !== false,
         async (value) => {
-          input.disabled = true;
-          saved.hidden = false;
+          if (saving) {
+            input.checked = pendingValue;
+            return;
+          }
+          saving = true;
+          pendingValue = value;
+          input.setAttribute("aria-disabled", "true");
           saved.textContent = "Saving assistance setting.";
           try {
             await session.setPreferences({ useAiAssistance: value });
@@ -77,11 +90,17 @@ export async function preferencesPage(
             input.checked = session.preferences.useAiAssistance !== false;
             saved.textContent = `Not saved: ${describe(error)}`;
           } finally {
-            input.disabled = false;
+            saving = false;
+            input.setAttribute("aria-disabled", "false");
           }
         },
       );
       const input = choice.querySelector("input")!;
+      input.setAttribute("aria-describedby", saved.id);
+      input.setAttribute("aria-disabled", "false");
+      input.addEventListener("click", (event) => {
+        if (saving) event.preventDefault();
+      });
       main.append(choice, saved);
     } else main.append(p("Not available on this server.", "small"));
   } catch {
@@ -110,9 +129,12 @@ export async function preferencesPage(
       app.announce(
         `Remote search sends each query to ${selfPeer.label}. Earlier local queries are not uploaded.`,
       );
-      await session.setPreferences({ remoteSearchDisclosed: true });
     }
-    await session.setPreferences({ searchMode: mode });
+    const saved = await save({
+      searchMode: mode,
+      ...(mode === "remote" ? { remoteSearchDisclosed: true } : {}),
+    });
+    modeField.input.value = saved.searchMode;
   });
   main.append(modeField.wrapper);
   const packages = el("div", { class: "stack" });
@@ -343,8 +365,9 @@ export async function preferencesPage(
   });
   theme.input.addEventListener("change", async () => {
     const value = theme.input.value as "system" | "light" | "dark";
-    await session.setPreferences({ theme: value });
-    applyTheme(value);
+    const saved = await save({ theme: value });
+    theme.input.value = saved.theme;
+    applyTheme(saved.theme);
   });
   main.append(theme.wrapper);
   const orthography = field("Lojban orthography beside headwords", {
@@ -361,18 +384,22 @@ export async function preferencesPage(
   orthography.input.addEventListener(
     "change",
     () =>
-      void session.setPreferences({
+      void save({
         orthography: orthography.input.value as "latin" | "zbalermorna",
+      }).then((saved) => {
+        orthography.input.value = saved.orthography;
       }),
   );
   main.append(orthography.wrapper);
-  main.append(
-    checkbox(
-      "Show my judgments first on word pages",
-      prefs.myJudgmentsFirst,
-      (value) => void session.setPreferences({ myJudgmentsFirst: value }),
-    ),
+  const judgments = checkbox(
+    "Show my judgments first on word pages",
+    prefs.myJudgmentsFirst,
+    async (value) => {
+      const saved = await save({ myJudgmentsFirst: value });
+      judgments.querySelector("input")!.checked = saved.myJudgmentsFirst;
+    },
   );
+  main.append(judgments);
   // Optional services.
   main.append(el("h2", { class: "section", text: "Optional services" }));
   try {
