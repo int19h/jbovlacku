@@ -94,6 +94,7 @@ for (const fail of [false, true]) {
     await expect
       .poll(() => page.evaluate(() => (window as any).preferenceWrites))
       .toBe(2);
+    await expect(choice).toHaveAttribute("aria-disabled", "false");
     await expect(choice).toBeFocused();
     expect(await unloadWarns(page)).toBe(false);
   });
