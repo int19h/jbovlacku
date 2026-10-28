@@ -376,6 +376,28 @@ test("copy retains readable place and operand chips in plain text", async ({
   expect(await nodes(field)).toEqual([[copied]]);
 });
 
+test("Backspace and canceled composition keep old pasted tokens literal", async ({
+  page,
+}) => {
+  await seed(page);
+  const field = editor(page);
+  for (const token of ["㊿", "___", "__4__"]) {
+    await field.fill("");
+    await paste(field, token + " ");
+    if (token === "㊿")
+      await page
+        .getByRole("dialog", { name: "Paste circled numbers" })
+        .getByRole("button", { name: "Keep literal text" })
+        .click();
+    await field.press("Backspace");
+    expect(await nodes(field)).toEqual([[token]]);
+    await field.dispatchEvent("compositionstart", { data: "" });
+    await field.dispatchEvent("compositionend", { data: "" });
+    await expect(field.getByRole("img")).toHaveCount(0);
+    expect(await nodes(field)).toEqual([[token]]);
+  }
+});
+
 test("literal mode preserves typed numbers and keeps code and links while editing", async ({
   page,
 }) => {

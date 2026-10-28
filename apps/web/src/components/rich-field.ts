@@ -147,6 +147,10 @@ export function richField(label: string, options: RichFieldOptions) {
       }
     },
     handleDOMEvents: {
+      compositionstart() {
+        view.dispatch(view.state.tr.setMeta("richCompositionStart", true));
+        return false;
+      },
       paste(_view, event) {
         event.preventDefault();
         const pasted = event.clipboardData?.getData("text/plain") ?? "";

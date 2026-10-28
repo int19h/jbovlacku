@@ -228,6 +228,17 @@ export interface PlaceRuleOptions {
   enabled: () => boolean;
   composing?: () => boolean;
 }
+function insertedContent(transaction: Transaction): boolean {
+  return transaction.steps.some((step) => {
+    const slice = (step as { slice?: { size: number } }).slice;
+    return (slice?.size ?? 0) > 0;
+  });
+}
+interface CompositionState {
+  before: EditorNode | null;
+  inserted: boolean;
+  committed: boolean;
+}
 export function placeInputPlugins(options: PlaceRuleOptions): Plugin[] {
   const replacement = (
     state: EditorState,
@@ -248,7 +259,39 @@ export function placeInputPlugins(options: PlaceRuleOptions): Plugin[] {
   const rules = inputRules({
     rules: [new InputRule(rulePattern, replacement)],
   });
-  const fallback = new Plugin({
+  // The tracked fallback owns completion, so a canceled IME cannot read old paste.
+  rules.props.handleDOMEvents!.compositionend = () => false;
+  const fallback: Plugin<CompositionState> = new Plugin<CompositionState>({
+    state: {
+      init: () => ({ before: null, inserted: false, committed: false }),
+      apply(tr, previous) {
+        if (tr.getMeta("richCompositionStart"))
+          return { before: tr.doc, inserted: false, committed: false };
+        if (tr.getMeta("richCompositionEnd"))
+          return {
+            before: null,
+            inserted: false,
+            committed:
+              previous.inserted &&
+              previous.before !== null &&
+              !tr.doc.eq(previous.before),
+          };
+        if (
+          tr.getMeta(rules) ||
+          tr.getMeta("richExternal") ||
+          tr.getMeta("richRuleUndo")
+        )
+          return { before: null, inserted: false, committed: false };
+        const pasted = ["paste", "drop"].includes(tr.getMeta("uiEvent"));
+        return {
+          ...previous,
+          committed: false,
+          inserted:
+            previous.inserted ||
+            (previous.before !== null && !pasted && insertedContent(tr)),
+        };
+      },
+    },
     appendTransaction(transactions, _old, state) {
       if (
         !options.enabled() ||
@@ -263,10 +306,12 @@ export function placeInputPlugins(options: PlaceRuleOptions): Plugin[] {
         )
       )
         return null;
+      const committed =
+        transactions.some((tr) => tr.getMeta("richCompositionEnd")) &&
+        fallback.getState(state)?.committed;
       if (
-        !transactions.some(
-          (tr) => tr.docChanged || tr.getMeta("richCompositionEnd"),
-        )
+        !committed &&
+        !transactions.some((tr) => tr.docChanged && insertedContent(tr))
       )
         return null;
       const { $from, empty } = state.selection;

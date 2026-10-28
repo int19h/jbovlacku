@@ -231,6 +231,50 @@ test("IME fallback converts DOM insertions and undo restores them once", () => {
   assert.equal(h.state.doc.textContent, "__50__");
 });
 
+test("deleting after literal paste and canceling composition never converts old tokens", () => {
+  for (const token of ["㊿", "___", "__4__"]) {
+    const h = harness();
+    h.dispatch(h.state.tr.insertText(token + " ").setMeta("uiEvent", "paste"));
+    const end = h.state.selection.from;
+    h.dispatch(h.state.tr.delete(end - 1, end));
+    assert.deepEqual(editorToRich(h.state.doc), [[token]]);
+    h.dispatch(h.state.tr.setMeta("richCompositionStart", true));
+    h.dispatch(h.state.tr.setMeta("richCompositionEnd", true));
+    assert.deepEqual(editorToRich(h.state.doc), [[token]]);
+    h.dispatch(h.state.tr.setMeta("richCompositionStart", true));
+    h.dispatch(h.state.tr.insertText("x"));
+    const canceledEnd = h.state.selection.from;
+    h.dispatch(h.state.tr.delete(canceledEnd - 1, canceledEnd));
+    h.dispatch(h.state.tr.setMeta("richCompositionEnd", true));
+    assert.deepEqual(editorToRich(h.state.doc), [[token]]);
+  }
+});
+
+test("a real composition insertion converts after its committed end", () => {
+  let composing = true;
+  let state = EditorState.create({
+    doc: richToEditor([]),
+    plugins: placeInputPlugins({
+      enabled: () => true,
+      composing: () => composing,
+    }),
+  });
+  const dispatch = (tr: ReturnType<EditorState["tr"]["insertText"]>) => {
+    state = state.applyTransaction(tr).state;
+  };
+  dispatch(state.tr.setMeta("richCompositionStart", true));
+  dispatch(state.tr.insertText("__50__"));
+  assert.deepEqual(editorToRich(state.doc), [["__50__"]]);
+  composing = false;
+  dispatch(state.tr.setMeta("richCompositionEnd", true));
+  assert.deepEqual(editorToRich(state.doc), [[50]]);
+  assert.equal(
+    undoInputRule(state, (tr) => dispatch(tr.setMeta("richRuleUndo", true))),
+    true,
+  );
+  assert.deepEqual(editorToRich(state.doc), [["__50__"]]);
+});
+
 test("literal mode, code labels, invalid numbers, and pasted text do not run rules", () => {
   const literal = harness([], false);
   literal.type("___ __50__ ㊿");
