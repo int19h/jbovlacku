@@ -122,11 +122,14 @@ async function start() {
     app.announce(message);
     preferenceMessage = message;
   });
-  shell.setViewLabel(
-    session.preferences.viewMode === "personal"
-      ? "Trust: personal view"
-      : "Trust: site view",
-  );
+  const updateViewLabel = () =>
+    shell.setViewLabel(
+      session.preferences.viewMode === "personal"
+        ? "Trust: personal view"
+        : "Trust: site view",
+    );
+  session.subscribe(updateViewLabel);
+  updateViewLabel();
   if (!session.storageAvailable) {
     const warning = el("p", {
       class: "notice",

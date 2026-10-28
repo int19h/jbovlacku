@@ -223,7 +223,10 @@ The assistance checkbox keeps keyboard focus and ignores repeated input while it
 Internal navigation waits up to two seconds for pending preference writes, then continues while storage keeps working.
 A visible notice explains a pending save. The app announces late success and every save failure after navigation too.
 Reload or exit warns while a write remains pending. A failed save keeps the committed preference and permits navigation.
-Browser tests cover focus, pending and failed preference saves, saved off-state reloads, and receipt waits before personal recomputation.
+A late save keeps the page that the reader chose. Earlier save completions preserve newer control choices.
+The empty shell announcement region stays available to assistive software. Fast assistance saves use inline feedback without a toast.
+The first-signature dialog shows storage errors inside the dialog and permits another attempt.
+Browser tests cover these outcomes, focus, saved off-state reloads, and receipt waits before personal recomputation.
 
 The private attempt log offers Markdown and JSON export. Signed publications omit AI logs.
 Both local adapters offer operator-controlled assistance, off by default, with server-held keys and bounded private jobs.

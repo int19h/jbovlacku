@@ -23,6 +23,7 @@ import {
   type Preferences,
 } from "../data/store.ts";
 import { navigate } from "./router.ts";
+import { applyTheme } from "./theme.ts";
 
 export const IDLE_LOCK_MS = 15 * 60 * 1000;
 export const PREFERENCE_NAVIGATION_WAIT_MS = 2000;
@@ -37,6 +38,7 @@ export class Session {
   private unlockAttempt: AbortController | undefined;
   private listeners = new Set<SessionListener>();
   private preferenceChannel: BroadcastChannel | undefined;
+  private themeRequest = 0;
   private preferenceWrites = new Set<Promise<Preferences>>();
   private preferenceWait: Promise<void> | undefined;
   private preferenceWaitExpired = false;
@@ -121,14 +123,16 @@ export class Session {
     for (const listener of this.preferenceStatusListeners) listener(message);
   }
   setPreferences(patch: Partial<Preferences>): Promise<Preferences> {
+    const themeRequest = "theme" in patch ? ++this.themeRequest : undefined;
     const writing = Promise.resolve()
       .then(() => this.store.setPreferences(patch))
       .then((preferences) => {
         this.preferences = preferences;
         this.preferenceChannel?.postMessage("changed");
         if ("view" in patch) setPreferredView(this.preferences.view);
+        if (themeRequest === this.themeRequest) applyTheme(preferences.theme);
         this.changed();
-        if ("useAiAssistance" in patch || this.preferenceWaitExpired)
+        if (this.preferenceWaitExpired)
           this.preferenceStatus(
             "useAiAssistance" in patch
               ? "Assistance setting saved in this browser."
@@ -137,6 +141,8 @@ export class Session {
         return preferences;
       })
       .catch((error: unknown) => {
+        if (themeRequest === this.themeRequest)
+          applyTheme(this.preferences.theme);
         this.preferenceStatus(`Not saved: ${describe(error)}`);
         throw error;
       })
@@ -432,15 +438,34 @@ export class Session {
         class: "sheet",
         "aria-labelledby": "first-sign-title",
       });
+      const origin = document.querySelector("main")?.firstElementChild;
+      const originLive = () => !origin || origin.isConnected;
+      const error = el("p", { class: "notice", role: "alert" });
+      error.hidden = true;
+      const current = () => dialog.isConnected && dialog.open;
       const proceed = button(
         "Continue",
         async () => {
+          if (proceed.disabled) return;
+          proceed.disabled = true;
+          error.hidden = true;
           try {
             await this.setPreferences({ firstSignatureAcknowledged: true });
-          } catch {
-            return;
+            if (!current()) return;
+            dialog.close(
+              originLive() && (!opener || opener.isConnected) ? "ok" : "cancel",
+            );
+          } catch (failure) {
+            if (!current()) return;
+            if (!originLive()) {
+              dialog.close("cancel");
+              return;
+            }
+            error.textContent = `Not saved: ${describe(failure)}`;
+            error.hidden = false;
+          } finally {
+            if (current()) proceed.disabled = false;
           }
-          dialog.close("ok");
         },
         { class: "btn btn-primary" },
       );
@@ -475,6 +500,7 @@ export class Session {
             ),
           ),
         ),
+        error,
         el(
           "div",
           { class: "actions", style: "margin-top:14px" },
@@ -485,7 +511,7 @@ export class Session {
       dialog.addEventListener("close", () => {
         resolve(dialog.returnValue === "ok");
         dialog.remove();
-        opener?.focus();
+        if (originLive() && opener?.isConnected) opener.focus();
       });
       document.body.append(dialog);
       dialog.showModal();

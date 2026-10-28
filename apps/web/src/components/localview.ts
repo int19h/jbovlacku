@@ -6,7 +6,7 @@
 import { el, p, text, button, link } from "../lib/dom.ts";
 import { plural } from "../lib/format.ts";
 import type { App } from "../app/context.ts";
-import { navigate } from "../app/router.ts";
+import { navigate, type RenderContext } from "../app/router.ts";
 import type { PersonalStatus } from "../data/personal.ts";
 import { RECORD_LIMITS } from "../data/records.ts";
 import { onDisconnect } from "../lib/lifetime.ts";
@@ -114,7 +114,13 @@ export function statusText(status: PersonalStatus): string {
  */
 export function calculationPanel(
   app: App,
-  options: { mode: "personal" | "site"; label: string; onRefresh?: () => void },
+  options: {
+    label: string;
+    onRefresh?: () => void;
+  } & (
+    | { mode: "personal"; context: RenderContext }
+    | { mode: "site"; context?: RenderContext }
+  ),
 ): HTMLElement {
   const region = el("div", {
     class: "notice",
@@ -145,7 +151,12 @@ export function calculationPanel(
         .ensure({ mode: options.mode, refresh: true })
         .then((status) => {
           // A failed refresh keeps its message. Only a ready calculation re-renders the page.
-          if (status.state === "ready") options.onRefresh?.();
+          if (
+            status.state === "ready" &&
+            region.isConnected &&
+            (!options.context || options.context.live())
+          )
+            options.onRefresh?.();
         });
     },
     { class: "btn btn-quiet" },
@@ -158,7 +169,8 @@ export function calculationPanel(
       } catch {
         return;
       }
-      app.shell.setViewLabel("Trust: site view");
+      if (!region.isConnected || (options.context && !options.context.live()))
+        return;
       navigate(location.pathname + location.search, { replace: true });
     },
     { class: "btn" },
