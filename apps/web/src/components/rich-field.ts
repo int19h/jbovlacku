@@ -27,6 +27,7 @@ import {
   richToEditor,
 } from "../model/rich-editor.ts";
 import type { RichText } from "../model/types.ts";
+import { canonicalRich } from "../model/rich-values.ts";
 
 export interface RichFieldOptions extends Omit<
   FieldOptions,
@@ -107,6 +108,7 @@ export function richField(label: string, options: RichFieldOptions) {
   const toolbarHint = el("p", {
     id: toolbarHintId,
     class: "hint",
+    hidden: true,
     text: "Use Left, Right, Home, and End to move through the toolbar. In More places, use Alt with those keys.",
   });
   toolbar.setAttribute("aria-describedby", toolbarHintId);
@@ -135,7 +137,9 @@ export function richField(label: string, options: RichFieldOptions) {
       : options.structured !== false);
   let previousMode = enabled();
   let view: EditorView;
-  let current = options.value;
+  let current = canonicalRich(options.value);
+  let moved = false;
+  let pointerFocus = false;
   let dialog: HTMLDialogElement | null = null;
   let editLink: HTMLButtonElement | undefined;
   const rulePlugins = placeInputPlugins({
@@ -286,9 +290,15 @@ export function richField(label: string, options: RichFieldOptions) {
         if (option.textContent !== label) option.textContent = label;
       }
     }
-    if (operandControl)
-      operandControl.disabled = !enabled() || !options.operands?.().length;
-    if (operandReason) operandReason.hidden = !!options.operands?.().length;
+    if (operandControl) {
+      operandControl.disabled = !enabled();
+      operandControl.setAttribute(
+        "aria-disabled",
+        String(!enabled() || !operandIds().length),
+      );
+    }
+    if (operandReason && (operandIds().length || !enabled()))
+      operandReason.hidden = true;
     hint.textContent =
       !enabled() && options.local !== false
         ? "Literal mode keeps typed characters as text. Pasted text stays literal."
@@ -321,8 +331,29 @@ export function richField(label: string, options: RichFieldOptions) {
     },
     handleDOMEvents: {
       focus(view) {
-        // Reparenting a retained editor can clear only the native caret.
-        view.focus();
+        const repair = moved;
+        moved = false;
+        const native = view.dom.ownerDocument.getSelection();
+        // A click or a chosen native selection takes precedence over a move.
+        if (
+          repair &&
+          !pointerFocus &&
+          !view.dom.contains(native?.anchorNode ?? null)
+        )
+          view.focus();
+        pointerFocus = false;
+        return false;
+      },
+      pointerdown() {
+        pointerFocus = true;
+        return false;
+      },
+      pointerup() {
+        pointerFocus = false;
+        return false;
+      },
+      pointercancel() {
+        pointerFocus = false;
         return false;
       },
       beforeinput(view, event) {
@@ -394,11 +425,11 @@ export function richField(label: string, options: RichFieldOptions) {
   Object.defineProperty(input, "value", {
     get: () => current,
     set: (value: RichText) => {
-      current = value;
+      current = canonicalRich(value);
       if (view.isDestroyed) return;
       // External draft changes start a new history for this field.
       if (
-        JSON.stringify(editorToRich(view.state.doc)) !== JSON.stringify(value)
+        JSON.stringify(editorToRich(view.state.doc)) !== JSON.stringify(current)
       )
         view.updateState(state());
       else if (enabled() !== previousMode)
@@ -456,7 +487,11 @@ export function richField(label: string, options: RichFieldOptions) {
       const operand = button(
         "Insert operand",
         () => {
-          const ids = options.operands!();
+          const ids = operandIds();
+          if (!ids.length) {
+            operandReason!.hidden = false;
+            return;
+          }
           const choice = field("Operand", {
             options: ids.map((id) => ({ value: id, label: id })),
           });
@@ -478,6 +513,8 @@ export function richField(label: string, options: RichFieldOptions) {
       operandReason = el("span", {
         id: reasonId,
         class: "hint",
+        hidden: true,
+        role: "status",
         text: "Declare an operand first.",
       });
       toolbar.append(operand);
@@ -665,11 +702,21 @@ export function richField(label: string, options: RichFieldOptions) {
   );
   toolbar.append(editLink);
   toolbar.addEventListener("focusin", (event) => {
+    toolbarHint.hidden = false;
     if (
       event.target instanceof HTMLElement &&
       event.target.matches("button,select")
     )
       rove(event.target);
+  });
+  toolbar.addEventListener("focusout", (event) => {
+    if (
+      event.relatedTarget instanceof Node &&
+      toolbar.contains(event.relatedTarget)
+    )
+      return;
+    toolbarHint.hidden = true;
+    if (operandReason) operandReason.hidden = true;
   });
   toolbar.addEventListener("keydown", (event) => {
     if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
@@ -822,5 +869,16 @@ export function richField(label: string, options: RichFieldOptions) {
     dialog?.close();
     view.destroy();
   });
-  return { wrapper, input, label: labelNode };
+  function operandIds() {
+    return (options.operands?.() ?? []).map((id) => id.trim()).filter(Boolean);
+  }
+  return {
+    wrapper,
+    input,
+    label: labelNode,
+    moved: () => {
+      moved = true;
+    },
+    refresh: syncMode,
+  };
 }

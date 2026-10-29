@@ -690,6 +690,7 @@ export async function placesPage(
       entry.read = read;
       entry.change = change;
       entry.field.input.value = read();
+      entry.field.moved();
       entry.field.label.textContent = label;
       entry.field.wrapper
         .querySelector('[role="toolbar"]')
@@ -1958,6 +1959,7 @@ export async function placesPage(
           });
           id.input.addEventListener("input", () => {
             operand.id = id.input.value;
+            syncMirrors();
             saver.touch();
           });
           const category = field(`Operand ${i + 1} category`, {
@@ -2018,6 +2020,7 @@ export async function placesPage(
               `Remove operand ${i + 1}`,
               () => {
                 draft.operands.splice(i, 1);
+                syncMirrors();
                 saver.touch();
                 render();
               },
@@ -2040,6 +2043,7 @@ export async function placesPage(
                   minimum: 1,
                   maximum: 1,
                 });
+                syncMirrors();
                 saver.touch();
                 render();
               },
