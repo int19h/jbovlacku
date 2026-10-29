@@ -214,7 +214,7 @@ test("r3 operand addition and renaming refresh every retained rich-field control
     await expect(control).toBeEnabled();
   await page.getByLabel("Operand 1 ID", { exact: true }).fill("sumti");
   for (const control of await controls.all()) {
-    await control.evaluate((node) => (node as HTMLButtonElement).click());
+    await control.click();
     await expect(
       page.getByRole("dialog").getByLabel("Operand", { exact: true }),
     ).toHaveValue("sumti");
@@ -237,7 +237,7 @@ test("r3 removing the last operand refreshes every retained rich-field control",
     .getByRole("button", { name: "Insert operand", exact: true })
     .all()) {
     await expect(control).toHaveAttribute("aria-disabled", "true");
-    await control.click();
+    await control.evaluate((node) => (node as HTMLButtonElement).click());
     await expect(page.getByRole("dialog")).toHaveCount(0);
   }
 });
