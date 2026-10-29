@@ -1,6 +1,6 @@
 import { test, expect, type Page, type Locator } from "@playwright/test";
 import { createIdentity, corePath } from "./helpers.ts";
-import { setRichNodes, typeRichText } from "./rich-helpers.ts";
+import { richText, setRichNodes, typeRichText } from "./rich-helpers.ts";
 
 async function seed(page: Page, fields = false) {
   await page.goto("/");
@@ -137,6 +137,39 @@ test("typed places, exact TeX, undo, keyboard toolbar, and 50-place dropdown", a
     const box = await control.boundingBox();
     expect(box!.width).toBeGreaterThanOrEqual(44);
     expect(box!.height).toBeGreaterThanOrEqual(44);
+  }
+});
+
+test("saved partial place tokens complete after reload and Ctrl-End with undo", async ({
+  page,
+}) => {
+  await seed(page);
+  const field = editor(page);
+  for (const [partial, index, prefix] of [
+    [["before __"], 1, "before "],
+    [["before _", "_"], 1, "before "],
+    [["before __50_"], 50, "before "],
+    [["before _", "_50_"], 50, "before "],
+    [["__"], 1, ""],
+    [["_", "_50_"], 50, ""],
+  ] as const) {
+    await setRichNodes(field, [[...partial]]);
+    await expect
+      .poll(() =>
+        page.evaluate(async () => {
+          const { LocalStore } = await import(String("/src/data/store.ts"));
+          return (await new LocalStore().get("drafts", "current")).text;
+        }),
+      )
+      .toEqual([[...partial]]);
+    await page.reload();
+    expect(await nodes(field)).toEqual([[...partial]]);
+    await field.press("Control+End");
+    await field.pressSequentially("_");
+    expect(await nodes(field)).toEqual([[...(prefix ? [prefix] : []), index]]);
+    await field.press("Backspace");
+    expect(await richText(field)).toBe(partial.join("") + "_");
+    await expect(field.getByRole("img")).toHaveCount(0);
   }
 });
 

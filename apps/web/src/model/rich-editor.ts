@@ -6,7 +6,7 @@ import {
   TextSelection,
   type Transaction,
 } from "prosemirror-state";
-import { InputRule, inputRules } from "prosemirror-inputrules";
+import { inputRules } from "prosemirror-inputrules";
 import { CIRCLED_SOURCE, circledPlace, placeGlyph } from "./place-glyphs.ts";
 import type { RichNode, RichText } from "./types.ts";
 
@@ -218,6 +218,13 @@ export function replaceInline(
       TextSelection.near(tr.doc.resolve(start + node.nodeSize)),
     );
   }
+  if ($from.parent.type.name === "literal" && $from.parentOffset === 0)
+    from = $from.before();
+  if (
+    $to.parent.type.name === "literal" &&
+    $to.parentOffset === $to.parent.content.size
+  )
+    to = $to.after();
   return state.tr.replaceWith(from, to, node);
 }
 
@@ -253,6 +260,54 @@ const rulePattern = new RegExp(
   `(__([1-9]|[1-4][0-9]|50)__|___|[${CIRCLED_SOURCE}])$`,
   "u",
 );
+const maxPlaceTokenLength = "__50__".length;
+/** Map the eligible text suffix to positions across literal containers. */
+function placeMatch(doc: EditorNode, position: number, typed = "") {
+  const $cursor = doc.resolve(position);
+  const parent = $cursor.parent.type.name;
+  if (parent !== "paragraph" && parent !== "literal") return null;
+  const depth = $cursor.depth - (parent === "literal" ? 1 : 0);
+  const paragraph = $cursor.node(depth);
+  const start = $cursor.start(depth);
+  let before = "";
+  let positions: number[] = [];
+  paragraph.forEach((node, offset) => {
+    const nodeStart = start + offset;
+    if (nodeStart >= position) return;
+    if (!node.isText && node.type.name !== "literal") {
+      before = "";
+      positions = [];
+      return;
+    }
+    const textStart = nodeStart + (node.isText ? 0 : 1);
+    const count = Math.max(
+      0,
+      Math.min(node.textContent.length, position - textStart),
+    );
+    const text = node.textContent.slice(
+      Math.max(0, count - maxPlaceTokenLength),
+      count,
+    );
+    before += text;
+    for (let index = count - text.length; index < count; index++)
+      positions.push(textStart + index);
+    before = before.slice(-maxPlaceTokenLength);
+    positions = positions.slice(-maxPlaceTokenLength);
+  });
+  const value = before + typed;
+  const match = rulePattern.exec(value);
+  if (
+    !match ||
+    match[0].length < typed.length ||
+    match.index + match[0].length !== value.length
+  )
+    return null;
+  const existing = match[0].length - typed.length;
+  return {
+    match,
+    from: existing ? positions[positions.length - existing] : position,
+  };
+}
 export interface PlaceRuleOptions {
   enabled: () => boolean;
   composing?: () => boolean;
@@ -301,9 +356,17 @@ export function placeInputPlugins(options: PlaceRuleOptions): Plugin[] {
       ? null
       : replaceInline(state, from, to, schema.nodes.place.create({ index }));
   };
-  const rules = inputRules({
-    rules: [new InputRule(rulePattern, replacement)],
-  });
+  const rules = inputRules({ rules: [] });
+  // The stock matcher counts text characters without inline container positions.
+  rules.props.handleTextInput = (view, from, to, text) => {
+    if (view.composing) return false;
+    const found = placeMatch(view.state.doc, from, text);
+    if (!found) return false;
+    const tr = replacement(view.state, found.match, found.from, to);
+    if (!tr) return false;
+    view.dispatch(tr.setMeta(rules, { transform: tr, from, to, text }));
+    return true;
+  };
   // The tracked fallback owns completion, so a canceled IME cannot read old paste.
   rules.props.handleDOMEvents!.compositionend = () => false;
   const fallback: Plugin<CompositionState> = new Plugin<CompositionState>({
@@ -362,20 +425,9 @@ export function placeInputPlugins(options: PlaceRuleOptions): Plugin[] {
       const { $from, empty } = state.selection;
       if (!empty || !["paragraph", "literal"].includes($from.parent.type.name))
         return null;
-      const before = $from.parent.textBetween(
-        0,
-        $from.parentOffset,
-        undefined,
-        "\ufffc",
-      );
-      const match = rulePattern.exec(before);
-      if (!match) return null;
-      const tr = replacement(
-        state,
-        match,
-        $from.pos - match[0].length,
-        $from.pos,
-      );
+      const found = placeMatch(state.doc, $from.pos);
+      if (!found) return null;
+      const tr = replacement(state, found.match, found.from, $from.pos);
       if (!tr) return null;
       return tr.setMeta(rules, {
         transform: tr,

@@ -274,6 +274,64 @@ test("automatic numbering reserves explicit places and restarts after a semicolo
   assert.equal(nextAutomaticPlace(doc, doc.content.size - 1), 2);
 });
 
+test("completing saved partial tokens maps literal boundaries and restores the typed token", () => {
+  for (const [partial, index, prefix] of [
+    [["before __"], 1, "before "],
+    [["before _", "_"], 1, "before "],
+    [["before __50_"], 50, "before "],
+    [["before _", "_50_"], 50, "before "],
+    [["__"], 1, ""],
+    [["_", "_"], 1, ""],
+    [["__50_"], 50, ""],
+    [["_", "_50_"], 50, ""],
+  ] as const) {
+    const converted = [[...(prefix ? [prefix] : []), index]];
+    for (const inside of [false, true]) {
+      const h = harness([[...partial]]);
+      if (inside)
+        h.dispatch(
+          h.state.tr.setSelection(
+            TextSelection.create(h.state.doc, h.state.doc.content.size - 2),
+          ),
+        );
+      h.type("_");
+      assert.deepEqual(editorToRich(h.state.doc), converted);
+      assert.ok(h.state.doc.eq(richToEditor(editorToRich(h.state.doc))));
+      assert.equal(h.backspace(), true);
+      assert.equal(h.state.doc.textContent, partial.join("") + "_");
+      h.state.doc.check();
+    }
+    const fallback = harness([[...partial]]);
+    fallback.dispatch(fallback.state.tr.insertText("_"));
+    assert.deepEqual(editorToRich(fallback.state.doc), converted);
+    assert.ok(
+      fallback.state.doc.eq(richToEditor(editorToRich(fallback.state.doc))),
+    );
+    assert.equal(fallback.backspace(), true);
+    assert.equal(fallback.state.doc.textContent, partial.join("") + "_");
+  }
+});
+
+test("partial tokens never continue across code, links, or their empty labels", () => {
+  for (const boundary of [
+    { code: "_" },
+    { code: "" },
+    { word: { language: "jbo", spelling: "cukta" }, label: "_" },
+    { word: { language: "jbo", spelling: "cukta" }, label: "" },
+    { url: "https://example.org/", label: "_" },
+    { url: "https://example.org/", label: "" },
+  ] as const) {
+    const h = harness([["before _", boundary, "_"]]);
+    h.type("_");
+    assert.deepEqual(editorToRich(h.state.doc), [
+      ["before _", boundary, "_", "_"],
+    ]);
+    const label = harness([[boundary]]);
+    label.type("__");
+    assert.deepEqual(editorToRich(label.state.doc), [[boundary, "__"]]);
+  }
+});
+
 test("IME fallback converts DOM insertions and undo restores them once", () => {
   const h = harness();
   h.dispatch(h.state.tr.insertText("__50__"));
@@ -301,6 +359,9 @@ test("deleting after literal paste and canceling composition never converts old 
     );
     h.dispatch(deletion);
     assert.deepEqual(editorToRich(h.state.doc), [[token]]);
+    const newline = harness([[token]]);
+    newline.type("\n");
+    assert.equal(newline.state.doc.textContent, token + "\n");
     h.dispatch(h.state.tr.setMeta("richCompositionStart", true));
     h.dispatch(h.state.tr.setMeta("richCompositionEnd", true));
     assert.deepEqual(editorToRich(h.state.doc), [[token]]);
