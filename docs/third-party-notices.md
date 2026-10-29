@@ -80,6 +80,8 @@ The license texts below retain upstream wording. Shared text appears once with e
 | `rand` | 0.8.8 | MIT OR Apache-2.0 | [Repository](https://github.com/rust-random/rand) |
 | `rand_chacha` | 0.3.1 | MIT OR Apache-2.0 | [Repository](https://github.com/rust-random/rand) |
 | `rand_core` | 0.6.4 | MIT OR Apache-2.0 | [Repository](https://github.com/rust-random/rand) |
+| `regex-automata` | 0.4.18 | MIT OR Apache-2.0 | [Repository](https://github.com/rust-lang/regex) |
+| `regex-syntax` | 0.8.10 | MIT OR Apache-2.0 | [Repository](https://github.com/rust-lang/regex) |
 | `rfc6979` | 0.4.0 | Apache-2.0 OR MIT | [Repository](https://github.com/RustCrypto/signatures/tree/master/rfc6979) |
 | `rsa` | 0.9.10 | MIT OR Apache-2.0 | [Repository](https://github.com/RustCrypto/RSA) |
 | `rustc_version` | 0.4.1 | MIT OR Apache-2.0 | [Repository](https://github.com/djc/rustc-version-rs) |
@@ -499,6 +501,8 @@ Sources:
 - `wasm-bindgen-macro 0.2.105 / LICENSE-APACHE`.
 - `wasm-bindgen-macro-support 0.2.105 / LICENSE-APACHE`.
 - `wasm-bindgen-shared 0.2.105 / LICENSE-APACHE`.
+- `regex-automata 0.4.18 / LICENSE-APACHE`.
+- `regex-syntax 0.8.10 / LICENSE-APACHE`.
 
 SHA-256: `a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2`.
 
@@ -3542,6 +3546,8 @@ Sources:
 - `num-iter 0.1.46 / LICENSE-MIT`.
 - `num-rational 0.4.2 / LICENSE-MIT`.
 - `num-traits 0.2.19 / LICENSE-MIT`.
+- `regex-automata 0.4.18 / LICENSE-MIT`.
+- `regex-syntax 0.8.10 / LICENSE-MIT`.
 
 SHA-256: `6485b8ed310d3f0340bf1ad1f47645069ce4069dcc6bb46c7d5c6faf41de1fdb`.
 
@@ -8375,4 +8381,72 @@ CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+```
+
+### Source text 74db5baf44a4
+
+Sources:
+
+- `regex-syntax 0.8.10 / src/unicode_tables/LICENSE-UNICODE`.
+
+SHA-256: `74db5baf44a41b1000312c673544b3374e4198af5605c7f9080a402cec42cfa3`.
+
+```text
+UNICODE, INC. LICENSE AGREEMENT - DATA FILES AND SOFTWARE
+
+Unicode Data Files include all data files under the directories
+http://www.unicode.org/Public/, http://www.unicode.org/reports/,
+http://www.unicode.org/cldr/data/, http://source.icu-project.org/repos/icu/, and
+http://www.unicode.org/utility/trac/browser/.
+
+Unicode Data Files do not include PDF online code charts under the
+directory http://www.unicode.org/Public/.
+
+Software includes any source code published in the Unicode Standard
+or under the directories
+http://www.unicode.org/Public/, http://www.unicode.org/reports/,
+http://www.unicode.org/cldr/data/, http://source.icu-project.org/repos/icu/, and
+http://www.unicode.org/utility/trac/browser/.
+
+NOTICE TO USER: Carefully read the following legal agreement.
+BY DOWNLOADING, INSTALLING, COPYING OR OTHERWISE USING UNICODE INC.'S
+DATA FILES ("DATA FILES"), AND/OR SOFTWARE ("SOFTWARE"),
+YOU UNEQUIVOCALLY ACCEPT, AND AGREE TO BE BOUND BY, ALL OF THE
+TERMS AND CONDITIONS OF THIS AGREEMENT.
+IF YOU DO NOT AGREE, DO NOT DOWNLOAD, INSTALL, COPY, DISTRIBUTE OR USE
+THE DATA FILES OR SOFTWARE.
+
+COPYRIGHT AND PERMISSION NOTICE
+
+Copyright © 1991-2018 Unicode, Inc. All rights reserved.
+Distributed under the Terms of Use in http://www.unicode.org/copyright.html.
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of the Unicode data files and any associated documentation
+(the "Data Files") or Unicode software and any associated documentation
+(the "Software") to deal in the Data Files or Software
+without restriction, including without limitation the rights to use,
+copy, modify, merge, publish, distribute, and/or sell copies of
+the Data Files or Software, and to permit persons to whom the Data Files
+or Software are furnished to do so, provided that either
+(a) this copyright and permission notice appear with all copies
+of the Data Files or Software, or
+(b) this copyright and permission notice appear in associated
+Documentation.
+
+THE DATA FILES AND SOFTWARE ARE PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT OF THIRD PARTY RIGHTS.
+IN NO EVENT SHALL THE COPYRIGHT HOLDER OR HOLDERS INCLUDED IN THIS
+NOTICE BE LIABLE FOR ANY CLAIM, OR ANY SPECIAL INDIRECT OR CONSEQUENTIAL
+DAMAGES, OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE,
+DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
+TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+PERFORMANCE OF THE DATA FILES OR SOFTWARE.
+
+Except as contained in this notice, the name of a copyright holder
+shall not be used in advertising or otherwise to promote the sale,
+use or other dealings in these Data Files or Software without prior
+written authorization of the copyright holder.
 ```

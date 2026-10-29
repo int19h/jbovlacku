@@ -3,9 +3,17 @@ import {
   selectMatches,
   matchRank,
   withSegmentation,
+  isPatternQuery,
+  comparePatternSpelling,
+  type SearchOptions,
+  type LexicalMatch,
   type MatchKind,
   type SearchMetrics,
 } from "../../search/src/index.ts";
+import {
+  scanPatternsChunked,
+  type PatternScanner,
+} from "../../search/src/pattern-scan.ts";
 import type { SearchEntry } from "./packages.ts";
 
 /** Scan each entry once and retain the public lexical match tiers and order. */
@@ -16,6 +24,9 @@ export function lexicalSearch(
   evaluation: Evaluation,
   includeRetired = false,
   metrics?: SearchMetrics,
+  rafsi: Record<string, string[]> = {},
+  options: SearchOptions = {},
+  selectedRows?: LexicalMatch<SearchEntry>[],
 ) {
   const hits = new Map<
     string,
@@ -33,16 +44,34 @@ export function lexicalSearch(
       };
     }
   >();
-  const selected = selectMatches(entries, query, metrics, (entry) => {
-    const publication = evaluation.publications[entry.event];
-    return (
-      entry.language === language &&
-      !!publication &&
-      evaluation.receipts[entry.event]?.interpretation === "effective" &&
-      publication.eligible === "eligible" &&
-      (publication.status === "active" || includeRetired)
-    );
-  });
+  const pattern = options.patterns !== false && isPatternQuery(query);
+  const source = pattern
+    ? (function* () {
+        for (const entry of entries)
+          yield {
+            ...entry,
+            rafsi: rafsi[evaluation.publications[entry.event]?.word] ?? [],
+          };
+      })()
+    : entries;
+  const selected = selectedRows
+    ? { rows: selectedRows, segmentation: "complete" as const }
+    : selectMatches(
+        source,
+        query,
+        metrics,
+        (entry) => {
+          const publication = evaluation.publications[entry.event];
+          return (
+            entry.language === language &&
+            !!publication &&
+            evaluation.receipts[entry.event]?.interpretation === "effective" &&
+            publication.eligible === "eligible" &&
+            (publication.status === "active" || includeRetired)
+          );
+        },
+        options,
+      );
   for (const { entry, match, position } of selected.rows) {
     const publication = evaluation.publications[entry.event];
     const wordId = publication.word;
@@ -89,7 +118,13 @@ export function lexicalSearch(
     (a, b) =>
       matchRank(a.match) - matchRank(b.match) ||
       a.position - b.position ||
-      a.word_id.localeCompare(b.word_id),
+      (pattern
+        ? comparePatternSpelling(
+            (a.word as SearchEntry["word"]).spelling,
+            (b.word as SearchEntry["word"]).spelling,
+          )
+        : 0) ||
+      (a.word_id < b.word_id ? -1 : a.word_id > b.word_id ? 1 : 0),
   );
 
   return withSegmentation(
@@ -98,5 +133,67 @@ export function lexicalSearch(
       return hit;
     }),
     selected.segmentation,
+  );
+}
+
+/** Hosts supply their own bounded pattern runtime. Ordinary retrieval stays literal when requested. */
+export async function lexicalSearchAsync(
+  entries: SearchEntry[],
+  query: string,
+  language: string,
+  evaluation: Evaluation,
+  includeRetired = false,
+  rafsi: Record<string, string[]> = {},
+  scanner: PatternScanner = (entries, query, signal) =>
+    scanPatternsChunked(entries, query, {
+      yield: () => new Promise((resolve) => setTimeout(resolve, 0)),
+      signal,
+    }),
+  signal?: AbortSignal,
+  options: SearchOptions = {},
+) {
+  if (options.patterns === false || !isPatternQuery(query))
+    return lexicalSearch(
+      entries,
+      query,
+      language,
+      evaluation,
+      includeRetired,
+      undefined,
+      rafsi,
+      options,
+    );
+  const source = entries.filter((entry) => {
+    const publication = evaluation.publications[entry.event];
+    return (
+      entry.language === language &&
+      publication &&
+      evaluation.receipts[entry.event]?.interpretation === "effective" &&
+      publication.eligible === "eligible" &&
+      (publication.status === "active" || includeRetired)
+    );
+  });
+  const matches = await scanner(
+    source.map((entry) => ({
+      spelling: entry.word.spelling,
+      rafsi: rafsi[evaluation.publications[entry.event].word] ?? [],
+    })),
+    query,
+    signal,
+  );
+  return lexicalSearch(
+    source,
+    query,
+    language,
+    evaluation,
+    includeRetired,
+    undefined,
+    rafsi,
+    {},
+    matches.map((row) => ({
+      entry: source[row.index],
+      match: row.match,
+      position: 0,
+    })),
   );
 }

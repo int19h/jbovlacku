@@ -93,6 +93,26 @@ The server prepares lexical indexes during package materialization, before compl
 Storage reads check durable revision markers, so same-snapshot changes and another tab's writes invalidate retained data.
 The [search specification](docs/frontend.md#4-search-and-reading) defines the bounds, ranking, and fallback rules.
 
+Local and server search also share bounded pattern matching in WebAssembly.
+`/.../` searches by an unanchored, case-insensitive regular expression. Globs use `*`, `?`, `@` for a vowel, and `$` for a consonant.
+Globs match the whole spelling. `*` and `?` consume any character, including spaces and punctuation.
+Literal `h` reads as an apostrophe. Matching ignores capitals and acute stress marks.
+Meaning retrieval and rafsi claim previews use literal search. Natural-language questions keep ordinary text search with a short punctuation note.
+Patterns return headword matches before retained rafsi matches, with normalized spelling order and a final word-ID tie break and the usual “show all” behavior.
+
+The rafsi page accepts the same patterns and keeps each matched assignment separate.
+Version 1 packages expose headword patterns only. Version 2 packages supply bounded rafsi metadata.
+The shared engine caps compilation, per-candidate work, and total work by compiled state count.
+
+Node reuses two initialized workers and starts each task deadline after initialization.
+Both server hosts admit two active pattern scans and eight waiting requests. Excess requests return HTTP 503 with a retry hint.
+Cloudflare shares admission across scanner instances and uses compiled-work limits between read-only D1 reads.
+Its loose elapsed guard excludes D1 waits. Hosted D1 latency still adds to response time.
+The browser retains its worker deadline.
+
+Plain local cancellation preserves prepared packages. Canceling a running pattern stops its worker.
+Invalid patterns and exhausted limits give explicit errors without partial results or a silent remote fallback.
+
 A download keeps its requested language even when the language selector changes before it finishes.
 Signing needs localhost or HTTPS. A plain HTTP Tailscale address supports reading only.
 

@@ -9,8 +9,12 @@ import {
 } from "../../../../packages/core/src/browser.ts";
 import {
   selectMatches,
+  selectRafsiMatches,
   withSegmentation,
   matchRank,
+  isPatternQuery,
+  comparePatternSpelling,
+  type SearchOptions,
   type SegmentationStatus,
   type SearchMetrics,
 } from "../../../../packages/search/src/index.ts";
@@ -406,16 +410,21 @@ async function downloadEntries(
 export interface LocalHit extends SearchHit {
   /** Every matching entry of the word, strongest first. */
   entries: PackageEntry[];
+  matchingRafsi?: string[];
 }
 /** Groups matching entries by word, ordered by match class and stable word ID. */
 export function localSearch(
   entries: PackageEntry[],
   query: string,
   metrics?: SearchMetrics,
+  rafsiOnly = false,
+  options: SearchOptions = {},
 ): LocalHit[] & { segmentation: SegmentationStatus } {
-  const selected = selectMatches(entries, query, metrics);
+  const selected = rafsiOnly
+    ? selectRafsiMatches(entries, query, metrics, options)
+    : selectMatches(entries, query, metrics, undefined, options);
   const grouped = new Map<string, LocalHit & { position: number }>();
-  for (const { entry, match, position } of selected.rows) {
+  for (const { entry, match, position, rafsi } of selected.rows) {
     const id = wordId({ language: "jbo", spelling: entry.word.spelling });
     const preview = {
       event: entry.event,
@@ -427,6 +436,10 @@ export function localSearch(
     if (old) {
       old.definitions.push(entry.event);
       old.entries.push(entry);
+      if (rafsi)
+        old.matchingRafsi = [
+          ...new Set([...(old.matchingRafsi ?? []), ...rafsi]),
+        ].sort();
       if (
         matchRank(match) < matchRank(old.match) ||
         (match === old.match && entry.event < old.preview!.event)
@@ -448,13 +461,17 @@ export function localSearch(
         position,
         preview,
         entries: [entry],
+        ...(rafsi ? { matchingRafsi: rafsi } : {}),
       });
   }
   const ordered = [...grouped.values()].sort(
     (a, b) =>
       matchRank(a.match) - matchRank(b.match) ||
       a.position - b.position ||
-      a.word_id.localeCompare(b.word_id, "en"),
+      (options.patterns !== false && isPatternQuery(query)
+        ? comparePatternSpelling(a.word.spelling, b.word.spelling)
+        : 0) ||
+      (a.word_id < b.word_id ? -1 : a.word_id > b.word_id ? 1 : 0),
   );
   return withSegmentation(
     ordered.map(({ position, ...hit }) => {

@@ -233,36 +233,6 @@ test("R2 Opus F5: zbalermorna renders the plain form of every accented name", as
   }
 });
 
-test("R2 Opus F3: rafsi package rows group accent displays by word ID", async () => {
-  const { wordsWithRafsi } = await import("../../src/pages/rafsi.ts");
-  const cached = {
-    ...cache(),
-    version: 2,
-    entries: cache().entries.map((entry) => ({
-      ...entry,
-      issuer: "ed25519:" + "a".repeat(64),
-      rafsi: ["dja"],
-    })),
-  };
-  const app = {
-    session: {
-      preferences: { definitionLanguage: "en" },
-      storageAvailable: true,
-    },
-    store: { keys: async () => ["en"], get: async () => cached },
-  };
-  const found = await wordsWithRafsi(
-    app as any,
-    "dja",
-    new AbortController().signal,
-  );
-  assert.equal(found.length, 1);
-  assert.equal(
-    wordId({ language: "jbo", spelling: found[0].spelling }),
-    wordId({ language: "jbo", spelling: "djan" }),
-  );
-});
-
 test("R2 Opus F8: an unknown accented name permits the same experimental classification as its plain form", () => {
   for (const [kind, spelling] of [
     ["cmevla", "dján smit"],

@@ -8,6 +8,7 @@ export {
   type Evaluation,
   canonicalize,
   contentHash,
+  createSearchPattern,
   prepareAdmission,
   verifyEnvelope,
   prepareSelection,

@@ -3,6 +3,13 @@ import {
   segmentText,
   stripAcuteAccents,
 } from "../../morphology/src/index.ts";
+import { compilePattern, isPatternQuery, patternKey } from "./pattern.ts";
+export {
+  PatternError,
+  isPatternQuery,
+  naturalLanguageNote,
+  comparePatternSpelling,
+} from "./pattern.ts";
 
 export const SEARCH_QUERY_BYTE_LIMIT = 16_384;
 export const SEARCH_QUERY_WORD_LIMIT = 512;
@@ -19,6 +26,8 @@ export const matchKinds = [
   "sequence-subsequence",
   "token",
   "component",
+  "headword-pattern",
+  "rafsi-pattern",
 ] as const;
 export type MatchKind = (typeof matchKinds)[number];
 export function withSegmentation<T>(
@@ -35,6 +44,7 @@ export interface LexicalEntry {
   word: { spelling: string };
   glosses: { text: string }[];
   plain_text: string;
+  rafsi?: string[];
 }
 export interface SearchMetrics {
   entries: number;
@@ -228,16 +238,21 @@ export function prepareIndex<T extends LexicalEntry>(
   preparedIndexes.set(entries, index);
   return index;
 }
+export interface SearchOptions {
+  patterns?: boolean;
+}
 export interface PreparedQuery {
   text: string;
   headword: string;
   components: Components | null;
   positions: Map<string, number>;
   segmentation: SegmentationStatus;
+  pattern?: string;
 }
 export function prepareQuery(
   query: string,
   metrics?: SearchMetrics,
+  options: SearchOptions = {},
 ): PreparedQuery {
   const text = normalizeQuery(query);
   const headword = headwordKey(text);
@@ -249,6 +264,10 @@ export function prepareQuery(
     segmentation: "complete",
   };
   if (!text) return result;
+  if (options.patterns !== false && isPatternQuery(query)) {
+    result.pattern = query;
+    return result;
+  }
   if (new TextEncoder().encode(query).length > SEARCH_QUERY_BYTE_LIMIT) {
     result.segmentation = "limited";
     return result;
@@ -310,6 +329,35 @@ export interface LexicalMatch<T> {
   match: MatchKind;
   /** The first query position, used only for component fallback. */
   position: number;
+  rafsi?: string[];
+}
+/** Match each exact retained spelling under one query budget. */
+export function selectRafsiMatches<T extends LexicalEntry>(
+  entries: Iterable<T>,
+  query: string,
+  metrics?: SearchMetrics,
+  options: SearchOptions = {},
+) {
+  const pattern =
+    options.patterns !== false && isPatternQuery(query)
+      ? compilePattern(query)
+      : null;
+  const rows: LexicalMatch<T>[] = [];
+  try {
+    for (const entry of entries) {
+      if (metrics) metrics.entries++;
+      const rafsi = (entry.rafsi ?? []).filter((spelling) =>
+        pattern
+          ? pattern.test(spelling)
+          : patternKey(spelling) === patternKey(query),
+      );
+      if (rafsi.length)
+        rows.push({ entry, match: "rafsi-pattern", position: 0, rafsi });
+    }
+    return { rows, segmentation: "complete" as const };
+  } finally {
+    pattern?.free();
+  }
 }
 /** One scan. Sequence searches use linear passes and never enumerate subsets. */
 export function selectMatches<T extends LexicalEntry>(
@@ -317,10 +365,36 @@ export function selectMatches<T extends LexicalEntry>(
   query: string | PreparedQuery,
   metrics?: SearchMetrics,
   accept: (entry: T) => boolean = () => true,
+  options: SearchOptions = {},
 ): { rows: LexicalMatch<T>[]; segmentation: SegmentationStatus } {
   const prepared =
-    typeof query === "string" ? prepareQuery(query, metrics) : query;
+    typeof query === "string" ? prepareQuery(query, metrics, options) : query;
   const rows: LexicalMatch<T>[] = [];
+  if (prepared.pattern !== undefined) {
+    const pattern = compilePattern(prepared.pattern);
+    try {
+      const source =
+        "rows" in entries ? entries.rows.map(({ entry }) => entry) : entries;
+      for (const entry of source) {
+        if (metrics) metrics.entries++;
+        if (!accept(entry)) continue;
+        const headword = pattern.test(entry.word.spelling);
+        // Scan every retained rafsi, even after a match, under the same budget.
+        let rafsi = false;
+        for (const spelling of entry.rafsi ?? [])
+          rafsi = pattern.test(spelling) || rafsi;
+        if (headword || rafsi)
+          rows.push({
+            entry,
+            match: headword ? "headword-pattern" : "rafsi-pattern",
+            position: 0,
+          });
+      }
+      return { rows, segmentation: "complete" };
+    } finally {
+      pattern.free();
+    }
+  }
   const fallback: { entry: T; key: string }[] = [];
   const coverage = new Int32Array(
     (prepared.components?.tokens.length ?? 0) + 1,

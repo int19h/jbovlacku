@@ -35,7 +35,8 @@ import {
   type TypeDictionary,
 } from "./assistance.ts";
 import { nearbyQuery, rankNearby } from "./nearby.ts";
-import { lexicalSearch } from "./lexical-search.ts";
+import { lexicalSearch, lexicalSearchAsync } from "./lexical-search.ts";
+import { PatternError } from "../../search/src/index.ts";
 import {
   checkpointBindingKey,
   type CheckpointBinding,
@@ -120,7 +121,9 @@ const compareBytes = (a: number[], b: number[]): number => {
   }
   return a.length - b.length;
 };
+import type { PatternScanner } from "../../search/src/pattern-scan.ts";
 export interface ServiceOptions {
+  patternScanner?: PatternScanner;
   assistance?: AssistanceOptions;
   semantic?: SemanticOptions;
   serverId: string;
@@ -338,6 +341,10 @@ export class DictionaryService {
         query,
         request.language,
         evaluation,
+        false,
+        undefined,
+        packages.searchRafsi,
+        { patterns: false },
       );
     });
     result.method = query_words.length || spelling ? "lexical" : "none";
@@ -626,6 +633,7 @@ export class DictionaryService {
                 session.state,
               );
               if (
+                !payload.packages.searchRafsi ||
                 !sameEffectiveDefinitions(
                   payload.packages.effectiveDefinitions,
                   effectiveDefinitions,
@@ -2001,6 +2009,7 @@ export class DictionaryService {
     } catch (error) {
       if (
         error instanceof ApiError ||
+        error instanceof PatternError ||
         error instanceof AssistanceError ||
         error instanceof SemanticError
       )
@@ -2012,6 +2021,9 @@ export class DictionaryService {
             field: error instanceof ApiError ? error.field : null,
           },
           error.status,
+          error instanceof PatternError && error.code === "search_busy"
+            ? { "Retry-After": "1" }
+            : {},
         );
       else {
         let detail: { code?: string; message?: string } = {};
@@ -2255,6 +2267,7 @@ export class DictionaryService {
         "limit",
         "after",
         "retired",
+        "literal",
       ];
       if (!fields || typeof fields !== "object" || Array.isArray(fields))
         throw new ApiError(
@@ -2531,20 +2544,30 @@ export class DictionaryService {
       if (retiredFlag !== null && retiredFlag !== "1")
         throw new ApiError(400, "retired", "retired must be 1 when present.");
       const includeRetired = retiredFlag === "1";
-      const ordered = lexicalSearch(
-        (await this.packages(snapshot)).entries,
+      const literalFlag = url.searchParams.get("literal");
+      if (literalFlag !== null && literalFlag !== "1")
+        throw new ApiError(400, "literal", "literal must be 1 when present.");
+      const literal = literalFlag === "1";
+      const packages = await this.packages(snapshot);
+      const ordered = await lexicalSearchAsync(
+        packages.entries,
         query,
         language,
         evaluation,
         includeRetired,
+        packages.searchRafsi,
+        this.options.patternScanner,
+        request.signal,
+        { patterns: !literal },
       );
       const cursorHash = this.hashJson({
-        search: "segmented-v3",
+        search: "patterns-v3",
         query,
         language,
         snapshot: snapshot.snapshot,
         view,
         retired: includeRetired,
+        literal,
       }).slice(7);
       const after = url.searchParams.get("after");
       let offset = 0;
