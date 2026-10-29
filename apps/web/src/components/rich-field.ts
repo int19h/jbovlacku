@@ -320,6 +320,11 @@ export function richField(label: string, options: RichFieldOptions) {
       }
     },
     handleDOMEvents: {
+      focus(view) {
+        // Reparenting a retained editor can clear only the native caret.
+        view.focus();
+        return false;
+      },
       beforeinput(view, event) {
         const input = event as InputEvent;
         if (
