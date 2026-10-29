@@ -252,8 +252,11 @@ for (const target of ["authoring", "profile", "rafsi"] as const) {
     let chunk = "**/src/pages/wizard/places.ts";
     if (target === "authoring") await seed(page);
     if (target === "profile") {
-      const identity = await createIdentity(page);
-      path = `/identity/${encodeURIComponent(String(identity))}#edit`;
+      await createIdentity(page);
+      path = (await page
+        .getByRole("link", { name: "Edit public profile", exact: true })
+        .getAttribute("href"))!;
+      expect(path).toMatch(/^\/identity\/[^/]+#edit$/);
       chunk = "**/src/components/rich-field.ts";
     }
     if (target === "rafsi") {

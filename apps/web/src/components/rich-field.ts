@@ -140,6 +140,8 @@ export function richField(label: string, options: RichFieldOptions) {
   let current = canonicalRich(options.value);
   let moved = false;
   let pointerFocus = false;
+  let tabSelection: boolean | null = null;
+  let tabTimer: number | undefined;
   let dialog: HTMLDialogElement | null = null;
   let editLink: HTMLButtonElement | undefined;
   const rulePlugins = placeInputPlugins({
@@ -331,16 +333,12 @@ export function richField(label: string, options: RichFieldOptions) {
     },
     handleDOMEvents: {
       focus(view) {
-        const repair = moved;
-        moved = false;
-        const native = view.dom.ownerDocument.getSelection();
-        // A click or a chosen native selection takes precedence over a move.
-        if (
-          repair &&
+        const repair =
+          moved &&
           !pointerFocus &&
-          !view.dom.contains(native?.anchorNode ?? null)
-        )
-          view.focus();
+          (tabSelection === false || !hasNativeSelection());
+        clearMove();
+        if (repair) view.focus();
         pointerFocus = false;
         return false;
       },
@@ -417,6 +415,36 @@ export function richField(label: string, options: RichFieldOptions) {
     },
   });
   const input = view.dom as RichInput;
+  const nativeFocus = input.focus;
+  function hasNativeSelection() {
+    const selection = input.ownerDocument.getSelection();
+    return (
+      input.contains(selection?.anchorNode ?? null) ||
+      input.contains(selection?.focusNode ?? null)
+    );
+  }
+  function clearMove() {
+    moved = false;
+    tabSelection = null;
+    window.clearTimeout(tabTimer);
+    input.ownerDocument.removeEventListener("keydown", beforeTab, true);
+    input.focus = nativeFocus;
+  }
+  function beforeTab(event: KeyboardEvent) {
+    if (event.key !== "Tab") return;
+    tabSelection = hasNativeSelection();
+    window.clearTimeout(tabTimer);
+    tabTimer = window.setTimeout(() => {
+      tabSelection = null;
+    }, 0);
+  }
+  function focusAfterMove(options?: FocusOptions) {
+    // Read an author's range before native focus creates its default caret.
+    const repair = moved && !pointerFocus && !hasNativeSelection();
+    clearMove();
+    nativeFocus.call(input, options);
+    if (repair) view.focus();
+  }
   input.style.setProperty(
     "--target-min-height",
     `${Math.max(2, options.rows ?? 3) * 1.7 + 1}em`,
@@ -866,6 +894,7 @@ export function richField(label: string, options: RichFieldOptions) {
     node.showModal();
   }
   onDisconnect(wrapper, () => {
+    clearMove();
     dialog?.close();
     view.destroy();
   });
@@ -878,6 +907,8 @@ export function richField(label: string, options: RichFieldOptions) {
     label: labelNode,
     moved: () => {
       moved = true;
+      input.focus = focusAfterMove;
+      input.ownerDocument.addEventListener("keydown", beforeTab, true);
     },
     refresh: syncMode,
   };

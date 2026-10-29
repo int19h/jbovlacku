@@ -358,6 +358,23 @@ test("r2 place-list updates retain blank paragraphs, caret, and undo", async ({
   expect(await nodes(description)).toEqual([["a person"]]);
   await description.press("Control+z");
   expect(await nodes(description)).toEqual([["a person"]]);
+  await expect(description.locator("p")).toHaveCount(1);
+  await description.press("Control+End");
+  await description.press("Enter");
+  await page
+    .getByRole("button", { name: "+ Add a place", exact: true })
+    .click();
+  const descriptionToolbar = page.getByRole("toolbar", {
+    name: "Description for place 1 formatting",
+    exact: true,
+  });
+  await descriptionToolbar
+    .getByRole("button", { name: "Insert place 1", exact: true })
+    .focus();
+  await page.keyboard.press("Tab");
+  await expect(description).toBeFocused();
+  await page.keyboard.type("from Tab");
+  expect(await nodes(description)).toEqual([["a person"], ["from Tab"]]);
 });
 test("r2 reading pages load no authoring editor code or CSS", async ({
   page,

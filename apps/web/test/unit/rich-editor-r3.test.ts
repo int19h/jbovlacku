@@ -249,6 +249,22 @@ test("r3 seeded edits choose interior positions, selections, commands, and conta
         `${sample} ${label}`,
       );
       state.doc.check();
+      for (const paragraph of stored)
+        for (const node of paragraph) {
+          const value =
+            typeof node === "string"
+              ? node
+              : typeof node === "number" || "operand" in node
+                ? ""
+                : "code" in node
+                  ? node.code
+                  : node.label;
+          assert.equal(
+            value.isWellFormed(),
+            true,
+            `${sample} ${label} well-formed text`,
+          );
+        }
       assert.deepEqual(
         editorToRich(richToEditor(stored)),
         stored,
@@ -309,7 +325,13 @@ test("r3 seeded edits choose interior positions, selections, commands, and conta
     }
     // Pick a range across saved strings and a code or link boundary.
     const target = state.doc.child(1).child(2);
-    const from = targetStart() + random(target.content.size + 1);
+    const starts = [
+      ...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(
+        target.textContent,
+      ),
+    ].map((part) => part.index);
+    starts.push(target.content.size);
+    const from = targetStart() + starts[random(starts.length)];
     const right =
       offset +
       state.doc.child(1).child(0).nodeSize +
