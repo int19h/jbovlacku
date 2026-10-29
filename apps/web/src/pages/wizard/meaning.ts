@@ -664,6 +664,7 @@ export async function meaningPage(
       if (pkg) {
         // Rank all query lists in the worker before selecting six nearby rows.
         const found = await searchPackage(pkg, language, query.split(" "), {
+          patterns: false,
           nearby: true,
           limit: 6,
           signal: context.signal,

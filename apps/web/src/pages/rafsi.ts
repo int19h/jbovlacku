@@ -23,6 +23,10 @@ import { identityLink } from "../components/attribution.ts";
 import { viewScores } from "../components/localview.ts";
 import { judgmentControl, scoreDetails } from "../components/judgment.ts";
 import { renderRichText } from "../model/richtext.ts";
+import {
+  comparePatternSpelling,
+  patternKey,
+} from "../../../../packages/search/src/pattern.ts";
 import { searchPackage } from "../data/package-search.ts";
 
 /** Loads the version 2 package for a language, from cache or the server. */
@@ -60,6 +64,7 @@ export async function wordsWithRafsi(
   app: App,
   rafsi: string,
   signal: AbortSignal,
+  options: { literal?: boolean } = {},
 ): Promise<RafsiWords> {
   const languages = new Set<string>([
     app.session.preferences.definitionLanguage,
@@ -68,6 +73,7 @@ export async function wordsWithRafsi(
     for (const key of await app.store.keys("packages").catch(() => []))
       languages.add(key);
   const found = new Map<string, RafsiWord>();
+  const identities = new Map<string, string>();
   let available = false,
     limited = false;
   for (const language of languages) {
@@ -82,11 +88,13 @@ export async function wordsWithRafsi(
     );
     const result = await searchPackage(pkg, language, [rafsi], {
       rafsiOnly: true,
+      patterns: !options.literal,
       limit: 1000,
       signal,
     });
     limited ||= result.totals[0] > 1000;
-    for (const hit of result.hits[0])
+    for (const hit of result.hits[0]) {
+      identities.set(hit.word.spelling, hit.word_id);
       for (const spelling of hit.matchingRafsi ?? []) {
         const key = `${hit.word_id}|${spelling}`;
         if (!found.has(key) && found.size >= 1000) {
@@ -99,11 +107,19 @@ export async function wordsWithRafsi(
           rafsi: spelling,
         });
       }
+    }
   }
   return Object.assign(
     [...found.values()].sort(
       (a, b) =>
-        a.rafsi.localeCompare(b.rafsi) || a.spelling.localeCompare(b.spelling),
+        comparePatternSpelling(a.spelling, b.spelling) ||
+        (identities.get(a.spelling)! < identities.get(b.spelling)!
+          ? -1
+          : identities.get(a.spelling)! > identities.get(b.spelling)!
+            ? 1
+            : 0) ||
+        comparePatternSpelling(a.rafsi, b.rafsi) ||
+        (a.rafsi < b.rafsi ? -1 : a.rafsi > b.rafsi ? 1 : 0),
     ),
     { unavailable: !available, limited },
   );
@@ -274,17 +290,27 @@ export async function rafsiPage(
     );
   });
   main.append(relation);
-  const assignments = new Map<string, Set<string>>();
+  const assignments = new Map<
+    string,
+    { claimants: Set<string>; raw: Set<string> }
+  >();
   for (const word of words) {
-    const spellings = assignments.get(word.rafsi) ?? new Set<string>();
-    spellings.add(deriveWordId({ language: "jbo", spelling: word.spelling }));
-    assignments.set(word.rafsi, spellings);
+    const key = patternKey(word.rafsi);
+    const group = assignments.get(key) ?? {
+      claimants: new Set<string>(),
+      raw: new Set<string>(),
+    };
+    group.claimants.add(
+      deriveWordId({ language: "jbo", spelling: word.spelling }),
+    );
+    group.raw.add(word.rafsi);
+    assignments.set(key, group);
   }
-  for (const [spelling, claimants] of assignments)
+  for (const [spelling, { claimants, raw }] of assignments)
     if (claimants.size > 1)
       main.append(
         p(
-          `${claimants.size} words claim ${spelling}. The assignment is unresolved until the selected view prefers one.`,
+          `${words.limited ? "At least " : ""}${claimants.size} words claim ${spelling}. The assignment is unresolved until the selected view prefers one.${raw.size > 1 ? " Stored spellings: " + [...raw].sort().join(", ") + "." : ""}`,
           "notice",
         ),
       );
@@ -404,7 +430,9 @@ export async function claimPage(
     submit.disabled = true;
     competition.replaceChildren(p("Checking retained claims…", "meta"));
     try {
-      const lookup = await wordsWithRafsi(app, value, context.signal);
+      const lookup = await wordsWithRafsi(app, value, context.signal, {
+        literal: true,
+      });
       const others = lookup.filter(
         (w) => deriveWordId({ language: "jbo", spelling: w.spelling }) !== id,
       );

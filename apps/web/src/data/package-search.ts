@@ -25,6 +25,8 @@ export interface PackageSearchOptions {
   limit?: number;
   /** Rank all query lists together before selecting the nearby page. */
   nearby?: boolean;
+  /** Meaning retrieval and claim previews always use literal text. */
+  patterns?: boolean;
   /** Match retained rafsi spellings instead of headwords. */
   rafsiOnly?: boolean;
   signal?: AbortSignal;
@@ -42,6 +44,7 @@ export class PackageValidationError extends Error {}
 class MissingPackageError extends Error {}
 interface Client {
   worker: Worker;
+  canceledPatterns: Set<number>;
   pending: Map<
     number,
     {
@@ -78,10 +81,22 @@ function searchWorker(): Client {
     new URL("./package-search-worker.ts", import.meta.url),
     { type: "module" },
   );
-  const current: Client = { worker, pending: new Map() };
+  const current: Client = {
+    worker,
+    pending: new Map(),
+    canceledPatterns: new Set(),
+  };
   worker.onmessage = ({ data }) => {
     const waiting = current.pending.get(data.request);
-    if (!waiting) return;
+    if (!waiting) {
+      if (data.started && current.canceledPatterns.has(data.request))
+        stopWorker(
+          current,
+          new DOMException("Search was canceled.", "AbortError"),
+        );
+      if (!data.started) current.canceledPatterns.delete(data.request);
+      return;
+    }
     if (data.started) {
       waiting.started();
       return;
@@ -148,15 +163,27 @@ export async function searchPackage(
       Omit<PackageSearchResult, "hits"> & { hits: PackageHitReferences[][] }
     >((resolve, reject) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
+      let started = false;
+      const pattern =
+        options.patterns !== false &&
+        !options.nearby &&
+        queries.some(isPatternQuery);
       const clean = () => {
         clearTimeout(timer);
         signal?.removeEventListener("abort", abort);
       };
-      const abort = () =>
-        stopWorker(
-          current,
-          new DOMException("Search was canceled.", "AbortError"),
-        );
+      const abort = () => {
+        const error = new DOMException("Search was canceled.", "AbortError");
+        if (pattern && started) {
+          stopWorker(current, error);
+          return;
+        }
+        current.pending.delete(request);
+        clean();
+        if (pattern) current.canceledPatterns.add(request);
+        current.worker.postMessage({ cancel: request });
+        reject(error);
+      };
       current.pending.set(request, {
         resolve(value) {
           clean();
@@ -167,8 +194,9 @@ export async function searchPackage(
           reject(error);
         },
         started() {
+          started = true;
           clearTimeout(timer);
-          if (queries.some(isPatternQuery))
+          if (pattern)
             timer = setTimeout(
               () =>
                 stopWorker(

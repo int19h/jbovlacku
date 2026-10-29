@@ -12,6 +12,9 @@ import {
   selectRafsiMatches,
   withSegmentation,
   matchRank,
+  isPatternQuery,
+  comparePatternSpelling,
+  type SearchOptions,
   type SegmentationStatus,
   type SearchMetrics,
 } from "../../../../packages/search/src/index.ts";
@@ -415,10 +418,11 @@ export function localSearch(
   query: string,
   metrics?: SearchMetrics,
   rafsiOnly = false,
+  options: SearchOptions = {},
 ): LocalHit[] & { segmentation: SegmentationStatus } {
   const selected = rafsiOnly
-    ? selectRafsiMatches(entries, query, metrics)
-    : selectMatches(entries, query, metrics);
+    ? selectRafsiMatches(entries, query, metrics, options)
+    : selectMatches(entries, query, metrics, undefined, options);
   const grouped = new Map<string, LocalHit & { position: number }>();
   for (const { entry, match, position, rafsi } of selected.rows) {
     const id = wordId({ language: "jbo", spelling: entry.word.spelling });
@@ -464,7 +468,10 @@ export function localSearch(
     (a, b) =>
       matchRank(a.match) - matchRank(b.match) ||
       a.position - b.position ||
-      a.word_id.localeCompare(b.word_id, "en"),
+      (options.patterns !== false && isPatternQuery(query)
+        ? comparePatternSpelling(a.word.spelling, b.word.spelling)
+        : 0) ||
+      (a.word_id < b.word_id ? -1 : a.word_id > b.word_id ? 1 : 0),
   );
   return withSegmentation(
     ordered.map(({ position, ...hit }) => {

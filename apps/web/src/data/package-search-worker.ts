@@ -25,11 +25,25 @@ const packages = new Map<
 >();
 const ready = initializeCore();
 let queue = Promise.resolve();
+const canceled = new Set<number>();
+const queued = new Set<number>();
 // Keep messages ordered while the initial Wasm module loads.
 self.onmessage = ({ data }) => {
+  if (data.cancel !== undefined) {
+    if (queued.has(data.cancel)) canceled.add(data.cancel);
+    return;
+  }
+  queued.add(data.request);
   queue = queue.then(async () => {
     try {
       await ready;
+      // Let queued cancellation messages arrive before preparation or matching.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      queued.delete(data.request);
+      if (canceled.delete(data.request)) {
+        self.postMessage({ request: data.request, canceled: true });
+        return;
+      }
       const metrics = searchMetrics();
       if (data.pkg) {
         try {
@@ -68,11 +82,17 @@ self.onmessage = ({ data }) => {
       packages.set(data.key, stored);
       if (packages.size > 2) packages.delete(packages.keys().next().value!);
       const options: PackageSearchOptions = data.options ?? {};
-      if (data.queries.some(isPatternQuery))
+      if (
+        options.patterns !== false &&
+        !options.nearby &&
+        data.queries.some(isPatternQuery)
+      )
         self.postMessage({ request: data.request, started: true });
       const hits: ReturnType<typeof localSearch>[] = data.queries.map(
         (query: string) =>
-          localSearch(stored.pkg.entries, query, metrics, options.rafsiOnly),
+          localSearch(stored.pkg.entries, query, metrics, options.rafsiOnly, {
+            patterns: options.patterns !== false && !options.nearby,
+          }),
       );
       const segmentation = hits.some(
         (rows: ReturnType<typeof localSearch>) =>
@@ -111,6 +131,8 @@ self.onmessage = ({ data }) => {
         },
       });
     } catch (error) {
+      queued.delete(data.request);
+      canceled.delete(data.request);
       self.postMessage({
         request: data.request,
         key: data.key,

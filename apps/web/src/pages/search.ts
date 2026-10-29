@@ -1,3 +1,4 @@
+import { naturalLanguageNote } from "../../../../packages/search/src/pattern.ts";
 import {
   searchPackage,
   PackageValidationError,
@@ -214,6 +215,8 @@ export async function searchPage(
     if (context.live() && request === languageRequest)
       navigate(routes.search(query, value));
   });
+  const punctuationNote = naturalLanguageNote(query);
+  if (punctuationNote) main.append(p(punctuationNote, "meta"));
   // Search source: the downloaded package in local mode, otherwise this server.
   let cached: CachedPackage | undefined;
   let initialLocal: PackageSearchResult | undefined;

@@ -341,7 +341,7 @@ test("a missing-package retry starts a fresh worker after another request cancel
         if (first && String(url).includes("package-search-worker")) {
           first = false;
           const source =
-            "let first=true;self.onmessage=({data})=>{if(first){first=false;setTimeout(()=>self.postMessage({request:data.request,key:data.key,code:'package-missing',error:'Synthetic eviction.'}),100)}}";
+            "let first=true;self.onmessage=({data})=>{if(first){first=false;setTimeout(()=>self.postMessage({request:data.request,key:data.key,code:'package-missing',error:'Synthetic eviction.'}),100)}else if(data.cancel===undefined){self.postMessage({request:data.request,started:true})}}";
           super(
             URL.createObjectURL(
               new Blob([source], { type: "text/javascript" }),
