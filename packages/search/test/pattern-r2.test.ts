@@ -96,6 +96,7 @@ test("common counted Unicode classes retain non-ASCII semantics", () => {
     String.raw`/^\w{3,8}$/`,
     String.raw`/^\w{10,}$/`,
     String.raw`/^\p{L}{3,8}$/`,
+    String.raw`/^\b\p{L}{3,8}\b$/`,
   ]) {
     const count = query.includes("10,") ? 10 : 5;
     for (const spelling of [
@@ -131,13 +132,19 @@ test(
       .trimEnd()
       .split("\n");
     assert.equal(keys.length, 33_267);
-    for (const query of [
-      "$@$$@$$@",
-      "$@$$@$$@*",
-      String.raw`/^\w{3,8}$/`,
-      "*zei*",
-    ])
-      assert.ok(selectMatches(keys.map(row), query).rows.length > 0, query);
+    for (const [query, count] of [
+      ["$@$$@$$@", 1947],
+      ["$$@$@$$@", 358],
+      ["$@$$@$$@*", 2845],
+      [String.raw`/^\w{3,8}$/`, 11673],
+      [String.raw`/^\w{10,}$/`, 3390],
+      ["*zei*", 197],
+    ] as const)
+      assert.equal(
+        selectMatches(keys.map(row), query).rows.length,
+        count,
+        query,
+      );
   },
 );
 test("expanded optional repetitions are refused before one expensive candidate", () => {
