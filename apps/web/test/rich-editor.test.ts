@@ -420,6 +420,26 @@ test("literal mode preserves typed numbers and keeps code and links while editin
   ).toHaveCount(1);
 });
 
+test("undo does not cross a mode change when the visible document is unchanged", async ({
+  page,
+}) => {
+  await seed(page);
+  const field = editor(page);
+  const mode = page.getByLabel("Read circled numbers as place references");
+  for (const structured of [false, true]) {
+    await field.pressSequentially("①");
+    // ProseMirror groups history events within 500 milliseconds.
+    await page.waitForTimeout(600);
+    await field.press("Control+a");
+    await field.press("Backspace");
+    expect(await nodes(field)).toEqual([]);
+    await mode.setChecked(structured);
+    await field.press("Control+z");
+    expect(await nodes(field)).toEqual([]);
+    await expect(field.getByRole("img")).toHaveCount(0);
+  }
+});
+
 test("Chromium IME composition converts once and Backspace restores the token", async ({
   page,
 }) => {

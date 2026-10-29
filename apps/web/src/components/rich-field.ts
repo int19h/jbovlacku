@@ -71,6 +71,7 @@ export function richField(label: string, options: RichFieldOptions) {
     (typeof options.structured === "function"
       ? options.structured()
       : options.structured !== false);
+  let previousMode = enabled();
   let view: EditorView;
   let current = options.value;
   let dialog: HTMLDialogElement | null = null;
@@ -180,8 +181,11 @@ export function richField(label: string, options: RichFieldOptions) {
     set: (value: RichText) => {
       current = value;
       if (view.isDestroyed) return;
+      const mode = enabled();
       // External draft changes start a new history for this field.
-      if (!view.state.doc.eq(richToEditor(value))) view.updateState(state());
+      if (mode !== previousMode || !view.state.doc.eq(richToEditor(value)))
+        view.updateState(state());
+      previousMode = mode;
       syncMode();
     },
   });
