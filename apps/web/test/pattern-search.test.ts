@@ -458,6 +458,55 @@ const emptyRafsiWord = () => ({
   calculation: null,
 });
 
+test("R2 Opus F3: rafsi package rows group accent displays by word ID in the real worker", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.route("**/api/v1/manifest", (route) => route.abort());
+  const result = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    const { wordsWithRafsi } = await import(String("/src/pages/rafsi.ts"));
+    const cached = {
+      snapshot: "sha256:" + "a".repeat(64),
+      version: 2,
+      entries: ["dján", "djan"].map((spelling, index) => ({
+        event: "jve1:" + (index + 1).toString(16).padStart(64, "0"),
+        word: { language: "jbo", spelling },
+        language: "en",
+        glosses: [],
+        plain_text: "Synthetic name.",
+        classification: { kind: "cmevla", selmaho: [] },
+        body: null,
+        issuer: "ed25519:" + "a".repeat(64),
+        notes: false,
+        attribution: null,
+        rafsi: ["dja"],
+        rafsi_complete: true,
+      })),
+    };
+    const app = {
+      session: {
+        preferences: { definitionLanguage: "en" },
+        storageAvailable: true,
+      },
+      store: { keys: async () => ["en"], get: async () => cached },
+    };
+    const found = await wordsWithRafsi(
+      app as any,
+      "dja",
+      new AbortController().signal,
+    );
+    return {
+      count: found.length,
+      identity: core.wordId({ language: "jbo", spelling: found[0].spelling }),
+      expected: core.wordId({ language: "jbo", spelling: "djan" }),
+    };
+  }, corePath);
+  expect(result.count).toBe(1);
+  expect(result.identity).toBe(result.expected);
+});
+
 test("rafsi patterns show 20 cards first and show all keeps each assignment and conflict", async ({
   page,
 }) => {
