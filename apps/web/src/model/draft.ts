@@ -1058,12 +1058,14 @@ export function remapRich(
   value: RichText,
   map: (index: number) => number | "literal",
 ): RichText {
-  return value.map((paragraph) => {
+  let changed = false;
+  const mapped = value.map((paragraph) => {
     const out: RichNode[] = [];
     for (const node of paragraph) {
       let next: RichNode = node;
       if (typeof node === "number") {
         const target = map(node);
+        if (target !== node) changed = true;
         // The literal text form of a place: the circled character, or the
         // explicit notation above 50, which the editor escapes as `\{place N}`.
         next =
@@ -1080,6 +1082,7 @@ export function remapRich(
     }
     return out;
   });
+  return changed ? mapped : value;
 }
 /** The fields that refer to a place, by label. */
 export function fieldsReferencing(draft: Draft, index: number): string[] {

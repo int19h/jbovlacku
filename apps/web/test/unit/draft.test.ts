@@ -36,6 +36,7 @@ import {
   placeholderCount,
   referenceFields,
   remapPlaces,
+  remapRich,
   rewriteReferences,
   retiredTagMeaning,
   replaceRetiredHintTag,
@@ -98,6 +99,47 @@ function admissible(body: unknown, parents: string[] = []) {
   const prepared = prepareAdmission(utf8(JSON.stringify({ envelope, body })));
   return prepared.action_valid && prepared.body_status === "present";
 }
+
+test("identity place mappings keep adjacent strings and node boundaries exact", () => {
+  const value = [["a", "b", 1, { code: "" }, { code: "next" }]];
+  assert.equal(
+    remapRich(value, (index) => index),
+    value,
+  );
+  assert.deepEqual(
+    remapRich(value, (index) => (index === 2 ? 3 : index)),
+    value,
+  );
+});
+
+test("an irrelevant reference rewrite preserves an untouched rich field exactly", () => {
+  const value = [["a", "b", 1]];
+  const draft = newDraft({
+    text: value,
+    notes: [[2]],
+    frameMode: "context",
+    places: [newPlace(1), newPlace(2)],
+  });
+  rewriteReferences(draft, (index) => (index === 2 ? 3 : index));
+  assert.equal(draft.text, value);
+  assert.deepEqual(draft.text, [["a", "b", 1]]);
+  assert.deepEqual(draft.notes, [[3]]);
+});
+
+test("an irrelevant rewrite keeps the exact literal-mode structured backup", () => {
+  const value = [["a", "b", 1]];
+  const draft = newDraft({
+    text: value,
+    notes: [[2]],
+    frameMode: "context",
+    places: [newPlace(1), newPlace(2)],
+  });
+  switchMode(draft, false);
+  rewriteReferences(draft, (index) => (index === 2 ? 3 : index));
+  switchMode(draft, true);
+  assert.deepEqual(draft.text, value);
+  assert.deepEqual(draft.notes, [[3]]);
+});
 
 test("structured text keeps declared place order and literal mode keeps circled characters", () => {
   const structured = editorToRichText(
