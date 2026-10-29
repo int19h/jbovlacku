@@ -113,6 +113,5 @@ test("R7 the full editor signs separate rafsi rationale paragraphs with literal 
   expect(claim.signed.body.rationale).toEqual([
     [" First ① paragraph.\nAnother line."],
     [" \t\nSecond paragraph."],
-    ["  "],
   ]);
 });

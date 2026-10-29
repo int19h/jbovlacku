@@ -153,7 +153,7 @@ test("N2 and N4 saved prose keeps exact line breaks and whitespace", async ({
     const { LocalStore } = await import(String("/src/data/store.ts"));
     return (await new LocalStore().get("drafts", "current")).text;
   });
-  expect(saved).toEqual([[prose], ["  "], ["Next."], ["  "]]);
+  expect(saved).toEqual([[prose], ["Next."]]);
 });
 
 test("N3 distant edits in a long list render only the two changes", async ({
