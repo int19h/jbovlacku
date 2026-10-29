@@ -389,3 +389,40 @@ test("R2 late canceled package replies preserve newer warm cache keys", async ({
     secondWarm: true,
   });
 });
+
+test("R3 combining acute repetitions keep their scope in the real search worker", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const result = await page.evaluate(
+    async (pkg) => {
+      const { searchPackage } = await import(
+        String("/src/data/package-search.ts")
+      );
+      const rows = [];
+      for (const query of [
+        "/^dj́+an$/",
+        "/^dj́{2}an$/",
+        "/^dj́?an$/",
+        "/^dj(?:́)+an$/",
+        String.raw`/^dj\x{301}+an$/`,
+        "/^dj+an$/",
+      ])
+        rows.push(
+          (await searchPackage(pkg, "en", [query])).hits[0].map(
+            (hit: any) => hit.word.spelling,
+          ),
+        );
+      return rows;
+    },
+    pkg(["djan", "djjan", "djjjan"]),
+  );
+  expect(result).toEqual([
+    ["djan"],
+    ["djan"],
+    ["djan"],
+    ["djan"],
+    [],
+    ["djan", "djjan", "djjjan"],
+  ]);
+});

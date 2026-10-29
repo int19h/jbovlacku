@@ -67,7 +67,24 @@ fn aliases(value: &mut Ast) {
     match value {
         Ast::Literal(value) => literal(value),
         Ast::ClassBracketed(value) => class_set(&mut value.kind),
-        Ast::Repetition(value) => aliases(&mut value.ast),
+        Ast::Repetition(value) => {
+            aliases(&mut value.ast);
+            if matches!(*value.ast, Ast::Empty(_)) {
+                // Keep the operator attached to the removed mark, not the
+                // preceding literal when the AST is printed and parsed again.
+                value.ast = Box::new(Ast::Group(
+                    ast::Group {
+                        span: *value.ast.span(),
+                        kind: ast::GroupKind::NonCapturing(ast::Flags {
+                            span: *value.ast.span(),
+                            items: vec![],
+                        }),
+                        ast: value.ast.clone(),
+                    }
+                    .into(),
+                ));
+            }
+        }
         Ast::Group(value) => aliases(&mut value.ast),
         Ast::Alternation(value) => value.asts.iter_mut().for_each(aliases),
         Ast::Concat(value) => value.asts.iter_mut().for_each(aliases),
@@ -242,6 +259,16 @@ mod tests {
         );
         for source in ["[", "(?=a)", r"(a)\1", "a{1000000}", "(?-i)BA"] {
             assert!(SearchPattern::compile(source).is_err());
+        }
+    }
+
+    #[test]
+    fn removed_acute_repetitions_preserve_scope() {
+        for source in ["^dj\u{301}+an$", "^dj\u{301}{2}an$", "^dj\u{301}?an$"] {
+            let mut pattern = SearchPattern::compile(source).unwrap();
+            assert!(pattern.matches("djan").unwrap());
+            assert!(!pattern.matches("djjan").unwrap());
+            assert!(!pattern.matches("djjjan").unwrap());
         }
     }
 
