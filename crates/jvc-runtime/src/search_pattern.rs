@@ -73,7 +73,7 @@ fn aliases(value: &mut Ast) {
                 // Keep the operator attached to the removed mark, not the
                 // preceding literal when the AST is printed and parsed again.
                 let span = *value.ast.span();
-                value.ast = Box::new(Ast::Group(
+                *value.ast = Ast::Group(
                     ast::Group {
                         span,
                         kind: ast::GroupKind::NonCapturing(ast::Flags {
@@ -83,7 +83,7 @@ fn aliases(value: &mut Ast) {
                         ast: Box::new(Ast::empty(span)),
                     }
                     .into(),
-                ));
+                );
             }
         }
         Ast::Group(value) => aliases(&mut value.ast),
