@@ -464,7 +464,7 @@ export async function searchPage(
       (sum, group) => sum + (cached ? group.total : group.hits.length),
       0,
     );
-    count.textContent = `${total}${!cached && Object.values(groups).some((group) => group.next) ? " or more" : ""} word and definition ${total === 1 ? "result" : "results"}`;
+    count.textContent = `${total}${!cached && Object.values(groups).some((group) => group.next) ? " or more" : ""} ${pattern ? "Lojban" : "word and definition"} ${total === 1 ? "result" : "results"}`;
     for (const [key, group] of Object.entries(groups) as [
       SearchGroup,
       typeof groups.lojban,

@@ -96,6 +96,27 @@ test("one local box orders known Lojban and English queries and keeps group page
   expect(requests).toEqual([]);
 });
 
+test("remote groups use the server's known-word decision and keep independent results", async ({
+  page,
+}) => {
+  for (const [query, order] of [
+    ["cukta", ["Lojban words", "Definitions"]],
+    ["cukta lo", ["Lojban words", "Definitions"]],
+    ["book", ["Definitions", "Lojban words"]],
+  ] as const) {
+    await page.goto("/search?" + new URLSearchParams({ q: query, lang: "en" }));
+    await expect(
+      page.getByRole("region", { name: "Search results", exact: true }),
+    ).toHaveAttribute("aria-busy", "false");
+    await expect(page.getByRole("heading", { level: 2 })).toHaveText(order);
+    await expect(
+      group(page, query === "book" ? "Definitions" : "Lojban words")
+        .locator("article")
+        .first(),
+    ).toBeVisible();
+  }
+});
+
 async function meaningService(page: Page, count = 1) {
   await page.goto("/");
   const records = await page.evaluate(
