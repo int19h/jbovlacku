@@ -95,11 +95,16 @@ The [search specification](docs/frontend.md#4-search-and-reading) defines the bo
 
 Local and server search also share bounded pattern matching in WebAssembly.
 `/.../` searches by an unanchored, case-insensitive regular expression. Globs use `*`, `?`, `@` for a vowel, and `$` for a consonant.
-Globs match the whole spelling. Literal `h` reads as an apostrophe. Matching ignores capitals and acute stress marks.
-Patterns return headword matches before retained rafsi matches, with stable word-ID order and the usual “show all” behavior.
+Globs match the whole spelling. `*` and `?` consume any character, including spaces and punctuation.
+Literal `h` reads as an apostrophe. Matching ignores capitals and acute stress marks.
+Meaning retrieval and rafsi claim previews use literal search. Natural-language questions keep ordinary text search with a short punctuation note.
+Patterns return headword matches before retained rafsi matches, with normalized spelling order and a final word-ID tie break and the usual “show all” behavior.
+
 The rafsi page accepts the same patterns and keeps each matched assignment separate.
 Version 1 packages expose headword patterns only. Version 2 packages supply bounded rafsi metadata.
-The shared engine caps compilation and total input work. The browser also applies a worker deadline and supports cancellation.
+The shared engine caps compilation, per-candidate work, and total work by compiled state count.
+The browser and Node apply worker deadlines. Cloudflare checks elapsed time between bounded chunks after read-only D1 I/O.
+Plain local cancellation preserves prepared packages. Canceling a running pattern stops its worker.
 Invalid patterns and exhausted limits give explicit errors without partial results or a silent remote fallback.
 
 A download keeps its requested language even when the language selector changes before it finishes.
