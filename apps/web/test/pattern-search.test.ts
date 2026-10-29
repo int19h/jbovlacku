@@ -9,7 +9,7 @@ async function fixture(page: Page) {
     async ({ corePath, language }) => {
       const core = await import(corePath);
       await core.initializeCore();
-      const seed = new Uint8Array(32).fill(96);
+      const seed = crypto.getRandomValues(new Uint8Array(32));
       let serial = 0;
       const signed = (action: any, body: any) =>
         core.createEvent(
