@@ -39,7 +39,7 @@ jobs:
       - name: Install JavaScript and browser tools
         run: |
           npm ci --no-audit --no-fund
-          npx playwright install --with-deps chromium
+          npx playwright install --with-deps chromium firefox
       - name: Format Rust
         run: cargo fmt --all --check
       - name: Lint Rust
@@ -71,7 +71,9 @@ jobs:
       - name: Test browser model units
         run: npm run test:web-unit
       - name: Test browser behavior
-        run: npm run test:web
+        run: npm run test:web -- --project chromium
+      - name: Test Firefox editing and authoring
+        run: npm run test:web -- --project firefox-editor --project firefox-authoring
 
   standalone-image:
     runs-on: ubuntu-24.04
