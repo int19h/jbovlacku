@@ -1,4 +1,4 @@
-import { richValue } from "./rich-editor.ts";
+import { richHasContent, richValue } from "./rich-values.ts";
 /**
  * Builder state kept in the draft, inventories from the local package, and
  * the formation and compound metadata that a chosen form records.
@@ -744,7 +744,7 @@ export function manualFormation(
   reason: string | RichText,
 ): Formation | null {
   const sources = formationSourcesFromRows(rows);
-  if (!sources.length && !richValue(reason).flat().length) return null;
+  if (!sources.length && !richHasContent(richValue(reason))) return null;
   return {
     method: "non-algorithmic",
     algorithm: null,

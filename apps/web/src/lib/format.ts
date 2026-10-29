@@ -193,4 +193,4 @@ export function languageName(tag: string): string {
     return tag;
   }
 }
-export { placeGlyph } from "../model/place-glyphs.ts";
+export { placeDisplay as placeGlyph } from "../model/place-glyphs.ts";

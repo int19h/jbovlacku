@@ -2964,3 +2964,20 @@ test("accepted sources keep supplementary note bytes and private stems through p
   ])
     assert.equal(mappingKind([[reason]]), null);
 });
+
+test("r2 whitespace-only definition text remains empty for publication", () => {
+  const draft = newDraft({
+    spelling: "broda",
+    kind: "gismu",
+    language: "en",
+    text: [[" \n\t"]],
+  });
+  assert.ok(
+    draftToBody(draft).problems.some(
+      (problem) =>
+        problem.field === "text" &&
+        problem.message === "Write the definition." &&
+        problem.blocking,
+    ),
+  );
+});

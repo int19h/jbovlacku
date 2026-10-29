@@ -1,4 +1,5 @@
-import { richValue } from "./rich-editor.ts";
+import { numberMeaningParts } from "../../../../packages/core/src/place-assistance.ts";
+import { richHasContent, richValue } from "./rich-values.ts";
 import { circledPlace } from "./place-glyphs.ts";
 /**
  * The local definition draft. The wizard and the full editor edit the same
@@ -620,45 +621,10 @@ export function numberPlaceholders(meaning: string): {
   count: number;
   parts: NumberingPart[];
 } {
-  type Segment = { text: string; place?: number; blank?: boolean };
-  const segments: Segment[][] = [[]];
-  const append = (segment: Segment) => segments.at(-1)!.push(segment);
-  // Only a backslash immediately before a circled numeral escapes it in
-  // Meaning. All other backslashes stay literal, including before braces.
-  const tokens =
-    /\\([①-⑳㉑-㉟㊱-㊿])|([①-⑳㉑-㉟㊱-㊿])|\{place (\d{1,5})\}|(;)|(_{2,})/gu;
-  let index = 0;
-  for (const match of meaning.matchAll(tokens)) {
-    append({ text: escapeLiteral(meaning.slice(index, match.index)) });
-    const [, escaped, circled, placeNumber, separator, blank] = match;
-    if (escaped !== undefined) append({ text: escapeLiteral(escaped) });
-    else if (separator) segments.push([]);
-    else if (blank) append({ text: "", blank: true });
-    else
-      append({
-        text: match[0],
-        place: circled ? circledPlace(circled)! : Number(placeNumber),
-      });
-    index = match.index! + match[0].length;
-  }
-  append({ text: escapeLiteral(meaning.slice(index)) });
-  const parts = segments.map((part): NumberingPart => {
-    const used = new Set(
-      part.flatMap((segment) =>
-        segment.place === undefined ? [] : [segment.place],
-      ),
-    );
-    let next = 1;
-    const text = part
-      .map((segment) => {
-        if (!segment.blank) return segment.text;
-        while (used.has(next)) next++;
-        used.add(next);
-        return referencePlace(next++);
-      })
-      .join("");
-    return { text, places: [...used].sort((a, b) => a - b) };
-  });
+  const parts: NumberingPart[] = numberMeaningParts(meaning).map((part) => ({
+    text: part.segments.map((segment) => segment.place === undefined ? escapeLiteral(segment.text) : segment.text).join(""),
+    places: part.places,
+  }));
   return {
     text: parts.map((part) => part.text).join(";"),
     count: parts.reduce(
@@ -1948,7 +1914,7 @@ export function draftToBody(input: Draft): {
     value: text,
     local: true,
   });
-  if (!countNodes(draft.text))
+  if (!richHasContent(draft.text))
     problems.push({
       field: "text",
       message: "Write the definition.",

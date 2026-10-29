@@ -11,3 +11,8 @@ export function circledPlace(value: string): number | null {
 export function placeGlyph(index: number): string {
   return PLACE_GLYPHS[index - 1] ?? `{place ${index}}`;
 }
+
+/** Reader badges and copied text use a plain number beyond the glyph table. */
+export function placeDisplay(index: number): string {
+  return PLACE_GLYPHS[index - 1] ?? String(index);
+}

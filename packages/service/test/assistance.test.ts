@@ -1166,6 +1166,67 @@ test("explicit place limits fail before a provider request and preserve manual g
   );
   assert.equal(calls, 0);
 });
+for (const [name, meaning, text, count] of [
+  ["blank numbering", "___ gives ___ to ③", [], 3],
+  ["stale Meaning", "x ⑳", [[1, " and ", 2]], 2],
+] as const) {
+  test(`r2 service accepts ${name} and reaches the mocked provider`, async () => {
+    let calls = 0;
+    const answers = [
+      {
+        places: Array.from({ length: count }, (_, index) => ({
+          description: `role ${index + 1}`,
+        })),
+        reason: "The requested roles.",
+      },
+      {
+        word: { gloss: "give", sense: "" },
+        ...Object.fromEntries(
+          Array.from({ length: count }, (_, index) => [
+            `x${index + 1}`,
+            { gloss: `role ${index + 1}`, sense: "" },
+          ]),
+        ),
+      },
+      Object.fromEntries(
+        Array.from({ length: count }, (_, index) => [
+          `x${index + 1}`,
+          [{ type: "referent", reason: "The role is broad." }],
+        ]),
+      ),
+    ];
+    const queued = queue(answers.map((answer) => completion(answer)));
+    const instance = service({
+      provider: makeConfig({
+        fetch: (async (...args: Parameters<typeof fetch>) => {
+          calls++;
+          return queued(...args);
+        }) as typeof fetch,
+      }),
+    });
+    const headers = await session(instance);
+    const request = draft("places-glosses");
+    request.meaning = meaning;
+    request.current.text = structuredClone(
+      text,
+    ) as unknown as AssistRequest["current"]["text"];
+    const response = await instance.fetch(
+      privateRequest("/assist", headers, request),
+    );
+    assert.equal(response.status, 202);
+    const accepted = (await response.json()) as any;
+    const done = await poll(instance, accepted.job, headers);
+    assert.equal(done.state, "completed", JSON.stringify(done));
+    assert.equal(calls, 3);
+    const proposed = done.result.proposals.find(
+      (proposal: any) => proposal.path === "/frame",
+    ).value;
+    assert.deepEqual(
+      proposed.places.map((place: any) => place.index),
+      Array.from({ length: count }, (_, index) => index + 1),
+    );
+  });
+}
 test("all operations return only permitted proposals and preserve non-English glosses", async () => {
   const cases: [AssistRequest, unknown[]][] = [
     [draft("type"), [{ word_type: "lujvo", reason: "A compound fits." }]],

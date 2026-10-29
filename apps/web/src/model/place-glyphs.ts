@@ -4,4 +4,5 @@ export {
   CIRCLED,
   circledPlace,
   placeGlyph,
+  placeDisplay,
 } from "../../../../packages/core/src/place-glyphs.ts";

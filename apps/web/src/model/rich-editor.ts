@@ -7,7 +7,7 @@ import {
   type Transaction,
 } from "prosemirror-state";
 import { inputRules } from "prosemirror-inputrules";
-import { CIRCLED_SOURCE, circledPlace, placeGlyph } from "./place-glyphs.ts";
+import { CIRCLED_SOURCE, circledPlace, placeDisplay } from "./place-glyphs.ts";
 import type { RichNode, RichText } from "./types.ts";
 
 const inlineText = (tag: string, className: string) => ({
@@ -25,13 +25,16 @@ export const richEditorSchema = new Schema({
     paragraph: { content: "inline*", whitespace: "pre", toDOM: () => ["p", 0] },
     text: { group: "inline" },
     // Containers preserve boundaries between adjacent stored strings.
-    literal: { ...inlineText("span", "rich-literal"), selectable: false },
+    literal: {
+      ...inlineText("span", "rich-literal"), selectable: false,
+      attrs: { origin: { default: null } },
+    },
     place: {
       inline: true,
       group: "inline",
       atom: true,
       attrs: { index: {} },
-      leafText: (node) => placeGlyph(node.attrs.index),
+      leafText: (node) => placeDisplay(node.attrs.index),
       toDOM: (node) => [
         "span",
         {
@@ -70,6 +73,9 @@ export const richEditorSchema = new Schema({
         {
           class: "rich-word-link",
           title: `Word: ${node.attrs.word.spelling}`,
+          role: "group",
+          "aria-roledescription": "word link",
+          "aria-label": `${node.textContent || "Empty label"}, word link to ${node.attrs.word.spelling}`,
           "data-target": node.attrs.word.spelling,
         },
         0,
@@ -83,6 +89,9 @@ export const richEditorSchema = new Schema({
         {
           class: "rich-web-link",
           title: node.attrs.url,
+          role: "group",
+          "aria-roledescription": "web link",
+          "aria-label": `${node.textContent || "Empty label"}, web link to ${node.attrs.url}`,
           "data-target": node.attrs.url,
         },
         0,
@@ -92,10 +101,13 @@ export const richEditorSchema = new Schema({
 });
 const schema = richEditorSchema;
 const contents = (value: string) => (value ? schema.text(value) : undefined);
+let nextOrigin = 0;
+const originalBlankDocs = new WeakSet<EditorNode>();
 export function richToEditor(value: RichText): EditorNode {
-  const inline = (node: RichNode): EditorNode => {
+  const source = nextOrigin++;
+  const inline = (node: RichNode, paragraph: number, index: number): EditorNode => {
     if (typeof node === "string")
-      return schema.nodes.literal.create(null, contents(node));
+      return schema.nodes.literal.create({ origin: { source, paragraph, index } }, contents(node));
     if (typeof node === "number")
       return schema.nodes.place.create({ index: node });
     if ("operand" in node)
@@ -112,24 +124,39 @@ export function richToEditor(value: RichText): EditorNode {
       contents(node.label),
     );
   };
-  return schema.nodes.doc.create(
+  const doc = schema.nodes.doc.create(
     null,
     value.length
-      ? value.map((paragraph) =>
-          schema.nodes.paragraph.create(null, paragraph.map(inline)),
+      ? value.map((paragraph, p) =>
+          paragraph.length === 1 && paragraph[0] === "\n"
+            ? schema.nodes.paragraph.create()
+            : schema.nodes.paragraph.create(null, paragraph.map((node, i) => inline(node, p, i))),
         )
       : schema.nodes.paragraph.create(),
   );
+  if (value.length === 1 && value[0].length === 1 && value[0][0] === "\n") originalBlankDocs.add(doc);
+  return doc;
 }
 export function editorToRich(doc: EditorNode): RichText {
   const value: RichText = [];
   doc.forEach((paragraph) => {
     const nodes: RichNode[] = [];
+    let previousOrigin: { source: number; paragraph: number; index: number } | null = null;
     paragraph.forEach((node) => {
       switch (node.type.name) {
         case "text":
         case "literal":
-          if (node.textContent) nodes.push(node.textContent);
+          if (node.textContent) {
+            const origin = node.type.name === "literal" ? node.attrs.origin : null;
+            const retainedBoundary = origin && previousOrigin &&
+              origin.source === previousOrigin.source && origin.paragraph === previousOrigin.paragraph &&
+              origin.index === previousOrigin.index + 1;
+            const last = nodes.length - 1;
+            if (typeof nodes[last] === "string" && !retainedBoundary)
+              nodes[last] = (nodes[last] as string) + node.textContent;
+            else nodes.push(node.textContent);
+            previousOrigin = origin;
+          }
           break;
         case "place":
           nodes.push(node.attrs.index);
@@ -147,8 +174,10 @@ export function editorToRich(doc: EditorNode): RichText {
           nodes.push({ url: node.attrs.url, label: node.textContent });
           break;
       }
+      if (!["text", "literal"].includes(node.type.name)) previousOrigin = null;
     });
     if (nodes.length) value.push(nodes);
+    else if (doc.childCount > 1 || originalBlankDocs.has(doc)) value.push(["\n"]);
   });
   return value;
 }
@@ -191,15 +220,16 @@ export function replaceInline(
 ): Transaction {
   const $from = state.doc.resolve(from),
     $to = state.doc.resolve(to);
-  if ($from.sameParent($to) && $from.parent.type.name === "literal") {
+  if ($from.sameParent($to) && $from.parent.isInline &&
+    ($from.parent.type.name === "literal" || from !== to)) {
     const before = $from.parent.textContent.slice(0, $from.parentOffset);
     const after = $from.parent.textContent.slice($to.parentOffset);
     const nodes = [];
     if (before)
-      nodes.push(schema.nodes.literal.create(null, schema.text(before)));
+      nodes.push($from.parent.type.create($from.parent.attrs, schema.text(before)));
     nodes.push(node);
     if (after)
-      nodes.push(schema.nodes.literal.create(null, schema.text(after)));
+      nodes.push($from.parent.type.create($from.parent.attrs, schema.text(after)));
     const start = $from.before();
     const tr = state.tr.replaceWith(start, $from.after(), nodes);
     return tr.setSelection(
@@ -211,7 +241,7 @@ export function replaceInline(
     );
   }
   // Code and link labels contain text only. Insert beside them.
-  if ($from.parent.isInline && $from.parent.type.name !== "literal") {
+  if (from === to && $from.parent.isInline && $from.parent.type.name !== "literal") {
     const start = $from.after();
     const tr = state.tr.insert(start, node);
     return tr.setSelection(
@@ -255,6 +285,10 @@ export function deleteRichBackward(
 ): boolean {
   if (!state.selection.empty) return false;
   let $cursor = state.selection.$from;
+  if ($cursor.parent.isInline && !$cursor.parent.content.size) {
+    dispatch?.(state.tr.delete($cursor.before(), $cursor.after()).scrollIntoView());
+    return true;
+  }
   if (!$cursor.nodeBefore && $cursor.parent.isInline)
     $cursor = state.doc.resolve($cursor.before());
   const previous = $cursor.nodeBefore;
@@ -265,12 +299,41 @@ export function deleteRichBackward(
   else if (previous.isInline && !previous.isAtom && previous.textContent) {
     source = previous.textContent;
     end--;
+  } else if (previous.isAtom || (previous.isInline && !previous.content.size)) {
+    dispatch?.(state.tr.delete($cursor.pos - previous.nodeSize, $cursor.pos).scrollIntoView());
+    return true;
   } else return false;
   const last = graphemes.segment(source).containing(source.length - 1)?.segment;
   if (!last) return false;
   const from = end - last.length;
   const tr = state.tr.delete(from, end);
   tr.setSelection(TextSelection.near(tr.doc.resolve(from), -1));
+  dispatch?.(tr.scrollIntoView());
+  return true;
+}
+
+/** Forward Delete removes one character cluster or one atomic chip. */
+export function deleteRichForward(state: EditorState, dispatch?: (tr: Transaction) => void): boolean {
+  if (!state.selection.empty) return false;
+  let $cursor = state.selection.$from;
+  if ($cursor.parent.isInline && !$cursor.parent.content.size) {
+    dispatch?.(state.tr.delete($cursor.before(), $cursor.after()).scrollIntoView());
+    return true;
+  }
+  if (!$cursor.nodeAfter && $cursor.parent.isInline)
+    $cursor = state.doc.resolve($cursor.after());
+  const next = $cursor.nodeAfter;
+  if (!next) return false;
+  if ((!next.isText && next.isAtom) || (next.isInline && !next.isText && !next.content.size)) {
+    dispatch?.(state.tr.delete($cursor.pos, $cursor.pos + next.nodeSize).scrollIntoView());
+    return true;
+  }
+  const source = next.textContent;
+  const first = graphemes.segment(source).containing(0)?.segment;
+  if (!first) return false;
+  const start = $cursor.pos + (next.isText ? 0 : 1);
+  const tr = state.tr.delete(start, start + first.length);
+  tr.setSelection(TextSelection.near(tr.doc.resolve($cursor.pos), 1));
   dispatch?.(tr.scrollIntoView());
   return true;
 }
@@ -465,19 +528,13 @@ export function pastedRichText(text: string, convertPlaces: boolean): RichText {
     .replace(/\r\n?/gu, "\n")
     .split(/\n\n/u)
     .map((paragraph) => {
-      if (!convertPlaces) return paragraph ? [paragraph] : [];
-      return paragraph
+      if (!convertPlaces) return paragraph ? [paragraph] : ["\n"];
+      return paragraph ? paragraph
         .split(new RegExp(`([${CIRCLED_SOURCE}])`, "u"))
         .filter(Boolean)
-        .map((part) => circledPlace(part) ?? part);
+        .map((part) => circledPlace(part) ?? part) : ["\n"];
     });
 }
 
 /** Older private drafts stored a few rich fields as plain strings. */
-export function richValue(value: RichText | string | undefined): RichText {
-  return typeof value === "string"
-    ? value
-      ? pastedRichText(value, false).filter((paragraph) => paragraph.length > 0)
-      : []
-    : (value ?? []);
-}
+export { richValue } from "./rich-values.ts";
