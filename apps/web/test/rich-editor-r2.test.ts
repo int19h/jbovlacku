@@ -62,9 +62,12 @@ const containers = [
   {
     name: "word link",
     selector: ".rich-word-link",
-    node: { word: { language: "jbo", spelling: "cukta" }, label: "abcd" },
+    node: {
+      word: { language: "jbo" as const, spelling: "cukta" },
+      label: "abcd",
+    },
     updated: (text: string) => ({
-      word: { language: "jbo", spelling: "cukta" },
+      word: { language: "jbo" as const, spelling: "cukta" },
       label: text,
     }),
   },
@@ -143,7 +146,10 @@ for (const kind of containers) {
     await field.evaluate((node, selector) => {
       const range = document.createRange();
       range.setStart(node.querySelector(selector)!.firstChild!, 2);
-      range.setEnd(node.querySelector("p")!.lastChild!.firstChild!, 6);
+      range.setEnd(
+        node.querySelector("p .rich-literal:last-of-type")!.firstChild!,
+        6,
+      );
       const selection = document.getSelection()!;
       selection.removeAllRanges();
       selection.addRange(range);
@@ -285,11 +291,14 @@ test("r2 unavailable operands explain the disabled control", async ({
   );
 });
 test("r2 literal mode replaces the place-rule hint", async ({ page }) => {
-  await mount(page, [["literal"]], { literal: true });
-  await expect(page.locator("[id$='-hint']")).toContainText(
+  const field = await mount(page, [["literal"]], { literal: true });
+  const hint = page.locator(
+    `[id="${await field.getAttribute("aria-describedby")}"]`,
+  );
+  await expect(hint).toContainText(
     "Literal mode keeps typed characters as text.",
   );
-  await expect(page.locator("[id$='-hint']")).not.toContainText("Type ___");
+  await expect(hint).not.toContainText("Type ___");
 });
 test("r2 place-list updates retain blank paragraphs, caret, and undo", async ({
   page,
@@ -324,6 +333,7 @@ test("r2 place-list updates retain blank paragraphs, caret, and undo", async ({
     .getByRole("button", { name: "+ Add a place", exact: true })
     .click();
   await expect(field.locator("p")).toHaveCount(2);
+  await page.waitForTimeout(550);
   await field.pressSequentially("tail");
   expect(await nodes(field)).toEqual([["the agent"], ["tail"]]);
   await field.press("Control+z");
@@ -341,6 +351,7 @@ test("r2 place-list updates retain blank paragraphs, caret, and undo", async ({
     .getByRole("button", { name: "+ Add a place", exact: true })
     .click();
   await expect(description.locator("p")).toHaveCount(2);
+  await page.waitForTimeout(550);
   await description.pressSequentially("tail");
   expect(await nodes(description)).toEqual([["a person"], ["tail"]]);
   await description.press("Control+z");
@@ -404,7 +415,10 @@ for (const kind of ["code", "word link", "web link"]) {
       kind === "code"
         ? { code: "new" }
         : kind === "word link"
-          ? { word: { language: "jbo", spelling: "cukta" }, label: "new" }
+          ? {
+              word: { language: "jbo" as const, spelling: "cukta" },
+              label: "new",
+            }
           : { url: "https://example.org/", label: "new" };
     expect(await nodes(field)).toEqual([["existing", node]]);
   });
@@ -485,5 +499,10 @@ test("r2 whitespace-only biography has an empty preview", async ({ page }) => {
     .click();
   const preview = page.getByRole("region", { name: "Profile preview" });
   await expect(preview).toBeVisible();
-  await expect(preview.locator(":scope > p").nth(1)).toBeEmpty();
+  expect(
+    await preview
+      .locator(":scope > p")
+      .nth(1)
+      .evaluate((node) => node.childElementCount),
+  ).toBe(0);
 });

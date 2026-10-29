@@ -205,7 +205,7 @@ test("clearing a preexisting field and editing blank paragraphs keep valid store
   expect((await inspect()).core).toEqual([]);
   await field.pressSequentially("first");
   await field.press("Enter");
-  expect(await nodes(field)).toEqual([["first"]]);
+  expect(await nodes(field)).toEqual([["first"], ["\n"]]);
   await field.pressSequentially("second");
   await expect
     .poll(async () => (await inspect()).text)
@@ -308,7 +308,7 @@ test("the operand dialog inserts a named chip for a declared operand", async ({
   await expect(
     editor(page).getByRole("img", { name: "operand bridi", exact: true }),
   ).toHaveCount(1);
-  expect((await nodes(editor(page)))[0][0]).toEqual({ operand: "bridi" });
+  expect((await nodes(editor(page)))[0].at(-1)).toEqual({ operand: "bridi" });
 });
 
 test("paragraph keys and toolbar insertion work inside literal, code, and link nodes", async ({

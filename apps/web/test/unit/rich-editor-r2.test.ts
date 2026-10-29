@@ -64,7 +64,7 @@ test("r2 whitespace alone creates no manual formation", () => {
 test("r2 cross-container toolbar replacement consumes the whole selection", () => {
   for (const node of [
     { code: "abcd" },
-    { word: { language: "jbo", spelling: "cukta" }, label: "abcd" },
+    { word: { language: "jbo" as const, spelling: "cukta" }, label: "abcd" },
     { url: "https://example.org/", label: "abcd" },
   ]) {
     const state = EditorState.create({ doc: richToEditor([[node, " after"]]) });
@@ -91,7 +91,10 @@ test("r2 seeded random edit sequences retain legal values and untouched boundari
         "untouched",
         " boundary",
         { code: "" },
-        { word: { language: "jbo", spelling: "https://cukta" }, label: "" },
+        {
+          word: { language: "jbo" as const, spelling: "https://cukta" },
+          label: "",
+        },
       ],
     ];
     let state = EditorState.create({ doc: richToEditor([...keep, ["start"]]) });

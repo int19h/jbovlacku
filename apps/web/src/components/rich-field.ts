@@ -1,7 +1,12 @@
 /** One accessible editor per rich field. The draft owns its RichText value. */
 import "prosemirror-view/style/prosemirror.css";
 import { Slice, type Node as EditorNode } from "prosemirror-model";
-import { EditorState, Plugin, TextSelection } from "prosemirror-state";
+import {
+  EditorState,
+  Plugin,
+  TextSelection,
+  type Selection,
+} from "prosemirror-state";
 import { EditorView } from "prosemirror-view";
 import { baseKeymap } from "prosemirror-commands";
 import { history, undo, redo } from "prosemirror-history";
@@ -128,6 +133,7 @@ export function richField(label: string, options: RichFieldOptions) {
     (typeof options.structured === "function"
       ? options.structured()
       : options.structured !== false);
+  let previousMode = enabled();
   let view: EditorView;
   let current = options.value;
   let dialog: HTMLDialogElement | null = null;
@@ -136,11 +142,10 @@ export function richField(label: string, options: RichFieldOptions) {
     enabled,
     composing: () => view?.composing ?? false,
   });
-  const state = () => {
-    const doc = richToEditor(current);
+  const state = (doc = richToEditor(current), selection?: Selection) => {
     return EditorState.create({
       doc,
-      selection: TextSelection.atEnd(doc),
+      selection: selection ?? TextSelection.atEnd(doc),
       plugins: [
         ...rulePlugins,
         new Plugin({
@@ -160,14 +165,17 @@ export function richField(label: string, options: RichFieldOptions) {
         }),
         history(),
         keymap({
-          "Mod-End": (state, dispatch) => {
+          "Mod-End": (state, dispatch, view) => {
             dispatch?.(state.tr.setSelection(TextSelection.atEnd(state.doc)));
+            // Native focus can differ when the model already has this selection.
+            view?.focus();
             return true;
           },
-          "Mod-Home": (state, dispatch) => {
+          "Mod-Home": (state, dispatch, view) => {
             dispatch?.(
               state.tr.setSelection(TextSelection.create(state.doc, 1)),
             );
+            view?.focus();
             return true;
           },
           Home: (state, dispatch) => {
@@ -388,6 +396,10 @@ export function richField(label: string, options: RichFieldOptions) {
         JSON.stringify(editorToRich(view.state.doc)) !== JSON.stringify(value)
       )
         view.updateState(state());
+      else if (enabled() !== previousMode)
+        // Mode changes start a new undo boundary without moving the caret.
+        view.updateState(state(view.state.doc, view.state.selection));
+      previousMode = enabled();
       syncMode();
       syncLinkAction();
     },

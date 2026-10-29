@@ -667,6 +667,7 @@ Web links require HTTPS addresses that [URL parsing](https://url.spec.whatwg.org
 The editor preserves adjacent saved nodes, empty labels, paragraph boundaries, and every unchanged field. New prose joins nearby text unless an untouched saved boundary separates it.
 Blank editor paragraphs use a newline string in the stored paragraph. An empty field remains `[]`.
 Updating place rows preserves each retained editor's caret and undo history.
+An explicit mode change starts a new undo history and keeps the caret when the visible document stays equal.
 Text needs no markup or escapes.
 Typed TeX backslashes, brackets, braces, and backticks stay literal. A backslash before a typed place stays literal beside the place chip.
 
