@@ -1,5 +1,5 @@
 import { richField } from "../../components/rich-field.ts";
-import { richValue } from "../../model/rich-editor.ts";
+import { richValue } from "../../model/rich-values.ts";
 import { wordFormStatus } from "../../components/word-form-feedback.ts";
 import { changeTypedWord, useManualForm } from "../../model/typed-headword.ts";
 import { assistanceAction } from "../../components/assistance.ts";

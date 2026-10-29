@@ -1,5 +1,9 @@
-import { richValue } from "../../model/rich-editor.ts";
-import { richField } from "../../components/rich-field.ts";
+import { richValue } from "../../model/rich-values.ts";
+import {
+  richField,
+  type RichFieldOptions,
+} from "../../components/rich-field.ts";
+import { onDisconnect } from "../../lib/lifetime.ts";
 import { wordFormStatus } from "../../components/word-form-feedback.ts";
 import { isZeiCompound } from "../../model/builders.ts";
 import { kindLabel } from "../../model/types.ts";
@@ -86,6 +90,15 @@ import {
 } from "./common.ts";
 import { describeArity } from "../../components/definition.ts";
 
+type RetainedRichField = (
+  owner: object,
+  key: string,
+  label: string,
+  options: RichFieldOptions,
+  read: () => RichText,
+  change: (value: RichText) => void,
+) => ReturnType<typeof richField>;
+
 type NumberingPart = ReturnType<typeof numberPlaceholders>["parts"][number] & {
   rich?: RichText;
 };
@@ -169,6 +182,8 @@ function hintEditor(
   structured: boolean,
   onChange: (hint: TypeHint | null) => void,
   draft: Draft,
+  retain: RetainedRichField,
+  owner: object,
 ): HTMLElement {
   const box = el("div", { class: "sunk", style: "margin-top:8px" });
   const alternatives = current?.alternatives.map((a) => ({
@@ -357,23 +372,29 @@ function hintEditor(
     });
     // The note follows the selected mode like every other rich field.
     // Each paragraph stays a separate node.
-    const noteField = richField("Type note", {
-      multiline: true,
-      structured,
-      places: () =>
-        draft.frameMode === "none"
-          ? []
-          : draft.places.map((place) => place.index),
-      operands: () => draft.operands.map((operand) => operand.id),
-      rows: 2,
-      value: note,
-      wrapperClass: "",
-      placeholder: "optional",
-    });
-    noteField.input.addEventListener("input", () => {
-      note = noteField.input.value;
-      emit();
-    });
+    const noteField = retain(
+      owner,
+      "type-note",
+      "Type note",
+      {
+        multiline: true,
+        structured: () => draft.structured,
+        places: () =>
+          draft.frameMode === "none"
+            ? []
+            : draft.places.map((place) => place.index),
+        operands: () => draft.operands.map((operand) => operand.id),
+        rows: 2,
+        value: note,
+        wrapperClass: "",
+        placeholder: "optional",
+      },
+      () => note,
+      (value) => {
+        note = value;
+        emit();
+      },
+    );
     box.append(
       noteField.wrapper,
       el(
@@ -641,6 +662,55 @@ export async function placesPage(
   const mirrors = new Set<() => void>();
   const syncMirrors = () => {
     for (const sync of mirrors) sync();
+  };
+  // Rebuilt rows keep the editor that belongs to the same draft object.
+  const retainedFields = new WeakMap<
+    object,
+    Map<
+      string,
+      {
+        field: ReturnType<typeof richField>;
+        read: () => RichText;
+        change: (value: RichText) => void;
+      }
+    >
+  >();
+  const retainedRichField = (
+    owner: object,
+    key: string,
+    label: string,
+    options: RichFieldOptions,
+    read: () => RichText,
+    change: (value: RichText) => void,
+  ) => {
+    let fields = retainedFields.get(owner);
+    if (!fields) retainedFields.set(owner, (fields = new Map()));
+    let entry = fields.get(key);
+    if (entry) {
+      entry.read = read;
+      entry.change = change;
+      entry.field.input.value = read();
+      entry.field.label.textContent = label;
+      entry.field.wrapper
+        .querySelector('[role="toolbar"]')
+        ?.setAttribute("aria-label", `${label} formatting`);
+      return entry.field;
+    }
+    const field = richField(label, options);
+    const created = { field, read, change };
+    fields.set(key, created);
+    field.input.addEventListener("input", () =>
+      created.change(field.input.value),
+    );
+    const mirror = () => {
+      field.input.value = created.read();
+    };
+    mirrors.add(mirror);
+    onDisconnect(field.wrapper, () => {
+      fields!.delete(key);
+      mirrors.delete(mirror);
+    });
+    return field;
   };
   const editor = richField("Definition text", {
     multiline: true,
@@ -953,27 +1023,33 @@ export async function placesPage(
       marker.append(idx);
     }
     const grid = el("div", { class: "place-grid" });
-    const description = richField(`Description for place ${place.index}`, {
-      multiline: true,
-      structured: () => draft.structured,
-      places: () =>
-        draft.frameMode === "none"
-          ? []
-          : draft.places.map((place) => place.index),
-      operands: () => draft.operands.map((operand) => operand.id),
-      rows: 2,
-      value: place.description,
-      wrapperClass: "span-3",
-      labelClass: "field-label",
-    });
+    const description = retainedRichField(
+      place,
+      "description",
+      `Description for place ${place.index}`,
+      {
+        multiline: true,
+        structured: () => draft.structured,
+        places: () =>
+          draft.frameMode === "none"
+            ? []
+            : draft.places.map((place) => place.index),
+        operands: () => draft.operands.map((operand) => operand.id),
+        rows: 2,
+        value: place.description,
+        wrapperClass: "span-3",
+        labelClass: "field-label",
+      },
+      () => place.description,
+      (value) => {
+        place.description = value;
+        saver.touch();
+      },
+    );
     description.label.textContent = "Description";
     description.label.append(
       el("span", { class: "sr", text: ` for place ${place.index}` }),
     );
-    description.input.addEventListener("input", () => {
-      place.description = description.input.value;
-      saver.touch();
-    });
     const gloss = {
       wrapper: el(
         "div",
@@ -1016,6 +1092,8 @@ export async function placesPage(
               refreshPreview();
             },
             draft,
+            retainedRichField,
+            place,
           ),
         );
     };
@@ -1030,10 +1108,15 @@ export async function placesPage(
       wrapper: el(
         "div",
         { class: "span-3" },
-        derivationEditor(place, draft.structured, () => {
-          saver.touch();
-          refreshPreview();
-        }),
+        derivationEditor(
+          place,
+          draft.structured,
+          () => {
+            saver.touch();
+            refreshPreview();
+          },
+          retainedRichField,
+        ),
       ),
     };
     grid.append(
@@ -1238,7 +1321,9 @@ export async function placesPage(
       minimum.input.addEventListener("change", () => {
         minimum.input.value = String(draft.variadicMinimum);
       });
-      const tailDescription = richField(
+      const tailDescription = retainedRichField(
+        draft,
+        "tailDescription",
         `Places ${draft.places.length + 1} and on`,
         {
           multiline: true,
@@ -1253,16 +1338,17 @@ export async function placesPage(
           placeholder: "what the repeated places are",
           wrapperClass: "",
         },
+        () => draft.tail?.description ?? [],
+        (value) => {
+          draft.tail = {
+            ...draft.tail,
+            description: value,
+            kind: draft.tail?.kind ?? "unspecified",
+            hint: draft.tail?.hint ?? null,
+          };
+          saver.touch();
+        },
       );
-      tailDescription.input.addEventListener("input", () => {
-        draft.tail = {
-          ...draft.tail,
-          description: tailDescription.input.value,
-          kind: draft.tail?.kind ?? "unspecified",
-          hint: draft.tail?.hint ?? null,
-        };
-        saver.touch();
-      });
       const tailKind = field("Kind of thing for the repeated places", {
         options: kindChoices,
         value: draft.tail?.kind ?? "unspecified",
@@ -1295,6 +1381,8 @@ export async function placesPage(
                 saver.touch();
                 refreshPreview();
               },
+              draft,
+              retainedRichField,
               draft,
             ),
           );
@@ -1346,7 +1434,7 @@ export async function placesPage(
     return details;
   };
   // Defaults and constraints.
-  const defaultsDetails = open("Defaults and constraints", () => {
+  const renderDefaultsBody = () => {
     const box = el("div", { class: "stack" });
     if (!draft.places.length) box.append(p("Declare places first.", "meta"));
     for (const place of draft.places) {
@@ -1413,7 +1501,9 @@ export async function placesPage(
             d.text = value.input.value;
             saver.touch();
           });
-          const condition = richField(
+          const condition = retainedRichField(
+            d,
+            "condition",
             `Condition ${i + 1} for place ${place.index}`,
             {
               multiline: true,
@@ -1428,12 +1518,15 @@ export async function placesPage(
               wrapperClass: "",
               placeholder: "when…",
             },
+            () => d.condition,
+            (value) => {
+              d.condition = value;
+              saver.touch();
+            },
           );
-          condition.input.addEventListener("input", () => {
-            d.condition = condition.input.value;
-            saver.touch();
-          });
-          const explanation = richField(
+          const explanation = retainedRichField(
+            d,
+            "explanation",
             `Explanation of default ${i + 1} for place ${place.index}`,
             {
               multiline: true,
@@ -1447,11 +1540,12 @@ export async function placesPage(
               value: d.explanation,
               wrapperClass: "",
             },
+            () => d.explanation,
+            (value) => {
+              d.explanation = value;
+              saver.touch();
+            },
           );
-          explanation.input.addEventListener("input", () => {
-            d.explanation = explanation.input.value;
-            saver.touch();
-          });
           for (const f of [
             kind,
             format,
@@ -1485,6 +1579,7 @@ export async function placesPage(
         draft,
         () => saver.touch(),
         place,
+        retainedRichField,
       );
       block.append(
         el(
@@ -1517,6 +1612,7 @@ export async function placesPage(
       draft,
       () => saver.touch(),
       draft,
+      retainedRichField,
     );
     box.append(
       frameConstraints,
@@ -1526,13 +1622,13 @@ export async function placesPage(
       ),
     );
     return box;
-  });
+  };
+  const defaultsDetails = open("Defaults and constraints", renderDefaultsBody);
   const rebuildDefaults = () => {
     const body = defaultsDetails.querySelector(":scope > .body");
     if (!body) return;
-    body.replaceChildren();
-    if (defaultsDetails.open)
-      defaultsDetails.dispatchEvent(new Event("toggle"));
+    if (defaultsDetails.open) body.replaceChildren(renderDefaultsBody());
+    else body.replaceChildren();
   };
   rebuildHooks.push(rebuildDefaults);
   open("Notes", () => {
@@ -2192,6 +2288,7 @@ function derivationEditor(
   place: DraftPlace,
   structured: boolean,
   changed: () => void,
+  retain: RetainedRichField,
 ): HTMLElement {
   const box = el("div");
   const render = () => {
@@ -2270,7 +2367,9 @@ function derivationEditor(
         refreshMapping();
         changed();
       });
-      const explanation = richField(
+      const explanation = retain(
+        derivation,
+        "explanation",
         `Explanation of derivation ${n} for place ${place.index}`,
         {
           multiline: true,
@@ -2281,6 +2380,12 @@ function derivationEditor(
           wrapperClass: "span-3",
           placeholder: "optional, without place references",
         },
+        () => derivation.explanation,
+        (value) => {
+          derivation.explanation = value;
+          refreshMapping();
+          changed();
+        },
       );
       explanation.label.textContent = "Explanation";
       explanation.label.append(
@@ -2289,11 +2394,6 @@ function derivationEditor(
           text: ` of derivation ${n} for place ${place.index}`,
         }),
       );
-      explanation.input.addEventListener("input", () => {
-        derivation.explanation = explanation.input.value;
-        refreshMapping();
-        changed();
-      });
       const mapping = el("p", {
         class: "meta span-3",
         text: `${derivation.word} ${derivation.place ?? "?"}${mappingKind(derivation.explanation) ? ` · ${mappingKind(derivation.explanation)}` : ""}`,
@@ -2355,27 +2455,37 @@ function constraintEditor(
   draft: Draft,
   changed: () => void,
   owner: object,
+  retain: RetainedRichField,
 ): HTMLElement {
   const box = el("div");
   const render = () => {
     box.replaceChildren();
     values.forEach((value, i) => {
-      const input = richField(`Constraint ${i + 1} ${suffix}`, {
-        multiline: true,
-        structured: () => draft.structured,
-        places: () =>
-          draft.frameMode === "none"
-            ? []
-            : draft.places.map((place) => place.index),
-        operands: () => draft.operands.map((operand) => operand.id),
-        rows: 2,
-        value: value,
-        wrapperClass: "",
-      });
-      input.input.addEventListener("input", () => {
-        values[i] = input.input.value;
-        changed();
-      });
+      const ids = ((owner as { constraintIds?: string[] }).constraintIds ??=
+        []);
+      const key = (ids[i] ??= crypto.randomUUID());
+      const input = retain(
+        owner,
+        `constraint:${key}`,
+        `Constraint ${i + 1} ${suffix}`,
+        {
+          multiline: true,
+          structured: () => draft.structured,
+          places: () =>
+            draft.frameMode === "none"
+              ? []
+              : draft.places.map((place) => place.index),
+          operands: () => draft.operands.map((operand) => operand.id),
+          rows: 2,
+          value: value,
+          wrapperClass: "",
+        },
+        () => values[i],
+        (value) => {
+          values[i] = value;
+          changed();
+        },
+      );
       box.append(
         input.wrapper,
         button(

@@ -1,4 +1,4 @@
-import { richField } from "../components/rich-field.ts";
+import { richHasContent } from "../model/rich-values.ts";
 /** Public identity: fingerprint, profile when known, trust actions, and this server's evidence. */
 import { deliveryAccepted } from "../data/delivery.ts";
 import {
@@ -258,11 +258,12 @@ export async function personPage(
       response?.profile.state === "known"
         ? (response.profile.claims[0]?.body ?? null)
         : null;
-    const editor = profileEditor(app, identity, current, () => {
+    const editor = await profileEditor(app, identity, current, () => {
       if (!context.live()) return;
       main.replaceChildren();
       void personPage(route, context, app, true);
     });
+    if (!context.live()) return;
     main.append(editor);
     // The key page links here with #edit. Focus the connected first field.
     const firstField = editor.querySelector<HTMLInputElement>("input");
@@ -501,12 +502,13 @@ const PROFILE_LIMITS = { name: 80, links: 8, nodes: 8192 };
  * claim. The editor shows the format limits, checks every field before the
  * preview, and signs only from the preview.
  */
-function profileEditor(
+async function profileEditor(
   app: App,
   identity: string,
   current: ProfileBody | null,
   onSigned: () => void,
-): HTMLElement {
+): Promise<HTMLElement> {
+  const { richField } = await import("../components/rich-field.ts");
   const section = el("section", {
     id: "edit",
     class: "card",
@@ -544,7 +546,7 @@ function profileEditor(
     value: current?.bio ?? [],
     local: false,
     rows: 4,
-    hint: "Use the controls to insert links and code. A blank paragraph starts a new paragraph.",
+    hint: "Use the controls to insert links and code. Enter starts a new paragraph.",
   });
   const links = field("Links", {
     multiline: true,
@@ -583,7 +585,7 @@ function profileEditor(
       errors.push(
         `The name has ${[...nameValue].length} characters. The limit is ${PROFILE_LIMITS.name}.`,
       );
-    const bioRich = bio.input.value;
+    const bioRich = richHasContent(bio.input.value) ? bio.input.value : [];
     const nodes = countNodes(bioRich);
     if (nodes > PROFILE_LIMITS.nodes)
       errors.push(
@@ -708,8 +710,10 @@ function describeKey(key: string) {
     .filter(Boolean)
     .join(", ");
 }
-function reportDialog(app: App, subject: string) {
+async function reportDialog(app: App, subject: string) {
   const opener = document.activeElement as HTMLElement | null;
+  const { richField } = await import("../components/rich-field.ts");
+  if (opener && !opener.isConnected) return;
   const dialog = el("dialog", {
     class: "sheet",
     "aria-labelledby": "report-title",
@@ -759,7 +763,7 @@ function reportDialog(app: App, subject: string) {
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const explanation = reason.input.value;
-    if (!countNodes(explanation)) return;
+    if (!richHasContent(explanation)) return;
     const preview = el(
       "div",
       { class: "stack small", style: "margin-top:12px" },

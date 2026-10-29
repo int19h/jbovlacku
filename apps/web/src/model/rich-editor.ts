@@ -26,7 +26,8 @@ export const richEditorSchema = new Schema({
     text: { group: "inline" },
     // Containers preserve boundaries between adjacent stored strings.
     literal: {
-      ...inlineText("span", "rich-literal"), selectable: false,
+      ...inlineText("span", "rich-literal"),
+      selectable: false,
       attrs: { origin: { default: null } },
     },
     place: {
@@ -105,9 +106,16 @@ let nextOrigin = 0;
 const originalBlankDocs = new WeakSet<EditorNode>();
 export function richToEditor(value: RichText): EditorNode {
   const source = nextOrigin++;
-  const inline = (node: RichNode, paragraph: number, index: number): EditorNode => {
+  const inline = (
+    node: RichNode,
+    paragraph: number,
+    index: number,
+  ): EditorNode => {
     if (typeof node === "string")
-      return schema.nodes.literal.create({ origin: { source, paragraph, index } }, contents(node));
+      return schema.nodes.literal.create(
+        { origin: { source, paragraph, index } },
+        contents(node),
+      );
     if (typeof node === "number")
       return schema.nodes.place.create({ index: node });
     if ("operand" in node)
@@ -130,26 +138,38 @@ export function richToEditor(value: RichText): EditorNode {
       ? value.map((paragraph, p) =>
           paragraph.length === 1 && paragraph[0] === "\n"
             ? schema.nodes.paragraph.create()
-            : schema.nodes.paragraph.create(null, paragraph.map((node, i) => inline(node, p, i))),
+            : schema.nodes.paragraph.create(
+                null,
+                paragraph.map((node, i) => inline(node, p, i)),
+              ),
         )
       : schema.nodes.paragraph.create(),
   );
-  if (value.length === 1 && value[0].length === 1 && value[0][0] === "\n") originalBlankDocs.add(doc);
+  if (value.length === 1 && value[0].length === 1 && value[0][0] === "\n")
+    originalBlankDocs.add(doc);
   return doc;
 }
 export function editorToRich(doc: EditorNode): RichText {
   const value: RichText = [];
   doc.forEach((paragraph) => {
     const nodes: RichNode[] = [];
-    let previousOrigin: { source: number; paragraph: number; index: number } | null = null;
+    let previousOrigin: {
+      source: number;
+      paragraph: number;
+      index: number;
+    } | null = null;
     paragraph.forEach((node) => {
       switch (node.type.name) {
         case "text":
         case "literal":
           if (node.textContent) {
-            const origin = node.type.name === "literal" ? node.attrs.origin : null;
-            const retainedBoundary = origin && previousOrigin &&
-              origin.source === previousOrigin.source && origin.paragraph === previousOrigin.paragraph &&
+            const origin =
+              node.type.name === "literal" ? node.attrs.origin : null;
+            const retainedBoundary =
+              origin &&
+              previousOrigin &&
+              origin.source === previousOrigin.source &&
+              origin.paragraph === previousOrigin.paragraph &&
               origin.index === previousOrigin.index + 1;
             const last = nodes.length - 1;
             if (typeof nodes[last] === "string" && !retainedBoundary)
@@ -177,7 +197,8 @@ export function editorToRich(doc: EditorNode): RichText {
       if (!["text", "literal"].includes(node.type.name)) previousOrigin = null;
     });
     if (nodes.length) value.push(nodes);
-    else if (doc.childCount > 1 || originalBlankDocs.has(doc)) value.push(["\n"]);
+    else if (doc.childCount > 1 || originalBlankDocs.has(doc))
+      value.push(["\n"]);
   });
   return value;
 }
@@ -220,16 +241,23 @@ export function replaceInline(
 ): Transaction {
   const $from = state.doc.resolve(from),
     $to = state.doc.resolve(to);
-  if ($from.sameParent($to) && $from.parent.isInline &&
-    ($from.parent.type.name === "literal" || from !== to)) {
+  if (
+    $from.sameParent($to) &&
+    $from.parent.isInline &&
+    ($from.parent.type.name === "literal" || from !== to)
+  ) {
     const before = $from.parent.textContent.slice(0, $from.parentOffset);
     const after = $from.parent.textContent.slice($to.parentOffset);
     const nodes = [];
     if (before)
-      nodes.push($from.parent.type.create($from.parent.attrs, schema.text(before)));
+      nodes.push(
+        $from.parent.type.create($from.parent.attrs, schema.text(before)),
+      );
     nodes.push(node);
     if (after)
-      nodes.push($from.parent.type.create($from.parent.attrs, schema.text(after)));
+      nodes.push(
+        $from.parent.type.create($from.parent.attrs, schema.text(after)),
+      );
     const start = $from.before();
     const tr = state.tr.replaceWith(start, $from.after(), nodes);
     return tr.setSelection(
@@ -241,7 +269,11 @@ export function replaceInline(
     );
   }
   // Code and link labels contain text only. Insert beside them.
-  if (from === to && $from.parent.isInline && $from.parent.type.name !== "literal") {
+  if (
+    from === to &&
+    $from.parent.isInline &&
+    $from.parent.type.name !== "literal"
+  ) {
     const start = $from.after();
     const tr = state.tr.insert(start, node);
     return tr.setSelection(
@@ -286,7 +318,9 @@ export function deleteRichBackward(
   if (!state.selection.empty) return false;
   let $cursor = state.selection.$from;
   if ($cursor.parent.isInline && !$cursor.parent.content.size) {
-    dispatch?.(state.tr.delete($cursor.before(), $cursor.after()).scrollIntoView());
+    dispatch?.(
+      state.tr.delete($cursor.before(), $cursor.after()).scrollIntoView(),
+    );
     return true;
   }
   if (!$cursor.nodeBefore && $cursor.parent.isInline)
@@ -300,7 +334,11 @@ export function deleteRichBackward(
     source = previous.textContent;
     end--;
   } else if (previous.isAtom || (previous.isInline && !previous.content.size)) {
-    dispatch?.(state.tr.delete($cursor.pos - previous.nodeSize, $cursor.pos).scrollIntoView());
+    dispatch?.(
+      state.tr
+        .delete($cursor.pos - previous.nodeSize, $cursor.pos)
+        .scrollIntoView(),
+    );
     return true;
   } else return false;
   const last = graphemes.segment(source).containing(source.length - 1)?.segment;
@@ -313,19 +351,31 @@ export function deleteRichBackward(
 }
 
 /** Forward Delete removes one character cluster or one atomic chip. */
-export function deleteRichForward(state: EditorState, dispatch?: (tr: Transaction) => void): boolean {
+export function deleteRichForward(
+  state: EditorState,
+  dispatch?: (tr: Transaction) => void,
+): boolean {
   if (!state.selection.empty) return false;
   let $cursor = state.selection.$from;
   if ($cursor.parent.isInline && !$cursor.parent.content.size) {
-    dispatch?.(state.tr.delete($cursor.before(), $cursor.after()).scrollIntoView());
+    dispatch?.(
+      state.tr.delete($cursor.before(), $cursor.after()).scrollIntoView(),
+    );
     return true;
   }
   if (!$cursor.nodeAfter && $cursor.parent.isInline)
     $cursor = state.doc.resolve($cursor.after());
   const next = $cursor.nodeAfter;
   if (!next) return false;
-  if ((!next.isText && next.isAtom) || (next.isInline && !next.isText && !next.content.size)) {
-    dispatch?.(state.tr.delete($cursor.pos, $cursor.pos + next.nodeSize).scrollIntoView());
+  if (
+    (!next.isText && next.isAtom) ||
+    (next.isInline && !next.isText && !next.content.size)
+  ) {
+    dispatch?.(
+      state.tr
+        .delete($cursor.pos, $cursor.pos + next.nodeSize)
+        .scrollIntoView(),
+    );
     return true;
   }
   const source = next.textContent;
@@ -529,10 +579,12 @@ export function pastedRichText(text: string, convertPlaces: boolean): RichText {
     .split(/\n\n/u)
     .map((paragraph) => {
       if (!convertPlaces) return paragraph ? [paragraph] : ["\n"];
-      return paragraph ? paragraph
-        .split(new RegExp(`([${CIRCLED_SOURCE}])`, "u"))
-        .filter(Boolean)
-        .map((part) => circledPlace(part) ?? part) : ["\n"];
+      return paragraph
+        ? paragraph
+            .split(new RegExp(`([${CIRCLED_SOURCE}])`, "u"))
+            .filter(Boolean)
+            .map((part) => circledPlace(part) ?? part)
+        : ["\n"];
     });
 }
 

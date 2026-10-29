@@ -347,7 +347,10 @@ test("completing saved partial tokens maps literal boundaries and restores the t
         );
       h.type("_");
       assert.deepEqual(editorToRich(h.state.doc), converted);
-      assert.deepEqual(editorToRich(richToEditor(editorToRich(h.state.doc))), converted);
+      assert.deepEqual(
+        editorToRich(richToEditor(editorToRich(h.state.doc))),
+        converted,
+      );
       assert.equal(h.backspace(), true);
       assert.equal(h.state.doc.textContent, partial.join("") + "_");
       h.state.doc.check();
@@ -355,7 +358,10 @@ test("completing saved partial tokens maps literal boundaries and restores the t
     const fallback = harness([[...partial]]);
     fallback.dispatch(fallback.state.tr.insertText("_"));
     assert.deepEqual(editorToRich(fallback.state.doc), converted);
-    assert.deepEqual(editorToRich(richToEditor(editorToRich(fallback.state.doc))), converted);
+    assert.deepEqual(
+      editorToRich(richToEditor(editorToRich(fallback.state.doc))),
+      converted,
+    );
     assert.equal(fallback.backspace(), true);
     assert.equal(fallback.state.doc.textContent, partial.join("") + "_");
   }
@@ -372,9 +378,7 @@ test("partial tokens never continue across code, links, or their empty labels", 
   ] as const) {
     const h = harness([["before _", boundary, "_"]]);
     h.type("_");
-    assert.deepEqual(editorToRich(h.state.doc), [
-      ["before _", boundary, "__"],
-    ]);
+    assert.deepEqual(editorToRich(h.state.doc), [["before _", boundary, "__"]]);
     const label = harness([[boundary]]);
     label.type("__");
     assert.deepEqual(editorToRich(label.state.doc), [[boundary, "__"]]);

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import * as editorModel from "../../src/model/rich-editor.ts";
 import { EditorState, TextSelection } from "prosemirror-state";
 import { baseKeymap } from "prosemirror-commands";
 import {
@@ -120,6 +121,24 @@ test("r2 seeded random edit sequences retain legal values and untouched boundari
           editorToRich(state.doc),
           [...keep, [expected]],
           `backspace sample ${sample} step ${step}`,
+        );
+      }
+      if (random(4) === 0 && expected) {
+        const start = state.doc.firstChild!.nodeSize + 1;
+        state = state.apply(
+          state.tr.setSelection(TextSelection.create(state.doc, start)),
+        );
+        (editorModel.deleteRichForward ?? baseKeymap.Delete)(state, (tr) => {
+          state = state.apply(tr);
+        });
+        const first = new Intl.Segmenter(undefined, { granularity: "grapheme" })
+          .segment(expected)
+          .containing(0)!;
+        expected = expected.slice(first.segment.length);
+        assert.deepEqual(
+          editorToRich(state.doc),
+          [...keep, [expected]],
+          `forward Delete sample ${sample} step ${step}`,
         );
       }
       const stored = editorToRich(state.doc);

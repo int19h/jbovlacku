@@ -1,4 +1,4 @@
-import { richValue } from "../../model/rich-editor.ts";
+import { richValue } from "../../model/rich-values.ts";
 import type { RichText } from "../../model/types.ts";
 import { stripAcuteAccents } from "../../../../../packages/morphology/src/accents.ts";
 import { kindLabel } from "../../model/types.ts";

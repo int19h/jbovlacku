@@ -1,4 +1,3 @@
-import { richField } from "../components/rich-field.ts";
 /**
  * Rafsi lookup and the standalone claim flow. `/rafsi/<spelling>` lists the
  * known assignments of a rafsi across words from this server's version 2
@@ -263,6 +262,8 @@ export async function claimPage(
     required: true,
     hint: "NFC spelling, at most 64 bytes. Syntax analysis is an attributed tool result, not an admission rule.",
   });
+  const { richField } = await import("../components/rich-field.ts");
+  if (!context.live()) return;
   const rationale = richField("Rationale", {
     value: [],
     local: false,

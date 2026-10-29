@@ -116,8 +116,14 @@ test("typed places, exact TeX, undo, keyboard toolbar, and 50-place dropdown", a
   await typeRichText(field, "");
   await field.pressSequentially("\\{ \\[ \\\\ \\__4__");
   expect(await nodes(field)).toEqual([["\\{ \\[ \\\\ \\", 4]]);
+  const beforeUndo = await nodes(field);
   await field.press("Control+z");
+  await expect(
+    field.getByRole("img", { name: "place 4", exact: true }),
+  ).toHaveCount(0);
+  expect(await nodes(field)).not.toEqual(beforeUndo);
   await field.press("Control+Shift+z");
+  expect(await nodes(field)).toEqual(beforeUndo);
   await expect(
     field.getByRole("img", { name: "place 4", exact: true }),
   ).toHaveCount(1);

@@ -1,5 +1,4 @@
 import "./styles/tokens.css";
-import "prosemirror-view/style/prosemirror.css";
 import "./styles/base.css";
 import "./styles/components.css";
 import { initializeCore } from "../../../packages/core/src/browser.ts";
@@ -29,15 +28,8 @@ import { outboxPage } from "./pages/outbox.ts";
 import { preferencesPage } from "./pages/preferences.ts";
 import { aboutPage } from "./pages/about.ts";
 import { trustPage } from "./pages/trust.ts";
-import { meaningPage } from "./pages/wizard/meaning.ts";
-import { typePage } from "./pages/wizard/type.ts";
-import { formPage } from "./pages/wizard/form.ts";
-import { lujvoPage } from "./pages/wizard/lujvo.ts";
-import { gismuPage } from "./pages/wizard/gismu.ts";
 import { handoverPage } from "./pages/handover.ts";
 import { compromisePage } from "./pages/compromise.ts";
-import { placesPage } from "./pages/wizard/places.ts";
-import { publishPage } from "./pages/wizard/publish.ts";
 import { claimPage, rafsiPage, rafsiPairPage } from "./pages/rafsi.ts";
 import {
   commitDraftNavigation,
@@ -57,6 +49,34 @@ type Page = (
   context: RenderContext,
   app: App,
 ) => Promise<void> | void;
+/** Authoring routes load their editors only when a reader opens them. */
+function lazyPage(load: () => Promise<Page>): Page {
+  return async (route, context, app) => {
+    const page = await load();
+    if (context.live()) await page(route, context, app);
+  };
+}
+const meaningPage = lazyPage(() =>
+  import("./pages/wizard/meaning.ts").then((module) => module.meaningPage),
+);
+const typePage = lazyPage(() =>
+  import("./pages/wizard/type.ts").then((module) => module.typePage),
+);
+const formPage = lazyPage(() =>
+  import("./pages/wizard/form.ts").then((module) => module.formPage),
+);
+const lujvoPage = lazyPage(() =>
+  import("./pages/wizard/lujvo.ts").then((module) => module.lujvoPage),
+);
+const gismuPage = lazyPage(() =>
+  import("./pages/wizard/gismu.ts").then((module) => module.gismuPage),
+);
+const placesPage = lazyPage(() =>
+  import("./pages/wizard/places.ts").then((module) => module.placesPage),
+);
+const publishPage = lazyPage(() =>
+  import("./pages/wizard/publish.ts").then((module) => module.publishPage),
+);
 function unavailable(title: string, message: string): Page {
   return (_route, context) => {
     context.title(title);

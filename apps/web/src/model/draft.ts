@@ -622,7 +622,13 @@ export function numberPlaceholders(meaning: string): {
   parts: NumberingPart[];
 } {
   const parts: NumberingPart[] = numberMeaningParts(meaning).map((part) => ({
-    text: part.segments.map((segment) => segment.place === undefined ? escapeLiteral(segment.text) : segment.text).join(""),
+    text: part.segments
+      .map((segment) =>
+        segment.place === undefined
+          ? escapeLiteral(segment.text)
+          : segment.text,
+      )
+      .join(""),
     places: part.places,
   }));
   return {

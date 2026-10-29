@@ -1,5 +1,5 @@
 import { richField } from "../../components/rich-field.ts";
-import { richValue } from "../../model/rich-editor.ts";
+import { richValue } from "../../model/rich-values.ts";
 import { detectWord, selectGismuSpelling } from "../../model/typed-headword.ts";
 import {
   assistanceAction,

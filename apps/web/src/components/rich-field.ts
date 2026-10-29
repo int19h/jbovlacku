@@ -1,4 +1,5 @@
 /** One accessible editor per rich field. The draft owns its RichText value. */
+import "prosemirror-view/style/prosemirror.css";
 import { Slice } from "prosemirror-model";
 import { EditorState, Plugin, TextSelection } from "prosemirror-state";
 import { EditorView } from "prosemirror-view";
@@ -12,6 +13,7 @@ import { CIRCLED, placeGlyph } from "../model/place-glyphs.ts";
 import {
   editorToRich,
   deleteRichBackward,
+  deleteRichForward,
   pastedRichText,
   placeInputPlugins,
   replaceInline,
@@ -73,6 +75,13 @@ export function richField(label: string, options: RichFieldOptions) {
     class: "rich-toolbar",
   });
   const host = el("div", { class: "rich-host" });
+  const toolbarHintId = `${id}-toolbar-hint`;
+  const toolbarHint = el("p", {
+    id: toolbarHintId,
+    class: "hint",
+    text: "Use Left, Right, Home, and End to move through the toolbar. In More places, use Alt with those keys.",
+  });
+  toolbar.setAttribute("aria-describedby", toolbarHintId);
   const hint = el("p", {
     id: hintId,
     class: "hint",
@@ -87,6 +96,7 @@ export function richField(label: string, options: RichFieldOptions) {
     { class: options.wrapperClass ?? "field-group" },
     labelNode,
     toolbar,
+    toolbarHint,
     host,
     hint,
   );
@@ -95,38 +105,31 @@ export function richField(label: string, options: RichFieldOptions) {
     (typeof options.structured === "function"
       ? options.structured()
       : options.structured !== false);
-  let previousMode = enabled();
   let view: EditorView;
   let current = options.value;
   let dialog: HTMLDialogElement | null = null;
+  let editLink: HTMLButtonElement | undefined;
   const rulePlugins = placeInputPlugins({
     enabled,
     composing: () => view?.composing ?? false,
   });
-  const state = () =>
-    EditorState.create({
-      doc: richToEditor(current),
+  const state = () => {
+    const doc = richToEditor(current);
+    return EditorState.create({
+      doc,
+      selection: TextSelection.atEnd(doc),
       plugins: [
         ...rulePlugins,
         new Plugin({
           props: {
             handleTextInput(view, from, to, value) {
               if (view.composing) return false;
-              const { selection } = view.state;
-              const previous = selection.$from.nodeBefore;
-              // Native DOM input can inherit the previous code or link style.
-              if (
-                selection.empty &&
-                selection.$from.parent.isTextblock &&
-                previous?.isInline &&
-                !previous.isText &&
-                !previous.isAtom &&
-                from === to &&
-                to === selection.from - 1
-              )
-                from = to = selection.from;
+              const selection = richInsertionSelection(view.state, from, to);
               view.dispatch(
-                view.state.tr.insertText(value, from, to).scrollIntoView(),
+                view.state.tr
+                  .setSelection(selection)
+                  .insertText(value)
+                  .scrollIntoView(),
               );
               return true;
             },
@@ -136,6 +139,34 @@ export function richField(label: string, options: RichFieldOptions) {
         keymap({
           "Mod-End": (state, dispatch) => {
             dispatch?.(state.tr.setSelection(TextSelection.atEnd(state.doc)));
+            return true;
+          },
+          "Mod-Home": (state, dispatch) => {
+            dispatch?.(
+              state.tr.setSelection(TextSelection.create(state.doc, 1)),
+            );
+            return true;
+          },
+          Home: (state, dispatch) => {
+            const { $from, empty } = state.selection;
+            if (!empty || !$from.parent.isInline || $from.parentOffset !== 0)
+              return false;
+            dispatch?.(
+              state.tr.setSelection(
+                TextSelection.create(state.doc, $from.before()),
+              ),
+            );
+            return true;
+          },
+          ArrowLeft: (state, dispatch) => {
+            const { $from, empty } = state.selection;
+            if (!empty || !$from.parent.isInline || $from.parentOffset !== 0)
+              return false;
+            dispatch?.(
+              state.tr.setSelection(
+                TextSelection.create(state.doc, $from.before()),
+              ),
+            );
             return true;
           },
           ArrowRight: (state, dispatch) => {
@@ -172,6 +203,7 @@ export function richField(label: string, options: RichFieldOptions) {
               state,
               dispatch && ((tr) => dispatch(tr.setMeta("richRuleUndo", true))),
             ) || deleteRichBackward(state, dispatch),
+          Delete: deleteRichForward,
           "Mod-z": (state, dispatch) =>
             undo(
               state,
@@ -191,8 +223,29 @@ export function richField(label: string, options: RichFieldOptions) {
         keymap(baseKeymap),
       ],
     });
+  };
   const placeControls: (HTMLButtonElement | HTMLSelectElement)[] = [];
   let placeMenu: HTMLSelectElement | undefined;
+  let operandControl: HTMLButtonElement | undefined;
+  let operandReason: HTMLElement | undefined;
+  let activeToolbarControl: HTMLElement | undefined;
+  const toolbarControls = () =>
+    [
+      ...toolbar.querySelectorAll<HTMLButtonElement | HTMLSelectElement>(
+        "button,select",
+      ),
+    ].filter((node) => !node.disabled && !node.hidden);
+  const rove = (control?: HTMLElement) => {
+    const controls = toolbarControls();
+    activeToolbarControl =
+      control && controls.includes(control as HTMLButtonElement)
+        ? control
+        : controls.includes(activeToolbarControl as HTMLButtonElement)
+          ? activeToolbarControl
+          : controls[0];
+    for (const node of toolbar.querySelectorAll<HTMLElement>("button,select"))
+      node.tabIndex = node === activeToolbarControl ? 0 : -1;
+  };
   const syncMode = () => {
     for (const control of placeControls) control.disabled = !enabled();
     if (placeMenu) {
@@ -202,6 +255,17 @@ export function richField(label: string, options: RichFieldOptions) {
         if (option.textContent !== label) option.textContent = label;
       }
     }
+    if (operandControl)
+      operandControl.disabled = !enabled() || !options.operands?.().length;
+    if (operandReason) operandReason.hidden = !!options.operands?.().length;
+    hint.textContent =
+      !enabled() && options.local !== false
+        ? "Literal mode keeps typed characters as text. Pasted text stays literal."
+        : (options.hint ??
+          (options.local === false
+            ? "Use the controls to insert links and code. Pasted text stays literal."
+            : "Type ___ for the next free place, __N__ for place N, or ① to ㊿. Paste can keep circled numbers literal."));
+    rove();
   };
   view = new EditorView(host, {
     state: state(),
@@ -217,6 +281,7 @@ export function richField(label: string, options: RichFieldOptions) {
     dispatchTransaction(transaction) {
       const result = view.state.applyTransaction(transaction);
       view.updateState(result.state);
+      syncLinkAction();
       if (result.transactions.some((tr) => tr.docChanged)) {
         current = editorToRich(view.state.doc);
         view.dom.dispatchEvent(new Event("input", { bubbles: true }));
@@ -257,7 +322,15 @@ export function richField(label: string, options: RichFieldOptions) {
       paste(_view, event) {
         event.preventDefault();
         const pasted = event.clipboardData?.getData("text/plain") ?? "";
-        if (enabled() && CIRCLED.test(pasted)) pasteDialog(pasted);
+        if (!pasted) return true;
+        const selection = view.state.selection;
+        const inlineContext =
+          selection.$from.sameParent(selection.$to) &&
+          ["code", "word_link", "web_link"].includes(
+            selection.$from.parent.type.name,
+          );
+        if (enabled() && !inlineContext && CIRCLED.test(pasted))
+          pasteDialog(pasted);
         else paste(pasted, false);
         return true;
       },
@@ -286,12 +359,13 @@ export function richField(label: string, options: RichFieldOptions) {
     set: (value: RichText) => {
       current = value;
       if (view.isDestroyed) return;
-      const mode = enabled();
       // External draft changes start a new history for this field.
-      if (mode !== previousMode || !view.state.doc.eq(richToEditor(value)))
+      if (
+        JSON.stringify(editorToRich(view.state.doc)) !== JSON.stringify(value)
+      )
         view.updateState(state());
-      previousMode = mode;
       syncMode();
+      syncLinkAction();
     },
   });
   labelNode.addEventListener("click", () => view.focus());
@@ -357,7 +431,17 @@ export function richField(label: string, options: RichFieldOptions) {
         { class: "btn btn-quiet" },
       );
       placeControls.push(operand);
+      operandControl = operand;
+      const reasonId = `${id}-operand-reason`;
+      operand.setAttribute("aria-describedby", reasonId);
+      operandReason = el("span", {
+        id: reasonId,
+        class: "hint",
+        text: "Declare an operand first.",
+      });
       toolbar.append(operand);
+      wrapper.append(operandReason);
+      operand.addEventListener("focus", syncMode);
     }
   }
   const selectedText = () =>
@@ -472,13 +556,116 @@ export function richField(label: string, options: RichFieldOptions) {
     { class: "btn btn-quiet" },
   );
   toolbar.append(linkWord, linkWeb, code);
+  editLink = button(
+    "Edit link",
+    () => {
+      const existing = selectedLink();
+      if (!existing) return;
+      const word = existing.node.type.name === "word_link";
+      const target = field(word ? "Lojban word" : "HTTPS address", {
+        value: word
+          ? existing.node.attrs.word.spelling
+          : existing.node.attrs.url,
+        ...(word ? { lang: "jbo", spellcheck: false } : { type: "url" }),
+        required: true,
+      });
+      const label = field("Link label", {
+        value: existing.node.textContent,
+        multiline: true,
+        rows: 2,
+        hint: "The label can be empty.",
+      });
+      const error = el("p", { role: "status", class: "notice", hidden: true });
+      openDialog(
+        "Edit link",
+        editLink!,
+        [target.wrapper, label.wrapper, error],
+        () => {
+          const value = target.input.value.trim();
+          try {
+            if (!value || (!word && new URL(value).protocol !== "https:"))
+              throw new Error();
+          } catch {
+            error.hidden = false;
+            error.textContent = word
+              ? "Enter a Lojban word."
+              : "Enter an HTTPS address.";
+            target.input.focus();
+            return false;
+          }
+          const replacement = existing.node.type.create(
+            word
+              ? { word: { language: "jbo", spelling: value } }
+              : { url: value },
+            label.input.value
+              ? richEditorSchema.text(label.input.value)
+              : undefined,
+          );
+          view.dispatch(
+            view.state.tr
+              .replaceWith(
+                existing.position,
+                existing.position + existing.node.nodeSize,
+                replacement,
+              )
+              .setMeta("richExternal", true),
+          );
+          return true;
+        },
+        "Save",
+      );
+    },
+    { class: "btn btn-quiet" },
+  );
+  toolbar.append(editLink);
+  toolbar.addEventListener("focusin", (event) => {
+    if (
+      event.target instanceof HTMLElement &&
+      event.target.matches("button,select")
+    )
+      rove(event.target);
+  });
+  toolbar.addEventListener("keydown", (event) => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    if (event.target instanceof HTMLSelectElement && !event.altKey) return;
+    const controls = toolbarControls();
+    const index = controls.indexOf(event.target as HTMLButtonElement);
+    if (index < 0 || !controls.length) return;
+    event.preventDefault();
+    const next =
+      event.key === "Home"
+        ? 0
+        : event.key === "End"
+          ? controls.length - 1
+          : (index + (event.key === "ArrowLeft" ? -1 : 1) + controls.length) %
+            controls.length;
+    rove(controls[next]);
+    controls[next].focus();
+  });
+  syncLinkAction();
   syncMode();
+
+  function selectedLink() {
+    const { $from, $to } = view.state.selection;
+    if (
+      !$from.sameParent($to) ||
+      !["word_link", "web_link"].includes($from.parent.type.name)
+    )
+      return null;
+    return { node: $from.parent, position: $from.before() };
+  }
+  function syncLinkAction() {
+    if (!editLink) return;
+    editLink.hidden = !selectedLink();
+    rove();
+  }
 
   function openDialog(
     title: string,
     invoker: HTMLElement,
     fields: HTMLElement[],
     submit: () => boolean,
+    applyText = "Insert",
   ) {
     dialog?.close();
     const node = el("dialog", {
@@ -495,7 +682,7 @@ export function richField(label: string, options: RichFieldOptions) {
     const apply = el("button", {
       type: "submit",
       class: "btn btn-primary",
-      text: "Insert",
+      text: applyText,
     });
     form.append(
       el(
@@ -523,10 +710,17 @@ export function richField(label: string, options: RichFieldOptions) {
     node.showModal();
   }
   function paste(text: string, convert: boolean) {
-    const doc = richToEditor(pastedRichText(text, convert));
-    const tr = view.state.tr
-      .replaceSelection(new Slice(doc.content, 1, 1))
-      .setMeta("uiEvent", "paste");
+    if (!text) return;
+    const { $from, $to } = view.state.selection;
+    const inlineContext =
+      $from.sameParent($to) &&
+      ["code", "word_link", "web_link"].includes($from.parent.type.name);
+    const tr = inlineContext
+      ? view.state.tr.insertText(text.replace(/\r\n?/gu, "\n"))
+      : view.state.tr.replaceSelection(
+          new Slice(richToEditor(pastedRichText(text, convert)).content, 1, 1),
+        );
+    tr.setMeta("uiEvent", "paste");
     tr.setSelection(TextSelection.near(tr.doc.resolve(tr.selection.to), -1));
     view.dispatch(tr.scrollIntoView());
     view.focus();
