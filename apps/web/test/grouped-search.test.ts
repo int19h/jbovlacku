@@ -5,6 +5,9 @@ const group = (page: Page, name: string) =>
   page.getByRole("region", { name, exact: true });
 async function localPackage(page: Page) {
   await page.goto("/");
+  await expect(
+    page.getByText("Type a word or a meaning to search.", { exact: true }),
+  ).toBeVisible();
   await page.evaluate(async () => {
     const { LocalStore } = await import(String("/src/data/store.ts"));
     const entries = [
@@ -67,7 +70,7 @@ test("one local box orders known Lojban and English queries and keeps group page
     .getByRole("button", { name: "show all", exact: true })
     .click();
   await expect(definitions.locator("article")).toHaveCount(47);
-  await page.getByRole("link", { name: "Settings", exact: true }).click();
+  await page.getByRole("link", { name: "Add a word", exact: true }).click();
   await page.goBack();
   await expect(words.locator("article")).toHaveCount(46);
   await expect(definitions.locator("article")).toHaveCount(47);
@@ -396,7 +399,7 @@ test("measure a warm query with all three groups outside the search worker", asy
     const before = await cpu();
     await page.evaluate(async () => {
       const { navigate } = await import(String("/src/app/router.ts"));
-      navigate("/search?q=se&lang=en", { replace: true, state: null });
+      navigate("/search?q=se&lang=en", { replace: true, state: {} });
     });
     await expect(meaning.locator("article")).toHaveCount(1);
     await expect(group(page, "Lojban words").locator("article")).toHaveCount(
