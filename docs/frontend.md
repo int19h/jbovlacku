@@ -167,6 +167,47 @@ A normalized exact headword match uses the same class as its display spelling.
 Rank result classes in this order: exact headword, exact gloss, exact component sequence, contiguous sequence, headword prefix, gloss prefix, ordered subsequence, then token matches.
 Ordinary text queries keep their existing lexical class order.
 
+A query written as `/.../` selects regular expression matching. It matches anywhere in a headword unless the query supplies anchors.
+For example, `/^ba/` matches a start, and `/nu$/` matches an end.
+A query that contains `*`, `?`, `@`, or `$` selects a glob, which matches the whole spelling.
+`@` matches one vowel from `aeiouy`. `$` matches one consonant from `bcdfgjklmnprstvxz`.
+`?` matches one letter or apostrophe. `*` matches any run of letters or apostrophes, including an empty run.
+Glob literals permit ASCII letters, digits, and apostrophes. Wildcards do not consume digits, spaces, or pause periods.
+In glob literals, `h` reads as an apostrophe. Thus `*'i` and `*hi` return the same results.
+Patterns ignore capitals and acute stress marks in candidate spellings. They preserve every displayed spelling.
+
+Regular expressions use Rust `regex` syntax with case-insensitive matching.
+Written literal characters gain the same acute-stress and `h` aliases, including single literals inside character classes.
+Escapes, properties, named groups, flags, and character-range endpoints retain their regular expression meaning.
+For example, `\D` retains its non-digit meaning, and `\x68` remains an escaped literal `h`.
+Look-around, backreferences, empty expression bodies, disabled case folding, invalid syntax, and excessive compilation return `pattern_invalid`.
+
+Pattern mode returns `headword-pattern` results before `rafsi-pattern` results. Each class uses stable word-ID order.
+It uses no gloss, definition-text, segmentation, or component fallback. One card groups every matching definition of a word.
+Headword matches take precedence when a word also has a matching rafsi.
+Both classes use the ordinary pages and “show all” limit. Pattern mode leaves the ordinary segmented-search classes unchanged.
+The rafsi page accepts the same patterns. It shows each matched spelling with its word and retains conflicting assignments separately.
+Each language shows at most 1,000 matching words there. A visible notice reports any cut.
+
+Rafsi patterns use retained claim bodies and the same 64-spelling limit per word as version 2 packages.
+Version 1 local packages support headword patterns only. The search page states that they contain no rafsi data.
+The rafsi page requires version 2 data and reports missing packages or incomplete coverage. It never treats absent metadata as no claims.
+
+Patterns permit at most 256 UTF-8 bytes, including expression delimiters. Compilation permits at most 32 levels of nesting.
+The generated expression permits at most 4,096 UTF-8 bytes after glob expansion.
+The shared engine caps its compiled expression and cached matching states at 262,144 bytes each. It uses linear-time matching on all hosts.
+One query permits 32,000,000 input work units across eligible headwords and retained rafsi spellings.
+Each candidate consumes the generated expression byte count multiplied by its normalized UTF-8 byte count plus one.
+Repeated definitions consume that work again. Work exhaustion returns `pattern_timeout` without partial results.
+One long word with nested repetition can finish safely. A larger corpus can exhaust the aggregate budget.
+
+The browser runs patterns in its existing static search worker. After preparation, each pattern request has a 1,000 millisecond execution deadline.
+Deadline expiry terminates that worker and returns `pattern_timeout`. Navigation cancels its pending search through an abort signal.
+Cancellation or deadline expiry also rejects other requests that wait on the same worker. It clears that worker's prepared packages.
+A later search starts a fresh worker and prepares its captured package again. Failed local patterns never upload their query as a fallback.
+The error message reads “Pattern search reached its time or work limit. Use a shorter or more specific pattern.”
+The server uses the linear engine and deterministic work limit. It has no worker deadline for patterns.
+
 Both local and server search split the query with the TypeScript text segmenter in `packages/morphology`.
 Each search index derives a component array for every headword that parses entirely as two or more cmavo.
 For example, `iseri'abo` has components `[i, se, ri'a, bo]`.
@@ -1221,6 +1262,8 @@ Optional fields are `snapshot`, `view`, `after`, `retired`, and `limit`.
 The first four use the same strings as GET. `limit` accepts a positive integer or its decimal string.
 Unknown fields and query parameters on a POST search return HTTP 400.
 Both search methods apply the same bounds, cursor rules, and result selection. Draft text stays in the POST body.
+Both methods accept the pattern syntax in section 4. `pattern_invalid` returns HTTP 400, and `pattern_timeout` returns HTTP 422.
+Neither error returns partial hits. The same limits apply on Node and Cloudflare.
 
 The POST /events body contains exactly `envelope` and `body`. Canonicalize the enclosed body and compare its hash and byte length before acceptance.
 Transport whitespace outside canonical objects does not alter signed bytes. The server preserves canonical signed meaning and never changes a field to make a signature pass.
@@ -1510,6 +1553,7 @@ An empty-string cursor is invalid. A request without a changes cursor starts fro
 Search accepts an optional `after` cursor tied to the same query, language, retired flag, view, and snapshot.
 
 Match kinds are `headword`, `gloss`, `sequence-exact`, `sequence-contiguous`, `headword-prefix`, `gloss-prefix`, `sequence-subsequence`, `token`, and `component`, in that relevance order.
+Pattern queries return only `headword-pattern` and `rafsi-pattern`, in that order, with stable word-ID order within each class.
 The `component` class uses the first uncovered occurrence of each query word before the stable word-ID tie break.
 New servers return `segmentation` on every page. Older servers can omit it.
 `complete` means that segmentation completed within its limits. It does not assert that every query run has a Lojban reading.

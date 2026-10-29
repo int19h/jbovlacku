@@ -2,6 +2,7 @@ import { initializeCore } from "../../../../packages/core/src/browser.ts";
 import {
   prepareIndex,
   searchMetrics,
+  PatternError,
 } from "../../../../packages/search/src/index.ts";
 import {
   localSearch,
@@ -65,8 +66,11 @@ self.onmessage = ({ data }) => {
       packages.delete(data.key);
       packages.set(data.key, stored);
       if (packages.size > 2) packages.delete(packages.keys().next().value!);
+      const options: PackageSearchOptions = data.options ?? {};
+      self.postMessage({ request: data.request, started: true });
       const hits: ReturnType<typeof localSearch>[] = data.queries.map(
-        (query: string) => localSearch(stored.pkg.entries, query, metrics),
+        (query: string) =>
+          localSearch(stored.pkg.entries, query, metrics, options.rafsiOnly),
       );
       const segmentation = hits.some(
         (rows: ReturnType<typeof localSearch>) =>
@@ -74,7 +78,6 @@ self.onmessage = ({ data }) => {
       )
         ? "limited"
         : "complete";
-      const options: PackageSearchOptions = data.options ?? {};
       const offset = Number.isSafeInteger(options.offset)
         ? Math.min(1000, Math.max(0, options.offset!))
         : 0;
@@ -92,6 +95,7 @@ self.onmessage = ({ data }) => {
             (event) => stored.events.get(event)!,
           ),
           preview: stored.events.get(hit.preview!.event)!,
+          ...(hit.matchingRafsi ? { rafsi: hit.matchingRafsi } : {}),
         })),
       );
       self.postMessage({
@@ -108,6 +112,7 @@ self.onmessage = ({ data }) => {
       self.postMessage({
         request: data.request,
         key: data.key,
+        ...(error instanceof PatternError ? { code: error.code } : {}),
         error: error instanceof Error ? error.message : String(error),
       });
     }

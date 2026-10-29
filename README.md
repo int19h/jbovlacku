@@ -93,6 +93,15 @@ The server prepares lexical indexes during package materialization, before compl
 Storage reads check durable revision markers, so same-snapshot changes and another tab's writes invalidate retained data.
 The [search specification](docs/frontend.md#4-search-and-reading) defines the bounds, ranking, and fallback rules.
 
+Local and server search also share bounded pattern matching in WebAssembly.
+`/.../` searches by an unanchored, case-insensitive regular expression. Globs use `*`, `?`, `@` for a vowel, and `$` for a consonant.
+Globs match the whole spelling. Literal `h` reads as an apostrophe. Matching ignores capitals and acute stress marks.
+Patterns return headword matches before retained rafsi matches, with stable word-ID order and the usual “show all” behavior.
+The rafsi page accepts the same patterns and keeps each matched assignment separate.
+Version 1 packages expose headword patterns only. Version 2 packages supply bounded rafsi metadata.
+The shared engine caps compilation and total input work. The browser also applies a worker deadline and supports cancellation.
+Invalid patterns and exhausted limits give explicit errors without partial results or a silent remote fallback.
+
 A download keeps its requested language even when the language selector changes before it finishes.
 Signing needs localhost or HTTPS. A plain HTTP Tailscale address supports reading only.
 

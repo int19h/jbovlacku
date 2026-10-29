@@ -666,6 +666,7 @@ export async function meaningPage(
         const found = await searchPackage(pkg, language, query.split(" "), {
           nearby: true,
           limit: 6,
+          signal: context.signal,
         });
         if (current()) renderHits(found.hits[0], "local");
         return;

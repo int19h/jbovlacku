@@ -1,4 +1,12 @@
 import { packageStorageKey } from "./store.ts";
+import {
+  isPatternQuery,
+  PatternError,
+} from "../../../../packages/search/src/index.ts";
+import {
+  PATTERN_TIMEOUT_MESSAGE,
+  PATTERN_WORKER_TIMEOUT_MS,
+} from "../../../../packages/search/src/pattern.ts";
 /** Saved-package validation and lexical work run in one static module worker. */
 import type { CachedPackage, LocalHit } from "./search.ts";
 import type {
@@ -17,6 +25,9 @@ export interface PackageSearchOptions {
   limit?: number;
   /** Rank all query lists together before selecting the nearby page. */
   nearby?: boolean;
+  /** Match retained rafsi spellings instead of headwords. */
+  rafsiOnly?: boolean;
+  signal?: AbortSignal;
 }
 /** References belong to the exact immutable package captured by the request. */
 export interface PackageHitReferences {
@@ -25,6 +36,7 @@ export interface PackageHitReferences {
   entries: number[];
   definitions: number[];
   preview: number;
+  rafsi?: string[];
 }
 export class PackageValidationError extends Error {}
 class MissingPackageError extends Error {}
@@ -39,6 +51,7 @@ interface Client {
         },
       ) => void;
       reject: (error: Error) => void;
+      started: () => void;
     }
   >;
 }
@@ -50,6 +63,15 @@ let requestId = 0,
   packageId = 0;
 const packageIds = new WeakMap<CachedPackage, number>();
 const retained: (string | number)[] = [];
+function stopWorker(current: Client, error: Error) {
+  current.worker.terminate();
+  for (const waiting of current.pending.values()) waiting.reject(error);
+  current.pending.clear();
+  if (client === current) {
+    retained.length = 0;
+    client = undefined;
+  }
+}
 function searchWorker(): Client {
   if (client) return client;
   const worker = new Worker(
@@ -60,6 +82,10 @@ function searchWorker(): Client {
   worker.onmessage = ({ data }) => {
     const waiting = current.pending.get(data.request);
     if (!waiting) return;
+    if (data.started) {
+      waiting.started();
+      return;
+    }
     current.pending.delete(data.request);
     if (data.error) {
       const index = retained.indexOf(data.key);
@@ -69,7 +95,9 @@ function searchWorker(): Client {
           ? new PackageValidationError(data.error)
           : data.code === "package-missing"
             ? new MissingPackageError(data.error)
-            : new Error(data.error),
+            : data.code === "pattern_timeout" || data.code === "pattern_invalid"
+              ? new PatternError(data.code, data.error)
+              : new Error(data.error),
       );
     } else {
       latest = { metrics: data.result.metrics, prepared: data.result.prepared };
@@ -77,14 +105,10 @@ function searchWorker(): Client {
     }
   };
   worker.onerror = () => {
-    for (const waiting of current.pending.values())
-      waiting.reject(
-        new Error("Local search could not start. Reload the page to retry."),
-      );
-    current.pending.clear();
-    worker.terminate();
-    retained.length = 0;
-    if (client === current) client = undefined;
+    stopWorker(
+      current,
+      new Error("Local search could not start. Reload the page to retry."),
+    );
   };
   client = current;
   return current;
@@ -96,11 +120,12 @@ export async function searchPackage(
   queries: string[],
   options: PackageSearchOptions = {},
 ): Promise<PackageSearchResult> {
+  options.signal?.throwIfAborted();
   if (!pkg || typeof pkg !== "object" || Array.isArray(pkg))
     throw new PackageValidationError(
       "The search package is invalid or exceeds the browser limit. Search this server or download another package.",
     );
-  const current = searchWorker();
+  const { signal, ...workerOptions } = options;
   let identity: string | number | undefined =
     packageStorageKey(pkg) ?? packageIds.get(pkg);
   if (identity === undefined) {
@@ -109,6 +134,8 @@ export async function searchPackage(
   }
   const key = JSON.stringify([language, identity]);
   const send = (force = false) => {
+    signal?.throwIfAborted();
+    const current = searchWorker();
     const prepare = force || !retained.includes(key);
     const index = retained.indexOf(key);
     if (index >= 0) retained.splice(index, 1);
@@ -118,17 +145,50 @@ export async function searchPackage(
     return new Promise<
       Omit<PackageSearchResult, "hits"> & { hits: PackageHitReferences[][] }
     >((resolve, reject) => {
-      current.pending.set(request, { resolve, reject });
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const clean = () => {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", abort);
+      };
+      const abort = () =>
+        stopWorker(
+          current,
+          new DOMException("Search was canceled.", "AbortError"),
+        );
+      current.pending.set(request, {
+        resolve(value) {
+          clean();
+          resolve(value);
+        },
+        reject(error) {
+          clean();
+          reject(error);
+        },
+        started() {
+          clearTimeout(timer);
+          if (queries.some(isPatternQuery))
+            timer = setTimeout(
+              () =>
+                stopWorker(
+                  current,
+                  new PatternError("pattern_timeout", PATTERN_TIMEOUT_MESSAGE),
+                ),
+              PATTERN_WORKER_TIMEOUT_MS,
+            );
+        },
+      });
+      signal?.addEventListener("abort", abort, { once: true });
       try {
         current.worker.postMessage({
           request,
           key,
           language,
           queries,
-          options,
+          options: workerOptions,
           ...(prepare ? { pkg } : {}),
         });
       } catch (error) {
+        clean();
         current.pending.delete(request);
         const index = retained.indexOf(key);
         if (index >= 0) retained.splice(index, 1);
@@ -164,6 +224,7 @@ export async function searchPackage(
               .join(""),
             status: "unavailable",
           },
+          ...(hit.rafsi ? { matchingRafsi: hit.rafsi } : {}),
         };
       }),
     ),
