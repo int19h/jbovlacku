@@ -1146,6 +1146,25 @@ test("explicit place limits fail before a provider request and preserve manual g
       [4, []],
     ],
   );
+  const indices = Array.from({ length: 17 }, (_, index) => index + 1);
+  const declared = draft("places-glosses", {
+    text: [indices],
+    frame: {
+      ...structuredClone(frame),
+      arity: { mode: "fixed", count: 17 },
+      places: indices.map((index) => ({
+        ...structuredClone(frame.places[0]),
+        index,
+        description: [],
+      })),
+    },
+  });
+  assert.doesNotThrow(() => parseAssistRequest(declared));
+  assert.deepEqual(
+    declared.current.frame!.places.map((place: any) => place.index),
+    indices,
+  );
+  assert.equal(calls, 0);
 });
 test("all operations return only permitted proposals and preserve non-English glosses", async () => {
   const cases: [AssistRequest, unknown[]][] = [

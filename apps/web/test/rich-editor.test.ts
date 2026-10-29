@@ -543,3 +543,45 @@ test("standalone biography and rafsi rationale expose the same editor", async ({
     page.getByRole("textbox", { name: "Rationale", exact: true }),
   ).toHaveAttribute("contenteditable", "true");
 });
+
+test("a fully declared manual frame with 17 places reaches Publish without AI", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  let requests = 0;
+  await page.route("**/api/v1/assist", async (route) => {
+    requests++;
+    await route.abort();
+  });
+  await seed(page);
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { newPlace } = await import(String("/src/model/draft.ts"));
+    const store = new LocalStore();
+    const draft = await store.get("drafts", "current");
+    const indices = Array.from({ length: 17 }, (_, index) => index + 1);
+    draft.frameMode = "fixed";
+    draft.places = indices.map((index) => newPlace(index));
+    draft.text = [indices.flatMap((index) => [index, " "])];
+    draft.numberingApproved = false;
+    await store.put("drafts", "current", draft);
+  });
+  await page.reload();
+  await expect(
+    page.getByRole("heading", {
+      name: "Are all 17 places needed?",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Approve the numbering", exact: true })
+    .click();
+  await page.getByRole("button", { name: "Review", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Publish as", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.locator("aside").getByRole("button", { name: "Publish", exact: true }),
+  ).toBeEnabled();
+  expect(requests).toBe(0);
+});
