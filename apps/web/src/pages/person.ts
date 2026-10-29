@@ -804,6 +804,8 @@ async function reportDialog(app: App, subject: string, opener: HTMLElement) {
       "Sign and publish the report",
       async () => {
         dialog.close("signed");
+        // The disclosure needs an opener that survives the queued close event.
+        if (opener.isConnected) opener.focus();
         await app.session.requireUnlocked(
           `Reporting ${subject.slice(8, 16)}`,
           async () => {
