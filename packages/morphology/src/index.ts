@@ -3,6 +3,7 @@ export {
   TEXT_BYTE_LIMIT,
   TEXT_WORK_LIMIT,
   TEXT_RUN_LIMIT,
+  TEXT_RUN_LIMIT_MAX,
 } from "./text.ts";
 export type {
   TextSegmentation,

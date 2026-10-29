@@ -322,15 +322,6 @@ test("authenticated rediscovery restores signing and shows its notice once acros
     const { LocalStore } = await import(String("/src/data/store.ts"));
     return (await new LocalStore().list("outbox"))[0];
   });
-  // Admission can precede the completed snapshot that supplies identity heads.
-  await expect
-    .poll(async () => {
-      const response = await page.request.get(
-        `/api/v1/identity-heads/${encodeURIComponent(saved.identity)}?limit=256`,
-      );
-      return (await response.json()).heads ?? [];
-    })
-    .toContain(saved.id);
   page.once("dialog", (dialog) => void dialog.accept());
   await page.getByRole("button", { name: "Discard", exact: true }).click();
   await expect(page.getByText("No unfinished records.")).toBeVisible();
@@ -341,6 +332,25 @@ test("authenticated rediscovery restores signing and shows its notice once acros
     }, saved.id),
   ).toBe(true);
   await page.unroute("**/api/v1/events");
+  // Signing reads the completed manifest snapshot, not unpinned accepted heads.
+  await expect
+    .poll(async () => {
+      const manifestResponse = await page.request.get("/api/v1/manifest");
+      expect(manifestResponse.ok()).toBe(true);
+      const { snapshot } = await manifestResponse.json();
+      const response = await page.request.get(
+        `/api/v1/identity-heads/${encodeURIComponent(saved.identity)}?limit=256&snapshot=${encodeURIComponent(snapshot)}`,
+      );
+      if (response.status() === 410) {
+        expect((await response.json()).code).toBe("snapshot_expired");
+        return [];
+      }
+      expect(response.ok()).toBe(true);
+      const heads = await response.json();
+      expect(heads.snapshot).toBe(snapshot);
+      return heads.heads ?? [];
+    })
+    .toContain(saved.id);
   // The next ordinary public action loads authenticated server history and signs after it.
   await openWord(page, "ckusro");
   await page

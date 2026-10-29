@@ -597,9 +597,12 @@ export function forgetWord(id: string) {
 const validCursor = (value: unknown): value is string =>
   typeof value === "string" && value.length > 0 && value.length <= 512;
 export function validateHits(hits: unknown, pageLimit: number): SearchHit[] {
+  if (Array.isArray(hits) && hits.length > pageLimit)
+    throw new Error(
+      "Search pagination returned too many results. Start a new search to retry.",
+    );
   if (
     !Array.isArray(hits) ||
-    hits.length > pageLimit ||
     !hits.every(
       (hit) =>
         isObject(hit) &&
@@ -673,7 +676,12 @@ export async function remoteSearch(
     !eventId(result.view) ||
     (context &&
       (result.snapshot !== context.snapshot || result.view !== context.view)) ||
-    !(result.next === null || validCursor(result.next))
+    !(result.next === null || validCursor(result.next)) ||
+    !(
+      result.segmentation === undefined ||
+      result.segmentation === "complete" ||
+      result.segmentation === "limited"
+    )
   )
     throw new Error(
       "The server returned an invalid search page. Start a new search to retry.",
@@ -686,6 +694,9 @@ export async function remoteSearch(
     language,
     hits,
     next: result.next as string | null,
+    ...(result.segmentation === undefined
+      ? {}
+      : { segmentation: result.segmentation as "complete" | "limited" }),
   };
 }
 export interface IdentityHeadsPage {

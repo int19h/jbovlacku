@@ -109,7 +109,7 @@ async function addCompetingClaimFixture(page: Page) {
   return page.evaluate(
     () =>
       new Promise<string[]>((resolve, reject) => {
-        const request = indexedDB.open("jbovlacku-browser-v1", 3);
+        const request = indexedDB.open("jbovlacku-browser-v1");
         request.onerror = () => reject(request.error);
         request.onsuccess = () => {
           const db = request.result;
@@ -675,7 +675,7 @@ for (const viewport of [
       await page.evaluate(
         () =>
           new Promise<void>((resolve, reject) => {
-            const request = indexedDB.open("jbovlacku-browser-v1", 3);
+            const request = indexedDB.open("jbovlacku-browser-v1");
             request.onerror = () => reject(request.error);
             request.onsuccess = () => {
               const db = request.result;
@@ -1302,7 +1302,7 @@ for (const viewport of [
       await page.evaluate(
         () =>
           new Promise<void>((resolve, reject) => {
-            const request = indexedDB.open("jbovlacku-browser-v1", 3);
+            const request = indexedDB.open("jbovlacku-browser-v1");
             request.onerror = () => reject(request.error);
             request.onsuccess = () => {
               const db = request.result;
@@ -1558,7 +1558,7 @@ for (const viewport of [
             successor: string;
             signedAt: number;
           }>((resolve, reject) => {
-            const request = indexedDB.open("jbovlacku-browser-v1", 3);
+            const request = indexedDB.open("jbovlacku-browser-v1");
             request.onerror = () => reject(request.error);
             request.onsuccess = () => {
               const db = request.result;
@@ -1597,7 +1597,7 @@ for (const viewport of [
       await page.evaluate(
         (record) =>
           new Promise<void>((resolve, reject) => {
-            const request = indexedDB.open("jbovlacku-browser-v1", 3);
+            const request = indexedDB.open("jbovlacku-browser-v1");
             request.onerror = () => reject(request.error);
             request.onsuccess = () => {
               const db = request.result;

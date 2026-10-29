@@ -1,4 +1,5 @@
 import { placeGlyph } from "../../core/src/place-glyphs.ts";
+import { prepareIndex, type SearchMetrics } from "../../search/src/index.ts";
 import {
   canonicalize,
   contentHash,
@@ -64,6 +65,24 @@ export interface MaterializedPackages {
   /** Version 2 packages by language. */
   packages2: Record<string, MaterializedPackage>;
 }
+export interface SearchPreparation {
+  metrics?: SearchMetrics;
+  start?(): void;
+  finish?(): void;
+}
+/** Complete the derived lexical index before a package becomes readable. */
+export function preparePackageSearch<T extends MaterializedPackages>(
+  packages: T,
+  measurement?: SearchPreparation,
+): T {
+  measurement?.start?.();
+  try {
+    prepareIndex(packages.entries, measurement?.metrics);
+  } finally {
+    measurement?.finish?.();
+  }
+  return packages;
+}
 export interface PackageRecord extends EvaluationPackageRecord {
   envelope_hash: string;
   missing: boolean;
@@ -88,9 +107,7 @@ export function plainDefinitionText(value: unknown): string {
         .map((node) => {
           if (typeof node === "string") return node;
           if (typeof node === "number" && Number.isInteger(node) && node > 0)
-            return node <= 50
-              ? placeGlyph(node)
-              : `[place ${node}]`;
+            return node <= 50 ? placeGlyph(node) : `[place ${node}]`;
           if (node && typeof node === "object" && !Array.isArray(node)) {
             if (typeof node.label === "string") return node.label;
             if (typeof node.code === "string") return node.code;
@@ -112,6 +129,7 @@ export async function buildPackages(
   reuse?: { previous: MaterializedPackages; changed: PackageRecord[] },
   trustedHostRecords = false,
   effectiveDefinitions?: string[] | null,
+  searchPreparation?: SearchPreparation,
 ): Promise<MaterializedPackages> {
   const entries: SearchEntry[] = [];
   const entries2: SearchEntryV2[] = [];
@@ -371,12 +389,15 @@ export async function buildPackages(
     }
     return packages;
   };
-  return {
-    entries,
-    ...(effectiveDefinitions !== undefined ? { effectiveDefinitions } : {}),
-    packages: await build(entries, 1),
-    packages2: await build(entries2, 2),
-  };
+  return preparePackageSearch(
+    {
+      entries,
+      ...(effectiveDefinitions !== undefined ? { effectiveDefinitions } : {}),
+      packages: await build(entries, 1),
+      packages2: await build(entries2, 2),
+    },
+    searchPreparation,
+  );
 }
 
 async function rebasePackage(
@@ -416,9 +437,9 @@ export async function rebasePackages(
     8,
   ))
     job.result[job.language] = result;
-  return {
+  return preparePackageSearch({
     ...previous,
     packages,
     packages2,
-  };
+  });
 }

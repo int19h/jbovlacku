@@ -582,7 +582,6 @@ test("Use this word replaces a typed lujvo with fresh analysis", async ({
         plain_text: index === 0 ? "Synthetic meaning." : "Synthetic.",
         classification: { kind: "lujvo", selmaho: [] },
         body: null,
-        notes: false,
       })),
     });
   });

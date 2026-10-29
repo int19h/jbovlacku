@@ -68,7 +68,8 @@ for (const surface of ["word", "search"] as const)
     });
     await retry.focus();
     await page.keyboard.press("Enter");
-    await expect(main.locator(".notice")).toHaveCount(1);
+    await expect(main.locator(".notice:visible")).toHaveCount(1);
+    await expect(main).not.toContainText("Still unavailable after retry");
     expect(requests).toBe(1);
     await page.evaluate(async () => {
       const { setNavigationGuard } = await import(String("/src/app/router.ts"));

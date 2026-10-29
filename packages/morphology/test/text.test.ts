@@ -108,3 +108,14 @@ test("text mode keeps magic words ordinary and rejects false CgV warnings", () =
   assert.ok(parsed.words.every(({ diagnostics }) => diagnostics.length === 0));
   assert.deepEqual(parsed.foreign, []);
 });
+
+test("search can explicitly segment full-size headwords without raising the text default", () => {
+  const input = "ba".repeat(128);
+  assert.throws(() => segmentText(input), /text run phonemes/);
+  assert.equal(segmentText(input, { runLimit: 256 }).words.length, 128);
+  assert.throws(() => segmentText(input, { runLimit: 257 }), /text run limit/);
+  assert.throws(
+    () => segmentText(input, { runLimit: -1 }),
+    /nonnegative safe integers/,
+  );
+});
