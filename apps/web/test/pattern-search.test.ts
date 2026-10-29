@@ -31,7 +31,7 @@ async function fixture(page: Page) {
         "baba",
         "ba'i",
         "dján",
-        "cukta",
+        "patternz",
       ].map((spelling) =>
         signed(
           {
@@ -54,12 +54,12 @@ async function fixture(page: Page) {
         signed(
           {
             kind: "rafsi.publish",
-            word: core.wordId(word("cukta")),
-            assignment: core.rafsiPairId(core.wordId(word("cukta")), rafsi),
+            word: core.wordId(word("patternz")),
+            assignment: core.rafsiPairId(core.wordId(word("patternz")), rafsi),
             origin: "native",
           },
           {
-            word: word("cukta"),
+            word: word("patternz"),
             rafsi,
             rationale: [],
             sources: [],
@@ -157,7 +157,10 @@ test("browser and server agree on every headword and rafsi pattern and preserve 
         const rafsi = await searchPackage(pkg, language, [q], {
           rafsiOnly: true,
         });
-        if (queries.includes(q) && rafsi.hits[0][0]?.word.spelling !== "cukta")
+        if (
+          queries.includes(q) &&
+          rafsi.hits[0][0]?.word.spelling !== "patternz"
+        )
           throw new Error("Rafsi pattern missed its word.");
       }
       const { LocalStore } = await import(String("/src/data/store.ts"));
