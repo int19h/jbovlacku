@@ -358,7 +358,6 @@ export async function searchPage(
     });
     const status = el("p", {
       class: "count",
-      role: "status",
       "aria-live": "polite",
     });
     const rows = el("div");
@@ -464,7 +463,10 @@ export async function searchPage(
       (sum, group) => sum + (cached ? group.total : group.hits.length),
       0,
     );
-    count.textContent = `${total}${!cached && Object.values(groups).some((group) => group.next) ? " or more" : ""} ${pattern ? "Lojban" : "word and definition"} ${total === 1 ? "result" : "results"}`;
+    const activeGroups = pattern ? [groups.lojban] : Object.values(groups);
+    count.textContent = activeGroups.every((group) => !group.loaded)
+      ? "Search results are unavailable."
+      : `${total}${!cached && activeGroups.some((group) => !group.loaded || group.next) ? " or more" : ""} ${pattern ? "Lojban" : "word and definition"} ${total === 1 ? "result" : "results"}`;
     for (const [key, group] of Object.entries(groups) as [
       SearchGroup,
       typeof groups.lojban,
@@ -474,7 +476,9 @@ export async function searchPage(
         : group.next
           ? null
           : 0;
-      group.status.textContent = `${group.hits.length}${remaining === null ? " or more" : ""} ${key === "lojban" ? "Lojban" : "definition"} ${group.hits.length === 1 && remaining !== null ? "result" : "results"} shown.`;
+      group.status.textContent = !group.loaded
+        ? "Results are unavailable."
+        : `${group.hits.length}${remaining === null ? " or more" : ""} ${key === "lojban" ? "Lojban" : "definition"} ${group.hits.length === 1 && remaining !== null ? "result" : "results"} shown.`;
       group.end.replaceChildren();
       if (remaining === null || remaining > 0) {
         group.end.append(
@@ -543,8 +547,10 @@ export async function searchPage(
         "notice",
       ),
     );
-    if (!retry.querySelector("button"))
+    if (!retry.querySelector("button")) {
+      retry.replaceChildren();
       appendReadRetry(retry, error, context, app.announce);
+    }
   };
   const loadNext = async (key: SearchGroup, all = false) => {
     const group = groups[key];
@@ -657,7 +663,9 @@ export async function searchPage(
     view = saved.view;
     allLojban = cached ? (initialLocal?.allLojban ?? false) : saved.allLojban;
     segmentation = cached ? initialLocal?.segmentation : saved.segmentation;
-    for (const key of ["lojban", "definitions"] as const) {
+    for (const key of pattern
+      ? (["lojban"] as const)
+      : (["lojban", "definitions"] as const)) {
       const group = groups[key];
       group.next = saved.groups[key].next;
       group.cursors = new Set(saved.groups[key].cursors);
@@ -684,6 +692,8 @@ export async function searchPage(
         await loadNext(key);
       } catch (error) {
         if (context.live()) showError(key, error);
+        // The first remote page must establish one snapshot before other groups read it.
+        if (!cached && !snapshot) break;
       }
       if (!context.live()) return;
     }
@@ -692,7 +702,11 @@ export async function searchPage(
   results.setAttribute("aria-busy", "false");
   refresh();
   for (const group of Object.values(groups)) {
-    if (!group.hits.length && !group.rows.querySelector(".notice"))
+    if (
+      group.loaded &&
+      !group.hits.length &&
+      !group.rows.querySelector(".notice")
+    )
       group.rows.append(p("No matches in this group.", "small"));
   }
   if (!pattern)

@@ -51,10 +51,8 @@ test("one local box orders known Lojban and English queries and keeps group page
   const definitions = group(page, "Definitions");
   await expect(words.locator("article")).toHaveCount(20);
   await expect(definitions.locator("article")).toHaveCount(20);
-  await expect(words.getByRole("status")).toHaveText(
-    "20 Lojban results shown.",
-  );
-  await expect(definitions.getByRole("status")).toHaveAttribute(
+  await expect(words.locator(".count")).toHaveText("20 Lojban results shown.");
+  await expect(definitions.locator(".count")).toHaveAttribute(
     "aria-live",
     "polite",
   );
