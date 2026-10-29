@@ -10,6 +10,7 @@ import {
   placeInputPlugins,
   richToEditor,
   richValue,
+  deleteRichBackward,
 } from "../../src/model/rich-editor.ts";
 import {
   PLACE_GLYPHS,
@@ -69,6 +70,35 @@ test("legacy plain-string imports omit empty paragraphs and keep stored arrays e
   ];
   assert.equal(richValue(stored), stored);
   assert.deepEqual(richValue(stored), stored);
+});
+
+test("boundary Backspace deletes grapheme clusters and preserves neighboring nodes", () => {
+  let state = EditorState.create({
+    doc: richToEditor([
+      [
+        { code: "keep\r\n\r\nexact" },
+        { word: { language: "jbo", spelling: "cukta" }, label: "e\u0301🙂" },
+      ],
+    ]),
+  });
+  state = state.apply(state.tr.setSelection(TextSelection.atEnd(state.doc)));
+  const dispatch = (tr: ReturnType<EditorState["tr"]["insertText"]>) => {
+    state = state.applyTransaction(tr).state;
+  };
+  assert.equal(deleteRichBackward(state, dispatch), true);
+  assert.deepEqual(editorToRich(state.doc), [
+    [
+      { code: "keep\r\n\r\nexact" },
+      { word: { language: "jbo", spelling: "cukta" }, label: "e\u0301" },
+    ],
+  ]);
+  assert.equal(deleteRichBackward(state, dispatch), true);
+  assert.deepEqual(editorToRich(state.doc), [
+    [
+      { code: "keep\r\n\r\nexact" },
+      { word: { language: "jbo", spelling: "cukta" }, label: "" },
+    ],
+  ]);
 });
 
 test("random stored rich values round trip exactly with a fixed seed", () => {
@@ -258,6 +288,18 @@ test("deleting after literal paste and canceling composition never converts old 
     h.dispatch(h.state.tr.insertText(token + " ").setMeta("uiEvent", "paste"));
     const end = h.state.selection.from;
     h.dispatch(h.state.tr.delete(end - 1, end));
+    assert.deepEqual(editorToRich(h.state.doc), [[token]]);
+    const reparsed = richToEditor([[token]]);
+    h.dispatch(h.state.tr.insertText(" ").setMeta("uiEvent", "paste"));
+    const deletion = h.state.tr.replaceWith(
+      0,
+      h.state.doc.content.size,
+      reparsed.content,
+    );
+    deletion.setSelection(
+      TextSelection.create(deletion.doc, deletion.doc.content.size - 2),
+    );
+    h.dispatch(deletion);
     assert.deepEqual(editorToRich(h.state.doc), [[token]]);
     h.dispatch(h.state.tr.setMeta("richCompositionStart", true));
     h.dispatch(h.state.tr.setMeta("richCompositionEnd", true));

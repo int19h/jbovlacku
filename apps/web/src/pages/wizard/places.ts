@@ -1197,6 +1197,7 @@ export async function placesPage(
   };
   const rebuildHooks: (() => void)[] = [];
   const renderPlaces = () => {
+    syncMirrors();
     refreshArity();
     refreshPlaceAdvice();
     for (const hook of rebuildHooks) hook();

@@ -1,5 +1,5 @@
 /** Direct mappings keep every stored inline node and paragraph boundary. */
-import { Schema, type Node as EditorNode } from "prosemirror-model";
+import { Schema, type Node as EditorNode, type Slice } from "prosemirror-model";
 import {
   EditorState,
   Plugin,
@@ -25,7 +25,7 @@ export const richEditorSchema = new Schema({
     paragraph: { content: "inline*", whitespace: "pre", toDOM: () => ["p", 0] },
     text: { group: "inline" },
     // Containers preserve boundaries between adjacent stored strings.
-    literal: inlineText("span", "rich-literal"),
+    literal: { ...inlineText("span", "rich-literal"), selectable: false },
     place: {
       inline: true,
       group: "inline",
@@ -221,6 +221,34 @@ export function replaceInline(
   return state.tr.replaceWith(from, to, node);
 }
 
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+/** Delete one character cluster without selecting a whole inline container. */
+export function deleteRichBackward(
+  state: EditorState,
+  dispatch?: (tr: Transaction) => void,
+): boolean {
+  if (!state.selection.empty) return false;
+  let $cursor = state.selection.$from;
+  if (!$cursor.nodeBefore && $cursor.parent.isInline)
+    $cursor = state.doc.resolve($cursor.before());
+  const previous = $cursor.nodeBefore;
+  if (!previous) return false;
+  let end = $cursor.pos;
+  let source: string;
+  if (previous.isText) source = previous.text!;
+  else if (previous.isInline && !previous.isAtom && previous.textContent) {
+    source = previous.textContent;
+    end--;
+  } else return false;
+  const last = graphemes.segment(source).containing(source.length - 1)?.segment;
+  if (!last) return false;
+  const from = end - last.length;
+  const tr = state.tr.delete(from, end);
+  tr.setSelection(TextSelection.near(tr.doc.resolve(from), -1));
+  dispatch?.(tr.scrollIntoView());
+  return true;
+}
+
 const rulePattern = new RegExp(
   `(__([1-9]|[1-4][0-9]|50)__|___|[${CIRCLED_SOURCE}])$`,
   "u",
@@ -230,9 +258,25 @@ export interface PlaceRuleOptions {
   composing?: () => boolean;
 }
 function insertedContent(transaction: Transaction): boolean {
-  return transaction.steps.some((step) => {
-    const slice = (step as { slice?: { size: number } }).slice;
-    return (slice?.size ?? 0) > 0;
+  return transaction.steps.some((step, index) => {
+    const { slice, from, to } = step as {
+      slice?: Slice;
+      from?: number;
+      to?: number;
+    };
+    if (!slice?.size || from === undefined || to === undefined) return false;
+    const inserted = slice.content.textBetween(
+      0,
+      slice.content.size,
+      "",
+      "\ufffc",
+    );
+    const removed = transaction.docs[index].textBetween(from, to, "", "\ufffc");
+    // DOM deletion may replace a whole container with its remaining text.
+    let matched = 0;
+    for (let offset = 0; offset < removed.length; offset++)
+      if (removed[offset] === inserted[matched]) matched++;
+    return matched < inserted.length;
   });
 }
 interface CompositionState {

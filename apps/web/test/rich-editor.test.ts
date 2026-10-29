@@ -15,16 +15,16 @@ async function seed(page: Page, fields = false) {
         { url: "https://example.org/", label: " label\n\nlast " },
       ],
     ];
-    const place = newPlace(1);
     const draft = newDraft({
       spelling: "broda",
       kind: "gismu",
       meaning: "A private test meaning.",
       text: [],
       frameMode: "context",
-      places: [place, newPlace(4)],
+      places: [newPlace(1), newPlace(4)],
       step: 4,
     });
+    const place = draft.places[0];
     if (fields) {
       draft.text = value;
       draft.notes = value;
@@ -442,6 +442,20 @@ test("Backspace and canceled composition keep old pasted tokens literal", async 
   }
 });
 
+test("boundary Backspace preserves emoji and combining characters as whole clusters", async ({
+  page,
+}) => {
+  await seed(page);
+  const field = editor(page);
+  await paste(field, "🙂e\u0301 ");
+  await field.press("Backspace");
+  expect(await nodes(field)).toEqual([["🙂e\u0301"]]);
+  await field.press("Backspace");
+  expect(await nodes(field)).toEqual([["🙂"]]);
+  await field.press("Backspace");
+  expect(await nodes(field)).toEqual([]);
+});
+
 test("literal mode preserves typed numbers and keeps code and links while editing", async ({
   page,
 }) => {
@@ -642,7 +656,7 @@ test("a fully declared manual frame with 17 places reaches Publish without AI", 
     .click();
   await page.getByRole("button", { name: "Review", exact: true }).click();
   await expect(
-    page.getByRole("heading", { name: "Publish as", exact: true }),
+    page.getByRole("heading", { name: /^Publish as / }),
   ).toBeVisible();
   await expect(
     page.locator("aside").getByRole("button", { name: "Publish", exact: true }),

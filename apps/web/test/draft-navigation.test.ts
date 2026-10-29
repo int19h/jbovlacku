@@ -112,13 +112,15 @@ for (const action of ["Back", "Add a word"] as const) {
         await expect(page).toHaveURL(
           action === "Back" ? /\/new\/editor$/ : /\/new\/meaning$/,
         );
-        await expectRichText(
-          page.getByRole("textbox", {
-            name: action === "Back" ? "Definition text" : "Meaning",
-            exact: true,
-          }),
-          action === "Back" ? before.editorText : before.current.meaning,
-        );
+        if (action === "Back")
+          await expectRichText(
+            page.getByRole("textbox", { name: "Definition text", exact: true }),
+            before.editorText,
+          );
+        else
+          await expect(
+            page.getByRole("textbox", { name: "Meaning", exact: true }),
+          ).toHaveValue(before.current.meaning);
         await page.evaluate(() => {
           const replace = history.replaceState.bind(history);
           (window as any).__staleUrlWrites = [];

@@ -196,7 +196,7 @@ test("accepted source notes stay editable with AI off and every signed field rea
     notes,
     "Sense: work 1\n\nNote: first line 1\nsecond line\n\nlast line",
   );
-  await expect(notes).toHaveJSProperty("tagName", "TEXTAREA");
+  await expect(notes).toHaveAttribute("contenteditable", "true");
   await page
     .getByRole("button", { name: "Suggest again", exact: true })
     .click();

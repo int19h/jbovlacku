@@ -1,6 +1,6 @@
 /** One accessible editor per rich field. The draft owns its RichText value. */
 import { Slice } from "prosemirror-model";
-import { EditorState, TextSelection } from "prosemirror-state";
+import { EditorState, Plugin, TextSelection } from "prosemirror-state";
 import { EditorView } from "prosemirror-view";
 import { baseKeymap } from "prosemirror-commands";
 import { history, undo, redo } from "prosemirror-history";
@@ -11,6 +11,7 @@ import { onDisconnect } from "../lib/lifetime.ts";
 import { CIRCLED, placeGlyph } from "../model/place-glyphs.ts";
 import {
   editorToRich,
+  deleteRichBackward,
   pastedRichText,
   placeInputPlugins,
   replaceInline,
@@ -83,6 +84,30 @@ export function richField(label: string, options: RichFieldOptions) {
       doc: richToEditor(current),
       plugins: [
         ...rulePlugins,
+        new Plugin({
+          props: {
+            handleTextInput(view, from, to, value) {
+              if (view.composing) return false;
+              const { selection } = view.state;
+              const previous = selection.$from.nodeBefore;
+              // Native DOM input can inherit the previous code or link style.
+              if (
+                selection.empty &&
+                selection.$from.parent.isTextblock &&
+                previous?.isInline &&
+                !previous.isText &&
+                !previous.isAtom &&
+                from === to &&
+                to === selection.from - 1
+              )
+                from = to = selection.from;
+              view.dispatch(
+                view.state.tr.insertText(value, from, to).scrollIntoView(),
+              );
+              return true;
+            },
+          },
+        }),
         history(),
         keymap({
           "Mod-End": (state, dispatch) => {
@@ -122,7 +147,7 @@ export function richField(label: string, options: RichFieldOptions) {
             undoInputRule(
               state,
               dispatch && ((tr) => dispatch(tr.setMeta("richRuleUndo", true))),
-            ),
+            ) || deleteRichBackward(state, dispatch),
           "Mod-z": (state, dispatch) =>
             undo(
               state,
@@ -143,8 +168,16 @@ export function richField(label: string, options: RichFieldOptions) {
       ],
     });
   const placeControls: (HTMLButtonElement | HTMLSelectElement)[] = [];
+  let placeMenu: HTMLSelectElement | undefined;
   const syncMode = () => {
     for (const control of placeControls) control.disabled = !enabled();
+    if (placeMenu) {
+      const declared = new Set(options.places?.() ?? []);
+      for (const option of placeMenu.options) {
+        const label = `Place ${option.value}${declared.has(Number(option.value)) ? " (declared)" : ""}`;
+        if (option.textContent !== label) option.textContent = label;
+      }
+    }
   };
   view = new EditorView(host, {
     state: state(),
@@ -241,10 +274,8 @@ export function richField(label: string, options: RichFieldOptions) {
       wrapperClass: "rich-place-menu",
       labelClass: "sr",
     });
-    place.input.addEventListener("focus", () => {
-      for (const option of place.input.options)
-        option.textContent = `Place ${option.value}${options.places?.().includes(Number(option.value)) ? " (declared)" : ""}`;
-    });
+    placeMenu = place.input;
+    place.input.addEventListener("focus", syncMode);
     const apply = button(
       "Insert selected place",
       () => addPlace(Number(place.input.value)),
@@ -442,6 +473,7 @@ export function richField(label: string, options: RichFieldOptions) {
     const tr = view.state.tr
       .replaceSelection(new Slice(doc.content, 1, 1))
       .setMeta("uiEvent", "paste");
+    tr.setSelection(TextSelection.near(tr.doc.resolve(tr.selection.to), -1));
     view.dispatch(tr.scrollIntoView());
     view.focus();
   }

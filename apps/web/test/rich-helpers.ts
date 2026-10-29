@@ -38,7 +38,8 @@ export async function setRichNodes(field: Locator, value: RichText) {
 }
 /** Type paragraph breaks and inline newlines through the editor's keys. */
 export async function typeRichText(field: Locator, value: string) {
-  await field.fill("");
+  await field.press("Control+a");
+  await field.press("Backspace");
   const paragraphs = value.split("\n\n");
   for (const [index, paragraph] of paragraphs.entries()) {
     if (index) await field.press("Enter");
