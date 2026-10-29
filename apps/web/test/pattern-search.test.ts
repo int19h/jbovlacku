@@ -155,10 +155,65 @@ test("browser and server agree on every headword and rafsi pattern and preserve 
       );
       const pkg = await downloadPackage(language);
       const rows = [];
+      const attempts: {
+        query: string;
+        attempt: number;
+        status: number;
+        body?: unknown;
+      }[] = [];
+      const readRemote = async (q: string) => {
+        // Resource refusal is possible on the shared VM. Keep three attempts,
+        // with no retry for syntax errors, server failures, or malformed data.
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          const response = await fetch(
+            `/api/v1/search?${new URLSearchParams({ q, language })}`,
+          );
+          const text = await response.text();
+          let body: any;
+          try {
+            body = JSON.parse(text);
+          } catch {
+            throw new Error(
+              JSON.stringify({ q, status: response.status, text, attempts }),
+            );
+          }
+          attempts.push({
+            query: q,
+            attempt,
+            status: response.status,
+            ...(response.status === 200 ? {} : { body }),
+          });
+          if (response.status === 200) {
+            if (!body || !Array.isArray(body.hits) || body.code !== undefined)
+              throw new Error(
+                JSON.stringify({ q, status: response.status, body, attempts }),
+              );
+            return body;
+          }
+          if (
+            response.status !== 422 ||
+            !body ||
+            body.code !== "pattern_timeout" ||
+            typeof body.message !== "string" ||
+            Object.hasOwn(body, "hits")
+          )
+            throw new Error(
+              JSON.stringify({ q, status: response.status, body, attempts }),
+            );
+          if (attempt < 3)
+            await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+        throw new Error(
+          JSON.stringify({
+            q,
+            message:
+              "Pattern parity exhausted three resource-limited attempts.",
+            attempts,
+          }),
+        );
+      };
       for (const q of [...queries, "/^PÁTTERNDJAN$/", "/hi$/", "/\\D+/"]) {
-        const remote = await (
-          await fetch(`/api/v1/search?${new URLSearchParams({ q, language })}`)
-        ).json();
+        const remote = await readRemote(q);
         const local = await searchPackage(pkg, language, [q]);
         const key = (hit: any) => [
           hit.word_id,
@@ -182,11 +237,18 @@ test("browser and server agree on every headword and rafsi pattern and preserve 
       }
       const { LocalStore } = await import(String("/src/data/store.ts"));
       await new LocalStore().put("packages", language, pkg);
-      return rows;
+      return { rows, attempts };
     },
     { language, queries },
   );
-  for (const result of compared)
+  await test
+    .info()
+    .attach("server-pattern-attempts.json", {
+      body: JSON.stringify(compared.attempts, null, 2),
+      contentType: "application/json",
+    });
+  console.log("Server pattern attempts:", JSON.stringify(compared.attempts));
+  for (const result of compared.rows)
     expect(result.local, result.q).toEqual(result.remote);
   await page.goto(
     `/search?${new URLSearchParams({ q: "/^PÁTTERNDJAN$/", lang: language })}`,
