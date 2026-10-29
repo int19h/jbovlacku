@@ -60,6 +60,24 @@ async function clickMiddle(page: Page, field: Locator) {
     });
   await page.mouse.click(point.x, point.y);
 }
+async function movedDescription(page: Page) {
+  await seed(page);
+  const field = page.getByRole("textbox", {
+    name: "Description for place 1",
+    exact: true,
+  });
+  await field.evaluate((node: any) => {
+    node.value = [["hello world"]];
+    node.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await field.press("Control+End");
+  const retained = await field.elementHandle();
+  await page
+    .getByRole("button", { name: "+ Add a place", exact: true })
+    .click();
+  expect(await retained!.evaluate((node) => node.isConnected)).toBe(true);
+  return field;
+}
 
 test("r3 pointer focus keeps the clicked caret in an unfocused editor", async ({
   page,
@@ -74,6 +92,10 @@ test("r3 pointer focus keeps the clicked caret in an unfocused editor", async ({
   await clickMiddle(page, field);
   await page.keyboard.type("Y");
   expect(await richNodes(field)).toEqual([["hello YXworld"]]);
+  const moved = await movedDescription(page);
+  await clickMiddle(page, moved);
+  await page.keyboard.type("X");
+  expect(await richNodes(moved)).toEqual([["hello Xworld"]]);
 });
 
 test("r3 a native selection chosen before focus stays at its requested offset", async ({
@@ -95,6 +117,23 @@ test("r3 a native selection chosen before focus stays at its requested offset", 
   });
   await page.keyboard.type("X");
   expect(await richNodes(field)).toEqual([["hello Xworld"]]);
+  for (const offset of [0, 6]) {
+    const moved = await movedDescription(page);
+    await moved.evaluate((node, offset) => {
+      const range = document.createRange();
+      range.setStart(node.querySelector(".rich-literal")!.firstChild!, offset);
+      range.collapse(true);
+      const selection = document.getSelection()!;
+      selection.removeAllRanges();
+      selection.addRange(range);
+      (node as HTMLElement).focus();
+      document.dispatchEvent(new Event("selectionchange"));
+    }, offset);
+    await page.keyboard.type("X");
+    expect(await richNodes(moved)).toEqual([
+      ["hello world".slice(0, offset) + "X" + "hello world".slice(offset)],
+    ]);
+  }
 });
 
 test("r3 live blank paragraphs stay editable while getters, saved drafts, and publication omit them", async ({
