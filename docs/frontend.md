@@ -561,6 +561,7 @@ Repeated references can name the same place. Textual order does not determine fi
 Each rich field uses an accessible editor over the stored node tree. Places and operands are inline chips. Code, word links, and web links are separate inline nodes.
 The toolbar provides places 1 to 3 directly and places 4 to 50 in a dropdown. The dropdown identifies declared places.
 Link a word, Web link, and Insert code open labeled dialogs. A word link retains its word type even when its spelling starts with `https://`.
+Web links require HTTPS addresses that [URL parsing](https://url.spec.whatwg.org/#concept-basic-url-parser) accepts.
 The editor preserves adjacent nodes, empty labels, paragraph boundaries, and every unchanged field. Text needs no markup or escapes.
 Typed TeX backslashes, brackets, braces, and backticks stay literal. A backslash before a typed place stays literal beside the place chip.
 
