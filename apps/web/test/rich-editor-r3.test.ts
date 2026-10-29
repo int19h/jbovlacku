@@ -206,6 +206,64 @@ test("r3 each Backspace past an emptied literal changes visible text", async ({
   expect(await richNodes(field)).toEqual([["keep ", { code: "a" }]]);
 });
 
+test("r3 outside typing preserves raw CR and CRLF while explicit newline edits and undo still work", async ({
+  page,
+}) => {
+  const exact: RichText = [
+    [
+      { code: "keep\r\n\r\nexact" },
+      { word: { language: "jbo", spelling: "cukta" }, label: "word\r\nlabel" },
+      { url: "https://example.org/", label: "keep\r\rexact " },
+    ],
+  ];
+  const field = await mount(page, exact);
+  await field.press("Control+End");
+  await field.pressSequentially("㊿");
+  expect(await richNodes(field)).toEqual([[...exact[0], 50]]);
+  await field.evaluate((node: any, value) => {
+    node.value = value;
+  }, exact);
+  const caret = async (selector: string) => {
+    await field.focus();
+    await field.evaluate((node, selector) => {
+      const range = document.createRange();
+      range.setStart(node.querySelector(selector)!.firstChild!, 4);
+      range.collapse(true);
+      const selection = document.getSelection()!;
+      selection.removeAllRanges();
+      selection.addRange(range);
+      document.dispatchEvent(new Event("selectionchange"));
+    }, selector);
+    await page.waitForTimeout(40);
+  };
+  await caret(".rich-code");
+  await field.press("Enter");
+  expect(await richNodes(field)).toEqual([
+    [{ code: "keep\n\r\n\r\nexact" }, ...exact[0].slice(1)],
+  ]);
+  await field.press("Control+z");
+  expect(await richNodes(field)).toEqual(exact);
+  await caret(".rich-web-link");
+  await field.evaluate((node) => {
+    const data = new DataTransfer();
+    data.setData("text/plain", "\n\n");
+    const event = new ClipboardEvent("paste", {
+      bubbles: true,
+      cancelable: true,
+    });
+    Object.defineProperty(event, "clipboardData", { value: data });
+    node.dispatchEvent(event);
+  });
+  expect(await richNodes(field)).toEqual([
+    [
+      ...exact[0].slice(0, 2),
+      { url: "https://example.org/", label: "keep\n\n\r\rexact " },
+    ],
+  ]);
+  await field.press("Control+z");
+  expect(await richNodes(field)).toEqual(exact);
+});
+
 test("r3 toolbar hints appear only for the focused toolbar and operand guidance follows an attempt", async ({
   page,
 }) => {

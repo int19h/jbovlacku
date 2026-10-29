@@ -6,6 +6,7 @@ import {
   Plugin,
   TextSelection,
   type Selection,
+  type Transaction,
 } from "prosemirror-state";
 import { EditorView } from "prosemirror-view";
 import { baseKeymap } from "prosemirror-commands";
@@ -41,6 +42,32 @@ export interface RichFieldOptions extends Omit<
 }
 export interface RichInput extends HTMLDivElement {
   value: RichText;
+}
+/** DOM parsing normalizes CR outside an IME edit. Keep those nodes exact. */
+function preserveOutsideNativeEdit(
+  transaction: Transaction,
+  edit: { doc: EditorNode; from: number; to: number },
+) {
+  if (transaction.before !== edit.doc) return;
+  edit.doc.descendants((node, position) => {
+    if (!["literal", "code", "word_link", "web_link"].includes(node.type.name))
+      return;
+    if (
+      !node.textContent.includes("\r") ||
+      !(position + node.nodeSize <= edit.from || position >= edit.to)
+    )
+      return false;
+    const mapped = transaction.mapping.map(position, 1);
+    const parsed = transaction.doc.nodeAt(mapped);
+    if (
+      parsed &&
+      node.sameMarkup(parsed) &&
+      node.textContent !== parsed.textContent &&
+      node.textContent.replace(/\r\n?/gu, "\n") === parsed.textContent
+    )
+      transaction.replaceWith(mapped, mapped + parsed.nodeSize, node);
+    return false;
+  });
 }
 /** Native selection changes can still be pending when beforeinput runs. */
 function insertionSelection(view: EditorView, input: InputEvent) {
@@ -142,6 +169,7 @@ export function richField(label: string, options: RichFieldOptions) {
   let pointerFocus = false;
   let tabSelection: boolean | null = null;
   let tabTimer: number | undefined;
+  let nativeEdit: { doc: EditorNode; from: number; to: number } | null = null;
   let dialog: HTMLDialogElement | null = null;
   let editLink: HTMLButtonElement | undefined;
   const rulePlugins = placeInputPlugins({
@@ -323,6 +351,10 @@ export function richField(label: string, options: RichFieldOptions) {
       ...(options.lang ? { lang: options.lang } : {}),
     },
     dispatchTransaction(transaction) {
+      if (transaction.docChanged && nativeEdit) {
+        preserveOutsideNativeEdit(transaction, nativeEdit);
+        nativeEdit = null;
+      }
       const result = view.state.applyTransaction(transaction);
       view.updateState(result.state);
       syncLinkAction();
@@ -356,6 +388,15 @@ export function richField(label: string, options: RichFieldOptions) {
       },
       beforeinput(view, event) {
         const input = event as InputEvent;
+        if (!input.cancelable && input.inputType === "insertCompositionText") {
+          const selection = insertionSelection(view, input);
+          if (selection)
+            nativeEdit = {
+              doc: view.state.doc,
+              from: selection.from,
+              to: selection.to,
+            };
+        }
         if (
           !input.cancelable ||
           input.inputType !== "insertText" ||
