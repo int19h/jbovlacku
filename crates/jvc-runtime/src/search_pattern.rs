@@ -72,14 +72,15 @@ fn aliases(value: &mut Ast) {
             if matches!(*value.ast, Ast::Empty(_)) {
                 // Keep the operator attached to the removed mark, not the
                 // preceding literal when the AST is printed and parsed again.
+                let span = *value.ast.span();
                 value.ast = Box::new(Ast::Group(
                     ast::Group {
-                        span: *value.ast.span(),
+                        span,
                         kind: ast::GroupKind::NonCapturing(ast::Flags {
-                            span: *value.ast.span(),
+                            span,
                             items: vec![],
                         }),
-                        ast: value.ast.clone(),
+                        ast: Box::new(Ast::empty(span)),
                     }
                     .into(),
                 ));
