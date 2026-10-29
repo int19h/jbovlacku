@@ -1086,12 +1086,16 @@ The fixture uses explicit synthetic edge identity settings in an isolated test c
 It does not enable header trust in the ordinary local launcher.
 This test establishes the fixture's behavior. It does not prove a total heap bound or hosted Worker compliance.
 
-Install the Chromium test binary into a task-specific directory, then run the browser tests:
+Install the browser test binaries into a task-specific directory, then run the browser tests:
 
 ```sh
-PLAYWRIGHT_BROWSERS_PATH="$PWD/.cache/playwright" npx playwright install chromium
+PLAYWRIGHT_BROWSERS_PATH="$PWD/.cache/playwright" npx playwright install chromium firefox
 PLAYWRIGHT_BROWSERS_PATH="$PWD/.cache/playwright" JVC_TEST_ROOT="$PWD/.cache/browser-tests" npm run test:web
 ```
+
+The default run tests the full app in Chromium. Firefox runs the rich-editor tests and two authoring smoke cases.
+Use `npm run test:web -- --project chromium` for Chromium alone.
+Use `npm run test:web -- --project firefox-editor --project firefox-authoring` for Firefox alone.
 
 The browser tests start their own API and Vite processes. Ports `8797` and `5177` must be free.
 `JVC_TEST_API_PORT` and `JVC_WEB_PORT` select other ports. `JVC_TEST_ROOT` selects the parent directory of the run data. Each run creates a separate `browser-run-*` directory. Workers reuse that directory through `JVC_PLAYWRIGHT_RUN_ROOT`. Runs retain their fixtures and results.
@@ -1107,7 +1111,7 @@ The draft model and the builder metadata have Node unit tests:
 npm run test:web-unit
 ```
 
-Playwright loads these files when it lists tests, but it does not run them. Run this command as well as `npm run test:web`.
+Playwright excludes these Node unit files. Run this command as well as `npm run test:web`.
 
 On this VM, place browser binaries and test data under a task-specific `/build/jbovlacku` directory.
 
