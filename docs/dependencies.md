@@ -20,7 +20,8 @@ PikeVM visits each active state at most once per input byte. This gives a direct
 The build disables the default engine features and keeps `std`, `syntax`, `nfa-pikevm`, and all Unicode features.
 It retains Unicode case folding, character properties, Perl classes, and word boundaries.
 
-It excludes lazy and fully compiled DFA engines, backtracking, capture optimization, and literal-search helpers.
+A DFA uses one active state per input byte.
+The build excludes lazy and fully compiled DFA engines, backtracking, capture optimization, and literal-search helpers.
 This removes `regex` and the `aho-corasick` runtime dependency. It adds no resolved package.
 The notices inventory follows the active WebAssembly dependencies. The lockfile also retains packages for other targets and development tools.
 Compilation, per-candidate, and aggregate input limits bound the work. The [search specification](frontend.md#4-search-and-reading) states those limits and errors.
