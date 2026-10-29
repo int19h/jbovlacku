@@ -12,6 +12,12 @@ The browser and server adapters load generated `jvc-runtime` WebAssembly and its
 `wasm-bindgen` and `wasm-bindgen-cli` must both use version 0.2.105.
 The generated bindings live in `packages/core/generated`. The build regenerates this ignored directory.
 
+`jvc-runtime` pins `regex` 1.12.3 and `regex-syntax` 0.8.10 for pattern search.
+The linear-time engine runs in the shared WebAssembly module on every host. It adds no npm dependency.
+The syntax parser applies headword aliases to literal nodes without changing escapes, named groups, properties, or range endpoints.
+The resolved runtime dependencies also include `regex-automata` 0.4.18 and `aho-corasick` 1.1.5. They reuse the existing `memchr` dependency.
+Compilation and aggregate input limits bound the work. The [search specification](frontend.md#4-search-and-reading) states those limits and errors.
+
 The notices inventory follows `jvc-runtime` through its resolved normal and build dependencies for the WebAssembly target.
 It includes compile-time helpers. It does not claim that every listed package contributes machine code to the final binary.
 The inventory excludes dependency edges that serve only native tests.

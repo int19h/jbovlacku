@@ -16,6 +16,7 @@ The license texts below retain upstream wording. Shared text appears once with e
 
 | Package | Version | Declared license | Source |
 | --- | --- | --- | --- |
+| `aho-corasick` | 1.1.5 | Unlicense OR MIT | [Repository](https://github.com/BurntSushi/aho-corasick) |
 | `autocfg` | 1.5.1 | Apache-2.0 OR MIT | [Repository](https://github.com/cuviper/autocfg) |
 | `base16ct` | 0.2.0 | Apache-2.0 OR MIT | [Repository](https://github.com/RustCrypto/formats/tree/master/base16ct) |
 | `base64` | 0.22.1 | MIT OR Apache-2.0 | [Repository](https://github.com/marshallpierce/rust-base64) |
@@ -80,6 +81,9 @@ The license texts below retain upstream wording. Shared text appears once with e
 | `rand` | 0.8.8 | MIT OR Apache-2.0 | [Repository](https://github.com/rust-random/rand) |
 | `rand_chacha` | 0.3.1 | MIT OR Apache-2.0 | [Repository](https://github.com/rust-random/rand) |
 | `rand_core` | 0.6.4 | MIT OR Apache-2.0 | [Repository](https://github.com/rust-random/rand) |
+| `regex` | 1.12.3 | MIT OR Apache-2.0 | [Repository](https://github.com/rust-lang/regex) |
+| `regex-automata` | 0.4.18 | MIT OR Apache-2.0 | [Repository](https://github.com/rust-lang/regex) |
+| `regex-syntax` | 0.8.10 | MIT OR Apache-2.0 | [Repository](https://github.com/rust-lang/regex) |
 | `rfc6979` | 0.4.0 | Apache-2.0 OR MIT | [Repository](https://github.com/RustCrypto/signatures/tree/master/rfc6979) |
 | `rsa` | 0.9.10 | MIT OR Apache-2.0 | [Repository](https://github.com/RustCrypto/RSA) |
 | `rustc_version` | 0.4.1 | MIT OR Apache-2.0 | [Repository](https://github.com/djc/rustc-version-rs) |
@@ -499,6 +503,9 @@ Sources:
 - `wasm-bindgen-macro 0.2.105 / LICENSE-APACHE`.
 - `wasm-bindgen-macro-support 0.2.105 / LICENSE-APACHE`.
 - `wasm-bindgen-shared 0.2.105 / LICENSE-APACHE`.
+- `regex 1.12.3 / LICENSE-APACHE`.
+- `regex-automata 0.4.18 / LICENSE-APACHE`.
+- `regex-syntax 0.8.10 / LICENSE-APACHE`.
 
 SHA-256: `a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2`.
 
@@ -3456,6 +3463,7 @@ Copyright notices are retained in src/* files where relevant.
 Sources:
 
 - `memchr 2.8.3 / COPYING`.
+- `aho-corasick 1.1.5 / COPYING`.
 
 SHA-256: `01c266bced4a434da0051174d6bee16a4c82cf634e2679b6155d40d75012390f`.
 
@@ -3470,6 +3478,7 @@ You may use this code under the terms of either license.
 Sources:
 
 - `memchr 2.8.3 / LICENSE-MIT`.
+- `aho-corasick 1.1.5 / LICENSE-MIT`.
 
 SHA-256: `0f96a83840e146e43c0ec96a22ec1f392e0680e6c1226e6f3ba87e0740af850f`.
 
@@ -3542,6 +3551,9 @@ Sources:
 - `num-iter 0.1.46 / LICENSE-MIT`.
 - `num-rational 0.4.2 / LICENSE-MIT`.
 - `num-traits 0.2.19 / LICENSE-MIT`.
+- `regex 1.12.3 / LICENSE-MIT`.
+- `regex-automata 0.4.18 / LICENSE-MIT`.
+- `regex-syntax 0.8.10 / LICENSE-MIT`.
 
 SHA-256: `6485b8ed310d3f0340bf1ad1f47645069ce4069dcc6bb46c7d5c6faf41de1fdb`.
 
