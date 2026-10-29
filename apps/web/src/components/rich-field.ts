@@ -199,6 +199,29 @@ export function richField(label: string, options: RichFieldOptions) {
       }
     },
     handleDOMEvents: {
+      beforeinput(view, event) {
+        const input = event as InputEvent;
+        if (
+          !input.cancelable ||
+          input.inputType !== "insertText" ||
+          input.data === null ||
+          input.isComposing ||
+          view.composing
+        )
+          return false;
+        input.preventDefault();
+        const { from, to } = view.state.selection;
+        const text = input.data;
+        const insert = () =>
+          view.state.tr.insertText(text, from, to).scrollIntoView();
+        if (
+          !view.someProp("handleTextInput", (handler) =>
+            handler(view, from, to, text, insert),
+          )
+        )
+          view.dispatch(insert());
+        return true;
+      },
       compositionstart() {
         view.dispatch(view.state.tr.setMeta("richCompositionStart", true));
         return false;

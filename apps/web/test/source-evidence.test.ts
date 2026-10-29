@@ -589,9 +589,10 @@ test("manual selection keeps scores after descriptive source edits", async ({
   });
   await page.getByLabel("Native word for English", { exact: true }).fill("new");
   await page.getByLabel("Said for English", { exact: true }).fill("nuː");
-  await page
-    .getByLabel("Source notes for English", { exact: true })
-    .fill("Reviewed note");
+  await typeRichText(
+    page.getByLabel("Source notes for English", { exact: true }),
+    "Reviewed note",
+  );
   await page
     .getByRole("link", { name: "Enter without generation", exact: true })
     .click();

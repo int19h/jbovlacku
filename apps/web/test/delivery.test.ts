@@ -1,3 +1,4 @@
+import { typeRichText } from "./rich-helpers.ts";
 import { test, expect, type Page } from "@playwright/test";
 import {
   acceptFirstSignature,
@@ -185,9 +186,10 @@ test("header-only acceptance stays unfinished until the matching body is confirm
   await expect(
     dialog.getByLabel("Explanation", { exact: true }),
   ).toHaveAttribute("contenteditable", "true");
-  await dialog
-    .getByLabel("Explanation", { exact: true })
-    .fill("Synthetic test report with a body.");
+  await typeRichText(
+    dialog.getByLabel("Explanation", { exact: true }),
+    "Synthetic test report with a body.",
+  );
   await dialog
     .getByRole("button", { name: "Preview the public report" })
     .click();

@@ -1,3 +1,4 @@
+import { typeRichText } from "./rich-helpers.ts";
 import { test, expect, type Page } from "@playwright/test";
 import {
   corePath,
@@ -138,9 +139,10 @@ test("uppercase and decomposed acute name input stays visible through wizard pub
     spelling,
   );
   await page.getByRole("button", { name: /^Use / }).click();
-  await page
-    .getByLabel("Definition text", { exact: true })
-    .fill("A synthetic signed name.");
+  await typeRichText(
+    page.getByLabel("Definition text", { exact: true }),
+    "A synthetic signed name.",
+  );
   await page.getByRole("button", { name: "Review", exact: true }).click();
   await page
     .locator("aside")
@@ -198,9 +200,10 @@ test("zei linking preserves accented name sources and rejects acute gismu", asyn
   await page
     .getByRole("button", { name: "Use dján zei blanu", exact: true })
     .click();
-  await page
-    .getByLabel("Definition text", { exact: true })
-    .fill("A synthetic named compound.");
+  await typeRichText(
+    page.getByLabel("Definition text", { exact: true }),
+    "A synthetic named compound.",
+  );
   await page.getByRole("button", { name: "Review", exact: true }).click();
   await expect(
     page.locator("aside").getByRole("button", { name: "Publish", exact: true }),
@@ -517,9 +520,10 @@ test("R3 wizard blocks accented rafsi before Publish and preserves the entered s
     .click();
   await page.getByRole("button", { name: "Use dján", exact: true }).click();
   await page.getByRole("link", { name: "Full editor", exact: true }).click();
-  await page
-    .getByLabel("Definition text", { exact: true })
-    .fill("A synthetic signed name.");
+  await typeRichText(
+    page.getByLabel("Definition text", { exact: true }),
+    "A synthetic signed name.",
+  );
   await page
     .getByRole("button", { name: "Add a rafsi claim", exact: true })
     .click();

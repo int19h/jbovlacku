@@ -1,5 +1,4 @@
-import { setRichNodes } from "./rich-helpers.ts";
-import { typeRichText, expectRichText } from "./rich-helpers.ts";
+import { setRichNodes, typeRichText, expectRichText } from "./rich-helpers.ts";
 import { test, expect, type Page } from "@playwright/test";
 import {
   acceptFirstSignature,
@@ -164,15 +163,18 @@ test("structured places keep declared order when prose mentions place 3 first, a
   // Reorder the prose so place 3 appears first. The declared order stays 1, 2, 3.
   const editor = page.getByRole("textbox", { name: "Definition text" });
   await typeRichText(editor, "③ holds ① read by ②.");
-  await page
-    .getByLabel("Description for place 1", { exact: true })
-    .fill("the text");
-  await page
-    .getByLabel("Description for place 2", { exact: true })
-    .fill("the reader");
-  await page
-    .getByLabel("Description for place 3", { exact: true })
-    .fill("the medium");
+  await typeRichText(
+    page.getByLabel("Description for place 1", { exact: true }),
+    "the text",
+  );
+  await typeRichText(
+    page.getByLabel("Description for place 2", { exact: true }),
+    "the reader",
+  );
+  await typeRichText(
+    page.getByLabel("Description for place 3", { exact: true }),
+    "the medium",
+  );
   await page.getByLabel("Kind of thing for place 2").selectOption("object");
   await page
     .getByRole("button", { name: "Add a derivation for place 3" })
@@ -256,9 +258,10 @@ test("the draft survives reload and browser back at every step and exports as a 
   await page.getByRole("radio", { name: /^cmavo/ }).check();
   await page.getByRole("button", { name: "Enter the cmavo" }).click();
   await page.getByLabel("selma'o", { exact: true }).fill("UI");
-  await page
-    .getByLabel("Morphology notes", { exact: true })
-    .fill("Attributed note.");
+  await typeRichText(
+    page.getByLabel("Morphology notes", { exact: true }),
+    "Attributed note.",
+  );
   await page.goBack();
   await expect(page.getByRole("radio", { name: /^cmavo/ })).toBeChecked();
   await page.goForward();
@@ -322,9 +325,10 @@ test("the full editor preserves every structured field and supports manual headw
   await page.getByRole("button", { name: "+ Add a place" }).click();
   await page.getByRole("button", { name: "+ Add a place" }).click();
   await page.getByLabel("Number of places").selectOption("context");
-  await page
-    .getByLabel("Description for place 1", { exact: true })
-    .fill("the agent");
+  await typeRichText(
+    page.getByLabel("Description for place 1", { exact: true }),
+    "the agent",
+  );
   await page.getByLabel("Kind of thing for place 1").selectOption("custom");
   await page
     .getByLabel("Tags for alternative 1")
@@ -335,9 +339,10 @@ test("the full editor preserves every structured field and supports manual headw
   await page.getByLabel("Add a gloss", { exact: true }).press("Enter");
   await page.getByRole("button", { name: "Add a default for place 1" }).click();
   await page.getByLabel("Default value 1 for place 1").fill("li pa");
-  await page
-    .getByLabel("Condition 1 for place 1", { exact: true })
-    .fill("when unspecified");
+  await typeRichText(
+    page.getByLabel("Condition 1 for place 1", { exact: true }),
+    "when unspecified",
+  );
   await page
     .getByRole("button", { name: "Add a constraint between places" })
     .click();
@@ -351,12 +356,14 @@ test("the full editor preserves every structured field and supports manual headw
   );
   await page.getByRole("button", { name: "Add an example" }).click();
   await page.getByLabel("Example 1", { exact: true }).fill("mi brodi do");
-  await page
-    .getByLabel("Translation of example 1", { exact: true })
-    .fill("I brodi you");
-  await page
-    .getByRole("textbox", { name: "Etymology" })
-    .fill("Made up for a test.");
+  await typeRichText(
+    page.getByLabel("Translation of example 1", { exact: true }),
+    "I brodi you",
+  );
+  await typeRichText(
+    page.getByRole("textbox", { name: "Etymology" }),
+    "Made up for a test.",
+  );
   await page.getByRole("button", { name: "Add a source" }).click();
   await page.getByLabel("Source 1 label").fill("Test source");
   await page.getByLabel("Source 1 link").fill("https://example.invalid/source");
@@ -367,9 +374,10 @@ test("the full editor preserves every structured field and supports manual headw
   await page.getByLabel("Labels", { exact: true }).fill("experimental, test");
   await page.getByRole("button", { name: "Add a rafsi claim" }).click();
   await page.getByLabel("Rafsi 1", { exact: true }).fill("bod");
-  await page
-    .getByLabel("Rationale for rafsi 1", { exact: true })
-    .fill("Test claim.");
+  await typeRichText(
+    page.getByLabel("Rationale for rafsi 1", { exact: true }),
+    "Test claim.",
+  );
   await page.getByRole("button", { name: "Review" }).click();
   await expect(
     page.getByText(
@@ -560,9 +568,10 @@ test("a standalone rafsi claim shows competing words, signs the claim with its p
   await page.getByRole("link", { name: "claim one" }).click();
   await expect(page).toHaveTitle("Claim a rafsi for vlacku · jbovlacku");
   await page.getByLabel("Rafsi spelling").fill("cku");
-  await page
-    .getByLabel("Rationale", { exact: true })
-    .fill("A deliberate conflict for the test.");
+  await typeRichText(
+    page.getByLabel("Rationale", { exact: true }),
+    "A deliberate conflict for the test.",
+  );
   await page.getByRole("button", { name: "Check claims and preview" }).click();
   await expect(
     page.getByText(/Conflict: cku is already claimed for/),
@@ -630,9 +639,10 @@ test("the wizard fits a 360 pixel screen and keeps every control reachable", asy
   await page
     .getByRole("button", { name: "Use the meaning with numbered places" })
     .click();
-  await page
-    .getByLabel("Description for place 1", { exact: true })
-    .fill("narrow");
+  await typeRichText(
+    page.getByLabel("Description for place 1", { exact: true }),
+    "narrow",
+  );
   await page.getByRole("button", { name: "Review" }).focus();
   expect(
     await page.evaluate(() => {
@@ -1993,9 +2003,10 @@ test("the full editor keeps referents on removal, saves type notes and derivatio
   // Three places, references to all of them, then removal of the second.
   for (let i = 0; i < 3; i++)
     await page.getByRole("button", { name: "+ Add a place" }).click();
-  await page
-    .getByLabel("Description for place 2", { exact: true })
-    .fill("the second one");
+  await typeRichText(
+    page.getByLabel("Description for place 2", { exact: true }),
+    "the second one",
+  );
   await typeRichText(
     page.getByLabel("Description for place 3", { exact: true }),
     "after ②",
@@ -2026,7 +2037,10 @@ test("the full editor keeps referents on removal, saves type notes and derivatio
   await expect(rendered.getByRole("img", { name: "place 2" })).toHaveCount(1);
   // A custom kind of thing keeps its typed note.
   await page.getByLabel("Kind of thing for place 1").selectOption("custom");
-  await page.getByLabel("Type note", { exact: true }).fill("a typed note");
+  await typeRichText(
+    page.getByLabel("Type note", { exact: true }),
+    "a typed note",
+  );
   await expect
     .poll(async () => (await stored()).places[0].hint?.note)
     .toEqual([["a typed note"]]);
@@ -2363,16 +2377,18 @@ test("moving a place keeps every referent, and a language change keeps each plac
   const editor = page.getByRole("textbox", { name: "Definition text" });
   for (let i = 0; i < 3; i++)
     await page.getByRole("button", { name: "+ Add a place" }).click();
-  await page
-    .getByLabel("Description for place 1", { exact: true })
-    .fill("first");
+  await typeRichText(
+    page.getByLabel("Description for place 1", { exact: true }),
+    "first",
+  );
   await typeRichText(
     page.getByLabel("Description for place 2", { exact: true }),
     "second, after ①",
   );
-  await page
-    .getByLabel("Description for place 3", { exact: true })
-    .fill("third");
+  await typeRichText(
+    page.getByLabel("Description for place 3", { exact: true }),
+    "third",
+  );
   await typeRichText(editor, "① gives ② to ③.");
   await page
     .getByLabel("Add a gloss for place 1")

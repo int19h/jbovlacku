@@ -1,3 +1,4 @@
+import { typeRichText } from "./rich-helpers.ts";
 import { test, expect, type Page } from "@playwright/test";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -337,7 +338,10 @@ test("the gismu generator scores exactly, shares ranks, lists conflicts, and rec
   await expect(
     page.getByLabel("Why this form", { exact: true }),
   ).toHaveAttribute("contenteditable", "true");
-  await page.getByLabel("Why this form", { exact: true }).fill("Only a test.");
+  await typeRichText(
+    page.getByLabel("Why this form", { exact: true }),
+    "Only a test.",
+  );
   await primary.click();
   await expect(page).toHaveURL(/\/new\/places$/);
   const draft = await currentDraft(page);

@@ -81,9 +81,10 @@ test("R7 the full editor signs separate rafsi rationale paragraphs with literal 
   await page.getByRole("link", { name: "Skip to the full editor" }).click();
   await page.getByLabel("Headword").fill("brodu");
   await page.getByLabel("Type", { exact: true }).selectOption("gismu");
-  await page
-    .getByRole("textbox", { name: "Definition text", exact: true })
-    .fill("A disposable test definition.");
+  await typeRichText(
+    page.getByRole("textbox", { name: "Definition text", exact: true }),
+    "A disposable test definition.",
+  );
   await page.getByRole("button", { name: "Add a rafsi claim" }).click();
   await page.getByLabel("Rafsi 1", { exact: true }).fill("rod");
   await typeRichText(

@@ -1,3 +1,4 @@
+import { typeRichText } from "./rich-helpers.ts";
 import {
   test,
   expect,
@@ -213,9 +214,10 @@ async function preparePublish(page: Page) {
   await open(page, "/new/editor");
   await page.getByLabel("Headword", { exact: true }).fill("broda");
   await page.getByLabel("Type", { exact: true }).selectOption("other");
-  await page
-    .getByLabel("Definition text", { exact: true })
-    .fill("A test definition.");
+  await typeRichText(
+    page.getByLabel("Definition text", { exact: true }),
+    "A test definition.",
+  );
   await page.getByRole("button", { name: "Review", exact: true }).click();
   await expect(page.locator(".preview-card")).toBeVisible();
 }

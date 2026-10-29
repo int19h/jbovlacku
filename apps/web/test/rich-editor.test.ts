@@ -1,6 +1,6 @@
 import { test, expect, type Page, type Locator } from "@playwright/test";
 import { createIdentity, corePath } from "./helpers.ts";
-import { setRichNodes } from "./rich-helpers.ts";
+import { setRichNodes, typeRichText } from "./rich-helpers.ts";
 
 async function seed(page: Page, fields = false) {
   await page.goto("/");
@@ -112,7 +112,7 @@ test("typed places, exact TeX, undo, keyboard toolbar, and 50-place dropdown", a
   ).toHaveCount(1);
   await field.press("Backspace");
   await expect(field).toHaveText("___");
-  await field.fill("");
+  await typeRichText(field, "");
   await field.pressSequentially("\\{ \\[ \\\\ \\__4__");
   expect(await nodes(field)).toEqual([["\\{ \\[ \\\\ \\", 4]]);
   await field.press("Control+z");
@@ -145,7 +145,7 @@ test("clearing a preexisting field and editing blank paragraphs keep valid store
 }) => {
   await seed(page, true);
   const field = editor(page);
-  await field.fill("");
+  await typeRichText(field, "");
   expect(await nodes(field)).toEqual([]);
   const inspect = async () =>
     page.evaluate(async (path) => {
@@ -338,6 +338,14 @@ test("paragraph keys and toolbar insertion work inside literal, code, and link n
     { code: "after link" },
     " tail",
   ]);
+  const exact = [
+    { code: "keep\r\n\r\nexact" },
+    { url: "https://example.org/", label: "keep\r\rexact " },
+  ];
+  await setRichNodes(field, [exact]);
+  await field.press("Control+End");
+  await field.pressSequentially("㊿");
+  expect(await nodes(field)).toEqual([[...exact, 50]]);
 });
 
 test("the Lujvo builder edits its current rich definition without flattening nodes", async ({
@@ -383,7 +391,7 @@ test("paste is inert plain text with a deliberate circled-number choice", async 
     .click();
   expect(await nodes(field)).toEqual([[text]]);
   await expect(field.locator("img,a,script,b")).toHaveCount(0);
-  await field.fill("");
+  await typeRichText(field, "");
   await paste(field, "___ ㉑㊱㊿⓪");
   await page
     .getByRole("dialog", { name: "Paste circled numbers" })
@@ -411,7 +419,7 @@ test("copy retains readable place and operand chips in plain text", async ({
     return data.getData("text/plain");
   });
   expect(copied).toBe("① [bridi] ㊿");
-  await field.fill("");
+  await typeRichText(field, "");
   await paste(field, copied);
   await page
     .getByRole("dialog", { name: "Paste circled numbers" })
@@ -426,7 +434,7 @@ test("Backspace and canceled composition keep old pasted tokens literal", async 
   await seed(page);
   const field = editor(page);
   for (const token of ["㊿", "___", "__4__"]) {
-    await field.fill("");
+    await typeRichText(field, "");
     await paste(field, token + " ");
     if (token === "㊿")
       await page
@@ -576,7 +584,7 @@ test("manual declarations keep 17 places and a context frame keeps explicit gaps
   expect(
     (await nodes(field))[0].filter((node: unknown) => typeof node === "number"),
   ).toEqual(Array.from({ length: 17 }, (_, index) => index + 1));
-  await field.fill("");
+  await typeRichText(field, "");
   await field.pressSequentially("\\① and ④");
   await expect(
     page.getByLabel("Description for place 2", { exact: true }),

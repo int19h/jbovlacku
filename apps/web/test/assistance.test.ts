@@ -633,9 +633,10 @@ test("a delayed answer reports retries, compares stale fields, and requires rene
   await expect(
     page.getByRole("status").filter({ hasText: "2 of 3" }),
   ).toBeVisible();
-  await page
-    .getByLabel("Current definition", { exact: true })
-    .fill("Newer human prose.");
+  await typeRichText(
+    page.getByLabel("Current definition", { exact: true }),
+    "Newer human prose.",
+  );
   mock.release();
   const panel = page.getByRole("region", {
     name: "Draft definition for this form suggestion",
@@ -648,9 +649,10 @@ test("a delayed answer reports retries, compares stale fields, and requires rene
     name: "I reviewed the newer fields and want to replace them",
   });
   await reviewed.check();
-  await page
-    .getByLabel("Current definition", { exact: true })
-    .fill("A second human edit.");
+  await typeRichText(
+    page.getByLabel("Current definition", { exact: true }),
+    "A second human edit.",
+  );
   await panel.getByRole("button", { name: "Use this", exact: true }).click();
   await expect(reviewed).not.toBeChecked();
   await expectRichText(
@@ -663,9 +665,10 @@ test("a delayed answer reports retries, compares stale fields, and requires rene
     page.getByLabel("Current definition", { exact: true }),
     "An improved definition.",
   );
-  await page
-    .getByLabel("Current definition", { exact: true })
-    .fill("A later author replacement.");
+  await typeRichText(
+    page.getByLabel("Current definition", { exact: true }),
+    "A later author replacement.",
+  );
   await page
     .getByRole("button", { name: "Undo Draft definition for this form" })
     .click();
@@ -1332,9 +1335,10 @@ test("place panels add a missing component mapping with persistent undo and show
   await expect(page.locator(".ai-hint-line")).toContainText(
     "The definition names a quantity.",
   );
-  await page
-    .getByLabel("Explanation of derivation 1 for place 1", { exact: true })
-    .fill("merged: This place covers both sources.");
+  await typeRichText(
+    page.getByLabel("Explanation of derivation 1 for place 1", { exact: true }),
+    "merged: This place covers both sources.",
+  );
   await expect(
     page.getByText("klama 2 · merged", { exact: true }),
   ).toBeVisible();
@@ -1744,8 +1748,13 @@ test("source preview preserves omitted values and replaces only the tracked AI n
     page.getByLabel("Source notes for English", { exact: true }),
     "Authored first\n\nSense: new meaning\n\nNote: new AI note\n\nAuthored last",
   );
-  await typeRichText(
-    page.getByLabel("Source notes for English", { exact: true }),
+  const notes = page.getByLabel("Source notes for English", { exact: true });
+  await notes.locator("p").nth(1).click();
+  await notes.press("Home");
+  await notes.press("Shift+End");
+  await notes.pressSequentially("Sense: edited by author");
+  await expectRichText(
+    notes,
     "Authored first\n\nSense: edited by author\n\nNote: new AI note\n\nAuthored last",
   );
   await page
@@ -2634,9 +2643,10 @@ test("partial mappings require stale review and recheck later edits", async ({
     .click();
   await allow(page);
   await expect.poll(() => mock.calls.length).toBe(1);
-  await page
-    .getByLabel("Description for place 1", { exact: true })
-    .fill("A newer place.");
+  await typeRichText(
+    page.getByLabel("Description for place 1", { exact: true }),
+    "A newer place.",
+  );
   mock.release();
   const panel = page.getByRole("region", {
     name: "Suggest places and glosses suggestion",
@@ -2652,9 +2662,10 @@ test("partial mappings require stale review and recheck later edits", async ({
     })
     .check();
   await expect(add).toBeEnabled();
-  await page
-    .getByLabel("Description for place 1", { exact: true })
-    .fill("One more author edit.");
+  await typeRichText(
+    page.getByLabel("Description for place 1", { exact: true }),
+    "One more author edit.",
+  );
   await add.click();
   await expect(add).toBeDisabled();
   expect((await stored(page)).places[0].derivations).toHaveLength(0);
@@ -3060,9 +3071,10 @@ for (const stale of [false, true]) {
     const cancel = page.getByRole("button", { name: "Cancel", exact: true });
     await expect(cancel).toBeFocused();
     if (stale) {
-      await page
-        .getByLabel("Description for place 1", { exact: true })
-        .fill("Newer prose.");
+      await typeRichText(
+        page.getByLabel("Description for place 1", { exact: true }),
+        "Newer prose.",
+      );
       await cancel.focus();
     }
     mock.release();
