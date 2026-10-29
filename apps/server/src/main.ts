@@ -9,6 +9,7 @@ import {
 import { Readable } from "node:stream";
 import { createHash } from "node:crypto";
 import { FileCheckpointStore } from "./checkpoint.ts";
+import { NodePatternScanner } from "./pattern-search.ts";
 import { NodeEvaluationRuntime } from "./evaluation.ts";
 import { shutdownHost } from "./shutdown.ts";
 import { sendResponseBody } from "./response.ts";
@@ -59,6 +60,7 @@ async function initializeService() {
   let evaluationRuntime: NodeEvaluationRuntime | undefined;
   let vectors: SqliteVectorStore | undefined;
   let scanner: NodeVectorScanner | undefined;
+  let patternScanner: NodePatternScanner | undefined;
   try {
     const coreBytes = await readFile(
       new URL(
@@ -68,6 +70,7 @@ async function initializeService() {
     );
     await initializeCore(coreBytes);
     evaluationRuntime = new NodeEvaluationRuntime(coreBytes);
+    patternScanner = new NodePatternScanner(coreBytes);
     const coreVersion = `${createHash("sha256").update(coreBytes).digest("hex")}:${coreCheckpointVersion()}:service-checkpoint-v1`;
     index = new SqliteIndexStore(join(directory, "indexes.sqlite"), true);
     coordinator = new SqliteCoordinator(
@@ -103,6 +106,7 @@ async function initializeService() {
     }
     const service = new DictionaryService(objects, coordinator, {
       assistance,
+      patternScanner: patternScanner.scan,
       semantic:
         vectors && scanner && semanticProfile
           ? {
@@ -164,10 +168,12 @@ async function initializeService() {
       evaluationRuntime,
       vectors,
       scanner,
+      patternScanner,
       release,
     };
   } catch (error) {
     await scanner?.close();
+    await patternScanner?.close();
     vectors?.close();
     await evaluationRuntime?.close();
     coordinator?.close();
@@ -185,6 +191,7 @@ const {
   evaluationRuntime,
   vectors,
   scanner,
+  patternScanner,
   release,
 } = await initializeService();
 const assets = resolve(process.env.JVC_ASSETS_DIR ?? "apps/web/dist");
@@ -332,6 +339,7 @@ function closeService(): Promise<void> {
     closeStorage: async () => {
       await service.drainSemanticQueries();
       await scanner?.close();
+      await patternScanner?.close();
       vectors?.close();
       try {
         coordinator.close();

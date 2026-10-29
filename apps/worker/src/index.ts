@@ -12,6 +12,7 @@ import { SqlRowsCoordinator } from "../../../packages/service/src/sql-coordinato
 import { DurableObject } from "cloudflare:workers";
 import wasmModule from "../../../packages/core/generated/jvc_runtime_bg.wasm";
 import { initializeCore } from "../../../packages/core/src/index.ts";
+import { workerPatternScanner } from "./pattern-search.ts";
 import { DictionaryService } from "../../../packages/service/src/service.ts";
 import {
   providerConfig,
@@ -101,6 +102,7 @@ export class AdmissionCoordinator
         retainedJobs: 2,
         waitUntil: (promise) => this.ctx.waitUntil(promise),
       },
+      patternScanner: workerPatternScanner(env.INDEX),
       serverId: env.SERVER_ID,
       index: new D1IndexStore(env.INDEX, true),
       selectedView: env.SELECTED_VIEW || undefined,

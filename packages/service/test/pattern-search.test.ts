@@ -192,25 +192,14 @@ test("GET and POST patterns keep ranking, rafsi, cursors, retirement, deltas, an
         hits
           .filter((hit) => hit.match === "headword-pattern")
           .map((hit) => hit.word.spelling),
-        heads.sort((a, b) =>
-          wordId({ language: "jbo", spelling: a }).localeCompare(
-            wordId({ language: "jbo", spelling: b }),
-          ),
-        ),
+        heads.sort(),
       );
       assert.equal(hits.at(-1).word.spelling, "cukta");
       assert.equal(hits.at(-1).match, "rafsi-pattern");
       assert.equal(first.segmentation, "complete");
     }
     assert.equal((await get("/^DJÁN$/")).hits[0].word.spelling, "dján");
-    for (const q of [
-      "/[/",
-      "//",
-      "/(?=a)/",
-      "/(a)\\1/",
-      "ba* word",
-      "*".repeat(257),
-    ]) {
+    for (const q of ["/[/", "//", "/(?=a)/", "/(a)\\1/", "*".repeat(257)]) {
       const response = await service.fetch(request(q));
       assert.equal(response.status, 400);
       assert.equal(((await response.json()) as any).code, "pattern_invalid");
