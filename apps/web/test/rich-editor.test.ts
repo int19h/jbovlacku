@@ -205,7 +205,7 @@ test("clearing a preexisting field and editing blank paragraphs keep valid store
   expect((await inspect()).core).toEqual([]);
   await field.pressSequentially("first");
   await field.press("Enter");
-  expect(await nodes(field)).toEqual([["first"], ["\n"]]);
+  expect(await nodes(field)).toEqual([["first"]]);
   await field.pressSequentially("second");
   await expect
     .poll(async () => (await inspect()).text)

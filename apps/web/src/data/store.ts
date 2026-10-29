@@ -13,6 +13,7 @@ import {
 } from "./outbox-graph.ts";
 import type { Envelope, Transport } from "../model/types.ts";
 import type { Draft } from "../model/draft.ts";
+import { canonicalRichFields } from "../model/rich-values.ts";
 
 /** Only authenticated, well-formed lifecycle actions can disable ordinary signing. */
 function lifecycleMarkers(identity: string, envelopes: Envelope[]) {
@@ -549,7 +550,7 @@ export class LocalStore {
           tx.abort();
           return;
         }
-        drafts.put(draft, key);
+        drafts.put(canonicalRichFields(draft), key);
       };
       current.onsuccess = proceed;
       if (published) published.onsuccess = proceed;

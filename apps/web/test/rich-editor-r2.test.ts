@@ -328,7 +328,7 @@ test("r2 place-list updates retain blank paragraphs, caret, and undo", async ({
   await field.pressSequentially("the agent");
   await page.waitForTimeout(550);
   await field.press("Enter");
-  expect(await nodes(field)).toEqual([["the agent"], ["\n"]]);
+  expect(await nodes(field)).toEqual([["the agent"]]);
   await page
     .getByRole("button", { name: "+ Add a place", exact: true })
     .click();
@@ -337,7 +337,7 @@ test("r2 place-list updates retain blank paragraphs, caret, and undo", async ({
   await field.pressSequentially("tail");
   expect(await nodes(field)).toEqual([["the agent"], ["tail"]]);
   await field.press("Control+z");
-  expect(await nodes(field)).toEqual([["the agent"], ["\n"]]);
+  expect(await nodes(field)).toEqual([["the agent"]]);
   await field.press("Control+z");
   expect(await nodes(field)).toEqual([["the agent"]]);
   const description = page.getByRole("textbox", {
@@ -355,7 +355,7 @@ test("r2 place-list updates retain blank paragraphs, caret, and undo", async ({
   await description.pressSequentially("tail");
   expect(await nodes(description)).toEqual([["a person"], ["tail"]]);
   await description.press("Control+z");
-  expect(await nodes(description)).toEqual([["a person"], ["\n"]]);
+  expect(await nodes(description)).toEqual([["a person"]]);
   await description.press("Control+z");
   expect(await nodes(description)).toEqual([["a person"]]);
 });

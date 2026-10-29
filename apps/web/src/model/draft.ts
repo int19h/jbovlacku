@@ -1,5 +1,9 @@
 import { numberMeaningParts } from "../../../../packages/core/src/place-assistance.ts";
-import { richHasContent, richValue } from "./rich-values.ts";
+import {
+  canonicalRichFields,
+  richHasContent,
+  richValue,
+} from "./rich-values.ts";
 import { circledPlace } from "./place-glyphs.ts";
 /**
  * The local definition draft. The wizard and the full editor edit the same
@@ -367,7 +371,7 @@ function richPlace(place: PlaceInput, structured: boolean): DraftPlace {
 export function newDraft(patch: DraftInput = {}): Draft {
   const now = Date.now();
   const structured = patch.structured ?? true;
-  return {
+  return canonicalRichFields<Draft>({
     version: 2,
     id: "current",
     revision: crypto.randomUUID(),
@@ -428,7 +432,7 @@ export function newDraft(patch: DraftInput = {}): Draft {
       ...o,
       description: rich(o.description, structured),
     })),
-  };
+  });
 }
 export function newPlace(index: number): DraftPlace {
   return {
@@ -1837,7 +1841,9 @@ export function draftToBody(input: Draft): {
 } {
   // Literal mode publishes no place references, whatever set the mode. A
   // reference that reached a field becomes the circled character as text.
-  const view = input.structured ? input : literalView(input);
+  const view = canonicalRichFields(
+    input.structured ? input : literalView(input),
+  );
   const draft = {
     ...view,
     formation: view.formation ? { ...view.formation } : null,

@@ -20,3 +20,61 @@ export function richHasContent(value: RichText): boolean {
     ),
   );
 }
+
+/** Live blank lines have no stored paragraph. Nonblank nodes stay exact. */
+export function canonicalRich(value: RichText): RichText {
+  const paragraphs = value.filter((paragraph) => richHasContent([paragraph]));
+  return paragraphs.length === value.length ? value : paragraphs;
+}
+
+const richFields = new Set([
+  "text",
+  "notes",
+  "note",
+  "description",
+  "condition",
+  "explanation",
+  "translation",
+  "rationale",
+  "selection_reason",
+  "constraints",
+  "frameConstraints",
+  "etymologyText",
+  "formNotes",
+  "literal",
+  "structured",
+  "previousLiterals",
+]);
+/** Apply the writer rule to nested rich fields, including private snapshots. */
+export function canonicalRichFields<T>(value: T, rich = false): T {
+  if (Array.isArray(value)) {
+    if (
+      rich &&
+      value.every(
+        (paragraph) =>
+          Array.isArray(paragraph) &&
+          paragraph.every(
+            (node) =>
+              typeof node === "string" ||
+              typeof node === "number" ||
+              (node !== null &&
+                typeof node === "object" &&
+                !Array.isArray(node)),
+          ),
+      )
+    )
+      return canonicalRich(value as RichText) as T;
+    const items = value.map((item) => canonicalRichFields(item, rich));
+    return items.every((item, index) => item === value[index])
+      ? value
+      : (items as T);
+  }
+  if (value === null || typeof value !== "object") return value;
+  let changed = false;
+  const fields = Object.entries(value).map(([key, original]) => {
+    const next = canonicalRichFields(original, richFields.has(key));
+    changed ||= next !== original;
+    return [key, next];
+  });
+  return changed ? (Object.fromEntries(fields) as T) : value;
+}

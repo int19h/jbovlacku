@@ -205,11 +205,19 @@ test("random stored rich values round trip exactly with a fixed seed", () => {
     );
     const doc = richToEditor(value);
     doc.check();
-    assert.deepEqual(editorToRich(doc), value, `sample ${sample}`);
+    assert.deepEqual(
+      editorToRich(doc),
+      value.filter((paragraph) =>
+        paragraph.some(
+          (node) => typeof node !== "string" || node.trim().length > 0,
+        ),
+      ),
+      `sample ${sample}`,
+    );
   }
 });
 
-test("cleared fields stay empty and blank paragraphs use a newline string", () => {
+test("cleared fields and live blank paragraphs store no whitespace paragraphs", () => {
   let state = EditorState.create({ doc: richToEditor([["existing"]]) });
   state = state.apply(state.tr.delete(0, state.doc.content.size));
   assert.deepEqual(editorToRich(state.doc), []);
@@ -222,7 +230,7 @@ test("cleared fields stay empty and blank paragraphs use a newline string", () =
     true,
   );
   assert.equal(state.doc.childCount, 2);
-  assert.deepEqual(editorToRich(state.doc), [["first"], ["\n"]]);
+  assert.deepEqual(editorToRich(state.doc), [["first"]]);
   state = state.apply(state.tr.insertText("second"));
   assert.deepEqual(editorToRich(state.doc), [["first"], ["second"]]);
 });

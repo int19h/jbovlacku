@@ -39,7 +39,7 @@ test("r2 writing new adjacent text merges runs and keeps untouched stored bounda
   );
   assert.deepEqual(editorToRich(state.doc), [["old", " boundary plus"]]);
 });
-test("r2 trailing blank paragraphs survive storage and reload", () => {
+test("r2 live blank paragraphs stay in the document while stored values omit them", () => {
   let state = EditorState.create({ doc: richToEditor([["first"]]) });
   state = state.apply(state.tr.setSelection(TextSelection.atEnd(state.doc)));
   assert.equal(
@@ -48,14 +48,13 @@ test("r2 trailing blank paragraphs survive storage and reload", () => {
     }),
     true,
   );
-  assert.deepEqual(editorToRich(state.doc), [["first"], ["\n"]]);
+  assert.equal(state.doc.childCount, 2);
+  assert.deepEqual(editorToRich(state.doc), [["first"]]);
   const doc = richToEditor(editorToRich(state.doc));
-  assert.equal(doc.childCount, 2);
-  assert.equal(doc.lastChild!.textContent, "");
+  assert.equal(doc.childCount, 1);
+  assert.equal(doc.lastChild!.textContent, "first");
   assert.deepEqual(editorToRich(richToEditor([["\n"], ["a", "b"], ["\n"]])), [
-    ["\n"],
     ["a", "b"],
-    ["\n"],
   ]);
 });
 test("r2 whitespace alone creates no manual formation", () => {
@@ -155,7 +154,7 @@ test("r2 seeded random edit sequences retain legal values and untouched boundari
       }),
       true,
     );
-    assert.deepEqual(editorToRich(state.doc), [...keep, [expected], ["\n"]]);
+    assert.deepEqual(editorToRich(state.doc), [...keep, [expected]]);
     const pasted = fragments[random(fragments.length)] + "paste";
     state = state.apply(
       state.tr.insertText(pasted).setMeta("uiEvent", "paste"),

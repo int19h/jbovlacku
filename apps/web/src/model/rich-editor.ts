@@ -7,8 +7,10 @@ import {
   type Transaction,
 } from "prosemirror-state";
 import { inputRules } from "prosemirror-inputrules";
+import { joinBackward } from "prosemirror-commands";
 import { CIRCLED_SOURCE, circledPlace, placeDisplay } from "./place-glyphs.ts";
 import type { RichNode, RichText } from "./types.ts";
+import { canonicalRich } from "./rich-values.ts";
 
 const inlineText = (tag: string, className: string) => ({
   inline: true,
@@ -103,7 +105,6 @@ export const richEditorSchema = new Schema({
 const schema = richEditorSchema;
 const contents = (value: string) => (value ? schema.text(value) : undefined);
 let nextOrigin = 0;
-const originalBlankDocs = new WeakSet<EditorNode>();
 export function richToEditor(value: RichText): EditorNode {
   const source = nextOrigin++;
   const inline = (
@@ -145,8 +146,6 @@ export function richToEditor(value: RichText): EditorNode {
         )
       : schema.nodes.paragraph.create(),
   );
-  if (value.length === 1 && value[0].length === 1 && value[0][0] === "\n")
-    originalBlankDocs.add(doc);
   return doc;
 }
 export function editorToRich(doc: EditorNode): RichText {
@@ -197,10 +196,8 @@ export function editorToRich(doc: EditorNode): RichText {
       if (!["text", "literal"].includes(node.type.name)) previousOrigin = null;
     });
     if (nodes.length) value.push(nodes);
-    else if (doc.childCount > 1 || originalBlankDocs.has(doc))
-      value.push(["\n"]);
   });
-  return value;
+  return canonicalRich(value);
 }
 
 /** Reserve explicit places throughout the current semicolon part. */
@@ -280,12 +277,8 @@ export function replaceInline(
       TextSelection.near(tr.doc.resolve(start + node.nodeSize)),
     );
   }
-  if ($from.parent.type.name === "literal" && $from.parentOffset === 0)
-    from = $from.before();
-  if (
-    $to.parent.type.name === "literal" &&
-    $to.parentOffset === $to.parent.content.size
-  )
+  if ($from.parent.isInline && $from.parentOffset === 0) from = $from.before();
+  if ($to.parent.isInline && $to.parentOffset === $to.parent.content.size)
     to = $to.after();
   return state.tr.replaceWith(from, to, node);
 }
@@ -316,17 +309,39 @@ export function deleteRichBackward(
   dispatch?: (tr: Transaction) => void,
 ): boolean {
   if (!state.selection.empty) return false;
+  const tr = state.tr;
   let $cursor = state.selection.$from;
   if ($cursor.parent.isInline && !$cursor.parent.content.size) {
-    dispatch?.(
-      state.tr.delete($cursor.before(), $cursor.after()).scrollIntoView(),
-    );
-    return true;
+    const literal = $cursor.parent.type.name === "literal";
+    tr.delete($cursor.before(), $cursor.after());
+    if (!literal) {
+      dispatch?.(tr.scrollIntoView());
+      return true;
+    }
+    // Empty prose has no visible node to remove. Continue the same key press.
+    $cursor = tr.selection.$from;
   }
   if (!$cursor.nodeBefore && $cursor.parent.isInline)
-    $cursor = state.doc.resolve($cursor.before());
-  const previous = $cursor.nodeBefore;
-  if (!previous) return false;
+    $cursor = tr.doc.resolve($cursor.before());
+  let previous = $cursor.nodeBefore;
+  while (previous?.type.name === "literal" && !previous.content.size) {
+    const position = $cursor.pos - previous.nodeSize;
+    tr.delete(position, $cursor.pos);
+    $cursor = tr.doc.resolve(position);
+    previous = $cursor.nodeBefore;
+  }
+  if (!previous) {
+    if (!tr.docChanged) return false;
+    // Continue across the paragraph boundary after invisible cleanup.
+    joinBackward(state.apply(tr), (next) => {
+      for (const step of next.steps) tr.step(step);
+      tr.setSelection(
+        TextSelection.near(tr.doc.resolve(next.selection.from), -1),
+      );
+    });
+    dispatch?.(tr.scrollIntoView());
+    return true;
+  }
   let end = $cursor.pos;
   let source: string;
   if (previous.isText) source = previous.text!;
@@ -335,16 +350,14 @@ export function deleteRichBackward(
     end--;
   } else if (previous.isAtom || (previous.isInline && !previous.content.size)) {
     dispatch?.(
-      state.tr
-        .delete($cursor.pos - previous.nodeSize, $cursor.pos)
-        .scrollIntoView(),
+      tr.delete($cursor.pos - previous.nodeSize, $cursor.pos).scrollIntoView(),
     );
     return true;
   } else return false;
   const last = graphemes.segment(source).containing(source.length - 1)?.segment;
   if (!last) return false;
   const from = end - last.length;
-  const tr = state.tr.delete(from, end);
+  tr.delete(from, end);
   tr.setSelection(TextSelection.near(tr.doc.resolve(from), -1));
   dispatch?.(tr.scrollIntoView());
   return true;
