@@ -36,6 +36,7 @@ import {
 } from "./assistance.ts";
 import { nearbyQuery, rankNearby } from "./nearby.ts";
 import { lexicalSearch } from "./lexical-search.ts";
+import { PatternError } from "../../search/src/index.ts";
 import {
   checkpointBindingKey,
   type CheckpointBinding,
@@ -338,6 +339,9 @@ export class DictionaryService {
         query,
         request.language,
         evaluation,
+        false,
+        undefined,
+        packages.searchRafsi,
       );
     });
     result.method = query_words.length || spelling ? "lexical" : "none";
@@ -626,6 +630,7 @@ export class DictionaryService {
                 session.state,
               );
               if (
+                !payload.packages.searchRafsi ||
                 !sameEffectiveDefinitions(
                   payload.packages.effectiveDefinitions,
                   effectiveDefinitions,
@@ -2001,6 +2006,7 @@ export class DictionaryService {
     } catch (error) {
       if (
         error instanceof ApiError ||
+        error instanceof PatternError ||
         error instanceof AssistanceError ||
         error instanceof SemanticError
       )
@@ -2531,15 +2537,18 @@ export class DictionaryService {
       if (retiredFlag !== null && retiredFlag !== "1")
         throw new ApiError(400, "retired", "retired must be 1 when present.");
       const includeRetired = retiredFlag === "1";
+      const packages = await this.packages(snapshot);
       const ordered = lexicalSearch(
-        (await this.packages(snapshot)).entries,
+        packages.entries,
         query,
         language,
         evaluation,
         includeRetired,
+        undefined,
+        packages.searchRafsi,
       );
       const cursorHash = this.hashJson({
-        search: "segmented-v3",
+        search: "patterns-v1",
         query,
         language,
         snapshot: snapshot.snapshot,

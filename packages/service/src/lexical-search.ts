@@ -3,6 +3,7 @@ import {
   selectMatches,
   matchRank,
   withSegmentation,
+  isPatternQuery,
   type MatchKind,
   type SearchMetrics,
 } from "../../search/src/index.ts";
@@ -16,6 +17,7 @@ export function lexicalSearch(
   evaluation: Evaluation,
   includeRetired = false,
   metrics?: SearchMetrics,
+  rafsi: Record<string, string[]> = {},
 ) {
   const hits = new Map<
     string,
@@ -33,7 +35,16 @@ export function lexicalSearch(
       };
     }
   >();
-  const selected = selectMatches(entries, query, metrics, (entry) => {
+  const source = isPatternQuery(query)
+    ? (function* () {
+        for (const entry of entries)
+          yield {
+            ...entry,
+            rafsi: rafsi[evaluation.publications[entry.event]?.word] ?? [],
+          };
+      })()
+    : entries;
+  const selected = selectMatches(source, query, metrics, (entry) => {
     const publication = evaluation.publications[entry.event];
     return (
       entry.language === language &&

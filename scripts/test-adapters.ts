@@ -590,6 +590,34 @@ try {
       const searched: any = await postSearch.json();
       assert.deepEqual(searched, await getSearch.json());
       assert.equal(searched.query, searchFields.q);
+      for (const q of ["/^KLA/", "/ma$/", "kla*", "?lama", "/(a+)+$/"]) {
+        const fields = { ...searchFields, q };
+        const post = await api(index, "/search", fields);
+        await assertResponseStatus(post, 200);
+        const get = await api(
+          index,
+          `/search?${new URLSearchParams(Object.entries(fields).map(([name, value]) => [name, String(value)]))}`,
+        );
+        await assertResponseStatus(get, 200);
+        const pattern: any = await post.json();
+        assert.deepEqual(pattern, await get.json());
+        assert.ok(pattern.hits.length > 0);
+        assert.ok(
+          pattern.hits.every(
+            (hit: any) =>
+              hit.match === "headword-pattern" || hit.match === "rafsi-pattern",
+          ),
+        );
+      }
+      const invalidPattern = await api(index, "/search", {
+        ...searchFields,
+        q: "/[/",
+      });
+      await assertResponseStatus(invalidPattern, 400);
+      assert.equal(
+        ((await invalidPattern.json()) as any).code,
+        "pattern_invalid",
+      );
       await assertResponseStatus(
         await api(index, "/search", { ...searchFields, q: null }),
         400,
