@@ -42,7 +42,7 @@ async function createSuccessor(page: Page) {
   await page.getByLabel("Backup file").setInputFiles(path!);
   await page.getByLabel("Its passphrase").fill(PASSPHRASE);
   await page.getByRole("button", { name: "Test the backup" }).click();
-  await expect(page.getByRole("status").last()).toContainText(
+  await expect(page.locator("main").getByRole("status").last()).toContainText(
     "recovers the new key",
   );
   return "ed25519:" + fingerprint.replace(/^ed25519/, "");
@@ -59,7 +59,7 @@ test("a planned handover persists both events and the new key before upload, sur
   const old = await createIdentity(page);
   await endorseFirst(page);
   await acceptFirstSignature(page);
-  await expect(page.getByRole("status")).toHaveText(
+  await expect(page.locator("#app > [role=status]")).toHaveText(
     "Your endorsement is published.",
   );
   let posts = 0;
@@ -88,7 +88,9 @@ test("a planned handover persists both events and the new key before upload, sur
   for (const box of await page.getByRole("checkbox").all()) await box.check();
   await expect(sign).toBeEnabled();
   await sign.click();
-  await expect(page.getByRole("status")).toContainText("Old key retired");
+  await expect(page.locator("#app > [role=status]")).toContainText(
+    "Old key retired",
+  );
   await expect(
     page.getByRole("region", { name: "Handover status" }),
   ).toContainText("Old key retired, acceptance waiting.");
@@ -127,7 +129,7 @@ test("a planned handover persists both events and the new key before upload, sur
   await page.getByRole("link", { name: "1 not delivered" }).click();
   await expect(page.getByText(/handover acceptance/)).toBeVisible();
   await page.getByRole("button", { name: "Try now" }).click();
-  await expect(page.getByRole("status")).toHaveText("Delivered.");
+  await expect(page.locator("#app > [role=status]")).toHaveText("Delivered.");
   const after = await outboxItems(page);
   expect(after.map((i: any) => i.id).sort()).toEqual(
     items.map((i: any) => i.id).sort(),
@@ -154,7 +156,7 @@ test("a planned handover persists both events and the new key before upload, sur
     .first()
     .getByRole("button", { name: "Endorse" })
     .click();
-  await expect(page.getByRole("status")).toHaveText(
+  await expect(page.locator("#app > [role=status]")).toHaveText(
     "Your endorsement is published.",
   );
   const latest = (await outboxItems(page))
@@ -173,11 +175,11 @@ test("a compromise notice previews retained and excluded records, needs approval
   const me = await createIdentity(page);
   await endorseFirst(page, "cukta");
   await acceptFirstSignature(page);
-  await expect(page.getByRole("status")).toHaveText(
+  await expect(page.locator("#app > [role=status]")).toHaveText(
     "Your endorsement is published.",
   );
   await endorseFirst(page, "vlacku");
-  await expect(page.getByRole("status")).toHaveText(
+  await expect(page.locator("#app > [role=status]")).toHaveText(
     "Your endorsement is published.",
   );
   await page.getByRole("link", { name: /key (unlocked|locked)/ }).click();
@@ -216,7 +218,7 @@ test("a compromise notice previews retained and excluded records, needs approval
     .check();
   await expect(sign).toBeEnabled();
   await sign.click();
-  await expect(page.getByRole("status")).toContainText(
+  await expect(page.locator("#app > [role=status]")).toContainText(
     "compromise notice is saved",
   );
   await expect(
@@ -245,7 +247,7 @@ test("a compromise notice previews retained and excluded records, needs approval
     .first()
     .getByRole("button", { name: "Endorse" })
     .click();
-  await expect(page.getByRole("status")).toContainText(
+  await expect(page.locator("#app > [role=status]")).toContainText(
     "compromise notice. Ordinary actions from it are disabled",
   );
 });
@@ -256,7 +258,7 @@ test("missing history blocks a confident compromise preview", async ({
   await createIdentity(page);
   await endorseFirst(page, "cukta");
   await acceptFirstSignature(page);
-  await expect(page.getByRole("status")).toHaveText(
+  await expect(page.locator("#app > [role=status]")).toHaveText(
     "Your endorsement is published.",
   );
   // Remember a head that no server and no outbox copy can supply.
@@ -335,7 +337,7 @@ test("a handover fetches a branch that only a second peer holds, blocks while th
   const unlock = page.getByRole("dialog", { name: "Unlock your key" });
   await unlock.getByLabel("Passphrase").fill(PASSPHRASE);
   await unlock.getByRole("button", { name: "Unlock" }).click();
-  await expect(page.getByRole("status").last()).toContainText(
+  await expect(page.locator("#app > [role=status]")).toContainText(
     "Old key retired",
   );
   const transfer = (await outboxItems(page)).find(
@@ -352,7 +354,7 @@ test("a handover is refused without saving or sending when another tab retired t
   const old = await createIdentity(page);
   await endorseFirst(page, "cukta");
   await acceptFirstSignature(page);
-  await expect(page.getByRole("status").last()).toHaveText(
+  await expect(page.locator("#app > [role=status]")).toHaveText(
     "Your endorsement is published.",
   );
   await page.getByRole("link", { name: /key (unlocked|locked)/ }).click();
@@ -373,7 +375,7 @@ test("a handover is refused without saving or sending when another tab retired t
     });
   }, old.identity);
   await page.getByRole("button", { name: "Sign the handover" }).click();
-  await expect(page.getByRole("status").last()).toContainText(
+  await expect(page.locator("#app > [role=status]")).toContainText(
     "retired or reported stolen meanwhile. Nothing was saved or sent",
   );
   let items = await outboxItems(page);
@@ -424,7 +426,7 @@ test("a handover is refused without saving or sending when another tab retired t
   });
   await checking.click();
   await expect(checking).toHaveText("Checking the known history…");
-  await expect(page.getByRole("status").last()).toContainText(
+  await expect(page.locator("#app > [role=status]")).toContainText(
     "Old key retired",
   );
   items = await outboxItems(page);
@@ -442,7 +444,7 @@ test("a retired key signs a compromise notice through a masked passphrase field"
   const old = await createIdentity(page);
   await endorseFirst(page, "cukta");
   await acceptFirstSignature(page);
-  await expect(page.getByRole("status").last()).toHaveText(
+  await expect(page.locator("#app > [role=status]")).toHaveText(
     "Your endorsement is published.",
   );
   await page.getByRole("link", { name: /key (unlocked|locked)/ }).click();
@@ -451,7 +453,7 @@ test("a retired key signs a compromise notice through a masked passphrase field"
   await expect(page.getByText(/One known head/)).toBeVisible();
   for (const box of await page.getByRole("checkbox").all()) await box.check();
   await page.getByRole("button", { name: "Sign the handover" }).click();
-  await expect(page.getByRole("status").last()).toContainText(
+  await expect(page.locator("#app > [role=status]")).toContainText(
     "Old key retired",
   );
   await expect
@@ -482,7 +484,7 @@ test("a retired key signs a compromise notice through a masked passphrase field"
   await expect(dialog.getByRole("alert")).toBeVisible();
   await pass.fill(PASSPHRASE);
   await dialog.getByRole("button", { name: "Unlock" }).click();
-  await expect(page.getByRole("status").last()).toContainText(
+  await expect(page.locator("#app > [role=status]")).toContainText(
     "compromise notice is saved",
   );
   const notice = (await outboxItems(page)).find(
@@ -509,7 +511,7 @@ async function mirrorBranchSetup(page: Page) {
   const old = await createIdentity(page);
   await endorseFirst(page, "cukta");
   await acceptFirstSignature(page);
-  await expect(page.getByRole("status")).toHaveText(
+  await expect(page.locator("#app > [role=status]")).toHaveText(
     "Your endorsement is published.",
   );
   let captured: {
@@ -667,7 +669,7 @@ test("a branch fetched from a peer stays known after that peer stops answering, 
   const unlock = page.getByRole("dialog", { name: "Unlock your key" });
   await unlock.getByLabel("Passphrase").fill(PASSPHRASE);
   await unlock.getByRole("button", { name: "Unlock" }).click();
-  await expect(page.getByRole("status").last()).toContainText(
+  await expect(page.locator("#app > [role=status]")).toContainText(
     "Old key retired",
   );
   const transfer = (await outboxItems(page)).find(
@@ -729,7 +731,7 @@ test("a key restored into fresh storage signs a notice about its server history"
   const me = await createIdentity(page);
   await endorseFirst(page, "cukta");
   await acceptFirstSignature(page);
-  await expect(page.getByRole("status")).toHaveText(
+  await expect(page.locator("#app > [role=status]")).toHaveText(
     "Your endorsement is published.",
   );
   await page.getByRole("link", { name: /key (unlocked|locked)/ }).click();
@@ -762,7 +764,7 @@ test("a key restored into fresh storage signs a notice about its server history"
     .getByRole("checkbox", { name: /cannot prove which holder/ })
     .check();
   await restored.getByRole("button", { name: "Sign the notice" }).click();
-  await expect(restored.getByRole("status")).toContainText(
+  await expect(restored.locator("#app > [role=status]")).toContainText(
     "compromise notice is saved",
   );
   const items = await restored.evaluate(async () => {

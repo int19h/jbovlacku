@@ -147,7 +147,7 @@ for (const action of ["Back", "Add a word"] as const) {
         exact: true,
       });
       await editor.fill("An edit after leaving the restore.");
-      await expect(page.getByRole("status").last()).toHaveText(
+      await expect(page.locator("main").getByRole("status").last()).toHaveText(
         "Saved in this browser",
       );
       await expect(
@@ -299,7 +299,7 @@ test("a refused Back after a restored draft save fails keeps the tracked URL and
     };
   });
   await meaning.fill("An unsaved edit after restoring.");
-  const status = page.getByRole("status").last();
+  const status = page.locator("main").getByRole("status").last();
   await expect(status).toContainText("Not saved: Injected save failure.");
   await page.evaluate(() => history.back());
   await expect(status).toContainText("Your unsaved edits stay on this page.");
@@ -382,7 +382,7 @@ for (const action of ["Add a word", "Search"] as const) {
     await expect(editor).toHaveValue(
       "The edit kept after two refused navigations.",
     );
-    await expect(page.getByRole("status").last()).toContainText(
+    await expect(page.locator("main").getByRole("status").last()).toContainText(
       "Your unsaved edits stay on this page.",
     );
     expect(
@@ -394,7 +394,7 @@ for (const action of ["Add a word", "Search"] as const) {
     await expect(page).toHaveURL(/\/new\/editor$/);
     await page.evaluate(() => (window as any).__restoreSave());
     await page.getByRole("button", { name: "retry", exact: true }).click();
-    await expect(page.getByRole("status").last()).toHaveText(
+    await expect(page.locator("main").getByRole("status").last()).toHaveText(
       "Saved in this browser",
     );
     await page.reload();
@@ -460,7 +460,7 @@ test("a cancelled kind dialog supersedes pending Back without detaching the edit
           .meaning,
     )
     .toBe("The edit after the cancelled dialog.");
-  await expect(page.getByRole("status").last()).toHaveText(
+  await expect(page.locator("main").getByRole("status").last()).toHaveText(
     "Saved in this browser",
   );
   await expect(page).toHaveURL(/\/new\/meaning$/);

@@ -485,7 +485,12 @@ async function stageSource(path: string, db: DatabaseSync, output: SqlReport) {
       const locator = (copy.fragments ?? [copy])
         .map(({ row, line }) => `${copy.table}/COPY-row=${row}/line=${line}`)
         .join(" + ");
-      const recovered = recoveredId(copy, issueKey(copy.table));
+      // A line break or extra tab can turn a partial owner into another captured definition ID.
+      const recovered =
+        copy.table === "keywordmapping" &&
+        (copy.values.length !== copy.columns.length || copy.fragments)
+          ? null
+          : recoveredId(copy, issueKey(copy.table));
       const definitionId =
         copy.table === "definitions" ? recoveredId(copy, "definitionid") : null;
       if (definitionId !== null && definitionId > 0)
@@ -1605,6 +1610,20 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
           `Manifest row count ${expected === undefined ? "is unknown" : "differs"} for ${table}: declared ${expected ?? "unknown"}, ${units} COPY rows ${actual ?? "absent"}${TABLES.has(table) ? `, physical COPY rows ${result.table_rows[table] ?? "absent"}` : ""}. No source repair was inferred.`,
         );
       }
+    }
+    const unownedMapping = stage
+      .prepare(
+        "SELECT locator FROM issues AS issue WHERE table_name='keywordmapping' AND (source_key IS NULL OR NOT EXISTS (SELECT 1 FROM rows WHERE table_name='definitions' AND source_id=issue.source_key)) LIMIT 1",
+      )
+      .get();
+    if (unownedMapping) {
+      result.incomplete = true;
+      stage
+        .prepare("INSERT OR IGNORE INTO incomplete_tables VALUES(?,?)")
+        .run(
+          "keywordmapping",
+          `The keywordmapping source evidence is incomplete. A malformed row at ${unownedMapping.locator} has no reliable captured definition owner.`,
+        );
     }
     const stageBytes = (await stat(stagePath)).size;
     const definitionRows = Number(

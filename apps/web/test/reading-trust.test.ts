@@ -9,10 +9,10 @@ import {
   acceptFirstSignature,
 } from "./helpers.ts";
 
-async function transferFixture(page: Page, accepted = false) {
+async function transferFixture(page: Page, accepted = false, base = "/api/v1") {
   const old = await createIdentity(page);
   const data = await page.evaluate(
-    async ({ old, accepted, corePath, passphrase }) => {
+    async ({ old, accepted, base, corePath, passphrase }) => {
       const core = await import(corePath);
       await core.initializeCore();
       const { createKey, unlockKey } = await import(
@@ -27,7 +27,7 @@ async function transferFixture(page: Page, accepted = false) {
         { kind: "identity.transfer", successor: successor.backup.identity },
       );
       const send = async (transport: unknown) => {
-        const response = await fetch("/api/v1/events", {
+        const response = await fetch(`${base}/events`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(transport),
@@ -50,25 +50,28 @@ async function transferFixture(page: Page, accepted = false) {
         accept: accept?.envelope,
       };
     },
-    { old, accepted, corePath, passphrase: PASSPHRASE },
+    { old, accepted, base, corePath, passphrase: PASSPHRASE },
   );
   // Recovery tests require these peer records in the completed snapshot.
   for (const event of [data.transfer, ...(data.accept ? [data.accept] : [])]) {
     await expect
       .poll(() =>
-        page.evaluate(async (id) => {
-          const response = await fetch(
-            `/api/v1/receipts/${encodeURIComponent(id)}`,
-          );
-          if (!response.ok) return false;
-          const receipt = await response.json();
-          return (
-            receipt.snapshot !== null &&
-            !receipt.reasons.some((reason: string) =>
-              ["index_lag", "evaluation_pending"].includes(reason),
-            )
-          );
-        }, event.id),
+        page.evaluate(
+          async ({ id, base }) => {
+            const response = await fetch(
+              `${base}/receipts/${encodeURIComponent(id)}`,
+            );
+            if (!response.ok) return false;
+            const receipt = await response.json();
+            return (
+              receipt.snapshot !== null &&
+              !receipt.reasons.some((reason: string) =>
+                ["index_lag", "evaluation_pending"].includes(reason),
+              )
+            );
+          },
+          { id: event.id, base },
+        ),
       )
       .toBe(true);
   }
@@ -87,7 +90,7 @@ test("private trust needs a key while private Ignore stays available", async ({
     panel.getByRole("link", { name: "Create or restore your key" }),
   ).toBeVisible();
   await panel.getByRole("button", { name: "Trust", exact: true }).click();
-  await expect(page.getByRole("status")).toContainText(
+  await expect(page.locator("#app > [role=status]")).toContainText(
     "Create or restore a key",
   );
   expect(
@@ -112,7 +115,7 @@ test("private scopes convert spellings and reject bad language tags before stora
   await panel.getByLabel("Word ID").fill("klama");
   await panel.getByLabel("Definition language").fill("a-en");
   await panel.getByRole("button", { name: "Ignore", exact: true }).click();
-  await expect(page.getByRole("status")).toContainText("BCP 47");
+  await expect(page.locator("#app > [role=status]")).toContainText("BCP 47");
   await panel.getByLabel("Definition language").fill("en");
   await panel.getByRole("button", { name: "Ignore", exact: true }).click();
   const result = await page.evaluate(async (corePath) => {
@@ -286,7 +289,7 @@ test("an ordinary signature keeps the loaded personal calculation for its snapsh
     .getByRole("button", { name: "Endorse" })
     .click();
   await acceptFirstSignature(page);
-  await expect(page.getByRole("status")).toContainText("published");
+  await expect(page.locator("#app > [role=status]")).toContainText("published");
   await expect(panel).toContainText("Personal view calculated in this browser");
   expect(await panel.innerText()).toBe(before);
 });
@@ -327,7 +330,7 @@ test("a complete negative acceptance scan allows one warned recovery and retires
   for (const checkbox of await form.getByRole("checkbox").all())
     await checkbox.check();
   await sign.dblclick();
-  await expect(page.getByRole("status")).toContainText(
+  await expect(page.locator("#app > [role=status]")).toContainText(
     "One recovery acceptance is saved",
   );
   const result = await page.evaluate(
@@ -667,9 +670,9 @@ for (const change of ["judgment", "transfer", "compromise"] as const) {
       await page.getByLabel("Backup file").setInputFiles(backupPath!);
       await page.getByLabel("Its passphrase").fill(PASSPHRASE);
       await page.getByRole("button", { name: "Test the backup" }).click();
-      await expect(page.getByRole("status").last()).toContainText(
-        "recovers the new key",
-      );
+      await expect(
+        page.locator("main").getByRole("status").last(),
+      ).toContainText("recovers the new key");
       await expect(page.getByRole("checkbox")).toHaveCount(3);
       for (const box of await page.getByRole("checkbox").all())
         await box.check();
@@ -821,7 +824,7 @@ test("a peer compromise during the notice unlock wait resets approval before any
     await mirror.watchSignatures();
     await dialog.getByLabel("Passphrase of the retired key").fill(PASSPHRASE);
     await dialog.getByRole("button", { name: "Unlock", exact: true }).click();
-    await expect(page.getByRole("status")).toContainText(
+    await expect(page.locator("#app > [role=status]")).toContainText(
       "The known history changed",
     );
     await expect(records.getByRole("checkbox")).toHaveCount(2);
@@ -888,7 +891,7 @@ test("changing the compromise key during unlock cannot replace the approved prev
     await history.watchSignatures();
     await dialog.getByLabel("Passphrase of the retired key").fill(PASSPHRASE);
     await dialog.getByRole("button", { name: "Unlock", exact: true }).click();
-    await expect(page.getByRole("status")).toContainText(
+    await expect(page.locator("#app > [role=status]")).toContainText(
       "The known history changed",
     );
     for (const box of await page.getByRole("checkbox").all())
@@ -956,7 +959,7 @@ test("a late acceptance found by the final recovery scan prevents a new signatur
     await expect(
       page.getByRole("region", { name: "Acceptance recovery" }),
     ).toContainText(acceptance);
-    await expect(page.getByRole("status")).toContainText(
+    await expect(page.locator("#app > [role=status]")).toContainText(
       "acceptance search changed",
     );
     expect(
@@ -1058,7 +1061,7 @@ test("a late acceptance held only by a mirror blocks recovery before any signatu
     await form
       .getByRole("button", { name: "Sign one recovery acceptance" })
       .click();
-    await expect(page.getByRole("status")).toContainText(
+    await expect(page.locator("#app > [role=status]")).toContainText(
       /acceptance search changed|One recovery acceptance is saved/,
     );
     expect(await mirror.signatures()).toBe(0);
@@ -1068,7 +1071,7 @@ test("a late acceptance held only by a mirror blocks recovery before any signatu
         return (await new LocalStore().list("outbox")).length;
       }),
     ).toBe(0);
-    await expect(page.getByRole("status")).toContainText(
+    await expect(page.locator("#app > [role=status]")).toContainText(
       "acceptance search changed",
     );
     const recovery = page.getByRole("region", { name: "Acceptance recovery" });
@@ -1128,7 +1131,7 @@ test("recovery blocks signatures when a peer's final accepted snapshot keeps exp
     await form
       .getByRole("button", { name: "Sign one recovery acceptance" })
       .click();
-    await expect(page.getByRole("status")).toContainText(
+    await expect(page.locator("#app > [role=status]")).toContainText(
       "acceptance search changed",
     );
     await expect(page.locator("main")).toContainText(
@@ -1385,4 +1388,66 @@ test("private rule labels use the loaded calculation continuity across a newer a
   expect(result.withoutCalculation.text).toContain(
     "No personal calculation is loaded. This rule depends on accepted continuity in the next calculation snapshot.",
   );
+});
+
+test("recovery keeps the incomplete-peer reason for an authenticated mirror transfer", async ({
+  page,
+}) => {
+  const self = await acceptedHistoryFixture(page);
+  const mirror = await acceptedHistoryFixture(page, "/mirror/api/v1");
+  let pattern: string | null = null;
+  try {
+    const data = await transferFixture(page, false, "/mirror/api/v1");
+    expect((await self.history(data.old.identity)).events).toEqual([]);
+    expect((await mirror.history(data.old.identity)).events).toEqual([
+      data.transfer.id,
+    ]);
+    await page.evaluate(async () => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      await new LocalStore().setPreferences({
+        peers: [
+          { id: "self", base: "/api/v1", label: "this server" },
+          { id: "mirror", base: "/mirror/api/v1", label: "mirror" },
+        ],
+      });
+    });
+    pattern = `${new URL(page.url()).origin}/api/v1/identities/${encodeURIComponent(data.old.identity)}/activity**`;
+    await page.route(pattern, async (route) => {
+      const url = new URL(route.request().url());
+      if (
+        url.searchParams.get("accepted") !== "1" ||
+        !url.searchParams.has("snapshot")
+      )
+        return route.fallback();
+      return route.fulfill({
+        status: 410,
+        json: {
+          code: "snapshot_expired",
+          message: "The fixture snapshot expired.",
+          event: null,
+          field: null,
+        },
+      });
+    });
+    await page.goto("/identity/transfer");
+    const recovery = page.getByRole("region", { name: "Acceptance recovery" });
+    await expect(recovery).toContainText(data.transfer.id);
+    await expect(recovery).toContainText(
+      "Recovery needs a complete answer from every configured peer",
+    );
+    await expect(recovery).not.toContainText("could not be authenticated");
+    await expect(
+      page.getByRole("button", { name: "Sign one recovery acceptance" }),
+    ).toHaveCount(0);
+    expect(
+      await page.evaluate(async () => {
+        const { LocalStore } = await import(String("/src/data/store.ts"));
+        return (await new LocalStore().list("outbox")).length;
+      }),
+    ).toBe(0);
+  } finally {
+    if (pattern) await page.unroute(pattern);
+    await mirror.close();
+    await self.close();
+  }
 });

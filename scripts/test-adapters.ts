@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { assertResponseStatus } from "./adapter-status.ts";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { createServer } from "node:net";
@@ -221,12 +222,12 @@ async function waitMaterialized(index: number, posted?: any) {
       await new Promise((done) => setTimeout(done, 25));
       continue;
     }
-    assert.equal(response.status, 200, await response.clone().text());
+    await assertResponseStatus(response, 200);
     const manifest: any = await response.json();
     let receipt: any;
     if (posted) {
       const received = await api(index, "/receipts/" + posted.id);
-      assert.equal(received.status, 200, await received.clone().text());
+      await assertResponseStatus(received, 200);
       receipt = await received.json();
       assert.equal(receipt.cursor, posted.cursor);
       assert.equal(receipt.envelope_hash, posted.envelope_hash);
@@ -274,7 +275,7 @@ try {
     await start(index, false);
     const disabled: any = await (await api(index, "/capabilities")).json();
     assert.equal(disabled.features.assistance, false);
-    assert.equal((await api(index, "/assist", {})).status, 503);
+    await assertResponseStatus(await api(index, "/assist", {}), 503);
     await stop(index);
     // Invalid embedding fields must leave both hosts' generation jobs available.
     await start(index, true, true);
@@ -321,7 +322,7 @@ try {
         }),
       },
     );
-    assert.equal(assist.status, 202, await assist.clone().text());
+    await assertResponseStatus(assist, 202);
     const accepted = (await assist.json()) as any;
     assert.match(accepted.expires_at, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/);
     let result: any;
@@ -330,7 +331,7 @@ try {
         `http://127.0.0.1:${ports[index]}/api/v1/jobs/${accepted.job}`,
         { headers: { cookie } },
       );
-      assert.equal(poll.status, 200);
+      await assertResponseStatus(poll, 200);
       result = await poll.json();
       if (!["queued", "running"].includes(result.state)) break;
       await new Promise((done) => setTimeout(done, 50));
@@ -359,26 +360,24 @@ try {
     assert.equal(((await acknowledged.json()) as any).result, null);
     if (process.env.JVC_ADAPTER_CORPUS_ONLY !== "enabled") {
       const missing = await api(index, "/events", { ...entry, body: null });
-      assert.equal(missing.status, 201);
+      await assertResponseStatus(missing, 201);
       const original: any = await materializedReceipt(
         index,
         await missing.json(),
       );
       const complete = await api(index, "/events", entry);
-      assert.equal(complete.status, 200);
+      await assertResponseStatus(complete, 200);
       const receipt: any = await materializedReceipt(
         index,
         await complete.json(),
       );
       assert.equal(receipt.cursor, original.cursor);
       assert.notEqual(receipt.snapshot, original.snapshot);
-      assert.equal(
-        (
-          await api(
-            index,
-            `/bodies/${entry.envelope.header.content!.hash}?snapshot=${original.snapshot}`,
-          )
-        ).status,
+      await assertResponseStatus(
+        await api(
+          index,
+          `/bodies/${entry.envelope.header.content!.hash}?snapshot=${original.snapshot}`,
+        ),
         404,
       );
       receipts[index] = receipt;
@@ -390,7 +389,7 @@ try {
         capabilities.assistance_profiles,
       );
       const retry = await api(index, "/events", entry);
-      assert.equal(retry.status, 200);
+      await assertResponseStatus(retry, 200);
       assert.deepEqual(
         await materializedReceipt(index, await retry.json()),
         receipt,
@@ -398,8 +397,8 @@ try {
       const changes: any = await (await api(index, "/changes")).json();
       assert.equal(changes.items.length, 1);
       assert.equal(changes.items[0].id, entry.envelope.id);
-      assert.equal(
-        (await api(index, `/events/${entry.envelope.id}`)).status,
+      await assertResponseStatus(
+        await api(index, `/events/${entry.envelope.id}`),
         200,
       );
       // A definition makes the adapter build search packages in both versions.
@@ -437,7 +436,7 @@ try {
         },
       );
       const published = await api(index, "/events", definition);
-      assert.equal(published.status, 201, await published.clone().text());
+      await assertResponseStatus(published, 201);
       await materializedReceipt(index, await published.json());
       // The newer read routes answer on both adapters with the same shapes.
       const manifest: any = await (await api(index, "/manifest")).json();
@@ -454,7 +453,7 @@ try {
         index,
         `/packages/en?version=2&snapshot=${encodeURIComponent(manifest.snapshot)}`,
       );
-      assert.equal(packageResponse.status, 200);
+      await assertResponseStatus(packageResponse, 200);
       const packageBytes = new Uint8Array(await packageResponse.arrayBuffer());
       assert.equal(packageBytes.length, descriptor.bytes);
       assert.equal(contentHash(packageBytes), descriptor.hash);
@@ -467,7 +466,7 @@ try {
         index,
         `/package-parts/${encodeURIComponent(pkg.parts[0].hash)}`,
       );
-      assert.equal(partResponse.status, 200);
+      await assertResponseStatus(partResponse, 200);
       const partBytes = new Uint8Array(await partResponse.arrayBuffer());
       assert.equal(partBytes.length, pkg.parts[0].bytes);
       assert.equal(contentHash(partBytes), pkg.parts[0].hash);
@@ -526,7 +525,7 @@ try {
         },
       );
       const viewResponse = await api(index, "/events", view);
-      assert.equal(viewResponse.status, 201, await viewResponse.clone().text());
+      await assertResponseStatus(viewResponse, 201);
       await materializedReceipt(index, await viewResponse.json());
       // A second signed view selects the route-refusal profile. Each view
       // reports its own profile through both adapters.
@@ -557,7 +556,7 @@ try {
         },
       );
       const shunResponse = await api(index, "/events", shunView);
-      assert.equal(shunResponse.status, 201, await shunResponse.clone().text());
+      await assertResponseStatus(shunResponse, 201);
       await materializedReceipt(index, await shunResponse.json());
       const wordPath = `/words/${encodeURIComponent(wordId(definitionWord))}`;
       for (const [chosen, algorithm] of [
@@ -582,17 +581,17 @@ try {
         retired: "1",
       };
       const postSearch = await api(index, "/search", searchFields);
-      assert.equal(postSearch.status, 200, await postSearch.clone().text());
+      await assertResponseStatus(postSearch, 200);
       const getSearch = await api(
         index,
         `/search?${new URLSearchParams(Object.entries(searchFields).map(([name, value]) => [name, String(value)]))}`,
       );
-      assert.equal(getSearch.status, 200);
+      await assertResponseStatus(getSearch, 200);
       const searched: any = await postSearch.json();
       assert.deepEqual(searched, await getSearch.json());
       assert.equal(searched.query, searchFields.q);
-      assert.equal(
-        (await api(index, "/search", { ...searchFields, q: null })).status,
+      await assertResponseStatus(
+        await api(index, "/search", { ...searchFields, q: null }),
         400,
       );
       const identity = encodeURIComponent(entry.envelope.header.issuer);
@@ -601,11 +600,7 @@ try {
         index,
         `/identities/${identity}?${withView}`,
       );
-      assert.equal(
-        personResponse.status,
-        200,
-        await personResponse.clone().text(),
-      );
+      await assertResponseStatus(personResponse, 200);
       const person: any = await personResponse.json();
       assert.equal(person.profile.state, "known");
       assert.equal(person.profile.claims_complete, true);
@@ -615,12 +610,12 @@ try {
         await api(index, `/identities/${identity}/activity?limit=5&${withView}`)
       ).json();
       assert.ok(activity.items.some((i: any) => i.id === entry.envelope.id));
-      assert.equal(
-        (await api(index, `/identities/${identity}/activity/extra`)).status,
+      await assertResponseStatus(
+        await api(index, `/identities/${identity}/activity/extra`),
         404,
       );
-      assert.equal(
-        (await api(index, `/records?snapshot=sha256:${"0".repeat(64)}`)).status,
+      await assertResponseStatus(
+        await api(index, `/records?snapshot=sha256:${"0".repeat(64)}`),
         410,
       );
       const invalid = await fetch(
@@ -631,7 +626,7 @@ try {
           body: '{"envelope":{},"body":null,"body":null}',
         },
       );
-      assert.equal(invalid.status, 400);
+      await assertResponseStatus(invalid, 400);
       const forbidden = await fetch(
         `http://127.0.0.1:${ports[index]}/api/v1/events`,
         {
@@ -643,7 +638,7 @@ try {
           body: JSON.stringify(entry),
         },
       );
-      assert.equal(forbidden.status, 403);
+      await assertResponseStatus(forbidden, 403);
       let latest: any;
       for (const nonce of ["b", "c", "d", "e"]) {
         const extra = createEvent(
@@ -654,16 +649,14 @@ try {
           null,
         );
         const response = await api(index, "/events", extra);
-        assert.equal(response.status, 201);
+        await assertResponseStatus(response, 201);
         latest = await materializedReceipt(index, await response.json());
       }
-      assert.equal(
-        (
-          await api(
-            index,
-            `/inventory?kind=events&snapshot=${original.snapshot}`,
-          )
-        ).status,
+      await assertResponseStatus(
+        await api(
+          index,
+          `/inventory?kind=events&snapshot=${original.snapshot}`,
+        ),
         410,
       );
       if (index === 0) {
@@ -677,13 +670,11 @@ try {
       }
       await stop(index);
       await start(index);
-      assert.equal(
-        (
-          await api(
-            index,
-            `/inventory?kind=events&snapshot=${original.snapshot}`,
-          )
-        ).status,
+      await assertResponseStatus(
+        await api(
+          index,
+          `/inventory?kind=events&snapshot=${original.snapshot}`,
+        ),
         410,
       );
       const finalRetry: any = await materializedReceipt(
@@ -708,7 +699,7 @@ try {
           body: corpus,
         },
       );
-      assert.equal(batch.status, 201, await batch.clone().text());
+      await assertResponseStatus(batch, 201);
       const result: any = await batch.json();
       assert.equal(
         result.receipts.length,
@@ -726,7 +717,7 @@ try {
             body: await readFile(process.env.JVC_ADAPTER_SELECTION),
           },
         );
-        assert.equal(selection.status, 201, await selection.clone().text());
+        await assertResponseStatus(selection, 201);
       }
       if (process.env.JVC_ADAPTER_VIEW) {
         await waitMaterialized(index);
@@ -734,7 +725,7 @@ try {
           index,
           `/search?q=klama&language=en&view=${process.env.JVC_ADAPTER_VIEW}`,
         );
-        assert.equal(search.status, 200, await search.clone().text());
+        await assertResponseStatus(search, 200);
         assert(((await search.json()) as any).hits.length > 0);
       }
       const manifest: any = (await waitMaterialized(index)).manifest;

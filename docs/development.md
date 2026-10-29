@@ -164,6 +164,13 @@ Requests for the same snapshot and view share evaluation work.
 An evaluation keeps its cache slot until its package publication finishes.
 An unknown or invalid requested view is rejected before full evaluation.
 Alternate views cannot evict the most recent configured-view evaluation.
+The coordinator revision defines that order, including snapshots with equal event positions after a late body arrives.
+Snapshot ID breaks a revision tie. An unknown historical revision sorts below a known current revision.
+Recomputing an older retained snapshot does not give it newer protection.
+During publication, the preceding completed evaluation and the new configured evaluation can occupy both slots.
+An uncached alternate view then reports HTTP 503. Configured reads still use the preceding completed snapshot.
+A failed unpublished package job gives up its configured-view protection. Active session calls still keep that entry until they finish.
+Another package job for that snapshot restores its protection until publication settles.
 If a committed admission cannot obtain an evaluation slot, its receipt still reports the durable acceptance and cursor.
 It reports unavailable interpretation with `evaluation_resource_unavailable`. A later receipt read or retry can evaluate it.
 
@@ -268,11 +275,14 @@ Both extraction commands share one journal for that origin and importer key.
 The SQL extraction uses every source definition language that the format can represent.
 It preserves authored source fields and available history. It omits derived vectors and caches with explicit source limitations.
 Malformed related rows leave affected definitions unresolved. They never create false source removals.
-Split COPY fragments retain their first readable owner and remain malformed, including breaks in different fields.
+Split COPY fragments remain malformed, including breaks in different fields.
 Each table that the importer reads needs a complete COPY block, even when the table is empty.
 Present tables without declared counts are accepted with a visible unknown-count notice. The archived manifest remains unchanged.
 Missing tables remain incomplete evidence. Grouped split records count once when the importer compares declared counts.
 Malformed keyword rows also block definitions that have no well-formed mapping rows. Damaged fragments cannot establish known empty glosses.
+A damaged mapping with no captured definition owner makes the whole mapping table incomplete, even when the declared row count matches.
+A mapping with missing or extra fields, or several fragments, has no reliable owner. It makes the whole mapping table incomplete.
+A full-width malformed mapping can keep per-definition handling when its owner parses cleanly and names a captured definition.
 The report keeps physical counts in `table_rows` and logical counts in `logical_table_rows`.
 Missing lookup rows block only their dependent definitions.
 The importer guide describes both extraction commands, source manifests, and unresolved reports.
@@ -346,6 +356,7 @@ Backfill does not repeat signature checks, body hashing, or canonical JSON check
 It preserves invalid body schema diagnostics. It commits at most 256 rows per batch and reads at most 16 records at once.
 The native golden test pins the complete projection output to `HOST_RECORD_VERSION`.
 Its immutable fixtures live under `crates/jvc-runtime/tests/fixtures` with a separate digest file for each extraction version.
+Versions 3 and 4 were used by intermediate commits of PR #35 and never released. Do not reuse them. Their unused golden files are removed.
 A projection change requires a new version and golden digest. The test covers all body statuses, action kinds, and both publication projections.
 It includes legacy account evidence and attribution fields that the two projections retain differently.
 
@@ -942,6 +953,10 @@ After restart, reservations remain charged and appear as retained operations.
 An operation that was active at restart has unknown cost and retains the larger of its reservation and accumulated charges.
 Retained records do not establish whether an earlier request completed or lost its transport.
 Every error after an embedding reservation names its operation through the error's `operation` field.
+Before diagnostic retention loss on the same service instance, an error ID with no status record means that nothing was sent.
+The 64-record diagnostic limit can hide finished operations. Inactive spending entries can expire after 24 hours.
+A restart can also lose records for finished operations, including sent failures with a known zero charge.
+After any such loss, an absent ID leaves it unknown whether the service sent the request.
 An operator can inspect these records and request a new bounded attempt through the same service after a limit clears.
 The earlier charge remains. A stuck transport requires its completion or a service restart before its slot returns.
 Job pause, resume, and explicit retry links belong to later indexing work.

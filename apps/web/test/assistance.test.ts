@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page, type Request } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 import {
   fixture,
@@ -223,8 +223,16 @@ async function mockAssistant(page: Page, options: MockOptions = {}) {
   let result: any;
   let released = !options.delay;
   let capabilityReads = 0;
+  let capabilityGate:
+    | { released: Promise<void>; reached: (request: Request) => void }
+    | undefined;
   await page.route("**/api/v1/capabilities", async (route) => {
+    const gate = capabilityGate;
     capabilityReads++;
+    if (gate) {
+      gate.reached(route.request());
+      await gate.released;
+    }
     const actual = await route.fetch();
     const caps = await actual.json();
     await route.fulfill({
@@ -388,6 +396,35 @@ async function mockAssistant(page: Page, options: MockOptions = {}) {
     },
     deletions: () => deleted,
     capabilityReads: () => capabilityReads,
+    holdCapabilities: () => {
+      let release!: () => void;
+      let reached!: (request: Request) => void;
+      const request = new Promise<Request>((resolve) => {
+        reached = resolve;
+      });
+      const gate = {
+        released: new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+        reached,
+      };
+      capabilityGate = gate;
+      const response = request.then((held) => held.response());
+      return {
+        request,
+        response,
+        release: () => {
+          if (capabilityGate === gate) capabilityGate = undefined;
+          release();
+        },
+        finished: async () => {
+          const actual = await response;
+          expect(actual).not.toBeNull();
+          expect(await actual!.finished()).toBeNull();
+          return actual!;
+        },
+      };
+    },
   };
 }
 async function draft(
@@ -660,10 +697,156 @@ test("cancel, navigation, and the off setting cancel jobs without applying delay
   await page.getByRole("link", { name: "Settings", exact: true }).click();
   await expect.poll(mock.deletions).toBe(2);
   await page.getByRole("checkbox", { name: "Use AI assistance" }).uncheck();
+  await expect(
+    page
+      .locator("main")
+      .getByText("Assistance setting saved in this browser.", {
+        exact: true,
+      }),
+  ).toBeVisible();
+  await expect(
+    page.getByText(
+      "Manual authoring and local search work without these services.",
+      {
+        exact: true,
+      },
+    ),
+  ).toBeVisible();
   mock.release();
+  const capabilities = mock.holdCapabilities();
+  let capabilityResponded = false;
+  void capabilities.response.then(() => {
+    capabilityResponded = true;
+  });
   await page.goto("/new/type");
+  await expect(
+    page.getByRole("heading", { name: "What kind of word?" }),
+  ).toBeVisible();
+  await capabilities.request;
+  expect(capabilityResponded).toBe(false);
+  capabilities.release();
+  await capabilities.finished();
   await expect(page.locator(".ai-action:visible")).toHaveCount(0);
   expect((await stored(page)).kind).toBe("gismu");
+  await page.getByRole("link", { name: "Settings", exact: true }).click();
+  await expect(
+    page.getByRole("checkbox", { name: "Use AI assistance" }),
+  ).not.toBeChecked();
+});
+
+test("assistance settings keep navigation on the page until the choice is saved", async ({
+  page,
+}) => {
+  const mock = await mockAssistant(page);
+  await draft(page);
+  await page.getByRole("link", { name: "Settings", exact: true }).click();
+  await page.getByRole("checkbox", { name: "Use AI assistance" }).waitFor();
+  await expect(
+    page.getByText(
+      "Manual authoring and local search work without these services.",
+      {
+        exact: true,
+      },
+    ),
+  ).toBeVisible();
+  await page.clock.install({ time: new Date("2026-10-27T12:00:00Z") });
+  await page.clock.pauseAt(new Date("2026-10-27T12:00:01Z"));
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const original = LocalStore.prototype.setPreferences;
+    const held = new Promise<void>((resolve) => {
+      (window as any).releasePreferenceSave = resolve;
+    });
+    LocalStore.prototype.setPreferences = async function (patch: {
+      useAiAssistance?: boolean;
+    }) {
+      if (patch.useAiAssistance === false) await held;
+      return original.call(this, patch);
+    };
+  });
+  await page.getByRole("checkbox", { name: "Use AI assistance" }).uncheck();
+  await page.getByRole("link", { name: "Add a word", exact: true }).click();
+  expect(new URL(page.url()).pathname).toBe("/preferences");
+  await expect(
+    page.getByText("Saving assistance setting.", { exact: true }),
+  ).toBeVisible();
+  const warning = page.waitForEvent("dialog");
+  const reload = page.evaluate(() => location.reload());
+  const dialog = await warning;
+  expect(dialog.type()).toBe("beforeunload");
+  await dialog.dismiss();
+  await reload;
+  expect(new URL(page.url()).pathname).toBe("/preferences");
+  await page.evaluate(() => (window as any).releasePreferenceSave());
+  await expect(page).toHaveURL(/\/new\/meaning$/);
+  await expect(page.getByLabel("Meaning", { exact: true })).toBeVisible();
+  expect(
+    await page.evaluate(() => {
+      const event = new Event("beforeunload", { cancelable: true });
+      window.dispatchEvent(event);
+      return event.defaultPrevented;
+    }),
+  ).toBe(false);
+  await page.clock.resume();
+  const capabilities = mock.holdCapabilities();
+  await page.goto("/new/type");
+  await expect(
+    page.getByRole("heading", { name: "What kind of word?" }),
+  ).toBeVisible();
+  await capabilities.request;
+  capabilities.release();
+  await capabilities.finished();
+  await expect(page.locator(".ai-action:visible")).toHaveCount(0);
+  await page.getByRole("link", { name: "Settings", exact: true }).click();
+  await expect(
+    page.getByRole("checkbox", { name: "Use AI assistance" }),
+  ).not.toBeChecked();
+});
+
+test("an assistance setting save failure restores the choice and releases navigation", async ({
+  page,
+}) => {
+  await mockAssistant(page);
+  await draft(page);
+  await page.getByRole("link", { name: "Settings", exact: true }).click();
+  const choice = page.getByRole("checkbox", { name: "Use AI assistance" });
+  await choice.waitFor();
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const original = LocalStore.prototype.setPreferences;
+    const held = new Promise<void>((resolve) => {
+      (window as any).failPreferenceSave = resolve;
+    });
+    LocalStore.prototype.setPreferences = async function (patch: {
+      useAiAssistance?: boolean;
+    }) {
+      if (patch.useAiAssistance === false) {
+        await held;
+        throw new Error("Test preference write failed.");
+      }
+      return original.call(this, patch);
+    };
+  });
+  await choice.uncheck();
+  await page.evaluate(() => (window as any).failPreferenceSave());
+  await expect(
+    page
+      .locator("main")
+      .getByText("Not saved: Test preference write failed.", { exact: true }),
+  ).toBeVisible();
+  expect(new URL(page.url()).pathname).toBe("/preferences");
+  await expect(choice).toBeChecked();
+  await expect(choice).toBeEnabled();
+  expect(
+    await page.evaluate(() => {
+      const event = new Event("beforeunload", { cancelable: true });
+      window.dispatchEvent(event);
+      return event.defaultPrevented;
+    }),
+  ).toBe(false);
+  await page.getByRole("link", { name: "Add a word", exact: true }).click();
+  await expect(page).toHaveURL(/\/new\/meaning$/);
+  await expect(page.getByLabel("Meaning", { exact: true })).toBeVisible();
 });
 
 test("failures and rejected proposal paths leave the manual editor available and retain the log", async ({
@@ -4299,4 +4482,84 @@ test("orphan saved rows migrate without current and Export drafts excludes only 
     text: "A raw legacy draft.",
   });
   expect(rows.some((row: any) => row.kind === "saved-drafts")).toBe(false);
+});
+
+test("a capabilities hold ignores an older response", async ({
+  page,
+}, testInfo) => {
+  const mock = await mockAssistant(page);
+  await page.goto("/preferences");
+  await expect(
+    page.getByText(
+      "Manual authoring and local search work without these services.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  let releaseOlder!: () => void;
+  let olderReached!: () => void;
+  const olderReady = new Promise<void>((resolve) => {
+    olderReached = resolve;
+  });
+  const olderGate = new Promise<void>((resolve) => {
+    releaseOlder = resolve;
+  });
+  await page.route("**/api/v1/capabilities", async (route) => {
+    if (route.request().headers()["x-test-capabilities"] !== "older")
+      return route.fallback();
+    const response = await route.fetch();
+    olderReached();
+    await olderGate;
+    await route.fulfill({ response });
+  });
+  const olderRequest = page.waitForRequest(
+    (request) => request.headers()["x-test-capabilities"] === "older",
+  );
+  const olderFetch = page.evaluate(async () => {
+    const response = await fetch("/api/v1/capabilities", {
+      headers: { "X-Test-Capabilities": "older" },
+    });
+    await response.json();
+  });
+  const older = await olderRequest;
+  await olderReady;
+  const capabilities = mock.holdCapabilities();
+  let capabilityResponded = false;
+  void capabilities.response.then(() => {
+    capabilityResponded = true;
+  });
+  const newerRequest = page.waitForRequest(
+    (request) => request.headers()["x-test-capabilities"] === "newer",
+  );
+  const newerFetch = page.evaluate(async () => {
+    const response = await fetch("/api/v1/capabilities", {
+      headers: { "X-Test-Capabilities": "newer" },
+    });
+    await response.json();
+  });
+  try {
+    const newer = await newerRequest;
+    expect(await capabilities.request).toBe(newer);
+    expect(newer).not.toBe(older);
+    releaseOlder();
+    await olderFetch;
+    const olderResponse = await older.response();
+    expect(olderResponse).not.toBeNull();
+    expect(await olderResponse!.finished()).toBeNull();
+    expect(capabilityResponded).toBe(false);
+    capabilities.release();
+    const response = await capabilities.finished();
+    expect(response.request()).toBe(newer);
+    await testInfo.attach("capabilities-control", {
+      body: JSON.stringify({
+        distinctRequests: older !== newer,
+        olderFinishedWhileNewerHeld: true,
+        responseIsNewer: response.request() === newer,
+      }),
+      contentType: "application/json",
+    });
+  } finally {
+    releaseOlder();
+    capabilities.release();
+    await newerFetch;
+  }
 });

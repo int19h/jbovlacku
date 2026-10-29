@@ -52,7 +52,7 @@ test("downloaded local search sends nothing and offline signing uses saved histo
 }) => {
   await page.goto("/preferences");
   await page.getByRole("button", { name: "Download", exact: true }).click();
-  await expect(page.getByRole("status")).toHaveText(
+  await expect(page.locator("#app > [role=status]")).toHaveText(
     "The English search package is saved in this browser.",
   );
   await expect(page.getByText(/\d+ definitions · snapshot/)).toBeVisible();
@@ -699,7 +699,7 @@ test("a failed package download through Settings keeps the cache and leaves serv
     .first()
     .click()
     .catch(() => {});
-  await expect(page.getByRole("status")).toContainText(
+  await expect(page.locator("#app > [role=status]")).toContainText(
     /invalid|malformed|rejected/,
   );
   const cached = await page.evaluate(async () => {
@@ -994,7 +994,7 @@ test("the client asks for an advertised version 2 package, binds it to the manif
   const urls = packageRequests(page);
   await page.goto("/preferences");
   await page.getByRole("button", { name: "Download", exact: true }).click();
-  await expect(page.getByRole("status")).toHaveText(
+  await expect(page.locator("#app > [role=status]")).toHaveText(
     "The English search package is saved in this browser.",
   );
   expect(urls).toHaveLength(1);
@@ -1028,7 +1028,9 @@ test("the client asks for an advertised version 2 package, binds it to the manif
   // status, so the announced failure marks this attempt's end.
   await page.goto("/preferences");
   await page.getByRole("button", { name: "Refresh English" }).click();
-  await expect(page.getByRole("status")).toContainText("hash did not match");
+  await expect(page.locator("#app > [role=status]")).toContainText(
+    "hash did not match",
+  );
   expect(await cachedPackage(page)).toEqual(cached);
   // Another snapshot inside hash-correct bytes.
   state.v2 = fixture.wrongSnapshot;
@@ -1036,7 +1038,9 @@ test("the client asks for an advertised version 2 package, binds it to the manif
   expect(urls).toHaveLength(7);
   await page.goto("/preferences");
   await page.getByRole("button", { name: "Refresh English" }).click();
-  await expect(page.getByRole("status")).toContainText("hash did not match");
+  await expect(page.locator("#app > [role=status]")).toContainText(
+    "hash did not match",
+  );
   expect(await cachedPackage(page)).toEqual(cached);
   // Each attempt asked for version 2 first and never activated its bytes.
   const versions = urls.map((url) => new URL(url).searchParams.get("version"));
@@ -1072,7 +1076,7 @@ test("an invalid version 2 package falls back to version 1 with a recorded reaso
   const urls = packageRequests(page);
   await page.goto("/preferences");
   await page.getByRole("button", { name: "Download", exact: true }).click();
-  const status = page.getByRole("status");
+  const status = page.locator("#app > [role=status]");
   await expect(status).toContainText(
     "The English search package is saved in this browser as version 1.",
   );
@@ -1134,7 +1138,7 @@ test("a version 2 transport failure, server error, or cancel makes no version 1 
   await servePackages(page, snapshot, state);
   const urls = packageRequests(page);
   await page.goto("/preferences");
-  const status = page.getByRole("status");
+  const status = page.locator("#app > [role=status]");
   await page.getByRole("button", { name: "Refresh English" }).click();
   await expect(status).not.toContainText("refreshed");
   await expect(status).not.toHaveText("");
@@ -1198,7 +1202,7 @@ test("a version 2 entry with a cut rafsi list makes the publish page name the in
   await servePackages(page, snapshot, { v1: fixture.v1, v2: fixture.v2 });
   await page.goto("/preferences");
   await page.getByRole("button", { name: "Download", exact: true }).click();
-  await expect(page.getByRole("status")).toHaveText(
+  await expect(page.locator("#app > [role=status]")).toHaveText(
     "The English search package is saved in this browser.",
   );
   await writeClaimDraft(page, "rod");

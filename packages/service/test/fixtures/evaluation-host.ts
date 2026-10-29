@@ -30,6 +30,7 @@ if (!workerData.inline) {
 }
 let state = emptyState();
 const snapshots = new Map<string, Snapshot>();
+const snapshotRevisions = new Map<string, number>();
 const bytes = new Map<string, Uint8Array>();
 const coordinator = {
   async load() {
@@ -38,10 +39,16 @@ const coordinator = {
   async getSnapshot(id: string) {
     return snapshots.get(id) ?? null;
   },
+  async getSnapshotRevision(id: string) {
+    return snapshots.has(id) ? snapshotRevisions.get(id)! : null;
+  },
   async compareAndSwap(revision: number, next: State, snapshot?: Snapshot) {
     if (state.revision !== revision) return false;
     state = next;
-    if (snapshot) snapshots.set(snapshot.snapshot, snapshot);
+    if (snapshot) {
+      snapshots.set(snapshot.snapshot, snapshot);
+      snapshotRevisions.set(snapshot.snapshot, next.revision);
+    }
     return true;
   },
 };

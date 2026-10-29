@@ -16,7 +16,7 @@ import {
 } from "../src/inference.ts";
 import { EMBEDDING_MODEL } from "../src/embedding.ts";
 import { DictionaryService } from "../src/service.ts";
-import { emptyState } from "../src/storage.ts";
+import { MemoryCoordinator } from "./fixtures/memory-coordinator.ts";
 import { nodeAssistance } from "../../../apps/server/src/assistance.ts";
 
 before(async () =>
@@ -794,11 +794,15 @@ for (const blockedSave of ["retry", "reservation"] as const) {
     const entered = deferred<void>();
     const release = deferred<void>();
     const background: Promise<unknown>[] = [];
+    const caller = new AbortController();
+    const savedAfterAbort: AssistanceBudgetSnapshot[] = [];
     let saves = 0;
     let calls = 0;
     const budgetStore: AssistanceBudgetStore = {
       load: () => durable.load(),
       async save(snapshot) {
+        if (caller.signal.aborted)
+          savedAfterAbort.push(structuredClone(snapshot));
         saves++;
         if (blockedSave === "retry" && saves === 2)
           throw new Error("The first reservation save failed.");
@@ -836,7 +840,6 @@ for (const blockedSave of ["retry", "reservation"] as const) {
       );
       assert.deepEqual(entries(durable), []);
     }
-    const caller = new AbortController();
     const pending = service
       .embed(input, { kind: "index" }, caller.signal)
       .catch((failure) => failure);
@@ -858,6 +861,13 @@ for (const blockedSave of ["retry", "reservation"] as const) {
     }
     release.resolve();
     await Promise.all(background);
+    if (blockedSave === "retry")
+      assert.ok(
+        savedAfterAbort.every((snapshot) =>
+          snapshot.entries.every((entry) => !entry.id.startsWith("embedding:")),
+        ),
+        "An abort during the retry save must prevent even a temporary embedding reservation.",
+      );
     const afterCancellation = entries(durable);
     const canceledDiagnostics = await service.embeddingOperations();
     const canceledCalls = calls;
@@ -907,11 +917,7 @@ test("unsent failures release their reservation and no disabled capability is in
   );
   const dictionary = new DictionaryService(
     { get: async () => null, put: async () => {} },
-    {
-      load: async () => emptyState(),
-      getSnapshot: async () => null,
-      compareAndSwap: async () => true,
-    },
+    new MemoryCoordinator(),
     {
       assistance: { provider: config() },
       serverId: "embedding-test",
@@ -1149,11 +1155,7 @@ test("invalid embedding settings leave Node generation and browser consent profi
   const capabilities = async (provider: ProviderConfig) => {
     const service = new DictionaryService(
       { get: async () => null, put: async () => {} },
-      {
-        load: async () => emptyState(),
-        getSnapshot: async () => null,
-        compareAndSwap: async () => true,
-      },
+      new MemoryCoordinator(),
       {
         serverId: "test",
         policyUrl: "https://example.test/policy",

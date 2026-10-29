@@ -45,6 +45,8 @@ The [carrier guide](crates/jvc-carrier/README.md) describes canonical files, imp
 The browser supports anonymous lookup, verified definition pages, encrypted key backups with a recovery test, and signed delivery with per-server receipts.
 Search sits in the header of every page. Result rows show the headword, rafsi, type, highlighted definition text, attribution, and a net score with Endorse and Oppose arrows.
 Word pages show every definition under the selected view, with place strips, revision notices, comparisons, source evidence, rafsi pair cards, and reviewer details.
+After an HTTP 503 read failure, word and search pages offer Retry reading with the same URL and selected view.
+A failed retry shows its retry number and announces the current error reason, including HTTP 500 and connection failures.
 Untouched rich-text fields keep their exact stored values. Edited fields normalize line endings, string fragments, trailing whitespace, and paragraph breaks. Ordinary TeX and backslashes stay literal. Code and links stay within one paragraph. The editor shows blank lines inside stored code and labels as single line breaks.
 Word-link and derivation spelling advice never blocks a format-valid reference. Invalid references show plain error sentences.
 Revision comparisons group changes by readable fields and numbered places, with rich text and complete place and source details.
@@ -109,6 +111,9 @@ Present tables without declared counts are accepted with an unknown-count notice
 Absent tables and declared logical row deficits leave dependent definitions unresolved and preserve their selected publications and known baselines.
 Grouped split records count once, so extra physical lines cannot hide a missing record.
 If a keyword table contains malformed rows, definitions without well-formed mapping rows remain unresolved instead of acquiring known empty glosses.
+A mapping with missing or extra fields, or a split mapping, keeps the whole table incomplete.
+This also applies when a fragment names an existing definition.
+If a damaged mapping has no owner in the capture, the whole mapping table remains incomplete even when its row count matches.
 A complete empty table can still establish a real source change.
 Unsupported rows receive unresolved notices. The source archive keeps the original manifest and records the digest and path of the external dump.
 Split rows retain their owner across breaks in different fields. The size estimate counts new publications separately from staged observations.
@@ -145,6 +150,8 @@ The browser does not load or save an unconfigured server view as a signed policy
 The lujvo builder says whether a candidate spelling is taken in the local package and on the server.
 The rafsi page lists known assignments across words from version 2 packages, and the claim page signs a claim with its pair blessing.
 The lujvo builder offers short rafsi, gismu stems, whole gismu, whole-word parts under the extended profile, locks, CLL scores, recovered parts, and every competing rafsi claim from the local package.
+A combination above 128 bytes leaves shorter candidates available.
+The bounded rejected list shows parse failures before examples of overlong spellings.
 If several parts share the same competing rafsi claim, the builder shows one acknowledgment for that claim.
 A word entered on Meaning gets local form detection and an exact identity lookup in the selected language package.
 Headword analysis lowercases author input, so capitals do not mark stress. Authors must write word breaks explicitly.
@@ -210,6 +217,7 @@ Draft reload preserves private `stem` and `ipa` values. Neither enters a signed 
 Publication keeps each source row's word, `word_ipa`, scoring input, weight, and notes.
 New signatures omit unknown `word_ipa` values. Retained signed bodies and private revision markers preserve original field presence without copying it into fresh source rows.
 Known weights, including zero, survive regardless of private `stem` or `ipa` values.
+Revise also keeps a signed source that names only a language, including an empty or whitespace-only word with null input and weight.
 The gismu source editor has seven readable columns inside its own scrolling region at 360 and 1280 CSS pixels.
 Each Remove action includes a row number and names its source language when known, including after a custom language edit.
 The names stay unique for alternatives and rows with no language yet.
@@ -260,6 +268,18 @@ Component suggestions keep selected exact source definitions.
 Place mappings also preserve exact definitions for repeated component words.
 The model keeps studied names such as `klama[2]`. Ambiguous repeated definitions require an `unclear` mapping.
 Turning assistance off reaches other open tabs and cancels their active jobs.
+Settings shows when the assistance choice reaches browser storage and reports a failed save.
+The assistance checkbox keeps keyboard focus and ignores repeated input while its save runs.
+Internal navigation waits up to two seconds for pending preference writes, then continues while storage keeps working.
+A visible notice explains a pending save. The app announces late success and every save failure after navigation too.
+Reload or exit warns while a write remains pending. A failed save keeps the committed preference and permits navigation.
+A late save keeps the page that the reader chose. Earlier save completions preserve newer control choices.
+The empty shell announcement region stays available to assistive software. Fast assistance saves use inline feedback without a toast.
+The inline assistance status also stays available while empty and announces a fast save.
+A failed assistance save uses one live status region. A result after navigation uses the shell status.
+The first-signature dialog shows storage errors inside the dialog and permits another attempt.
+Browser tests cover these outcomes, focus, saved off-state reloads, and receipt waits before personal recomputation.
+The assistance tests bind delayed capability responses to held requests and cover an older response that finishes during a newer hold.
 
 The private attempt log offers Markdown and JSON export. Signed publications omit AI logs.
 Both local adapters offer operator-controlled assistance, off by default, with server-held keys and bounded private jobs.
@@ -428,6 +448,13 @@ After publication, the host releases the older runtime when its active calls fin
 It keeps that snapshot's completed state and packages in the bounded cache.
 Pinned reads use those results without restarting evaluation. Word scores remain unavailable after the older runtime stops.
 The next evaluation can evict the older cached result when it needs the slot.
+A failed unpublished package job releases its configured-view protection while active calls keep their cache entries.
+An alternate view can then use that slot after those calls finish. The completed snapshot keeps its protection.
+Recomputing an older retained snapshot does not give it newer protection than the completed snapshot.
+This also applies after a late body changes the snapshot without advancing the event position.
+The cache uses the saved coordinator revision, including after restart, with snapshot ID as a fixed tie breaker.
+Pinned reads load this revision on Node and Worker before any unpinned current read.
+Node also retains this order when newer accepted records wait behind a completed checkpoint.
 
 Workers transfer state bytes without retaining another parsed JavaScript state. Judgment updates share unchanged result objects on the main thread.
 

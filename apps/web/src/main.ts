@@ -45,6 +45,10 @@ import {
 import { PersonalCalculator } from "./data/personal.ts";
 import { classifyReceipt } from "./data/delivery.ts";
 import { watchReaderFocus } from "./app/focus.ts";
+import {
+  appendReadRetry,
+  takeReadRetryAttempt,
+} from "./components/readretry.ts";
 
 const root = document.querySelector<HTMLDivElement>("#app")!;
 type Page = (
@@ -103,6 +107,7 @@ async function start() {
       personal.invalidate();
     }
   });
+  let preferenceMessage: string | undefined;
   const app: App = {
     store,
     personal,
@@ -112,13 +117,23 @@ async function start() {
     shell,
     own,
     offlineSigning,
-    announce: (message) => shell.announce(message),
+    announce: (message) => {
+      preferenceMessage = undefined;
+      shell.announce(message);
+    },
   };
-  shell.setViewLabel(
-    session.preferences.viewMode === "personal"
-      ? "Trust: personal view"
-      : "Trust: site view",
-  );
+  session.subscribePreferenceStatus((message) => {
+    app.announce(message);
+    preferenceMessage = message;
+  });
+  const updateViewLabel = () =>
+    shell.setViewLabel(
+      session.preferences.viewMode === "personal"
+        ? "Trust: personal view"
+        : "Trust: site view",
+    );
+  session.subscribe(updateViewLabel);
+  updateViewLabel();
   if (!session.storageAvailable) {
     const warning = el("p", {
       class: "notice",
@@ -152,7 +167,8 @@ async function start() {
     controller.abort();
     controller = new AbortController();
     const signal = controller.signal;
-    shell.announce("");
+    // Keep save outcomes visible when a waiting navigation replaces the page.
+    if (shell.status.textContent !== preferenceMessage) shell.announce("");
     syncSearchField(shell, route);
     if (session.storageAvailable) void delivery.invalidate();
     const main = shell.main;
@@ -165,6 +181,7 @@ async function start() {
       main,
       live: () => current === revision,
       signal,
+      readRetryAttempt: takeReadRetryAttempt(),
       focus: (target, options) =>
         current === revision && readerFocus.focus(target, options),
       title: (value) => {
@@ -240,6 +257,7 @@ async function start() {
     } catch (error) {
       if (current === revision) {
         main.append(p(describe(error), "notice"));
+        appendReadRetry(main, error, context, app.announce);
       }
     } finally {
       readerFocus.stop();
@@ -262,7 +280,12 @@ async function start() {
     commitDraftNavigation();
     void render(route, options);
   });
-  if (session.storageAvailable) setNavigationGuard(guardDraftNavigation);
+  if (session.storageAvailable)
+    setNavigationGuard((target) =>
+      session.preferencesSaving
+        ? session.waitForPreferences().then(() => guardDraftNavigation(target))
+        : guardDraftNavigation(target),
+    );
   installRouter();
   await render(currentRoute(), { focusHeading: false });
 }
