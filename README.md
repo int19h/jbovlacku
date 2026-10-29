@@ -45,7 +45,7 @@ The [carrier guide](crates/jvc-carrier/README.md) describes canonical files, imp
 The browser supports anonymous lookup, verified definition pages, encrypted key backups with a recovery test, and signed delivery with per-server receipts.
 Search sits in the header of every page. Result rows show the headword, rafsi, type, highlighted definition text, attribution, and a net score with Endorse and Oppose arrows.
 Word pages show every definition under the selected view, with place strips, revision notices, comparisons, source evidence, rafsi pair cards, and reviewer details.
-Untouched rich-text fields keep their exact stored values. Edited fields normalize line endings, string fragments, trailing whitespace, and paragraph breaks. Ordinary TeX and backslashes stay literal. Code and links stay within one paragraph. The editor shows blank lines inside stored code and labels as single line breaks.
+Rich-text fields use accessible ProseMirror editors. Places and operands appear as named inline chips. Code and links keep separate inline nodes. Untouched fields retain their exact stored values.
 Word-link and derivation spelling advice never blocks a format-valid reference. Invalid references show plain error sentences.
 Revision comparisons group changes by readable fields and numbered places, with rich text and complete place and source details.
 They align inserted and removed list items and keep exact structured values in closed disclosures.
@@ -106,9 +106,17 @@ Meaning treats only a backslash before a circled numeral as an escape. It preser
 The Places step and the full editor offer hideable advice above three declared places, with firmer text above five.
 A repeating tail counts once. The advice applies to every word type and never blocks publication or enters signed records.
 Revise copies a publication into a new draft with its exact parent and keeps every field: links, code, operands, literal circled characters, every gloss with its language and sense, every derivation, and the frame role. The page names the only changes a native revision makes. A revision of imported text cites the imported publication and copies the source-rights reference once.
-Each rich text field of a draft holds its exact value, and only an edit of that field parses text, so an untouched field never changes. In structured editing every rich text node has a text form, and a backslash keeps a circled numeral or a token character literal. Pasted circled numbers stay literal unless the author chooses references. Removing a place keeps the referent of every other reference. The shared core checks the finished body before Publish is enabled, and every blocking problem names its field.
-Editing beside multiline code or link labels keeps their node types, literal circled numbers, and edge spacing. Runs of blank lines become single line breaks. All rich-text controls support multiple lines.
-URL targets remove only characters ignored by URL parsing, so edited links keep their destination. Rafsi rationales publish blank lines as separate paragraphs.
+The rich editors change the stored node tree directly. Editing beside code, links, or adjacent strings keeps their boundaries, labels, whitespace, and line breaks. Empty editor paragraphs do not enter stored data. A word link stays a word link when its spelling starts with `https://`.
+
+The toolbar inserts places 1 to 3 directly. A dropdown offers places 4 to 50 and identifies declared places. Labeled dialogs insert word links and code. The same editor supports HTTPS links and operand references.
+
+Typing `___` inserts the next free place, and `__N__` inserts place N from 1 through 50. Typed circled numbers also insert places. A semicolon restarts automatic numbering. Backspace restores the characters immediately after conversion. Literal mode keeps circled numbers and underscores as text. It preserves code and links.
+
+Paste reads only plain text. Pasted circled numbers stay literal unless the author chooses references. Pasted markup and underscores stay literal. Copy retains readable place glyphs and operand names. Removing a place keeps the referent of every other reference. The shared core checks the finished body before Publish is enabled, and every blocking problem names its field.
+
+AI frame generation supports up to 16 consecutive places. Manual frames support explicit gaps and more than 16 places. Requests with explicit numbers above 16 or with gaps require manual declarations before separate gloss and type suggestions.
+
+Chromium tests simulate text composition with an input method editor. Real Android and iOS keyboard tests remain pending.
 Word links and place derivations use the shared format rules. Valid uppercase references retain their exact targets and do not block publication.
 A draft saved by the earlier prototype opens a choice to export it, convert it into a wizard draft, or discard it. The old license and attribution fields stay in the export only, because new definitions publish under CC0 1.0.
 Remote lexical search, word pages, and downloaded language packages exclude definitions whose receipts are not effective.
