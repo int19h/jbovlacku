@@ -1,3 +1,8 @@
+import { meaningSearchGroup } from "../components/meaning-search.ts";
+import {
+  matchGroup,
+  type SearchGroup,
+} from "../../../../packages/search/src/index.ts";
 import { naturalLanguageNote } from "../../../../packages/search/src/pattern.ts";
 import {
   searchPackage,
@@ -75,9 +80,11 @@ interface SearchState {
    * choice. Older saved state without this field is not restored.
    */
   choice?: string | null;
-  hits: SearchHit[];
-  next: string | null;
-  cursors: string[];
+  groups: Record<
+    SearchGroup,
+    { hits: SearchHit[]; next: string | null; cursors: string[] }
+  >;
+  allLojban: boolean;
   segmentation?: "complete" | "limited";
 }
 /**
@@ -164,8 +171,6 @@ export async function searchPage(
     ),
   );
   const results = el("section", { "aria-label": "Search results" });
-  const endLine = el("p", { class: "end-line" });
-  endLine.hidden = true;
   const missing = el("div", { class: "missing-line" });
   main.append(countLine);
   // In the personal view the rows score from the local calculation. Its
@@ -180,7 +185,7 @@ export async function searchPage(
           navigate(location.pathname + location.search, { replace: true }),
       }),
     );
-  main.append(results, endLine, missing);
+  main.append(results, missing);
   // Language options come from the manifest and the cached packages.
   const languages = new Set<string>([language, "en"]);
   const packageKeys = app.session.storageAvailable
@@ -234,7 +239,12 @@ export async function searchPage(
         cached,
         language,
         query ? [query] : [],
-        { signal: context.signal },
+        {
+          signal: context.signal,
+          ...(query && isPatternQuery(query)
+            ? { group: "lojban" as const }
+            : { grouped: true }),
+        },
       );
     } catch (error) {
       if (!context.live()) return;
@@ -309,27 +319,68 @@ export async function searchPage(
       }
     }
   };
-  const displayed: SearchHit[] = [];
-  const seen = new Set<string>();
-  const cursors = new Set<string>();
-  let next: string | null = null;
   let snapshot = cached?.snapshot ?? "";
   let view: string | null = null;
-  let localHits: LocalHit[] = [];
-  let localTotal = 0;
-  let stopped = false;
+  let allLojban = initialLocal?.allLojban ?? false;
+  let segmentation = initialLocal?.segmentation;
   let expanding = false;
-  let segmentation: "complete" | "limited" | undefined;
+  const pattern = isPatternQuery(query);
   const segmentationNote = p(
     "Word segmentation reached a limit. Some sequence matches or word cards can be missing. Ordinary text matching remains available.",
     "notice",
   );
   segmentationNote.hidden = true;
   results.before(segmentationNote);
-  if (initialLocal) {
-    localHits = initialLocal.hits[0];
-    localTotal = initialLocal.totals[0];
-    segmentation = initialLocal.segmentation;
+  const groups = {} as Record<
+    SearchGroup,
+    {
+      node: HTMLElement;
+      rows: HTMLElement;
+      status: HTMLElement;
+      end: HTMLElement;
+      hits: SearchHit[];
+      next: string | null;
+      cursors: Set<string>;
+      stopped: boolean;
+      total: number;
+      initial: LocalHit[];
+    }
+  >;
+  for (const [index, key] of (["lojban", "definitions"] as const).entries()) {
+    const label = key === "lojban" ? "Lojban words" : "Definitions";
+    const heading = el("h2", {
+      id: `search-${key}`,
+      class: "section",
+      text: label,
+    });
+    const status = el("p", {
+      class: "count",
+      role: "status",
+      "aria-live": "polite",
+    });
+    const rows = el("div");
+    const end = el("div", { class: "end-line" });
+    const node = el(
+      "section",
+      { "aria-labelledby": heading.id },
+      heading,
+      status,
+      rows,
+      end,
+    );
+    node.hidden = pattern && key === "definitions";
+    groups[key] = {
+      node,
+      rows,
+      status,
+      end,
+      hits: [],
+      next: null,
+      cursors: new Set(),
+      stopped: false,
+      total: initialLocal?.totals[index] ?? 0,
+      initial: initialLocal?.hits[index] ?? [],
+    };
   }
   const remember = () => {
     if (!context.live()) return;
@@ -340,109 +391,33 @@ export async function searchPage(
       snapshot,
       view,
       choice: getPreferredView(),
-      hits: displayed,
-      next,
-      cursors: [...cursors],
       segmentation,
+      allLojban,
+      groups: Object.fromEntries(
+        Object.entries(groups).map(([key, group]) => [
+          key,
+          {
+            hits: group.hits,
+            next: group.next,
+            cursors: [...group.cursors],
+          },
+        ]),
+      ) as SearchState["groups"],
     };
     rememberState({ dictionarySearch: state });
   };
-  // The retired-results filter. Remote search excludes retired publications
-  // unless asked. Local results carry no status, so the filter is remote only.
-  const retired = el("span", { class: "meta" });
-  if (!cached)
-    retired.append(
-      checkbox("Include retired results", includeRetired, (checked) => {
-        const params = new URLSearchParams(route.params);
-        if (checked) params.set("retired", "1");
-        else params.delete("retired");
-        navigate(`/search?${params}`);
-      }),
-    );
-  // The exact snapshot and view behind these results, in full, for narrow screens too.
-  const provenance = el("details", {
-    class: "disclosure small",
-    style: "margin-top:6px",
-  });
-  provenance.append(
+  const provenance = el(
+    "details",
+    { class: "disclosure small" },
     el("summary", { text: "Search source and snapshot" }),
     el("div", { class: "body", style: "overflow-wrap:anywhere" }),
   );
   results.before(provenance);
-  const refreshProvenance = () => {
-    const body = provenance.querySelector(".body")!;
-    body.replaceChildren();
-    body.append(
-      p(
-        cached
-          ? `Source: the downloaded ${languageName(language)} package in this browser.`
-          : `Source: ${location.host || "this server"}.`,
-        "meta",
-      ),
-      el("p", { class: "meta", text: `Snapshot: ${snapshot || "unknown"}` }),
-      el("p", {
-        class: "meta",
-        text: `View: ${cached ? "not evaluated in the local index" : (view ?? "unknown")}`,
-      }),
-    );
-  };
-  const refreshCount = () => {
-    refreshProvenance();
-    segmentationNote.hidden = segmentation !== "limited";
-    const total = cached ? localTotal : displayed.length + (next ? "+" : "");
-    count.textContent = cached
-      ? plural(localTotal, "word")
-      : `${displayed.length}${next ? " or more" : ""} ${displayed.length === 1 && !next ? "word" : "words"}`;
-    void total;
-    const remaining = cached ? localTotal - displayed.length : next ? null : 0;
-    endLine.hidden = !(remaining === null || remaining > 0);
-    endLine.replaceChildren();
-    if (remaining === null || remaining > 0) {
-      endLine.append(
-        text(remaining === null ? "More results… " : `${remaining} more… `),
-      );
-      const more = button(
-        "show all",
-        async () => {
-          if (expanding || stopped || !context.live()) return;
-          expanding = true;
-          refreshCount();
-          try {
-            if (cached) await loadNext(true);
-            else {
-              while (
-                context.live() &&
-                !stopped &&
-                next &&
-                displayed.length < RESULT_LIMIT
-              )
-                await loadNext();
-            }
-          } catch (error) {
-            if (context.live()) {
-              results.append(p(describe(error), "notice"));
-              refreshCount();
-            }
-          } finally {
-            expanding = false;
-            if (context.live()) refreshCount();
-          }
-        },
-        { class: "btn btn-quiet" },
-      );
-      more.disabled = expanding || stopped || displayed.length >= RESULT_LIMIT;
-      endLine.append(more);
-      if (displayed.length >= RESULT_LIMIT)
-        endLine.append(
-          text(" The browser limit is reached. Refine your search."),
-        );
-    }
-  };
-  const appendHits = (hits: SearchHit[]) => {
+  const appendHits = (key: SearchGroup, hits: SearchHit[]) => {
+    const group = groups[key];
     for (const hit of hits) {
-      seen.add(hit.word_id);
-      displayed.push(hit);
-      results.append(
+      group.hits.push(hit);
+      group.rows.append(
         hitRow(
           app,
           hit,
@@ -454,59 +429,170 @@ export async function searchPage(
       );
     }
   };
-  const loadNext = async (allLocal = false) => {
-    if (!context.live() || stopped || displayed.length >= RESULT_LIMIT) return;
-    if (cached) {
-      const limit = Math.min(
-        allLocal ? localTotal - displayed.length : PAGE_SIZE,
-        RESULT_LIMIT - displayed.length,
-        Math.max(0, localTotal - displayed.length),
+  const refresh = () => {
+    provenance
+      .querySelector(".body")!
+      .replaceChildren(
+        p(
+          cached
+            ? `Source: the downloaded ${languageName(language)} package in this browser.`
+            : `Source: ${location.host || "this server"}.`,
+          "meta",
+        ),
+        p(`Snapshot: ${snapshot || "unknown"}`, "meta"),
+        p(
+          `View: ${cached ? "not evaluated in the local index" : (view ?? "unknown")}`,
+          "meta",
+        ),
       );
-      if (displayed.length || limit > localHits.length) {
+    segmentationNote.hidden = segmentation !== "limited";
+    const ordered =
+      allLojban || pattern
+        ? [groups.lojban, groups.definitions]
+        : [groups.definitions, groups.lojban];
+    // Keep the DOM order equal to the reading and keyboard order.
+    const before = results.firstElementChild;
+    if (before !== ordered[0].node)
+      results.prepend(...ordered.map((group) => group.node));
+    const total = Object.values(groups).reduce(
+      (sum, group) => sum + (cached ? group.total : group.hits.length),
+      0,
+    );
+    count.textContent = `${total}${!cached && Object.values(groups).some((group) => group.next) ? " or more" : ""} word and definition ${total === 1 ? "result" : "results"}`;
+    for (const [key, group] of Object.entries(groups) as [
+      SearchGroup,
+      typeof groups.lojban,
+    ][]) {
+      const remaining = cached
+        ? group.total - group.hits.length
+        : group.next
+          ? null
+          : 0;
+      group.status.textContent = `${group.hits.length}${remaining === null ? " or more" : ""} ${key === "lojban" ? "Lojban" : "definition"} ${group.hits.length === 1 && remaining !== null ? "result" : "results"} shown.`;
+      group.end.replaceChildren();
+      if (remaining === null || remaining > 0) {
+        group.end.append(
+          text(remaining === null ? "More results… " : `${remaining} more… `),
+        );
+        for (const [label, all] of [
+          ["Show more", false],
+          ["show all", true],
+        ] as const) {
+          const more = button(
+            label,
+            async () => {
+              if (expanding || group.stopped || !context.live()) return;
+              const firstNew = group.hits.length;
+              expanding = true;
+              refresh();
+              try {
+                do {
+                  await loadNext(key, all && !!cached);
+                } while (
+                  all &&
+                  !cached &&
+                  context.live() &&
+                  !group.stopped &&
+                  group.next &&
+                  group.hits.length < RESULT_LIMIT
+                );
+              } catch (error) {
+                if (context.live()) showError(key, error);
+              } finally {
+                expanding = false;
+                if (context.live()) {
+                  refresh();
+                  group.rows
+                    .querySelectorAll<HTMLElement>("article .hw")
+                    [firstNew]?.focus();
+                }
+              }
+            },
+            { class: "btn btn-quiet" },
+          );
+          more.disabled =
+            expanding || group.stopped || group.hits.length >= RESULT_LIMIT;
+          group.end.append(more);
+        }
+        if (group.hits.length >= RESULT_LIMIT)
+          group.end.append(
+            p("The browser limit is reached. Refine your search.", "meta"),
+          );
+      }
+    }
+    for (const control of results.querySelectorAll<HTMLButtonElement>(
+      "section[aria-labelledby=meaning-heading] .end-line button",
+    ))
+      control.disabled = expanding;
+  };
+  const retry = el("div");
+  results.before(retry);
+  const showError = (key: SearchGroup, error: unknown) => {
+    const group = groups[key];
+    group.rows.append(
+      p(
+        error instanceof TransportError && !cached
+          ? `${error.message} Download a search package in Settings to search without a connection.`
+          : describe(error),
+        "notice",
+      ),
+    );
+    if (!retry.querySelector("button"))
+      appendReadRetry(retry, error, context, app.announce);
+  };
+  const loadNext = async (key: SearchGroup, all = false) => {
+    const group = groups[key];
+    if (!context.live() || group.stopped || group.hits.length >= RESULT_LIMIT)
+      return;
+    const limit = Math.min(
+      all ? RESULT_LIMIT : PAGE_SIZE,
+      RESULT_LIMIT - group.hits.length,
+    );
+    if (cached) {
+      let hits = group.initial;
+      if (group.hits.length || limit > hits.length) {
         const page = await searchPackage(cached, language, [query], {
-          offset: displayed.length,
+          group: key,
+          offset: group.hits.length,
           limit,
           signal: context.signal,
         });
         if (!context.live()) return;
-        localHits = page.hits[0];
-        localTotal = page.totals[0];
-        segmentation = page.segmentation;
+        hits = page.hits[0];
+        group.total = page.totals[0];
+        if (page.segmentation === "limited") segmentation = "limited";
       }
-      appendHits(localHits.slice(0, limit));
+      appendHits(key, hits.slice(0, limit));
     } else {
       await discloseRemote();
       if (!context.live()) return;
-      const pageLimit = Math.min(PAGE_SIZE, RESULT_LIMIT - displayed.length);
       const page = await remoteSearch(
         query,
         language,
-        pageLimit,
+        limit,
         snapshot ? { snapshot, view: view! } : null,
-        next,
-        { signal: context.signal, retired: includeRetired },
+        group.next,
+        { signal: context.signal, retired: includeRetired, group: key },
       );
       if (!context.live()) return;
-      if (
-        page.hits.length > pageLimit ||
-        page.hits.length > RESULT_LIMIT - displayed.length
-      ) {
-        stopped = true;
+      if (page.hits.length > limit) {
+        group.stopped = true;
         throw new Error(
           "Search pagination returned too many results. Start a new search to retry.",
         );
       }
       if (
-        (page.next !== null && (cursors.has(page.next) || !page.hits.length)) ||
+        (page.next !== null &&
+          (group.cursors.has(page.next) || !page.hits.length)) ||
         page.hits.some(
           (hit, index) =>
-            seen.has(hit.word_id) ||
+            group.hits.some((prior) => prior.word_id === hit.word_id) ||
             page.hits
               .slice(0, index)
               .some((prior) => prior.word_id === hit.word_id),
         )
       ) {
-        stopped = true;
+        group.stopped = true;
         throw new Error(
           "Search pagination repeated a cursor or result. Start a new search to retry.",
         );
@@ -514,77 +600,113 @@ export async function searchPage(
       remoteSource.textContent = `Searched on ${selfPeer.label}.`;
       snapshot = page.snapshot;
       view = page.view;
-      next = page.next;
-      segmentation = page.segmentation;
-      if (next) cursors.add(next);
-      appendHits(page.hits);
+      group.next = page.next;
+      allLojban = page.all_lojban ?? allLojban;
+      if (page.segmentation === "limited") segmentation = "limited";
+      if (group.next) group.cursors.add(group.next);
+      appendHits(
+        key,
+        page.hits.filter((hit) => matchGroup(hit.match) === key),
+      );
     }
     remember();
-    refreshCount();
+    refresh();
   };
-  // Restore a remembered page after browser Back.
   const saved = history.state?.dictionarySearch as SearchState | undefined;
-  // Saved results belong to the view choice that produced them. After a
-  // different choice a new search runs under the current one.
   const restorable =
+    !context.readRetryAttempt &&
     saved &&
     saved.query === query &&
     saved.language === language &&
     saved.source === (cached ? "local" : "remote") &&
     "choice" in saved &&
     (saved.choice ?? null) === getPreferredView() &&
-    Array.isArray(saved.hits) &&
-    saved.hits.length <= RESULT_LIMIT;
-  try {
-    if (restorable && cached && saved.snapshot === cached.snapshot) {
-      if (saved.hits.length > localHits.length) {
-        const page = await searchPackage(cached, language, [query], {
-          limit: saved.hits.length,
-          signal: context.signal,
-        });
-        if (!context.live()) return;
-        localHits = page.hits[0];
+    saved.groups &&
+    Object.values(saved.groups).every(
+      (group) =>
+        Array.isArray(group.hits) &&
+        group.hits.length <= RESULT_LIMIT &&
+        Array.isArray(group.cursors),
+    ) &&
+    (cached
+      ? saved.snapshot === cached.snapshot
+      : /^sha256:[0-9a-f]{64}$/.test(saved.snapshot) &&
+        typeof saved.view === "string");
+  if (restorable) {
+    snapshot = saved.snapshot;
+    view = saved.view;
+    allLojban = cached ? (initialLocal?.allLojban ?? false) : saved.allLojban;
+    segmentation = cached ? initialLocal?.segmentation : saved.segmentation;
+    for (const key of ["lojban", "definitions"] as const) {
+      const group = groups[key];
+      group.next = saved.groups[key].next;
+      group.cursors = new Set(saved.groups[key].cursors);
+      try {
+        if (cached) {
+          const page = await searchPackage(cached, language, [query], {
+            group: key,
+            limit: saved.groups[key].hits.length,
+            signal: context.signal,
+          });
+          if (!context.live()) return;
+          group.total = page.totals[0];
+          appendHits(key, page.hits[0]);
+        } else appendHits(key, saved.groups[key].hits);
+      } catch (error) {
+        if (context.live()) showError(key, error);
       }
-      appendHits(localHits.slice(0, saved.hits.length));
-      refreshCount();
-    } else if (
-      restorable &&
-      !cached &&
-      /^sha256:[0-9a-f]{64}$/.test(saved.snapshot) &&
-      typeof saved.view === "string" &&
-      Array.isArray(saved.cursors) &&
-      saved.cursors.length <= RESULT_LIMIT
-    ) {
-      snapshot = saved.snapshot;
-      view = saved.view;
-      next = saved.next;
-      segmentation = saved.segmentation;
-      for (const cursor of saved.cursors) cursors.add(cursor);
-      appendHits(saved.hits);
-      refreshCount();
-    } else await loadNext();
-  } catch (error) {
-    if (!context.live()) return;
-    if (error instanceof TransportError && !cached)
-      results.append(
-        p(
-          `${error.message} Download a search package in Settings to search without a connection.`,
-          "notice",
-        ),
-      );
-    else results.append(p(describe(error), "notice"));
-    appendReadRetry(results, error, context, app.announce);
-    refreshCount();
+    }
+  } else {
+    for (const key of pattern
+      ? (["lojban"] as const)
+      : (["lojban", "definitions"] as const)) {
+      try {
+        await loadNext(key);
+      } catch (error) {
+        if (context.live()) showError(key, error);
+      }
+      if (!context.live()) return;
+    }
   }
   if (!context.live()) return;
-  if (!displayed.length && !results.querySelector(".notice"))
-    results.append(
-      p(
-        cached
-          ? "No matching definitions in the downloaded package."
-          : "No matching definitions on this server.",
-        "small",
-      ),
+  refresh();
+  for (const group of Object.values(groups)) {
+    if (!group.hits.length && !group.rows.querySelector(".notice"))
+      group.rows.append(p("No matches in this group.", "small"));
+  }
+  if (!pattern)
+    void meaningSearchGroup(
+      results,
+      query,
+      language,
+      cached || !snapshot || !view ? null : { snapshot, view },
+      app,
+      context,
+      (hit, source) => hitRow(app, hit, query, language, source, context),
+      {
+        busy: () => expanding,
+        async run(work) {
+          if (expanding || !context.live()) return;
+          expanding = true;
+          refresh();
+          try {
+            await work();
+          } finally {
+            expanding = false;
+            if (context.live()) refresh();
+          }
+        },
+      },
+    );
+  const retired = el("span", { class: "meta" });
+  if (!cached)
+    retired.append(
+      checkbox("Include retired results", includeRetired, (checked) => {
+        const params = new URLSearchParams(route.params);
+        if (checked) params.set("retired", "1");
+        else params.delete("retired");
+        navigate(`/search?${params}`);
+      }),
     );
   missing.append(
     p("Missing a word for this?"),
@@ -603,6 +725,7 @@ export async function searchPage(
       ),
     );
 }
+
 function hitRow(
   app: App,
   hit: SearchHit,
@@ -618,6 +741,8 @@ function hitRow(
     routes.word(hit.word.spelling, language),
     { class: "hw", lang: "jbo" },
   );
+  if (hit.match === "rafsi-pattern" && !isPatternQuery(query))
+    line1.append(text(`${query} ← `, "meta"));
   line1.append(headword);
   const zb =
     app.session.preferences.orthography === "zbalermorna"

@@ -169,12 +169,18 @@ Native authors link to their signing identity. Imported authors link to source-a
 The importer signer remains inspectable separately. A shared display name never merges the two.
 
 Search order follows exact headword, exact gloss, exact component sequence, contiguous sequence, headword prefix, gloss prefix, ordered subsequence, and token matches.
-The list has no class headings. Individual cards follow in query order for words outside exact or contiguous compound spans, with repeated identities grouped.
+One search box has no mode switch. Visible headings divide results into Lojban words, Definitions, and Similar in meaning.
+Lojban words includes headword, segmented, pattern, and rafsi matches. Definitions includes gloss and text matches.
+When every query word is a known Lojban word, Lojban words comes first. Otherwise, Definitions comes first.
+Pattern queries show only Lojban words. Each group keeps its own pagination and “show all” action.
+Meaning search needs one inline consent under the frontend's provider and scope rules.
+When AI is off or meaning search is unavailable, that group is absent and leaves no gap.
+Individual cards follow in query order for words outside exact or contiguous compound spans, with repeated identities grouped.
 Subsequence matches keep those cards. A one-word query shows its exact word and prefix family before compounds that contain it.
 Case and acute headword stress marks do not change the order.
 If segmentation reaches a resource limit, a visible notice states that some sequence matches or word cards can be missing.
 The notice stays through pagination and browser Back.
-The list ends with the remaining count and “show all,” then “Missing a word for this? Add it” and the retired-results filter.
+Each group ends with its remaining count and “show all.” The page then shows “Missing a word for this? Add it” and the retired-results filter.
 A rafsi query shows its word relation, for example “cku ← cukta,” and retains assignment conflicts.
 No official badge appears. No identity, key prompt, or general activity feed precedes reading.
 

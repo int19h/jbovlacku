@@ -367,10 +367,24 @@ A receipt date reads “Seen …” and identifies the receiving server in its d
 It never implies the original creation date. Unknown dates remain omitted.
 Identity activity can use receipt chronology for navigation, never causal conflict resolution.
 A text link labeled “notes” opens existing notes. An “also:” link exposes another matching definition of the same word.
-Language filters never erase the existence of alternatives. Search classes have no visible group headings.
+Language filters never erase the existence of alternatives.
+One search box shows three groups with visible headings: Lojban words, Definitions, and Similar in meaning.
+There is no search-class or meaning-mode switch.
+Lojban words includes headword, segmented, pattern, and rafsi matches. Definitions includes gloss and text matches.
+A word can appear in both groups when it matches both. Each group keeps its own match-class order and alternatives.
+When every query word is a known Lojban word in the eligible language index, Lojban words comes first. Otherwise, Definitions comes first.
+A known complete headword also puts Lojban words first. Unknown words do not establish this order. Limited query segmentation requires a known complete headword.
+Pattern queries show only Lojban words.
 
-The list offers “show all” with the remaining count, “Missing a word for this? Add it,” and a retired-results filter.
-One click reveals all remaining local hits or fetches remote pages in sequence, up to the browser limit of 1,000 hits.
+Similar in meaning uses `POST /search/semantic` after one inline consent in the search page, without a modal.
+The disclosure names the server, provider, task, and fields sent. It covers this query and future search queries.
+Remembered consent applies only to that provider and scope, under section 16. Declining keeps ordinary search available.
+When AI assistance is off, or the server lacks `features.semantic_search` and a `query_available` profile, this group is absent.
+An absent group leaves no gap. Pending or failed indexing appears as a coverage note beside meaning results.
+Similarity never becomes an editorial score.
+
+Each group offers pagination and “show all” with its remaining count. The page offers “Missing a word for this? Add it,” and a retired-results filter.
+One click reveals all remaining local hits or fetches remote pages in sequence, up to the browser limit of 1,000 hits per lexical group. Meaning search retains at most 100 definitions and pages them locally.
 Only one expansion runs at once. Navigation cancels it, and repeated cursors or results stop it.
 A rafsi lookup identifies the related word, for example “cku ← cukta,” and exposes competing assignments when present.
 Rafsi lookup does not silently pick an unresolved assignment.
@@ -1311,14 +1325,17 @@ Public reads need no account. Public event admission follows published quotas an
 | `GET /records?snapshot=S&after=ID&limit=N`                        | Snapshot records for local calculation: envelope, body, and body status, bounded by count and bytes. The limit ranges from 1 through 200.                                                                            |
 
 The `POST /search` body requires string fields `q` and `language`.
-Optional fields are `snapshot`, `view`, `after`, `retired`, `literal`, and `limit`.
-The first five use the same strings as GET. `limit` accepts a positive integer or its decimal string.
+Optional fields are `snapshot`, `view`, `after`, `retired`, `literal`, `group`, and `limit`.
+The string fields use the same values as GET. `limit` accepts a positive integer or its decimal string.
 Unknown fields and query parameters on a POST search return HTTP 400.
 Both search methods apply the same bounds, cursor rules, and result selection. Draft text stays in the POST body.
 Both methods accept the pattern syntax in section 4 by default.
 With `literal=1`, they search the query literally instead. Any other `literal` value returns HTTP 400.
 The meaning wizard sets `literal` to `"1"` in its consented POST search. Ordinary word searches keep pattern mode.
-Search cursors include the literal mode. A cursor from another mode returns HTTP 400 with `bad_cursor`.
+Optional `group` selects `lojban` or `definitions` before matching and pagination. Other values return HTTP 400.
+Without it, the earlier combined lexical order remains available. Package bytes and signed records do not change.
+Search responses can include `all_lojban`, which states whether the eligible index knows the complete query or each recognized query word.
+Search cursors include the group and literal mode. A cursor from another mode returns HTTP 400 with `bad_cursor`.
 `pattern_invalid` returns HTTP 400, and `pattern_timeout` returns HTTP 422.
 An excess pattern request returns HTTP 503 with `search_busy` and `Retry-After: 1`.
 These errors return no partial hits. Both hosts enforce the shared compiled-work limits and their documented execution limits.
@@ -1498,7 +1515,7 @@ WordResponse = {
 }
 SearchResponse = {
   snapshot: ID, view: event-ID, query: string, language: string,
-  segmentation?: "complete" | "limited",
+  segmentation?: "complete" | "limited", all_lojban?: boolean,
   hits: [{word: WordObject, word_id: word-ID, match: match-kind,
           definitions: [event-ID]}], next: cursor | null
 }
@@ -1803,7 +1820,7 @@ The system prompt puts `explain.txt` after the task file. For `sources`, it foll
 The language block stays last. Without a language block, `explain.txt` is last.
 
 The Assistance group of Settings has one checkbox, “Use AI assistance”. It is on by default when the server offers assistance.
-When it is off, the app hides every AI tagged button, every suggestion panel and its notes, the consent dialog, the “by meaning” search mode, and every AI hint line. Hidden controls leave no gap, and every manual path stays complete. The app sends nothing to a provider.
+When it is off, the app hides every AI tagged button, every suggestion panel and its notes, the consent dialog, the inline meaning-search consent, the Similar in meaning group, and every AI hint line. Hidden controls leave no gap, and every manual path stays complete. The app sends nothing to a provider.
 When no assistance capability is available, the app looks the same. The checkbox is replaced by the line “Not available on this server.” The user's own choice is kept for a server that offers assistance later.
 
 The server offers assistance when capabilities expose a generation operation or a query-available embedding profile.
@@ -1811,10 +1828,9 @@ A generation operation requires `features.assistance` and an `assistance_profile
 Meaning search requires `features.semantic_search` and a `query_available` embedding profile. A partial setup keeps the checkbox and exposes only available actions.
 If neither capability is available, the checkbox gives way to “Not available on this server.”
 
-While assistance is off, search uses “by words” and keeps the stored mode unchanged.
-When assistance returns, the stored mode returns if its required capability is available.
-The same fallback applies whenever the stored mode's capability is unavailable, including when assistance is on for generation alone.
-Search uses “by words” and preserves the stored preference. The stored mode returns when its capability becomes available.
+While assistance is off or meaning search is unavailable, the search page keeps its Lojban and definition groups.
+The meaning group returns when its required capability is available and assistance is on.
+Remembered provider and scope consent stays unchanged. Nearby search in the meaning step retains its explicit “by meaning” choice.
 
 The baseline provider interface is a documented subset of OpenAI-compatible Chat Completions and Embeddings over HTTP and JSON.
 It uses `/chat/completions` and `/embeddings` under a configured base URL. It does not depend on legacy text completions.
@@ -1856,6 +1872,7 @@ Localhost means the machine that makes the request. A container's local provider
 Public clients cannot turn an inference request into an arbitrary outbound URL fetch. Only configured provider and source adapters make network requests.
 
 The first AI request shows one consent dialog for the selected provider and its declared tasks and data scope.
+The search page uses inline consent with the same provider and scope rules instead of that dialog.
 The dialog names the server, provider, and fields sent. A broad scope is permitted only when the dialog declares it explicitly.
 Remembered consent applies only to that provider and scope. A new provider or expanded scope requires a new disclosure.
 Related public dictionary definitions and analysis of an already supplied spelling do not expand that scope.

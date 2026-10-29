@@ -68,7 +68,9 @@ test("downloaded local search sends nothing and offline signing uses saved histo
   await expect(
     results.getByRole("link", { name: "notes" }).first(),
   ).toBeVisible();
-  await expect(page.getByText(/^\d+ words?$/)).toBeVisible();
+  await expect(
+    page.getByText(/^\d+ word and definition results?$/),
+  ).toBeVisible();
   privacy.assertPrivate();
   await privacy.dispose();
   // Offline signing uses the remembered local history only.
@@ -467,6 +469,8 @@ test("remote search pages pin snapshot and view, survive browser back, and rejec
   const requests: string[] = [];
   await page.route("**/api/v1/search?**", (route) => {
     const url = new URL(route.request().url());
+    if (url.searchParams.get("group") === "lojban")
+      return route.fulfill({ json: { snapshot, view, hits: [], next: null } });
     requests.push(url.search);
     expect(url.searchParams.get("limit")).toBe("20");
     const after = url.searchParams.get("after");
@@ -532,6 +536,8 @@ test("remote search pages pin snapshot and view, survive browser back, and rejec
   await page.route("**/api/v1/search?**", (route) => {
     const url = new URL(route.request().url());
     const later = url.searchParams.has("after");
+    if (url.searchParams.get("group") === "lojban")
+      return route.fulfill({ json: { snapshot, view, hits: [], next: null } });
     return route.fulfill({
       json: {
         snapshot,
@@ -1221,7 +1227,10 @@ test("a restored search belongs to the view choice that produced it: a changed c
   const f = fixture();
   const requests: string[] = [];
   await page.route("**/api/v1/search?**", (route) => {
-    requests.push(new URL(route.request().url()).search);
+    if (
+      new URL(route.request().url()).searchParams.get("group") !== "definitions"
+    )
+      requests.push(new URL(route.request().url()).search);
     return route.continue();
   });
   const results = page.getByRole("region", { name: "Search results" });

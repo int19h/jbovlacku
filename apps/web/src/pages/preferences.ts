@@ -1,3 +1,4 @@
+import { embeddingProfiles } from "../data/semantic-search.ts";
 import { assistanceProfiles } from "../components/assistance.ts";
 /** Settings: languages, search mode, delivery peers, storage, export, and appearance. */
 import {
@@ -82,7 +83,14 @@ export async function preferencesPage(
   try {
     const capabilities = await getCapabilities({ signal: context.signal });
     if (!context.live()) return;
-    if (assistanceProfiles(capabilities).length) {
+    const meaningAvailable =
+      capabilities.features.semantic_search &&
+      (
+        await embeddingProfiles(null, prefs.definitionLanguage, {
+          signal: context.signal,
+        }).catch(() => [])
+      ).some((profile) => profile.query_available);
+    if (assistanceProfiles(capabilities).length || meaningAvailable) {
       const saved = el("p", {
         id: "assistance-save-status",
         class: "small",

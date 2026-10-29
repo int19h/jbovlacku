@@ -135,6 +135,10 @@ test("remote sequence classes and a limited-segmentation notice survive paginati
     releaseSecond = resolve;
   });
   await page.route("**/api/v1/search?**", async (route) => {
+    if (
+      new URL(route.request().url()).searchParams.get("group") === "definitions"
+    )
+      return route.fulfill({ json: { snapshot, view, hits: [], next: null } });
     requests++;
     const after = new URL(route.request().url()).searchParams.get("after");
     const offset =
@@ -195,8 +199,10 @@ test("an oversized remote page keeps prior hits and reports a pagination error",
   });
   let requests = 0;
   await page.route("**/api/v1/search?**", (route) => {
-    requests++;
     const params = new URL(route.request().url()).searchParams;
+    if (params.get("group") === "definitions")
+      return route.fulfill({ json: { snapshot, view, hits: [], next: null } });
+    requests++;
     const later = params.has("after");
     expect(params.get("limit")).toBe("20");
     return route.fulfill({
