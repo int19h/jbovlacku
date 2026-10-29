@@ -16,8 +16,8 @@ serde.workspace = true
 serde_json.workspace = true
 serde_json_canonicalizer = "=0.3.2"
 wasm-bindgen = "=0.2.105"
-regex = "=1.12.3"
-regex-syntax = "=0.8.10"
+regex-automata = { version = "=0.4.18", default-features = false, features = ["std", "syntax", "nfa-pikevm", "unicode"] }
+regex-syntax = { version = "=0.8.10", default-features = false, features = ["std", "unicode"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 jvc-carrier = { path = "../jvc-carrier" }

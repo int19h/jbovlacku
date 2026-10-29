@@ -1,17 +1,26 @@
 //! Linear-time pattern matching with bounded compilation and aggregate input.
-use regex::{Regex, RegexBuilder};
+use regex_automata::{
+    nfa::thompson::{
+        self, NFA, State, WhichCaptures,
+        pikevm::{Cache, PikeVM},
+    },
+    util::primitives::StateID,
+};
 use regex_syntax::ast::{self, Ast, ClassSet, ClassSetItem, LiteralKind};
 use wasm_bindgen::prelude::*;
 
 const SOURCE_LIMIT: usize = 4096;
-const COMPILED_LIMIT: usize = 262_144;
+const COMPILED_LIMIT: usize = 2_097_152;
+const CANDIDATE_WORK_LIMIT: usize = 262_144;
 const WORK_LIMIT: usize = 32_000_000;
 
 /// One query owns one matcher. Failed work returns no partial search results.
 #[wasm_bindgen]
 pub struct SearchPattern {
-    regex: Regex,
-    weight: usize,
+    regex: PikeVM,
+    cache: Cache,
+    states: usize,
+    ascii_states: usize,
     remaining: usize,
 }
 
@@ -49,6 +58,12 @@ fn class_set(value: &mut ClassSet) {
     }
 }
 fn aliases(value: &mut Ast) {
+    // A written acute can be its own AST node. An empty node removes it only
+    // from literal sequences. Escapes and class/range syntax stay intact.
+    if matches!(value, Ast::Literal(v) if v.kind == LiteralKind::Verbatim && v.c == '\u{301}') {
+        *value = Ast::empty(*value.span());
+        return;
+    }
     match value {
         Ast::Literal(value) => literal(value),
         Ast::ClassBracketed(value) => class_set(&mut value.kind),
@@ -74,6 +89,47 @@ fn disables_case_folding(value: &Ast) -> bool {
     }
 }
 
+// Only paths that consume ASCII can run for an ASCII candidate. This is a
+// graph property of the actual compiled NFA, not an ASCII rewrite of Unicode
+// classes. Non-ASCII candidates use the full compiled state count.
+fn ascii_reachable(nfa: &NFA) -> usize {
+    let mut visited = vec![false; nfa.states().len()];
+    let mut pending = vec![nfa.start_unanchored()];
+    while let Some(id) = pending.pop() {
+        if std::mem::replace(&mut visited[id.as_usize()], true) {
+            continue;
+        }
+        match &nfa.states()[id.as_usize()] {
+            State::ByteRange { trans } => {
+                if trans.start < 128 {
+                    pending.push(trans.next);
+                }
+            }
+            State::Sparse(trans) => pending.extend(
+                trans
+                    .transitions
+                    .iter()
+                    .filter(|t| t.start < 128)
+                    .map(|t| t.next),
+            ),
+            State::Dense(trans) => pending.extend(
+                trans.transitions[..128]
+                    .iter()
+                    .filter(|id| **id != StateID::ZERO)
+                    .copied(),
+            ),
+            State::Look { next, .. } | State::Capture { next, .. } => pending.push(*next),
+            State::Union { alternates } => pending.extend(alternates.iter().copied()),
+            State::BinaryUnion { alt1, alt2 } => {
+                pending.push(*alt1);
+                pending.push(*alt2);
+            }
+            State::Match { .. } | State::Fail => {}
+        }
+    }
+    visited.iter().filter(|v| **v).count().max(1)
+}
+
 impl SearchPattern {
     fn compile(source: &str) -> Result<Self, ()> {
         if source.is_empty() || source.len() > SOURCE_LIMIT {
@@ -89,23 +145,44 @@ impl SearchPattern {
         }
         aliases(&mut ast);
         let normalized = ast.to_string();
-        let regex = RegexBuilder::new(&normalized)
+        let hir = regex_syntax::ParserBuilder::new()
             .case_insensitive(true)
-            .size_limit(COMPILED_LIMIT)
-            .dfa_size_limit(COMPILED_LIMIT)
             .nest_limit(32)
             .build()
+            .parse(&normalized)
             .map_err(|_| ())?;
+        let nfa = NFA::compiler()
+            .configure(
+                thompson::Config::new()
+                    .nfa_size_limit(Some(COMPILED_LIMIT))
+                    .which_captures(WhichCaptures::None),
+            )
+            .build_from_hir(&hir)
+            .map_err(|_| ())?;
+        let states = nfa.states().len();
+        let ascii_states = ascii_reachable(&nfa);
+        let regex = PikeVM::new_from_nfa(nfa).map_err(|_| ())?;
+        let cache = regex.create_cache();
         Ok(Self {
             regex,
-            weight: source.len().max(1),
+            cache,
+            states,
+            ascii_states,
             remaining: WORK_LIMIT,
         })
     }
     fn matches(&mut self, spelling: &str) -> Result<bool, ()> {
-        let work = spelling.len().saturating_add(1).saturating_mul(self.weight);
+        let states = if spelling.is_ascii() {
+            self.ascii_states
+        } else {
+            self.states
+        };
+        let work = spelling.len().saturating_add(1).saturating_mul(states);
+        if work > CANDIDATE_WORK_LIMIT {
+            return Err(());
+        }
         self.remaining = self.remaining.checked_sub(work).ok_or(())?;
-        Ok(self.regex.is_match(spelling))
+        Ok(self.regex.is_match(&mut self.cache, spelling))
     }
 }
 
@@ -114,6 +191,18 @@ impl SearchPattern {
     #[wasm_bindgen(constructor)]
     pub fn new(source: &str) -> Result<SearchPattern, JsValue> {
         Self::compile(source).map_err(|_| invalid())
+    }
+    pub fn states(&self) -> usize {
+        self.states
+    }
+    pub fn ascii_states(&self) -> usize {
+        self.ascii_states
+    }
+    pub fn memory_usage(&self) -> usize {
+        self.regex.get_nfa().memory_usage() + self.cache.memory_usage()
+    }
+    pub fn spent(&self) -> usize {
+        WORK_LIMIT - self.remaining
     }
     pub fn is_match(&mut self, spelling: &str) -> Result<bool, JsValue> {
         self.matches(spelling)

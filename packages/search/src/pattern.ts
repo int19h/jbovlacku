@@ -15,8 +15,16 @@ export class PatternError extends Error {
     this.status = code === "pattern_invalid" ? 400 : 422;
   }
 }
+/** A sentence with one final question mark is ordinary definition text. */
+export const naturalLanguageNote = (query: string) =>
+  !query.trim().startsWith("/") &&
+  /\s/u.test(query.trim()) &&
+  /^[^*?@$]+\?$/u.test(query.trim())
+    ? "The final question mark is punctuation. This search uses ordinary text."
+    : null;
 export const isPatternQuery = (query: string) =>
-  query.trim().startsWith("/") || /[*?@$]/u.test(query);
+  !naturalLanguageNote(query) &&
+  (query.trim().startsWith("/") || /[*?@$]/u.test(query));
 export const patternKey = (value: string) =>
   stripAcuteAccents(value.normalize("NFC"))
     .toLocaleLowerCase("en")
@@ -40,23 +48,23 @@ export function patternSource(query: string): string {
     return raw.slice(1, -1);
   }
   const value = patternKey(raw);
-  if (!value || /[^a-z0-9'*?@$]/u.test(value))
+  if (!value)
     throw new PatternError(
       "pattern_invalid",
-      "The glob contains an unsupported character. Use letters, apostrophes, digits, *, ?, @, or $.",
+      "The word pattern is empty. Enter a spelling or search definitions with ordinary text.",
     );
   let source = "\\A";
   for (const letter of value)
     source +=
       letter === "*"
-        ? "[a-z']*"
+        ? "(?s:.)*"
         : letter === "?"
-          ? "[a-z']"
+          ? "(?s:.)"
           : letter === "@"
             ? "[aeiouy]"
             : letter === "$"
               ? "[bcdfgjklmnprstvxz]"
-              : letter;
+              : letter.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
   return source + "\\z";
 }
 export function compilePattern(query: string) {
@@ -71,6 +79,12 @@ export function compilePattern(query: string) {
           throw new PatternError("pattern_timeout", PATTERN_TIMEOUT_MESSAGE);
         }
       },
+      stats: () => ({
+        states: compiled.states(),
+        asciiStates: compiled.ascii_states(),
+        memory: compiled.memory_usage(),
+        spent: compiled.spent(),
+      }),
       free: () => compiled.free(),
     };
   } catch (error) {
@@ -78,7 +92,16 @@ export function compilePattern(query: string) {
     if (String(error) !== "pattern_invalid") throw error;
     throw new PatternError(
       "pattern_invalid",
-      "The regular expression is invalid or exceeds its compilation limit. Use a simpler pattern.",
+      query.trim().startsWith("/")
+        ? "The regular expression is invalid or exceeds its compilation limit. Use a simpler pattern."
+        : "The word pattern exceeds its compilation limit. Use fewer wildcards or a shorter pattern.",
     );
   }
+}
+
+/** Ordinal order is stable across hosts and ignores lookup spelling aliases. */
+export function comparePatternSpelling(a: string, b: string): number {
+  const left = patternKey(a),
+    right = patternKey(b);
+  return left < right ? -1 : left > right ? 1 : 0;
 }

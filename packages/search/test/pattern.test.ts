@@ -113,7 +113,6 @@ test("invalid syntax and compilation limits are explicit even for an empty dicti
     "/(a)\\1/",
     "/\\h/",
     "/(?-i)BA/",
-    "ba* word",
     "*".repeat(257),
     "/a{1000000}/",
   ])

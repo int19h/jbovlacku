@@ -4,7 +4,12 @@ import {
   stripAcuteAccents,
 } from "../../morphology/src/index.ts";
 import { compilePattern, isPatternQuery, patternKey } from "./pattern.ts";
-export { PatternError, isPatternQuery } from "./pattern.ts";
+export {
+  PatternError,
+  isPatternQuery,
+  naturalLanguageNote,
+  comparePatternSpelling,
+} from "./pattern.ts";
 
 export const SEARCH_QUERY_BYTE_LIMIT = 16_384;
 export const SEARCH_QUERY_WORD_LIMIT = 512;
@@ -233,6 +238,9 @@ export function prepareIndex<T extends LexicalEntry>(
   preparedIndexes.set(entries, index);
   return index;
 }
+export interface SearchOptions {
+  patterns?: boolean;
+}
 export interface PreparedQuery {
   text: string;
   headword: string;
@@ -244,6 +252,7 @@ export interface PreparedQuery {
 export function prepareQuery(
   query: string,
   metrics?: SearchMetrics,
+  options: SearchOptions = {},
 ): PreparedQuery {
   const text = normalizeQuery(query);
   const headword = headwordKey(text);
@@ -255,7 +264,7 @@ export function prepareQuery(
     segmentation: "complete",
   };
   if (!text) return result;
-  if (isPatternQuery(query)) {
+  if (options.patterns !== false && isPatternQuery(query)) {
     result.pattern = query;
     return result;
   }
@@ -327,8 +336,12 @@ export function selectRafsiMatches<T extends LexicalEntry>(
   entries: Iterable<T>,
   query: string,
   metrics?: SearchMetrics,
+  options: SearchOptions = {},
 ) {
-  const pattern = isPatternQuery(query) ? compilePattern(query) : null;
+  const pattern =
+    options.patterns !== false && isPatternQuery(query)
+      ? compilePattern(query)
+      : null;
   const rows: LexicalMatch<T>[] = [];
   try {
     for (const entry of entries) {
@@ -352,9 +365,10 @@ export function selectMatches<T extends LexicalEntry>(
   query: string | PreparedQuery,
   metrics?: SearchMetrics,
   accept: (entry: T) => boolean = () => true,
+  options: SearchOptions = {},
 ): { rows: LexicalMatch<T>[]; segmentation: SegmentationStatus } {
   const prepared =
-    typeof query === "string" ? prepareQuery(query, metrics) : query;
+    typeof query === "string" ? prepareQuery(query, metrics, options) : query;
   const rows: LexicalMatch<T>[] = [];
   if (prepared.pattern !== undefined) {
     const pattern = compilePattern(prepared.pattern);

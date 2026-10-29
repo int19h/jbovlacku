@@ -12,11 +12,17 @@ The browser and server adapters load generated `jvc-runtime` WebAssembly and its
 `wasm-bindgen` and `wasm-bindgen-cli` must both use version 0.2.105.
 The generated bindings live in `packages/core/generated`. The build regenerates this ignored directory.
 
-`jvc-runtime` pins `regex` 1.12.3 and `regex-syntax` 0.8.10 for pattern search.
+`jvc-runtime` pins `regex-automata` 0.4.18 and `regex-syntax` 0.8.10 for pattern search.
 The linear-time engine runs in the shared WebAssembly module on every host. It adds no npm dependency.
 The syntax parser applies headword aliases to literal nodes without changing escapes, named groups, properties, or range endpoints.
-The resolved runtime dependencies also include `regex-automata` 0.4.18 and `aho-corasick` 1.1.5. They reuse the existing `memchr` dependency.
-Compilation and aggregate input limits bound the work. The [search specification](frontend.md#4-search-and-reading) states those limits and errors.
+The engine uses the Thompson NFA and PikeVM features. An NFA is a graph of matching states.
+PikeVM visits each active state at most once per input byte. This gives a direct compiled-state work bound.
+The build disables the default engine features and keeps `std`, `syntax`, `nfa-pikevm`, and all Unicode features.
+It retains Unicode case folding, character properties, Perl classes, and word boundaries.
+It excludes lazy and fully compiled DFA engines, backtracking, capture optimization, and literal-search helpers.
+This removes `regex` and the `aho-corasick` runtime dependency. It adds no resolved package.
+The notices inventory follows the active WebAssembly dependencies. The lockfile also retains packages for other targets and development tools.
+Compilation, per-candidate, and aggregate input limits bound the work. The [search specification](frontend.md#4-search-and-reading) states those limits and errors.
 
 The notices inventory follows `jvc-runtime` through its resolved normal and build dependencies for the WebAssembly target.
 It includes compile-time helpers. It does not claim that every listed package contributes machine code to the final binary.
