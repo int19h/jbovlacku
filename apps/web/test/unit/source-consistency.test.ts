@@ -255,14 +255,16 @@ test("an existing opaque core frame error blocks an unrelated definition edit", 
 });
 
 for (const operation of ["definition", "places-glosses"] as const) {
-  test(`${operation} acceptance rejects a new empty paragraph hidden by the same core error`, () => {
+  test(`${operation} acceptance rejects a new malformed code node hidden by the same core error`, () => {
     const draft = example();
-    draft.notes = [[]];
+    const invalid = [[{ code: "Malformed code node.", unexpected: true }]];
+    draft.notes = structuredClone(invalid);
     draft.frameMode = "fixed";
     draft.places = [newPlace(1)];
     draft.places[0].description = [["A valid place."]];
     const frame = currentDraft(draft).frame!;
-    frame.places[0].description = [[]];
+    frame.places[0].description = structuredClone(invalid);
+    const text = [["A definition with an invalid node."], ...invalid];
     const baseline = draftToBody(draft).problems.filter(
       (problem) => problem.blocking,
     );
@@ -270,7 +272,25 @@ for (const operation of ["definition", "places-glosses"] as const) {
     assert.equal(baseline[0].field, "body");
     assert.match(
       baseline[0].message,
-      /rich text paragraph must contain a node/,
+      /object requires exactly these fields: code/u,
+    );
+    // The new fault remains invalid even when the old notes fault is removed.
+    const proposalOnly = structuredClone(draft);
+    proposalOnly.notes = [];
+    if (operation === "definition") proposalOnly.text = text;
+    else proposalOnly.places[0].description = frame.places[0].description;
+    const proposed = draftToBody(proposalOnly);
+    assert.deepEqual(
+      proposed.problems
+        .filter((problem) => problem.blocking)
+        .map(({ field, message }) => ({ field, message })),
+      baseline.map(({ field, message }) => ({ field, message })),
+    );
+    assert.deepEqual(
+      operation === "definition"
+        ? proposed.body!.text
+        : proposed.body!.frame!.places[0].description,
+      operation === "definition" ? text : invalid,
     );
     assert.throws(
       () =>
@@ -281,12 +301,12 @@ for (const operation of ["definition", "places-glosses"] as const) {
               ? [
                   {
                     path: "/text",
-                    value: [["A definition with an invalid paragraph."], []],
+                    value: text,
                   },
                 ]
               : [{ path: "/frame", value: frame }],
         } as never),
-      /rich text paragraph must contain a node/,
+      /object requires exactly these fields: code/u,
     );
   });
 }

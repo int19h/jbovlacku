@@ -75,7 +75,7 @@ test("R5 an untouched field keeps rare stored values when another field changes"
     [],
   );
   assert.deepEqual(result.body!.text, [["new\ntext"]]);
-  assert.deepEqual(result.body!.notes, notes);
+  assert.deepEqual(result.body!.notes, [notes[0]]);
 });
 
 test("R5 merging string fragments never creates a place or operand reference", () => {
