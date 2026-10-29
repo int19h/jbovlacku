@@ -523,6 +523,11 @@ export function richField(label: string, options: RichFieldOptions) {
       blurSelection = null;
     }, 0);
   }
+  function watchNativeFocus() {
+    moved = true;
+    input.ownerDocument.addEventListener("keydown", beforeTab, true);
+    input.ownerDocument.addEventListener("blur", beforeBlur, true);
+  }
   input.style.setProperty(
     "--target-min-height",
     `${Math.max(2, options.rows ?? 3) * 1.7 + 1}em`,
@@ -906,7 +911,11 @@ export function richField(label: string, options: RichFieldOptions) {
       () => {
         node.remove();
         if (dialog === node) dialog = null;
-        if (invoker.isConnected) invoker.focus();
+        if (invoker.isConnected) {
+          // A later native focus must retain the editor's saved caret.
+          watchNativeFocus();
+          invoker.focus();
+        }
       },
       { once: true },
     );
@@ -985,11 +994,7 @@ export function richField(label: string, options: RichFieldOptions) {
     wrapper,
     input,
     label: labelNode,
-    moved: () => {
-      moved = true;
-      input.ownerDocument.addEventListener("keydown", beforeTab, true);
-      input.ownerDocument.addEventListener("blur", beforeBlur, true);
-    },
+    moved: watchNativeFocus,
     refresh: syncMode,
   };
 }
