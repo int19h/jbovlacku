@@ -350,8 +350,8 @@ test("r3 repeated report activation during loading opens one dialog", async ({
     (node as HTMLButtonElement).click();
   });
   release();
+  await expect(page.locator("dialog[open]")).toHaveCount(1);
   await expect(
     page.getByRole("dialog", { name: "Report identity abuse" }),
   ).toBeVisible();
-  await expect(page.locator("dialog[open]")).toHaveCount(1);
 });
