@@ -12,6 +12,36 @@ The browser and server adapters load generated `jvc-runtime` WebAssembly and its
 `wasm-bindgen` and `wasm-bindgen-cli` must both use version 0.2.105.
 The generated bindings live in `packages/core/generated`. The build regenerates this ignored directory.
 
+`jvc-runtime` pins `regex-automata` 0.4.18 and `regex-syntax` 0.8.10 for pattern search.
+The linear-time engine runs in the shared WebAssembly module on every host. It adds no npm dependency.
+The syntax parser applies headword aliases to literal nodes without changing escapes, named groups, properties, or range endpoints.
+The engine uses the Thompson NFA and PikeVM features. An NFA is a graph of matching states.
+PikeVM visits each active state at most once per input byte. This gives a direct compiled-state work bound.
+The build disables the default engine features and keeps `std`, `syntax`, `nfa-pikevm`, and all Unicode features.
+It retains Unicode case folding, character properties, Perl classes, and word boundaries.
+
+A DFA uses one active state per input byte.
+The build excludes lazy and fully compiled DFA engines, backtracking, capture optimization, and literal-search helpers.
+This removes `regex` and the `aho-corasick` runtime dependency. It adds no resolved package.
+The notices inventory follows the active WebAssembly dependencies. The lockfile also retains packages for other targets and development tools.
+Compilation, per-candidate, and aggregate input limits bound the work. The [search specification](frontend.md#4-search-and-reading) states those limits and errors.
+
+The build uses `npm run build:core`, Rust 1.99.0, and wasm-bindgen 0.2.105 for each comparison below.
+Gzip uses `gzip -n -9`. The counts include the generated WebAssembly module, without its JavaScript wrapper.
+The compiled-state engine retains all Unicode features. Removing unused engine features reduces the module without narrowing expression syntax.
+
+| Source | Raw bytes | Gzip bytes |
+| --- | ---: | ---: |
+| Before pattern search, `581b588` | 2,901,727 | 811,062 |
+| General regex engine, `f24a89e` | 4,142,890 | 1,188,899 |
+| Compiled-state engine, `0852cdf` | 3,590,247 | 1,034,073 |
+| Acute repetition scope, `a5a3175` | 3,590,623 | 1,034,440 |
+
+The current engine adds 688,896 raw bytes and 223,378 gzip bytes over the build before pattern search.
+It removes 552,267 raw bytes and 154,459 gzip bytes from the general regex build.
+The acute repetition repair adds 376 raw bytes and 367 gzip bytes to the initial compiled-state engine.
+Unicode character tables remain part of this cost.
+
 The notices inventory follows `jvc-runtime` through its resolved normal and build dependencies for the WebAssembly target.
 It includes compile-time helpers. It does not claim that every listed package contributes machine code to the final binary.
 The inventory excludes dependency edges that serve only native tests.

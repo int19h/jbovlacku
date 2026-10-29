@@ -1,4 +1,12 @@
 import { packageStorageKey } from "./store.ts";
+import {
+  isPatternQuery,
+  PatternError,
+} from "../../../../packages/search/src/index.ts";
+import {
+  PATTERN_TIMEOUT_MESSAGE,
+  PATTERN_WORKER_TIMEOUT_MS,
+} from "../../../../packages/search/src/pattern.ts";
 /** Saved-package validation and lexical work run in one static module worker. */
 import type { CachedPackage, LocalHit } from "./search.ts";
 import type {
@@ -17,6 +25,11 @@ export interface PackageSearchOptions {
   limit?: number;
   /** Rank all query lists together before selecting the nearby page. */
   nearby?: boolean;
+  /** Meaning retrieval and claim previews always use literal text. */
+  patterns?: boolean;
+  /** Match retained rafsi spellings instead of headwords. */
+  rafsiOnly?: boolean;
+  signal?: AbortSignal;
 }
 /** References belong to the exact immutable package captured by the request. */
 export interface PackageHitReferences {
@@ -25,11 +38,16 @@ export interface PackageHitReferences {
   entries: number[];
   definitions: number[];
   preview: number;
+  rafsi?: string[];
 }
 export class PackageValidationError extends Error {}
 class MissingPackageError extends Error {}
 interface Client {
   worker: Worker;
+  canceledPatterns: Set<number>;
+  retained: Set<string | number>;
+  cacheRevision: number;
+  preparing: Map<number, string | number>;
   pending: Map<
     number,
     {
@@ -39,6 +57,7 @@ interface Client {
         },
       ) => void;
       reject: (error: Error) => void;
+      started: () => void;
     }
   >;
 }
@@ -49,27 +68,69 @@ let client: Client | undefined;
 let requestId = 0,
   packageId = 0;
 const packageIds = new WeakMap<CachedPackage, number>();
-const retained: (string | number)[] = [];
+function stopWorker(current: Client, error: Error) {
+  current.worker.terminate();
+  current.retained.clear();
+  current.preparing.clear();
+  for (const waiting of current.pending.values()) waiting.reject(error);
+  current.pending.clear();
+  if (client === current) {
+    client = undefined;
+  }
+}
 function searchWorker(): Client {
   if (client) return client;
   const worker = new Worker(
     new URL("./package-search-worker.ts", import.meta.url),
     { type: "module" },
   );
-  const current: Client = { worker, pending: new Map() };
+  const current: Client = {
+    worker,
+    pending: new Map(),
+    canceledPatterns: new Set(),
+    retained: new Set(),
+    cacheRevision: -1,
+    preparing: new Map(),
+  };
   worker.onmessage = ({ data }) => {
+    // Cache acknowledgments also matter after that request's consumer aborts.
+    const stale =
+      Number.isSafeInteger(data.cacheRevision) &&
+      data.cacheRevision < current.cacheRevision;
+    if (
+      Array.isArray(data.retained) &&
+      Number.isSafeInteger(data.cacheRevision) &&
+      !stale
+    ) {
+      current.retained.clear();
+      for (const key of data.retained) current.retained.add(key);
+      current.cacheRevision = data.cacheRevision;
+    }
+    if (!data.started) current.preparing.delete(data.request);
     const waiting = current.pending.get(data.request);
-    if (!waiting) return;
+    if (!waiting) {
+      if (data.started && !stale && current.canceledPatterns.has(data.request))
+        stopWorker(
+          current,
+          new DOMException("Search was canceled.", "AbortError"),
+        );
+      if (!data.started || stale) current.canceledPatterns.delete(data.request);
+      return;
+    }
+    if (data.started) {
+      if (!stale) waiting.started();
+      return;
+    }
     current.pending.delete(data.request);
     if (data.error) {
-      const index = retained.indexOf(data.key);
-      if (index >= 0) retained.splice(index, 1);
       waiting.reject(
         data.code === "invalid-package"
           ? new PackageValidationError(data.error)
           : data.code === "package-missing"
             ? new MissingPackageError(data.error)
-            : new Error(data.error),
+            : data.code === "pattern_timeout" || data.code === "pattern_invalid"
+              ? new PatternError(data.code, data.error)
+              : new Error(data.error),
       );
     } else {
       latest = { metrics: data.result.metrics, prepared: data.result.prepared };
@@ -77,14 +138,10 @@ function searchWorker(): Client {
     }
   };
   worker.onerror = () => {
-    for (const waiting of current.pending.values())
-      waiting.reject(
-        new Error("Local search could not start. Reload the page to retry."),
-      );
-    current.pending.clear();
-    worker.terminate();
-    retained.length = 0;
-    if (client === current) client = undefined;
+    stopWorker(
+      current,
+      new Error("Local search could not start. Reload the page to retry."),
+    );
   };
   client = current;
   return current;
@@ -96,11 +153,12 @@ export async function searchPackage(
   queries: string[],
   options: PackageSearchOptions = {},
 ): Promise<PackageSearchResult> {
+  options.signal?.throwIfAborted();
   if (!pkg || typeof pkg !== "object" || Array.isArray(pkg))
     throw new PackageValidationError(
       "The search package is invalid or exceeds the browser limit. Search this server or download another package.",
     );
-  const current = searchWorker();
+  const { signal, ...workerOptions } = options;
   let identity: string | number | undefined =
     packageStorageKey(pkg) ?? packageIds.get(pkg);
   if (identity === undefined) {
@@ -109,29 +167,79 @@ export async function searchPackage(
   }
   const key = JSON.stringify([language, identity]);
   const send = (force = false) => {
-    const prepare = force || !retained.includes(key);
-    const index = retained.indexOf(key);
-    if (index >= 0) retained.splice(index, 1);
-    retained.push(key);
-    if (retained.length > 2) retained.shift();
+    signal?.throwIfAborted();
+    const current = searchWorker();
+    const prepare =
+      force ||
+      !(
+        current.retained.has(key) ||
+        [...current.preparing.values()].includes(key)
+      );
     const request = ++requestId;
+    // Announce a transfer without evicting any confirmed warm package.
+    if (prepare) current.preparing.set(request, key);
     return new Promise<
       Omit<PackageSearchResult, "hits"> & { hits: PackageHitReferences[][] }
     >((resolve, reject) => {
-      current.pending.set(request, { resolve, reject });
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let started = false;
+      const pattern =
+        options.patterns !== false &&
+        !options.nearby &&
+        queries.some(isPatternQuery);
+      const clean = () => {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", abort);
+      };
+      const abort = () => {
+        const error = new DOMException("Search was canceled.", "AbortError");
+        if (pattern && started) {
+          stopWorker(current, error);
+          return;
+        }
+        current.pending.delete(request);
+        clean();
+        if (pattern) current.canceledPatterns.add(request);
+        current.worker.postMessage({ cancel: request });
+        reject(error);
+      };
+      current.pending.set(request, {
+        resolve(value) {
+          clean();
+          resolve(value);
+        },
+        reject(error) {
+          clean();
+          reject(error);
+        },
+        started() {
+          started = true;
+          clearTimeout(timer);
+          if (pattern)
+            timer = setTimeout(
+              () =>
+                stopWorker(
+                  current,
+                  new PatternError("pattern_timeout", PATTERN_TIMEOUT_MESSAGE),
+                ),
+              PATTERN_WORKER_TIMEOUT_MS,
+            );
+        },
+      });
+      signal?.addEventListener("abort", abort, { once: true });
       try {
         current.worker.postMessage({
           request,
           key,
           language,
           queries,
-          options,
+          options: workerOptions,
           ...(prepare ? { pkg } : {}),
         });
       } catch (error) {
+        clean();
         current.pending.delete(request);
-        const index = retained.indexOf(key);
-        if (index >= 0) retained.splice(index, 1);
+        current.preparing.delete(request);
         reject(error);
       }
     });
@@ -141,7 +249,7 @@ export async function searchPackage(
     result = await send();
   } catch (error) {
     if (!(error instanceof MissingPackageError)) throw error;
-    // A rejected or evicted queued request can invalidate the optimistic LRU.
+    // An evicted or canceled queued preparation can require one captured retry.
     result = await send(true);
   }
   return {
@@ -164,6 +272,7 @@ export async function searchPackage(
               .join(""),
             status: "unavailable",
           },
+          ...(hit.rafsi ? { matchingRafsi: hit.rafsi } : {}),
         };
       }),
     ),

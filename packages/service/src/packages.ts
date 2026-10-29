@@ -59,6 +59,8 @@ export interface MaterializedPackage {
 }
 export interface MaterializedPackages {
   entries: SearchEntry[];
+  /** Private, bounded rafsi metadata for the shared pattern matcher. */
+  searchRafsi?: Record<string, string[]>;
   /** Private cache metadata. Null means that publication receipts are unavailable. */
   effectiveDefinitions?: string[] | null;
   packages: Record<string, MaterializedPackage>;
@@ -392,6 +394,12 @@ export async function buildPackages(
   return preparePackageSearch(
     {
       entries,
+      searchRafsi: Object.fromEntries(
+        [...rafsiByWord].map(([word, spellings]) => [
+          word,
+          [...spellings].sort().slice(0, PACKAGE_RAFSI_LIMIT),
+        ]),
+      ),
       ...(effectiveDefinitions !== undefined ? { effectiveDefinitions } : {}),
       packages: await build(entries, 1),
       packages2: await build(entries2, 2),

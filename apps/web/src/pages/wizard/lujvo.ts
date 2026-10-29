@@ -343,7 +343,7 @@ export async function lujvoPage(
             cached,
             cached.entries[0]?.language ?? draft.language,
             [query],
-            { limit: 6 },
+            { limit: 6, signal: context.signal },
           )
         ).hits[0];
     } catch (error) {

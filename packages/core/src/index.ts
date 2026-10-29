@@ -61,6 +61,9 @@ export const canonicalize = (bytes: Uint8Array): string =>
   wasm.runtime_canonicalize(bytes);
 export const contentHash = (bytes: Uint8Array): string =>
   wasm.content_hash(bytes);
+/** One linear-time matcher with a cumulative work budget. Call free after use. */
+export const createSearchPattern = (source: string) =>
+  new wasm.SearchPattern(source);
 export const prepareAdmission = (bytes: Uint8Array): PreparedAdmission =>
   JSON.parse(wasm.prepare_admission(bytes));
 export const verifyEnvelope = (bytes: Uint8Array) =>

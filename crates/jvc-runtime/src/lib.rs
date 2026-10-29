@@ -5,6 +5,9 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use wasm_bindgen::prelude::*;
 
+mod search_pattern;
+pub use search_pattern::SearchPattern;
+
 fn output(value: impl Serialize) -> std::result::Result<String, JsValue> {
     serde_json::to_string(&value).map_err(|e| JsValue::from_str(&e.to_string()))
 }

@@ -167,6 +167,94 @@ A normalized exact headword match uses the same class as its display spelling.
 Rank result classes in this order: exact headword, exact gloss, exact component sequence, contiguous sequence, headword prefix, gloss prefix, ordered subsequence, then token matches.
 Ordinary text queries keep their existing lexical class order.
 
+A query written as `/.../` selects regular expression matching. It matches anywhere in a headword unless the query supplies anchors.
+For example, `/^ba/` matches a start, and `/nu$/` matches an end.
+A query that contains `*`, `?`, `@`, or `$` selects a glob, which matches the whole spelling.
+`@` matches one vowel from `aeiouy`. `$` matches one consonant from `bcdfgjklmnprstvxz`.
+`?` matches one character. `*` matches any run of characters, including an empty run.
+Both wildcards consume digits, Unicode characters, spaces, commas, and pause periods. `*zei*` can find `ci zei tuple`.
+Other characters in a glob match literally. A period in `ba.ba*` is a literal period.
+In glob literals, `h` reads as an apostrophe. Thus `*'i` and `*hi` return the same results.
+Patterns ignore capitals and acute stress marks in candidate spellings. They preserve every displayed spelling.
+Meaning text, nearby retrieval, and type assistance always use ordinary literal search. Rafsi claim previews always compare literal spellings.
+A query with spaces and one final `?` uses ordinary text search. Other symbols in that sentence remain literal text.
+The search page explains that it treats the final question mark as punctuation. A query that starts with `/` still requires expression delimiters.
+
+Regular expressions use Rust `regex` syntax with case-insensitive matching.
+Written literal characters gain the same acute-stress and `h` aliases, including single literals inside character classes.
+Written combining acute marks disappear from literal sequences, including marks on consonants without a precomposed form.
+Escaped acute marks and character-range endpoints keep their expression meaning.
+Escapes, properties, named groups, flags, and character-range endpoints retain their regular expression meaning.
+For example, `\D` retains its non-digit meaning, and `\x68` remains an escaped literal `h`.
+Look-around, backreferences, empty expression bodies, disabled case folding, invalid syntax, and excessive compilation return `pattern_invalid`.
+
+Pattern mode returns `headword-pattern` results before `rafsi-pattern` results. Each class sorts by normalized spelling, then word ID.
+Spelling comparison uses stable ordinal order across hosts. It does not depend on the host locale.
+It uses no gloss, definition-text, segmentation, or component fallback. One card groups every matching definition of a word.
+Headword matches take precedence when a word also has a matching rafsi.
+Both classes use the ordinary pages and “show all” limit. Pattern mode leaves the ordinary segmented-search classes unchanged.
+The rafsi page accepts the same patterns. It shows each matched spelling with its word and retains conflicting assignments separately.
+The rafsi page retains at most 1,000 matched pairs across its languages. A visible notice reports any cut.
+Conflict notices group by normalized rafsi spelling and list different stored spellings. Pair identifiers still use each raw stored spelling.
+When coverage is limited, claimant counts say “At least”. The page does not claim that a retained count is complete.
+It shows 20 assignment cards first. “Show all” reveals the remaining retained cards without another match scan.
+
+Rafsi patterns use retained claim bodies and the same 64-spelling limit per word as version 2 packages.
+Version 1 local packages support headword patterns only. The search page states that they contain no rafsi data.
+The rafsi page requires version 2 data and reports missing packages or incomplete coverage. It never treats absent metadata as no claims.
+
+Patterns permit at most 256 UTF-8 bytes, including expression delimiters. Compilation permits at most 32 levels of nesting.
+The generated expression permits at most 4,096 UTF-8 bytes after glob expansion.
+The shared engine caps each compiled NFA at 2,097,152 bytes. An NFA is a graph of matching states.
+The PikeVM engine visits each active state at most once per input byte. It retains Unicode classes, properties, and word boundaries.
+Common counted classes, such as `/^\w{3,8}$/` and `/^\w{10,}$/`, remain available.
+
+One query permits 32,000,000 work units across eligible headwords and retained rafsi spellings.
+Each candidate consumes its compiled state count multiplied by its normalized UTF-8 byte count plus one.
+For ASCII candidates, the count includes only states reachable through ASCII transitions in that same compiled graph.
+Non-ASCII candidates use the full state count. This cost reduction does not rewrite Unicode classes.
+
+A candidate above 262,144 work units returns `pattern_timeout` before matching.
+Repeated definitions consume work again. Work exhaustion returns no partial results, even when a clock does not advance.
+One long word with nested repetition can finish safely. A larger corpus can exhaust the aggregate budget.
+Expanded optional repetitions can exceed the per-candidate bound before any scan.
+
+The browser runs patterns in its existing static search worker. After preparation, each pattern request has a 1,000 millisecond execution deadline.
+Deadline expiry terminates that worker and returns `pattern_timeout`.
+Cancellation of a running pattern also terminates it. Termination rejects other pending requests and clears that worker's prepared packages.
+
+Cancellation of a plain or queued request rejects that consumer and keeps the worker. A canceled queued pattern skips its scan.
+If a canceled pattern starts before its cancellation arrives, the browser terminates that running scan.
+A later search starts a fresh worker when needed. Failed local patterns never upload their query as a fallback.
+The error message reads “Pattern search reached its time or work limit. Use a shorter or more specific pattern.”
+
+Node runs pattern compilation and scanning in a worker thread, outside the request thread.
+At most two initialized pattern workers run, and eight requests wait.
+Successful scans release their task capacity immediately and keep their worker for later requests.
+Workers retain initialized WebAssembly. Each request still filters and copies candidates, because that array has no reusable version identity.
+
+The parent starts a 1,000 millisecond task deadline after the worker reports that initialization is complete.
+That deadline includes compilation and scanning. Queue waiting and initialization precede it.
+Initialization has a separate 5,000 millisecond limit. Failure to initialize reports a service failure, not a pattern limit.
+Task deadline expiry, active cancellation, and worker errors stop that worker. A later task can start a replacement.
+Queued cancellation removes that task. Server shutdown settles all requests and stops idle and active workers.
+
+Cloudflare scans at most 1,000,000 work units or 8,192 rows per chunk, plus the last bounded candidate.
+One isolate admits two active pattern scans and eight waiting requests across all scanner instances, before compiling any matcher.
+Several [Durable Objects can share an isolate and its memory](https://developers.cloudflare.com/durable-objects/platform/pricing/#compute-billing).
+Completion, failure, and cancellation release their admission slots. Cancellation frees a matcher even while its D1 read remains pending.
+
+After each chunk, Cloudflare performs a read-only D1 `SELECT 1`.
+A loose 5,000 millisecond elapsed guard excludes time between the start and completion of each D1 read.
+[Hosted clocks advance after I/O](https://developers.cloudflare.com/workers/runtime-apis/performance/).
+The excluded interval can also contain CPU time that the hosted clock did not yet report. This guard is not a CPU measurement.
+The compiled-work bounds remain the primary safety limit, independently of clocks and I/O latency.
+Hosted D1 latency adds to response time and has no separate response deadline here.
+
+On either server host, excess pattern requests return HTTP 503 with `search_busy` and `Retry-After: 1`.
+The message reads “Pattern search is busy. Try again shortly.” A shorter pattern does not remove this temporary admission limit.
+Neither host returns partial results after a limit failure.
+
 Both local and server search split the query with the TypeScript text segmenter in `packages/morphology`.
 Each search index derives a component array for every headword that parses entirely as two or more cmavo.
 For example, `iseri'abo` has components `[i, se, ri'a, bo]`.
@@ -234,7 +322,13 @@ Replies include total counts and entry references into the exact package capture
 These references preserve matching alternatives, definition order, selected previews, and display spellings.
 
 An empty search page validates its saved package before displaying its snapshot.
-If queued cache churn removes a worker package, the client retries once with its captured package. Rejected packages keep their validation error.
+The worker owns its prepared-package cache. A new package travels with the first request, so an ordinary cold search needs one reply.
+Worker replies report the actual retained keys, even when the requesting consumer is canceled.
+A per-worker revision prevents an older reply from replacing newer cache knowledge.
+The client also tracks transfers that still wait for acknowledgment, so other requests can reuse their preparation.
+
+A queued transfer does not evict a confirmed warm key. On a cache miss, the client retries once with its captured package.
+Rejected packages keep their validation error.
 Worker startup or execution failure reports an error without sending a local query to a server.
 An invalid saved package retains the earlier disclosed remote fallback.
 
@@ -1262,10 +1356,17 @@ Public reads need no account. Public event admission follows published quotas an
 | `GET /records?snapshot=S&after=ID&limit=N`                        | Snapshot records for local calculation: envelope, body, and body status, bounded by count and bytes. The limit ranges from 1 through 200.                                                                            |
 
 The `POST /search` body requires string fields `q` and `language`.
-Optional fields are `snapshot`, `view`, `after`, `retired`, and `limit`.
-The first four use the same strings as GET. `limit` accepts a positive integer or its decimal string.
+Optional fields are `snapshot`, `view`, `after`, `retired`, `literal`, and `limit`.
+The first five use the same strings as GET. `limit` accepts a positive integer or its decimal string.
 Unknown fields and query parameters on a POST search return HTTP 400.
 Both search methods apply the same bounds, cursor rules, and result selection. Draft text stays in the POST body.
+Both methods accept the pattern syntax in section 4 by default.
+With `literal=1`, they search the query literally instead. Any other `literal` value returns HTTP 400.
+The meaning wizard sets `literal` to `"1"` in its consented POST search. Ordinary word searches keep pattern mode.
+Search cursors include the literal mode. A cursor from another mode returns HTTP 400 with `bad_cursor`.
+`pattern_invalid` returns HTTP 400, and `pattern_timeout` returns HTTP 422.
+An excess pattern request returns HTTP 503 with `search_busy` and `Retry-After: 1`.
+These errors return no partial hits. Both hosts enforce the shared compiled-work limits and their documented execution limits.
 
 The POST /events body contains exactly `envelope` and `body`. Canonicalize the enclosed body and compare its hash and byte length before acceptance.
 Transport whitespace outside canonical objects does not alter signed bytes. The server preserves canonical signed meaning and never changes a field to make a signature pass.
@@ -1555,6 +1656,7 @@ An empty-string cursor is invalid. A request without a changes cursor starts fro
 Search accepts an optional `after` cursor tied to the same query, language, retired flag, view, and snapshot.
 
 Match kinds are `headword`, `gloss`, `sequence-exact`, `sequence-contiguous`, `headword-prefix`, `gloss-prefix`, `sequence-subsequence`, `token`, and `component`, in that relevance order.
+Pattern queries return only `headword-pattern` and `rafsi-pattern`, in that order, with normalized spelling order and a final word-ID tie break within each class.
 The `component` class uses the first uncovered occurrence of each query word before the stable word-ID tie break.
 New servers return `segmentation` on every page. Older servers can omit it.
 `complete` means that segmentation completed within its limits. It does not assert that every query run has a Lojban reading.

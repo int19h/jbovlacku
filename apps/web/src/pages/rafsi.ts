@@ -24,6 +24,11 @@ import { viewScores } from "../components/localview.ts";
 import { judgmentControl, scoreDetails } from "../components/judgment.ts";
 import { renderRichText } from "../model/richtext.ts";
 import { editorLoadError } from "../components/editor-load-error.ts";
+import {
+  comparePatternSpelling,
+  patternKey,
+} from "../../../../packages/search/src/pattern.ts";
+import { searchPackage } from "../data/package-search.ts";
 
 /** Loads the version 2 package for a language, from cache or the server. */
 async function packageFor(
@@ -31,47 +36,93 @@ async function packageFor(
   language: string,
   signal: AbortSignal,
 ): Promise<CachedPackage | null> {
+  let fallback: CachedPackage | null = null;
   // Prefer the server's current package so new claims appear. Fall back to the cache.
   try {
     const fresh = await downloadPackage(language, { signal });
+    fallback = fresh;
     if (fresh.version === 2) {
       if (app.session.storageAvailable)
         await app.store.put("packages", language, fresh).catch(() => {});
       return fresh;
     }
   } catch {}
-  if (!app.session.storageAvailable) return null;
+  if (!app.session.storageAvailable) return fallback;
   const cached =
     (await app.store
       .get<CachedPackage>("packages", language)
       .catch(() => null)) ?? null;
-  return cached?.version === 2 ? cached : null;
+  return cached?.version === 2 ? cached : fallback;
 }
+interface RafsiWord {
+  spelling: string;
+  language: string;
+  rafsi: string;
+}
+type RafsiWords = RafsiWord[] & { unavailable: boolean; limited: boolean };
 /** Words whose retained claims use this rafsi spelling, from version 2 package rows. */
 export async function wordsWithRafsi(
   app: App,
   rafsi: string,
   signal: AbortSignal,
-): Promise<{ spelling: string; language: string }[]> {
+  options: { literal?: boolean } = {},
+): Promise<RafsiWords> {
   const languages = new Set<string>([
     app.session.preferences.definitionLanguage,
   ]);
   if (app.session.storageAvailable)
     for (const key of await app.store.keys("packages").catch(() => []))
       languages.add(key);
-  const found = new Map<string, { spelling: string; language: string }>();
+  const found = new Map<string, RafsiWord>();
+  const identities = new Map<string, string>();
+  let available = false,
+    limited = false;
   for (const language of languages) {
     const pkg = await packageFor(app, language, signal);
-    if (!pkg) continue;
-    for (const entry of pkg.entries)
-      if (isV2(entry) && (entry as PackageEntryV2).rafsi.includes(rafsi))
-        found.set(deriveWordId(entry.word), {
-          spelling: entry.word.spelling,
+    if (!pkg || pkg.version !== 2) {
+      limited = true;
+      continue;
+    }
+    available = true;
+    limited ||= pkg.entries.some(
+      (entry) => isV2(entry) && entry.rafsi_complete === false,
+    );
+    const result = await searchPackage(pkg, language, [rafsi], {
+      rafsiOnly: true,
+      patterns: !options.literal,
+      limit: 1000,
+      signal,
+    });
+    limited ||= result.totals[0] > 1000;
+    for (const hit of result.hits[0]) {
+      identities.set(hit.word.spelling, hit.word_id);
+      for (const spelling of hit.matchingRafsi ?? []) {
+        const key = `${hit.word_id}|${spelling}`;
+        if (!found.has(key) && found.size >= 1000) {
+          limited = true;
+          continue;
+        }
+        found.set(key, {
+          spelling: hit.word.spelling,
           language,
+          rafsi: spelling,
         });
+      }
+    }
   }
-  return [...found.values()].sort((a, b) =>
-    a.spelling.localeCompare(b.spelling),
+  return Object.assign(
+    [...found.values()].sort(
+      (a, b) =>
+        comparePatternSpelling(a.spelling, b.spelling) ||
+        (identities.get(a.spelling)! < identities.get(b.spelling)!
+          ? -1
+          : identities.get(a.spelling)! > identities.get(b.spelling)!
+            ? 1
+            : 0) ||
+        comparePatternSpelling(a.rafsi, b.rafsi) ||
+        (a.rafsi < b.rafsi ? -1 : a.rafsi > b.rafsi ? 1 : 0),
+    ),
+    { unavailable: !available, limited },
   );
 }
 /** One word's card for a rafsi: the pair status, the judgment control, and the retained claims. */
@@ -141,8 +192,12 @@ async function pairCard(
     );
     card.append(byline);
     for (const claim of assignment?.claims ?? []) {
+      if (!context.live()) return card;
       try {
-        const record = await loadRecord<RafsiBody>(claim, word.snapshot);
+        const record = await loadRecord<RafsiBody>(claim, word.snapshot, {
+          signal: context.signal,
+        });
+        if (!context.live()) return card;
         const row = el("div", {
           class: "small claim-source",
           style: "margin-top:8px",
@@ -191,8 +246,30 @@ export async function rafsiPage(
     main.append(p("This link names no rafsi.", "notice"));
     return;
   }
-  const words = await wordsWithRafsi(app, rafsi, context.signal);
+  let words: RafsiWords;
+  try {
+    words = await wordsWithRafsi(app, rafsi, context.signal);
+  } catch (error) {
+    if (context.live()) main.append(p(describe(error), "notice"));
+    return;
+  }
   if (!context.live()) return;
+  if (words.unavailable) {
+    main.append(
+      p(
+        "Rafsi lookup needs a version 2 search package. This server and the saved packages supply no rafsi data.",
+        "notice",
+      ),
+    );
+    return;
+  }
+  if (words.limited)
+    main.append(
+      p(
+        "Rafsi coverage is limited. Packages list at most 64 rafsi per word. This page shows at most 1,000 matching pairs. Refine the pattern for more specific results.",
+        "notice",
+      ),
+    );
   if (!words.length) {
     main.append(
       p(
@@ -206,7 +283,7 @@ export async function rafsiPage(
   words.forEach((w, i) => {
     if (i) relation.append(text(" · "));
     relation.append(
-      text(`${rafsi} ← `),
+      text(`${w.rafsi} ← `),
       link(w.spelling, routes.word(w.spelling, w.language), {
         lang: "jbo",
         class: "touch-link",
@@ -214,14 +291,62 @@ export async function rafsiPage(
     );
   });
   main.append(relation);
-  if (words.length > 1)
-    main.append(
-      p(
-        `${words.length} words claim this rafsi. The assignment is unresolved until the selected view prefers one.`,
-        "notice",
-      ),
+  const assignments = new Map<
+    string,
+    { claimants: Set<string>; raw: Set<string> }
+  >();
+  for (const word of words) {
+    const key = patternKey(word.rafsi);
+    const group = assignments.get(key) ?? {
+      claimants: new Set<string>(),
+      raw: new Set<string>(),
+    };
+    group.claimants.add(
+      deriveWordId({ language: "jbo", spelling: word.spelling }),
     );
-  for (const w of words) main.append(await pairCard(app, context, w, rafsi));
+    group.raw.add(word.rafsi);
+    assignments.set(key, group);
+  }
+  for (const [spelling, { claimants, raw }] of assignments)
+    if (claimants.size > 1)
+      main.append(
+        p(
+          `${words.limited ? "At least " : ""}${claimants.size} words claim ${spelling}. The assignment is unresolved until the selected view prefers one.${raw.size > 1 ? " Stored spellings: " + [...raw].sort().join(", ") + "." : ""}`,
+          "notice",
+        ),
+      );
+  const cards = el("div");
+  const moreLine = el("p", { class: "meta" });
+  let shown = 0;
+  const render = async (limit: number) => {
+    while (shown < Math.min(limit, words.length)) {
+      if (!context.live()) return;
+      const word = words[shown];
+      const card = await pairCard(app, context, word, word.rafsi);
+      if (!context.live()) return;
+      cards.append(card);
+      shown++;
+    }
+    moreLine.replaceChildren();
+    if (shown < words.length) {
+      const more = button(
+        "show all",
+        async () => {
+          more.disabled = true;
+          try {
+            await render(words.length);
+          } catch (error) {
+            if (context.live()) main.append(p(describe(error), "notice"));
+          }
+        },
+        { class: "btn btn-quiet" },
+      );
+      moreLine.append(text(`${words.length - shown} more… `), more);
+    }
+  };
+  main.append(cards, moreLine);
+  await render(20);
+  if (!context.live()) return;
   main.append(
     p(
       "A rafsi is not reserved by the first server that receives a claim. Judgments on a pair apply across all its publishers.",
@@ -315,7 +440,10 @@ export async function claimPage(
     submit.disabled = true;
     competition.replaceChildren(p("Checking retained claims…", "meta"));
     try {
-      const others = (await wordsWithRafsi(app, value, context.signal)).filter(
+      const lookup = await wordsWithRafsi(app, value, context.signal, {
+        literal: true,
+      });
+      const others = lookup.filter(
         (w) => deriveWordId({ language: "jbo", spelling: w.spelling }) !== id,
       );
       if (!context.live()) return;
@@ -338,7 +466,14 @@ export async function claimPage(
           ),
         );
         competition.append(note);
-      } else
+      } else if (lookup.unavailable)
+        competition.append(
+          p(
+            "Rafsi conflict lookup is unavailable. Version 2 package data is missing. Review the claim with that coverage limit.",
+            "notice",
+          ),
+        );
+      else
         competition.append(
           p(
             `No retained claim of ${value} for another word in this server's packages. Coverage is limited to retained claim bodies.`,

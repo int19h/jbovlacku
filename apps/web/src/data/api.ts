@@ -629,14 +629,22 @@ export function validateHits(hits: unknown, pageLimit: number): SearchHit[] {
     );
   return hits as SearchHit[];
 }
-/** Sends a disclosed draft query in a JSON body. */
+/** Searches disclosed meaning text literally in a JSON body. */
 export async function remoteDraftSearch(
   query: string,
   language: string,
   pageLimit: number,
   options: RequestOptions = {},
 ): Promise<SearchResponse> {
-  return remoteSearch(query, language, pageLimit, null, null, options, true);
+  return remoteSearch(
+    query,
+    language,
+    pageLimit,
+    null,
+    null,
+    { ...options, literal: true },
+    true,
+  );
 }
 export async function remoteSearch(
   query: string,
@@ -644,7 +652,7 @@ export async function remoteSearch(
   pageLimit: number,
   context: { snapshot: string; view: string } | null,
   after: string | null,
-  options: RequestOptions & { retired?: boolean } = {},
+  options: RequestOptions & { retired?: boolean; literal?: boolean } = {},
   draftBody = false,
 ): Promise<SearchResponse> {
   const params = new URLSearchParams({
@@ -654,6 +662,7 @@ export async function remoteSearch(
   });
   // Retired results are excluded unless the reader asks for them.
   if (options.retired) params.set("retired", "1");
+  if (options.literal) params.set("literal", "1");
   if (context) {
     params.set("snapshot", context.snapshot);
     params.set("view", context.view);

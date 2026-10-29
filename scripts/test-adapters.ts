@@ -306,12 +306,12 @@ try {
           operation: "type",
           draft_revision: "adapter-private",
           language: "en",
-          meaning: "x1 travels by car.",
+          meaning: "x1 is a C*-algebra and writes to name@example.org.",
           current: {
             word_type: null,
             classification: null,
             spelling: null,
-            text: [["x1 travels by car."]],
+            text: [["x1 is a C*-algebra and writes to name@example.org."]],
             frame: null,
             glosses: [],
             formation: null,
@@ -420,7 +420,11 @@ try {
           text: [["x1 goes to x2."]],
           frame: null,
           operands: [],
-          glosses: [{ language: "en", text: "go", sense: null }],
+          glosses: [
+            { language: "en", text: "go", sense: null },
+            { language: "en", text: "c*-algebra", sense: null },
+            { language: "en", text: "name@example.org", sense: null },
+          ],
           notes: [],
           etymology: { text: [], formation: null, compound: null },
           examples: [],
@@ -573,6 +577,24 @@ try {
         assert.equal(ranked.calculation?.algorithm, algorithm);
         assert.equal(ranked.calculation?.exact, true);
       }
+      for (const q of ["c*-algebra", "name@example.org"]) {
+        const fields = {
+          q,
+          language: "en",
+          literal: "1",
+          view: view.envelope.id,
+        };
+        for (const response of [
+          await api(index, `/search?${new URLSearchParams(fields)}`),
+          await api(index, "/search", fields),
+        ]) {
+          await assertResponseStatus(response, 200);
+          const result: any = await response.json();
+          assert.equal(result.hits.length, 1);
+          assert.equal(result.hits[0].word_id, wordId(definitionWord));
+          assert.equal(result.hits[0].match, "gloss");
+        }
+      }
       const searchFields = {
         q: "go",
         language: "en",
@@ -590,6 +612,34 @@ try {
       const searched: any = await postSearch.json();
       assert.deepEqual(searched, await getSearch.json());
       assert.equal(searched.query, searchFields.q);
+      for (const q of ["/^KLA/", "/ma$/", "kla*", "?lama", "/(a+)+$/"]) {
+        const fields = { ...searchFields, q };
+        const post = await api(index, "/search", fields);
+        await assertResponseStatus(post, 200);
+        const get = await api(
+          index,
+          `/search?${new URLSearchParams(Object.entries(fields).map(([name, value]) => [name, String(value)]))}`,
+        );
+        await assertResponseStatus(get, 200);
+        const pattern: any = await post.json();
+        assert.deepEqual(pattern, await get.json());
+        assert.ok(pattern.hits.length > 0);
+        assert.ok(
+          pattern.hits.every(
+            (hit: any) =>
+              hit.match === "headword-pattern" || hit.match === "rafsi-pattern",
+          ),
+        );
+      }
+      const invalidPattern = await api(index, "/search", {
+        ...searchFields,
+        q: "/[/",
+      });
+      await assertResponseStatus(invalidPattern, 400);
+      assert.equal(
+        ((await invalidPattern.json()) as any).code,
+        "pattern_invalid",
+      );
       await assertResponseStatus(
         await api(index, "/search", { ...searchFields, q: null }),
         400,

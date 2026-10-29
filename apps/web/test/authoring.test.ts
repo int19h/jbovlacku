@@ -599,7 +599,7 @@ test("a standalone rafsi claim shows competing words, signs the claim with its p
   ).toBeVisible();
   await page.getByRole("link", { name: "cku", exact: true }).first().click();
   await expect(page).toHaveTitle("Rafsi cku · jbovlacku");
-  await expect(page.getByText("2 words claim this rafsi.")).toBeVisible();
+  await expect(page.getByText("2 words claim cku.")).toBeVisible();
   await expect(
     page.getByRole("region", { name: "cku for cukta" }),
   ).toBeVisible();

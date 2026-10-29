@@ -2,6 +2,8 @@ import { initializeCore } from "../../../../packages/core/src/browser.ts";
 import {
   prepareIndex,
   searchMetrics,
+  PatternError,
+  isPatternQuery,
 } from "../../../../packages/search/src/index.ts";
 import {
   localSearch,
@@ -21,19 +23,40 @@ const packages = new Map<
     events: Map<string, number>;
   }
 >();
+let cacheRevision = 0;
+const reply = (data: Record<string, unknown>) =>
+  self.postMessage({
+    ...data,
+    retained: [...packages.keys()],
+    cacheRevision: ++cacheRevision,
+  });
 const ready = initializeCore();
 let queue = Promise.resolve();
+const canceled = new Set<number>();
+const queued = new Set<number>();
 // Keep messages ordered while the initial Wasm module loads.
 self.onmessage = ({ data }) => {
+  if (data.cancel !== undefined) {
+    if (queued.has(data.cancel)) canceled.add(data.cancel);
+    return;
+  }
+  queued.add(data.request);
   queue = queue.then(async () => {
     try {
       await ready;
+      // Let queued cancellation messages arrive before preparation or matching.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      queued.delete(data.request);
+      if (canceled.delete(data.request)) {
+        reply({ request: data.request, canceled: true });
+        return;
+      }
       const metrics = searchMetrics();
       if (data.pkg) {
         try {
           validateCachedPackage(data.pkg, data.language);
         } catch (error) {
-          self.postMessage({
+          reply({
             request: data.request,
             key: data.key,
             code: "invalid-package",
@@ -53,7 +76,7 @@ self.onmessage = ({ data }) => {
       }
       const stored = packages.get(data.key);
       if (!stored) {
-        self.postMessage({
+        reply({
           request: data.request,
           key: data.key,
           code: "package-missing",
@@ -65,8 +88,18 @@ self.onmessage = ({ data }) => {
       packages.delete(data.key);
       packages.set(data.key, stored);
       if (packages.size > 2) packages.delete(packages.keys().next().value!);
+      const options: PackageSearchOptions = data.options ?? {};
+      if (
+        options.patterns !== false &&
+        !options.nearby &&
+        data.queries.some(isPatternQuery)
+      )
+        reply({ request: data.request, started: true });
       const hits: ReturnType<typeof localSearch>[] = data.queries.map(
-        (query: string) => localSearch(stored.pkg.entries, query, metrics),
+        (query: string) =>
+          localSearch(stored.pkg.entries, query, metrics, options.rafsiOnly, {
+            patterns: options.patterns !== false && !options.nearby,
+          }),
       );
       const segmentation = hits.some(
         (rows: ReturnType<typeof localSearch>) =>
@@ -74,7 +107,6 @@ self.onmessage = ({ data }) => {
       )
         ? "limited"
         : "complete";
-      const options: PackageSearchOptions = data.options ?? {};
       const offset = Number.isSafeInteger(options.offset)
         ? Math.min(1000, Math.max(0, options.offset!))
         : 0;
@@ -92,9 +124,10 @@ self.onmessage = ({ data }) => {
             (event) => stored.events.get(event)!,
           ),
           preview: stored.events.get(hit.preview!.event)!,
+          ...(hit.matchingRafsi ? { rafsi: hit.matchingRafsi } : {}),
         })),
       );
-      self.postMessage({
+      reply({
         request: data.request,
         result: {
           hits: pages,
@@ -105,9 +138,12 @@ self.onmessage = ({ data }) => {
         },
       });
     } catch (error) {
-      self.postMessage({
+      queued.delete(data.request);
+      canceled.delete(data.request);
+      reply({
         request: data.request,
         key: data.key,
+        ...(error instanceof PatternError ? { code: error.code } : {}),
         error: error instanceof Error ? error.message : String(error),
       });
     }

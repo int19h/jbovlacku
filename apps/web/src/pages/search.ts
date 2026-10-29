@@ -1,9 +1,11 @@
+import { naturalLanguageNote } from "../../../../packages/search/src/pattern.ts";
 import {
   searchPackage,
   PackageValidationError,
   type PackageSearchResult,
 } from "../data/package-search.ts";
 import { kindLabel } from "../model/types.ts";
+import { isPatternQuery } from "../../../../packages/search/src/index.ts";
 /**
  * Search results. The header holds the query. The page shows a count line,
  * the definition-language select, and compact three-line rows.
@@ -213,6 +215,8 @@ export async function searchPage(
     if (context.live() && request === languageRequest)
       navigate(routes.search(query, value));
   });
+  const punctuationNote = naturalLanguageNote(query);
+  if (punctuationNote) main.append(p(punctuationNote, "meta"));
   // Search source: the downloaded package in local mode, otherwise this server.
   let cached: CachedPackage | undefined;
   let initialLocal: PackageSearchResult | undefined;
@@ -230,6 +234,7 @@ export async function searchPage(
         cached,
         language,
         query ? [query] : [],
+        { signal: context.signal },
       );
     } catch (error) {
       if (!context.live()) return;
@@ -243,6 +248,15 @@ export async function searchPage(
     }
   }
   if (!context.live()) return;
+  if (query && isPatternQuery(query))
+    results.before(
+      p(
+        cached && cached.version !== 2
+          ? "This package has no rafsi data. Pattern results cover headwords only."
+          : "Pattern results match headwords first, then retained rafsi claims. Each word lists at most 64 rafsi.",
+        "meta",
+      ),
+    );
   if (!cached)
     getManifest({ signal: context.signal })
       .then((manifest) => {
@@ -452,6 +466,7 @@ export async function searchPage(
         const page = await searchPackage(cached, language, [query], {
           offset: displayed.length,
           limit,
+          signal: context.signal,
         });
         if (!context.live()) return;
         localHits = page.hits[0];
@@ -525,6 +540,7 @@ export async function searchPage(
       if (saved.hits.length > localHits.length) {
         const page = await searchPackage(cached, language, [query], {
           limit: saved.hits.length,
+          signal: context.signal,
         });
         if (!context.live()) return;
         localHits = page.hits[0];
