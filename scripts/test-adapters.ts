@@ -442,19 +442,6 @@ try {
       const published = await api(index, "/events", definition);
       await assertResponseStatus(published, 201);
       await materializedReceipt(index, await published.json());
-      for (const q of ["c*-algebra", "name@example.org"]) {
-        const fields = { q, language: "en", literal: "1" };
-        for (const response of [
-          await api(index, `/search?${new URLSearchParams(fields)}`),
-          await api(index, "/search", fields),
-        ]) {
-          await assertResponseStatus(response, 200);
-          const result: any = await response.json();
-          assert.equal(result.hits.length, 1);
-          assert.equal(result.hits[0].word_id, wordId(definitionWord));
-          assert.equal(result.hits[0].match, "gloss");
-        }
-      }
       // The newer read routes answer on both adapters with the same shapes.
       const manifest: any = await (await api(index, "/manifest")).json();
       assert.ok(Array.isArray(manifest.package_versions));
@@ -589,6 +576,24 @@ try {
         assert.equal(ranked.view, chosen.envelope.id);
         assert.equal(ranked.calculation?.algorithm, algorithm);
         assert.equal(ranked.calculation?.exact, true);
+      }
+      for (const q of ["c*-algebra", "name@example.org"]) {
+        const fields = {
+          q,
+          language: "en",
+          literal: "1",
+          view: view.envelope.id,
+        };
+        for (const response of [
+          await api(index, `/search?${new URLSearchParams(fields)}`),
+          await api(index, "/search", fields),
+        ]) {
+          await assertResponseStatus(response, 200);
+          const result: any = await response.json();
+          assert.equal(result.hits.length, 1);
+          assert.equal(result.hits[0].word_id, wordId(definitionWord));
+          assert.equal(result.hits[0].match, "gloss");
+        }
       }
       const searchFields = {
         q: "go",
