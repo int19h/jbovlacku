@@ -302,6 +302,13 @@ test("r2 literal mode replaces the place-rule hint", async ({ page }) => {
 test("r2 place-list updates retain blank paragraphs, caret, and undo", async ({
   page,
 }) => {
+  // History uses Date.now. Keep its groups independent of VM clock changes.
+  let historyTime = Date.now();
+  await page.clock.setFixedTime(historyTime);
+  const nextHistoryGroup = async () => {
+    historyTime += 1000;
+    await page.clock.setFixedTime(historyTime);
+  };
   await page.goto("/");
   await page.evaluate(async () => {
     const { newDraft, newPlace } = await import(String("/src/model/draft.ts"));
@@ -325,14 +332,14 @@ test("r2 place-list updates retain blank paragraphs, caret, and undo", async ({
     exact: true,
   });
   await field.pressSequentially("the agent");
-  await page.waitForTimeout(550);
+  await nextHistoryGroup();
   await field.press("Enter");
   expect(await nodes(field)).toEqual([["the agent"]]);
   await page
     .getByRole("button", { name: "+ Add a place", exact: true })
     .click();
   await expect(field.locator("p")).toHaveCount(2);
-  await page.waitForTimeout(550);
+  await nextHistoryGroup();
   await field.pressSequentially("tail");
   expect(await nodes(field)).toEqual([["the agent"], ["tail"]]);
   await field.press("Control+z");
@@ -344,13 +351,13 @@ test("r2 place-list updates retain blank paragraphs, caret, and undo", async ({
     exact: true,
   });
   await description.pressSequentially("a person");
-  await page.waitForTimeout(550);
+  await nextHistoryGroup();
   await description.press("Enter");
   await page
     .getByRole("button", { name: "+ Add a place", exact: true })
     .click();
   await expect(description.locator("p")).toHaveCount(2);
-  await page.waitForTimeout(550);
+  await nextHistoryGroup();
   await description.pressSequentially("tail");
   expect(await nodes(description)).toEqual([["a person"], ["tail"]]);
   await description.press("Control+z");

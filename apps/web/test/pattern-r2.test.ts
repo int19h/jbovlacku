@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { resolve } from "node:path";
+import { installSearchWorkerGate } from "./pattern-worker-gate.ts";
 const corePath = `/@fs${resolve("packages/core/src/browser.ts")}`;
 const pkg = (spellings: string[], rafsi: string[][] = []) => ({
   version: 2,
@@ -39,34 +40,7 @@ const emptyWord = {
 test("R2 plain and queued pattern aborts preserve the shared worker and prepared package", async ({
   page,
 }) => {
-  await page.addInitScript(() => {
-    const Original = Worker;
-    (window as any).searchWorkers = 0;
-    window.Worker = class extends Original {
-      constructor(url: string | URL, options?: WorkerOptions) {
-        super(url, options);
-        if (String(url).includes("package-search-worker"))
-          (window as any).searchWorkers++;
-        const property = Object.getOwnPropertyDescriptor(
-          Original.prototype,
-          "onmessage",
-        )!;
-        Object.defineProperty(this, "onmessage", {
-          get: () => property.get?.call(this),
-          set: (handler) =>
-            property.set?.call(this, (event: MessageEvent) => {
-              // Abort the active plain consumer before its completed reply settles it.
-              if (event.data.result && (window as any).abortPlainOnReply) {
-                const abort = (window as any).abortPlainOnReply;
-                delete (window as any).abortPlainOnReply;
-                abort();
-              }
-              handler?.call(this, event);
-            }),
-        });
-      }
-    };
-  });
+  await installSearchWorkerGate(page);
   await page.goto("/");
   const result = await page.evaluate(
     async (pkg) => {
@@ -90,12 +64,17 @@ test("R2 plain and queued pattern aborts preserve the shared worker and prepared
         signal: plain.signal,
       }).catch((e: any) => e.name);
       const plainError = await aborted;
+      const gate = (window as any).searchGate;
+      await gate.hold();
       const running = searchPackage(pkg, "en", ["bangu"]);
       const queued = new AbortController();
       const canceled = searchPackage(pkg, "en", ["ba*"], {
         signal: queued.signal,
       }).catch((e: any) => e.name);
+      const queuedRequest = await gate.queued();
       queued.abort();
+      await gate.canceled(queuedRequest);
+      await gate.release();
       const active = await running;
       const later = await searchPackage(pkg, "en", ["ba*"]);
       const second = structuredClone(pkg);
@@ -103,11 +82,15 @@ test("R2 plain and queued pattern aborts preserve the shared worker and prepared
       await searchPackage(second, "en", ["bangu"]);
       const third = structuredClone(pkg);
       third.snapshot = "sha256:" + "c".repeat(64);
+      await gate.hold();
       const cancelThird = new AbortController();
       const thirdRequest = searchPackage(third, "en", ["ba*"], {
         signal: cancelThird.signal,
       }).catch((error: any) => error.name);
+      const thirdQueuedRequest = await gate.queued();
       cancelThird.abort();
+      await gate.canceled(thirdQueuedRequest);
+      await gate.release();
       const originalWarm = await searchPackage(pkg, "en", ["bangu"]);
       const secondWarm = await searchPackage(second, "en", ["bangu"]);
       return {
