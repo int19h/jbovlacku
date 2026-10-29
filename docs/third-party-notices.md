@@ -342,6 +342,7 @@ The license texts below retain upstream wording. Shared text appears once with e
 | `commander` | 14.0.3 | MIT |
 | `peggy` | 5.1.1 | MIT |
 | `source-map-generator` | 2.0.7 | BSD-3-Clause |
+
 ## License and copyright texts
 
 The text blocks reproduce local package and font files without edits.

@@ -132,15 +132,18 @@ Meaning treats only a backslash before a circled numeral as an escape. It preser
 The Places step and the full editor offer hideable advice above three declared places, with firmer text above five.
 A repeating tail counts once. The advice applies to every word type and never blocks publication or enters signed records.
 Revise copies a publication into a new draft with its exact parent and keeps every field: links, code, operands, literal circled characters, every gloss with its language and sense, every derivation, and the frame role. The page names the only changes a native revision makes. A revision of imported text cites the imported publication and copies the source-rights reference once.
-The rich editors change the stored node tree directly. Editing beside code, links, or adjacent strings keeps their boundaries, labels, whitespace, and line breaks. Empty editor paragraphs do not enter stored data. A word link stays a word link when its spelling starts with `https://`.
+The rich editors change the stored node tree directly. Editing code and links keeps their labels, whitespace, and line breaks. New prose joins nearby text while untouched saved boundaries stay exact. Blank paragraphs use a newline string in stored data. Place-row updates preserve the caret and undo history. A word link stays a word link when its spelling starts with `https://`.
 
-The toolbar inserts places 1 to 3 directly. A dropdown offers places 4 to 50 and identifies declared places. Labeled dialogs insert word links and code. The same editor supports HTTPS links and operand references.
+The toolbar inserts places 1 to 3 directly. A dropdown offers places 4 to 50 and identifies declared places. Labeled dialogs insert word links and code, and Edit link changes an existing target or label. Accessible link names include their targets. The toolbar uses one tab stop with arrow-key navigation. The same editor supports HTTPS links and operand references.
 
 Typing `___` inserts the next free place, and `__N__` inserts place N from 1 through 50. Typed circled numbers also insert places. A semicolon restarts automatic numbering. Backspace restores the characters immediately after conversion. Literal mode keeps circled numbers and underscores as text. It preserves code and links.
 
-Paste reads only plain text. Pasted circled numbers stay literal unless the author chooses references. Pasted markup and underscores stay literal. Copy retains readable place glyphs and operand names. Removing a place keeps the referent of every other reference. The shared core checks the finished body before Publish is enabled, and every blocking problem names its field.
+Paste reads only plain text. Clipboard content without plain text leaves the selection unchanged. Paste inside code or a link label stays in that node. Pasted circled numbers elsewhere stay literal unless the author chooses references. Pasted markup and underscores stay literal. Copy retains readable place glyphs and operand names. Removing a place keeps the referent of every other reference. The shared core checks the finished body before Publish is enabled, and every blocking problem names its field.
 
-AI frame generation supports up to 16 consecutive places. Manual frames support explicit gaps and more than 16 places. Requests with explicit numbers above 16 or with gaps require manual declarations before separate gloss and type suggestions.
+AI frame generation supports up to 16 consecutive places. Manual frames support explicit gaps and more than 16 places. The guard counts blanks with explicit Meaning numbers and prefers current definition places. Numbers above 16 or with gaps require manual declarations before separate gloss and type suggestions.
+
+Reading pages load no ProseMirror code or CSS. Authoring pages load the editor on demand.
+Whitespace-only text stays empty for required definitions, report explanations, biographies, and manual formation reasons.
 
 Chromium tests simulate text composition with an input method editor. Real Android and iOS keyboard tests remain pending.
 Word links and place derivations use the shared format rules. Valid uppercase references retain their exact targets and do not block publication.

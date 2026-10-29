@@ -66,13 +66,13 @@ The root manifest selects these direct npm packages:
 | `jose`                      | 6.1.3        | MIT               | Browser key backup encryption.                        |
 | `peggy`                     | 5.1.1        | MIT               | Word grammar compiler.                                |
 | `prettier`                  | 3.7.4        | MIT               | Source formatting.                                    |
-| `prosemirror-commands` | 1.7.2 | MIT | Rich-text editor. |
-| `prosemirror-history` | 1.5.1 | MIT | Rich-text editor. |
-| `prosemirror-inputrules` | 1.5.1 | MIT | Rich-text editor. |
-| `prosemirror-keymap` | 1.2.3 | MIT | Rich-text editor. |
-| `prosemirror-model` | 1.25.12 | MIT | Rich-text editor. |
-| `prosemirror-state` | 1.4.4 | MIT | Rich-text editor. |
-| `prosemirror-view` | 1.42.8 | MIT | Rich-text editor. |
+| `prosemirror-commands`      | 1.7.2        | MIT               | Rich-text editor.                                     |
+| `prosemirror-history`       | 1.5.1        | MIT               | Rich-text editor.                                     |
+| `prosemirror-inputrules`    | 1.5.1        | MIT               | Rich-text editor.                                     |
+| `prosemirror-keymap`        | 1.2.3        | MIT               | Rich-text editor.                                     |
+| `prosemirror-model`         | 1.25.12      | MIT               | Rich-text editor.                                     |
+| `prosemirror-state`         | 1.4.4        | MIT               | Rich-text editor.                                     |
+| `prosemirror-view`          | 1.42.8       | MIT               | Rich-text editor.                                     |
 | `tsx`                       | 4.20.6       | MIT               | TypeScript execution for local development and tests. |
 | `typescript`                | 5.9.3        | Apache-2.0        | Type analysis.                                        |
 | `vite`                      | 7.3.7        | MIT               | Browser development and bundle.                       |
