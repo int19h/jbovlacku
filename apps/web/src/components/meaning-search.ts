@@ -1,5 +1,5 @@
 import type { App } from "../app/context.ts";
-import { rememberState, type RenderContext } from "../app/router.ts";
+import { rememberState, routes, type RenderContext } from "../app/router.ts";
 import {
   getCapabilities,
   getManifest,
@@ -12,7 +12,7 @@ import {
   semanticSearch,
   type SemanticContext,
 } from "../data/semantic-search.ts";
-import { button, describe, el, p } from "../lib/dom.ts";
+import { button, describe, el, link, p } from "../lib/dom.ts";
 import { richTextToText } from "../model/richtext.ts";
 import type { SearchHit } from "../model/types.ts";
 import { wordId } from "../../../../packages/core/src/browser.ts";
@@ -99,6 +99,19 @@ export async function meaningSearchGroup(
           `Profile: ${profile.label}. Similarity is a suggestion, not an editorial score.`,
           "meta",
         ),
+        el(
+          "details",
+          { class: "disclosure small" },
+          el("summary", { text: "Meaning search profile" }),
+          el(
+            "div",
+            { class: "body", style: "overflow-wrap:anywhere" },
+            p(`Profile: ${profile.id}`),
+            p(`Snapshot: ${source!.snapshot}`),
+            p(`View: ${source!.view}`),
+            ...profile.limitations.map((limitation) => p(limitation)),
+          ),
+        ),
       );
       status.textContent = "Searching for similar meanings.";
       try {
@@ -166,25 +179,36 @@ export async function meaningSearchGroup(
                   wordId(record.body.word) !== hit.word
                 )
                   throw new Error("Meaning result definition is unavailable.");
-                rows.append(
-                  renderHit(
-                    {
-                      word: record.body.word,
-                      word_id: hit.word,
-                      definitions: [hit.event],
-                      match: "token",
-                      preview: {
-                        event: hit.event,
-                        word_kind: record.body.classification.kind,
-                        plain_text: Array.from(richTextToText(record.body.text))
-                          .slice(0, 240)
-                          .join(""),
-                        status: "active",
-                      },
+                const row = renderHit(
+                  {
+                    word: record.body.word,
+                    word_id: hit.word,
+                    definitions: [hit.event],
+                    match: "token",
+                    preview: {
+                      event: hit.event,
+                      word_kind: record.body.classification.kind,
+                      plain_text: Array.from(richTextToText(record.body.text))
+                        .slice(0, 240)
+                        .join(""),
+                      status: "active",
                     },
-                    source!,
-                  ),
+                  },
+                  source!,
                 );
+                const permanent = link(
+                  "Matched definition",
+                  routes.definition(hit.event),
+                  { class: "meta" },
+                );
+                const metadata = row.querySelector(".line3");
+                if (metadata)
+                  metadata.insertBefore(
+                    permanent,
+                    metadata.querySelector(".spacer"),
+                  );
+                else row.append(permanent);
+                rows.append(row);
               } catch (error) {
                 if (!live()) return;
                 unavailable++;
@@ -263,6 +287,7 @@ export async function meaningSearchGroup(
         p(
           `Server: ${selfPeer.label} (${capabilities.server_id}). Provider: ${provider}.`,
         ),
+        p(`Profile: ${profile.id}`, "meta"),
         p(
           "Task: find similar meanings. Fields sent: search query and definition language.",
         ),

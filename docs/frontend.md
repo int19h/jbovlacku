@@ -1820,7 +1820,8 @@ The system prompt puts `explain.txt` after the task file. For `sources`, it foll
 The language block stays last. Without a language block, `explain.txt` is last.
 
 The Assistance group of Settings has one checkbox, “Use AI assistance”. It is on by default when the server offers assistance.
-When it is off, the app hides every AI tagged button, every suggestion panel and its notes, the consent dialog, the inline meaning-search consent, the Similar in meaning group, and every AI hint line. Hidden controls leave no gap, and every manual path stays complete. The app sends nothing to a provider.
+When it is off, the app hides every AI tagged button, suggestion panel, and AI hint line.
+It also hides suggestion notes, consent dialogs, inline meaning consent, and the Similar in meaning group. Hidden controls leave no gap, and every manual path stays complete. The app sends nothing to a provider.
 When no assistance capability is available, the app looks the same. The checkbox is replaced by the line “Not available on this server.” The user's own choice is kept for a server that offers assistance later.
 
 The server offers assistance when capabilities expose a generation operation or a query-available embedding profile.

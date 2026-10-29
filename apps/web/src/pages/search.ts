@@ -85,6 +85,7 @@ interface SearchState {
     { hits: SearchHit[]; next: string | null; cursors: string[] }
   >;
   allLojban: boolean;
+  complete: boolean;
   segmentation?: "complete" | "limited";
 }
 /**
@@ -296,6 +297,7 @@ export async function searchPage(
     );
     return;
   }
+  results.setAttribute("aria-busy", "true");
   const remoteSource = p(`Searched on ${selfPeer.label}.`, "meta");
   if (!cached) results.before(remoteSource);
   let disclosed =
@@ -344,6 +346,7 @@ export async function searchPage(
       stopped: boolean;
       total: number;
       initial: LocalHit[];
+      loaded: boolean;
     }
   >;
   for (const [index, key] of (["lojban", "definitions"] as const).entries()) {
@@ -380,6 +383,7 @@ export async function searchPage(
       stopped: false,
       total: initialLocal?.totals[index] ?? 0,
       initial: initialLocal?.hits[index] ?? [],
+      loaded: false,
     };
   }
   const remember = () => {
@@ -393,6 +397,7 @@ export async function searchPage(
       choice: getPreferredView(),
       segmentation,
       allLojban,
+      complete: groups.lojban.loaded && (pattern || groups.definitions.loaded),
       groups: Object.fromEntries(
         Object.entries(groups).map(([key, group]) => [
           key,
@@ -415,6 +420,7 @@ export async function searchPage(
   results.before(provenance);
   const appendHits = (key: SearchGroup, hits: SearchHit[]) => {
     const group = groups[key];
+    group.loaded = true;
     for (const hit of hits) {
       group.hits.push(hit);
       group.rows.append(
@@ -597,6 +603,15 @@ export async function searchPage(
           "Search pagination repeated a cursor or result. Start a new search to retry.",
         );
       }
+      if (
+        page.next &&
+        page.hits.every((hit) => matchGroup(hit.match) !== key)
+      ) {
+        group.stopped = true;
+        throw new Error(
+          "Search pagination returned no matches for this group. Start a new search to retry.",
+        );
+      }
       remoteSource.textContent = `Searched on ${selfPeer.label}.`;
       snapshot = page.snapshot;
       view = page.view;
@@ -616,18 +631,23 @@ export async function searchPage(
   const restorable =
     !context.readRetryAttempt &&
     saved &&
+    saved.complete === true &&
     saved.query === query &&
     saved.language === language &&
     saved.source === (cached ? "local" : "remote") &&
     "choice" in saved &&
     (saved.choice ?? null) === getPreferredView() &&
     saved.groups &&
-    Object.values(saved.groups).every(
-      (group) =>
+    (["lojban", "definitions"] as const).every((key) => {
+      const group = saved.groups[key];
+      return (
+        group &&
         Array.isArray(group.hits) &&
         group.hits.length <= RESULT_LIMIT &&
-        Array.isArray(group.cursors),
-    ) &&
+        Array.isArray(group.cursors) &&
+        group.cursors.length <= RESULT_LIMIT
+      );
+    }) &&
     (cached
       ? saved.snapshot === cached.snapshot
       : /^sha256:[0-9a-f]{64}$/.test(saved.snapshot) &&
@@ -669,6 +689,7 @@ export async function searchPage(
     }
   }
   if (!context.live()) return;
+  results.setAttribute("aria-busy", "false");
   refresh();
   for (const group of Object.values(groups)) {
     if (!group.hits.length && !group.rows.querySelector(".notice"))

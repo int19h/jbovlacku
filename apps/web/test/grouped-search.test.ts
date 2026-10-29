@@ -233,6 +233,9 @@ test("inline meaning consent can be declined, accepted, remembered, and renewed 
   await meaning.getByRole("button", { name: "Enable meaning search" }).click();
   await meaning.getByRole("button", { name: "Allow meaning search" }).click();
   await expect(meaning.locator("article")).toHaveCount(1);
+  await expect(
+    meaning.getByRole("link", { name: "Matched definition", exact: true }),
+  ).toHaveAttribute("href", /^\/definition\/jve1%3A/);
   await expect(meaning).toContainText(
     "3 are pending indexing. 1 failed indexing.",
   );

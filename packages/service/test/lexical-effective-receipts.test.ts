@@ -975,7 +975,7 @@ test("group pages bind cursors to the group and report known Lojban queries", as
     ),
   );
   assert.equal(invalid.status, 400);
-  assert.equal((await invalid.json()).code, "bad_cursor");
+  assert.equal(((await invalid.json()) as { code: string }).code, "bad_cursor");
   const badGroup = await f.service.fetch(
     new Request(
       "http://local.invalid/api/v1/search?q=klama&language=en&group=unknown",
