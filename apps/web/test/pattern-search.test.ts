@@ -5,7 +5,7 @@ const language = "en-x-pattern";
 const queries = ["/^ba/", "/nu$/", "ba*", "@@$", "?a?a", "*'i", "*hi"];
 async function fixture(page: Page) {
   await page.goto("/");
-  await page.evaluate(
+  const baseline = await page.evaluate(
     async ({ corePath, language }) => {
       const core = await import(corePath);
       await core.initializeCore();
@@ -20,17 +20,22 @@ async function fixture(page: Page) {
           body,
         );
       const word = (spelling: string) => ({ language: "jbo", spelling });
+      const id = core.wordId(word("cukta"));
+      const before = await (
+        await fetch(`/api/v1/words/${encodeURIComponent(id)}`)
+      ).json();
       const definitions = [
-        "bangu",
-        "barda",
-        "vecnu",
-        "nu",
-        "uen",
-        "yen",
-        "papa",
-        "baba",
-        "ba'i",
-        "dján",
+        "bapattern",
+        "barpattern",
+        "baxpattern",
+        "bapti'i",
+        "patnnu",
+        "xaptnu",
+        "uab",
+        "yeb",
+        "zaxa",
+        "xaxa",
+        "pátterndjan",
         "patternz",
       ].map((spelling) =>
         signed(
@@ -45,27 +50,33 @@ async function fixture(page: Page) {
             word: word(spelling),
             language,
             text: [["Synthetic pattern fixture."]],
-            classification: { kind: spelling === "dján" ? "cmevla" : "other" },
+            classification: {
+              kind: spelling === "pátterndjan" ? "cmevla" : "other",
+            },
             license: { expression: "CC0-1.0" },
           },
         ),
       );
-      const claims = ["ban", "nu", "uen", "papa", "ba'i"].map((rafsi) =>
-        signed(
-          {
-            kind: "rafsi.publish",
-            word: core.wordId(word("patternz")),
-            assignment: core.rafsiPairId(core.wordId(word("patternz")), rafsi),
-            origin: "native",
-          },
-          {
-            word: word("patternz"),
-            rafsi,
-            rationale: [],
-            sources: [],
-            legacy: null,
-          },
-        ),
+      const claims = ["baptni", "ptnrafnu", "yub", "zaxa", "baptni'i"].map(
+        (rafsi) =>
+          signed(
+            {
+              kind: "rafsi.publish",
+              word: core.wordId(word("patternz")),
+              assignment: core.rafsiPairId(
+                core.wordId(word("patternz")),
+                rafsi,
+              ),
+              origin: "native",
+            },
+            {
+              word: word("patternz"),
+              rafsi,
+              rationale: [],
+              sources: [],
+              legacy: null,
+            },
+          ),
       );
       for (const record of [...definitions, ...claims]) {
         const response = await fetch("/api/v1/events", {
@@ -75,6 +86,7 @@ async function fixture(page: Page) {
         });
         if (!response.ok) throw new Error(await response.text());
       }
+      return { id, definitions: before.definitions, rafsi: before.rafsi };
     },
     { corePath, language },
   );
@@ -86,6 +98,11 @@ async function fixture(page: Page) {
       return response.ok() && (await response.json()).hits.length;
     })
     .toBe(5);
+  const unchanged = await (
+    await page.request.get(`/api/v1/words/${encodeURIComponent(baseline.id)}`)
+  ).json();
+  expect(unchanged.definitions).toEqual(baseline.definitions);
+  expect(unchanged.rafsi).toEqual(baseline.rafsi);
 }
 const pkgScript = () => ({
   snapshot: "sha256:" + "a".repeat(64),
@@ -138,7 +155,7 @@ test("browser and server agree on every headword and rafsi pattern and preserve 
       );
       const pkg = await downloadPackage(language);
       const rows = [];
-      for (const q of [...queries, "/^DJÁN$/", "/hi$/", "/\\D+/"]) {
+      for (const q of [...queries, "/^PÁTTERNDJAN$/", "/hi$/", "/\\D+/"]) {
         const remote = await (
           await fetch(`/api/v1/search?${new URLSearchParams({ q, language })}`)
         ).json();
@@ -172,9 +189,9 @@ test("browser and server agree on every headword and rafsi pattern and preserve 
   for (const result of compared)
     expect(result.local, result.q).toEqual(result.remote);
   await page.goto(
-    `/search?${new URLSearchParams({ q: "/^DJÁN$/", lang: language })}`,
+    `/search?${new URLSearchParams({ q: "/^PÁTTERNDJAN$/", lang: language })}`,
   );
-  await expect(page.locator("article.hit .hw")).toHaveText(["dján"]);
+  await expect(page.locator("article.hit .hw")).toHaveText(["pátterndjan"]);
   let leaked = false;
   page.on("request", (request) => {
     if (request.url().includes("/api/v1/search")) leaked = true;
@@ -195,10 +212,10 @@ test("browser and server agree on every headword and rafsi pattern and preserve 
   expect(leaked).toBe(false);
   await page.goto(`/rafsi/${encodeURIComponent("b*")}`);
   await expect(
-    page.getByText("ban ← ", { exact: false }).first(),
+    page.getByText("baptni ← ", { exact: false }).first(),
   ).toBeVisible();
   await expect(
-    page.getByText("ba'i ← ", { exact: false }).first(),
+    page.getByText("baptni'i ← ", { exact: false }).first(),
   ).toBeVisible();
   await expect(page.getByText(/words claim b\*/)).toHaveCount(0);
 });
