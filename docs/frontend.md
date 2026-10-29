@@ -229,14 +229,30 @@ A later search starts a fresh worker when needed. Failed local patterns never up
 The error message reads “Pattern search reached its time or work limit. Use a shorter or more specific pattern.”
 
 Node runs pattern compilation and scanning in a worker thread, outside the request thread.
-At most two pattern workers run, and eight requests wait. Additional requests return `pattern_timeout`.
-The parent terminates a worker after 1,000 milliseconds, including startup, compilation, and scanning. Queue waiting precedes that deadline.
-Abort, worker errors, and server shutdown settle pending requests and stop their workers.
+At most two initialized pattern workers run, and eight requests wait.
+Successful scans release their task capacity immediately and keep their worker for later requests.
+Workers retain initialized WebAssembly. Each request still filters and copies candidates, because that array has no reusable version identity.
+
+The parent starts a 1,000 millisecond task deadline after the worker reports that initialization is complete.
+That deadline includes compilation and scanning. Queue waiting and initialization precede it.
+Initialization has a separate 5,000 millisecond limit. Failure to initialize reports a service failure, not a pattern limit.
+Task deadline expiry, active cancellation, and worker errors stop that worker. A later task can start a replacement.
+Queued cancellation removes that task. Server shutdown settles all requests and stops idle and active workers.
 
 Cloudflare scans at most 1,000,000 work units or 8,192 rows per chunk, plus the last bounded candidate.
-It performs a read-only D1 `SELECT 1` after each chunk, then checks the 1,000 millisecond elapsed limit.
-[Hosted clocks advance after I/O](https://developers.cloudflare.com/workers/runtime-apis/performance/), so a resolved Promise alone cannot enforce that elapsed limit.
-The D1 read can delay the response. The compiled-work bounds apply independently of clocks and I/O latency.
+One isolate admits two active pattern scans and eight waiting requests across all scanner instances, before compiling any matcher.
+Several [Durable Objects can share an isolate and its memory](https://developers.cloudflare.com/durable-objects/platform/pricing/#compute-billing).
+Completion, failure, and cancellation release their admission slots. Cancellation frees a matcher even while its D1 read remains pending.
+
+After each chunk, Cloudflare performs a read-only D1 `SELECT 1`.
+A loose 5,000 millisecond elapsed guard excludes time between the start and completion of each D1 read.
+[Hosted clocks advance after I/O](https://developers.cloudflare.com/workers/runtime-apis/performance/).
+The excluded interval can also contain CPU time that the hosted clock did not yet report. This guard is not a CPU measurement.
+The compiled-work bounds remain the primary safety limit, independently of clocks and I/O latency.
+Hosted D1 latency adds to response time and has no separate response deadline here.
+
+On either server host, excess pattern requests return HTTP 503 with `search_busy` and `Retry-After: 1`.
+The message reads “Pattern search is busy. Try again shortly.” A shorter pattern does not remove this temporary admission limit.
 Neither host returns partial results after a limit failure.
 
 Both local and server search split the query with the TypeScript text segmenter in `packages/morphology`.
@@ -1304,7 +1320,8 @@ With `literal=1`, they search the query literally instead. Any other `literal` v
 The meaning wizard sets `literal` to `"1"` in its consented POST search. Ordinary word searches keep pattern mode.
 Search cursors include the literal mode. A cursor from another mode returns HTTP 400 with `bad_cursor`.
 `pattern_invalid` returns HTTP 400, and `pattern_timeout` returns HTTP 422.
-Neither error returns partial hits. Both hosts enforce the shared compiled-work limits and their documented execution limits.
+An excess pattern request returns HTTP 503 with `search_busy` and `Retry-After: 1`.
+These errors return no partial hits. Both hosts enforce the shared compiled-work limits and their documented execution limits.
 
 The POST /events body contains exactly `envelope` and `body`. Canonicalize the enclosed body and compare its hash and byte length before acceptance.
 Transport whitespace outside canonical objects does not alter signed bytes. The server preserves canonical signed meaning and never changes a field to make a signature pass.

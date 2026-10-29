@@ -103,7 +103,13 @@ Patterns return headword matches before retained rafsi matches, with normalized 
 The rafsi page accepts the same patterns and keeps each matched assignment separate.
 Version 1 packages expose headword patterns only. Version 2 packages supply bounded rafsi metadata.
 The shared engine caps compilation, per-candidate work, and total work by compiled state count.
-The browser and Node apply worker deadlines. Cloudflare checks elapsed time between bounded chunks after read-only D1 I/O.
+
+Node reuses two initialized workers and starts each task deadline after initialization.
+Both server hosts admit two active pattern scans and eight waiting requests. Excess requests return HTTP 503 with a retry hint.
+Cloudflare shares admission across scanner instances and uses compiled-work limits between read-only D1 reads.
+Its loose elapsed guard excludes D1 waits. Hosted D1 latency still adds to response time.
+The browser retains its worker deadline.
+
 Plain local cancellation preserves prepared packages. Canceling a running pattern stops its worker.
 Invalid patterns and exhausted limits give explicit errors without partial results or a silent remote fallback.
 

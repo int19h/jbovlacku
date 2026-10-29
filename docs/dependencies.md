@@ -35,9 +35,11 @@ The compiled-state engine retains all Unicode features. Removing unused engine f
 | Before pattern search, `581b588` | 2,901,727 | 811,062 |
 | General regex engine, `f24a89e` | 4,142,890 | 1,188,899 |
 | Compiled-state engine, `0852cdf` | 3,590,247 | 1,034,073 |
+| Acute repetition scope, `bcede55` | 3,590,662 | 1,034,429 |
 
-The compiled-state engine adds 688,520 raw bytes and 223,011 gzip bytes over the build before pattern search.
-It removes 552,643 raw bytes and 154,826 gzip bytes from the general regex build.
+The current engine adds 688,935 raw bytes and 223,367 gzip bytes over the build before pattern search.
+It removes 552,228 raw bytes and 154,470 gzip bytes from the general regex build.
+The acute repetition repair adds 415 raw bytes and 356 gzip bytes to the initial compiled-state engine.
 Unicode character tables remain part of this cost.
 
 The notices inventory follows `jvc-runtime` through its resolved normal and build dependencies for the WebAssembly target.
