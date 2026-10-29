@@ -11,6 +11,7 @@ import {
   richToEditor,
   richValue,
   deleteRichBackward,
+  richInsertionSelection,
 } from "../../src/model/rich-editor.ts";
 import {
   PLACE_GLYPHS,
@@ -99,6 +100,56 @@ test("boundary Backspace deletes grapheme clusters and preserves neighboring nod
       { word: { language: "jbo", spelling: "cukta" }, label: "" },
     ],
   ]);
+});
+
+test("current insertion ranges replace stale selections and keep equivalent outer carets", () => {
+  let state = EditorState.create({
+    doc: richToEditor([["keep"], ["replace"]]),
+  });
+  state = state.apply(state.tr.setSelection(TextSelection.atEnd(state.doc)));
+  const from = state.doc.firstChild!.nodeSize + 2;
+  const selection = richInsertionSelection(
+    state,
+    from,
+    from + "replace".length,
+  );
+  assert.deepEqual(
+    editorToRich(state.tr.setSelection(selection).insertText("new").doc),
+    [["keep"], ["new"]],
+  );
+  assert.equal(richInsertionSelection(state, 2, 2).from, 2);
+  const values: RichNode[] = [
+    "literal",
+    { code: "keep\r\n\r\ncode" },
+    { word: { language: "jbo", spelling: "cukta" }, label: "keep\rword" },
+    { url: "https://example.org/raw", label: "keep\r\nweb" },
+    { code: "" },
+    { word: { language: "jbo", spelling: "cukta" }, label: "" },
+  ];
+  for (const value of values) {
+    let boundary = EditorState.create({ doc: richToEditor([[value]]) });
+    boundary = boundary.apply(
+      boundary.tr.setSelection(TextSelection.atEnd(boundary.doc)),
+    );
+    const end = boundary.selection.from;
+    assert.equal(
+      richInsertionSelection(boundary, end - 1, end - 1),
+      boundary.selection,
+    );
+    assert.deepEqual(editorToRich(boundary.tr.insertText("!").doc), [
+      [value, "!"],
+    ]);
+    boundary = boundary.apply(
+      boundary.tr.setSelection(TextSelection.create(boundary.doc, 1)),
+    );
+    assert.equal(richInsertionSelection(boundary, 2, 2), boundary.selection);
+  }
+  let native = EditorState.create({ doc: richToEditor([]) });
+  native = native.apply(native.tr.insertText("ab", 1));
+  native = native.apply(
+    native.tr.setSelection(TextSelection.create(native.doc, 1)),
+  );
+  assert.equal(richInsertionSelection(native, 2, 2).from, 2);
 });
 
 test("random stored rich values round trip exactly with a fixed seed", () => {

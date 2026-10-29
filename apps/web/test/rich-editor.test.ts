@@ -1,6 +1,7 @@
 import { test, expect, type Page, type Locator } from "@playwright/test";
 import { createIdentity, corePath } from "./helpers.ts";
 import { richText, setRichNodes, typeRichText } from "./rich-helpers.ts";
+import type { RichText } from "../src/model/types.ts";
 
 async function seed(page: Page, fields = false) {
   await page.goto("/");
@@ -379,6 +380,76 @@ test("paragraph keys and toolbar insertion work inside literal, code, and link n
   await field.press("Control+End");
   await field.pressSequentially("㊿");
   expect(await nodes(field)).toEqual([[...exact, 50]]);
+});
+
+test("beforeinput reads same-turn target ranges and DOM selections without moving boundary carets", async ({
+  page,
+}) => {
+  await seed(page);
+  const field = editor(page);
+  const inputAt = async (
+    targetRanges: boolean,
+    collapsed: boolean,
+    edge = false,
+  ) => {
+    await field.press("Control+End");
+    return field.evaluate(
+      (node, { targetRanges, collapsed, edge }) => {
+        const text = edge
+          ? node.querySelector(".rich-web-link")!.firstChild!
+          : node.querySelectorAll(".rich-literal")[collapsed ? 0 : 1]
+              .firstChild!;
+        const range = document.createRange();
+        range.selectNodeContents(text);
+        if (collapsed) range.collapse(!edge);
+        const event = new InputEvent("beforeinput", {
+          bubbles: true,
+          cancelable: true,
+          inputType: "insertText",
+          data: edge ? " suffix" : "new",
+        });
+        Object.defineProperty(event, "getTargetRanges", {
+          value: () =>
+            targetRanges
+              ? [
+                  new StaticRange({
+                    startContainer: range.startContainer,
+                    startOffset: range.startOffset,
+                    endContainer: range.endContainer,
+                    endOffset: range.endOffset,
+                  }),
+                ]
+              : [],
+        });
+        if (!targetRanges) {
+          const selection = window.getSelection()!;
+          selection.removeAllRanges();
+          selection.addRange(range);
+        }
+        node.dispatchEvent(event);
+        return event.defaultPrevented;
+      },
+      { targetRanges, collapsed, edge },
+    );
+  };
+  for (const targetRanges of [true, false]) {
+    await setRichNodes(field, [["keep"], ["replace"]]);
+    expect(await inputAt(targetRanges, false)).toBe(true);
+    expect(await nodes(field)).toEqual([["keep"], ["new"]]);
+    await setRichNodes(field, [["keep"], ["replace"]]);
+    expect(await inputAt(targetRanges, true)).toBe(true);
+    expect(await nodes(field)).toEqual([["newkeep"], ["replace"]]);
+    const exact: RichText = [
+      [
+        { code: "keep\r\n\r\ncode" },
+        { word: { language: "jbo", spelling: "cukta" }, label: "keep\rword" },
+        { url: "https://example.org/raw", label: "keep\r\nweb" },
+      ],
+    ];
+    await setRichNodes(field, exact);
+    expect(await inputAt(targetRanges, true, true)).toBe(true);
+    expect(await nodes(field)).toEqual([[...exact[0], " suffix"]]);
+  }
 });
 
 test("the Lujvo builder edits its current rich definition without flattening nodes", async ({

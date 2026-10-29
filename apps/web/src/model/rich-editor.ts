@@ -229,6 +229,25 @@ export function replaceInline(
 }
 
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+/** Prefer the current DOM target without moving an equivalent outer caret inward. */
+export function richInsertionSelection(
+  state: EditorState,
+  from: number,
+  to: number,
+) {
+  const current = state.selection;
+  if (from === to && current.empty && current.$from.parent.isTextblock) {
+    const editable = (node: EditorNode | null) =>
+      node?.isInline && !node.isText && !node.isAtom;
+    if (
+      (from === current.from - 1 && editable(current.$from.nodeBefore)) ||
+      (from === current.from + 1 && editable(current.$from.nodeAfter))
+    )
+      return current;
+  }
+  return TextSelection.between(state.doc.resolve(from), state.doc.resolve(to));
+}
+
 /** Delete one character cluster without selecting a whole inline container. */
 export function deleteRichBackward(
   state: EditorState,

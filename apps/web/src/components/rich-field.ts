@@ -16,6 +16,7 @@ import {
   placeInputPlugins,
   replaceInline,
   richEditorSchema,
+  richInsertionSelection,
   richToEditor,
 } from "../model/rich-editor.ts";
 import type { RichText } from "../model/types.ts";
@@ -32,6 +33,29 @@ export interface RichFieldOptions extends Omit<
 }
 export interface RichInput extends HTMLDivElement {
   value: RichText;
+}
+/** Native selection changes can still be pending when beforeinput runs. */
+function insertionSelection(view: EditorView, input: InputEvent) {
+  const target = input.getTargetRanges?.()[0];
+  const selection = view.dom.ownerDocument.getSelection();
+  const range =
+    target ?? (selection?.rangeCount ? selection.getRangeAt(0) : null);
+  if (
+    !range ||
+    !view.dom.contains(range.startContainer) ||
+    !view.dom.contains(range.endContainer)
+  )
+    return view.state.selection;
+  try {
+    const from = view.posAtDOM(range.startContainer, range.startOffset, -1);
+    const to = range.collapsed
+      ? from
+      : view.posAtDOM(range.endContainer, range.endOffset, 1);
+    return richInsertionSelection(view.state, from, to);
+  } catch {
+    // Let the native input path read DOM changes that are not mapped yet.
+    return null;
+  }
 }
 export function richField(label: string, options: RichFieldOptions) {
   const id = fieldId("rich"),
@@ -209,7 +233,11 @@ export function richField(label: string, options: RichFieldOptions) {
           view.composing
         )
           return false;
+        const selection = insertionSelection(view, input);
+        if (!selection) return false;
         input.preventDefault();
+        if (!selection.eq(view.state.selection))
+          view.dispatch(view.state.tr.setSelection(selection));
         const { from, to } = view.state.selection;
         const text = input.data;
         const insert = () =>
