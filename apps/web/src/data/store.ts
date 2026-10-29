@@ -253,6 +253,7 @@ const stores = [
   "outbox",
   "heads",
   "packages",
+  "packageRevisions",
   "prefs",
   "ownhistory",
   "inventory",
@@ -266,12 +267,24 @@ export interface SavedDraftIndex {
 }
 const savedDraftKey = (key: unknown): key is string =>
   typeof key === "string" && /^saved:[0-9a-f-]{36}$/.test(key);
+const packageKeys = new WeakMap<object, string>();
+/** The key includes the database, language, and committed storage revision. */
+export const packageStorageKey = (value: object): string | undefined =>
+  packageKeys.get(value);
+const packageRevision = () =>
+  Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
 export class LocalStore {
   /** The open database. Lifecycle transactions span several stores. */
   readonly database: Promise<IDBDatabase>;
+  private readonly packageCache = new Map<
+    string,
+    { revision: unknown; value: unknown }
+  >();
   constructor(name = "jbovlacku-browser-v1") {
     this.database = new Promise((resolve, reject) => {
-      const request = indexedDB.open(name, 3);
+      const request = indexedDB.open(name, 4);
       request.onupgradeneeded = (event) => {
         const db = request.result;
         for (const store of stores)
@@ -295,7 +308,14 @@ export class LocalStore {
           };
         }
       };
-      request.onsuccess = () => resolve(request.result);
+      request.onsuccess = () => {
+        const db = request.result;
+        db.onversionchange = () => {
+          this.packageCache.clear();
+          db.close();
+        };
+        resolve(db);
+      };
       request.onerror = () =>
         reject(
           new Error(
@@ -309,6 +329,38 @@ export class LocalStore {
   }
   async get<T>(store: string, id: string): Promise<T | undefined> {
     const db = await this.database;
+    if (store === "packages") {
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(["packages", "packageRevisions"]);
+        const revision = tx.objectStore("packageRevisions").get(id);
+        revision.onsuccess = () => {
+          const old = this.packageCache.get(id);
+          if (old && old.revision === revision.result) {
+            this.packageCache.delete(id);
+            this.packageCache.set(id, old);
+            resolve(old.value as T | undefined);
+            return;
+          }
+          const request = tx.objectStore("packages").get(id);
+          request.onsuccess = () => {
+            if (request.result && typeof request.result === "object")
+              packageKeys.set(
+                request.result,
+                JSON.stringify([db.name, id, revision.result ?? null]),
+              );
+            this.packageCache.set(id, {
+              revision: revision.result,
+              value: request.result,
+            });
+            if (this.packageCache.size > 2)
+              this.packageCache.delete(this.packageCache.keys().next().value!);
+            resolve(request.result);
+          };
+        };
+        tx.onabort = () => reject(tx.error);
+        tx.onerror = () => {};
+      });
+    }
     return new Promise((resolve, reject) => {
       const request = db.transaction(store).objectStore(store).get(id);
       request.onsuccess = () => resolve(request.result);
@@ -333,10 +385,19 @@ export class LocalStore {
   }
   async put(store: string, id: string, value: unknown): Promise<void> {
     const db = await this.database;
+    const revision = store === "packages" ? packageRevision() : undefined;
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(store, "readwrite");
+      const tx = db.transaction(
+        store === "packages" ? [store, "packageRevisions"] : store,
+        "readwrite",
+      );
       tx.objectStore(store).put(value, id);
-      tx.oncomplete = () => resolve();
+      if (store === "packages")
+        tx.objectStore("packageRevisions").put(revision, id);
+      tx.oncomplete = () => {
+        if (store === "packages") this.packageCache.delete(id);
+        resolve();
+      };
       tx.onabort = () =>
         reject(
           tx.error ?? new Error("Local storage did not save this change."),
@@ -735,10 +796,19 @@ export class LocalStore {
   }
   async delete(store: string, id: string): Promise<void> {
     const db = await this.database;
+    const revision = store === "packages" ? packageRevision() : undefined;
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(store, "readwrite");
+      const tx = db.transaction(
+        store === "packages" ? [store, "packageRevisions"] : store,
+        "readwrite",
+      );
       tx.objectStore(store).delete(id);
-      tx.oncomplete = () => resolve();
+      if (store === "packages")
+        tx.objectStore("packageRevisions").put(revision, id);
+      tx.oncomplete = () => {
+        if (store === "packages") this.packageCache.delete(id);
+        resolve();
+      };
       tx.onabort = () =>
         reject(
           tx.error ?? new Error("Local storage did not delete this record."),

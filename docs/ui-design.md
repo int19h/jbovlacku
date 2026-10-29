@@ -168,7 +168,12 @@ The third line shows author attribution, month and year, optional “notes,” m
 Native authors link to their signing identity. Imported authors link to source-account evidence when available, without impersonating a signing identity.
 The importer signer remains inspectable separately. A shared display name never merges the two.
 
-Search order follows exact headword, exact gloss, headword prefix, gloss prefix, and token matches, without class headings.
+Search order follows exact headword, exact gloss, exact component sequence, contiguous sequence, headword prefix, gloss prefix, ordered subsequence, and token matches.
+The list has no class headings. Individual cards follow in query order for words outside exact or contiguous compound spans, with repeated identities grouped.
+Subsequence matches keep those cards. A one-word query shows its exact word and prefix family before compounds that contain it.
+Case and acute headword stress marks do not change the order.
+If segmentation reaches a resource limit, a visible notice states that some sequence matches or word cards can be missing.
+The notice stays through pagination and browser Back.
 The list ends with the remaining count and “show all,” then “Missing a word for this? Add it” and the retired-results filter.
 A rafsi query shows its word relation, for example “cku ← cukta,” and retains assignment conflicts.
 No official badge appears. No identity, key prompt, or general activity feed precedes reading.
@@ -205,13 +210,17 @@ Both columns can start from a 360px basis and stack at narrow widths.
 
 “By words” uses a local package initially and does not inherit ordinary remote-search upload settings.
 If that package is missing, offer a download or continued manual editing.
+Changing the meaning or language discards pending nearby results and errors. Each lookup reads the current language package, so a later download restores local suggestions.
+
 An explicit remote lexical request and “By meaning” require consent before any private text leaves the browser.
 The best match offers “Add a definition” and “Revise this one.” Other matches offer “Use this word.”
 The author can continue despite every match. The bottom action area shows “Saved in this browser” and “New word.”
+
 Underscores remain draft placeholders until the author approves their numbering.
 The original meaning remains separate from later editable definition prose.
 Each semicolon restarts blank numbering at 1. The displayed count is the highest place number in any part.
 Unescaped circled numerals and `{place N}` reserve explicit numbers within each part. Blanks take the free numbers in order.
+
 Only a backslash before a circled character acts as an escape in Meaning. All other backslashes stay as typed.
 The count reports places rather than occurrences.
 

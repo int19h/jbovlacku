@@ -22,7 +22,8 @@
     "start:built": "node apps/server/dist/main.js",
     "test:adapters": "tsx scripts/test-adapters.ts",
     "build:morphology": "node scripts/build-morphology.mjs",
-    "test:morphology": "node scripts/build-morphology.mjs --check && tsx --test packages/morphology/test/*.test.ts"
+    "test:morphology": "node scripts/build-morphology.mjs --check && tsx --test packages/morphology/test/*.test.ts",
+    "test:search": "tsx --test packages/search/test/*.test.ts"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20261011.1",

@@ -1,3 +1,8 @@
+import {
+  searchPackage,
+  PackageValidationError,
+  type PackageSearchResult,
+} from "../data/package-search.ts";
 import { kindLabel } from "../model/types.ts";
 /**
  * Search results. The header holds the query. The page shows a count line,
@@ -25,8 +30,6 @@ import type { App } from "../app/context.ts";
 import {
   downloadPackage,
   isV2,
-  localSearch,
-  validateCachedPackage,
   type CachedPackage,
   type LocalHit,
 } from "../data/search.ts";
@@ -73,6 +76,7 @@ interface SearchState {
   hits: SearchHit[];
   next: string | null;
   cursors: string[];
+  segmentation?: "complete" | "limited";
 }
 /**
  * Appends plain text with the query highlighted. Every character stays
@@ -211,6 +215,7 @@ export async function searchPage(
   });
   // Search source: the downloaded package in local mode, otherwise this server.
   let cached: CachedPackage | undefined;
+  let initialLocal: PackageSearchResult | undefined;
   if (
     app.session.preferences.searchMode === "local" &&
     app.session.storageAvailable
@@ -218,12 +223,22 @@ export async function searchPage(
     cached = await app.store
       .get<CachedPackage>("packages", language)
       .catch(() => undefined);
-    if (cached) {
-      try {
-        validateCachedPackage(cached, language);
-      } catch (error) {
+  }
+  if (cached) {
+    try {
+      initialLocal = await searchPackage(
+        cached,
+        language,
+        query ? [query] : [],
+      );
+    } catch (error) {
+      if (!context.live()) return;
+      if (error instanceof PackageValidationError) {
         cached = undefined;
         app.announce(describe(error));
+      } else {
+        results.append(p(describe(error), "notice"));
+        return;
       }
     }
   }
@@ -287,8 +302,21 @@ export async function searchPage(
   let snapshot = cached?.snapshot ?? "";
   let view: string | null = null;
   let localHits: LocalHit[] = [];
+  let localTotal = 0;
   let stopped = false;
-  if (cached) localHits = localSearch(cached.entries, query);
+  let expanding = false;
+  let segmentation: "complete" | "limited" | undefined;
+  const segmentationNote = p(
+    "Word segmentation reached a limit. Some sequence matches or word cards can be missing. Ordinary text matching remains available.",
+    "notice",
+  );
+  segmentationNote.hidden = true;
+  results.before(segmentationNote);
+  if (initialLocal) {
+    localHits = initialLocal.hits[0];
+    localTotal = initialLocal.totals[0];
+    segmentation = initialLocal.segmentation;
+  }
   const remember = () => {
     if (!context.live()) return;
     const state: SearchState = {
@@ -301,6 +329,7 @@ export async function searchPage(
       hits: displayed,
       next,
       cursors: [...cursors],
+      segmentation,
     };
     rememberState({ dictionarySearch: state });
   };
@@ -345,18 +374,13 @@ export async function searchPage(
   };
   const refreshCount = () => {
     refreshProvenance();
-    const total = cached
-      ? localHits.length
-      : displayed.length + (next ? "+" : "");
+    segmentationNote.hidden = segmentation !== "limited";
+    const total = cached ? localTotal : displayed.length + (next ? "+" : "");
     count.textContent = cached
-      ? plural(localHits.length, "word")
+      ? plural(localTotal, "word")
       : `${displayed.length}${next ? " or more" : ""} ${displayed.length === 1 && !next ? "word" : "words"}`;
     void total;
-    const remaining = cached
-      ? localHits.length - displayed.length
-      : next
-        ? null
-        : 0;
+    const remaining = cached ? localTotal - displayed.length : next ? null : 0;
     endLine.hidden = !(remaining === null || remaining > 0);
     endLine.replaceChildren();
     if (remaining === null || remaining > 0) {
@@ -366,21 +390,33 @@ export async function searchPage(
       const more = button(
         "show all",
         async () => {
-          more.disabled = true;
+          if (expanding || stopped || !context.live()) return;
+          expanding = true;
+          refreshCount();
           try {
-            await loadNext();
+            if (cached) await loadNext(true);
+            else {
+              while (
+                context.live() &&
+                !stopped &&
+                next &&
+                displayed.length < RESULT_LIMIT
+              )
+                await loadNext();
+            }
           } catch (error) {
             if (context.live()) {
               results.append(p(describe(error), "notice"));
               refreshCount();
             }
           } finally {
-            more.disabled = stopped;
+            expanding = false;
+            if (context.live()) refreshCount();
           }
         },
         { class: "btn btn-quiet" },
       );
-      more.disabled = stopped || displayed.length >= RESULT_LIMIT;
+      more.disabled = expanding || stopped || displayed.length >= RESULT_LIMIT;
       endLine.append(more);
       if (displayed.length >= RESULT_LIMIT)
         endLine.append(
@@ -404,26 +440,47 @@ export async function searchPage(
       );
     }
   };
-  const loadNext = async () => {
+  const loadNext = async (allLocal = false) => {
+    if (!context.live() || stopped || displayed.length >= RESULT_LIMIT) return;
     if (cached) {
-      appendHits(
-        localHits.slice(
-          displayed.length,
-          Math.min(displayed.length + PAGE_SIZE, RESULT_LIMIT),
-        ),
+      const limit = Math.min(
+        allLocal ? localTotal - displayed.length : PAGE_SIZE,
+        RESULT_LIMIT - displayed.length,
+        Math.max(0, localTotal - displayed.length),
       );
+      if (displayed.length || limit > localHits.length) {
+        const page = await searchPackage(cached, language, [query], {
+          offset: displayed.length,
+          limit,
+        });
+        if (!context.live()) return;
+        localHits = page.hits[0];
+        localTotal = page.totals[0];
+        segmentation = page.segmentation;
+      }
+      appendHits(localHits.slice(0, limit));
     } else {
       await discloseRemote();
       if (!context.live()) return;
+      const pageLimit = Math.min(PAGE_SIZE, RESULT_LIMIT - displayed.length);
       const page = await remoteSearch(
         query,
         language,
-        PAGE_SIZE,
+        pageLimit,
         snapshot ? { snapshot, view: view! } : null,
         next,
         { signal: context.signal, retired: includeRetired },
       );
       if (!context.live()) return;
+      if (
+        page.hits.length > pageLimit ||
+        page.hits.length > RESULT_LIMIT - displayed.length
+      ) {
+        stopped = true;
+        throw new Error(
+          "Search pagination returned too many results. Start a new search to retry.",
+        );
+      }
       if (
         (page.next !== null && (cursors.has(page.next) || !page.hits.length)) ||
         page.hits.some(
@@ -443,6 +500,7 @@ export async function searchPage(
       snapshot = page.snapshot;
       view = page.view;
       next = page.next;
+      segmentation = page.segmentation;
       if (next) cursors.add(next);
       appendHits(page.hits);
     }
@@ -464,6 +522,13 @@ export async function searchPage(
     saved.hits.length <= RESULT_LIMIT;
   try {
     if (restorable && cached && saved.snapshot === cached.snapshot) {
+      if (saved.hits.length > localHits.length) {
+        const page = await searchPackage(cached, language, [query], {
+          limit: saved.hits.length,
+        });
+        if (!context.live()) return;
+        localHits = page.hits[0];
+      }
       appendHits(localHits.slice(0, saved.hits.length));
       refreshCount();
     } else if (
@@ -472,11 +537,12 @@ export async function searchPage(
       /^sha256:[0-9a-f]{64}$/.test(saved.snapshot) &&
       typeof saved.view === "string" &&
       Array.isArray(saved.cursors) &&
-      saved.cursors.length <= 50
+      saved.cursors.length <= RESULT_LIMIT
     ) {
       snapshot = saved.snapshot;
       view = saved.view;
       next = saved.next;
+      segmentation = saved.segmentation;
       for (const cursor of saved.cursors) cursors.add(cursor);
       appendHits(saved.hits);
       refreshCount();

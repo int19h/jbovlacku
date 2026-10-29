@@ -163,7 +163,9 @@ The named gencmu override for `klamá` remains necessary because gencmu treats t
 Capital stress in this separate text API keeps its existing behavior. The low-level reference orthography helper retains its original conversion by default.
 
 Text segmentation permits at most 1 MiB of original UTF-8 input and 5,000,000 parser rule entries across all runs.
-Each nonforeign run permits at most 128 normalized phonemes, which bounds the parser's recursive depth.
+Each nonforeign run permits 128 normalized phonemes by default, which bounds the parser's recursive depth.
+The explicit `runLimit` option permits at most 256 phonemes for a search index that covers full-size dictionary headwords.
+It does not raise the byte or work limits.
 Caller options can reduce the aggregate limits.
 A resource error throws and returns no partial result.
 These text limits and spelling conversions do not change headword admission or the builders.

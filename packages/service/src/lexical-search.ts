@@ -1,4 +1,11 @@
-import { stripAcuteAccents, type Evaluation } from "../../core/src/index.ts";
+import type { Evaluation } from "../../core/src/index.ts";
+import {
+  selectMatches,
+  matchRank,
+  withSegmentation,
+  type MatchKind,
+  type SearchMetrics,
+} from "../../search/src/index.ts";
 import type { SearchEntry } from "./packages.ts";
 
 /** Scan each entry once and retain the public lexical match tiers and order. */
@@ -8,22 +15,15 @@ export function lexicalSearch(
   language: string,
   evaluation: Evaluation,
   includeRetired = false,
+  metrics?: SearchMetrics,
 ) {
-  const q = query.normalize("NFC").toLocaleLowerCase("en");
-  const headwordQuery = stripAcuteAccents(q);
-  const kinds = [
-    "headword",
-    "gloss",
-    "headword-prefix",
-    "gloss-prefix",
-    "token",
-  ];
   const hits = new Map<
     string,
     {
       word: unknown;
       word_id: string;
-      match: string;
+      match: MatchKind;
+      position: number;
       definitions: string[];
       preview: {
         event: string;
@@ -33,33 +33,18 @@ export function lexicalSearch(
       };
     }
   >();
-  for (const entry of entries) {
+  const selected = selectMatches(entries, query, metrics, (entry) => {
     const publication = evaluation.publications[entry.event];
-    if (
-      entry.language !== language ||
-      !publication ||
-      evaluation.receipts[entry.event]?.interpretation !== "effective" ||
-      publication.eligible !== "eligible" ||
-      (publication.status !== "active" && !includeRetired)
-    )
-      continue;
-    const spelling = stripAcuteAccents(entry.word.spelling).toLocaleLowerCase(
-      "en",
+    return (
+      entry.language === language &&
+      !!publication &&
+      evaluation.receipts[entry.event]?.interpretation === "effective" &&
+      publication.eligible === "eligible" &&
+      (publication.status === "active" || includeRetired)
     );
-    const glosses = entry.glosses.map((g) => g.text.toLocaleLowerCase("en"));
-    const match =
-      spelling === headwordQuery
-        ? "headword"
-        : glosses.includes(q)
-          ? "gloss"
-          : headwordQuery && spelling.startsWith(headwordQuery)
-            ? "headword-prefix"
-            : glosses.some((g) => g.startsWith(q))
-              ? "gloss-prefix"
-              : entry.plain_text.toLocaleLowerCase("en").includes(q)
-                ? "token"
-                : null;
-    if (!match) continue;
+  });
+  for (const { entry, match, position } of selected.rows) {
+    const publication = evaluation.publications[entry.event];
     const wordId = publication.word;
     const classification = entry.classification as {
       kind?: unknown;
@@ -82,10 +67,11 @@ export function lexicalSearch(
     if (old) {
       old.definitions.push(entry.event);
       if (
-        kinds.indexOf(match) < kinds.indexOf(old.match) ||
+        matchRank(match) < matchRank(old.match) ||
         (match === old.match && entry.event < old.preview.event)
       ) {
         old.match = match;
+        old.position = position;
         old.preview = preview;
         old.word = entry.word;
       }
@@ -94,15 +80,23 @@ export function lexicalSearch(
         word: entry.word,
         word_id: wordId,
         match,
+        position,
         definitions: [entry.event],
         preview,
       });
   }
   const ordered = [...hits.values()].sort(
     (a, b) =>
-      kinds.indexOf(a.match) - kinds.indexOf(b.match) ||
+      matchRank(a.match) - matchRank(b.match) ||
+      a.position - b.position ||
       a.word_id.localeCompare(b.word_id),
   );
 
-  return ordered;
+  return withSegmentation(
+    ordered.map(({ position, ...hit }) => {
+      void position;
+      return hit;
+    }),
+    selected.segmentation,
+  );
 }

@@ -1,8 +1,6 @@
+import { searchPackage } from "../../data/package-search.ts";
 import { kindLabel } from "../../model/types.ts";
-import {
-  nearbyQuery as meaningQueries,
-  rankNearby,
-} from "../../../../../packages/service/src/nearby.ts";
+import { nearbyQuery as meaningQueries } from "../../../../../packages/service/src/nearby.ts";
 import { wordId } from "../../../../../packages/core/src/browser.ts";
 import {
   changeTypedWord,
@@ -20,11 +18,7 @@ import {
   type Route,
 } from "../../app/router.ts";
 import type { App } from "../../app/context.ts";
-import {
-  localSearch,
-  packageWordEntries,
-  type CachedPackage,
-} from "../../data/search.ts";
+import { packageWordEntries, type CachedPackage } from "../../data/search.ts";
 import { getWord, loadRecord, remoteDraftSearch } from "../../data/api.ts";
 import { placeholderCount, type Draft } from "../../model/draft.ts";
 import { countNodes, placeMarker } from "../../model/richtext.ts";
@@ -523,11 +517,6 @@ export async function meaningPage(
   const note = el("p", { class: "meta" });
   right.append(list, note);
   let cached: CachedPackage | null = null;
-  try {
-    cached =
-      (await app.store.get<CachedPackage>("packages", draft.language)) ?? null;
-  } catch {}
-  if (!context.live()) return;
   // Consent covers one exact query and its definition language.
   let remoteConsent: string | null = null;
   const nearbyQuery = () => meaningQueries(meaning.input.value).join(" ");
@@ -580,7 +569,9 @@ export async function meaningPage(
     once: true,
   });
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let nearbyRequest = 0;
   const scheduleNearby = () => {
+    nearbyRequest++;
     if (remoteConsent !== consentKey()) remoteConsent = null;
     renderMode();
     clearTimeout(timer);
@@ -652,35 +643,45 @@ export async function meaningPage(
     );
   };
   const nearby = async () => {
+    const request = ++nearbyRequest;
+    const value = meaning.input.value;
+    const language = draft.language;
     const query = nearbyQuery();
-    if (!query) {
-      renderHits([], "local");
-      return;
-    }
-    if (cached) {
-      // Rank by the number of matching query words.
-      const words = query.toLocaleLowerCase("en").split(" ");
-      renderHits(
-        rankNearby(words.map((word) => localSearch(cached.entries, word))),
-        "local",
-      );
-      return;
-    }
-    if (remoteConsent !== consentKey()) {
-      note.textContent =
-        "Download a search package in Settings for local nearby search, or allow a search on this server.";
-      return;
-    }
+    const current = () =>
+      context.live() &&
+      request === nearbyRequest &&
+      value === meaning.input.value &&
+      language === draft.language;
     try {
-      const result = await remoteDraftSearch(
-        remoteQuery(),
-        draft.language,
-        10,
-        { signal: context.signal },
-      );
-      if (context.live()) renderHits(result.hits, "remote");
+      const pkg = await app.store.get<CachedPackage>("packages", language);
+      if (!current()) return;
+      cached = pkg ?? null;
+      renderMode();
+      if (!query) {
+        renderHits([], "local");
+        return;
+      }
+      if (pkg) {
+        // Rank all query lists in the worker before selecting six nearby rows.
+        const found = await searchPackage(pkg, language, query.split(" "), {
+          nearby: true,
+          limit: 6,
+        });
+        if (current()) renderHits(found.hits[0], "local");
+        return;
+      }
+      renderHits([], "local");
+      if (remoteConsent !== consentKey()) {
+        note.textContent =
+          "Download a search package in Settings for local nearby search, or allow a search on this server.";
+        return;
+      }
+      const result = await remoteDraftSearch(remoteQuery(), language, 10, {
+        signal: context.signal,
+      });
+      if (current()) renderHits(result.hits, "remote");
     } catch (error) {
-      if (context.live()) note.textContent = describe(error);
+      if (current()) note.textContent = describe(error);
     }
   };
   void nearby();

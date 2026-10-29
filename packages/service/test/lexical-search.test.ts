@@ -140,3 +140,90 @@ test("shared lexical search retains public match tiers, previews, and retired fi
     6,
   );
 });
+
+const segmentedEntry = (spelling: string, event = spelling): SearchEntry => ({
+  event,
+  word: { language: "jbo", spelling },
+  language: "en",
+  glosses: [],
+  plain_text: "A synthetic definition.",
+  classification: { kind: "cmavo", selmaho: [] },
+  body: "body",
+});
+const segmentedEvaluation = (entries: SearchEntry[]) =>
+  ({
+    publications: Object.fromEntries(
+      entries.map((entry) => [
+        entry.event,
+        { word: entry.word.spelling, eligible: "eligible", status: "active" },
+      ]),
+    ),
+    receipts: Object.fromEntries(
+      entries.map((entry) => [entry.event, { interpretation: "effective" }]),
+    ),
+  }) as unknown as Evaluation;
+
+test("segmented results rank exact sequences before prefixes and containing subsequences", () => {
+  const entries = ["iseri'abo", "iboku", "i bo", "ibo", "i", "bo"].map(
+    (spelling) => segmentedEntry(spelling),
+  );
+  const hits = lexicalSearch(
+    entries,
+    "i bo",
+    "en",
+    segmentedEvaluation(entries),
+  );
+  assert.deepEqual(
+    hits.map(({ word_id, match }) => [word_id, match]),
+    [
+      ["i bo", "headword"],
+      ["ibo", "sequence-exact"],
+      ["iboku", "sequence-subsequence"],
+      ["iseri'abo", "sequence-subsequence"],
+    ],
+  );
+  for (const query of [
+    "i seri'a bo",
+    "ise ri'abo",
+    "iseri'abo",
+    "I SE RÍ’ABO",
+    "mi klama i seri'a bo",
+  ])
+    assert.ok(
+      lexicalSearch(entries, query, "en", segmentedEvaluation(entries)).some(
+        (hit) => hit.word_id === "iseri'abo",
+      ),
+    );
+});
+
+test("fallback preserves query order, groups repeated words, and applies every eligibility guard", () => {
+  const entries = ["bo", "i", "je", "klama", "tai", "a"].map((spelling) =>
+    segmentedEntry(spelling),
+  );
+  const evaluation = segmentedEvaluation(entries);
+  assert.deepEqual(
+    lexicalSearch(entries, "ijebo", "en", evaluation).map((hit) => hit.word_id),
+    ["i", "je", "bo"],
+  );
+  assert.deepEqual(
+    lexicalSearch(entries, "i klama i bo", "en", evaluation).map(
+      (hit) => hit.word_id,
+    ),
+    ["i", "klama", "bo"],
+  );
+  assert.deepEqual(
+    lexicalSearch(entries, "taia", "en", evaluation).map((hit) => hit.word_id),
+    ["tai", "a"],
+  );
+  evaluation.publications.je.status = "deprecated";
+  evaluation.publications.klama.eligible = "unknown";
+  evaluation.receipts.bo.interpretation = "unavailable";
+  entries[1].language = "fr";
+  assert.deepEqual(lexicalSearch(entries, "ijebo klama", "en", evaluation), []);
+  assert.deepEqual(
+    lexicalSearch(entries, "ijebo klama", "en", evaluation, true).map(
+      (hit) => hit.word_id,
+    ),
+    ["je"],
+  );
+});
