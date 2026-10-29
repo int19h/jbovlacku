@@ -32,6 +32,9 @@ export default defineConfig({
     {
       name: "firefox-editor",
       testMatch: /rich-editor(?:-r\d+)?\.test\.ts/,
+      // Only this case requires Chromium's debugging protocol.
+      grepInvert:
+        /Chromium IME composition converts once and Backspace restores the token/,
       use: { browserName: "firefox" },
     },
     {

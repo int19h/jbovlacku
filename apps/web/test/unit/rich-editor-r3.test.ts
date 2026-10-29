@@ -259,9 +259,9 @@ test("r3 seeded edits choose interior positions, selections, commands, and conta
                 : "code" in node
                   ? node.code
                   : node.label;
-          assert.equal(
-            value.isWellFormed(),
-            true,
+          assert.doesNotMatch(
+            value,
+            /[\uD800-\uDFFF]/u,
             `${sample} ${label} well-formed text`,
           );
         }

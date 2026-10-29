@@ -89,13 +89,12 @@ async function paste(field: Locator, plain: string, html = "") {
       const data = new DataTransfer();
       data.setData("text/plain", plain);
       data.setData("text/html", html);
-      node.dispatchEvent(
-        new ClipboardEvent("paste", {
-          bubbles: true,
-          cancelable: true,
-          clipboardData: data,
-        }),
-      );
+      const event = new ClipboardEvent("paste", {
+        bubbles: true,
+        cancelable: true,
+      });
+      Object.defineProperty(event, "clipboardData", { value: data });
+      node.dispatchEvent(event);
     },
     { plain, html },
   );
@@ -519,13 +518,12 @@ test("copy retains readable place and operand chips in plain text", async ({
   await field.press("Control+a");
   const copied = await field.evaluate((node) => {
     const data = new DataTransfer();
-    node.dispatchEvent(
-      new ClipboardEvent("copy", {
-        bubbles: true,
-        cancelable: true,
-        clipboardData: data,
-      }),
-    );
+    const event = new ClipboardEvent("copy", {
+      bubbles: true,
+      cancelable: true,
+    });
+    Object.defineProperty(event, "clipboardData", { value: data });
+    node.dispatchEvent(event);
     return data.getData("text/plain");
   });
   expect(copied).toBe("① [bridi] ㊿");

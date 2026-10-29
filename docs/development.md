@@ -1096,6 +1096,7 @@ PLAYWRIGHT_BROWSERS_PATH="$PWD/.cache/playwright" JVC_TEST_ROOT="$PWD/.cache/bro
 The default run tests the full app in Chromium. Firefox runs the rich-editor tests and two authoring smoke cases.
 Use `npm run test:web -- --project chromium` for Chromium alone.
 Use `npm run test:web -- --project firefox-editor --project firefox-authoring` for Firefox alone.
+The native composition case uses Chromium's debugging protocol. Firefox keeps the portable composition cases.
 
 The browser tests start their own API and Vite processes. Ports `8797` and `5177` must be free.
 `JVC_TEST_API_PORT` and `JVC_WEB_PORT` select other ports. `JVC_TEST_ROOT` selects the parent directory of the run data. Each run creates a separate `browser-run-*` directory. Workers reuse that directory through `JVC_PLAYWRIGHT_RUN_ROOT`. Runs retain their fixtures and results.

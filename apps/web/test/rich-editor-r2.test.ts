@@ -43,13 +43,12 @@ async function paste(field: Locator, text?: string) {
     const data = new DataTransfer();
     if (text !== undefined) data.setData("text/plain", text);
     else data.setData("text/html", "<img src=x>");
-    node.dispatchEvent(
-      new ClipboardEvent("paste", {
-        bubbles: true,
-        cancelable: true,
-        clipboardData: data,
-      }),
-    );
+    const event = new ClipboardEvent("paste", {
+      bubbles: true,
+      cancelable: true,
+    });
+    Object.defineProperty(event, "clipboardData", { value: data });
+    node.dispatchEvent(event);
   }, text);
 }
 const containers = [
