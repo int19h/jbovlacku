@@ -1167,6 +1167,7 @@ label:is(.check, .opt, .chip):has(> input:only-of-type)
   left: 0;
   z-index: 2;
   width: min(36rem, calc(100vw - 48px));
+  max-width: 100%;
   margin: 0 0 6px;
   padding: 8px 12px;
   border: 1px solid var(--ink3);
