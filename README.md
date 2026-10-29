@@ -45,6 +45,8 @@ The [carrier guide](crates/jvc-carrier/README.md) describes canonical files, imp
 The browser supports anonymous lookup, verified definition pages, encrypted key backups with a recovery test, and signed delivery with per-server receipts.
 Search sits in the header of every page. Result rows show the headword, rafsi, type, highlighted definition text, attribution, and a net score with Endorse and Oppose arrows.
 Word pages show every definition under the selected view, with place strips, revision notices, comparisons, source evidence, rafsi pair cards, and reviewer details.
+After an HTTP 503 read failure, word and search pages offer Retry reading with the same URL and selected view.
+A failed retry shows its retry number and announces the current error reason, including HTTP 500 and connection failures.
 Untouched rich-text fields keep their exact stored values. Edited fields normalize line endings, string fragments, trailing whitespace, and paragraph breaks. Ordinary TeX and backslashes stay literal. Code and links stay within one paragraph. The editor shows blank lines inside stored code and labels as single line breaks.
 Word-link and derivation spelling advice never blocks a format-valid reference. Invalid references show plain error sentences.
 Revision comparisons group changes by readable fields and numbered places, with rich text and complete place and source details.
@@ -88,6 +90,9 @@ Present tables without declared counts are accepted with an unknown-count notice
 Absent tables and declared logical row deficits leave dependent definitions unresolved and preserve their selected publications and known baselines.
 Grouped split records count once, so extra physical lines cannot hide a missing record.
 If a keyword table contains malformed rows, definitions without well-formed mapping rows remain unresolved instead of acquiring known empty glosses.
+A mapping with missing or extra fields, or a split mapping, keeps the whole table incomplete.
+This also applies when a fragment names an existing definition.
+If a damaged mapping has no owner in the capture, the whole mapping table remains incomplete even when its row count matches.
 A complete empty table can still establish a real source change.
 Unsupported rows receive unresolved notices. The source archive keeps the original manifest and records the digest and path of the external dump.
 Split rows retain their owner across breaks in different fields. The size estimate counts new publications separately from staged observations.
@@ -124,6 +129,8 @@ The browser does not load or save an unconfigured server view as a signed policy
 The lujvo builder says whether a candidate spelling is taken in the local package and on the server.
 The rafsi page lists known assignments across words from version 2 packages, and the claim page signs a claim with its pair blessing.
 The lujvo builder offers short rafsi, gismu stems, whole gismu, whole-word parts under the extended profile, locks, CLL scores, recovered parts, and every competing rafsi claim from the local package.
+A combination above 128 bytes leaves shorter candidates available.
+The bounded rejected list shows parse failures before examples of overlong spellings.
 If several parts share the same competing rafsi claim, the builder shows one acknowledgment for that claim.
 A word entered on Meaning gets local form detection and an exact identity lookup in the selected language package.
 Headword analysis lowercases author input, so capitals do not mark stress. Authors must write word breaks explicitly.
@@ -189,6 +196,7 @@ Draft reload preserves private `stem` and `ipa` values. Neither enters a signed 
 Publication keeps each source row's word, `word_ipa`, scoring input, weight, and notes.
 New signatures omit unknown `word_ipa` values. Retained signed bodies and private revision markers preserve original field presence without copying it into fresh source rows.
 Known weights, including zero, survive regardless of private `stem` or `ipa` values.
+Revise also keeps a signed source that names only a language, including an empty or whitespace-only word with null input and weight.
 The gismu source editor has seven readable columns inside its own scrolling region at 360 and 1280 CSS pixels.
 Each Remove action includes a row number and names its source language when known, including after a custom language edit.
 The names stay unique for alternatives and rows with no language yet.

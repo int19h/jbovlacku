@@ -18,6 +18,8 @@ export interface RenderContext {
   /** True while this render is still the current one. */
   live: () => boolean;
   signal: AbortSignal;
+  /** The numbered read retry for this render, or zero for an ordinary visit. */
+  readRetryAttempt?: number;
   /** Focuses a connected page control and preserves it when this render finishes.
    * Returns false for an old render, a reader's focus choice, or an open dialog.
    */

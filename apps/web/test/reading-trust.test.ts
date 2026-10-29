@@ -9,10 +9,10 @@ import {
   acceptFirstSignature,
 } from "./helpers.ts";
 
-async function transferFixture(page: Page, accepted = false) {
+async function transferFixture(page: Page, accepted = false, base = "/api/v1") {
   const old = await createIdentity(page);
   const data = await page.evaluate(
-    async ({ old, accepted, corePath, passphrase }) => {
+    async ({ old, accepted, base, corePath, passphrase }) => {
       const core = await import(corePath);
       await core.initializeCore();
       const { createKey, unlockKey } = await import(
@@ -27,7 +27,7 @@ async function transferFixture(page: Page, accepted = false) {
         { kind: "identity.transfer", successor: successor.backup.identity },
       );
       const send = async (transport: unknown) => {
-        const response = await fetch("/api/v1/events", {
+        const response = await fetch(`${base}/events`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(transport),
@@ -50,25 +50,28 @@ async function transferFixture(page: Page, accepted = false) {
         accept: accept?.envelope,
       };
     },
-    { old, accepted, corePath, passphrase: PASSPHRASE },
+    { old, accepted, base, corePath, passphrase: PASSPHRASE },
   );
   // Recovery tests require these peer records in the completed snapshot.
   for (const event of [data.transfer, ...(data.accept ? [data.accept] : [])]) {
     await expect
       .poll(() =>
-        page.evaluate(async (id) => {
-          const response = await fetch(
-            `/api/v1/receipts/${encodeURIComponent(id)}`,
-          );
-          if (!response.ok) return false;
-          const receipt = await response.json();
-          return (
-            receipt.snapshot !== null &&
-            !receipt.reasons.some((reason: string) =>
-              ["index_lag", "evaluation_pending"].includes(reason),
-            )
-          );
-        }, event.id),
+        page.evaluate(
+          async ({ id, base }) => {
+            const response = await fetch(
+              `${base}/receipts/${encodeURIComponent(id)}`,
+            );
+            if (!response.ok) return false;
+            const receipt = await response.json();
+            return (
+              receipt.snapshot !== null &&
+              !receipt.reasons.some((reason: string) =>
+                ["index_lag", "evaluation_pending"].includes(reason),
+              )
+            );
+          },
+          { id: event.id, base },
+        ),
       )
       .toBe(true);
   }
@@ -1385,4 +1388,66 @@ test("private rule labels use the loaded calculation continuity across a newer a
   expect(result.withoutCalculation.text).toContain(
     "No personal calculation is loaded. This rule depends on accepted continuity in the next calculation snapshot.",
   );
+});
+
+test("recovery keeps the incomplete-peer reason for an authenticated mirror transfer", async ({
+  page,
+}) => {
+  const self = await acceptedHistoryFixture(page);
+  const mirror = await acceptedHistoryFixture(page, "/mirror/api/v1");
+  let pattern: string | null = null;
+  try {
+    const data = await transferFixture(page, false, "/mirror/api/v1");
+    expect((await self.history(data.old.identity)).events).toEqual([]);
+    expect((await mirror.history(data.old.identity)).events).toEqual([
+      data.transfer.id,
+    ]);
+    await page.evaluate(async () => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      await new LocalStore().setPreferences({
+        peers: [
+          { id: "self", base: "/api/v1", label: "this server" },
+          { id: "mirror", base: "/mirror/api/v1", label: "mirror" },
+        ],
+      });
+    });
+    pattern = `${new URL(page.url()).origin}/api/v1/identities/${encodeURIComponent(data.old.identity)}/activity**`;
+    await page.route(pattern, async (route) => {
+      const url = new URL(route.request().url());
+      if (
+        url.searchParams.get("accepted") !== "1" ||
+        !url.searchParams.has("snapshot")
+      )
+        return route.fallback();
+      return route.fulfill({
+        status: 410,
+        json: {
+          code: "snapshot_expired",
+          message: "The fixture snapshot expired.",
+          event: null,
+          field: null,
+        },
+      });
+    });
+    await page.goto("/identity/transfer");
+    const recovery = page.getByRole("region", { name: "Acceptance recovery" });
+    await expect(recovery).toContainText(data.transfer.id);
+    await expect(recovery).toContainText(
+      "Recovery needs a complete answer from every configured peer",
+    );
+    await expect(recovery).not.toContainText("could not be authenticated");
+    await expect(
+      page.getByRole("button", { name: "Sign one recovery acceptance" }),
+    ).toHaveCount(0);
+    expect(
+      await page.evaluate(async () => {
+        const { LocalStore } = await import(String("/src/data/store.ts"));
+        return (await new LocalStore().list("outbox")).length;
+      }),
+    ).toBe(0);
+  } finally {
+    if (pattern) await page.unroute(pattern);
+    await mirror.close();
+    await self.close();
+  }
 });

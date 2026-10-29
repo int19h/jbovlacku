@@ -462,8 +462,8 @@ export async function handoverPage(
         transfer.header.action.kind !== "identity.transfer" ||
         transfer.header.action.successor !== existingTransfer.successor
       )
-        recoveryBlocked =
-          "The transfer could not be authenticated. Recovery is blocked.";
+        recoveryBlocked ??=
+          "The transfer is absent from the complete authenticated history. Recovery is blocked.";
       const successorHistory = await loadOwnHistory(
         app.store,
         existingTransfer.successor,

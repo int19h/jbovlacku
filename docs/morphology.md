@@ -83,6 +83,8 @@ The CLL profile keeps its recognition and construction rules at version `2`.
 Version `2` and the CLL profile refuse `mz`. Version `3` permits it. New authoring uses version `4`.
 
 Extended analysis also accepts the join `'y'`, as in `bangu'y'ismu`. It reports the full token as the join before the next component. A nonfinal whole gismu is a core. A final whole gismu can be a rafsi under the CLL component rules.
+Versions `3` and `4` can construct `leksiko'y'ismu` with the explicit boundary join `'y'`.
+Automatic bonding keeps its versioned `'y` rule. Version `2` cannot construct this spelling because it has no explicit join control.
 
 The word recognizer ports the pure recognition functions from jbotci's `segment.rs` and the indicator table from `cmavo.rs`. Contract macros and source diagnostic types do not enter the port. The compatibility port retains the work limits. Version `2` and CLL use CLL consonant-pair restrictions. Version `3` permits `mz`. It returns spelling spans without jbotci's stress and glide marks.
 
@@ -210,11 +212,13 @@ A lujvo request accepts 2 through 64 components, 64 claims per component, and 20
 
 Caller limits can reduce these ceilings. The public TypeScript score function returns an error above 128 bytes, before arithmetic.
 
-The builder bonds and scores every combination before parsing candidates in score order. It stops parsing when the result window fills. Every returned candidate recovers the intended parts and joins from a full parse. The builder caches each distinct whole-word core check across candidate checks. Failed candidate parses count toward the shared work limit.
+The builder bonds every combination and skips spellings above 128 bytes before scoring. It records them in the bounded rejected list.
+It scores the remaining combinations before parsing candidates in score order. It stops parsing when the result window fills. Every returned candidate recovers the intended parts and joins from a full parse. The builder caches each distinct whole-word core check across candidate checks. Failed candidate parses count toward the shared work limit.
 
 The work limit can still stop long or repeatedly rejected forms before the window fills. It does not guarantee 512 results for every input. A shared build recognition error suggests a component lock. Per-word recognition errors give no lock advice. Resource errors return no partial result.
 
-The builder creates conflict details only for returned candidates. A complete result covers every combination for bonding and scoring. Its rejected list covers only candidates parsed before the window fills.
+The builder creates conflict details only for returned candidates. A complete result considers every combination for bonding and the byte limit.
+Its rejected list holds at most 64 entries. Parse failures come first, followed by examples of overlong spellings while space remains.
 
 A gismu request accepts 1 through 64 source rows. Each raw scoring input and native source word accepts at most 256 bytes. A normalized scoring input accepts at most 64 letters. A language identifier accepts at most 64 bytes. Each weight part accepts at most 64 decimal digits. Exact weight arithmetic permits at most 4096 bits in its shared denominator and total weight. The search permits at most 60,000,000 candidate-input-letter operations. Each inventory list permits at most 20,000 rows. Caller limits can reduce these ceilings.
 

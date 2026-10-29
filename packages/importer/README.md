@@ -94,6 +94,10 @@ The REST command requires a complete local capture instead of fetching live page
 ## SQL snapshots
 
 The SQL command streams PostgreSQL COPY blocks and joins source rows through a temporary SQLite database.
+If a damaged mapping has no captured definition owner, the importer treats the whole mapping table as incomplete.
+An equal declared row count cannot establish complete gloss evidence in that case.
+A mapping with missing or extra fields, or several fragments, has no reliable owner, even when a fragment names a captured definition.
+A full-width malformed mapping can keep per-definition handling when its owner ID parses cleanly and names a captured definition.
 It reads the dump as data. It never executes SQL from the dump.
 The extraction uses the source language table and retains separate tags such as `en`, `en-simple`, and `en-bpfk`.
 Wiki pages, phrases, and nonwords remain outside the lexical import.
@@ -147,10 +151,11 @@ For example, a present `natlangwordbestplaces` table without a declared count do
 If `keywordmapping` contains any malformed row, definitions without well-formed mapping rows remain unresolved instead of receiving known empty glosses.
 Definitions with well-formed mapping rows retain the checks for malformed rows under their own owner or an unreadable owner.
 The reader groups matching adjacent short fragments into one malformed record and reports every physical location.
-It retains the first fragment's owner without repairing or signing the damaged record.
+It retains the first fragment's fields without repairing or signing the damaged record.
+For keyword mappings, split records and unequal field counts cannot establish an owner.
 The field count spans every fragment, including breaks in different source fields.
 Each group stays within 64 physical rows and 32 MiB of decoded field bytes.
-An adjacent damaged row with its own identifier prefix retains its separate owner.
+An adjacent damaged row with its own identifier prefix remains a separate logical row.
 An unreadable lookup row blocks definitions that reference its missing key, rather than the whole snapshot.
 An unpaired owner row without a readable owner still makes that dependent table incomplete.
 

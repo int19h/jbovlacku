@@ -766,10 +766,13 @@ for (const alwaysExpire of [false, true]) {
     const store = emptyHistory();
     const operation = fetchBranches(store as any, history, knowledge);
     if (alwaysExpire) {
-      await assert.rejects(
-        operation,
-        /snapshots kept expiring.*Retry before signing/,
-      );
+      await assert.rejects(operation, (error: Error) => {
+        assert.equal(
+          error.message,
+          `${peer.label}: incomplete: the server snapshots kept expiring. Retry before signing.`,
+        );
+        return true;
+      });
       assert.equal(captures, 3);
       assert.equal(knowledge[0].outcome, "partial");
       assert.equal(knowledge[0].complete, false);
@@ -942,4 +945,53 @@ test("accepted own-history retries share the head-page budget and original deadl
   } finally {
     AbortSignal.timeout = oldTimeout;
   }
+});
+
+test("branch expiry keeps retry guidance when the fresh scan loses its connection", async () => {
+  const branch = core.createEvent(
+    seed,
+    [],
+    "8".repeat(32),
+    { kind: "identity.merge" },
+    null,
+  ).envelope;
+  let captures = 0;
+  serve({
+    "/api/v1/identity-heads/": () => {
+      captures++;
+      return { snapshot, identity: identity(), heads: [branch.id], next: null };
+    },
+    "/api/v1/identities/": () => {
+      if (captures > 1) throw new Error("Connection dropped.");
+      return { snapshot, identity: identity(), items: [], next: null };
+    },
+    "/api/v1/events/": () => expired(),
+  });
+  const knowledge = await askPeers([peer], identity(), null);
+  const store = emptyHistory();
+  const history = {
+    identity: identity(),
+    snapshot: null,
+    events: new Map(),
+    frontier: [],
+    storedHeads: [],
+    complete: true,
+  };
+  await assert.rejects(
+    fetchBranches(store as any, history, knowledge),
+    (error: Error) => {
+      assert.match(
+        error.message,
+        /mirror: incomplete: the activity scan stopped/,
+      );
+      assert.match(error.message, /No connection to the server/);
+      assert.match(error.message, /\. Retry before signing\.$/);
+      assert.equal(error.message.match(/Retry before signing/g)?.length, 1);
+      return true;
+    },
+  );
+  assert.equal(captures, 2);
+  assert.equal(knowledge[0].complete, false);
+  assert.deepEqual(store.saved, []);
+  assert.equal(history.events.size, 0);
 });

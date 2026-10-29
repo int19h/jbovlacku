@@ -1140,6 +1140,10 @@ An existing event, including an equivalent valid signature variant, returns HTTP
 HTTP 400 reports malformed transport. HTTP 422 reports a rejected envelope or body with a field-specific code.
 HTTP 413 reports size limits. HTTP 429 reports a quota and retry interval.
 HTTP 403 reports local admission refusal. HTTP 503 reports temporary service failure or unavailable computation.
+After an HTTP 503 read failure, a word or search page keeps the reason visible and offers “Retry reading”.
+The retry preserves the route, language, and selected view. It replaces the current history entry and performs no signed write.
+If a retry fails, the page shows its retry number and keeps the current error reason visible.
+It announces the retry number and reason through the shell status region, even when the new failure differs from HTTP 503.
 
 A semantic no-op or unauthorized action inside a signature-valid causal header is retained as `inert`, not misreported as a bad signature.
 
