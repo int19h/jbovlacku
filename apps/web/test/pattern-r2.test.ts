@@ -162,13 +162,22 @@ test("R2 question punctuation shows an ordinary-search note", async ({
     },
     pkg(["r2word"]),
   );
-  await page.goto("/search?q=how%20do%20you%20say%20hello%3F&lang=en");
-  await expect(
-    page.getByText(
-      "The final question mark is punctuation. This search uses ordinary text.",
-    ),
-  ).toBeVisible();
-  await expect(page.locator("article.hit")).toHaveCount(1);
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore();
+    const cached: any = await store.get("packages", "en");
+    cached.entries[0].plain_text += " what is a C*-algebra?";
+    await store.put("packages", "en", cached);
+  });
+  for (const q of ["how do you say hello?", "what is a C*-algebra?"]) {
+    await page.goto("/search?" + new URLSearchParams({ q, lang: "en" }));
+    await expect(
+      page.getByText(
+        "The final question mark is punctuation. This search uses ordinary text.",
+      ),
+    ).toBeVisible();
+    await expect(page.locator("article.hit")).toHaveCount(1);
+  }
 });
 test("R2 rafsi conflict groups normalize aliases while assignments retain raw spellings", async ({
   page,

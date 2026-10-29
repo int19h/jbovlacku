@@ -67,6 +67,12 @@ test("sentence punctuation falls back to ordinary text with a short note", () =>
     1,
   );
   assert.ok(naturalLanguageNote("how do you say hello?"));
+  for (const query of ["what is a C*-algebra?", "who uses name@example.org?"])
+    assert.equal(
+      selectMatches([{ ...row("r2word"), plain_text: query }], query).rows
+        .length,
+      1,
+    );
   assert.equal(naturalLanguageNote("*zei*"), null);
   assert.equal(isPatternQuery("/missing slash ?"), true);
   assert.throws(() => selectMatches([], "/missing slash ?"), PatternError);

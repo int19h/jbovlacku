@@ -177,7 +177,7 @@ Other characters in a glob match literally. A period in `ba.ba*` is a literal pe
 In glob literals, `h` reads as an apostrophe. Thus `*'i` and `*hi` return the same results.
 Patterns ignore capitals and acute stress marks in candidate spellings. They preserve every displayed spelling.
 Meaning text, nearby retrieval, and type assistance always use ordinary literal search. Rafsi claim previews always compare literal spellings.
-A query with spaces and one final `?`, with no other pattern symbol, uses ordinary text search.
+A query with spaces and one final `?` uses ordinary text search. Other symbols in that sentence remain literal text.
 The search page explains that it treats the final question mark as punctuation. A query that starts with `/` still requires expression delimiters.
 
 Regular expressions use Rust `regex` syntax with case-insensitive matching.

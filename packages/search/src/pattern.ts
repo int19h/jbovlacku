@@ -19,7 +19,7 @@ export class PatternError extends Error {
 export const naturalLanguageNote = (query: string) =>
   !query.trim().startsWith("/") &&
   /\s/u.test(query.trim()) &&
-  /^[^*?@$]+\?$/u.test(query.trim())
+  /^[^?]+\?$/u.test(query.trim())
     ? "The final question mark is punctuation. This search uses ordinary text."
     : null;
 export const isPatternQuery = (query: string) =>
