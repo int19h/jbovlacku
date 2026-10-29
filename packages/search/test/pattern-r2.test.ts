@@ -117,6 +117,31 @@ test("common counted Unicode classes retain non-ASCII semantics", () => {
       );
   }
 });
+test("removed combining acute repetitions keep their operand scope", () => {
+  const entries = ["djan", "djjan", "djjjan"].map(row);
+  for (const query of [
+    "/^dj\u0301+an$/",
+    "/^dj\u0301{2}an$/",
+    "/^dj\u0301?an$/",
+    "/^dj(?:\u0301)+an$/",
+    "/^dj(\u0301){2}an$/",
+  ])
+    assert.deepEqual(
+      selectMatches(entries, query).rows.map((hit) => hit.entry.word.spelling),
+      ["djan"],
+      query,
+    );
+  assert.equal(
+    selectMatches(entries, String.raw`/^dj\x{301}+an$/`).rows.length,
+    0,
+  );
+  assert.deepEqual(
+    selectMatches(entries, "/^dj+an$/").rows.map(
+      (hit) => hit.entry.word.spelling,
+    ),
+    ["djan", "djjan", "djjjan"],
+  );
+});
 test("compiled-state cost permits 35000 ordinary spellings and a long alternation", () => {
   const entries = Array.from({ length: 35_000 }, () => row("basturfa"));
   const alternation =
@@ -174,18 +199,24 @@ test("chunked scans enforce elapsed and independent frozen-clock work bounds", a
   }));
   let clock = 0,
     yields = 0;
+  const delayed = await scanPatternsChunked(entries, "*", {
+    now: () => clock,
+    yield: async () => {
+      yields++;
+      clock += 1200;
+    },
+  });
+  assert.equal(delayed.length, entries.length);
+  assert.ok(yields > 1);
+  clock = 0;
   await assert.rejects(
     scanPatternsChunked(entries, "*", {
-      now: () => clock,
-      yield: async () => {
-        yields++;
-        clock += 1000;
-      },
+      now: () => (clock += 1300),
+      yield: async () => {},
     }),
     (error: unknown) =>
       error instanceof PatternError && error.code === "pattern_timeout",
   );
-  assert.equal(yields, 1);
   await assert.rejects(
     scanPatternsChunked(
       [{ spelling: "ab".repeat(127) + "a", rafsi: [] }],

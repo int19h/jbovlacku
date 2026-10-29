@@ -8,11 +8,12 @@ export const PATTERN_TIMEOUT_MESSAGE =
 export class PatternError extends Error {
   readonly status: number;
   constructor(
-    public code: "pattern_invalid" | "pattern_timeout",
+    public code: "pattern_invalid" | "pattern_timeout" | "search_busy",
     message: string,
   ) {
     super(message);
-    this.status = code === "pattern_invalid" ? 400 : 422;
+    this.status =
+      code === "pattern_invalid" ? 400 : code === "search_busy" ? 503 : 422;
   }
 }
 /** A sentence with one final question mark is ordinary definition text. */

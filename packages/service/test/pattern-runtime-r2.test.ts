@@ -84,7 +84,11 @@ test("Node service scans patterns off its request thread and refuses expanded re
 });
 test("Node pattern workers enforce a real deadline, bounded queues and close cleanup", async () => {
   const scanner = new NodePatternScanner(wasm, {
-    workerFactory: () => new Worker("while(true){}", { eval: true }),
+    workerFactory: () =>
+      new Worker(
+        "const {parentPort}=require('node:worker_threads');parentPort.on('message',()=>{while(true){}});parentPort.postMessage({ready:true});",
+        { eval: true },
+      ),
   });
   const jobs = Array.from({ length: 10 }, () =>
     scanner.scan([], "*").catch((error) => error),

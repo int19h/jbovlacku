@@ -2021,6 +2021,9 @@ export class DictionaryService {
             field: error instanceof ApiError ? error.field : null,
           },
           error.status,
+          error instanceof PatternError && error.code === "search_busy"
+            ? { "Retry-After": "1" }
+            : {},
         );
       else {
         let detail: { code?: string; message?: string } = {};
