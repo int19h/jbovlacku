@@ -163,18 +163,23 @@ test("remote and local-fallback queries name the host before the first request",
       const store = new LocalStore();
       await store.setPreferences({ searchMode, remoteSearchDisclosed: false });
     }, mode);
-    let statement = "";
+    const statements: string[] = [];
     await page.route("**/api/v1/search?**", async (route) => {
-      statement = await page.locator("main").innerText();
+      statements.push(await page.locator("main").innerText());
       await route.continue();
     });
     await page.goto("/search?q=book&lang=en");
     await expect(
       page.getByRole("link", { name: "cukta", exact: true }),
     ).toBeVisible();
-    expect(statement).toContain(
+    await expect(
+      page.getByRole("region", { name: "Search results", exact: true }),
+    ).toHaveAttribute("aria-busy", "false");
+    expect(statements).toHaveLength(2);
+    expect(statements[0]).toContain(
       `Search sends this query to ${new URL(page.url()).host}.`,
     );
+    expect(statements[1]).toContain(`Searched on ${new URL(page.url()).host}.`);
     await expect(
       page.getByText(`Searched on ${new URL(page.url()).host}.`, {
         exact: true,
@@ -461,12 +466,16 @@ test("failed disclosure persistence keeps remote reading and the session acknowl
         exact: true,
       }),
     ).toBeVisible();
+    await expect(
+      page.getByRole("region", { name: "Search results", exact: true }),
+    ).toHaveAttribute("aria-busy", "false");
   }
-  expect(statements).toHaveLength(2);
+  expect(statements).toHaveLength(4);
   expect(statements[0]).toContain(
     `Search sends this query to ${new URL(page.url()).host}.`,
   );
-  expect(statements[1]).toContain(`Searched on ${new URL(page.url()).host}.`);
+  for (const statement of statements.slice(1))
+    expect(statement).toContain(`Searched on ${new URL(page.url()).host}.`);
   expect(await page.evaluate(() => (window as any).disclosureWrites)).toBe(1);
   await expect(page.locator("main")).not.toContainText(
     "Preference storage failed",

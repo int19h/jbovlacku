@@ -359,11 +359,24 @@ test("R3 a broad local page keeps its total and show-all cap", async ({
     ),
   );
   await open(page, "/search?q=shared&lang=en");
-  await expect(page.locator("main .count")).toHaveText("1005 words");
-  await expect(page.locator("article.hit")).toHaveCount(20);
-  await page.getByRole("button", { name: "show all", exact: true }).click();
-  await expect(page.locator("article.hit")).toHaveCount(1000);
-  await expect(page.locator("main .count")).toHaveText("1005 words");
+  await expect(page.locator("main > .count-line .count")).toHaveText(
+    "1005 word and definition results",
+  );
+  const definitions = page.getByRole("region", {
+    name: "Definitions",
+    exact: true,
+  });
+  const words = page.getByRole("region", { name: "Lojban words", exact: true });
+  await expect(definitions.locator("article.hit")).toHaveCount(20);
+  await expect(words.locator("article.hit")).toHaveCount(0);
+  await definitions
+    .getByRole("button", { name: "show all", exact: true })
+    .click();
+  await expect(definitions.locator("article.hit")).toHaveCount(1000);
+  await expect(words.locator("article.hit")).toHaveCount(0);
+  await expect(page.locator("main > .count-line .count")).toHaveText(
+    "1005 word and definition results",
+  );
   await expect(
     page.getByRole("button", { name: "show all", exact: true }),
   ).toBeDisabled();

@@ -788,7 +788,9 @@ test("the retired-results filter asks the server for retired publications and sh
   });
   await page.goto("/search?q=retirementprobe&lang=en");
   await expect(
-    page.getByText("No matching definitions on this server.", { exact: true }),
+    page
+      .getByRole("region", { name: "Definitions", exact: true })
+      .getByText("No matches in this group.", { exact: true }),
   ).toBeVisible();
   expect(requests.at(-1)).not.toContain("retired=");
   await expect(
@@ -808,7 +810,9 @@ test("the retired-results filter asks the server for retired publications and sh
   await page.getByLabel("Include retired results").uncheck();
   await expect(page).not.toHaveURL(/retired=1/);
   await expect(
-    page.getByText("No matching definitions on this server.", { exact: true }),
+    page
+      .getByRole("region", { name: "Definitions", exact: true })
+      .getByText("No matches in this group.", { exact: true }),
   ).toBeVisible();
   expect(requests.at(-1)).not.toContain("retired=");
 });

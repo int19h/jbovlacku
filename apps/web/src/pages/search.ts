@@ -559,6 +559,7 @@ export async function searchPage(
     const limit = Math.min(
       all ? RESULT_LIMIT : PAGE_SIZE,
       RESULT_LIMIT - group.hits.length,
+      cached ? Math.max(0, group.total - group.hits.length) : RESULT_LIMIT,
     );
     if (cached) {
       let hits = group.initial;
