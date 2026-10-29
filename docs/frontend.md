@@ -310,6 +310,7 @@ The worker owns its prepared-package cache. A new package travels with the first
 Worker replies report the actual retained keys, even when the requesting consumer is canceled.
 A per-worker revision prevents an older reply from replacing newer cache knowledge.
 The client also tracks transfers that still wait for acknowledgment, so other requests can reuse their preparation.
+
 A queued transfer does not evict a confirmed warm key. On a cache miss, the client retries once with its captured package.
 Rejected packages keep their validation error.
 Worker startup or execution failure reports an error without sending a local query to a server.
