@@ -132,9 +132,14 @@ Meaning treats only a backslash before a circled numeral as an escape. It preser
 The Places step and the full editor offer hideable advice above three declared places, with firmer text above five.
 A repeating tail counts once. The advice applies to every word type and never blocks publication or enters signed records.
 Revise copies a publication into a new draft with its exact parent and keeps every field: links, code, operands, literal circled characters, every gloss with its language and sense, every derivation, and the frame role. The page names the only changes a native revision makes. A revision of imported text cites the imported publication and copies the source-rights reference once.
-The rich editors change the stored node tree directly. Editing code and links keeps their labels, whitespace, and line breaks. New prose joins nearby text while untouched saved boundaries stay exact. Blank paragraphs stay editable but do not enter saved drafts or published records. Whitespace-only optional fields stay absent. Place-row updates preserve the caret and undo history. Pointer focus keeps the clicked caret position. A word link stays a word link when its spelling starts with `https://`.
 
-The toolbar inserts places 1 to 3 directly. A dropdown offers places 4 to 50 and identifies declared places. Labeled dialogs insert word links and code, and Edit link changes an existing target or label. Accessible link names include their targets. The toolbar uses one tab stop with arrow-key navigation. Keyboard guidance appears for the focused toolbar. Operand controls follow the current declarations and explain a missing declaration after an insertion attempt. The same editor supports HTTPS links and operand references.
+The rich editors change the stored node tree directly. Editing code and links keeps their labels, whitespace, and line breaks. New prose joins nearby text while untouched saved boundaries stay exact.
+
+Blank paragraphs stay editable but do not enter saved drafts or published records. Whitespace-only optional fields stay absent. Place-row updates preserve the caret and undo history. Pointer focus keeps the clicked caret position. A word link stays a word link when its spelling starts with `https://`.
+
+The toolbar inserts places 1 to 3 directly. A dropdown offers places 4 to 50 and identifies declared places. Labeled dialogs insert word links and code, and Edit link changes an existing target or label. Accessible link names include their targets.
+
+The toolbar uses one tab stop with arrow-key navigation. Keyboard guidance appears for the focused toolbar. Operand controls follow the current declarations and explain a missing declaration after an insertion attempt. The same editor supports HTTPS links and operand references.
 
 Typing `___` inserts the next free place, and `__N__` inserts place N from 1 through 50. Typed circled numbers also insert places. A semicolon restarts automatic numbering. Backspace restores the characters immediately after conversion. Literal mode keeps circled numbers and underscores as text. It preserves code and links.
 

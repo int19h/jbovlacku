@@ -657,25 +657,32 @@ Repeated references can name the same place. Textual order does not determine fi
 
 Each rich field uses an accessible editor over the stored node tree. Places and operands are inline chips. Code, word links, and web links are separate inline nodes.
 The toolbar provides places 1 to 3 directly and places 4 to 50 in a dropdown. The dropdown identifies declared places.
+
 Link a word, Web link, and Insert code open labeled dialogs. A word link retains its word type even when its spelling starts with `https://`.
 A link's accessible name includes its label and target. Edit link changes an existing link through a labeled dialog.
+
 The toolbar is one tab stop. Left, Right, Home, and End move between its controls.
 The place dropdown keeps its native keys. Alt with those keys moves to another toolbar control.
+
 Insert operand uses `aria-disabled` until an operand exists. An insertion attempt explains the missing declaration without opening a dialog.
 Operand changes refresh every retained editor's insertion controls.
 Keyboard guidance appears only for the focused toolbar.
 A toolbar insertion appends when the field never received focus.
 Web links require HTTPS addresses that [URL parsing](https://url.spec.whatwg.org/#concept-basic-url-parser) accepts.
+
 The editor preserves adjacent saved nodes, empty labels, paragraph boundaries, and every unchanged field. New prose joins nearby text unless an untouched saved boundary separates it.
 Blank paragraphs stay in the live editor for the caret and undo history.
 Saved drafts and published values omit every whitespace-only paragraph, including leading, interior, and trailing paragraphs.
 Nonblank paragraphs keep their exact nodes and whitespace. An empty field remains `[]`, and an empty optional field stays absent from publication.
+
 Loading a saved single blank paragraph and undoing an edit both produce the canonical empty value.
 Updating place rows preserves each retained editor's caret and undo history.
 Pointer focus and an existing native selection keep their chosen caret position.
 An editor repairs its native caret only after its retained wrapper moves, when no pointer or native selection chooses another position.
+
 If an authoring page, profile editor, rafsi editor, or report editor fails to load, show an accessible error with a heading and Reload.
 Keep saved drafts unchanged. A report action permits only one pending editor load.
+
 An explicit mode change starts a new undo history and keeps the caret when the visible document stays equal.
 Text needs no markup or escapes.
 Typed TeX backslashes, brackets, braces, and backticks stay literal. A backslash before a typed place stays literal beside the place chip.
@@ -683,20 +690,25 @@ Typed TeX backslashes, brackets, braces, and backticks stay literal. A backslash
 In structured editing, typed circled numerals `①` through `㊿` insert place references. The Unicode ranges are separate, so conversion uses a lookup table.
 Typing `___` inserts the next free place from 1 through 50 in the current semicolon part. Each `;` restarts the count.
 Existing explicit places reserve their numbers throughout that part. Typing `__N__` inserts place N, from 1 through 50, on the final underscore.
+
 Backspace immediately after conversion restores the typed characters. Ordinary undo and redo also work.
 The rules run after input and after an IME commits text. They do not run inside code or link labels, on paste, or in literal mode.
 
 Paste reads only plain text. Clipboard content without usable plain text leaves the selection unchanged.
 Paste inside code or a link label stays within that node, including line breaks and circled numerals.
 HTML and editor markup stay inert text.
+
 When pasted text contains circled numbers, the editor offers literal text or explicit circled-number conversion. It never converts pasted underscores into places.
 Literal mode turns place references into circled characters after confirmation. It keeps links, code, and operands as separate nodes.
+
 Returning to structured mode restores exact untouched values. Edited literal text reads circled characters as places again.
 In literal mode, removing or moving a place updates unchanged fields to keep their saved references aligned.
 The separate original Meaning field keeps its narrow backslash escape for circled numerals and its numbering proposal.
+
 AI frame generation supports at most 16 consecutive places. The guard uses current place nodes, or the effective Meaning numbering when none exists.
 Meaning numbering includes blanks and explicit numbers. Numbers above 16 or with gaps require manual declarations first.
 A context-dependent frame can declare only the explicit numbers. Missing numbers gain no invented descriptions.
+
 Existing declared frames use the separate gloss and type tasks, without the 16-place generation limit.
 Removing a declared place requires removal, replacement, or literalization of every reference to it.
 

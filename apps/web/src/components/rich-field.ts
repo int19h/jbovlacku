@@ -107,11 +107,12 @@ export function richField(label: string, options: RichFieldOptions) {
   const toolbarHintId = `${id}-toolbar-hint`;
   const toolbarHint = el("p", {
     id: toolbarHintId,
-    class: "hint",
+    class: "hint rich-toolbar-hint",
     hidden: true,
     text: "Use Left, Right, Home, and End to move through the toolbar. In More places, use Alt with those keys.",
   });
   toolbar.setAttribute("aria-describedby", toolbarHintId);
+  toolbar.append(toolbarHint);
   const hint = el("p", {
     id: hintId,
     class: "hint",
@@ -126,7 +127,6 @@ export function richField(label: string, options: RichFieldOptions) {
     { class: options.wrapperClass ?? "field-group" },
     labelNode,
     toolbar,
-    toolbarHint,
     host,
     hint,
   );
