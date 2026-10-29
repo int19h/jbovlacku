@@ -88,12 +88,27 @@ test("R2 plain and queued pattern aborts preserve the shared worker and prepared
       queued.abort();
       const active = await running;
       const later = await searchPackage(pkg, "en", ["ba*"]);
+      const second = structuredClone(pkg);
+      second.snapshot = "sha256:" + "b".repeat(64);
+      await searchPackage(second, "en", ["bangu"]);
+      const third = structuredClone(pkg);
+      third.snapshot = "sha256:" + "c".repeat(64);
+      const cancelThird = new AbortController();
+      const thirdRequest = searchPackage(third, "en", ["ba*"], {
+        signal: cancelThird.signal,
+      }).catch((error: any) => error.name);
+      cancelThird.abort();
+      const originalWarm = await searchPackage(pkg, "en", ["bangu"]);
+      const secondWarm = await searchPackage(second, "en", ["bangu"]);
       return {
         aborted: plainError,
         canceled: await canceled,
         active: active.hits[0].length,
         prepared: later.prepared,
         workers: (window as any).searchWorkers,
+        third: await thirdRequest,
+        originalWarm: !originalWarm.prepared,
+        secondWarm: !secondWarm.prepared,
       };
     },
     pkg(["bangu"]),
@@ -104,6 +119,9 @@ test("R2 plain and queued pattern aborts preserve the shared worker and prepared
     active: 1,
     prepared: false,
     workers: 1,
+    third: "AbortError",
+    originalWarm: true,
+    secondWarm: true,
   });
 });
 test("R2 nearby meanings use literal search", async ({ page }) => {

@@ -306,7 +306,9 @@ Replies include total counts and entry references into the exact package capture
 These references preserve matching alternatives, definition order, selected previews, and display spellings.
 
 An empty search page validates its saved package before displaying its snapshot.
-If queued cache churn removes a worker package, the client retries once with its captured package. Rejected packages keep their validation error.
+The worker owns its prepared-package cache. Each request asks for that package before transferring its data.
+On a cache miss, the client retries once with its captured package. Rejected packages keep their validation error.
+Canceling a queued request does not evict another prepared package through a second cache on the main thread.
 Worker startup or execution failure reports an error without sending a local query to a server.
 An invalid saved package retains the earlier disclosed remote fallback.
 

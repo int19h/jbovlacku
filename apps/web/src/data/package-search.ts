@@ -65,13 +65,11 @@ let client: Client | undefined;
 let requestId = 0,
   packageId = 0;
 const packageIds = new WeakMap<CachedPackage, number>();
-const retained: (string | number)[] = [];
 function stopWorker(current: Client, error: Error) {
   current.worker.terminate();
   for (const waiting of current.pending.values()) waiting.reject(error);
   current.pending.clear();
   if (client === current) {
-    retained.length = 0;
     client = undefined;
   }
 }
@@ -103,10 +101,6 @@ function searchWorker(): Client {
     }
     current.pending.delete(data.request);
     if (data.error) {
-      if (data.code !== "pattern_invalid" && data.code !== "pattern_timeout") {
-        const index = retained.indexOf(data.key);
-        if (index >= 0) retained.splice(index, 1);
-      }
       waiting.reject(
         data.code === "invalid-package"
           ? new PackageValidationError(data.error)
@@ -153,11 +147,8 @@ export async function searchPackage(
   const send = (force = false) => {
     signal?.throwIfAborted();
     const current = searchWorker();
-    const prepare = force || !retained.includes(key);
-    const index = retained.indexOf(key);
-    if (index >= 0) retained.splice(index, 1);
-    retained.push(key);
-    if (retained.length > 2) retained.shift();
+    // The worker owns the two-package cache. A canceled queued transfer must
+    // not evict a valid package from a second optimistic cache on this thread.
     const request = ++requestId;
     return new Promise<
       Omit<PackageSearchResult, "hits"> & { hits: PackageHitReferences[][] }
@@ -215,13 +206,11 @@ export async function searchPackage(
           language,
           queries,
           options: workerOptions,
-          ...(prepare ? { pkg } : {}),
+          ...(force ? { pkg } : {}),
         });
       } catch (error) {
         clean();
         current.pending.delete(request);
-        const index = retained.indexOf(key);
-        if (index >= 0) retained.splice(index, 1);
         reject(error);
       }
     });
@@ -231,7 +220,7 @@ export async function searchPackage(
     result = await send();
   } catch (error) {
     if (!(error instanceof MissingPackageError)) throw error;
-    // A rejected or evicted queued request can invalidate the optimistic LRU.
+    // Transfer the captured package only after the worker reports a cache miss.
     result = await send(true);
   }
   return {
