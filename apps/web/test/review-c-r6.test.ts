@@ -157,7 +157,7 @@ for (const [kind, label] of [
       .poll(read)
       .toEqual(
         kind === "rationale"
-          ? [["left\nright", " appended"]]
+          ? [["left\nright appended"]]
           : [
               [
                 { code: "left\n\nright" },

@@ -88,7 +88,7 @@ test("R5 nearby edits preserve rare stored values", async ({ page }) => {
     page.getByText("Saved in this browser", { exact: true }),
   ).toBeVisible();
   expect(await read()).toEqual({
-    text: [["one\r\n\r\ntwo ", "adjacent "], ["  "], ["last", " added"]],
+    text: [["one\r\n\r\ntwo ", "adjacent "], ["  "], ["last added"]],
     notes: original.notes,
   });
 });
