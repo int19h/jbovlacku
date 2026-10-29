@@ -328,8 +328,21 @@ test("a missing-package retry starts a fresh worker after another request cancel
             ),
             options,
           );
-          (window as any).evictedWorker = this;
         } else super(url, options);
+        const property = Object.getOwnPropertyDescriptor(
+          Original.prototype,
+          "onmessage",
+        )!;
+        Object.defineProperty(this, "onmessage", {
+          get: () => property.get?.call(this),
+          set: (handler) =>
+            property.set?.call(this, (event: MessageEvent) => {
+              handler?.call(this, event);
+              // Force cancellation before the rejected promise can retry.
+              if (event.data.code === "package-missing")
+                (window as any).cancelQueued?.();
+            }),
+        });
       }
     };
   });
@@ -339,16 +352,11 @@ test("a missing-package retry starts a fresh worker after another request cancel
       String("/src/data/package-search.ts")
     );
     const controller = new AbortController();
+    (window as any).cancelQueued = () => controller.abort();
     const retried = searchPackage(pkg, "en", ["ba*"]);
     const canceled = searchPackage(pkg, "en", ["ba*"], {
       signal: controller.signal,
     }).catch((error: any) => error.name);
-    (window as any).evictedWorker.addEventListener(
-      "message",
-      (event: MessageEvent) => {
-        if (event.data.code === "package-missing") controller.abort();
-      },
-    );
     return {
       retried: (await retried).hits[0].length,
       canceled: await canceled,
@@ -366,7 +374,7 @@ test("legal long headwords exhaust the corpus budget without partial hits and th
       String("/src/data/package-search.ts")
     );
     const long = "a".repeat(254) + "b";
-    const entries = Array.from({ length: 20_000 }, (_, index) => ({
+    const entries = Array.from({ length: 25_000 }, (_, index) => ({
       event: "jve1:" + index.toString(16).padStart(64, "0"),
       word: { language: "jbo", spelling: index === 0 ? "a" : long },
       language: "en",
@@ -385,9 +393,154 @@ test("legal long headwords exhaust the corpus budget without partial hits and th
       message = error.message;
     }
     const recovered = await searchPackage(pkg, "en", ["a"]);
-    return { code, message, recovered: recovered.hits[0].length };
+    return {
+      code,
+      message,
+      recovered: recovered.hits[0].length,
+      prepared: recovered.prepared,
+    };
   });
   expect(result.code).toBe("pattern_timeout");
   expect(result.message).toContain("time or work limit");
   expect(result.recovered).toBe(2);
+  expect(result.prepared).toBe(false);
+});
+
+async function cachedRafsiRows(page: Page, count: number, rafsiCount: number) {
+  await page.goto("/");
+  await page.evaluate(
+    async ({ corePath, count, rafsiCount }) => {
+      const core = await import(corePath);
+      await core.initializeCore();
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const entries = Array.from({ length: count }, (_, index) => ({
+        event: "jve1:" + (index + 1).toString(16).padStart(64, "0"),
+        word: { language: "jbo", spelling: "ba" + "a".repeat(index) + "b" },
+        language: "en",
+        glosses: [],
+        plain_text: "Synthetic rafsi fixture.",
+        classification: { kind: "other", selmaho: [] },
+        body: null,
+        issuer: "ed25519:" + "1".repeat(64),
+        notes: false,
+        attribution: null,
+        rafsi_complete: true,
+        rafsi: Array.from({ length: rafsiCount }, (_, part) =>
+          part === 0
+            ? "ra"
+            : "r" +
+              String.fromCharCode(98 + index) +
+              String.fromCharCode(97 + Math.floor(part / 26)) +
+              String.fromCharCode(97 + (part % 26)),
+        ),
+      }));
+      await new LocalStore().put("packages", "en", {
+        snapshot: "sha256:" + "a".repeat(64),
+        version: 2,
+        entries,
+      });
+    },
+    { corePath, count, rafsiCount },
+  );
+  await page.route("**/api/v1/manifest", (route) => route.abort());
+}
+const emptyRafsiWord = () => ({
+  snapshot: "sha256:" + "a".repeat(64),
+  view: "jve1:" + "b".repeat(64),
+  word: null,
+  definitions: [],
+  rafsi: [],
+  assignments: [],
+  scores: [],
+  statuses: [],
+  layers: [],
+  unavailable_scores: [],
+  calculation: null,
+});
+
+test("rafsi patterns show 20 cards first and show all keeps each assignment and conflict", async ({
+  page,
+}) => {
+  await cachedRafsiRows(page, 3, 10);
+  const wordRequests: string[] = [];
+  await page.route("**/api/v1/words/**", async (route) => {
+    wordRequests.push(route.request().url());
+    await route.fulfill({ json: emptyRafsiWord() });
+  });
+  await page.goto("/rafsi/r*");
+  const cards = page.locator("section.definition[aria-label]");
+  await expect(cards).toHaveCount(20);
+  expect(wordRequests.length).toBeLessThanOrEqual(20);
+  await expect(
+    page.getByText(
+      "3 words claim ra. The assignment is unresolved until the selected view prefers one.",
+    ),
+  ).toBeVisible();
+  const first = await cards.evaluateAll((nodes) =>
+    nodes.map((node) => node.getAttribute("aria-label")),
+  );
+  await page.getByRole("button", { name: "show all", exact: true }).click();
+  await expect(cards).toHaveCount(30);
+  const all = await cards.evaluateAll((nodes) =>
+    nodes.map((node) => node.getAttribute("aria-label")),
+  );
+  expect(all.slice(0, 20)).toEqual(first);
+  expect(new Set(all).size).toBe(30);
+  expect(all.filter((value) => value?.startsWith("ra for ")).length).toBe(3);
+});
+
+test("rafsi patterns cut the page at 1,000 pairs and state the coverage limit", async ({
+  page,
+}) => {
+  await cachedRafsiRows(page, 17, 64);
+  let requested = 0;
+  await page.route("**/api/v1/words/**", async (route) => {
+    requested++;
+    await route.fulfill({ json: emptyRafsiWord() });
+  });
+  await page.goto("/rafsi/r*");
+  await expect(
+    page.getByText(
+      "Rafsi coverage is limited. Packages list at most 64 rafsi per word. This page shows at most 1,000 matching pairs. Refine the pattern for more specific results.",
+    ),
+  ).toBeVisible();
+  await expect(page.locator(".surface-word > p.muted a")).toHaveCount(1000);
+  await expect(page.locator("section.definition[aria-label]")).toHaveCount(20);
+  expect(requested).toBeLessThanOrEqual(20);
+});
+
+test("navigation cancels a rafsi expansion before it requests the remaining cards", async ({
+  page,
+}) => {
+  await cachedRafsiRows(page, 40, 1);
+  let hold = false,
+    release: (() => void) | undefined,
+    requested = 0;
+  await page.route("**/api/v1/words/**", async (route) => {
+    requested++;
+    if (hold)
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    await route.fulfill({ json: emptyRafsiWord() }).catch(() => {});
+  });
+  await page.goto("/rafsi/r*");
+  await expect(page.locator("section.definition[aria-label]")).toHaveCount(20);
+  expect(requested).toBe(20);
+  hold = true;
+  await page.getByRole("button", { name: "show all", exact: true }).click();
+  await expect.poll(() => release !== undefined).toBe(true);
+  await page.evaluate(async () => {
+    (await import(String("/src/app/router.ts"))).navigate(
+      "/search?q=bangu&lang=en",
+    );
+  });
+  await expect(
+    page.getByRole("region", { name: "Search results" }),
+  ).toBeVisible();
+  release!();
+  await page.waitForTimeout(100);
+  expect(requested).toBe(21);
+  await expect(page.locator("section.definition[aria-label]")).toHaveCount(0);
+  await expect(page.getByText("Search was canceled.")).toHaveCount(0);
 });

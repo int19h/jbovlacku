@@ -36,10 +36,14 @@ test("GET and POST patterns keep ranking, rafsi, cursors, retirement, deltas, an
   let serial = 0,
     checkpoint: ServiceCheckpoint | undefined,
     restores = 0;
-  const signed = (action: Record<string, unknown>, body: unknown) =>
+  const signed = (
+    action: Record<string, unknown>,
+    body: unknown,
+    previous: string[] = [],
+  ) =>
     createEvent(
       seed,
-      [],
+      previous,
       (++serial).toString(16).padStart(32, "0"),
       action,
       body,
@@ -222,6 +226,7 @@ test("GET and POST patterns keep ranking, rafsi, cursors, retirement, deltas, an
           value: "deprecated",
         },
         null,
+        [definitions[1].envelope.id],
       ),
     );
     assert.ok(
@@ -258,7 +263,7 @@ test("GET and POST patterns keep ranking, rafsi, cursors, retirement, deltas, an
     // Exercise the shared HTTP boundary with legal long spellings and an
     // oversized derived fixture, without signing thousands of duplicate bodies.
     const long = "a".repeat(254) + "b";
-    const entries = Array.from({ length: 20_000 }, (_, index) => ({
+    const entries = Array.from({ length: 25_000 }, (_, index) => ({
       event: String(index),
       word: { language: "jbo", spelling: long },
       language: "en",

@@ -162,7 +162,7 @@ mod tests {
         let spelling = format!("{}b", "a".repeat(254));
         assert!(!pattern.matches(&spelling).unwrap());
         let mut timed_out = false;
-        for _ in 0..20_000 {
+        for _ in 0..25_000 {
             if pattern.matches(&spelling).is_err() {
                 timed_out = true;
                 break;

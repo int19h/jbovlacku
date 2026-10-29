@@ -88,8 +88,10 @@ function searchWorker(): Client {
     }
     current.pending.delete(data.request);
     if (data.error) {
-      const index = retained.indexOf(data.key);
-      if (index >= 0) retained.splice(index, 1);
+      if (data.code !== "pattern_invalid" && data.code !== "pattern_timeout") {
+        const index = retained.indexOf(data.key);
+        if (index >= 0) retained.splice(index, 1);
+      }
       waiting.reject(
         data.code === "invalid-package"
           ? new PackageValidationError(data.error)

@@ -3,6 +3,7 @@ import {
   prepareIndex,
   searchMetrics,
   PatternError,
+  isPatternQuery,
 } from "../../../../packages/search/src/index.ts";
 import {
   localSearch,
@@ -67,7 +68,8 @@ self.onmessage = ({ data }) => {
       packages.set(data.key, stored);
       if (packages.size > 2) packages.delete(packages.keys().next().value!);
       const options: PackageSearchOptions = data.options ?? {};
-      self.postMessage({ request: data.request, started: true });
+      if (data.queries.some(isPatternQuery))
+        self.postMessage({ request: data.request, started: true });
       const hits: ReturnType<typeof localSearch>[] = data.queries.map(
         (query: string) =>
           localSearch(stored.pkg.entries, query, metrics, options.rafsiOnly),

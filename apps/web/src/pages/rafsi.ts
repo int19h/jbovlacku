@@ -87,12 +87,18 @@ export async function wordsWithRafsi(
     });
     limited ||= result.totals[0] > 1000;
     for (const hit of result.hits[0])
-      for (const spelling of hit.matchingRafsi ?? [])
-        found.set(`${hit.word_id}|${spelling}`, {
+      for (const spelling of hit.matchingRafsi ?? []) {
+        const key = `${hit.word_id}|${spelling}`;
+        if (!found.has(key) && found.size >= 1000) {
+          limited = true;
+          continue;
+        }
+        found.set(key, {
           spelling: hit.word.spelling,
           language,
           rafsi: spelling,
         });
+      }
   }
   return Object.assign(
     [...found.values()].sort(
@@ -239,7 +245,7 @@ export async function rafsiPage(
   if (words.limited)
     main.append(
       p(
-        "Rafsi coverage is limited. Packages list at most 64 rafsi per word. Each language shows at most 1,000 matching words.",
+        "Rafsi coverage is limited. Packages list at most 64 rafsi per word. This page shows at most 1,000 matching pairs. Refine the pattern for more specific results.",
         "notice",
       ),
     );
@@ -278,10 +284,38 @@ export async function rafsiPage(
           "notice",
         ),
       );
-  for (const w of words) {
-    if (!context.live()) return;
-    main.append(await pairCard(app, context, w, w.rafsi));
-  }
+  const cards = el("div");
+  const moreLine = el("p", { class: "meta" });
+  let shown = 0;
+  const render = async (limit: number) => {
+    while (shown < Math.min(limit, words.length)) {
+      if (!context.live()) return;
+      const word = words[shown];
+      const card = await pairCard(app, context, word, word.rafsi);
+      if (!context.live()) return;
+      cards.append(card);
+      shown++;
+    }
+    moreLine.replaceChildren();
+    if (shown < words.length) {
+      const more = button(
+        "show all",
+        async () => {
+          more.disabled = true;
+          try {
+            await render(words.length);
+          } catch (error) {
+            if (context.live()) main.append(p(describe(error), "notice"));
+          }
+        },
+        { class: "btn btn-quiet" },
+      );
+      moreLine.append(text(`${words.length - shown} more… `), more);
+    }
+  };
+  main.append(cards, moreLine);
+  await render(20);
+  if (!context.live()) return;
   main.append(
     p(
       "A rafsi is not reserved by the first server that receives a claim. Judgments on a pair apply across all its publishers.",

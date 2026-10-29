@@ -187,7 +187,8 @@ It uses no gloss, definition-text, segmentation, or component fallback. One card
 Headword matches take precedence when a word also has a matching rafsi.
 Both classes use the ordinary pages and “show all” limit. Pattern mode leaves the ordinary segmented-search classes unchanged.
 The rafsi page accepts the same patterns. It shows each matched spelling with its word and retains conflicting assignments separately.
-Each language shows at most 1,000 matching words there. A visible notice reports any cut.
+The rafsi page retains at most 1,000 matched pairs across its languages. A visible notice reports any cut.
+It shows 20 assignment cards first. “Show all” reveals the remaining retained cards without another match scan.
 
 Rafsi patterns use retained claim bodies and the same 64-spelling limit per word as version 2 packages.
 Version 1 local packages support headword patterns only. The search page states that they contain no rafsi data.

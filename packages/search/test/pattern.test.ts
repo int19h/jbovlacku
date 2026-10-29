@@ -133,7 +133,7 @@ test("catastrophic repetition completes on one legal long word and exhausts the 
   assert.throws(
     () =>
       selectMatches(
-        [{ ...long, word: { spelling: "a" } }, ...Array(20_000).fill(long)],
+        [{ ...long, word: { spelling: "a" } }, ...Array(25_000).fill(long)],
         "/(a+)+$/",
       ),
     (error) =>
