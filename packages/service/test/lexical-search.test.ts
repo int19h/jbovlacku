@@ -227,3 +227,54 @@ test("fallback preserves query order, groups repeated words, and applies every e
     ["je"],
   );
 });
+
+test("grouped remote matching keeps language and status filters before known-word detection", () => {
+  const entries: SearchEntry[] = ["se", "bo", "sebo", "cukta"].map(
+    (spelling) => ({
+      event: spelling,
+      word: { language: "jbo", spelling },
+      language: "en",
+      glosses: [{ text: "se bo" }],
+      plain_text: "A book uses se.",
+      classification: { kind: "cmavo" },
+      body: "body",
+    }),
+  );
+  const evaluation = {
+    publications: Object.fromEntries(
+      entries.map((entry) => [
+        entry.event,
+        { word: entry.event, eligible: "eligible", status: "active" },
+      ]),
+    ),
+    receipts: Object.fromEntries(
+      entries.map((entry) => [entry.event, { interpretation: "effective" }]),
+    ),
+  } as unknown as Evaluation;
+  const search = (query: string, group: "lojban" | "definitions") =>
+    lexicalSearch(
+      entries,
+      query,
+      "en",
+      evaluation,
+      false,
+      undefined,
+      { cukta: ["cku"] },
+      { group },
+    );
+  assert.deepEqual(
+    search("se bo", "lojban").map((hit) => hit.match),
+    ["sequence-exact"],
+  );
+  assert.ok(
+    search("se bo", "definitions").every((hit) => hit.match === "gloss"),
+  );
+  assert.equal(search("se bo", "lojban").allLojban, true);
+  assert.equal(search("book", "lojban").allLojban, false);
+  assert.equal(search("cku", "lojban")[0].word_id, "cukta");
+  entries[1].language = "fr";
+  assert.equal(search("se bo", "lojban").allLojban, false);
+  entries[1].language = "en";
+  evaluation.publications.bo.status = "deprecated";
+  assert.equal(search("se bo", "lojban").allLojban, false);
+});

@@ -45,17 +45,22 @@ export function lexicalSearch(
     }
   >();
   const pattern = options.patterns !== false && isPatternQuery(query);
-  const source = pattern
-    ? (function* () {
-        for (const entry of entries)
-          yield {
-            ...entry,
-            rafsi: rafsi[evaluation.publications[entry.event]?.word] ?? [],
-          };
-      })()
-    : entries;
+  const source =
+    pattern || options.group === "lojban"
+      ? (function* () {
+          for (const entry of entries)
+            yield {
+              ...entry,
+              rafsi: rafsi[evaluation.publications[entry.event]?.word] ?? [],
+            };
+        })()
+      : entries;
   const selected = selectedRows
-    ? { rows: selectedRows, segmentation: "complete" as const }
+    ? {
+        rows: options.group === "definitions" ? [] : selectedRows,
+        segmentation: "complete" as const,
+        allLojban: false,
+      }
     : selectMatches(
         source,
         query,
@@ -133,6 +138,7 @@ export function lexicalSearch(
       return hit;
     }),
     selected.segmentation,
+    selected.allLojban,
   );
 }
 
@@ -189,7 +195,7 @@ export async function lexicalSearchAsync(
     includeRetired,
     undefined,
     rafsi,
-    {},
+    options,
     matches.map((row) => ({
       entry: source[row.index],
       match: row.match,

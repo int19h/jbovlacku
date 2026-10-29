@@ -33,11 +33,16 @@ export type MatchKind = (typeof matchKinds)[number];
 export function withSegmentation<T>(
   rows: T[],
   segmentation: SegmentationStatus,
-): T[] & { segmentation: SegmentationStatus } {
-  return Object.defineProperty(rows, "segmentation", {
-    value: segmentation,
-  }) as T[] & { segmentation: SegmentationStatus };
+  allLojban = false,
+): T[] & { segmentation: SegmentationStatus; allLojban: boolean } {
+  return Object.defineProperties(rows, {
+    segmentation: { value: segmentation },
+    allLojban: { value: allLojban },
+  }) as T[] & { segmentation: SegmentationStatus; allLojban: boolean };
 }
+export type SearchGroup = "lojban" | "definitions";
+export const matchGroup = (match: MatchKind): SearchGroup =>
+  ["gloss", "gloss-prefix", "token"].includes(match) ? "definitions" : "lojban";
 export const matchRank = (kind: MatchKind) => matchKinds.indexOf(kind);
 
 export interface LexicalEntry {
@@ -240,6 +245,7 @@ export function prepareIndex<T extends LexicalEntry>(
 }
 export interface SearchOptions {
   patterns?: boolean;
+  group?: SearchGroup;
 }
 export interface PreparedQuery {
   text: string;
@@ -366,7 +372,11 @@ export function selectMatches<T extends LexicalEntry>(
   metrics?: SearchMetrics,
   accept: (entry: T) => boolean = () => true,
   options: SearchOptions = {},
-): { rows: LexicalMatch<T>[]; segmentation: SegmentationStatus } {
+): {
+  rows: LexicalMatch<T>[];
+  segmentation: SegmentationStatus;
+  allLojban: boolean;
+} {
   const prepared =
     typeof query === "string" ? prepareQuery(query, metrics, options) : query;
   const rows: LexicalMatch<T>[] = [];
@@ -390,7 +400,11 @@ export function selectMatches<T extends LexicalEntry>(
             position: 0,
           });
       }
-      return { rows, segmentation: "complete" };
+      return {
+        rows: options.group === "definitions" ? [] : rows,
+        segmentation: "complete",
+        allLojban: false,
+      };
     } finally {
       pattern.free();
     }
@@ -400,7 +414,9 @@ export function selectMatches<T extends LexicalEntry>(
     (prepared.components?.tokens.length ?? 0) + 1,
   );
   let segmentation = prepared.segmentation;
-  if (!prepared.text) return { rows, segmentation };
+  const known = new Set<string>();
+  let wholeKnown = false;
+  if (!prepared.text) return { rows, segmentation, allLojban: false };
   const single =
     prepared.components?.words.length === 1 &&
     !prepared.components.tokens.includes(null)
@@ -418,6 +434,8 @@ export function selectMatches<T extends LexicalEntry>(
   for (const { entry, indexed: index } of source) {
     if (metrics) metrics.entries++;
     if (!accept(entry)) continue;
+    if (prepared.positions.has(index.canonical)) known.add(index.canonical);
+    if (index.spelling === prepared.headword) wholeKnown = true;
     if (index.limited) segmentation = "limited";
     const sequence = sequenceMatch(index, prepared, coverage, metrics);
     const prefix = prepared.headword.replace(/[.,]/gu, "");
@@ -439,6 +457,20 @@ export function selectMatches<T extends LexicalEntry>(
     if (index.glosses.some((gloss) => gloss.startsWith(prepared.text)))
       candidates.push("gloss-prefix");
     if (index.text.includes(prepared.text)) candidates.push("token");
+    if (
+      options.group === "lojban" &&
+      (entry.rafsi ?? []).some(
+        (rafsi: string) =>
+          headwordKey(rafsi).replaceAll("h", "'") ===
+          prepared.headword.replaceAll("h", "'"),
+      )
+    )
+      candidates.push("rafsi-pattern");
+    if (options.group) {
+      for (let index = candidates.length - 1; index >= 0; index--)
+        if (matchGroup(candidates[index]) !== options.group)
+          candidates.splice(index, 1);
+    }
     candidates.sort((a, b) => matchRank(a) - matchRank(b));
     if (candidates.length)
       rows.push({ entry, match: candidates[0], position: 0 });
@@ -457,10 +489,24 @@ export function selectMatches<T extends LexicalEntry>(
   const matchedEntries = new Set(rows.map((row) => row.entry));
   for (const { entry, key } of fallback) {
     const position = positions.get(key);
-    if (position !== undefined && !matchedEntries.has(entry))
+    if (
+      options.group !== "definitions" &&
+      position !== undefined &&
+      !matchedEntries.has(entry)
+    )
       rows.push({ entry, match: "component", position });
   }
-  return { rows, segmentation };
+  return {
+    rows,
+    segmentation,
+    allLojban:
+      wholeKnown ||
+      !!(
+        prepared.components?.words.length &&
+        !prepared.components.tokens.includes(null) &&
+        prepared.components.words.every((word) => known.has(word))
+      ),
+  };
 }
 /** A single-entry lookup, with the same normalization and sequence classes. */
 export function matchKind(

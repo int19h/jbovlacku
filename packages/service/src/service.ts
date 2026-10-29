@@ -2268,6 +2268,7 @@ export class DictionaryService {
         "after",
         "retired",
         "literal",
+        "group",
       ];
       if (!fields || typeof fields !== "object" || Array.isArray(fields))
         throw new ApiError(
@@ -2548,6 +2549,13 @@ export class DictionaryService {
       if (literalFlag !== null && literalFlag !== "1")
         throw new ApiError(400, "literal", "literal must be 1 when present.");
       const literal = literalFlag === "1";
+      const group = url.searchParams.get("group");
+      if (group !== null && group !== "lojban" && group !== "definitions")
+        throw new ApiError(
+          400,
+          "group",
+          "Search group must be lojban or definitions.",
+        );
       const packages = await this.packages(snapshot);
       const ordered = await lexicalSearchAsync(
         packages.entries,
@@ -2558,7 +2566,7 @@ export class DictionaryService {
         packages.searchRafsi,
         this.options.patternScanner,
         request.signal,
-        { patterns: !literal },
+        { patterns: !literal, ...(group ? { group } : {}) },
       );
       const cursorHash = this.hashJson({
         search: "patterns-v3",
@@ -2568,6 +2576,7 @@ export class DictionaryService {
         view,
         retired: includeRetired,
         literal,
+        group,
       }).slice(7);
       const after = url.searchParams.get("after");
       let offset = 0;
@@ -2596,6 +2605,7 @@ export class DictionaryService {
         view,
         query,
         segmentation: ordered.segmentation,
+        all_lojban: ordered.allLojban,
         language,
         hits: page,
         next:

@@ -17,6 +17,7 @@ import {
   type SearchOptions,
   type SegmentationStatus,
   type SearchMetrics,
+  type PreparedQuery,
 } from "../../../../packages/search/src/index.ts";
 export {
   normalizeQuery,
@@ -415,13 +416,15 @@ export interface LocalHit extends SearchHit {
 /** Groups matching entries by word, ordered by match class and stable word ID. */
 export function localSearch(
   entries: PackageEntry[],
-  query: string,
+  query: string | PreparedQuery,
   metrics?: SearchMetrics,
   rafsiOnly = false,
   options: SearchOptions = {},
-): LocalHit[] & { segmentation: SegmentationStatus } {
+): LocalHit[] & { segmentation: SegmentationStatus; allLojban: boolean } {
+  const queryText =
+    typeof query === "string" ? query : (query.pattern ?? query.text);
   const selected = rafsiOnly
-    ? selectRafsiMatches(entries, query, metrics, options)
+    ? selectRafsiMatches(entries, queryText, metrics, options)
     : selectMatches(entries, query, metrics, undefined, options);
   const grouped = new Map<string, LocalHit & { position: number }>();
   for (const { entry, match, position, rafsi } of selected.rows) {
@@ -468,7 +471,7 @@ export function localSearch(
     (a, b) =>
       matchRank(a.match) - matchRank(b.match) ||
       a.position - b.position ||
-      (options.patterns !== false && isPatternQuery(query)
+      (options.patterns !== false && isPatternQuery(queryText)
         ? comparePatternSpelling(a.word.spelling, b.word.spelling)
         : 0) ||
       (a.word_id < b.word_id ? -1 : a.word_id > b.word_id ? 1 : 0),
@@ -479,5 +482,6 @@ export function localSearch(
       return hit;
     }),
     selected.segmentation,
+    "allLojban" in selected ? selected.allLojban : false,
   );
 }

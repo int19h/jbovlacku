@@ -19,12 +19,16 @@ export interface PackageSearchResult {
   segmentation: SegmentationStatus;
   metrics: SearchMetrics;
   prepared: boolean;
+  allLojban: boolean;
 }
 export interface PackageSearchOptions {
   offset?: number;
   limit?: number;
   /** Rank all query lists together before selecting the nearby page. */
   nearby?: boolean;
+  /** Return independent Lojban and definition pages for one query. */
+  grouped?: boolean;
+  group?: import("../../../../packages/search/src/index.ts").SearchGroup;
   /** Meaning retrieval and claim previews always use literal text. */
   patterns?: boolean;
   /** Match retained rafsi spellings instead of headwords. */

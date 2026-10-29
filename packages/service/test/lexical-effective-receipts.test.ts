@@ -922,3 +922,64 @@ test("retired search retains effective deprecated definitions and exact earlier 
     assert.equal(retained.hits[0].preview.status, "active");
   }
 });
+
+test("group pages bind cursors to the group and report known Lojban queries", async () => {
+  const f = await fixture();
+  const records = Array.from({ length: 4 }, (_, index) => {
+    const spelling = index ? "klama" + index : "klama";
+    const word = { language: "jbo" as const, spelling };
+    return createEvent(
+      publisher,
+      [],
+      (900 + index).toString(16).padStart(32, "0"),
+      {
+        kind: "definition.publish",
+        word: wordId(word),
+        language: "en",
+        parents: [],
+        origin: "native",
+      },
+      {
+        word,
+        language: "en",
+        text: [["klama is in this synthetic definition."]],
+        classification: { kind: "other" },
+        license: { expression: "CC0-1.0" },
+      },
+    );
+  });
+  await f.admit(f.view, ...records);
+  const first = await f.read(
+    "/search?q=klama&language=en&group=lojban&limit=2",
+  );
+  assert.equal(first.all_lojban, true);
+  assert.equal(first.hits.length, 2);
+  assert.ok(first.next);
+  assert.ok(
+    first.hits.every((hit: any) =>
+      ["headword", "headword-prefix"].includes(hit.match),
+    ),
+  );
+  const second = await f.read(
+    `/search?q=klama&language=en&group=lojban&limit=2&snapshot=${first.snapshot}&after=${first.next}`,
+  );
+  assert.equal(second.hits.length, 2);
+  assert.equal(second.next, null);
+  const definitions = await f.read(
+    "/search?q=klama&language=en&group=definitions&limit=2",
+  );
+  assert.ok(definitions.hits.every((hit: any) => hit.match === "token"));
+  const invalid = await f.service.fetch(
+    new Request(
+      `http://local.invalid/api/v1/search?q=klama&language=en&group=definitions&after=${first.next}`,
+    ),
+  );
+  assert.equal(invalid.status, 400);
+  assert.equal((await invalid.json()).code, "bad_cursor");
+  const badGroup = await f.service.fetch(
+    new Request(
+      "http://local.invalid/api/v1/search?q=klama&language=en&group=unknown",
+    ),
+  );
+  assert.equal(badGroup.status, 400);
+});

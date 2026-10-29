@@ -382,6 +382,7 @@ export interface SearchResponse {
   next: string | null;
   /** Absent on older servers. */
   segmentation?: SegmentationStatus;
+  all_lojban?: boolean;
 }
 export interface Capabilities {
   versions: number[];
