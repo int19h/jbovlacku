@@ -73,7 +73,17 @@ test("R2 plain and queued pattern aborts preserve the shared worker and prepared
       const { searchPackage } = await import(
         String("/src/data/package-search.ts")
       );
-      await searchPackage(pkg, "en", ["bangu"]);
+      const cold = new AbortController();
+      let duringAbort: Promise<any> | undefined;
+      (window as any).abortPlainOnReply = () => {
+        cold.abort();
+        // Reuse before the client receives the preparation acknowledgment.
+        duringAbort = searchPackage(pkg, "en", ["bangu"]);
+      };
+      const coldError = await searchPackage(pkg, "en", ["bangu"], {
+        signal: cold.signal,
+      }).catch((error: any) => error.name);
+      const backgroundWarm = !(await duringAbort!).prepared;
       const plain = new AbortController();
       (window as any).abortPlainOnReply = () => plain.abort();
       const aborted = searchPackage(pkg, "en", ["bangu"], {
@@ -101,6 +111,8 @@ test("R2 plain and queued pattern aborts preserve the shared worker and prepared
       const originalWarm = await searchPackage(pkg, "en", ["bangu"]);
       const secondWarm = await searchPackage(second, "en", ["bangu"]);
       return {
+        coldError,
+        backgroundWarm,
         aborted: plainError,
         canceled: await canceled,
         active: active.hits[0].length,
@@ -114,6 +126,8 @@ test("R2 plain and queued pattern aborts preserve the shared worker and prepared
     pkg(["bangu"]),
   );
   expect(result).toEqual({
+    coldError: "AbortError",
+    backgroundWarm: true,
     aborted: "AbortError",
     canceled: "AbortError",
     active: 1,
@@ -319,4 +333,59 @@ test("R2 literal proposed slash and wildcard rafsi reach the claim preview", asy
       }),
     ).toBeVisible();
   }
+});
+
+test("R2 late canceled package replies preserve newer warm cache keys", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const Original = Worker;
+    const bypass = new WeakSet<Event>();
+    let first = true;
+    window.Worker = class extends Original {
+      constructor(url: string | URL, options?: WorkerOptions) {
+        super(url, options);
+        if (String(url).includes("package-search-worker"))
+          this.addEventListener("message", (event) => {
+            if (!first || bypass.has(event) || !event.data.result) return;
+            first = false;
+            event.stopImmediatePropagation();
+            const data = event.data;
+            (window as any).releaseOldPackageReply = () => {
+              const reply = new MessageEvent("message", { data });
+              bypass.add(reply);
+              this.dispatchEvent(reply);
+            };
+          });
+      }
+    };
+  });
+  await page.goto("/");
+  const observed = await page.evaluate(
+    async (pkg) => {
+      const { searchPackage } = await import(
+        String("/src/data/package-search.ts")
+      );
+      const controller = new AbortController();
+      const older = searchPackage(pkg, "en", ["bangu"], {
+        signal: controller.signal,
+      }).catch((error: any) => error.name);
+      const second = structuredClone(pkg);
+      second.snapshot = "sha256:" + "e".repeat(64);
+      await searchPackage(second, "en", ["bangu"]);
+      controller.abort();
+      (window as any).releaseOldPackageReply();
+      return {
+        older: await older,
+        originalWarm: !(await searchPackage(pkg, "en", ["bangu"])).prepared,
+        secondWarm: !(await searchPackage(second, "en", ["bangu"])).prepared,
+      };
+    },
+    pkg(["bangu"]),
+  );
+  expect(observed).toEqual({
+    older: "AbortError",
+    originalWarm: true,
+    secondWarm: true,
+  });
 });

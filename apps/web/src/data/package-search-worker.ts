@@ -23,6 +23,13 @@ const packages = new Map<
     events: Map<string, number>;
   }
 >();
+let cacheRevision = 0;
+const reply = (data: Record<string, unknown>) =>
+  self.postMessage({
+    ...data,
+    retained: [...packages.keys()],
+    cacheRevision: ++cacheRevision,
+  });
 const ready = initializeCore();
 let queue = Promise.resolve();
 const canceled = new Set<number>();
@@ -41,7 +48,7 @@ self.onmessage = ({ data }) => {
       await new Promise((resolve) => setTimeout(resolve, 0));
       queued.delete(data.request);
       if (canceled.delete(data.request)) {
-        self.postMessage({ request: data.request, canceled: true });
+        reply({ request: data.request, canceled: true });
         return;
       }
       const metrics = searchMetrics();
@@ -49,7 +56,7 @@ self.onmessage = ({ data }) => {
         try {
           validateCachedPackage(data.pkg, data.language);
         } catch (error) {
-          self.postMessage({
+          reply({
             request: data.request,
             key: data.key,
             code: "invalid-package",
@@ -69,7 +76,7 @@ self.onmessage = ({ data }) => {
       }
       const stored = packages.get(data.key);
       if (!stored) {
-        self.postMessage({
+        reply({
           request: data.request,
           key: data.key,
           code: "package-missing",
@@ -87,7 +94,7 @@ self.onmessage = ({ data }) => {
         !options.nearby &&
         data.queries.some(isPatternQuery)
       )
-        self.postMessage({ request: data.request, started: true });
+        reply({ request: data.request, started: true });
       const hits: ReturnType<typeof localSearch>[] = data.queries.map(
         (query: string) =>
           localSearch(stored.pkg.entries, query, metrics, options.rafsiOnly, {
@@ -120,7 +127,7 @@ self.onmessage = ({ data }) => {
           ...(hit.matchingRafsi ? { rafsi: hit.matchingRafsi } : {}),
         })),
       );
-      self.postMessage({
+      reply({
         request: data.request,
         result: {
           hits: pages,
@@ -133,7 +140,7 @@ self.onmessage = ({ data }) => {
     } catch (error) {
       queued.delete(data.request);
       canceled.delete(data.request);
-      self.postMessage({
+      reply({
         request: data.request,
         key: data.key,
         ...(error instanceof PatternError ? { code: error.code } : {}),

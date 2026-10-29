@@ -306,9 +306,12 @@ Replies include total counts and entry references into the exact package capture
 These references preserve matching alternatives, definition order, selected previews, and display spellings.
 
 An empty search page validates its saved package before displaying its snapshot.
-The worker owns its prepared-package cache. Each request asks for that package before transferring its data.
-On a cache miss, the client retries once with its captured package. Rejected packages keep their validation error.
-Canceling a queued request does not evict another prepared package through a second cache on the main thread.
+The worker owns its prepared-package cache. A new package travels with the first request, so an ordinary cold search needs one reply.
+Worker replies report the actual retained keys, even when the requesting consumer is canceled.
+A per-worker revision prevents an older reply from replacing newer cache knowledge.
+The client also tracks transfers that still wait for acknowledgment, so other requests can reuse their preparation.
+A queued transfer does not evict a confirmed warm key. On a cache miss, the client retries once with its captured package.
+Rejected packages keep their validation error.
 Worker startup or execution failure reports an error without sending a local query to a server.
 An invalid saved package retains the earlier disclosed remote fallback.
 

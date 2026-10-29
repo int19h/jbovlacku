@@ -45,6 +45,9 @@ class MissingPackageError extends Error {}
 interface Client {
   worker: Worker;
   canceledPatterns: Set<number>;
+  retained: Set<string | number>;
+  cacheRevision: number;
+  preparing: Map<number, string | number>;
   pending: Map<
     number,
     {
@@ -67,6 +70,8 @@ let requestId = 0,
 const packageIds = new WeakMap<CachedPackage, number>();
 function stopWorker(current: Client, error: Error) {
   current.worker.terminate();
+  current.retained.clear();
+  current.preparing.clear();
   for (const waiting of current.pending.values()) waiting.reject(error);
   current.pending.clear();
   if (client === current) {
@@ -83,20 +88,37 @@ function searchWorker(): Client {
     worker,
     pending: new Map(),
     canceledPatterns: new Set(),
+    retained: new Set(),
+    cacheRevision: -1,
+    preparing: new Map(),
   };
   worker.onmessage = ({ data }) => {
+    // Cache acknowledgments also matter after that request's consumer aborts.
+    const stale =
+      Number.isSafeInteger(data.cacheRevision) &&
+      data.cacheRevision < current.cacheRevision;
+    if (
+      Array.isArray(data.retained) &&
+      Number.isSafeInteger(data.cacheRevision) &&
+      !stale
+    ) {
+      current.retained.clear();
+      for (const key of data.retained) current.retained.add(key);
+      current.cacheRevision = data.cacheRevision;
+    }
+    if (!data.started) current.preparing.delete(data.request);
     const waiting = current.pending.get(data.request);
     if (!waiting) {
-      if (data.started && current.canceledPatterns.has(data.request))
+      if (data.started && !stale && current.canceledPatterns.has(data.request))
         stopWorker(
           current,
           new DOMException("Search was canceled.", "AbortError"),
         );
-      if (!data.started) current.canceledPatterns.delete(data.request);
+      if (!data.started || stale) current.canceledPatterns.delete(data.request);
       return;
     }
     if (data.started) {
-      waiting.started();
+      if (!stale) waiting.started();
       return;
     }
     current.pending.delete(data.request);
@@ -147,9 +169,15 @@ export async function searchPackage(
   const send = (force = false) => {
     signal?.throwIfAborted();
     const current = searchWorker();
-    // The worker owns the two-package cache. A canceled queued transfer must
-    // not evict a valid package from a second optimistic cache on this thread.
+    const prepare =
+      force ||
+      !(
+        current.retained.has(key) ||
+        [...current.preparing.values()].includes(key)
+      );
     const request = ++requestId;
+    // Announce a transfer without evicting any confirmed warm package.
+    if (prepare) current.preparing.set(request, key);
     return new Promise<
       Omit<PackageSearchResult, "hits"> & { hits: PackageHitReferences[][] }
     >((resolve, reject) => {
@@ -206,11 +234,12 @@ export async function searchPackage(
           language,
           queries,
           options: workerOptions,
-          ...(force ? { pkg } : {}),
+          ...(prepare ? { pkg } : {}),
         });
       } catch (error) {
         clean();
         current.pending.delete(request);
+        current.preparing.delete(request);
         reject(error);
       }
     });
@@ -220,7 +249,7 @@ export async function searchPackage(
     result = await send();
   } catch (error) {
     if (!(error instanceof MissingPackageError)) throw error;
-    // Transfer the captured package only after the worker reports a cache miss.
+    // An evicted or canceled queued preparation can require one captured retry.
     result = await send(true);
   }
   return {
