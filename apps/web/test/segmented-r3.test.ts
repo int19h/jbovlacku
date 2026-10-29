@@ -448,7 +448,24 @@ for (const language of ["en", "fr"])
   test(`R3 lujvo part lookup uses the package worker for a ${language} draft`, async ({
     page,
   }) => {
+    const workerStarted = page.waitForEvent("worker", {
+      predicate: (worker) => worker.url().includes("package-search-worker"),
+    });
     await seed(page);
+    // Empty search can create the shared worker before the builder opens.
+    await open(page, "/");
+    await expect(
+      page.getByText("Type a word or a meaning to search.", { exact: true }),
+    ).toBeVisible();
+    expect((await workerStarted).url()).toContain("package-search-worker");
+    const queryWordCount = () =>
+      page.evaluate(async () => {
+        const { packageSearchStats } = await import(
+          String("/src/data/package-search.ts")
+        );
+        return packageSearchStats()?.metrics.queryWords;
+      });
+    expect(await queryWordCount()).toBe(0);
     await page.evaluate(async (language) => {
       const { LocalStore } = await import(String("/src/data/store.ts"));
       const { newDraft } = await import(String("/src/model/draft.ts"));
@@ -456,8 +473,6 @@ for (const language of ["en", "fr"])
       draft.kind = "lujvo";
       await new LocalStore().put("drafts", "current", draft);
     }, language);
-    const workers: string[] = [];
-    page.on("worker", (worker) => workers.push(worker.url()));
     await open(page, "/new/lujvo");
     await page
       .getByRole("textbox", { name: "Add a part", exact: true })
@@ -465,9 +480,7 @@ for (const language of ["en", "fr"])
     await expect(
       page.getByRole("button", { name: "Add klama", exact: true }),
     ).toBeVisible();
-    expect(workers.some((url) => url.includes("package-search-worker"))).toBe(
-      true,
-    );
+    expect(await queryWordCount()).toBe(1);
   });
 
 test("R3 compact previews preserve Unicode within bounded main-thread work", async ({
