@@ -146,7 +146,9 @@ test("an unknown delivery outcome asks for the receipt before any retry and neve
 test("header-only acceptance stays unfinished until the matching body is confirmed", async ({
   page,
 }) => {
-  await createIdentity(page);
+  // Each run needs a distinct body because the server reuses stored bodies by hash.
+  const identity = (await createIdentity(page)).identity as string;
+  expect(identity).toMatch(/^ed25519:[0-9a-f]{64}$/);
   const f = fixture();
   // Phase one strips the body from every upload, so the real receipt reports
   // header-only acceptance. The handler stays installed. Only its phase changes.
@@ -188,7 +190,7 @@ test("header-only acceptance stays unfinished until the matching body is confirm
   ).toHaveAttribute("contenteditable", "true");
   await typeRichText(
     dialog.getByLabel("Explanation", { exact: true }),
-    "Synthetic test report with a body.",
+    `Synthetic test report with a body for ${identity}.`,
   );
   await dialog
     .getByRole("button", { name: "Preview the public report" })
