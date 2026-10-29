@@ -248,7 +248,10 @@ export function richField(label: string, options: RichFieldOptions) {
     },
   });
   const input = view.dom as RichInput;
-  input.style.minHeight = `${Math.max(2, options.rows ?? 3) * 1.7 + 1}em`;
+  input.style.setProperty(
+    "--target-min-height",
+    `${Math.max(2, options.rows ?? 3) * 1.7 + 1}em`,
+  );
   if (options.spellcheck === false) input.spellcheck = false;
   Object.defineProperty(input, "value", {
     get: () => current,

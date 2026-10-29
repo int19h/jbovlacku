@@ -726,7 +726,7 @@ function editorUrl(value: string): string {
     return value;
   }
 }
-/** Parse only an edited field. Line endings and plain whitespace normalize. */
+/** Import legacy markup text. Line endings and plain whitespace normalize. */
 export function editorToRichText(
   source: string,
   structured: boolean,
@@ -811,7 +811,7 @@ const inlineBreaks = (value: string) =>
   value
     .replace(/\r\n?/gu, "\n")
     .replace(new RegExp(PARAGRAPH_BREAK, "gu"), "\n");
-/** Show stored rich text without changing the draft. Edits normalize it. */
+/** Project stored nodes into legacy markup for compatibility displays. */
 export function richTextToEditor(value: RichText): string {
   return value
     .map((paragraph) => {
@@ -1136,7 +1136,7 @@ function matchesLiteral(
     )
   );
 }
-/** The text form of a rich value for the editor in the given mode. */
+/** Return a legacy text view for imports and compatibility displays. */
 export function editorText(value: RichText, structured: boolean): string {
   return structured ? richTextToEditor(value) : richTextToText(value);
 }

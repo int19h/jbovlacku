@@ -30,7 +30,7 @@ export function placeSuggestionProblem(
   ].sort((a, b) => a - b);
   const highest = explicit.at(-1) ?? 0;
   if (highest > 16)
-    return "AI can generate at most 16 places. Declare the explicit places manually, then ask for glosses and types.";
+    return "AI can generate at most 16 places. Declare the explicit places manually. Then ask for glosses and types.";
   if (explicit.some((index, position) => index !== position + 1))
     return "The explicit place numbers have gaps. Declare those numbers manually with Depends on context, or fill the fixed positions yourself before asking for suggestions.";
   return null;
