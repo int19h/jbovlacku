@@ -1180,7 +1180,7 @@ for (const [name, meaning, text, count] of [
         reason: "The requested roles.",
       },
       {
-        word: { gloss: "give", sense: "" },
+        word: { gloss: "give", sense: "transfer something to a recipient" },
         ...Object.fromEntries(
           Array.from({ length: count }, (_, index) => [
             `x${index + 1}`,
@@ -1195,7 +1195,18 @@ for (const [name, meaning, text, count] of [
         ]),
       ),
     ];
-    const queued = queue(answers.map((answer) => completion(answer)));
+    let providerCurrent: AssistRequest["current"] | undefined;
+    const queued = queue(
+      answers.map((answer) => completion(answer)),
+      (body, turn) => {
+        if (turn === 0) {
+          const user = body.messages.find(
+            (message: any) => message.role === "user",
+          );
+          providerCurrent = JSON.parse(user.content.split("\n\n")[0]).current;
+        }
+      },
+    );
     const instance = service({
       provider: makeConfig({
         fetch: (async (...args: Parameters<typeof fetch>) => {
@@ -1213,11 +1224,15 @@ for (const [name, meaning, text, count] of [
     const response = await instance.fetch(
       privateRequest("/assist", headers, request),
     );
-    assert.equal(response.status, 202);
     const accepted = (await response.json()) as any;
+    assert.equal(response.status, 202, JSON.stringify(accepted));
     const done = await poll(instance, accepted.job, headers);
     assert.equal(done.state, "completed", JSON.stringify(done));
     assert.equal(calls, 3);
+    assert.equal(request.current.frame, null);
+    assert.equal(parseAssistRequest(request).current.frame, null);
+    assert.equal(providerCurrent!.frame, null);
+    assert.deepEqual(providerCurrent!.text, text);
     const proposed = done.result.proposals.find(
       (proposal: any) => proposal.path === "/frame",
     ).value;

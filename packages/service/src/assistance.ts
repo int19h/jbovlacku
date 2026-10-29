@@ -409,11 +409,31 @@ export function parseAssistRequest(value: unknown): AssistRequest {
           rafsi: "broda",
         });
     }
+    // Initial frame suggestions can start from numbered text. The temporary
+    // carrier declares those checked consecutive references for validation only.
+    // The provider still receives the original null frame.
+    let validationFrame = current.frame;
+    if (request.operation === "places-glosses" && validationFrame === null) {
+      const count = Math.max(
+        0,
+        ...current.text
+          .flat()
+          .filter((node): node is number => typeof node === "number"),
+      );
+      if (count)
+        validationFrame = {
+          role: "predicate",
+          arity: { mode: "fixed", count },
+          places: Array.from({ length: count }, (_, index) => ({
+            index: index + 1,
+          })),
+        };
+    }
     const body = {
       word: { language: "jbo" as const, spelling: "broda" },
       language: request.language,
       text: current.text,
-      frame: schemaFrame(current.frame),
+      frame: schemaFrame(validationFrame),
       glosses: current.glosses,
       operands: [],
       notes: [],
