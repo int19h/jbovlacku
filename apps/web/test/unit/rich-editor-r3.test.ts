@@ -12,6 +12,7 @@ import {
   newPlace,
   draftToBody,
   normalizeDraft,
+  type Draft,
 } from "../../src/model/draft.ts";
 import {
   richToEditor,
@@ -110,6 +111,56 @@ test("r3 draft writes canonical rich values in every retained field and omits em
       { language: "jbo", text: "mi klama", translation: blank, notes: padded },
     ],
   });
+  const ai = {
+    records: [
+      {
+        id: "preserve-evidence",
+        key: "definition",
+        label: "Definition",
+        operation: "definition",
+        fingerprint: "original",
+        requested: {
+          word_type: "gismu",
+          classification: null,
+          spelling: "broda",
+          text: padded,
+          frame: null,
+          glosses: [],
+          formation: null,
+          compound: null,
+        },
+        result: {
+          operation: "definition",
+          draft_revision: "original",
+          proposals: [{ path: "/notes", value: blank }],
+          explanation: "Keep original evidence.",
+          provenance: {
+            provider: "mock",
+            model: "mock",
+            revision: null,
+            recipe: "local-test",
+            seed: null,
+          },
+          usage: null,
+          log: { notes: blank, nested: { text: blank } },
+        },
+        log: { notes: blank },
+        log_json: '{"notes":[[" "]]}',
+        error: null,
+        state: "done",
+      },
+    ],
+  } as NonNullable<Draft["ai"]>;
+  const withEvidence = newDraft({ ...draft, ai });
+  assert.equal(
+    withEvidence.ai,
+    ai,
+    "writer normalization keeps raw inference and proposal evidence untouched",
+  );
+  assert.deepEqual(
+    withEvidence.ai!.records[0].result!.proposals[0].value,
+    blank,
+  );
   const originalText = structuredClone(draft.text);
   const saved = normalizeDraft(draft);
   assert.deepEqual(saved.text, retained);

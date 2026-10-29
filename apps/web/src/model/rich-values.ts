@@ -41,11 +41,26 @@ const richFields = new Set([
   "frameConstraints",
   "etymologyText",
   "formNotes",
-  "literal",
-  "structured",
-  "previousLiterals",
 ]);
-/** Apply the writer rule to nested rich fields, including private snapshots. */
+const richContainers = new Set([
+  "frame",
+  "places",
+  "tail",
+  "hint",
+  "type_hints",
+  "defaults",
+  "derivation",
+  "derivations",
+  "operands",
+  "examples",
+  "etymology",
+  "formation",
+  "sources",
+  "rafsiClaims",
+  "gismu",
+  "rows",
+]);
+/** Normalize authored fields. Inference logs and proposal evidence stay exact. */
 export function canonicalRichFields<T>(value: T, rich = false): T {
   if (Array.isArray(value)) {
     if (
@@ -72,7 +87,11 @@ export function canonicalRichFields<T>(value: T, rich = false): T {
   if (value === null || typeof value !== "object") return value;
   let changed = false;
   const fields = Object.entries(value).map(([key, original]) => {
-    const next = canonicalRichFields(original, richFields.has(key));
+    const next = richFields.has(key)
+      ? canonicalRichFields(original, true)
+      : richContainers.has(key)
+        ? canonicalRichFields(original)
+        : original;
     changed ||= next !== original;
     return [key, next];
   });
