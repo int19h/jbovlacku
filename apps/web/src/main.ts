@@ -38,6 +38,7 @@ import {
 import { PersonalCalculator } from "./data/personal.ts";
 import { classifyReceipt } from "./data/delivery.ts";
 import { watchReaderFocus } from "./app/focus.ts";
+import { editorLoadError } from "./components/editor-load-error.ts";
 import {
   appendReadRetry,
   takeReadRetryAttempt,
@@ -52,7 +53,19 @@ type Page = (
 /** Authoring routes load their editors only when a reader opens them. */
 function lazyPage(load: () => Promise<Page>): Page {
   return async (route, context, app) => {
-    const page = await load();
+    let page: Page;
+    try {
+      page = await load();
+    } catch (error) {
+      if (!context.live()) return;
+      context.title("This page did not load");
+      const notice = editorLoadError(error, true);
+      context.main.append(notice);
+      const heading = notice.querySelector("h1")!;
+      heading.tabIndex = -1;
+      context.focus(heading);
+      return;
+    }
     if (context.live()) await page(route, context, app);
   };
 }

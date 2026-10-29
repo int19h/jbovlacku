@@ -22,6 +22,7 @@ process.env.JVC_FIXTURE_FILE = resolve(testRoot, "fixture.json");
 export default defineConfig({
   testDir: "./test",
   testMatch: /.*\.test\.ts/,
+  testIgnore: /\/unit\//,
   timeout: 90000,
   expect: { timeout: 10000 },
   workers: 1,

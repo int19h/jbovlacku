@@ -1,4 +1,5 @@
 import { richHasContent } from "../model/rich-values.ts";
+import { editorLoadError } from "../components/editor-load-error.ts";
 /** Public identity: fingerprint, profile when known, trust actions, and this server's evidence. */
 import { deliveryAccepted } from "../data/delivery.ts";
 import {
@@ -258,17 +259,22 @@ export async function personPage(
       response?.profile.state === "known"
         ? (response.profile.claims[0]?.body ?? null)
         : null;
-    const editor = await profileEditor(app, identity, current, () => {
+    try {
+      const editor = await profileEditor(app, identity, current, () => {
+        if (!context.live()) return;
+        main.replaceChildren();
+        void personPage(route, context, app, true);
+      });
       if (!context.live()) return;
-      main.replaceChildren();
-      void personPage(route, context, app, true);
-    });
-    if (!context.live()) return;
-    main.append(editor);
-    // The key page links here with #edit. Focus the connected first field.
-    const firstField = editor.querySelector<HTMLInputElement>("input");
-    if (location.hash === "#edit" && firstField && context.focus(firstField))
-      editor.scrollIntoView();
+      main.append(editor);
+      // The key page links here with #edit. Focus the connected first field.
+      const firstField = editor.querySelector<HTMLInputElement>("input");
+      if (location.hash === "#edit" && firstField && context.focus(firstField))
+        editor.scrollIntoView();
+    } catch (error) {
+      if (!context.live()) return;
+      main.append(editorLoadError(error));
+    }
   }
   const view = await loadSiteView(context.signal).catch(() => null);
   if (!context.live()) return;
@@ -356,10 +362,30 @@ export async function personPage(
       class: "btn btn-quiet",
       "aria-expanded": "false",
     });
-    const report = button("Report abuse", () => reportDialog(app, identity), {
-      class: "btn btn-quiet",
-      style: "margin-left:auto",
-    });
+    let openingReport = false;
+    const reportError = el("div");
+    const report = button(
+      "Report abuse",
+      async () => {
+        if (openingReport) return;
+        openingReport = true;
+        report.disabled = true;
+        reportError.replaceChildren();
+        try {
+          await reportDialog(app, identity, report);
+        } catch (error) {
+          if (context.live() && report.isConnected)
+            reportError.append(editorLoadError(error));
+        } finally {
+          openingReport = false;
+          report.disabled = !app.session.storageAvailable;
+        }
+      },
+      {
+        class: "btn btn-quiet",
+        style: "margin-left:auto",
+      },
+    );
     if (!app.session.storageAvailable)
       for (const control of [trustButton, ignoreButton, report]) {
         control.disabled = true;
@@ -367,7 +393,7 @@ export async function personPage(
           "Browser storage is unavailable, so trust choices and reports cannot be signed or kept.";
       }
     actions.append(trustButton, ignoreButton, report);
-    main.append(actions, slot);
+    main.append(actions, reportError, slot);
   }
   main.append(el("h2", { class: "section", text: "Recent" }));
   const list = el("ol", { "aria-label": "Recent activity" });
@@ -710,8 +736,7 @@ function describeKey(key: string) {
     .filter(Boolean)
     .join(", ");
 }
-async function reportDialog(app: App, subject: string) {
-  const opener = document.activeElement as HTMLElement | null;
+async function reportDialog(app: App, subject: string, opener: HTMLElement) {
   const { richField } = await import("../components/rich-field.ts");
   if (opener && !opener.isConnected) return;
   const dialog = el("dialog", {

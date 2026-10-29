@@ -23,6 +23,7 @@ import { identityLink } from "../components/attribution.ts";
 import { viewScores } from "../components/localview.ts";
 import { judgmentControl, scoreDetails } from "../components/judgment.ts";
 import { renderRichText } from "../model/richtext.ts";
+import { editorLoadError } from "../components/editor-load-error.ts";
 
 /** Loads the version 2 package for a language, from cache or the server. */
 async function packageFor(
@@ -262,7 +263,12 @@ export async function claimPage(
     required: true,
     hint: "NFC spelling, at most 64 bytes. Syntax analysis is an attributed tool result, not an admission rule.",
   });
-  const { richField } = await import("../components/rich-field.ts");
+  const editor = await import("../components/rich-field.ts").catch((error) => {
+    if (context.live()) main.append(editorLoadError(error));
+    return null;
+  });
+  if (!editor) return;
+  const { richField } = editor;
   if (!context.live()) return;
   const rationale = richField("Rationale", {
     value: [],

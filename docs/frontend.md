@@ -661,12 +661,19 @@ Link a word, Web link, and Insert code open labeled dialogs. A word link retains
 A link's accessible name includes its label and target. Edit link changes an existing link through a labeled dialog.
 The toolbar is one tab stop. Left, Right, Home, and End move between its controls.
 The place dropdown keeps its native keys. Alt with those keys moves to another toolbar control.
-Insert operand stays disabled until an operand exists and explains that requirement.
+Insert operand uses `aria-disabled` until an operand exists. An insertion attempt explains the missing declaration without opening a dialog.
+Operand changes refresh every retained editor's insertion controls.
+Keyboard guidance appears only for the focused toolbar.
 A toolbar insertion appends when the field never received focus.
 Web links require HTTPS addresses that [URL parsing](https://url.spec.whatwg.org/#concept-basic-url-parser) accepts.
 The editor preserves adjacent saved nodes, empty labels, paragraph boundaries, and every unchanged field. New prose joins nearby text unless an untouched saved boundary separates it.
-Blank editor paragraphs use a newline string in the stored paragraph. An empty field remains `[]`.
+Blank paragraphs stay in the live editor for the caret and undo history.
+Saved drafts and published values omit every whitespace-only paragraph, including leading, interior, and trailing paragraphs.
+Nonblank paragraphs keep their exact nodes and whitespace. An empty field remains `[]`, and an empty optional field stays absent from publication.
+Loading a saved single blank paragraph and undoing an edit both produce the canonical empty value.
 Updating place rows preserves each retained editor's caret and undo history.
+Pointer focus and an existing native selection keep their chosen caret position.
+An editor repairs its native caret only after its retained wrapper moves, when no pointer or native selection chooses another position.
 An explicit mode change starts a new undo history and keeps the caret when the visible document stays equal.
 Text needs no markup or escapes.
 Typed TeX backslashes, brackets, braces, and backticks stay literal. A backslash before a typed place stays literal beside the place chip.
