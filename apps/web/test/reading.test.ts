@@ -1603,13 +1603,19 @@ test("signed record disclosures retain each body's original omitted or explicit 
     page.getByRole("textbox", { name: "Definition text" }),
     "Definition defaults disclosure fixture.",
   );
-  await expectRichText(page.getByLabel("Description for place 1"), "");
+  await expectRichText(
+    page.getByLabel("Description for place 1", { exact: true }),
+    "",
+  );
   await page.reload();
   await expectRichText(
     page.getByRole("textbox", { name: "Definition text" }),
     "Definition defaults disclosure fixture.",
   );
-  await expectRichText(page.getByLabel("Description for place 1"), "");
+  await expectRichText(
+    page.getByLabel("Description for place 1", { exact: true }),
+    "",
+  );
 });
 
 test("revision comparisons display fu'ivla for the fuhivla classification", async ({

@@ -334,11 +334,10 @@ test("the gismu generator scores exactly, shares ranks, lists conflicts, and rec
   await expect(primary).toBeDisabled();
   await selected.getByRole("checkbox").check();
   await expect(primary).toBeEnabled();
-  await expect(page.getByLabel("Why this form")).toHaveAttribute(
-    "contenteditable",
-    "true",
-  );
-  await page.getByLabel("Why this form").fill("Only a test.");
+  await expect(
+    page.getByLabel("Why this form", { exact: true }),
+  ).toHaveAttribute("contenteditable", "true");
+  await page.getByLabel("Why this form", { exact: true }).fill("Only a test.");
   await primary.click();
   await expect(page).toHaveURL(/\/new\/places$/);
   const draft = await currentDraft(page);

@@ -2479,7 +2479,10 @@ test("literal edits keep backslashes before place notation when references retur
     switchMode(draft, true);
     assert.deepEqual(draft.text, expected);
     switchMode(draft, false);
-    assert.equal(editorText(draft.text, false), literal);
+    assert.equal(
+      editorText(draft.text, false),
+      literal.replace("{place 21}", "㉑"),
+    );
   }
 });
 

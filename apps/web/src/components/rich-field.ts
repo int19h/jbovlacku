@@ -1,7 +1,6 @@
 /** One accessible editor per rich field. The draft owns its RichText value. */
 import { Slice } from "prosemirror-model";
-import "prosemirror-view/style/prosemirror.css";
-import { EditorState } from "prosemirror-state";
+import { EditorState, TextSelection } from "prosemirror-state";
 import { EditorView } from "prosemirror-view";
 import { baseKeymap } from "prosemirror-commands";
 import { history, undo, redo } from "prosemirror-history";
@@ -86,6 +85,25 @@ export function richField(label: string, options: RichFieldOptions) {
         ...rulePlugins,
         history(),
         keymap({
+          "Mod-End": (state, dispatch) => {
+            dispatch?.(state.tr.setSelection(TextSelection.atEnd(state.doc)));
+            return true;
+          },
+          ArrowRight: (state, dispatch) => {
+            const { $from, empty } = state.selection;
+            if (
+              !empty ||
+              !$from.parent.isInline ||
+              $from.parentOffset !== $from.parent.content.size
+            )
+              return false;
+            dispatch?.(
+              state.tr.setSelection(
+                TextSelection.near(state.doc.resolve($from.after()), 1),
+              ),
+            );
+            return true;
+          },
           "Shift-Enter": (state, dispatch) => {
             dispatch?.(state.tr.insertText("\n"));
             return true;

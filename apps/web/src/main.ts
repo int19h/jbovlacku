@@ -1,4 +1,5 @@
 import "./styles/tokens.css";
+import "prosemirror-view/style/prosemirror.css";
 import "./styles/base.css";
 import "./styles/components.css";
 import { initializeCore } from "../../../packages/core/src/browser.ts";

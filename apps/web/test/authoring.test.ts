@@ -164,9 +164,15 @@ test("structured places keep declared order when prose mentions place 3 first, a
   // Reorder the prose so place 3 appears first. The declared order stays 1, 2, 3.
   const editor = page.getByRole("textbox", { name: "Definition text" });
   await typeRichText(editor, "③ holds ① read by ②.");
-  await page.getByLabel("Description for place 1").fill("the text");
-  await page.getByLabel("Description for place 2").fill("the reader");
-  await page.getByLabel("Description for place 3").fill("the medium");
+  await page
+    .getByLabel("Description for place 1", { exact: true })
+    .fill("the text");
+  await page
+    .getByLabel("Description for place 2", { exact: true })
+    .fill("the reader");
+  await page
+    .getByLabel("Description for place 3", { exact: true })
+    .fill("the medium");
   await page.getByLabel("Kind of thing for place 2").selectOption("object");
   await page
     .getByRole("button", { name: "Add a derivation for place 3" })
@@ -250,13 +256,18 @@ test("the draft survives reload and browser back at every step and exports as a 
   await page.getByRole("radio", { name: /^cmavo/ }).check();
   await page.getByRole("button", { name: "Enter the cmavo" }).click();
   await page.getByLabel("selma'o", { exact: true }).fill("UI");
-  await page.getByLabel("Morphology notes").fill("Attributed note.");
+  await page
+    .getByLabel("Morphology notes", { exact: true })
+    .fill("Attributed note.");
   await page.goBack();
   await expect(page.getByRole("radio", { name: /^cmavo/ })).toBeChecked();
   await page.goForward();
   await expect(page.getByLabel("selma'o", { exact: true })).toHaveValue("UI");
   await page.reload();
-  await expectRichText(page.getByLabel("Morphology notes"), "Attributed note.");
+  await expectRichText(
+    page.getByLabel("Morphology notes", { exact: true }),
+    "Attributed note.",
+  );
   await expect(page.getByLabel("Spelling")).toHaveValue("brodo");
   const downloadPromise = page.waitForEvent("download");
   await page.getByRole("button", { name: "Export draft" }).click();
@@ -282,7 +293,10 @@ test("the draft survives reload and browser back at every step and exports as a 
     .toBe("gismu");
   await page.goto("/new/form");
   await expect(page.getByLabel("selma'o", { exact: true })).toHaveCount(0);
-  await expectRichText(page.getByLabel("Morphology notes"), "Attributed note.");
+  await expectRichText(
+    page.getByLabel("Morphology notes", { exact: true }),
+    "Attributed note.",
+  );
 });
 
 test("the full editor preserves every structured field and supports manual headword and type entry", async ({
@@ -308,7 +322,9 @@ test("the full editor preserves every structured field and supports manual headw
   await page.getByRole("button", { name: "+ Add a place" }).click();
   await page.getByRole("button", { name: "+ Add a place" }).click();
   await page.getByLabel("Number of places").selectOption("context");
-  await page.getByLabel("Description for place 1").fill("the agent");
+  await page
+    .getByLabel("Description for place 1", { exact: true })
+    .fill("the agent");
   await page.getByLabel("Kind of thing for place 1").selectOption("custom");
   await page
     .getByLabel("Tags for alternative 1")
@@ -319,12 +335,14 @@ test("the full editor preserves every structured field and supports manual headw
   await page.getByLabel("Add a gloss", { exact: true }).press("Enter");
   await page.getByRole("button", { name: "Add a default for place 1" }).click();
   await page.getByLabel("Default value 1 for place 1").fill("li pa");
-  await page.getByLabel("Condition 1 for place 1").fill("when unspecified");
+  await page
+    .getByLabel("Condition 1 for place 1", { exact: true })
+    .fill("when unspecified");
   await page
     .getByRole("button", { name: "Add a constraint between places" })
     .click();
   await typeRichText(
-    page.getByLabel("Constraint 1 between places"),
+    page.getByLabel("Constraint 1 between places", { exact: true }),
     "① differs from ②",
   );
   await typeRichText(
@@ -333,7 +351,9 @@ test("the full editor preserves every structured field and supports manual headw
   );
   await page.getByRole("button", { name: "Add an example" }).click();
   await page.getByLabel("Example 1", { exact: true }).fill("mi brodi do");
-  await page.getByLabel("Translation of example 1").fill("I brodi you");
+  await page
+    .getByLabel("Translation of example 1", { exact: true })
+    .fill("I brodi you");
   await page
     .getByRole("textbox", { name: "Etymology" })
     .fill("Made up for a test.");
@@ -347,7 +367,9 @@ test("the full editor preserves every structured field and supports manual headw
   await page.getByLabel("Labels", { exact: true }).fill("experimental, test");
   await page.getByRole("button", { name: "Add a rafsi claim" }).click();
   await page.getByLabel("Rafsi 1", { exact: true }).fill("bod");
-  await page.getByLabel("Rationale for rafsi 1").fill("Test claim.");
+  await page
+    .getByLabel("Rationale for rafsi 1", { exact: true })
+    .fill("Test claim.");
   await page.getByRole("button", { name: "Review" }).click();
   await expect(
     page.getByText(
@@ -539,7 +561,7 @@ test("a standalone rafsi claim shows competing words, signs the claim with its p
   await expect(page).toHaveTitle("Claim a rafsi for vlacku · jbovlacku");
   await page.getByLabel("Rafsi spelling").fill("cku");
   await page
-    .getByLabel("Rationale")
+    .getByLabel("Rationale", { exact: true })
     .fill("A deliberate conflict for the test.");
   await page.getByRole("button", { name: "Check claims and preview" }).click();
   await expect(
@@ -608,7 +630,9 @@ test("the wizard fits a 360 pixel screen and keeps every control reachable", asy
   await page
     .getByRole("button", { name: "Use the meaning with numbered places" })
     .click();
-  await page.getByLabel("Description for place 1").fill("narrow");
+  await page
+    .getByLabel("Description for place 1", { exact: true })
+    .fill("narrow");
   await page.getByRole("button", { name: "Review" }).focus();
   expect(
     await page.evaluate(() => {
@@ -1969,8 +1993,13 @@ test("the full editor keeps referents on removal, saves type notes and derivatio
   // Three places, references to all of them, then removal of the second.
   for (let i = 0; i < 3; i++)
     await page.getByRole("button", { name: "+ Add a place" }).click();
-  await page.getByLabel("Description for place 2").fill("the second one");
-  await typeRichText(page.getByLabel("Description for place 3"), "after ②");
+  await page
+    .getByLabel("Description for place 2", { exact: true })
+    .fill("the second one");
+  await typeRichText(
+    page.getByLabel("Description for place 3", { exact: true }),
+    "after ②",
+  );
   await typeRichText(editor, "① gives ② to ③.");
   await page.getByRole("button", { name: "Approve the numbering" }).click();
   await expect(status).toHaveText("Saved in this browser");
@@ -1987,14 +2016,17 @@ test("the full editor keeps referents on removal, saves type notes and derivatio
     );
   // The reference to the removed place is literal. The reference to the old place 3 now names place 2.
   await expectRichText(editor, "① gives ② to ②.");
-  await expectRichText(page.getByLabel("Description for place 2"), "after ②");
+  await expectRichText(
+    page.getByLabel("Description for place 2", { exact: true }),
+    "after ②",
+  );
   await expect.poll(async () => (await stored()).places.length).toBe(2);
   const rendered = page.getByRole("region", { name: "Rendered definition" });
   await expect(rendered).not.toContainText("referenced but not declared");
   await expect(rendered.getByRole("img", { name: "place 2" })).toHaveCount(1);
   // A custom kind of thing keeps its typed note.
   await page.getByLabel("Kind of thing for place 1").selectOption("custom");
-  await page.getByLabel("Type note").fill("a typed note");
+  await page.getByLabel("Type note", { exact: true }).fill("a typed note");
   await expect
     .poll(async () => (await stored()).places[0].hint?.note)
     .toEqual([["a typed note"]]);
@@ -2331,12 +2363,16 @@ test("moving a place keeps every referent, and a language change keeps each plac
   const editor = page.getByRole("textbox", { name: "Definition text" });
   for (let i = 0; i < 3; i++)
     await page.getByRole("button", { name: "+ Add a place" }).click();
-  await page.getByLabel("Description for place 1").fill("first");
+  await page
+    .getByLabel("Description for place 1", { exact: true })
+    .fill("first");
   await typeRichText(
-    page.getByLabel("Description for place 2"),
+    page.getByLabel("Description for place 2", { exact: true }),
     "second, after ①",
   );
-  await page.getByLabel("Description for place 3").fill("third");
+  await page
+    .getByLabel("Description for place 3", { exact: true })
+    .fill("third");
   await typeRichText(editor, "① gives ② to ③.");
   await page
     .getByLabel("Add a gloss for place 1")
@@ -2352,10 +2388,13 @@ test("moving a place keeps every referent, and a language change keeps each plac
   await page.getByRole("button", { name: "Move place 2 up" }).click();
   await expectRichText(editor, "② gives ① to ③.");
   await expectRichText(
-    page.getByLabel("Description for place 1"),
+    page.getByLabel("Description for place 1", { exact: true }),
     "second, after ②",
   );
-  await expectRichText(page.getByLabel("Description for place 2"), "first");
+  await expectRichText(
+    page.getByLabel("Description for place 2", { exact: true }),
+    "first",
+  );
   await page.getByRole("button", { name: "Move place 3 up" }).click();
   await expectRichText(editor, "③ gives ① to ②.");
   // The automatic save runs after the edits settle.
@@ -2518,12 +2557,15 @@ test("switching off the reference reading asks first, turns references into lite
   await page.getByLabel("Headword").fill("broke");
   await page.getByLabel("Type", { exact: true }).selectOption("gismu");
   await page.getByRole("button", { name: "+ Add a place" }).click();
-  await setRichNodes(page.getByLabel("Description for place 1"), [
+  await setRichNodes(
+    page.getByLabel("Description for place 1", { exact: true }),
     [
-      "the thing, see ",
-      { word: { language: "jbo", spelling: "cukta" }, label: "cukta" },
+      [
+        "the thing, see ",
+        { word: { language: "jbo", spelling: "cukta" }, label: "cukta" },
+      ],
     ],
-  ]);
+  );
   const editor = page.getByRole("textbox", { name: "Definition text" });
   await setRichNodes(editor, [[1, " is a thing with ", { code: "code" }, "."]]);
   await page.getByRole("button", { name: "Approve the numbering" }).click();
@@ -2664,16 +2706,28 @@ test("a place number that another place holds is refused before anything changes
   );
   await expect(first).toHaveValue("1");
   await expectRichText(editor, "① gives ② away.");
-  await expectRichText(page.getByLabel("Description for place 1"), "the giver");
-  await expectRichText(page.getByLabel("Description for place 2"), "the gift");
+  await expectRichText(
+    page.getByLabel("Description for place 1", { exact: true }),
+    "the giver",
+  );
+  await expectRichText(
+    page.getByLabel("Description for place 2", { exact: true }),
+    "the gift",
+  );
   await page.waitForTimeout(600);
   expect(await stored()).toEqual(before);
   // A free number moves place 1 and its references, and the other place stays.
   await first.fill("3");
   await first.press("Tab");
   await expectRichText(editor, "③ gives ② away.");
-  await expectRichText(page.getByLabel("Description for place 2"), "the gift");
-  await expectRichText(page.getByLabel("Description for place 3"), "the giver");
+  await expectRichText(
+    page.getByLabel("Description for place 2", { exact: true }),
+    "the gift",
+  );
+  await expectRichText(
+    page.getByLabel("Description for place 3", { exact: true }),
+    "the giver",
+  );
   await expect
     .poll(async () => (await stored()).text)
     .toEqual([[3, " gives ", 2, " away."]]);
@@ -2721,20 +2775,26 @@ test("a type note follows the selected mode and keeps an unchanged rich note thr
       return (await new LocalStore().get("drafts", "current")).places[0].hint
         .note;
     });
-  const note = page.getByLabel("Type note");
+  const note = page.getByLabel("Type note", { exact: true });
   await expectRichText(note, "keep\n\nthis and ①");
   // Literal mode: the reference in the note becomes a circled character, and the code node stays.
   page.once("dialog", (dialog) => void dialog.accept());
   await page.getByLabel("Read circled numbers as place references").uncheck();
   await expect.poll(stored).toEqual([[{ code: "keep\n\nthis" }, " and ①"]]);
-  await expectRichText(page.getByLabel("Type note"), "keep\n\nthis and ①");
+  await expectRichText(
+    page.getByLabel("Type note", { exact: true }),
+    "keep\n\nthis and ①",
+  );
   // Back to structured mode: the circled character is a reference again, and the code node is still exact.
   await page.getByLabel("Read circled numbers as place references").check();
   await expect.poll(stored).toEqual([[{ code: "keep\n\nthis" }, " and ", 1]]);
   // An edit in literal mode parses as literal text.
   page.once("dialog", (dialog) => void dialog.accept());
   await page.getByLabel("Read circled numbers as place references").uncheck();
-  await typeRichText(page.getByLabel("Type note"), "plain ① note");
+  await typeRichText(
+    page.getByLabel("Type note", { exact: true }),
+    "plain ① note",
+  );
   await expect.poll(stored).toEqual([["plain ① note"]]);
   await page.getByLabel("Read circled numbers as place references").check();
   await expect.poll(stored).toEqual([["plain ", 1, " note"]]);
@@ -2772,7 +2832,7 @@ test("the full editor edits complete defaults, tail hints, examples, and live in
   await page.getByLabel("Default language 1 for place 1").fill("fr");
   await page.getByLabel("Default value 1 for place 1").fill("une personne");
   await typeRichText(
-    page.getByLabel("Explanation of default 1 for place 1"),
+    page.getByLabel("Explanation of default 1 for place 1", { exact: true }),
     "usually ①\n\nthe speaker",
   );
   await page.getByRole("button", { name: "Add an example" }).click();
@@ -2789,7 +2849,10 @@ test("the full editor edits complete defaults, tail hints, examples, and live in
   await page
     .getByLabel("Tags for alternative 1")
     .fill("https://example.invalid/type");
-  await typeRichText(page.getByLabel("Type note"), "tail for ①");
+  await typeRichText(
+    page.getByLabel("Type note", { exact: true }),
+    "tail for ①",
+  );
   await expect
     .poll(
       async () => (await json()).frame.tail.type_hints[0].alternatives[0].tags,
@@ -2853,33 +2916,36 @@ test("editing constraints keeps each multi-paragraph value and reference rewrite
   });
   await page.goto("/new/editor");
   await expectRichText(
-    page.getByLabel("Constraint 1 for place 1"),
+    page.getByLabel("Constraint 1 for place 1", { exact: true }),
     "keep ①\n\nthe book stays",
   );
   await typeRichText(
-    page.getByLabel("Constraint 1 for place 1"),
+    page.getByLabel("Constraint 1 for place 1", { exact: true }),
     "keep ①\n\nthe book stays here",
   );
   await typeRichText(
-    page.getByLabel("Constraint 1 between places"),
+    page.getByLabel("Constraint 1 between places", { exact: true }),
     "first ①\n\nthen ② again",
   );
   await page.getByRole("button", { name: "Move place 2 up" }).click();
   await expectRichText(
-    page.getByLabel("Constraint 1 for place 2"),
+    page.getByLabel("Constraint 1 for place 2", { exact: true }),
     "keep ②\n\nthe book stays here",
   );
   await expectRichText(
-    page.getByLabel("Constraint 1 between places"),
+    page.getByLabel("Constraint 1 between places", { exact: true }),
     "first ②\n\nthen ① again",
   );
-  await expectRichText(page.getByLabel("Condition 1 for place 2"), "①");
   await expectRichText(
-    page.getByLabel("Explanation of default 1 for place 2"),
+    page.getByLabel("Condition 1 for place 2", { exact: true }),
+    "①",
+  );
+  await expectRichText(
+    page.getByLabel("Explanation of default 1 for place 2", { exact: true }),
     "see ①",
   );
   await typeRichText(
-    page.getByLabel("Constraint 1 between places"),
+    page.getByLabel("Constraint 1 between places", { exact: true }),
     "first ②\n\nthen ① edited",
   );
   const json = JSON.parse(await page.locator("pre.json").innerText());
@@ -2934,10 +3000,13 @@ test("nonlocal editor fields keep typed place notation literal and convert saved
   await page.getByRole("button", { name: "Add an example" }).click();
   await page.getByLabel("Example 1", { exact: true }).fill("literal ①");
   await typeRichText(
-    page.getByLabel("Translation of example 1"),
+    page.getByLabel("Translation of example 1", { exact: true }),
     "translation ①",
   );
-  await typeRichText(page.getByLabel("Notes for example 1"), "note ①");
+  await typeRichText(
+    page.getByLabel("Notes for example 1", { exact: true }),
+    "note ①",
+  );
   await page
     .getByRole("button", { name: "Add a derivation for place 1" })
     .click();
@@ -2945,7 +3014,7 @@ test("nonlocal editor fields keep typed place notation literal and convert saved
     .getByLabel("Source word of derivation 1 for place 1")
     .fill("sinxa");
   await typeRichText(
-    page.getByLabel("Explanation of derivation 1 for place 1"),
+    page.getByLabel("Explanation of derivation 1 for place 1", { exact: true }),
     "source ①",
   );
   let json = JSON.parse(await page.locator("pre.json").innerText());
@@ -3098,7 +3167,7 @@ test("N5 closed defaults and constraints reopen with current references before t
     has: page.locator("summary", { hasText: /^Defaults and constraints$/ }),
   });
   await expectRichText(
-    page.getByLabel("Constraint 1 between places"),
+    page.getByLabel("Constraint 1 between places", { exact: true }),
     "② is inside ③",
   );
   await details.locator("summary").click();
@@ -3108,20 +3177,23 @@ test("N5 closed defaults and constraints reopen with current references before t
     .click();
   await details.locator("summary").click();
   await expectRichText(
-    page.getByLabel("Constraint 1 between places"),
+    page.getByLabel("Constraint 1 between places", { exact: true }),
     "① is inside ②",
   );
   await expectRichText(
-    page.getByLabel("Constraint 1 for place 1"),
+    page.getByLabel("Constraint 1 for place 1", { exact: true }),
     "① stays near ②",
   );
-  await expectRichText(page.getByLabel("Condition 1 for place 1"), "②");
   await expectRichText(
-    page.getByLabel("Explanation of default 1 for place 1"),
+    page.getByLabel("Condition 1 for place 1", { exact: true }),
+    "②",
+  );
+  await expectRichText(
+    page.getByLabel("Explanation of default 1 for place 1", { exact: true }),
     "see ①",
   );
   await typeRichText(
-    page.getByLabel("Constraint 1 between places"),
+    page.getByLabel("Constraint 1 between places", { exact: true }),
     "① is inside ② fully",
   );
   expect(

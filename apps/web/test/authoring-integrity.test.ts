@@ -1,4 +1,4 @@
-import { appendRichText } from "./rich-helpers.ts";
+import { appendRichText, richNodes } from "./rich-helpers.ts";
 import { expect, test } from "@playwright/test";
 import { corePath, createIdentity } from "./helpers.ts";
 
@@ -6,7 +6,7 @@ test("editing a revision keeps code and labels with exact blank lines", async ({
   page,
 }) => {
   await page.goto("/");
-  await page.evaluate(async (path) => {
+  const original = await page.evaluate(async (path) => {
     const core = await import(path);
     await core.initializeCore();
     const model = await import(String("/src/model/draft.ts"));
@@ -14,8 +14,18 @@ test("editing a revision keeps code and labels with exact blank lines", async ({
     const text = [
       [
         { code: "first\n\n①" },
+        { code: "" },
+        { code: "CRLF\r\n\r\n①" },
+        { code: "CR\r\r①" },
         " ",
+        "adjacent ",
+        {
+          word: { language: "jbo", spelling: "CUKTA" },
+          label: "word\r\n\r\n①",
+        },
+        { word: { language: "jbo", spelling: "cukta" }, label: "" },
         { url: "https://example.org/", label: " label\n\n① " },
+        { url: "https://example.org/cr", label: " label\r\r① " },
       ],
     ];
     const body = model.draftToBody(
@@ -31,12 +41,14 @@ test("editing a revision keeps code and labels with exact blank lines", async ({
     ).body;
     const draft = model.draftFromBody(body, "jve1:" + "a".repeat(64), "native");
     await new LocalStore().put("drafts", "current", draft);
+    return text;
   }, corePath);
   await page.goto("/new/places");
   const editor = page.getByRole("textbox", {
     name: "Definition text",
     exact: true,
   });
+  expect(await richNodes(editor)).toEqual(original);
   await appendRichText(editor, " appended");
   await expect(
     page.getByText("Saved in this browser", { exact: true }),
@@ -45,14 +57,7 @@ test("editing a revision keeps code and labels with exact blank lines", async ({
     const { LocalStore } = await import(String("/src/data/store.ts"));
     return (await new LocalStore().get("drafts", "current")).text;
   });
-  expect(saved).toEqual([
-    [
-      { code: "first\n\n①" },
-      " ",
-      { url: "https://example.org/", label: " label\n\n① " },
-      " appended",
-    ],
-  ]);
+  expect(saved).toEqual([[...original[0], " appended"]]);
 });
 
 test("comparison exposes nested changes and distinct rich text nodes", async ({

@@ -84,7 +84,7 @@ test("semicolon parts restart blank numbering before approval and preserve the s
     .getByRole("button", { name: "Use the meaning with numbered places" })
     .click();
   await expectRichText(
-    page.getByLabel("Definition text"),
+    page.getByLabel("Definition text", { exact: true }),
     "① seemingly has property ②; ① seems to have property ② but actually doesn't",
   );
   await expect(
@@ -159,7 +159,7 @@ test("explicit numbers reserve places per part and escaped numbers stay literal"
     .getByRole("button", { name: "Use the meaning with numbered places" })
     .click();
   await expectRichText(
-    page.getByLabel("Definition text"),
+    page.getByLabel("Definition text", { exact: true }),
     "② sees ① with ③; ③ stays literal beside ① and ④",
   );
   await expect(note(page)).toContainText(ordinary);
@@ -168,7 +168,7 @@ test("explicit numbers reserve places per part and escaped numbers stay literal"
   ).toHaveCount(2);
   // The breakdown follows edits to the definition before approval.
   await typeRichText(
-    page.getByLabel("Definition text"),
+    page.getByLabel("Definition text", { exact: true }),
     "① sees ②; ③ stays with ④",
   );
   await expect(
@@ -190,7 +190,10 @@ test("places through fifty use circled literal glyphs", async ({ page }) => {
   await page
     .getByRole("button", { name: "Use the meaning with numbered places" })
     .click();
-  await expectRichText(page.getByLabel("Definition text"), /⑳ with ㉑$/u);
+  await expectRichText(
+    page.getByLabel("Definition text", { exact: true }),
+    /⑳ with ㉑$/u,
+  );
   await expect(
     page.getByLabel("Description for place 21", { exact: true }),
   ).toBeVisible();
@@ -389,7 +392,7 @@ test("edited code, links, and escaped glyphs do not add places to the breakdown"
   await page.goto("/");
   await seed(page, { count: 2 });
   await page.goto("/new/places");
-  await setRichNodes(page.getByLabel("Definition text"), [
+  await setRichNodes(page.getByLabel("Definition text", { exact: true }), [
     [
       1,
       " sees ③ with ",

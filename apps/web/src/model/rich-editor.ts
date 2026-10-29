@@ -14,6 +14,7 @@ const inlineText = (tag: string, className: string) => ({
   inline: true,
   group: "inline",
   content: "text*",
+  whitespace: "pre" as const,
   defining: true,
   toDOM: () =>
     [tag, { class: className }, 0] as [string, Record<string, string>, number],
@@ -21,7 +22,7 @@ const inlineText = (tag: string, className: string) => ({
 export const richEditorSchema = new Schema({
   nodes: {
     doc: { content: "paragraph+" },
-    paragraph: { content: "inline*", toDOM: () => ["p", 0] },
+    paragraph: { content: "inline*", whitespace: "pre", toDOM: () => ["p", 0] },
     text: { group: "inline" },
     // Containers preserve boundaries between adjacent stored strings.
     literal: inlineText("span", "rich-literal"),

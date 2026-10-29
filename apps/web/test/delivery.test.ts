@@ -182,12 +182,11 @@ test("header-only acceptance stays unfinished until the matching body is confirm
     .click();
   await page.getByRole("button", { name: "Report abuse" }).click();
   const dialog = page.getByRole("dialog", { name: "Report identity abuse" });
-  await expect(dialog.getByLabel("Explanation")).toHaveAttribute(
-    "contenteditable",
-    "true",
-  );
+  await expect(
+    dialog.getByLabel("Explanation", { exact: true }),
+  ).toHaveAttribute("contenteditable", "true");
   await dialog
-    .getByLabel("Explanation")
+    .getByLabel("Explanation", { exact: true })
     .fill("Synthetic test report with a body.");
   await dialog
     .getByRole("button", { name: "Preview the public report" })

@@ -232,6 +232,43 @@ test("word links and code use accessible dialogs and preserve empty labels", asy
   await expect(
     toolbar(page).getByRole("button", { name: "Web link", exact: true }),
   ).toBeFocused();
+  await toolbar(page)
+    .getByRole("button", { name: "Web link", exact: true })
+    .click();
+  const web = page.getByRole("dialog", { name: "Web link", exact: true });
+  await web
+    .getByLabel("HTTPS address", { exact: true })
+    .fill("http://example.org/");
+  await web.getByRole("button", { name: "Insert", exact: true }).click();
+  await expect(web.getByRole("status")).toHaveText("Enter an HTTPS address.");
+  await web
+    .getByLabel("HTTPS address", { exact: true })
+    .fill("https://example.org/");
+  await web.getByLabel("Link label", { exact: true }).fill("source\n\nlabel");
+  await web.getByRole("button", { name: "Insert", exact: true }).click();
+  expect((await nodes(editor(page)))[0].at(-1)).toEqual({
+    url: "https://example.org/",
+    label: "source\n\nlabel",
+  });
+});
+
+test("the operand dialog inserts a named chip for a declared operand", async ({
+  page,
+}) => {
+  await seed(page, true);
+  await toolbar(page)
+    .getByRole("button", { name: "Insert operand", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog", {
+    name: "Insert operand",
+    exact: true,
+  });
+  await dialog.getByLabel("Operand", { exact: true }).selectOption("bridi");
+  await dialog.getByRole("button", { name: "Insert", exact: true }).click();
+  await expect(
+    editor(page).getByRole("img", { name: "operand bridi", exact: true }),
+  ).toHaveCount(1);
+  expect((await nodes(editor(page)))[0][0]).toEqual({ operand: "bridi" });
 });
 
 test("paragraph keys and toolbar insertion work inside literal, code, and link nodes", async ({
@@ -294,6 +331,13 @@ test("paragraph keys and toolbar insertion work inside literal, code, and link n
     .getByRole("button", { name: "Insert", exact: true })
     .click();
   expect((await nodes(field))[1].at(-1)).toEqual({ code: "after link" });
+  await caret(".rich-code:last-of-type", 10);
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.type(" tail");
+  expect((await nodes(field))[1].slice(-2)).toEqual([
+    { code: "after link" },
+    " tail",
+  ]);
 });
 
 test("the Lujvo builder edits its current rich definition without flattening nodes", async ({

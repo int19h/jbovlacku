@@ -87,7 +87,7 @@ test("R7 the full editor signs separate rafsi rationale paragraphs with literal 
   await page.getByRole("button", { name: "Add a rafsi claim" }).click();
   await page.getByLabel("Rafsi 1", { exact: true }).fill("rod");
   await typeRichText(
-    page.getByLabel("Rationale for rafsi 1"),
+    page.getByLabel("Rationale for rafsi 1", { exact: true }),
     " First ① paragraph.\nAnother line.\n\n \t\nSecond paragraph.\n\n  ",
   );
   await page.getByRole("button", { name: "Review" }).click();

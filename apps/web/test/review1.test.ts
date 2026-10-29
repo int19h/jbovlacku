@@ -130,12 +130,11 @@ test("a wrong body hash on a record with a body stays unknown until the real rec
     .click();
   await page.getByRole("button", { name: "Report abuse" }).click();
   const dialog = page.getByRole("dialog", { name: "Report identity abuse" });
-  await expect(dialog.getByLabel("Explanation")).toHaveAttribute(
-    "contenteditable",
-    "true",
-  );
+  await expect(
+    dialog.getByLabel("Explanation", { exact: true }),
+  ).toHaveAttribute("contenteditable", "true");
   await dialog
-    .getByLabel("Explanation")
+    .getByLabel("Explanation", { exact: true })
     .fill("Synthetic body for the hash test.");
   await dialog
     .getByRole("button", { name: "Preview the public report" })
