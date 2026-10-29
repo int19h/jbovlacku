@@ -175,8 +175,12 @@ async function pairCard(
     );
     card.append(byline);
     for (const claim of assignment?.claims ?? []) {
+      if (!context.live()) return card;
       try {
-        const record = await loadRecord<RafsiBody>(claim, word.snapshot);
+        const record = await loadRecord<RafsiBody>(claim, word.snapshot, {
+          signal: context.signal,
+        });
+        if (!context.live()) return card;
         const row = el("div", {
           class: "small claim-source",
           style: "margin-top:8px",

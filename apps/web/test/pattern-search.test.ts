@@ -593,3 +593,139 @@ test("navigation cancels a rafsi expansion before it requests the remaining card
   await expect(page.locator("section.definition[aria-label]")).toHaveCount(0);
   await expect(page.getByText("Search was canceled.")).toHaveCount(0);
 });
+
+test("navigation cancels actual rafsi claim bodies and prevents later claim requests", async ({
+  page,
+}) => {
+  await cachedRafsiRows(page, 40, 1);
+  let claimMode = false,
+    release: (() => void) | undefined,
+    aborted = false;
+  const envelopes = new Map<string, any>(),
+    bodies = new Map<string, string>();
+  const eventRequests: string[] = [],
+    bodyRequests: string[] = [];
+  await page.route("**/api/v1/words/**", async (route) => {
+    if (!claimMode) {
+      await route.fulfill({ json: emptyRafsiWord() });
+      return;
+    }
+    const id = decodeURIComponent(
+      new URL(route.request().url()).pathname.split("/").at(-1)!,
+    );
+    const fixture = await page.evaluate(
+      async ({ corePath, id }) => {
+        const core = await import(corePath);
+        await core.initializeCore();
+        const word = Array.from({ length: 40 }, (_, index) => ({
+          language: "jbo",
+          spelling: "ba" + "a".repeat(index) + "b",
+        })).find((word) => core.wordId(word) === id)!;
+        const pair = core.rafsiPairId(id, "ra");
+        const records = [1, 2].map((index) =>
+          core.createEvent(
+            new Uint8Array(32).fill(98),
+            [],
+            index.toString(16).padStart(32, "0"),
+            {
+              kind: "rafsi.publish",
+              word: id,
+              assignment: pair,
+              origin: "native",
+            },
+            {
+              word,
+              rafsi: "ra",
+              rationale: [["Synthetic claim " + index]],
+              sources: [],
+              legacy: null,
+            },
+          ),
+        );
+        return {
+          pair,
+          records: records.map((record) => ({
+            envelope: record.envelope,
+            canonical: core.canonicalize(
+              core.utf8(JSON.stringify(record.body)),
+            ),
+          })),
+        };
+      },
+      { corePath, id },
+    );
+    for (const record of fixture.records) {
+      envelopes.set(record.envelope.id, record.envelope);
+      bodies.set(record.envelope.header.content.hash, record.canonical);
+    }
+    await route.fulfill({
+      json: {
+        ...emptyRafsiWord(),
+        assignments: [
+          {
+            id: fixture.pair,
+            claims: fixture.records.map((record) => record.envelope.id),
+            status: "eligible",
+          },
+        ],
+      },
+    });
+  });
+  await page.route("**/api/v1/events/**", async (route) => {
+    const id = decodeURIComponent(
+      new URL(route.request().url()).pathname.split("/").at(-1)!,
+    );
+    if (!envelopes.has(id)) {
+      await route.continue();
+      return;
+    }
+    eventRequests.push(id);
+    await route.fulfill({ json: envelopes.get(id) });
+  });
+  await page.route("**/api/v1/bodies/**", async (route) => {
+    const id = decodeURIComponent(
+      new URL(route.request().url()).pathname.split("/").at(-1)!,
+    );
+    if (!bodies.has(id)) {
+      await route.continue();
+      return;
+    }
+    bodyRequests.push(id);
+    if (bodyRequests.length === 1)
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    await route
+      .fulfill({ contentType: "application/json", body: bodies.get(id)! })
+      .catch(() => {});
+  });
+  page.on("requestfailed", (request) => {
+    const id = decodeURIComponent(
+      new URL(request.url()).pathname.split("/").at(-1)!,
+    );
+    if (bodies.has(id) && /ABORT/iu.test(request.failure()?.errorText ?? ""))
+      aborted = true;
+  });
+  await page.goto("/rafsi/r*");
+  await expect(page.locator("section.definition[aria-label]")).toHaveCount(20);
+  claimMode = true;
+  await page.getByRole("button", { name: "show all", exact: true }).click();
+  await expect.poll(() => release !== undefined).toBe(true);
+  try {
+    await page.evaluate(async () => {
+      (await import(String("/src/app/router.ts"))).navigate(
+        "/search?q=bangu&lang=en",
+      );
+    });
+    await expect(
+      page.getByRole("region", { name: "Search results" }),
+    ).toBeVisible();
+    await expect.poll(() => aborted, { timeout: 2000 }).toBe(true);
+  } finally {
+    release?.();
+  }
+  await page.waitForTimeout(100);
+  expect(eventRequests).toHaveLength(1);
+  expect(bodyRequests).toHaveLength(1);
+  await expect(page.locator("section.definition[aria-label]")).toHaveCount(0);
+});
