@@ -66,7 +66,8 @@ export function compilePattern(query: string) {
       test(spelling: string): boolean {
         try {
           return compiled.is_match(patternKey(spelling));
-        } catch {
+        } catch (error) {
+          if (String(error) !== "pattern_timeout") throw error;
           throw new PatternError("pattern_timeout", PATTERN_TIMEOUT_MESSAGE);
         }
       },
@@ -74,6 +75,7 @@ export function compilePattern(query: string) {
     };
   } catch (error) {
     if (error instanceof PatternError) throw error;
+    if (String(error) !== "pattern_invalid") throw error;
     throw new PatternError(
       "pattern_invalid",
       "The regular expression is invalid or exceeds its compilation limit. Use a simpler pattern.",
