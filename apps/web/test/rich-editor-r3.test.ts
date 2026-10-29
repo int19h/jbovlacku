@@ -48,6 +48,7 @@ async function seed(page: Page, operands = false) {
   ).toBeVisible();
 }
 async function clickMiddle(page: Page, field: Locator) {
+  await field.scrollIntoViewIfNeeded();
   const point = await field
     .locator(".rich-literal")
     .first()
@@ -58,7 +59,21 @@ async function clickMiddle(page: Page, field: Locator) {
       const box = range.getBoundingClientRect();
       return { x: box.left + 0.2, y: box.top + box.height / 2 };
     });
+  expect(
+    await field.evaluate(
+      (node, point) =>
+        point.x >= 0 &&
+        point.x < innerWidth &&
+        point.y >= 0 &&
+        point.y < innerHeight &&
+        document
+          .elementFromPoint(point.x, point.y)
+          ?.closest('[contenteditable="true"]') === node,
+      point,
+    ),
+  ).toBe(true);
   await page.mouse.click(point.x, point.y);
+  await expect(field).toBeFocused();
 }
 async function movedDescription(page: Page) {
   await seed(page);
@@ -117,18 +132,27 @@ test("r3 a native selection chosen before focus stays at its requested offset", 
   });
   await page.keyboard.type("X");
   expect(await richNodes(field)).toEqual([["hello Xworld"]]);
-  for (const offset of [0, 6]) {
+  for (const target of ["text-zero", "text-middle", "paragraph-zero"]) {
+    const offset = target === "text-middle" ? 6 : 0;
     const moved = await movedDescription(page);
-    await moved.evaluate((node, offset) => {
-      const range = document.createRange();
-      range.setStart(node.querySelector(".rich-literal")!.firstChild!, offset);
-      range.collapse(true);
-      const selection = document.getSelection()!;
-      selection.removeAllRanges();
-      selection.addRange(range);
-      (node as HTMLElement).focus();
-      document.dispatchEvent(new Event("selectionchange"));
-    }, offset);
+    await moved.evaluate(
+      (node, { offset, target }) => {
+        const range = document.createRange();
+        range.setStart(
+          target === "paragraph-zero"
+            ? node.querySelector("p")!
+            : node.querySelector(".rich-literal")!.firstChild!,
+          offset,
+        );
+        range.collapse(true);
+        const selection = document.getSelection()!;
+        selection.removeAllRanges();
+        selection.addRange(range);
+        HTMLElement.prototype.focus.call(node);
+        document.dispatchEvent(new Event("selectionchange"));
+      },
+      { offset, target },
+    );
     await page.keyboard.type("X");
     expect(await richNodes(moved)).toEqual([
       ["hello world".slice(0, offset) + "X" + "hello world".slice(offset)],

@@ -169,6 +169,9 @@ export function richField(label: string, options: RichFieldOptions) {
   let pointerFocus = false;
   let tabSelection: boolean | null = null;
   let tabTimer: number | undefined;
+  let blurSelection: { doc: EditorNode; selection: Selection | null } | null =
+    null;
+  let blurTimer: number | undefined;
   let nativeEdit: { doc: EditorNode; from: number; to: number } | null = null;
   let dialog: HTMLDialogElement | null = null;
   let editLink: HTMLButtonElement | undefined;
@@ -367,11 +370,21 @@ export function richField(label: string, options: RichFieldOptions) {
     },
     handleDOMEvents: {
       focus(view) {
+        const before =
+          blurSelection?.doc === view.state.doc ? blurSelection : null;
         const repair =
           moved &&
           !pointerFocus &&
-          (tabSelection === false || !hasNativeSelection());
+          (before
+            ? before.selection === null
+            : tabSelection === false || !readNativeSelection());
+        const chosen =
+          moved && !pointerFocus && !repair
+            ? (before?.selection ?? readNativeSelection())
+            : null;
         clearMove();
+        if (chosen && !chosen.eq(view.state.selection))
+          view.dispatch(view.state.tr.setSelection(chosen));
         if (repair) view.focus();
         pointerFocus = false;
         return false;
@@ -459,35 +472,56 @@ export function richField(label: string, options: RichFieldOptions) {
     },
   });
   const input = view.dom as RichInput;
-  const nativeFocus = input.focus;
-  function hasNativeSelection() {
+  function readNativeSelection(): Selection | null {
     const selection = input.ownerDocument.getSelection();
-    return (
-      input.contains(selection?.anchorNode ?? null) ||
-      input.contains(selection?.focusNode ?? null)
-    );
+    if (
+      !selection?.anchorNode ||
+      !selection.focusNode ||
+      !input.contains(selection.anchorNode) ||
+      !input.contains(selection.focusNode)
+    )
+      return null;
+    try {
+      const from = view.posAtDOM(
+        selection.anchorNode,
+        selection.anchorOffset,
+        -1,
+      );
+      const to = selection.isCollapsed
+        ? from
+        : view.posAtDOM(selection.focusNode, selection.focusOffset, 1);
+      return TextSelection.between(
+        view.state.doc.resolve(from),
+        view.state.doc.resolve(to),
+      );
+    } catch {
+      return null;
+    }
   }
   function clearMove() {
     moved = false;
     tabSelection = null;
     window.clearTimeout(tabTimer);
+    window.clearTimeout(blurTimer);
+    blurSelection = null;
     input.ownerDocument.removeEventListener("keydown", beforeTab, true);
-    input.focus = nativeFocus;
+    input.ownerDocument.removeEventListener("blur", beforeBlur, true);
   }
   function beforeTab(event: KeyboardEvent) {
     if (event.key !== "Tab") return;
-    tabSelection = hasNativeSelection();
+    tabSelection = readNativeSelection() !== null;
     window.clearTimeout(tabTimer);
     tabTimer = window.setTimeout(() => {
       tabSelection = null;
     }, 0);
   }
-  function focusAfterMove(options?: FocusOptions) {
-    // Read an author's range before native focus creates its default caret.
-    const repair = moved && !pointerFocus && !hasNativeSelection();
-    clearMove();
-    nativeFocus.call(input, options);
-    if (repair) view.focus();
+  function beforeBlur() {
+    // Native focus can create a default caret after the old control blurs.
+    blurSelection = { doc: view.state.doc, selection: readNativeSelection() };
+    window.clearTimeout(blurTimer);
+    blurTimer = window.setTimeout(() => {
+      blurSelection = null;
+    }, 0);
   }
   input.style.setProperty(
     "--target-min-height",
@@ -953,8 +987,8 @@ export function richField(label: string, options: RichFieldOptions) {
     label: labelNode,
     moved: () => {
       moved = true;
-      input.focus = focusAfterMove;
       input.ownerDocument.addEventListener("keydown", beforeTab, true);
+      input.ownerDocument.addEventListener("blur", beforeBlur, true);
     },
     refresh: syncMode,
   };
