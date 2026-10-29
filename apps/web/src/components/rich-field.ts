@@ -352,7 +352,9 @@ export function richField(label: string, options: RichFieldOptions) {
     },
     dispatchTransaction(transaction) {
       if (transaction.docChanged && nativeEdit) {
-        preserveOutsideNativeEdit(transaction, nativeEdit);
+        // Explicit editor commands do not carry the DOM reader's composition ID.
+        if (transaction.getMeta("composition") !== undefined)
+          preserveOutsideNativeEdit(transaction, nativeEdit);
         nativeEdit = null;
       }
       const result = view.state.applyTransaction(transaction);
@@ -450,6 +452,7 @@ export function richField(label: string, options: RichFieldOptions) {
         setTimeout(() => {
           if (!view.isDestroyed)
             view.dispatch(view.state.tr.setMeta("richCompositionEnd", true));
+          nativeEdit = null;
         }, 0);
         return false;
       },
@@ -495,6 +498,7 @@ export function richField(label: string, options: RichFieldOptions) {
     get: () => current,
     set: (value: RichText) => {
       current = canonicalRich(value);
+      nativeEdit = null;
       if (view.isDestroyed) return;
       // External draft changes start a new history for this field.
       if (
@@ -935,6 +939,7 @@ export function richField(label: string, options: RichFieldOptions) {
     node.showModal();
   }
   onDisconnect(wrapper, () => {
+    nativeEdit = null;
     clearMove();
     dialog?.close();
     view.destroy();

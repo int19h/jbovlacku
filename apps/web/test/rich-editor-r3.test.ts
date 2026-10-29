@@ -262,6 +262,42 @@ test("r3 outside typing preserves raw CR and CRLF while explicit newline edits a
   ]);
   await field.press("Control+z");
   expect(await richNodes(field)).toEqual(exact);
+  // A canceled native edit cannot change the meaning of the next explicit edit.
+  await field.press("Control+End");
+  await field.evaluate((node) => {
+    node.dispatchEvent(
+      new InputEvent("beforeinput", {
+        bubbles: true,
+        cancelable: false,
+        inputType: "insertCompositionText",
+        data: "",
+        isComposing: true,
+      }),
+    );
+    const code = node.querySelector(".rich-code")!;
+    const range = document.createRange();
+    range.selectNodeContents(code);
+    const selection = document.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    document.dispatchEvent(new Event("selectionchange"));
+  });
+  await page.waitForTimeout(40);
+  await field.evaluate((node) => {
+    const data = new DataTransfer();
+    data.setData("text/plain", "keep\n\nexact");
+    const event = new ClipboardEvent("paste", {
+      bubbles: true,
+      cancelable: true,
+    });
+    Object.defineProperty(event, "clipboardData", { value: data });
+    node.dispatchEvent(event);
+  });
+  expect(await richNodes(field)).toEqual([
+    [{ code: "keep\n\nexact" }, ...exact[0].slice(1)],
+  ]);
+  await field.press("Control+z");
+  expect(await richNodes(field)).toEqual(exact);
 });
 
 test("r3 toolbar hints appear only for the focused toolbar and operand guidance follows an attempt", async ({
