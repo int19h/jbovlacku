@@ -1275,26 +1275,35 @@ test("an empty signed source with a known weight survives publication and Revise
   assert.ok(admissible(revised.body, [parent]));
 });
 
-test("Revise preserves an authenticated all-empty source through draft reload without generator state", () => {
-  const body = draftToBody(
-    newDraft({ kind: "gismu", spelling: "broda", text: "A fixture meaning." }),
-  ).body!;
-  body.etymology.formation = {
-    ...manualFormation([], "Retained historical evidence.")!,
-    sources: [
-      { language: "fr", word: "", input: null, weight: null, notes: [] },
-    ],
-  };
-  assert.ok(admissible(body));
-  const parent = "jve1:" + "1".repeat(64);
-  const draft = normalizeDraft(
-    JSON.parse(JSON.stringify(draftFromBody(body, parent, "native"))),
-  );
-  assert.equal(draft.gismu, null);
-  const revised = draftToBody(draft);
-  assert.deepEqual(revised.body!.etymology.formation, body.etymology.formation);
-  assert.ok(admissible(revised.body, [parent]));
-});
+for (const word of ["", " \t "])
+  test(`Revise preserves a language-only signed source with word ${JSON.stringify(word)} through reload`, () => {
+    const body = draftToBody(
+      newDraft({
+        kind: "gismu",
+        spelling: "broda",
+        text: "A fixture meaning.",
+      }),
+    ).body!;
+    body.etymology.formation = {
+      ...manualFormation([], "Retained historical evidence.")!,
+      sources: [{ language: "zh", word, input: null, weight: null, notes: [] }],
+    };
+    assert.ok(admissible(body));
+    const parent = "jve1:" + "1".repeat(64);
+    const draft = normalizeDraft(
+      JSON.parse(JSON.stringify(draftFromBody(body, parent, "native"))),
+    );
+    assert.equal(draft.gismu, null);
+    const before = structuredClone(draft);
+    const revised = draftToBody(draft);
+    assert.deepEqual(revised.problems, []);
+    assert.deepEqual(draft, before);
+    assert.deepEqual(
+      revised.body!.etymology.formation,
+      body.etymology.formation,
+    );
+    assert.ok(admissible(revised.body, [parent]));
+  });
 
 /** An independent body that uses every field the format offers, not one the draft serializer made. */
 function richParent() {
