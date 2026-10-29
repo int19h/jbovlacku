@@ -72,6 +72,10 @@ Updates keep focus on delivery controls and announce only short status changes. 
 If storage cannot be read, the saved page keeps known records and offers Retry reading. It reports missing records only after a successful read.
 Delivered records leave the list but keep their receipts in retained history. With no waiting or stopped records, the page shows a short empty state.
 
+The search page uses one box and separate Lojban word, definition, and optional meaning groups.
+Each group has its own pages and show all action. Known Lojban queries put word matches first. Other queries put definitions first.
+Meaning search uses inline consent for the named provider and scope. It stays absent when AI is off or the service is unavailable.
+Pending and failed indexing remain visible beside meaning results.
 Downloaded search packages permit local search without a request for each query. Version 2 packages carry authors, notes, and rafsi for result rows.
 Local and server search share TypeScript morphology and match ranking. Compound cmavo match exact component sequences, contiguous runs, and ordered subsequences.
 For example, `i seri'a bo`, `ise ri'abo`, and `iseri'abo` find the same compound. `i bo` also finds `iseri'abo`.
@@ -86,7 +90,7 @@ Queries permit 512 recognized words and 300,000 parser steps, with 128 phonemes 
 A limit notice preserves ordinary text search and states incomplete sequence coverage.
 
 Saved-package validation and search run in a static module worker. Search pages, nearby lookup, and lujvo part lookup share two prepared package revisions.
-Local search transfers references for 20 results initially. Show all fetches only the remaining results through the 1,000-word browser limit.
+Local search transfers references for 20 results per group initially. Show all fetches only the remaining results through the 1,000-word browser limit.
 Nearby lookup ignores late results after meaning or language edits and recovers when the current language package returns.
 
 The server prepares lexical indexes during package materialization, before completed snapshots become readable.
@@ -350,7 +354,7 @@ The persistent query cache stores complete profile hashes, exact input hashes, a
 Cache hits require no provider request or spending reservation. Each search still filters the selected view and excludes inert definitions.
 Public reference probes detect model drift before new query computations. A detected mismatch suspends that profile, including its cached queries.
 Cancellation stops the caller's wait. Admitted embedding work still settles and can fill the shared cache without a replacement request.
-Worker vector storage and the browser meaning controls remain unfinished. An unconfigured host reports meaning search as unavailable.
+Worker vector storage and offline browser meaning search remain unfinished. An unconfigured host reports meaning search as unavailable.
 A discarded result returns a clear status. Spending failures distinguish pending costs, timed limits, and requests that cannot fit.
 The default spending share admits every enabled operation at each reasoning effort, with decision reports enabled or disabled.
 Each task uses an output cap based on recorded prompt tests. An explicit operator limit replaces the automatic caps.
@@ -358,7 +362,7 @@ Every output limit stays at or below 20,480 tokens, including explicit limits an
 Mocked providers cover the request and correction loop. These tests do not establish live model accuracy.
 The [development guide](docs/development.md#optional-ai-assistance) gives the configuration and retention limits.
 
-The status editor, transfer editor, browser meaning search, and Lensisku cross-posting remain target features.
+The status editor, transfer editor, wizard meaning search, and Lensisku cross-posting remain target features.
 The site view is the server's selected signed view, and the Trust page can use another retained signed view by its event ID. A signed view names its calculation profile, `simple-routes-bounds-v1` or `simple-routes-shun-v1`; the pages name the profile of each result and its route rule, and an unknown profile leaves scores unavailable.
 Site calculation metadata uses the digest of canonical JSON null for its absent overlay. An explicit empty overlay keeps its own digest.
 The personal view downloads the snapshot records, verifies each envelope and body in a Web Worker, and ranks words locally with the private overlay.
