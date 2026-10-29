@@ -138,7 +138,9 @@ The toolbar inserts places 1 to 3 directly. A dropdown offers places 4 to 50 and
 
 Typing `___` inserts the next free place, and `__N__` inserts place N from 1 through 50. Typed circled numbers also insert places. A semicolon restarts automatic numbering. Backspace restores the characters immediately after conversion. Literal mode keeps circled numbers and underscores as text. It preserves code and links.
 
-Paste reads only plain text. Clipboard content without plain text leaves the selection unchanged. Paste inside code or a link label stays in that node. Pasted circled numbers elsewhere stay literal unless the author chooses references. Pasted markup and underscores stay literal. Copy retains readable place glyphs and operand names. Removing a place keeps the referent of every other reference. The shared core checks the finished body before Publish is enabled, and every blocking problem names its field.
+Paste reads only plain text. Clipboard content without plain text leaves the selection unchanged. Paste inside code or a link label stays in that node. Pasted circled numbers elsewhere stay literal unless the author chooses references. Pasted markup and underscores stay literal.
+
+Copy retains readable place glyphs and operand names. Removing a place keeps the referent of every other reference. The shared core checks the finished body before Publish is enabled, and every blocking problem names its field.
 
 AI frame generation supports up to 16 consecutive places. Manual frames support explicit gaps and more than 16 places. The guard counts blanks with explicit Meaning numbers and prefers current definition places. Numbers above 16 or with gaps require manual declarations before separate gloss and type suggestions.
 

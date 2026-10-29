@@ -244,14 +244,22 @@ for (const kind of containers.filter((kind) => kind.name !== "code")) {
       new RegExp(target === "cukta" ? "cukta" : "example"),
     );
     await caret(field, kind.selector, 2);
+    await field.pressSequentially("X");
+    await expect(link).toHaveAccessibleName(`abXcd, ${kind.name} to ${target}`);
     await page.getByRole("button", { name: "Edit link", exact: true }).click();
     const dialog = page.getByRole("dialog");
     await expect(dialog.getByLabel("Link label", { exact: true })).toHaveValue(
-      "abcd",
+      "abXcd",
     );
     await dialog.getByLabel("Link label", { exact: true }).fill("new label");
     await dialog.getByRole("button", { name: "Save", exact: true }).click();
     expect(await nodes(field)).toEqual([[kind.updated("new label")]]);
+    await expect(link).toHaveAccessibleName(
+      `new label, ${kind.name} to ${target}`,
+    );
+    await expect(
+      page.getByRole("button", { name: "Edit link", exact: true }),
+    ).toBeFocused();
   });
 }
 test("r2 never-focused toolbar insertion appends to existing content", async ({

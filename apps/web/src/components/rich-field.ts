@@ -1,6 +1,6 @@
 /** One accessible editor per rich field. The draft owns its RichText value. */
 import "prosemirror-view/style/prosemirror.css";
-import { Slice } from "prosemirror-model";
+import { Slice, type Node as EditorNode } from "prosemirror-model";
 import { EditorState, Plugin, TextSelection } from "prosemirror-state";
 import { EditorView } from "prosemirror-view";
 import { baseKeymap } from "prosemirror-commands";
@@ -58,6 +58,29 @@ function insertionSelection(view: EditorView, input: InputEvent) {
     // Let the native input path read DOM changes that are not mapped yet.
     return null;
   }
+}
+/** ProseMirror can reuse a link's span when only its label changes. */
+function linkNodeView(node: EditorNode) {
+  const type = node.type.name;
+  const word = type === "word_link";
+  const dom = el("span", {
+    class: word ? "rich-word-link" : "rich-web-link",
+    role: "group",
+    "aria-roledescription": word ? "word link" : "web link",
+  });
+  const update = (next: EditorNode) => {
+    if (next.type.name !== type) return false;
+    const target = word ? next.attrs.word.spelling : next.attrs.url;
+    dom.title = word ? `Word: ${target}` : target;
+    dom.setAttribute("data-target", target);
+    dom.setAttribute(
+      "aria-label",
+      `${next.textContent || "Empty label"}, ${word ? "word" : "web"} link to ${target}`,
+    );
+    return true;
+  };
+  update(node);
+  return { dom, contentDOM: dom, update };
 }
 export function richField(label: string, options: RichFieldOptions) {
   const id = fieldId("rich"),
@@ -269,6 +292,7 @@ export function richField(label: string, options: RichFieldOptions) {
   };
   view = new EditorView(host, {
     state: state(),
+    nodeViews: { word_link: linkNodeView, web_link: linkNodeView },
     attributes: {
       id,
       class: "field rich-editor",
@@ -601,15 +625,20 @@ export function richField(label: string, options: RichFieldOptions) {
               ? richEditorSchema.text(label.input.value)
               : undefined,
           );
-          view.dispatch(
-            view.state.tr
-              .replaceWith(
-                existing.position,
-                existing.position + existing.node.nodeSize,
-                replacement,
-              )
-              .setMeta("richExternal", true),
+          const tr = view.state.tr.replaceWith(
+            existing.position,
+            existing.position + existing.node.nodeSize,
+            replacement,
           );
+          tr.setSelection(
+            TextSelection.create(
+              tr.doc,
+              existing.position +
+                1 +
+                Math.min(existing.offset, replacement.content.size),
+            ),
+          );
+          view.dispatch(tr.setMeta("richExternal", true));
           return true;
         },
         "Save",
@@ -652,7 +681,11 @@ export function richField(label: string, options: RichFieldOptions) {
       !["word_link", "web_link"].includes($from.parent.type.name)
     )
       return null;
-    return { node: $from.parent, position: $from.before() };
+    return {
+      node: $from.parent,
+      position: $from.before(),
+      offset: $from.parentOffset,
+    };
   }
   function syncLinkAction() {
     if (!editLink) return;
