@@ -40,7 +40,12 @@ test("nearby draft search discloses the exact query and sends only a POST body",
   expect(searches).toHaveLength(1);
   expect(searches[0].method).toBe("POST");
   expect(new URL(searches[0].url).search).toBe("");
-  expect(searches[0].body).toEqual({ q: "book", language: "en", limit: 10 });
+  expect(searches[0].body).toEqual({
+    q: "book",
+    language: "en",
+    limit: 10,
+    literal: "1",
+  });
   await page
     .getByLabel("Meaning", { exact: true })
     .fill("another private phrase");
