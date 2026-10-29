@@ -674,8 +674,10 @@ export class LocalStore {
               !index.entries.some((entry) => entry.key === consumed))
           )
             throw new SavedDraftUnavailableError();
-          next = structuredClone(
-            consumed ? (resumed!.result as Draft) : (replacement as Draft),
+          next = canonicalRichFields(
+            structuredClone(
+              consumed ? (resumed!.result as Draft) : (replacement as Draft),
+            ),
           );
           const savedKey = previous ? `saved:${crypto.randomUUID()}` : null;
           index.entries = [
@@ -687,7 +689,8 @@ export class LocalStore {
           next.savedDrafts = index.entries;
           next.revision = crypto.randomUUID();
           next.updatedAt = Date.now();
-          if (previous && savedKey) drafts.add(previous, savedKey);
+          if (previous && savedKey)
+            drafts.add(canonicalRichFields(previous), savedKey);
           drafts.put(index, "saved-index");
           drafts.put(next, "current");
           if (consumed) drafts.delete(consumed);
@@ -747,7 +750,7 @@ export class LocalStore {
           return;
         }
         if (next === null) drafts.delete(key);
-        else drafts.put(next, key);
+        else drafts.put(canonicalRichFields(next), key);
       };
       current.onsuccess = proceed;
       if (key === "current") this.readSavedIndex(drafts, () => proceed());

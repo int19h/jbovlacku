@@ -674,6 +674,8 @@ Loading a saved single blank paragraph and undoing an edit both produce the cano
 Updating place rows preserves each retained editor's caret and undo history.
 Pointer focus and an existing native selection keep their chosen caret position.
 An editor repairs its native caret only after its retained wrapper moves, when no pointer or native selection chooses another position.
+If an authoring page, profile editor, rafsi editor, or report editor fails to load, show an accessible error with a heading and Reload.
+Keep saved drafts unchanged. A report action permits only one pending editor load.
 An explicit mode change starts a new undo history and keeps the caret when the visible document stays equal.
 Text needs no markup or escapes.
 Typed TeX backslashes, brackets, braces, and backticks stay literal. A backslash before a typed place stays literal beside the place chip.
