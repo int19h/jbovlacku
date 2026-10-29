@@ -1295,11 +1295,15 @@ Public reads need no account. Public event admission follows published quotas an
 | `GET /records?snapshot=S&after=ID&limit=N`                        | Snapshot records for local calculation: envelope, body, and body status, bounded by count and bytes. The limit ranges from 1 through 200.                                                                            |
 
 The `POST /search` body requires string fields `q` and `language`.
-Optional fields are `snapshot`, `view`, `after`, `retired`, and `limit`.
-The first four use the same strings as GET. `limit` accepts a positive integer or its decimal string.
+Optional fields are `snapshot`, `view`, `after`, `retired`, `literal`, and `limit`.
+The first five use the same strings as GET. `limit` accepts a positive integer or its decimal string.
 Unknown fields and query parameters on a POST search return HTTP 400.
 Both search methods apply the same bounds, cursor rules, and result selection. Draft text stays in the POST body.
-Both methods accept the pattern syntax in section 4. `pattern_invalid` returns HTTP 400, and `pattern_timeout` returns HTTP 422.
+Both methods accept the pattern syntax in section 4 by default.
+With `literal=1`, they search the query literally instead. Any other `literal` value returns HTTP 400.
+The meaning wizard sets `literal` to `"1"` in its consented POST search. Ordinary word searches keep pattern mode.
+Search cursors include the literal mode. A cursor from another mode returns HTTP 400 with `bad_cursor`.
+`pattern_invalid` returns HTTP 400, and `pattern_timeout` returns HTTP 422.
 Neither error returns partial hits. Both hosts enforce the shared compiled-work limits and their documented execution limits.
 
 The POST /events body contains exactly `envelope` and `body`. Canonicalize the enclosed body and compare its hash and byte length before acceptance.

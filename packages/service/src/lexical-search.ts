@@ -150,9 +150,19 @@ export async function lexicalSearchAsync(
       signal,
     }),
   signal?: AbortSignal,
+  options: SearchOptions = {},
 ) {
-  if (!isPatternQuery(query))
-    return lexicalSearch(entries, query, language, evaluation, includeRetired);
+  if (options.patterns === false || !isPatternQuery(query))
+    return lexicalSearch(
+      entries,
+      query,
+      language,
+      evaluation,
+      includeRetired,
+      undefined,
+      rafsi,
+      options,
+    );
   const source = entries.filter((entry) => {
     const publication = evaluation.publications[entry.event];
     return (

@@ -168,3 +168,83 @@ test("type assistance retrieves inner pattern punctuation literally", async () =
     assert.equal(result.related.length, 1);
   }
 });
+
+test("GET and POST literal search preserve meaning punctuation and reject invalid flags", async () => {
+  const { service } = fixture(["r2literalone", "r2literaltwo"]);
+  const request = (method: string, fields: Record<string, unknown>) =>
+    service.fetch(
+      new Request(
+        "http://local.invalid/api/v1/search" +
+          (method === "GET"
+            ? "?" + new URLSearchParams(fields as Record<string, string>)
+            : ""),
+        method === "GET"
+          ? undefined
+          : {
+              method,
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify(fields),
+            },
+      ),
+    );
+  for (const method of ["GET", "POST"]) {
+    for (const q of ["c*-algebra", "name@example.org"]) {
+      const response = await request(method, {
+        q,
+        language: "en",
+        literal: "1",
+      });
+      assert.equal(response.status, 200);
+      const result: any = await response.json();
+      assert.equal(result.hits.length, 2);
+      assert.ok(result.hits.every((hit: any) => hit.match === "gloss"));
+    }
+    for (const literal of ["", "0", "true", "2"]) {
+      const response = await request(method, {
+        q: "r2",
+        language: "en",
+        literal,
+      });
+      assert.equal(response.status, 400);
+      assert.equal(((await response.json()) as any).code, "literal");
+    }
+    const pattern = await request(method, { q: "r2*", language: "en" });
+    assert.equal(pattern.status, 200);
+    assert.equal(((await pattern.json()) as any).hits.length, 2);
+    for (const literal of [false, true]) {
+      const fields = {
+        q: "r2",
+        language: "en",
+        limit: "1",
+        ...(literal ? { literal: "1" } : {}),
+      };
+      const first = await request(method, fields);
+      assert.equal(first.status, 200);
+      const { next } = (await first.json()) as any;
+      assert.equal(typeof next, "string");
+      const same = await request(method === "GET" ? "POST" : "GET", {
+        ...fields,
+        after: next,
+      });
+      assert.equal(same.status, 200);
+      const mixed = await request(method, {
+        q: "r2",
+        language: "en",
+        limit: "1",
+        after: next,
+        ...(!literal ? { literal: "1" } : {}),
+      });
+      assert.equal(mixed.status, 400);
+      assert.equal(((await mixed.json()) as any).code, "bad_cursor");
+    }
+  }
+  for (const literal of [true, 1, null]) {
+    const response = await request("POST", {
+      q: "r2",
+      language: "en",
+      literal,
+    });
+    assert.equal(response.status, 400);
+    assert.equal(((await response.json()) as any).code, "query");
+  }
+});

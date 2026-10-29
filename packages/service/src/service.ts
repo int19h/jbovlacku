@@ -2264,6 +2264,7 @@ export class DictionaryService {
         "limit",
         "after",
         "retired",
+        "literal",
       ];
       if (!fields || typeof fields !== "object" || Array.isArray(fields))
         throw new ApiError(
@@ -2540,6 +2541,10 @@ export class DictionaryService {
       if (retiredFlag !== null && retiredFlag !== "1")
         throw new ApiError(400, "retired", "retired must be 1 when present.");
       const includeRetired = retiredFlag === "1";
+      const literalFlag = url.searchParams.get("literal");
+      if (literalFlag !== null && literalFlag !== "1")
+        throw new ApiError(400, "literal", "literal must be 1 when present.");
+      const literal = literalFlag === "1";
       const packages = await this.packages(snapshot);
       const ordered = await lexicalSearchAsync(
         packages.entries,
@@ -2550,14 +2555,16 @@ export class DictionaryService {
         packages.searchRafsi,
         this.options.patternScanner,
         request.signal,
+        { patterns: !literal },
       );
       const cursorHash = this.hashJson({
-        search: "patterns-v2",
+        search: "patterns-v3",
         query,
         language,
         snapshot: snapshot.snapshot,
         view,
         retired: includeRetired,
+        literal,
       }).slice(7);
       const after = url.searchParams.get("after");
       let offset = 0;
