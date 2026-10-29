@@ -251,10 +251,17 @@ test("inline meaning consent can be declined, accepted, remembered, and renewed 
   expect(state.calls).toHaveLength(0);
   await meaning.getByRole("button", { name: "Not now", exact: true }).click();
   await expect(meaning).toContainText("Meaning search is off for this page.");
+  await expect(
+    meaning.getByRole("button", { name: "Enable meaning search" }),
+  ).toBeFocused();
   expect(state.calls).toHaveLength(0);
   await meaning.getByRole("button", { name: "Enable meaning search" }).click();
-  await meaning.getByRole("button", { name: "Allow meaning search" }).click();
+  await expect(
+    meaning.getByRole("button", { name: "Allow meaning search" }),
+  ).toBeFocused();
+  await page.keyboard.press("Enter");
   await expect(meaning.locator("article")).toHaveCount(1);
+  await expect(meaning.locator("article .hw").first()).toBeFocused();
   await expect(
     meaning.getByRole("link", { name: "Matched definition", exact: true }),
   ).toHaveAttribute("href", /^\/definition\/jve1%3A/);

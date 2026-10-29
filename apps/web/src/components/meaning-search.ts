@@ -92,7 +92,7 @@ export async function meaningSearchGroup(
           consent.tasks.includes(task) &&
           dataScope.every((field) => consent.dataScope.includes(field)),
       );
-    const run = async () => {
+    const run = async (focusAfter = false) => {
       if (!live() || !allowed()) return;
       body.replaceChildren(
         p(
@@ -257,10 +257,17 @@ export async function meaningSearchGroup(
         if (!live()) return;
         status.textContent = `Meaning search failed. ${describe(error)}`;
         appendReadRetry(body, error, context, app.announce);
-        body.append(button("Try meaning search again", () => void run()));
+        body.append(button("Try meaning search again", () => void run(true)));
+      } finally {
+        if (focusAfter && live() && document.activeElement === document.body) {
+          const target =
+            body.querySelector<HTMLElement>(".hw,button") ?? status;
+          if (target === status) status.tabIndex = -1;
+          target.focus();
+        }
       }
     };
-    const consent = () => {
+    const consent = (focus = false) => {
       status.textContent = "Meaning search needs your permission.";
       const notice = el("div", {
         class: "notice",
@@ -275,7 +282,7 @@ export async function meaningSearchGroup(
               { provider, scope, tasks: [task], dataScope },
             ],
           });
-          if (live()) await run();
+          if (live()) await run(true);
         } catch (error) {
           if (live()) {
             status.textContent = describe(error);
@@ -300,10 +307,13 @@ export async function meaningSearchGroup(
         accept,
         button("Not now", () => {
           status.textContent = "Meaning search is off for this page.";
-          body.replaceChildren(button("Enable meaning search", consent));
+          const enable = button("Enable meaning search", () => consent(true));
+          body.replaceChildren(enable);
+          enable.focus();
         }),
       );
       body.replaceChildren(notice);
+      if (focus) accept.focus();
     };
     if (allowed()) await run();
     else consent();
