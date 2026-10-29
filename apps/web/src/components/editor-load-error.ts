@@ -10,7 +10,7 @@ export function editorLoadError(error: unknown, page = false) {
       text: page ? "This page did not load" : "This editor did not load",
     }),
     p(
-      "The editor could not load. Your saved drafts are safe in this browser. Reload this page to try again.",
+      "The editor did not load. Your saved drafts are safe in this browser. Reload this page to try again.",
     ),
     p(describe(error), "small"),
     button("Reload", () => location.reload(), { class: "btn" }),
