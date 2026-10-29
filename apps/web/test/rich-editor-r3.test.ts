@@ -187,7 +187,7 @@ test("r3 toolbar hints appear only for the focused toolbar and operand guidance 
     name: "Insert operand",
     exact: true,
   });
-  await operand.click();
+  await operand.evaluate((node) => (node as HTMLButtonElement).click());
   await expect(
     page.getByText("Declare an operand first.", { exact: true }),
   ).toBeVisible();
@@ -214,7 +214,7 @@ test("r3 operand addition and renaming refresh every retained rich-field control
     await expect(control).toBeEnabled();
   await page.getByLabel("Operand 1 ID", { exact: true }).fill("sumti");
   for (const control of await controls.all()) {
-    await control.click();
+    await control.evaluate((node) => (node as HTMLButtonElement).click());
     await expect(
       page.getByRole("dialog").getByLabel("Operand", { exact: true }),
     ).toHaveValue("sumti");
