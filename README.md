@@ -156,10 +156,15 @@ Revise copies a publication into a new draft with its exact parent and keeps eve
 The rich editors change the stored node tree directly. CR is a carriage return. LF is a line feed. CRLF is their two-character sequence.
 Editing prose, code, or a link label changes CR and CRLF in that node to LF.
 If an edit combines prose fragments into one stored string, that complete string uses LF.
-Backspace and Delete join saved paragraphs without turning inline line breaks into paragraph breaks.
 
-The rule also applies to composition, paste, deletion, undo, and redo. Untouched nodes keep their exact text.
+The LF rule also applies to composition, paste, deletion, undo, and redo. Untouched nodes keep their exact text.
 Changing only a link target keeps its label unchanged. New prose joins nearby text while untouched saved boundaries stay exact.
+
+Character, word, line, selection, and cut requests use editor commands.
+Composition deletion can stay native inside one mapped text node.
+These commands join saved paragraphs without turning inline line breaks into paragraph breaks.
+Partial deletions keep surviving code and link labels in their original node types.
+Cut copies selected text before deletion.
 
 Blank paragraphs stay editable. Edited fields omit whitespace-only paragraphs from saved drafts and published records.
 Edited empty optional fields stay absent. Untouched fields keep their exact values on loading, save, and publication.
@@ -181,7 +186,11 @@ AI frame generation supports up to 16 consecutive places. Manual frames support 
 Reading pages load no ProseMirror code or CSS. Authoring pages load the editor on demand.
 Whitespace-only text stays empty for required definitions, report explanations, biographies, and manual formation reasons.
 
-Chromium tests simulate text composition with an input method editor. Real Android and iOS keyboard tests remain pending.
+Chromium and Firefox tests cover keyboard deletion and simulated deletion input without a key event.
+The simulated tests include events that cannot be canceled and later changes to the browser document.
+The editor command determines the saved result in those tests.
+Chromium tests also simulate text composition with an input method editor.
+Real macOS, Android, and iOS keyboard tests remain pending.
 Word links and place derivations use the shared format rules. Valid uppercase references retain their exact targets and do not block publication.
 A draft saved by the earlier prototype opens a choice to export it, convert it into a wizard draft, or discard it. The old license and attribution fields stay in the export only, because new definitions publish under CC0 1.0.
 Remote lexical search, word pages, and downloaded language packages exclude definitions whose receipts are not effective.
