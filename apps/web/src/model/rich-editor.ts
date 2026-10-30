@@ -104,6 +104,41 @@ export const richEditorSchema = new Schema({
 });
 const schema = richEditorSchema;
 const contents = (value: string) => (value ? schema.text(value) : undefined);
+interface StoredNodeGroup {
+  prose: boolean;
+  parts: { node: EditorNode; position: number }[];
+}
+/** Use the same saved boundaries for serialization and edit detection. */
+function storedNodeGroups(doc: EditorNode): StoredNodeGroup[][] {
+  const paragraphs: StoredNodeGroup[][] = [];
+  doc.forEach((paragraph, paragraphPosition) => {
+    const groups: StoredNodeGroup[] = [];
+    let previousOrigin: {
+      source: number;
+      paragraph: number;
+      index: number;
+    } | null = null;
+    paragraph.forEach((node, offset) => {
+      const prose = node.isText || node.type.name === "literal";
+      if (prose && !node.textContent) return;
+      const origin = node.type.name === "literal" ? node.attrs.origin : null;
+      const retainedBoundary =
+        origin &&
+        previousOrigin &&
+        origin.source === previousOrigin.source &&
+        origin.paragraph === previousOrigin.paragraph &&
+        origin.index === previousOrigin.index + 1;
+      const previous = groups.at(-1);
+      const part = { node, position: paragraphPosition + 1 + offset };
+      if (prose && previous?.prose && !retainedBoundary)
+        previous.parts.push(part);
+      else groups.push({ prose, parts: [part] });
+      previousOrigin = prose ? origin : null;
+    });
+    paragraphs.push(groups);
+  });
+  return paragraphs;
+}
 /** Normalize edited containers in the same history event as their input. */
 export function editedTextPlugin(
   options: { composing?: () => boolean } = {},
@@ -133,35 +168,43 @@ export function editedTextPlugin(
         retained.add(node);
       });
       const changes: { from: number; to: number; text: string }[] = [];
-      state.doc.descendants((node, position) => {
-        if (
-          !node.isText &&
-          !["literal", "code", "word_link", "web_link"].includes(node.type.name)
-        )
-          return;
-        if (retained.has(node) || !node.textContent.includes("\r"))
-          return false;
-        // A changed target does not make its unchanged link label an edit.
-        let original = position;
-        for (const transaction of [...transactions].reverse())
-          original = transaction.mapping.invert().map(original, 1);
-        const previous = before.doc.nodeAt(original);
-        if (
-          previous?.type === node.type &&
-          !previous.sameMarkup(node) &&
-          previous.content.eq(node.content)
-        )
-          return false;
-        const from = position + (node.isText ? 0 : 1);
-        // Keep maps outside each line ending, including the typed text, exact.
-        for (const match of node.textContent.matchAll(/\r\n?/gu))
-          changes.push({
-            from: from + match.index,
-            to: from + match.index + match[0].length,
-            text: "\n",
-          });
-        return false;
-      });
+      for (const paragraph of storedNodeGroups(state.doc))
+        for (const group of paragraph)
+          for (const { node, position } of group.parts) {
+            const combined = group.prose && group.parts.length > 1;
+            if (
+              !node.isText &&
+              !["literal", "code", "word_link", "web_link"].includes(
+                node.type.name,
+              )
+            )
+              continue;
+            if (
+              (!combined && retained.has(node)) ||
+              !node.textContent.includes("\r")
+            )
+              continue;
+            // A changed target does not make its unchanged link label an edit.
+            let original = position;
+            for (const transaction of [...transactions].reverse())
+              original = transaction.mapping.invert().map(original, 1);
+            const previous = before.doc.nodeAt(original);
+            if (
+              !combined &&
+              previous?.type === node.type &&
+              !previous.sameMarkup(node) &&
+              previous.content.eq(node.content)
+            )
+              continue;
+            const from = position + (node.isText ? 0 : 1);
+            // Keep maps outside each line ending, including the typed text, exact.
+            for (const match of node.textContent.matchAll(/\r\n?/gu))
+              changes.push({
+                from: from + match.index,
+                to: from + match.index + match[0].length,
+                text: "\n",
+              });
+          }
       if (!changes.length) return null;
       const transaction = state.tr;
       for (const change of changes.reverse())
@@ -241,38 +284,24 @@ export function editorToRich(
   editedFrom?.descendants((node) => {
     retained.add(node);
   });
-  const text = (node: EditorNode) =>
-    editedFrom && !retained.has(node)
+  const text = (node: EditorNode, combined = false) =>
+    editedFrom && (combined || !retained.has(node))
       ? node.textContent.replace(/\r\n?/gu, "\n")
       : node.textContent;
   const value: RichText = [];
-  doc.forEach((paragraph) => {
+  for (const paragraph of storedNodeGroups(doc)) {
     const nodes: RichNode[] = [];
-    let previousOrigin: {
-      source: number;
-      paragraph: number;
-      index: number;
-    } | null = null;
-    paragraph.forEach((node) => {
+    for (const group of paragraph) {
+      if (group.prose) {
+        nodes.push(
+          group.parts
+            .map(({ node }) => text(node, group.parts.length > 1))
+            .join(""),
+        );
+        continue;
+      }
+      const node = group.parts[0].node;
       switch (node.type.name) {
-        case "text":
-        case "literal":
-          if (node.textContent) {
-            const origin =
-              node.type.name === "literal" ? node.attrs.origin : null;
-            const retainedBoundary =
-              origin &&
-              previousOrigin &&
-              origin.source === previousOrigin.source &&
-              origin.paragraph === previousOrigin.paragraph &&
-              origin.index === previousOrigin.index + 1;
-            const last = nodes.length - 1;
-            if (typeof nodes[last] === "string" && !retainedBoundary)
-              nodes[last] = (nodes[last] as string) + text(node);
-            else nodes.push(text(node));
-            previousOrigin = origin;
-          }
-          break;
         case "place":
           nodes.push(node.attrs.index);
           break;
@@ -289,10 +318,9 @@ export function editorToRich(
           nodes.push({ url: node.attrs.url, label: text(node) });
           break;
       }
-      if (!["text", "literal"].includes(node.type.name)) previousOrigin = null;
-    });
+    }
     if (nodes.length) value.push(nodes);
-  });
+  }
   return canonicalRich(value);
 }
 
