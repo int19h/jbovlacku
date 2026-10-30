@@ -280,7 +280,7 @@ export async function searchPage(
       })
       .catch(() => {});
   countLine.before(meaningPrivacy(app, !!cached));
-  if (cached) {
+  if (cached && !isPatternQuery(query)) {
     const chosen = getPreferredView();
     let missingEvidence = false;
     let differentView =

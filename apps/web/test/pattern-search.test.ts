@@ -301,8 +301,11 @@ test("pattern show all keeps stable order and version 1 discloses missing rafsi 
   });
   await page.goto("/search?q=ba*&lang=en");
   await expect(page.locator("article.hit")).toHaveCount(20);
+  await expect(
+    page.locator("main > .notice").filter({ hasText: /known.word ordering/i }),
+  ).toHaveCount(0);
   await expect(page.locator("main")).not.toContainText(
-    "Definitions appear first.",
+    /Definitions (?:appear|comes?) first/i,
   );
   await expect(
     page.getByText(
@@ -812,3 +815,52 @@ test("navigation cancels actual rafsi claim bodies and prevents later claim requ
   expect(bodyRequests).toHaveLength(1);
   await expect(page.locator("section.definition[aria-label]")).toHaveCount(0);
 });
+
+for (const compact of [false, true])
+  test(`r3: a pattern with a mismatched ${compact ? "compact" : "legacy"} package view shows no ordering advice`, async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await page.evaluate(async (compact) => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const store = new LocalStore();
+      const view = "jve1:" + "a".repeat(64);
+      await store.put("packages", "en", {
+        snapshot: "sha256:" + "b".repeat(64),
+        version: 2,
+        ...(compact ? { search_view: view } : {}),
+        entries: [
+          {
+            event: "jve1:" + "1".repeat(64),
+            word: { language: "jbo", spelling: "klama" },
+            language: "en",
+            glosses: [],
+            plain_text: "Synthetic pattern definition.",
+            classification: { kind: "gismu", selmaho: [] },
+            body: null,
+            issuer: "ed25519:" + "c".repeat(64),
+            notes: false,
+            rafsi: [],
+            rafsi_complete: true,
+            attribution: null,
+            search_status: compact ? "active" : { view, status: "active" },
+          },
+        ],
+      });
+      await store.setPreferences({
+        view: "jve1:" + "f".repeat(64),
+        useAiAssistance: false,
+      });
+    }, compact);
+    await page.goto("/search?q=kla*&lang=en");
+    await expect(page.getByRole("heading", { level: 2 })).toHaveText(["Lojban words"]);
+    await expect(page.locator("article.hit .hw")).toHaveText(["klama"]);
+    await expect(
+      page
+        .locator("main > .notice")
+        .filter({ hasText: /known.word ordering/i }),
+    ).toHaveCount(0);
+    await expect(page.locator("main")).not.toContainText(
+      /Definitions (?:appear|comes?) first/i,
+    );
+  });
