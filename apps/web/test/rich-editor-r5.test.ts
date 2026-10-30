@@ -20,7 +20,7 @@ async function mount(page: Page, value: RichText) {
     const { richField } = await import(String("/src/components/rich-field.ts"));
     const field = richField("Round five field", { value });
     document.body.replaceChildren(field.wrapper);
-    field.input.addEventListener("keydown", (event) => {
+    field.input.addEventListener("keydown", (event: KeyboardEvent) => {
       (window as any).r5KeyHandled = event.defaultPrevented;
     });
   }, value);
