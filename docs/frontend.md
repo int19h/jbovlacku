@@ -1,6 +1,6 @@
 # Jbovlacku web frontend
 
-This specification defines target behavior for the web app and both server adapters.
+This specification defines target behavior for the web app and Node server.
 The [README](../README.md) describes the implemented scope.
 The [repository specification](format.md) defines signed events, structured content, identity continuity, and ranking.
 Its field names and authority rules take precedence over illustrative interface copy here.
@@ -21,19 +21,18 @@ Public trust is visible and inspectable. It does not become a required account-c
 ## 2. Shared application and hosting design
 
 The browser contains the interface, signer, local drafts, local search, and shared format core.
-The project ships two server adapters: a standalone server and a Cloudflare Workers service. Both expose the same dictionary API.
-Neither the dictionary format nor the standalone server requires a Cloudflare account.
+The project runs the dictionary API on a single Node.js host.
 
 The application uses a Rust core with native and WebAssembly builds, plus a shared TypeScript HTTP service layer.
 The Rust core contains canonical records, signatures, causal state, and ranking.
 A shared TypeScript package provides word recognition and deterministic word builders.
-The browser and Workers consume its WebAssembly build. The CLI can use the native build.
-Thin host adapters supply storage, transaction coordination, queues, secrets, clocks, and outbound HTTP.
+The browser and Node server consume its WebAssembly build. The CLI can use the native build.
+The Node service supplies storage, transaction coordination, queues, secrets, clocks, and outbound HTTP.
 The implementer must establish dependency licenses and runtime compatibility before reusing jbotci code.
 
 Behavioral compatibility does not grant permission to copy a dependency. Preserve the license of every reused component.
 
-The standalone adapter runs on a supported Node.js release and ships as a Docker image, plus a direct installation package.
+The server runs on a supported Node.js release and ships as a Docker image, plus a direct installation package.
 It serves the web assets and API, stores immutable content on a persistent volume, and uses local SQLite for indexes and receipts.
 The operator supplies a data directory, listen address, public origin, peers, selected view, and optional inference configuration.
 A single-instance deployment needs no Redis, object-storage service, or cloud database.
@@ -44,14 +43,12 @@ A backup captures immutable objects, the receipt journal, configuration, and a c
 Shutdown stops admission, completes or rolls back local transactions, and checkpoints pending jobs for restart.
 Health endpoints distinguish process liveness from readiness after migrations and state recovery.
 
-The Cloudflare adapter uses Workers Static Assets, R2 content storage, and D1 rebuildable indexes.
-A Durable Object with SQLite storage coordinates admission receipts and the current snapshot pointer.
-Neither adapter holds contributor signing keys. An operator key can sign service statements and derived-artifact manifests.
-R2 or local storage can deduplicate bodies independently of the Git carrier's inline representation.
+The server holds no contributor signing keys. An operator key can sign service statements and derived-artifact manifests.
+Local storage can deduplicate bodies independently of the Git carrier's inline representation.
 
 Envelope objects use representation hashes. Each snapshot maps event IDs to the exact envelope variants committed by its manifest.
 
-Both adapters use the same admission, snapshot-building, import, peer-sync, and inference job logic.
+The service layer implements admission, snapshot-building, import, peer-sync, and inference jobs.
 The job store persists inputs, checkpoints, cancellation requests, and outcomes. Retries reuse immutable input IDs.
 A builder writes all new immutable objects before it advances the snapshot pointer.
 Failed builds leave the preceding complete snapshot current. Search and word responses never mix snapshot versions silently.
@@ -60,16 +57,15 @@ Indexes can lag accepted writes. The API exposes accepted and materialized curso
 Durable receipt journals survive an index rebuild. Local arrival order never becomes dictionary chronology.
 
 Peer lists remain operator choices. Scheduled jobs exchange canonical records and selected optional derived artifacts.
-Native Git publication is an optional mirror job. Standard Workers cannot run a native Git process.
-The standalone host can run that mirror locally. Workers can send its canonical snapshot to a separate mirror process.
+Native Git publication is an optional mirror job. The Node host can run that mirror locally.
 
 A mirror that shares its source storage is not an independent replica.
 
 Static hosting supports reading, local signing, drafts, and deterministic word builders.
 Persistent shared submissions require a writable peer or file export. The app remains usable with AI and semantic search disabled.
-Long calculations use bounded jobs and explicit resource errors. Moving a job to another adapter never changes the signed format.
+Long calculations use bounded jobs and explicit resource errors. Job execution never changes the signed format.
 
-### Host service contracts
+### Service contracts
 
 | Port                  | Required behavior                                                                                |
 | --------------------- | ------------------------------------------------------------------------------------------------ |
@@ -81,10 +77,9 @@ Long calculations use bounded jobs and explicit resource errors. Moving a job to
 | Vector index          | Search one named embedding profile and expose its coverage.                                      |
 | Provider adapter      | Make bounded inference requests with server-held provider credentials.                           |
 
-The standalone vector backend can scan retained vectors exactly or use a bundled local index.
-Workers can use Vectorize or another configured backend. Backend indexes are disposable, host-specific accelerators.
+The vector backend can scan retained vectors exactly or use a bundled local index. Backend indexes are disposable accelerators.
 The portable vector artifacts remain available independently of that backend. A cloud index is never the only retained vector copy.
-The release tests exchange snapshots and vector artifacts between both adapters and compare their logical results.
+The release tests exchange snapshots and vector artifacts between independent Node servers and compare their logical results.
 
 ## 3. Interface structure and appearance
 
@@ -159,6 +154,11 @@ It performs ordinary headword, gloss, and text searches locally after that downl
 A remote search mode remains available for large languages or limited devices. Settings contains the local or remote mode choice.
 Before its first remote query, the app states that queries reach the named server.
 A change of mode does not silently upload previously local query history.
+Local mode keeps word and definition queries in the browser. Consented meaning search still sends each new query to the server and provider.
+The search page states this beside the box while meaning search is on and offers “Turn off meaning search”.
+That action saves a lasting search preference, separate from provider consent and the general AI preference.
+While it is off, new queries and reloads show no meaning consent or results and send no meaning request.
+“Turn on meaning search” restores that search preference. Applicable provider consent is still required.
 
 Search normalization affects lookup only. It never rewrites signed spellings or definition text.
 Use NFC, case folding, and explicit apostrophe aliases in search indexes.
@@ -240,21 +240,9 @@ Initialization has a separate 5,000 millisecond limit. Failure to initialize rep
 Task deadline expiry, active cancellation, and worker errors stop that worker. A later task can start a replacement.
 Queued cancellation removes that task. Server shutdown settles all requests and stops idle and active workers.
 
-Cloudflare scans at most 1,000,000 work units or 8,192 rows per chunk, plus the last bounded candidate.
-One isolate admits two active pattern scans and eight waiting requests across all scanner instances, before compiling any matcher.
-Several [Durable Objects can share an isolate and its memory](https://developers.cloudflare.com/durable-objects/platform/pricing/#compute-billing).
-Completion, failure, and cancellation release their admission slots. Cancellation frees a matcher even while its D1 read remains pending.
-
-After each chunk, Cloudflare performs a read-only D1 `SELECT 1`.
-A loose 5,000 millisecond elapsed guard excludes time between the start and completion of each D1 read.
-[Hosted clocks advance after I/O](https://developers.cloudflare.com/workers/runtime-apis/performance/).
-The excluded interval can also contain CPU time that the hosted clock did not yet report. This guard is not a CPU measurement.
-The compiled-work bounds remain the primary safety limit, independently of clocks and I/O latency.
-Hosted D1 latency adds to response time and has no separate response deadline here.
-
-On either server host, excess pattern requests return HTTP 503 with `search_busy` and `Retry-After: 1`.
+On the server, excess pattern requests return HTTP 503 with `search_busy` and `Retry-After: 1`.
 The message reads “Pattern search is busy. Try again shortly.” A shorter pattern does not remove this temporary admission limit.
-Neither host returns partial results after a limit failure.
+The server returns no partial results after a limit failure.
 
 Both local and server search split the query with the TypeScript text segmenter in `packages/morphology`.
 Each search index derives a component array for every headword that parses entirely as two or more cmavo.
@@ -318,7 +306,8 @@ Each nearby call reads the package for its current language, including an empty 
 Changes to the meaning or language invalidate pending results and errors before the next debounced lookup starts.
 The worker ranks all nearby query lists before selecting six rows.
 
-Ordinary local search transfers 20 rows initially. Show all requests only the remaining rows within the browser's 1,000-word limit.
+Ordinary local search transfers up to 20 rows per lexical group initially, so two groups can transfer 40 rows.
+Show all requests only the remaining rows within each group's limit of 1,000 hits.
 Replies include total counts and entry references into the exact package captured by that request. They never copy full definition records back to the page.
 These references preserve matching alternatives, definition order, selected previews, and display spellings.
 
@@ -368,11 +357,58 @@ A receipt date reads “Seen …” and identifies the receiving server in its d
 It never implies the original creation date. Unknown dates remain omitted.
 Identity activity can use receipt chronology for navigation, never causal conflict resolution.
 A text link labeled “notes” opens existing notes. An “also:” link exposes another matching definition of the same word.
-Language filters never erase the existence of alternatives. Search classes have no visible group headings.
+Language filters never erase the existence of alternatives.
+One search box shows three groups with visible headings: Lojban words, Definitions, and Similar in meaning.
+There is no search-class or meaning-mode switch.
+Lojban words includes headword, segmented, pattern, and rafsi matches. Definitions includes gloss and text matches.
+A word can appear in both groups when it matches both. Each group keeps its own match-class order and alternatives.
+When every space-separated query word has an exact normalized headword in the eligible language index, Lojban words comes first. Otherwise, Definitions comes first.
+A known complete headword also puts Lojban words first. Case, acute stress, and apostrophe aliases follow the headword rules above.
+For this test, remove pause periods and commas and read `h` as an apostrophe in each complete spelling.
+Do not segment a query word into cmavo. Other punctuation and unknown words do not count as known spellings.
+A compound cmavo spelling counts only when the dictionary holds that complete spelling as a headword.
 
-The list offers “show all” with the remaining count, “Missing a word for this? Add it,” and a retired-results filter.
-One click reveals all remaining local hits or fetches remote pages in sequence, up to the browser limit of 1,000 hits.
+For example, known `lo` and `ve` never make `love` a known query word. Known `mi` and `klama` make `mi klama` known.
+The forms `mi klama.`, `.i mi klama`, `coi, do`, `la .alis.`, and `kihe` count when their complete words exist.
+
+Server ordering applies its language, effective-receipt, eligibility, and retired-results filters before that test.
+Local ordering uses view-bound evidence in version 3 packages from the same snapshot. It follows the same eligibility and retired-results rules.
+
+Older packages without that evidence cannot establish known words. A visible notice asks for a new package, and Definitions comes first.
+Evidence for a different selected view also cannot establish known words. The notice names its server-view limit and says that Definitions comes first.
+It offers remote search for the chosen view without asking for another download. No local query reaches a server to resolve missing evidence.
+Local hits still include every retained publication. Ordering evidence does not provide complete current publication statuses.
+Pattern queries show only Lojban words.
+
+Similar in meaning uses `POST /search/semantic` after one inline consent in the search page, without a modal.
+The disclosure names the server, provider, task, and fields sent. It covers this query and future search queries.
+Remembered consent applies only to that provider and scope, under section 16. The consent box offers a lasting off choice. Declining keeps ordinary search available.
+“Not now” stops meaning search for this page, including a pending consent save. It keeps stored provider consent for later pages.
+Either off control blocks a pending Allow action before its save finishes. A failed off save keeps consent and off retry available.
+The reader must press Allow again before that canceled acceptance can start meaning search.
+When AI assistance is off, or the server lacks `features.semantic_search` and a `query_available` profile, this group is absent.
+An absent group leaves no gap. Pending or failed indexing appears as a coverage note beside meaning results.
+
+In local mode, meaning search reads a server snapshot that can differ from the downloaded lexical package. Its snapshot and view stay visible beside meaning results.
+
+Back restores the saved meaning response, displayed rows, snapshot, view, profile, and expansion count without another inference request.
+Restoration requires the same query, language, view choice, and remembered provider and scope consent.
+If incomplete lexical history requires newer remote lexical results, saved meaning results still keep their saved snapshot.
+The meaning group shows that separate snapshot and view. Back never starts another inference request to align those snapshots.
+A fresh reload checks current capabilities, profile, and consent instead of restoring the saved meaning group.
+Similarity never becomes an editorial score.
+
+Each group offers pagination and “show all” with its remaining count. The page offers “Missing a word for this? Add it,” and a retired-results filter.
+One click reveals all remaining local hits or fetches remote pages in sequence, up to the browser limit of 1,000 hits per lexical group. Meaning search retains at most 100 definitions and pages them locally.
 Only one expansion runs at once. Navigation cancels it, and repeated cursors or results stop it.
+Each lexical group shows its own loading or failure state. A failed group does not prevent the other group from loading.
+One screen-reader-only count region announces settled lexical counts in displayed group order as soon as both lexical groups finish.
+Local counts state the full total and the shown count when rows remain hidden, including at the browser limit.
+Lexical counts, expansions, Add it, and the retired filter never wait for meaning requests or matched definition reads.
+Each settled meaning update includes the last settled lexical counts before its meaning count, including while a lexical expansion waits.
+Each consent action, retry, or expansion announces its own settled results once. Group statuses remain visible ordinary text without a second visible copy.
+After expansion, focus moves to the first new row. A failed or empty expansion keeps focus on its retry, remaining control, or group status.
+A failed meaning definition read offers Retry reading for that definition. This retry retains successful rows and sends no inference request.
 A rafsi lookup identifies the related word, for example “cku ← cukta,” and exposes competing assignments when present.
 Rafsi lookup does not silently pick an unresolved assignment.
 A single unreviewed definition remains visible. A lack of endorsements is not a negative judgment.
@@ -1468,17 +1504,25 @@ Public reads need no account. Public event admission follows published quotas an
 | `GET /records?snapshot=S&after=ID&limit=N`                        | Snapshot records for local calculation: envelope, body, and body status, bounded by count and bytes. The limit ranges from 1 through 200.                                                                            |
 
 The `POST /search` body requires string fields `q` and `language`.
-Optional fields are `snapshot`, `view`, `after`, `retired`, `literal`, and `limit`.
-The first five use the same strings as GET. `limit` accepts a positive integer or its decimal string.
+Optional fields are `snapshot`, `view`, `after`, `retired`, `literal`, `group`, and `limit`.
+The string fields use the same values as GET. `limit` accepts a positive integer or its decimal string.
 Unknown fields and query parameters on a POST search return HTTP 400.
 Both search methods apply the same bounds, cursor rules, and result selection. Draft text stays in the POST body.
 Both methods accept the pattern syntax in section 4 by default.
 With `literal=1`, they search the query literally instead. Any other `literal` value returns HTTP 400.
 The meaning wizard sets `literal` to `"1"` in its consented POST search. Ordinary word searches keep pattern mode.
-Search cursors include the literal mode. A cursor from another mode returns HTTP 400 with `bad_cursor`.
+Optional `group` selects `lojban` or `definitions` before matching and pagination. Other values return HTTP 400.
+Without it, the earlier combined lexical order remains available. Signed records do not change.
+Version 3 package rows carry the view-bound ordering evidence defined below.
+Search responses can include `all_lojban`. It states whether the eligible index knows the complete normalized headword or every space-separated query word.
+Each query word must match one complete normalized dictionary spelling. Case, acute stress, and apostrophe aliases follow section 4.
+Remove pause periods and commas and read `h` as an apostrophe in each complete spelling.
+Segmented cmavo pieces, other punctuation, and unrecognized text do not establish that spelling.
+The response uses the same language, view, snapshot, receipt, eligibility, and retired-results filters as its hits.
+Search cursors include the group and literal mode. A cursor from another mode returns HTTP 400 with `bad_cursor`.
 `pattern_invalid` returns HTTP 400, and `pattern_timeout` returns HTTP 422.
 An excess pattern request returns HTTP 503 with `search_busy` and `Retry-After: 1`.
-These errors return no partial hits. Both hosts enforce the shared compiled-work limits and their documented execution limits.
+These errors return no partial hits. The server enforces the shared compiled-work limits and its documented execution limits.
 
 The POST /events body contains exactly `envelope` and `body`. Canonicalize the enclosed body and compare its hash and byte length before acceptance.
 Transport whitespace outside canonical objects does not alter signed bytes. The server preserves canonical signed meaning and never changes a field to make a signature pass.
@@ -1656,7 +1700,7 @@ WordResponse = {
 }
 SearchResponse = {
   snapshot: ID, view: event-ID, query: string, language: string,
-  segmentation?: "complete" | "limited",
+  segmentation?: "complete" | "limited", all_lojban?: boolean,
   hits: [{word: WordObject, word_id: word-ID, match: match-kind,
           definitions: [candidate-ID]}], virtuals: [VirtualReference], next: cursor | null
 }
@@ -1819,12 +1863,17 @@ With `packages_available: true`, empty descriptor arrays mean that the server ha
 
 The availability field is a required boolean. The declared view is a required event ID in this prelaunch contract.
 
-A package manifest contains exactly `version`, `language`, `snapshot`, and `parts`. The target package version is 3.
+A package manifest contains exactly `version`, `language`, `snapshot`, `search_view`, and `parts`. The target package version is 3.
 The manifest response lists that package in `packages` and identifies version 3 in `package_versions`.
 Requests omit `version` or select `version=3`. Other versions are unavailable for this prelaunch target contract.
 Each part contains `hash`, `bytes`, and `count`. Its hash identifies a canonical JSON array of candidate rows.
 Each part holds at most 2,000 rows and 4 MiB uncompressed. Split larger data into additional parts.
 The manifest hash covers its canonical bytes. Compression remains outside the hashes.
+These derived parts use their dedicated endpoint, rather than the 256 KiB event-body limit.
+
+`search_view` is the selected signed view ID that binds ordering evidence for every row in that snapshot.
+The browser retains that binding once per saved package and passes it to local search.
+The package never repeats the view in each row or part.
 
 Each version 3 row contains these fields:
 
@@ -1835,6 +1884,7 @@ Each version 3 row contains these fields:
   word: WordObject, base_word: WordObject | null, language: string,
   text: RichText, frame: Frame | null, glosses: [Gloss], plain_text: string,
   classification: Classification | null, notes: boolean,
+  search_status: "active" | "retired" | "ineligible",
   rafsi: [string], rafsi_complete: boolean, attribution: SourceAttribution | null
 }
 ```
@@ -1845,6 +1895,14 @@ For a virtual, `target` is its recomputed virtual ID. Its descriptor, `base_body
 Its `event`, `body`, `issuer`, and `classification` fields are null. The virtual has no signed record or independent lexical classification.
 Its `word` is the canonical converted word. Its text, frame, and glosses come from the shared core's projection.
 `plain_text` renders that text for lexical matching. `notes` reports whether the projected notes are nonempty.
+
+`search_status` binds each row's known-word ordering evidence to `search_view`.
+Active means eligible, effective, and active for ordinary remote search.
+Retired means eligible and effective, but included only with the retired-results filter. It includes unresolved non-active statuses under that filter.
+Ineligible means that the candidate cannot establish a known query word in that view.
+A virtual derives this status from its exact base eligibility, status, and computability. It needs no synthetic publication receipt.
+This evidence changes with status, eligibility, receipt, or selected-view changes. It is a derived assertion, not signed publication status.
+Malformed view IDs, invalid statuses, missing fields, and extra fields reject the package. Earlier package forms require rebuilding, without a compatibility fallback.
 
 Rafsi lists retained claims for the row's displayed canonical word, not inherited assignments from the base.
 It holds at most 64 sorted spellings. `rafsi_complete` is false for missing, invalid, unreadable, or cut claim evidence.
@@ -1862,10 +1920,9 @@ A client can reconstruct a row from authenticated records and flag any mismatch.
 A descriptor, source hash, or computed-content mismatch rejects the row and reports incomplete coverage. It never activates a guessed virtual.
 An unsupported rule or missing base remains unavailable. The client never fills missing places from an earlier prelaunch package.
 
-
 ## 12. Admission, privacy, and rendering
 
-The Worker applies limits before expensive signature work and separates anonymous network quotas from key-based quotas.
+The server applies limits before expensive signature work and separates anonymous network quotas from key-based quotas.
 A new key does not bypass every network limit. A trusted key does not bypass parser or signature rules.
 The operator publishes local refusal reasons and an appeal or contact path when it offers one.
 Rate limits never rewrite valid records or become a claim about linguistic quality.
@@ -1975,11 +2032,6 @@ Reference software licenses do not establish rights in all dictionary content.
 [WebAuthn PRF](https://www.w3.org/TR/webauthn-3/#prf-extension) supports the optional unlock direction, with origin and implementation limits.
 [WebKit's storage policy](https://webkit.org/blog/14403/updates-to-storage-policy/) and the [Storage Standard](https://storage.spec.whatwg.org/) explain why local storage needs export paths.
 
-The hosting design uses [Workers Static Assets](https://developers.cloudflare.com/workers/static-assets/), [R2](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/), and [D1](https://developers.cloudflare.com/d1/worker-api/).
-Its coordination state uses [Durable Object storage](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/).
-[Workers compatibility documentation](https://developers.cloudflare.com/workers/configuration/compatibility-flags/) identifies the native-process limitation.
-These services are selected components, not evidence that an implementation already exists.
-
 ## 16. Semantic search and optional AI
 
 Semantic search finds definitions with related meanings. It supplements exact spelling, gloss, and ordinary text search.
@@ -2016,7 +2068,10 @@ The system prompt puts `explain.txt` after the task file. For `sources`, it foll
 The language block stays last. Without a language block, `explain.txt` is last.
 
 The Assistance group of Settings has one checkbox, “Use AI assistance”. It is on by default when the server offers assistance.
-When it is off, the app hides every AI tagged button, every suggestion panel and its notes, the consent dialog, the “by meaning” search mode, and every AI hint line. Hidden controls leave no gap, and every manual path stays complete. The app sends nothing to a provider.
+When it is off, the app hides every AI tagged button, suggestion panel, and AI hint line.
+It also hides suggestion notes, consent dialogs, inline meaning consent, and the Similar in meaning group.
+The nearby panel also hides its “by meaning” choice. Hidden controls leave no gap, and every manual path stays complete.
+The app sends nothing to a provider.
 When no assistance capability is available, the app looks the same. The checkbox is replaced by the line “Not available on this server.” The user's own choice is kept for a server that offers assistance later.
 
 The server offers assistance when capabilities expose a generation operation or a query-available embedding profile.
@@ -2024,10 +2079,14 @@ A generation operation requires `features.assistance` and an `assistance_profile
 Meaning search requires `features.semantic_search` and a `query_available` embedding profile. A partial setup keeps the checkbox and exposes only available actions.
 If neither capability is available, the checkbox gives way to “Not available on this server.”
 
-While assistance is off, search uses “by words” and keeps the stored mode unchanged.
-When assistance returns, the stored mode returns if its required capability is available.
-The same fallback applies whenever the stored mode's capability is unavailable, including when assistance is on for generation alone.
-Search uses “by words” and preserves the stored preference. The stored mode returns when its capability becomes available.
+While assistance is off or meaning search is unavailable, the search page keeps its Lojban and definition groups.
+The meaning group returns when its required capability is available, assistance is on, and the separate meaning-search preference is on.
+Turning meaning search off preserves provider and scope consent and all other AI preferences. Its on control remains beside search when assistance and a query profile are available.
+This search-page preference does not change the wizard's nearby mode or its stored choice.
+Remembered provider and scope consent stays unchanged.
+The nearby panel in the wizard's meaning step retains its explicit “by words” and “by meaning” choices.
+When AI assistance is off or meaning search is unavailable, that panel hides “by meaning” and uses “by words”.
+It keeps the stored choice and restores it when assistance and the required capability return.
 
 The baseline provider interface is a documented subset of OpenAI-compatible Chat Completions and Embeddings over HTTP and JSON.
 It uses `/chat/completions` and `/embeddings` under a configured base URL. It does not depend on legacy text completions.
@@ -2069,6 +2128,7 @@ Localhost means the machine that makes the request. A container's local provider
 Public clients cannot turn an inference request into an arbitrary outbound URL fetch. Only configured provider and source adapters make network requests.
 
 The first AI request shows one consent dialog for the selected provider and its declared tasks and data scope.
+The search page uses inline consent with the same provider and scope rules instead of that dialog.
 The dialog names the server, provider, and fields sent. A broad scope is permitted only when the dialog declares it explicitly.
 Remembered consent applies only to that provider and scope. A new provider or expanded scope requires a new disclosure.
 Related public dictionary definitions and analysis of an already supplied spelling do not expand that scope.
@@ -2092,7 +2152,7 @@ An undo record survives draft reload and mode changes.
 
 ### Optional service API
 
-The common API adds the following endpoints. Both standalone and Workers hosts implement identical contracts when they advertise each capability.
+The API adds the following endpoints. The server implements each contract when it advertises that capability.
 
 | Endpoint                   | Contract                                                                                |
 | -------------------------- | --------------------------------------------------------------------------------------- |
@@ -2407,7 +2467,7 @@ Release scenarios must cover these additional cases:
 5. Reuse shared vectors only with matching content, input recipe, vector profile, and accepted producer.
 6. Reconcile repeated Lensisku batches without fabricating edits from missing fields or changed aggregate scores.
 7. Report partial cross-post outcomes without duplicate creates or rollback of signed jvc records.
-8. Run the standalone Docker service with no Cloudflare credentials and exchange records with the Workers service.
+8. Run independent Node services, including the Docker package, and exchange records with the same logical results.
 9. Render Latin, zbalermorna, circled places, and mathematical symbols with the selected font stacks at narrow widths.
 10. Show account evidence and its age without claiming historical signatures or recoverable jvc keys.
 11. Retire and restore a linked author's import, then carry its status through a certified replacement claim.

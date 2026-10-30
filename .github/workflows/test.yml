@@ -66,7 +66,7 @@ jobs:
         run: |
           npm run build:server
           npm run build:web
-      - name: Compare standalone and local Workers adapters
+      - name: Test the standalone server
         run: npm run test:adapters
       - name: Test browser model units
         run: npm run test:web-unit

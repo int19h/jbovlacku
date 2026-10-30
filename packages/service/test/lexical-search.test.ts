@@ -227,3 +227,105 @@ test("fallback preserves query order, groups repeated words, and applies every e
     ["je"],
   );
 });
+
+test("grouped remote matching keeps language and status filters before known-word detection", () => {
+  const entries: SearchEntry[] = ["se", "bo", "sebo", "cukta"].map(
+    (spelling) => ({
+      event: spelling,
+      word: { language: "jbo", spelling },
+      language: "en",
+      glosses: [{ text: "se bo" }],
+      plain_text: "A book uses se.",
+      classification: { kind: "cmavo" },
+      body: "body",
+    }),
+  );
+  const evaluation = {
+    publications: Object.fromEntries(
+      entries.map((entry) => [
+        entry.event,
+        { word: entry.event, eligible: "eligible", status: "active" },
+      ]),
+    ),
+    receipts: Object.fromEntries(
+      entries.map((entry) => [entry.event, { interpretation: "effective" }]),
+    ),
+  } as unknown as Evaluation;
+  const search = (query: string, group: "lojban" | "definitions") =>
+    lexicalSearch(
+      entries,
+      query,
+      "en",
+      evaluation,
+      false,
+      undefined,
+      { cukta: ["cku"] },
+      { group },
+    );
+  assert.deepEqual(
+    search("se bo", "lojban").map((hit) => hit.match),
+    ["sequence-exact"],
+  );
+  assert.ok(
+    search("se bo", "definitions").every((hit) => hit.match === "gloss"),
+  );
+  assert.equal(search("se bo", "lojban").allLojban, true);
+  assert.equal(search("book", "lojban").allLojban, false);
+  assert.equal(search("cku", "lojban")[0].word_id, "cukta");
+  entries[1].language = "fr";
+  assert.equal(search("se bo", "lojban").allLojban, false);
+  entries[1].language = "en";
+  evaluation.publications.bo.status = "deprecated";
+  assert.equal(search("se bo", "lojban").allLojban, false);
+});
+
+test("grouped searches reuse the prepared index above the spelling cache limit", async () => {
+  const { prepareIndex, searchMetrics } =
+    await import("../../search/src/index.ts");
+  const vowels = ["a", "e", "i", "o", "u"];
+  const consonants = [
+    "b",
+    "c",
+    "d",
+    "f",
+    "g",
+    "j",
+    "k",
+    "l",
+    "m",
+    "n",
+    "p",
+    "r",
+    "s",
+    "t",
+    "v",
+    "x",
+    "z",
+  ];
+  const entries: SearchEntry[] = [];
+  outer: for (const c1 of consonants)
+    for (const v1 of vowels)
+      for (const c2 of consonants)
+        for (const v2 of vowels)
+          for (const c3 of ["b", "d", "k"]) {
+            entries.push(segmentedEntry(`${c1}${v1}${c2}${v2}${c3}a`));
+            if (entries.length === 4200) break outer;
+          }
+  prepareIndex(entries);
+  const evaluation = segmentedEvaluation(entries);
+  for (const group of ["lojban", "lojban", "definitions"] as const) {
+    const metrics = searchMetrics();
+    lexicalSearch(
+      entries,
+      "book",
+      "en",
+      evaluation,
+      false,
+      metrics,
+      {},
+      { group },
+    );
+    assert.equal(metrics.headwordsParsed, 0, group);
+    assert.equal(metrics.entries, entries.length);
+  }
+});

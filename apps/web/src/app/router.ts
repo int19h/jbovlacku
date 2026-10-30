@@ -20,6 +20,8 @@ export interface RenderContext {
   signal: AbortSignal;
   /** The numbered read retry for this render, or zero for an ordinary visit. */
   readRetryAttempt?: number;
+  /** Back or Forward restores saved result context without repeating inference. */
+  restoringHistory?: boolean;
   /** Focuses a connected page control and preserves it when this render finishes.
    * Returns false for an old render, a reader's focus choice, or an open dialog.
    */
@@ -35,7 +37,10 @@ export function currentRoute(): Route {
     segments: url.pathname.split("/").filter(Boolean).map(decodeURIComponent),
   };
 }
-type Listener = (route: Route, options: { focusHeading: boolean }) => void;
+type Listener = (
+  route: Route,
+  options: { focusHeading: boolean; restoringHistory?: boolean },
+) => void;
 const listeners = new Set<Listener>();
 /**
  * A guard runs before the page changes. It receives the target URL and
@@ -84,10 +89,11 @@ export function onNavigate(listener: Listener) {
   listeners.add(listener);
   return () => listeners.delete(listener);
 }
-function emit(focusHeading: boolean) {
+function emit(focusHeading: boolean, restoringHistory = false) {
   track();
   const route = currentRoute();
-  for (const listener of listeners) listener(route, { focusHeading });
+  for (const listener of listeners)
+    listener(route, { focusHeading, restoringHistory });
 }
 export function navigate(
   href: string,
@@ -173,7 +179,8 @@ export function installRouter() {
     const current = ++navigation;
     const settle = (ok: boolean) => {
       if (!ok) refuse(current);
-      else if (current === navigation && location.href === target) emit(true);
+      else if (current === navigation && location.href === target)
+        emit(true, true);
     };
     const verdict = allowed(target);
     if (typeof verdict === "boolean") settle(verdict);

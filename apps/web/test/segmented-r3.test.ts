@@ -359,11 +359,26 @@ test("R3 a broad local page keeps its total and show-all cap", async ({
     ),
   );
   await open(page, "/search?q=shared&lang=en");
-  await expect(page.locator("main .count")).toHaveText("1005 words");
-  await expect(page.locator("article.hit")).toHaveCount(20);
-  await page.getByRole("button", { name: "show all", exact: true }).click();
-  await expect(page.locator("article.hit")).toHaveCount(1000);
-  await expect(page.locator("main .count")).toHaveText("1005 words");
+  await expect
+    .soft(page.locator("main > .count-line .count"))
+    .toHaveText("1,005 definition results, 20 shown. 0 Lojban results.");
+  const definitions = page.getByRole("region", {
+    name: "Definitions",
+    exact: true,
+  });
+  const words = page.getByRole("region", { name: "Lojban words", exact: true });
+  await expect(definitions.locator("article.hit")).toHaveCount(20);
+  await expect(definitions).toContainText("985 more");
+  await expect(words.locator("article.hit")).toHaveCount(0);
+  await definitions
+    .getByRole("button", { name: "show all", exact: true })
+    .click();
+  await expect(definitions.locator("article.hit")).toHaveCount(1000);
+  await expect(definitions).toContainText("5 more");
+  await expect(words.locator("article.hit")).toHaveCount(0);
+  await expect(page.locator("main > .count-line .count")).toHaveText(
+    "1,005 definition results, 1,000 shown. 0 Lojban results.",
+  );
   await expect(
     page.getByRole("button", { name: "show all", exact: true }),
   ).toBeDisabled();
@@ -435,7 +450,24 @@ for (const language of ["en", "fr"])
   test(`R3 lujvo part lookup uses the package worker for a ${language} draft`, async ({
     page,
   }) => {
+    const workerStarted = page.waitForEvent("worker", {
+      predicate: (worker) => worker.url().includes("package-search-worker"),
+    });
     await seed(page);
+    // Empty search can create the shared worker before the builder opens.
+    await open(page, "/");
+    await expect(
+      page.getByText("Type a word or a meaning to search.", { exact: true }),
+    ).toBeVisible();
+    expect((await workerStarted).url()).toContain("package-search-worker");
+    const queryWordCount = () =>
+      page.evaluate(async () => {
+        const { packageSearchStats } = await import(
+          String("/src/data/package-search.ts")
+        );
+        return packageSearchStats()?.metrics.queryWords;
+      });
+    expect(await queryWordCount()).toBe(0);
     await page.evaluate(async (language) => {
       const { LocalStore } = await import(String("/src/data/store.ts"));
       const { newDraft } = await import(String("/src/model/draft.ts"));
@@ -443,8 +475,6 @@ for (const language of ["en", "fr"])
       draft.kind = "lujvo";
       await new LocalStore().put("drafts", "current", draft);
     }, language);
-    const workers: string[] = [];
-    page.on("worker", (worker) => workers.push(worker.url()));
     await open(page, "/new/lujvo");
     await page
       .getByRole("textbox", { name: "Add a part", exact: true })
@@ -452,9 +482,7 @@ for (const language of ["en", "fr"])
     await expect(
       page.getByRole("button", { name: "Add klama", exact: true }),
     ).toBeVisible();
-    expect(workers.some((url) => url.includes("package-search-worker"))).toBe(
-      true,
-    );
+    expect(await queryWordCount()).toBe(1);
   });
 
 test("R3 compact previews preserve Unicode within bounded main-thread work", async ({

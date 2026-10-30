@@ -268,3 +268,48 @@ test("stored-package search keeps a prefix-shaped compound after ordinary prefix
   expect(hits[0][3]).toEqual(["sefa'e", "sequence-subsequence"]);
   expect(hits[1]).toEqual([["sefa'e", "headword-prefix"]]);
 });
+
+test("r3: download, saved cache, and search worker retain the package view once", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const result = await page.evaluate(async () => {
+    const { downloadPackage, validateCachedPackage } = await import(
+      String("/src/data/search.ts")
+    );
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { searchPackage } = await import(
+      String("/src/data/package-search.ts")
+    );
+    const store = new LocalStore("package-binding-r3");
+    const pkg = await downloadPackage("en");
+    validateCachedPackage(pkg, "en");
+    await store.put("packages", "en", pkg);
+    const cached = await store.get("packages", "en");
+    const hits = await searchPackage(cached, "en", ["cukta"], {
+      grouped: true,
+      view: pkg.search_view,
+    });
+    return {
+      view: pkg.search_view,
+      cachedView: cached.search_view,
+      statuses: pkg.entries.map(
+        (entry: { search_status?: unknown }) => entry.search_status,
+      ),
+      known: hits.allLojban,
+      downgrade: pkg.downgrade,
+    };
+  });
+  expect(result.view).toMatch(/^jve1:[a-f0-9]{64}$/);
+  expect(result.cachedView).toBe(result.view);
+  expect(result.statuses.length).toBeGreaterThan(0);
+  expect(
+    result.statuses.every(
+      (status: unknown) =>
+        typeof status === "string" &&
+        ["active", "retired", "ineligible"].includes(status),
+    ),
+  ).toBe(true);
+  expect(result.known).toBe(true);
+  expect(result.downgrade).toBeNull();
+});

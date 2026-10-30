@@ -11,7 +11,7 @@ import {
   type SearchMetrics,
 } from "../../search/src/index.ts";
 import {
-  scanPatternsChunked,
+  scanPatterns,
   type PatternScanner,
 } from "../../search/src/pattern-scan.ts";
 import type { SearchEntry } from "./packages.ts";
@@ -45,19 +45,14 @@ export function lexicalSearch(
     }
   >();
   const pattern = options.patterns !== false && isPatternQuery(query);
-  const source = pattern
-    ? (function* () {
-        for (const entry of entries)
-          yield {
-            ...entry,
-            rafsi: rafsi[evaluation.publications[entry.event]?.word] ?? [],
-          };
-      })()
-    : entries;
   const selected = selectedRows
-    ? { rows: selectedRows, segmentation: "complete" as const }
+    ? {
+        rows: options.group === "definitions" ? [] : selectedRows,
+        segmentation: "complete" as const,
+        allLojban: false,
+      }
     : selectMatches(
-        source,
+        entries,
         query,
         metrics,
         (entry) => {
@@ -70,7 +65,13 @@ export function lexicalSearch(
             (publication.status === "active" || includeRetired)
           );
         },
-        options,
+        {
+          ...options,
+          rafsiFor: (entry) =>
+            rafsi[
+              evaluation.publications[(entry as SearchEntry).event]?.word
+            ] ?? [],
+        },
       );
   for (const { entry, match, position } of selected.rows) {
     const publication = evaluation.publications[entry.event];
@@ -133,10 +134,13 @@ export function lexicalSearch(
       return hit;
     }),
     selected.segmentation,
+    selected.allLojban,
   );
 }
 
-/** Hosts supply their own bounded pattern runtime. Ordinary retrieval stays literal when requested. */
+/** The Node server supplies its bounded pattern runtime. Other callers use a five-second fallback.
+ * Ordinary retrieval stays literal when requested.
+ */
 export async function lexicalSearchAsync(
   entries: SearchEntry[],
   query: string,
@@ -144,10 +148,10 @@ export async function lexicalSearchAsync(
   evaluation: Evaluation,
   includeRetired = false,
   rafsi: Record<string, string[]> = {},
-  scanner: PatternScanner = (entries, query, signal) =>
-    scanPatternsChunked(entries, query, {
-      yield: () => new Promise((resolve) => setTimeout(resolve, 0)),
+  scanner: PatternScanner = async (entries, query, signal) =>
+    scanPatterns(entries, query, {
       signal,
+      deadline: performance.now() + 5000,
     }),
   signal?: AbortSignal,
   options: SearchOptions = {},
@@ -189,7 +193,7 @@ export async function lexicalSearchAsync(
     includeRetired,
     undefined,
     rafsi,
-    {},
+    options,
     matches.map((row) => ({
       entry: source[row.index],
       match: row.match,

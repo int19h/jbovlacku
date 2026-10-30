@@ -26,7 +26,7 @@ Git is a specified repository carrier. HTTP is another carrier for the same sign
 Author signatures survive Git history changes and export to ordinary files. Git commit signatures authenticate repository snapshots only.
 
 This choice retains established OpenSSH signing infrastructure. It does not introduce a cryptographic algorithm.
-It also permits client signing and Workers hosting without a Git process.
+It also permits client signing and HTTP exchange without a Git process.
 A normal clone provides readable JSONL. A dictionary merger supplies set-union semantics that ordinary text merging does not provide.
 
 ## 3. Bytes, identifiers, and signatures
@@ -860,7 +860,7 @@ This complete body omits unused optional fields. Pretty-printed examples become 
 
 A virtual definition is computed content with an independent judgment target.
 It has no publication event, stored definition body, signer, signature, or independently controlled status.
-The shared core implements `place-conversion-v1` in Rust and WebAssembly. Both hosts must produce the same content and ID.
+The shared core implements `place-conversion-v1` in Rust and WebAssembly. Its native and WebAssembly builds must produce the same content and ID.
 Clients authenticate the exact base publication before computing its content. Server-derived previews retain their ordinary assertion status.
 
 A virtual descriptor contains exactly `base`, `conversion`, and `rule`:
@@ -2078,7 +2078,7 @@ A new jvc revision needs an updated bridge declaration and external marker. Ance
 
 ## 12. Required low-level tools
 
-The first implementation provides one shared core for browser, self-hosted server, Worker, and CLI use.
+The first implementation provides one shared core for browser, Node server, and CLI use.
 The CLI command is jvc, with one letter for each rafsi in jbovlacku.
 It covers canonicalization, signature acceptance, causal state, structured content, continuity, scopes, and ranking bounds.
 A separate implementation supplies interoperability tests. No implementation's undocumented behavior overrides this specification.
@@ -2096,7 +2096,7 @@ The target CLI exposes these commands:
 | `jvc rank PATH --view EVENT` | Produce weights, judgment components, intervals, and calculation metadata. |
 | `jvc retain PATH --policy FILE` | Apply operator refusal policy to a new output snapshot. It never claims physical purge of old copies. |
 | `jvc handover --identity KEY --output PATH` | Prepare both transfer signatures, persist their complete bundle, and reuse it on retries. |
-| `jvc serve --data PATH` | Run the standalone server without Cloudflare services. |
+| `jvc serve --data PATH` | Run the Node server with a local data directory. |
 | `jvc import-sync SOURCE --ledger PATH` | Prepare a repeat import batch with explicit additions, revisions, omissions, and conflicts. |
 | `jvc sign FILE --identity KEY` | Sign a prepared event with a local key or an explicitly configured local SSH signer. |
 
@@ -2126,7 +2126,7 @@ Implementation starts with shared fixtures for these cases:
 10. Cycles, proxy return attempts, root changes, and exact ranking inside certified intervals.
 11. Withdrawn definitions, restored judgments, absent candidates, and competing rafsi without a certified winner.
 12. Rewritten Git carrier history and refused-body synchronization without false authenticated deletion.
-13. Inline body filling, repeated body hashes, refusal precedence, and matching manifests across both host adapters.
+13. Inline body filling, repeated body hashes, refusal precedence, and matching manifests across independent Node servers.
 14. Compact text and integer nodes, contextual frame references, literal numerals, and visible handling of bidirectional controls.
 15. Rational generation scores, optional nonalgorithmic evidence, non-top selections, and inconsistent formation claims.
 16. Account-marker copying, absent witnesses, conflicting bindings, and management declarations from unrelated authors.

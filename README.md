@@ -33,12 +33,9 @@ The draft model preserves these hints for review.
 Before a new signature, the author must replace retired tags with current standard or custom HTTPS tags, or remove them.
 Explicit alias replacement preserves the note, abstractor, and relation arity. After that action, identical tags and alternatives appear once.
 
-The Node.js adapter uses local object files and SQLite. The local Worker adapter uses R2, D1, and a Durable Object.
-The Worker currently serves the API only.
-Both adapters share admission, receipts, snapshots, search packages, and dictionary API logic.
-Both search indexes retain the current copy, one rollback copy, active staged copies, and copies that retained aliases reference.
+The Node.js server uses local object files and SQLite for admission, receipts, snapshots, search packages, and dictionary API reads.
+The search index retains the current copy, one rollback copy, active staged copies, and copies that retained aliases reference.
 An alias points to unchanged entries without copying them. Index publication removes obsolete copies and aliases in the same transaction as the current pointer.
-The Worker stages chunked writes privately, so a failed rebuild leaves the complete published copy available.
 The native `jvc` command reads, writes, validates, and merges dictionary carriers. It also reads exact committed Git trees locally.
 The [carrier guide](crates/jvc-carrier/README.md) describes canonical files, import selections, retention policies, and read limits.
 
@@ -72,7 +69,26 @@ Updates keep focus on delivery controls and announce only short status changes. 
 If storage cannot be read, the saved page keeps known records and offers Retry reading. It reports missing records only after a successful read.
 Delivered records leave the list but keep their receipts in retained history. With no waiting or stopped records, the page shows a short empty state.
 
+The search page uses one box and separate Lojban word, definition, and optional meaning groups.
+Each group has its own pages and show all action. Known complete dictionary spellings put word matches first. Other queries put definitions first.
+Pause periods, commas, and the `h` apostrophe alias count as the same complete dictionary spellings.
+
+Version 2 packages store their ordering view once, with a status per entry. Older packages without evidence ask for a refresh.
+A chosen view that differs from the package view keeps Definitions first and explains that limit without asking for another download.
+
+Meaning search uses inline consent for the named provider and scope. It stays absent when AI is off or the service is unavailable.
+“Not now” stops meaning search for this page, including a pending consent save. Stored provider consent stays available for later pages.
+Pending and failed indexing remain visible beside meaning results. The meaning snapshot and view stay visible in local mode.
+Back restores saved meaning results without another provider request. A failed matched-definition read retries without repeating inference.
+
+A visible notice explains meaning uploads. The notice and the consent box offer a lasting off choice. That choice keeps consent and other AI choices.
+When AI and a query profile are available, the on control returns beside search. Lexical counts and controls do not wait for meaning requests or definition reads.
+
+One screen-reader count region announces lexical groups in displayed order. Local counts include the full total and the shown count when rows remain hidden.
+A settled meaning update includes those lexical counts before its meaning count. Group counts stay visible without a second status line.
+Each expansion preserves keyboard focus.
 Downloaded search packages permit local search without a request for each query. Version 2 packages carry authors, notes, and rafsi for result rows.
+
 Local and server search share TypeScript morphology and match ranking. Compound cmavo match exact component sequences, contiguous runs, and ordered subsequences.
 For example, `i seri'a bo`, `ise ri'abo`, and `iseri'abo` find the same compound. `i bo` also finds `iseri'abo`.
 
@@ -86,7 +102,7 @@ Queries permit 512 recognized words and 300,000 parser steps, with 128 phonemes 
 A limit notice preserves ordinary text search and states incomplete sequence coverage.
 
 Saved-package validation and search run in a static module worker. Search pages, nearby lookup, and lujvo part lookup share two prepared package revisions.
-Local search transfers references for 20 results initially. Show all fetches only the remaining results through the 1,000-word browser limit.
+Local search transfers references for 20 results per group initially. Show all fetches only the remaining results through the 1,000-word browser limit.
 Nearby lookup ignores late results after meaning or language edits and recovers when the current language package returns.
 
 The server prepares lexical indexes during package materialization, before completed snapshots become readable.
@@ -105,9 +121,7 @@ Version 1 packages expose headword patterns only. Version 2 packages supply boun
 The shared engine caps compilation, per-candidate work, and total work by compiled state count.
 
 Node reuses two initialized workers and starts each task deadline after initialization.
-Both server hosts admit two active pattern scans and eight waiting requests. Excess requests return HTTP 503 with a retry hint.
-Cloudflare shares admission across scanner instances and uses compiled-work limits between read-only D1 reads.
-Its loose elapsed guard excludes D1 waits. Hosted D1 latency still adds to response time.
+The Node server admits two active pattern scans and eight waiting requests. Excess requests return HTTP 503 with a retry hint.
 The browser retains its worker deadline.
 
 Plain local cancellation preserves prepared packages. Canceling a running pattern stops its worker.
@@ -122,7 +136,7 @@ New SQL and REST publications omit derived vectors and caches with explicit sour
 REST publications also omit viewer-specific values.
 The current importer records unknown rights. The source-notice convention below remains a target change.
 
-The committed adapter comparison uses one signed profile event. Importer tests include a two-row fixture derived from a pinned 2,429-row API capture.
+The committed Node adapter test uses one signed profile event. Importer tests include a two-row fixture derived from a pinned 2,429-row API capture.
 
 The SQL fixture retains four source definitions in English, French, and Russian, with available version history and numbered keywords.
 SQL extraction streams COPY blocks and joins source rows on disk. It retains separate language tags and separate word-level and definition-level rafsi evidence.
@@ -302,13 +316,13 @@ Browser tests cover these outcomes, focus, saved off-state reloads, and receipt 
 The assistance tests bind delayed capability responses to held requests and cover an older response that finishes during a newer hold.
 
 The private attempt log offers Markdown and JSON export. Signed publications omit AI logs.
-Both local adapters offer operator-controlled assistance, off by default, with server-held keys and bounded private jobs.
-They reserve costs before admission and enforce server and network spending limits that survive a restart.
-IPv6 limits also count /48 prefixes. The Worker stores large spending ledgers in atomic parts.
+The Node server offers operator-controlled assistance, off by default, with server-held keys and bounded private jobs.
+It reserves costs before admission and enforces server and network spending limits that survive a restart.
+IPv6 limits also count /48 prefixes. The Node server stores spending ledgers in SQLite.
 The host service also admits bounded embedding batches through the same spending ledger and execution slots.
 Caller cancellation during embedding admission prevents dispatch and removes any unsent reservation.
 Its provider adapter pins `qwen/qwen3-embedding-8b` to the Nebius route through OpenRouter, with fallback and redirects disabled.
-Invalid embedding configuration disables embedding alone and preserves generation on both hosts.
+Invalid embedding configuration disables embedding alone and preserves generation.
 Interrupted operations retain unknown-cost charges after restart. Errors after reservation carry their operation IDs.
 Completed operator batches with known costs share hourly ledger rows, while recent diagnostics retain their individual charges.
 Mocked capacity tests cover two 59,129-input index runs, 8,192 assistance history rows, and a subsequent generation job.
@@ -350,7 +364,7 @@ The persistent query cache stores complete profile hashes, exact input hashes, a
 Cache hits require no provider request or spending reservation. Each search still filters the selected view and excludes inert definitions.
 Public reference probes detect model drift before new query computations. A detected mismatch suspends that profile, including its cached queries.
 Cancellation stops the caller's wait. Admitted embedding work still settles and can fill the shared cache without a replacement request.
-Worker vector storage and the browser meaning controls remain unfinished. An unconfigured host reports meaning search as unavailable.
+Offline browser meaning search remains unfinished. An unconfigured host reports meaning search as unavailable.
 A discarded result returns a clear status. Spending failures distinguish pending costs, timed limits, and requests that cannot fit.
 The default spending share admits every enabled operation at each reasoning effort, with decision reports enabled or disabled.
 Each task uses an output cap based on recorded prompt tests. An explicit operator limit replaces the automatic caps.
@@ -358,7 +372,7 @@ Every output limit stays at or below 20,480 tokens, including explicit limits an
 Mocked providers cover the request and correction loop. These tests do not establish live model accuracy.
 The [development guide](docs/development.md#optional-ai-assistance) gives the configuration and retention limits.
 
-The status editor, transfer editor, browser meaning search, and Lensisku cross-posting remain target features.
+The status editor, transfer editor, wizard meaning search, and Lensisku cross-posting remain target features.
 The site view is the server's selected signed view, and the Trust page can use another retained signed view by its event ID. A signed view names its calculation profile, `simple-routes-bounds-v1` or `simple-routes-shun-v1`; the pages name the profile of each result and its route rule, and an unknown profile leaves scores unavailable.
 Site calculation metadata uses the digest of canonical JSON null for its absent overlay. An explicit empty overlay keeps its own digest.
 The personal view downloads the snapshot records, verifies each envelope and body in a Web Worker, and ranks words locally with the private overlay.
@@ -429,7 +443,7 @@ JVC_DATA_DIR="$PWD/.cache/node" npm run start:built
 
 The standalone app listens at [http://127.0.0.1:8789](http://127.0.0.1:8789).
 A new data directory starts empty. Stop the foreground process with Ctrl+C.
-The guide also covers browser development, the local Worker API, and container tests.
+The guide also covers browser development and container tests.
 No command in this setup deploys a service.
 
 ## Evidence and limits
@@ -437,9 +451,6 @@ No command in this setup deploys a service.
 The [ranking measurements](crates/jvc-rank/README.md) cover eleven synthetic scenarios in native Rust and WebAssembly.
 The weighted sixteen-actor case takes 8.119 seconds in WebAssembly despite zero completed expansion work.
 The expansion budget does not bound total CPU time. These measurements do not establish performance for real community graphs.
-
-A local 2,430-event batch uses 17,010 R2 operations. Cold search uses 9,727 R2 operations before D1 and Durable Object work.
-Local Wrangler success does not prove deployed quota, memory, or CPU compliance. Larger imports need bounded incremental jobs.
 
 The current default state work budget can run out at roughly 4,500 events in a flat history.
 This is an approximate limit. Histories with more edges can reach it sooner, and the requested state also affects the work.
@@ -473,10 +484,10 @@ An alternate view can then use that slot after those calls finish. The completed
 Recomputing an older retained snapshot does not give it newer protection than the completed snapshot.
 This also applies after a late body changes the snapshot without advancing the event position.
 The cache uses the saved coordinator revision, including after restart, with snapshot ID as a fixed tie breaker.
-Pinned reads load this revision on Node and Worker before any unpinned current read.
+Pinned reads load this revision before any unpinned current read.
 Node also retains this order when newer accepted records wait behind a completed checkpoint.
 
-Workers transfer state bytes without retaining another parsed JavaScript state. Judgment updates share unchanged result objects on the main thread.
+Evaluation threads transfer state bytes without retaining another parsed JavaScript state. Judgment updates share unchanged result objects on the main thread.
 
 The adapter normally captures at most one checkpoint per minute. A failed live export can retry once immediately.
 Shutdown closes idle connections and grants up to ten seconds for evaluation.

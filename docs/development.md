@@ -19,7 +19,7 @@ Do not overwrite another agent's changes. Assign file scopes before concurrent w
 ## Tools and build
 
 Use Node.js 24 or newer. `rust-toolchain.toml` selects Rust 1.99.0 and the WebAssembly target.
-WebAssembly is a portable compiled form for browsers and Workers.
+WebAssembly is a portable compiled form for browsers and the Node server.
 Morphology runs in TypeScript, separately from that binary.
 Its Peggy grammar and generated parser live in `packages/morphology`.
 The repository limits Rust builds to two parallel jobs. The WebAssembly build script also uses two jobs.
@@ -98,7 +98,7 @@ Its corpus combines dictionary headwords, earlier comparison sets, gencmu cases,
 ## Standalone app
 
 The Node.js adapter serves the API and built browser assets. It stores objects, receipt state, and SQLite indexes in its data directory.
-A new directory starts empty. The adapter requires no Cloudflare credentials or network access to Cloudflare.
+A new directory starts empty. The server uses local files and SQLite without external storage services.
 Keep the data directory across process restarts when persistence matters.
 
 Start the built application from the repository root:
@@ -137,7 +137,7 @@ The adapter does not infer the public origin from forwarded headers.
 Browser assets allow local scripts and WebAssembly. They block inline scripts, JavaScript string evaluation, and framing.
 
 The coordinator keeps the most recent 16 distinct snapshot wrappers by default.
-Use `JVC_SNAPSHOT_LIMIT` on Node or `SNAPSHOT_LIMIT` in the Worker configuration to change this count.
+Use `JVC_SNAPSHOT_LIMIT` to change this count.
 Expired or unpublished snapshot reads return HTTP 410 with `snapshot_expired`.
 Signed envelopes, bodies, selections, and accepted event cursors remain durable after wrapper expiry.
 Reusing an identical retained snapshot ID refreshes its retention position.
@@ -150,10 +150,9 @@ Legacy object-store wrappers and the old snapshot-ID table remain as one-time cl
 Anonymous event and selection admission has no contributor quota. Signed object retention remains unbounded.
 
 A generation is an index copy for one snapshot. An alias points to a generation with the same entries.
-Both search indexes retain their current generation, one rollback generation, active staged generations, and the source generations that aliases use.
+The search index retains its current generation, one rollback generation, active staged generations, and the source generations that aliases use.
 Index publication removes obsolete rows, aliases, and markers in the same transaction as the current pointer.
-The Worker uses a D1 batch for that transaction. It stages chunked writes under a private identifier before it installs a complete generation.
-Unchanged entries use aliases on both hosts. Failed writes leave the preceding complete generation available.
+Unchanged entries use aliases. Failed writes leave the preceding complete generation available.
 Historical API reads use immutable packages. If an index base is absent, the service rebuilds it from the completed package entries.
 
 This prototype needs an admission policy and resource limits before public use.
@@ -177,7 +176,7 @@ It reports unavailable interpretation with `evaluation_resource_unavailable`. A 
 The Node adapter evaluates new snapshots in separate worker threads.
 A worker thread runs code independently within the same process. At most two evaluation runtimes remain live.
 One runtime serves completed rankings while another reads stored compact records and evaluates the next snapshot.
-The browser and Cloudflare Worker keep the same shared core and inline evaluation path.
+The browser keeps the same shared core and inline evaluation path.
 Without an explicit snapshot, word, search, identity, account, and package reads use the last completed snapshot.
 The manifest also names that completed snapshot. Interpreted results name their snapshot and view.
 Raw replication reads can expose the newer accepted inventory and name its snapshot.
@@ -345,7 +344,7 @@ No API route exports the private compact records as verification evidence.
 The server reconstructs exact canonical envelope text from each stored header, event ID, and decoded SSHSIG blob.
 Admission requires canonical base64, so this reconstruction preserves every signature variant and snapshot hash.
 Cold evaluation and checkpoint restore fill the envelope cache from these private fields.
-The first admission after a restart or Worker eviction needs no retained envelope reads.
+The first admission after a restart needs no retained envelope reads.
 
 
 An extraction format or body-validation change requires another projection of existing data.
@@ -474,7 +473,7 @@ A pinned read of a retained entry starts no repair or rebuild after intentional 
 Its word scores report unavailable without a live runtime. The next evaluation can evict that older cached entry when it needs the slot.
 An older snapshot outside these caches can still require evaluation while the coordinator retains its wrapper.
 
-Workers transfer full state or a bounded judgment delta as bytes, without retaining another parsed JavaScript state.
+Evaluation threads transfer full state or a bounded judgment delta as bytes, without retaining another parsed JavaScript state.
 The main thread applies matching deltas to immutable maps and shares unchanged objects.
 
 The fifteen-second browser wait can end before a full-dictionary evaluation finishes.
@@ -485,7 +484,7 @@ The checkpoint interval limits capture frequency, not the duration of these oper
 These runs differ in inventory, filesystem state, and concurrent work. They do not isolate the effect of one fix.
 Dense ancestry still uses quadratic bitset storage for a complete history chain.
 Overlapping evaluation runtimes still require several GiB, and individual requests can reach their deadlines.
-The measurements do not establish hosted Worker resource compliance or performance on another host.
+The measurements do not establish performance on another host.
 An explicit traversal limit or a larger Node heap does not remove the WebAssembly memory limit.
 
 ## Browser development
@@ -504,44 +503,6 @@ The Node adapter serves those built assets directly.
 Browser signing requires localhost or HTTPS. Plain HTTP through a Tailscale IP address provides reading only.
 Use an authorized HTTPS setup for remote signing tests. Do not disable browser security to make HTTP signing work.
 Key backup exports do not include unpublished drafts or pending outbox records.
-
-## Local Worker API
-
-The Worker uses the shared service layer and the same WebAssembly runtime.
-Its local bindings use R2 for immutable objects, D1 for indexes, and a Durable Object for admission coordination.
-`apps/worker/wrangler.jsonc` declares local bindings. The current adapter exposes the API.
-The Worker is API-only. The full browser hosting contract remains a target requirement.
-
-Run Wrangler from the repository root after the core build:
-
-```sh
-npm run dev:worker -- --port 8790 --persist-to "$PWD/.cache/worker"
-```
-
-This command uses local storage and exposes the API on port `8790`.
-Use a task-specific `/build/jbovlacku` path for `--persist-to` on this VM.
-`npm run types:worker` regenerates the Worker type declarations.
-Do not use production bindings or deploy during local tests.
-
-The measured local batch contains 2,430 events. The table records R2 operations before D1 and Durable Object work.
-
-| Measured implementation                         | Batch admission | Cold search |
-| ----------------------------------------------- | --------------: | ----------: |
-| Earlier object-store wrappers                   |          17,013 |       9,726 |
-| Bounded coordinator wrappers and view preflight |          17,010 |       9,727 |
-
-The current counts include the R2 adapter's read before each immutable write.
-The cold search also includes two reads for requested-view preflight.
-The local batch opt-in enables Worker diagnostic logs with request paths, R2 counts, and Wasm linear-memory size.
-These counters describe sequential fixture requests. Concurrent requests can overlap the counter deltas.
-The logs omit body content and signing keys.
-Private cache serialization now avoids an extra Wasm parse of each complete wrapper.
-In the Node measurement, the first cache write kept Wasm memory at 3.93 MB instead of growing to 43.06 MB.
-Evaluation still grew Wasm memory to about 73 MB after admission and 90 MB after cold search.
-These samples do not bound total memory. JavaScript, SQLite, and the host also allocate memory.
-
-Local Wrangler success does not prove deployed quota, memory, or CPU compliance.
-The prototype batch endpoint is a local opt-in. Larger hosted imports need bounded incremental jobs.
 
 ## Native carrier tools
 
@@ -603,7 +564,6 @@ If a write fails, treat partial output as unusable until inspected.
 The Node server accepts `JVC_SEMANTIC_PROFILE` as a complete `sha256:` profile hash.
 It enables meaning search only for a matching complete published generation and a configured embedding provider.
 The [semantic search guide](semantic-search.md#enable-node-meaning-search) describes the routes, query cache, compatibility probes, and limits.
-The local Worker adapter has no vector backend and continues to report the capability as unavailable.
 
 The Node indexing command saves a rate-limit deadline for each complete embedding profile.
 It caps each saved deadline at one hour from the provider failure, including an invalidly large `Retry-After` value.
@@ -660,11 +620,10 @@ npx tsx --test packages/importer/test/*.test.ts
 npx tsx --test packages/core/test/evaluation-request.test.ts
 ```
 
-The adapter tests start a built Node server and local Wrangler on available loopback ports.
-They test restart, late bodies, snapshot reads, expiry, same-origin writes, exact retry, and logical parity. Build the server and core before these tests.
-`JVC_ADAPTER_CARRIER` optionally adds a local signed JSONL corpus to both adapter runs.
+The adapter tests start a built Node server on an available loopback port.
+They test restart, late bodies, snapshot reads, expiry, same-origin writes, exact retry, and package hashes. Build the server and core before these tests.
+`JVC_ADAPTER_CARRIER` optionally adds a local signed JSONL corpus to the server test.
 `JVC_ADAPTER_SELECTION` adds its selection sidecar, and `JVC_ADAPTER_VIEW` enables a retained-view search check.
-`JVC_ADAPTER_ONLY` selects `node` or `worker` for a diagnostic run.
 `JVC_ADAPTER_CORPUS_ONLY=enabled` skips the preceding synthetic request sequence.
 These inputs stay outside the committed synthetic adapter fixture.
 Service unit tests use the system temporary directory by default and remove each owned case after it finishes.
@@ -680,6 +639,10 @@ npx tsx scripts/test-server-security.ts
 `JVC_SECURITY_BROWSERS` selects a comma-separated subset of `chromium,firefox,webkit`.
 The probe verifies real runtime WebAssembly, blocked JavaScript evaluation, blocked inline scripts, and blocked framing.
 `scripts/measure-service-io.ts` uses the same corpus variables to count object operations and sample Node and Wasm memory.
+`logical_get` and `logical_put` count calls to the object store.
+`object_get` counts file read attempts, including missing objects and existing-object checks after a link collision.
+`object_put` counts temporary-file write attempts, including duplicate puts. New objects need no read before the write.
+`operations` totals those file reads and writes. It excludes directory operations, links, file syncs, and metadata access.
 `JVC_IO_REPORT` selects an output report file. Its disposable database is removed when the measurement finishes.
 The importer tests use pinned JSON captures and a small SQL fixture with source provenance.
 Inferred place conversion and automatic rafsi publication remain unfinished.
@@ -689,7 +652,7 @@ Use mocked providers before real inference tests.
 
 ## Optional AI assistance
 
-AI assistance is off by default. The shared service implements the same assistance jobs on Node and the local Worker.
+AI assistance is off by default. The Node service runs assistance jobs.
 Each action needs an explicit browser request. The provider key stays on the server.
 The provider uses the configured base URL plus `/chat/completions`. Clients cannot supply a provider URL or model.
 The tested configuration uses `meta/muse-spark-1.3-contributor`, the `meta` route only, and `medium` reasoning.
@@ -698,13 +661,13 @@ Every request uses `tool_choice: "auto"`. The tested provider supports only that
 The answer still requires one valid `submit_answer` call. A missing call counts as a failed answer and receives correction instructions.
 After three failed answers for one task, that task fails. A provider or transport failure stops the job without an automatic paid retry.
 
-Both local adapters accept these variables:
+The Node server accepts these variables:
 
 | Variable                           | Purpose                                                                                                                                                              |
 | ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `JVC_AI_ENABLED`                   | Set `enabled` to offer assistance. The default is disabled.                                                                                                          |
 | `JVC_AI_BASE_URL`                  | Provider base URL. The default is `https://openrouter.ai/api/v1`. Use HTTPS, or HTTP on loopback for a local provider.                                               |
-| `JVC_AI_KEY_FILE`                  | Path to the server-held provider key. Node reads the file for each model turn. The local Worker launcher reads it at startup.                                        |
+| `JVC_AI_KEY_FILE`                  | Path to the server-held provider key. Node reads the file for each model turn.                                                                                       |
 | `JVC_AI_PROVIDER_NAME`             | Public provider name. The default is `OpenRouter`. Capability metadata uses this name and the route, without the private endpoint URL.                               |
 | `JVC_AI_MODEL`                     | Model name. The default is `meta/muse-spark-1.3-contributor`.                                                                                                        |
 | `JVC_AI_PROVIDER_ROUTE`            | Single permitted route. The default is `meta`.                                                                                                                       |
@@ -713,7 +676,7 @@ Both local adapters accept these variables:
 | `JVC_AI_DECISION_REPORTS`          | Set `enabled` to request a written decision report before the tool call. The default is disabled.                                                                    |
 | `JVC_AI_MAX_TOKENS`                | Optional output limit per provider turn. An explicit value replaces automatic task, effort, and report limits. The permitted range is 128 through 20,480.            |
 | `JVC_AI_TIMEOUT_MS`                | Time limit for the complete job. The default is 120,000 milliseconds. The permitted range is 10 through 540,000. Job expiry leaves a reading window after this time. |
-| `JVC_AI_CONCURRENCY`               | Maximum active jobs. The default is two. Node permits one through four. The Worker caps this value at two.                                                           |
+| `JVC_AI_CONCURRENCY`               | Maximum active jobs. The default is two. Node permits one through four.                                                                                              |
 | `JVC_AI_INPUT_PRICE`               | Model input price in USD per million tokens. The default is 0.10.                                                                                                    |
 | `JVC_AI_OUTPUT_PRICE`              | Model output price in USD per million tokens. The default is 0.20.                                                                                                   |
 | `JVC_AI_EMBEDDING_MODEL`           | Embedding model. The adapter permits only `qwen/qwen3-embedding-8b`, which is the default.                                                                           |
@@ -745,19 +708,6 @@ Initial place suggestions contain at most 16 places. Component suggestions conta
 Selma'o suggestions contain at most 16 classes. Larger existing structures remain available through manual editing.
 
 Start the Node source service with the variables above and `npm run start`.
-For the local Worker, use `npx tsx apps/worker/dev-ai.ts` instead of the ordinary Wrangler command.
-Set `JVC_WORKER_DATA_DIR` to its task-specific local storage directory. `HOST` and `PORT` select its listener.
-The launcher reads the named key file into an in-memory Worker binding. It never writes another credential file or passes the key in command arguments.
-It suppresses Wrangler binding output and reports only a fixed startup error on failure.
-The Worker runtime cannot read a host file path. Its provider key binding is `JVC_AI_KEY`.
-The local launcher permits assistance only on loopback with a loopback HTTP origin.
-It marks local requests with an internal binding and ignores every client IP header.
-The ordinary Wrangler command leaves assistance off unless the operator supplies the key, enables assistance, and configures trusted edge identity.
-For an edge host, set `JVC_TRUST_CF_CONNECTING_IP=enabled` only where Cloudflare controls `CF-Connecting-IP`.
-The Worker also requires platform request metadata and a valid IP address. Synthetic metadata alone does not enable header trust.
-An invalid generation configuration disables assistance on the Worker and emits one fixed error per coordinator instance. Manual routes remain available.
-Hosted secret setup and deployment remain separate operator work.
-
 Node permits assistance on direct loopback by default and ignores forwarding headers.
 Without proxy trust, a non-loopback listener or an HTTPS public origin disables assistance. Manual routes remain available.
 Behind an HTTPS proxy, set `JVC_PUBLIC_ORIGIN` to the app origin and `JVC_TRUSTED_PROXY_ADDRESSES` to its exact socket peer IP addresses.
@@ -836,7 +786,7 @@ Those ratios are `11973 / 5687` for high and `17053 / 5687` for xhigh.
 Efforts `none` and `minimal` use the low limits without direct measurements. The provider still receives the requested effort unchanged.
 Decision reports double each automatic limit, with a ceiling of 20,480. The factor of two is an unmeasured allowance for written reports.
 An explicit `JVC_AI_MAX_TOKENS` replaces this entire calculation, including the report factor. It applies unchanged to every task and effort.
-Node and Worker defaults both omit this override. These observations and extrapolations do not guarantee completion for every future request.
+Node defaults omit this override. These observations and extrapolations do not guarantee completion for every future request.
 
 Every automatic and explicit output limit stays at or below 20,480 tokens, including limits with decision reports disabled.
 Startup refuses an explicit value above 20,480 and names the permitted range. Direct configuration also cannot send a larger limit.
@@ -910,8 +860,7 @@ Every turn sends `usage: { include: true }`, including correction turns.
 The field does not guarantee a usage report.
 
 Node stores the cost ledger in `assistance-spending.sqlite` within `JVC_DATA_DIR`.
-The Worker stores it in the existing admission Durable Object. It splits snapshots into 64 KiB binary parts with a checksummed manifest.
-One storage transaction replaces the parts and manifest together. A failed write preserves the preceding complete snapshot.
+One SQLite write replaces the complete cost snapshot atomically. A failed write preserves the preceding complete snapshot.
 Reservations reach durable storage before any provider request.
 A restart keeps interrupted jobs' outstanding reservations until their spending windows expire.
 Recovery starts those windows at the later of the restart time and the stored job deadline.
@@ -922,8 +871,8 @@ The same ledger also controls host embedding calls through `AssistanceService.em
 An embedding query uses the caller's network limits. Operator index and probe batches use the server limits.
 Query callers must supply a valid IP address, a normalized IPv6 /64, or the trusted local host marker `local`.
 All these operations share the server's hourly and daily limits and execution slots with generation.
-The existing Node key file and Worker key binding also serve embedding requests.
-An invalid or empty `JVC_AI_EMBEDDING_*` value disables embedding alone on both hosts.
+The existing Node key file also serves embedding requests.
+An invalid or empty `JVC_AI_EMBEDDING_*` value disables embedding alone.
 The host emits a fixed warning that names the invalid field. Generation profiles and remembered browser consent stay unchanged.
 
 Each embedding batch permits one through eight inputs, with at most 4,096 UTF-8 bytes per input and 32 KiB in total.
@@ -961,8 +910,9 @@ An operator can inspect these records and request a new bounded attempt through 
 The earlier charge remains. A stuck transport requires its completion or a service restart before its slot returns.
 Job pause, resume, and explicit retry links belong to later indexing work.
 
-These host methods expose no browser route. Semantic search remains disabled until storage and query services pass their tests.
-Compatible query caching and current-view filtering also belong to those later services.
+These embedding host methods expose no browser route.
+The Node server exposes meaning search through the [semantic routes](semantic-search.md#enable-node-meaning-search).
+Those routes use compatible query caching and current-view filtering.
 At most 16,384 cost records remain within a day. Reaching this bound also refuses new jobs with a retry interval.
 On a later admission, the service combines completed operator batches with known costs into hourly summary rows.
 Queries, generation jobs, errors, and unknown charges keep their individual rows.
@@ -971,12 +921,7 @@ Summaries retain the operator's spending identity and count against server limit
 Recent batch diagnostics keep the individual charge and link to their summary through `summary`.
 An aggregate diagnostic has `aggregated: true`. Restart retains the financial summary without claiming individual batch outcomes.
 Mocked tests run two complete indexes of 59,129 inputs each, retain 8,192 assistance history rows, and admit another generation job.
-The ledger keeps its existing row limit, 32 MiB Worker storage bound, and atomic 64 KiB parts.
-A local workerd test measured a valid maximum ledger with escaped 128-character IDs and two hashes per record.
-Its JSON occupied 17,858,669 bytes. The old single stored value occupied 6,324,340 bytes.
-The split form used 273 parts. Its largest stored part occupied 65,549 bytes, including serialization overhead. The manifest occupied 112 bytes.
-The test restored the complete ledger after a runtime restart. An injected write failure preserved the preceding ledger.
-Local workerd accepted the oversized old value. This does not remove the hosted 2 MB value limit or prove hosted quota compliance.
+The ledger keeps its existing row limit and uses local SQLite storage.
 These estimates require accurate operator prices. They do not guarantee charges from an untested compatible provider.
 
 The log bounds use separate size allowances. The initial request allowance is `B = 2,097,152` bytes before generated-frame additions.
@@ -998,15 +943,13 @@ These are serialized bounds. They are not a JavaScript heap bound.
 Request snapshots share immutable messages and tool schemas. Exchange text shares the initial request strings.
 Raw response fields and correction metadata stay as compact JSON and expand one field at a time when read.
 Job reads stream JSON rather than build one complete response string. Admission counts each completed attempt without serializing the whole log again.
-Node retains at most four private logs. The Worker retains at most two and runs at most two jobs at once.
-Thus retained logs represent at most 256 MiB on Node or 128 MiB on the Worker when fully serialized.
+Node retains at most four private logs. Their fully serialized size totals at most 256 MiB.
 The compact shared representation uses less memory. Wasm, dictionary state, an active provider response, and serialization still need separate headroom.
-These local bounds do not prove that every admitted dictionary and job combination fits a hosted Worker memory limit.
 A full reservation returns HTTP 429. Saving or dismissing a result releases its reservation through acknowledgment.
 
 `GET /api/v1/session` returns a CSRF token and sets a Secure, HttpOnly, SameSite=Strict session cookie.
 The browser sends the token in `X-CSRF-Token` for `POST /api/v1/assist` and `DELETE /api/v1/jobs/ID`.
-Private requests use the configured `JVC_PUBLIC_ORIGIN` on Node or `PUBLIC_ORIGIN` on the Worker, or the request origin by default.
+Private requests use the configured `JVC_PUBLIC_ORIGIN`, or the request origin by default.
 Extra origins permitted for public dictionary reads cannot use private jobs.
 Each session can start 12 jobs per hour. Each client network bucket can start 48 jobs per hour.
 One bucket holds at most eight sessions and one retained job. A failed job with no provider turn releases its retained slot.
@@ -1025,7 +968,7 @@ Capacity retry times include that window. Completion cannot extend the window be
 Accepted work returns HTTP 202 with an opaque job ID, expiry, and polling interval.
 Job reads expose the current task and answer count. Cancel aborts the outbound request and stops further local turns.
 Cancellation cannot reverse an already transmitted request or a provider charge.
-Private jobs expire after at most ten minutes. A service restart or Worker eviction also loses them.
+Private jobs expire after at most ten minutes. A service restart also loses them.
 Unknown and foreign job IDs return HTTP 404 with `missing`. Owned expired IDs return HTTP 410 with `job_expired` while their markers remain.
 Expiry markers retain only the ID, owner session, and fixed expiry. Each session keeps at most 128 markers for at most one further hour.
 Each session also keeps at most 128 unexpired job records. This separate limit returns HTTP 429 with `session_job_limit` and the earliest expiry interval.
@@ -1067,24 +1010,9 @@ To update the runtime prompt bundle after editing a prompt, run `node prompts/bu
 The service tests require that the generated bundle matches every public prompt file exactly.
 
 Run the mocked inference checks with `npx tsx --test packages/service/test/assistance.test.ts`.
-The adapter suite runs both hosts against a disposable mocked provider and key file.
+The adapter suite runs the Node server against a disposable mocked provider and key file.
 It tests the disabled state, corrected answer, private session, secret redaction, and log acknowledgment.
 Neither test suite reads a real provider key or sends paid inference requests.
-
-The optional Worker stress test uses the real local workerd host and disposable bindings.
-It runs two overlapping jobs at the draft and context limits, with twelve maximum-size mocked responses per job.
-It retains both logs, compares repeated streamed reads, tests capacity refusal, and acknowledges both jobs.
-Run it only after reserving its local ports:
-
-```sh
-JVC_TEST_WORKER_AI_MEMORY=enabled node --import tsx scripts/test-worker-ai-memory.ts
-```
-
-`JVC_TEST_ROOT` selects its task-specific artifact directory.
-`JVC_TEST_AI_PROVIDER_PORT` and `JVC_TEST_AI_WORKER_PORT` select its listeners. Their defaults are 8910 and 9910.
-The fixture uses explicit synthetic edge identity settings in an isolated test configuration.
-It does not enable header trust in the ordinary local launcher.
-This test establishes the fixture's behavior. It does not prove a total heap bound or hosted Worker compliance.
 
 Install the Chromium test binary into a task-specific directory, then run the browser tests:
 
@@ -1107,7 +1035,7 @@ The draft model and the builder metadata have Node unit tests:
 npm run test:web-unit
 ```
 
-Playwright loads these files when it lists tests, but it does not run them. Run this command as well as `npm run test:web`.
+Playwright excludes the Node unit directory from discovery. Run `npm run test:web-unit` as well as `npm run test:web`.
 
 On this VM, place browser binaries and test data under a task-specific `/build/jbovlacku` directory.
 
@@ -1158,7 +1086,7 @@ The configured event-count limit does not guarantee successful evaluation of eve
 [Issue 11](https://github.com/int19h/jbovlacku/issues/11) tracks state evaluation beyond the local corpus.
 Use the [state validation guide](../crates/jvc-state/VALIDATION.md) for its tested corpus and limits.
 
-The required acceptance tests also cover both adapters, restart, duplicate delivery, interrupted snapshots, missing evidence, and delivery permutations.
+The required acceptance tests also cover Node server restart, duplicate delivery, interrupted snapshots, missing evidence, and delivery permutations.
 They must compare logical state from identical records and an explicit view.
 The [handover cases](handover-cases.md) supply required account-control outcomes.
 The [format specification](format.md) and [frontend specification](frontend.md) define the complete target acceptance requirements.
@@ -1203,7 +1131,7 @@ A later substantive change requires a new review of the affected behavior.
 
 Resolve review findings and rerun the relevant tests before handoff.
 Luna performs thorough testing before the human partner starts local acceptance tests.
-Give Luna the reviewed revision, both adapter commands, fixture locations, and expected outcomes.
+Give Luna the reviewed revision, server commands, fixture locations, and expected outcomes.
 Preserve failures and limits in the handoff. A green unit test result does not replace browser or adapter tests.
 If a required scenario is unavailable, state the missing behavior explicitly.
 

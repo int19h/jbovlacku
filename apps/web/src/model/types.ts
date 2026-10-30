@@ -382,6 +382,7 @@ export interface SearchResponse {
   next: string | null;
   /** Absent on older servers. */
   segmentation?: SegmentationStatus;
+  all_lojban?: boolean;
 }
 export interface Capabilities {
   versions: number[];
@@ -429,6 +430,12 @@ export interface PackageEntry {
   plain_text: string;
   classification: { kind: LexicalKind; selmaho: string[] };
   body: string | null;
+  /** Server-asserted eligibility for ordering, under the package's view. */
+  search_status?:
+    | "active"
+    | "retired"
+    | "ineligible"
+    | { view: string; status: "active" | "retired" | "ineligible" };
 }
 export interface ViewBody {
   name: string;
