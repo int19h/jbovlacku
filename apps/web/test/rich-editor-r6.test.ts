@@ -913,6 +913,56 @@ test("r6 canceled native composition deletion cannot repair a later owned CR del
   }
 });
 
+test("r6 canceled native marker cannot repair an explicit empty text replacement", async ({
+  page,
+}) => {
+  const field = await mount(page);
+  for (const kind of kinds) {
+    const value: RichText = [
+      [node("code", "ab"), node("word", "keep\r")],
+      [node(kind, "first\r\nsecond"), node("web", "outside\r\n")],
+    ];
+    await reset(field, value);
+    await choose(field, [0, 0, 1]);
+    // This protocol marker has no actual compositionstart event.
+    await field.evaluate((field) => {
+      field.addEventListener("beforeinput", (event) => event.preventDefault(), {
+        once: true,
+      });
+    });
+    expect(
+      await beforeinput(
+        field,
+        "deleteCompositionText",
+        [
+          [0, 0, 0],
+          [0, 0, 1],
+        ],
+        true,
+      ),
+    ).toBe(true);
+    expect(await richNodes(field)).toEqual(value);
+    await choose(field, [1, 0, 5], [1, 0, 6]);
+    const handled = await field.evaluate((field) => {
+      const event = new InputEvent("beforeinput", {
+        bubbles: true,
+        cancelable: true,
+        inputType: "insertText",
+        data: "",
+      });
+      field.dispatchEvent(event);
+      return event.defaultPrevented;
+    });
+    expect(handled).toBe(true);
+    await expect
+      .poll(() => richNodes(field))
+      .toEqual([
+        value[0],
+        [node(kind, "first\nsecond"), node("web", "outside\r\n")],
+      ]);
+  }
+});
+
 test("r6 partial ranges retain code and both link types", async ({ page }) => {
   const field = await mount(page);
   for (const [leftKind, rightKind] of [

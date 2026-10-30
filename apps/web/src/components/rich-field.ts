@@ -7,6 +7,7 @@ import {
   TextSelection,
   type Selection,
   type Transaction,
+  type Command,
 } from "prosemirror-state";
 import { EditorView } from "prosemirror-view";
 import { baseKeymap } from "prosemirror-commands";
@@ -383,6 +384,26 @@ export function richField(label: string, options: RichFieldOptions) {
     deletionCaret = null;
     return richInsertionSelection(state, from, to);
   }
+  function dispatchEdit(transaction: Transaction) {
+    view.dispatch(transaction.setMeta("richExplicit", true));
+  }
+  function commandKeymap(bindings: Record<string, Command>) {
+    return keymap(
+      Object.fromEntries(
+        Object.entries(bindings).map(([key, command]) => {
+          const owned: Command = (state, dispatch, view) =>
+            command(
+              state,
+              dispatch &&
+                ((transaction) =>
+                  dispatch(transaction.setMeta("richExplicit", true))),
+              view,
+            );
+          return [key, owned];
+        }),
+      ),
+    );
+  }
   const nodeViews = { word_link: linkNodeView, web_link: linkNodeView };
   function cancelDeleteRecovery() {
     if (!deleteRecovery) return;
@@ -436,9 +457,9 @@ export function richField(label: string, options: RichFieldOptions) {
     restoreDeleteDOM();
     deleteRecovery = null;
     if (view.state !== stage.state) return;
-    if (commit && stage.transaction) view.dispatch(stage.transaction);
+    if (commit && stage.transaction) dispatchEdit(stage.transaction);
     else if (!selection.eq(view.state.selection))
-      view.dispatch(view.state.tr.setSelection(selection));
+      dispatchEdit(view.state.tr.setSelection(selection));
   }
   function prepareDeletion(
     type: RichDeleteType,
@@ -488,7 +509,7 @@ export function richField(label: string, options: RichFieldOptions) {
             handleTextInput(view, from, to, value) {
               if (view.composing) return false;
               const selection = editingSelection(view.state, from, to);
-              view.dispatch(
+              dispatchEdit(
                 view.state.tr
                   .setSelection(selection)
                   .insertText(value)
@@ -499,7 +520,7 @@ export function richField(label: string, options: RichFieldOptions) {
           },
         }),
         history(),
-        keymap({
+        commandKeymap({
           "Mod-End": (state, dispatch, view) => {
             dispatch?.(state.tr.setSelection(TextSelection.atEnd(state.doc)));
             // Native focus can differ when the model already has this selection.
@@ -580,7 +601,7 @@ export function richField(label: string, options: RichFieldOptions) {
               dispatch && ((tr) => dispatch(tr.setMeta("richRuleUndo", true))),
             ),
         }),
-        keymap(baseKeymap),
+        commandKeymap(baseKeymap),
       ],
     });
   };
@@ -654,7 +675,9 @@ export function richField(label: string, options: RichFieldOptions) {
       const ownsCaret =
         transaction.getMeta("richDelete") ||
         transaction.getMeta("richRuleUndo");
-      if (ownsCaret) nativeEdit = null;
+      if (ownsCaret || transaction.getMeta("richExplicit")) nativeEdit = null;
+      if (!ownsCaret && transaction.getMeta("richExplicit"))
+        deletionCaret = null;
       if (transaction.docChanged && nativeEdit) {
         // Explicit editor commands do not carry the DOM reader's composition ID.
         if (
@@ -713,7 +736,7 @@ export function richField(label: string, options: RichFieldOptions) {
           );
         event.preventDefault();
         const { transaction } = prepareDeletion(type, undefined, selection);
-        if (transaction) view.dispatch(transaction);
+        if (transaction) dispatchEdit(transaction);
         return true;
       },
       input(_view, event) {
@@ -744,7 +767,7 @@ export function richField(label: string, options: RichFieldOptions) {
         deleteRichInput(
           view.state.tr.setSelection(selection),
           "deleteByCut",
-          view.dispatch,
+          dispatchEdit,
         );
         return true;
       },
@@ -763,7 +786,7 @@ export function richField(label: string, options: RichFieldOptions) {
             : null;
         clearMove();
         if (chosen && !chosen.eq(view.state.selection))
-          view.dispatch(view.state.tr.setSelection(chosen));
+          dispatchEdit(view.state.tr.setSelection(chosen));
         if (repair) view.focus();
         pointerFocus = false;
         return false;
@@ -828,7 +851,7 @@ export function richField(label: string, options: RichFieldOptions) {
           );
           if (input.cancelable) {
             input.preventDefault();
-            if (prepared.transaction) view.dispatch(prepared.transaction);
+            if (prepared.transaction) dispatchEdit(prepared.transaction);
           } else {
             const stage: DeleteRecovery = {
               ...prepared,
@@ -865,8 +888,9 @@ export function richField(label: string, options: RichFieldOptions) {
           insertionSelection(view, input, editingSelection);
         if (!selection) return false;
         input.preventDefault();
+        nativeEdit = null;
         if (!selection.eq(view.state.selection))
-          view.dispatch(view.state.tr.setSelection(selection));
+          dispatchEdit(view.state.tr.setSelection(selection));
         const { from, to } = view.state.selection;
         const text = input.data;
         const insert = () =>
@@ -876,7 +900,7 @@ export function richField(label: string, options: RichFieldOptions) {
             handler(view, from, to, text, insert),
           )
         )
-          view.dispatch(insert());
+          dispatchEdit(insert());
         return true;
       },
       compositionstart() {
@@ -1008,7 +1032,7 @@ export function richField(label: string, options: RichFieldOptions) {
     focus = true,
   ) => {
     const { from, to } = view.state.selection;
-    view.dispatch(
+    dispatchEdit(
       replaceInline(view.state, from, to, node)
         .scrollIntoView()
         .setMeta("richExternal", true),
@@ -1259,7 +1283,7 @@ export function richField(label: string, options: RichFieldOptions) {
                 Math.min(existing.offset, replacement.content.size),
             ),
           );
-          view.dispatch(tr.setMeta("richExternal", true));
+          dispatchEdit(tr.setMeta("richExternal", true));
           return true;
         },
         "Save",
@@ -1390,7 +1414,7 @@ export function richField(label: string, options: RichFieldOptions) {
         );
     tr.setMeta("uiEvent", "paste");
     tr.setSelection(TextSelection.near(tr.doc.resolve(tr.selection.to), -1));
-    view.dispatch(tr.scrollIntoView());
+    dispatchEdit(tr.scrollIntoView());
     view.focus();
   }
   function pasteDialog(text: string) {
