@@ -51,6 +51,9 @@ Each request has one system prompt, one user message, and one tool, `submit_answ
 Every request uses `tool_choice: "auto"`, which the tested provider requires.
 The application still accepts only one valid `submit_answer` call. A missing call receives correction instructions within the same three-answer limit.
 
+The [frontend specification](../docs/frontend.md#step-2-word-type) defines a target type-job request with full target IDs and virtual entries.
+The request described here changes when the implementation sends that target form.
+
 Only the type request adds `related` definitions that the server finds from the original meaning in its current dictionary snapshot.
 Up to three exact typed spelling definitions come first after trimming and NFC normalization.
 Ordinary editorial layers decide their order when available. Ties use meaning relevance, then event ID.
