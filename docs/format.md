@@ -989,8 +989,35 @@ A missing selection, unavailable body, uncertain authority, or unresolved status
 A known invalid body or unsupported permutation supplies no eligible virtual content.
 Withholding base content also withholds the derived content. A cached converted copy cannot bypass the retention decision.
 
+The following table maps base state to the virtual candidate's state in the same snapshot and view.
+Active and deprecated rows require an authenticated, selected base and a computable conversion.
+Missing content, an absent selection, or unresolved authority makes the virtual unavailable, even when the base status names active or deprecated.
+The response retains every applicable reason.
+
+| Base state | Virtual `Score.status` | Layer membership | `VirtualStatus.eligibility` | Package `search_status` |
+| --- | --- | --- | --- | --- |
+| Active | `active` | Ordinary active layers in the converted context | `eligible` | `active` |
+| Deprecated | `deprecated` | Retired layers after every active candidate in that context | `inactive` | `retired` |
+| Conflicted | `unavailable` | None | `unavailable` | `ineligible` |
+| Uncertain or unresolved | `unavailable` | None | `unavailable` | `ineligible` |
+| Unavailable | `unavailable` | None | `unavailable` | `ineligible` |
+| Missing body | `unavailable` | None | `unavailable` | `ineligible` |
+| Not selected | `unavailable` | None | `unavailable` | `ineligible` |
+
+`eligible` means that the virtual can participate in active ranking and search.
+`inactive` means that a readable, computable virtual has a known deprecated base. It remains readable through retired results and exact links.
+`unavailable` means that the evidence cannot establish an active or known deprecated candidate under these rules.
+A conflicted base therefore keeps its explicit conflict reason but supplies no virtual score or layer.
+Unavailable scores have no numerical values. Direct lookups return `score: null`, and word responses list the target in `unavailable_scores`.
+The package value above describes ordering eligibility. A missing projection produces no row, rather than a fabricated ineligible projection.
+
 Retiring or retracting a base uses its ordinary native or imported deprecation control.
 Deprecating the exact base deactivates judgments on all its virtuals. Their signed judgment records remain stored.
+For a known deprecated virtual, support, opposition, and net are exactly `[0,0]`, and `direct_reviewers` counts zero effective reviewers.
+Historical judgments remain inspectable as inactive history. They supply no score, effective reviewer, or comparison coefficient while deactivated.
+Deprecated virtuals never enter the unjudged-zero sublist, regardless of their frame review claim or retained judgment count.
+
+Restoration resolves the retained judgment registers normally, including judgments signed during deactivation. It never copies judgments from another target.
 Restoring that base reactivates those same judgments when eligibility and computability also return.
 A revision creates new virtual IDs and inherits no judgments, including the base author's judgments or blessings of the earlier virtual.
 The old virtual remains bound to the old base. A reader shows a newer-base notice and a separate link when a known revision exists.
@@ -1292,7 +1319,8 @@ Within a layer, start with full target ID order for stable presentation.
 The starting-order rule below refines only known unjudged zero-score candidates. Label the result as presentation order, not a quality distinction.
 The client offers more computation and exposes the intervals.
 
-For each layer, select only the sublist with a known count of zero effective direct reviewers and an exact net interval `[0,0]`.
+For each active layer, select only active candidates with a known count of zero effective direct reviewers.
+Further restrict that sublist to candidates with an exact net interval `[0,0]`.
 Every other candidate retains its occupied position, including candidates with nonzero reviewer counts or unresolved score or reviewer information.
 Sort that sublist by the following categories, then by full target ID. Write it back into only its original positions:
 
@@ -1480,6 +1508,9 @@ Signed headers also contain arbitrary bytes. Refusing one can make descendants p
 ### Derived conversion indexes
 
 Lexical search indexes virtual definitions by their canonical converted spelling, converted text, and new place 1 glosses.
+Canonical converted spellings retain every ordinary non-pattern match class, including prefix, token, and subsequence matches.
+Within one match class, matching stored headwords precede virtual spellings. This preference changes presentation order, not membership.
+Pagination retains every hit. Pattern search keeps its separate stored-spelling rule below.
 The [frontend specification](frontend.md#search-package-contract) defines conversion-capable package version 3 and its bounded row and manifest shapes.
 It uses candidate `target` IDs, with a virtual descriptor and `base_body` hash for each virtual row.
 A virtual row has no event, issuer, stored body hash, or independently claimed classification.
@@ -1493,6 +1524,8 @@ Disagreement makes the row unusable. Missing or withheld evidence makes its cove
 Admission of a derived row never grants base eligibility, imports content into an accepted selection, or supplies editorial influence.
 
 Version 3 retains structured frame content and enough base and rafsi evidence for the declared morphology coverage.
+Its manifest pins the morphology identifier and version under the [package contract](frontend.md#search-package-contract).
+Alias recovery uses that profile and the snapshot's retained rafsi assignments on stored rows. It never substitutes the client's current profile.
 The consumer resolves conversion-shaped queries against that evidence. It never enumerates every possible rafsi spelling.
 Competing established bases retain separate virtual targets and groups. Missing assignment evidence supplies an unresolved analysis rather than a guessed match.
 All generated rows and query alternatives follow the ordinary search and work limits.
@@ -1590,10 +1623,7 @@ Revoking a producer suspends its unreviewed artifacts under local cache policy. 
 
 Before indexing a shared artifact, the receiver authenticates the producer and hashes each object.
 It must make sure that dimensions and finite values satisfy the artifact profile.
-It resolves each publication event and body locally. For a virtual, it resolves the descriptor's exact base event and authenticated body instead.
-It makes sure that the target is eligible in the selected snapshot and view, then recomputes the exact recipe input bytes and hash.
-For a virtual entry, it also establishes descriptor identity and computability under the declared conversion rule.
-Missing content, mismatched hashes, invalid permutations, or unresolved eligibility prevent activation. They never supply a zero vector or an unverified base-vector association.
+It then applies the same [semantic target admission](#semantic-target-admission) that governs locally generated vectors and search hits.
 A valid producer signature proves provenance, not that inference produced the claimed vector.
 Trusted producers, reproducible model artifacts, and optional spot recomputation address that remaining trust decision.
 The receiver never downloads or executes model code merely because a peer profile names it.
@@ -1606,8 +1636,61 @@ Identical input bytes retain the same content hash. They never merge targets, ju
 A revision alone never moves or deactivates an earlier target's entry. Its exact base eligibility still controls activation.
 
 Bounded normal indexing jobs cover at most four valid virtual targets per exact base event.
-Coverage counts include eligible publication and virtual targets. The service reports indexed, pending, and unavailable counts for known targets.
-Missing source evidence marks coverage incomplete when the service cannot determine the valid virtual targets.
+All semantic coverage uses the [coverage object](#semantic-coverage) below, including profiles, search responses, and derived-data reports.
+
+#### Semantic target admission
+
+One admission procedure governs both signed and virtual targets before indexing or returning a semantic hit.
+It requires the requested snapshot, view, language, full profile, extraction version, and recomputed recipe input to match the retained association.
+The target must be active and eligible under that context. The vector must satisfy the profile's dimension, encoding, and normalization rules.
+
+For a publication, `target` equals its exact event ID.
+Its event, snapshot envelope representation, authenticated body hash, word, and language must match the retained association.
+Its `virtual` and `base_body` fields are null.
+
+For a virtual, `target` must equal the hash of its exact descriptor.
+The snapshot authenticates the descriptor's base event, its envelope representation, and its body hash, which must equal `base_body`.
+The shared core must reproduce its canonical converted word, language, and projection under the descriptor's conversion rule.
+The full recomputed recipe input bytes and hash must match the association under the same profile and extraction version.
+Its own event and body fields are null. It needs no envelope or signed body of its own.
+
+Missing content, mismatched bindings, invalid permutations, or unresolved eligibility prevent admission for either target kind.
+They never supply a zero vector or a guessed base-vector association.
+Trusted admission projections can establish these bindings without rereading original bodies during a scan. They must retain the same authenticated evidence.
+
+#### Semantic coverage
+
+`SemanticCoverage` is the single coverage object for one profile, snapshot, view, and selected language scope.
+It contains exactly these fields:
+
+```text
+SemanticCoverage = {
+  signed: {indexed: integer, eligible: integer, pending: integer, failed: integer},
+  virtual: {indexed: integer, eligible: integer, pending: integer, failed: integer},
+  undetermined_bases: integer
+}
+```
+
+All counts are nonnegative safe integers. `signed` counts publication targets, and `virtual` counts virtual targets.
+Each target counts once by full target ID, even when aliases share it or several targets reuse identical vector bytes.
+For each kind, `eligible = indexed + pending + failed`.
+
+`eligible` counts known active candidates that pass selection, status, content, and conversion requirements in the selected context.
+`indexed` counts those candidates with an admitted, compatible vector and an exact current association.
+`pending` counts the remaining candidates awaiting preparation, queued work, an in-flight request, or a selected retry.
+`failed` counts the remaining candidates with a known failure that blocks their current attempt, including `input_limit`, invalid vectors, and parked failures.
+An available admitted vector takes precedence over a failed earlier attempt. A selected retry moves a failed target to pending.
+
+`undetermined_bases` counts selected bases whose missing content, unresolved status, or missing evidence prevents determination of their eligible virtual targets.
+Count each such base once, rather than inventing between one and four failed virtuals.
+A known null frame or unsupported permutation determines zero targets and adds nothing to this count.
+Missing alias analysis alone adds no undetermined base when the canonical conversions remain computable.
+Known deprecated and unselected bases add nothing to semantic eligibility or `undetermined_bases`.
+
+The term unavailable maps to `pending` when a known eligible target awaits work, or `failed` when a known failure blocks it.
+If the target set itself cannot be determined, use `undetermined_bases` instead of invented virtual counts.
+Inactive, ineligible, and unresolved targets stay outside both eligible totals. Their status and reasons remain available through ordinary candidate diagnostics.
+Nonzero pending, failed, or undetermined counts identify incomplete coverage. Zero counts describe only the known inventory, not the whole network.
 
 Derived exchange uses these optional endpoints, separate from `/api/v1`:
 
@@ -2159,6 +2242,9 @@ Implementation starts with shared fixtures for these cases:
 43. Required nullable embedding-index fields, wrong descriptor and body bindings, duplicate targets, and sorting by full target ID.
 44. Base-selection changes, retirement, withholding, restoration, and revised targets without moving old vector associations or judgments.
 45. Bounded virtual-indexing jobs and explicit coverage counts that include eligible virtual targets without inventing coverage from unavailable source evidence.
+46. Base-state mappings with inactive deprecated virtuals after active candidates, zero effective reviewers during deactivation, and no retired candidate in the unjudged-zero sublist.
+47. One semantic admission procedure for signed and virtual targets, with recomputed inputs and no invented virtual envelope or body.
+48. Shared coverage objects with separate signed and virtual partitions, complete count arithmetic, and one count per base with indeterminate conversions.
 
 The implementations must agree on logical state from the same fixtures. Their certified bounds must contain independently calculated exact small-graph scores.
 Performance measurements must cover the imported dictionary and adversarial trust graphs. The design does not claim completed runtime benchmarks.

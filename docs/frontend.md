@@ -168,6 +168,11 @@ Each result keeps the display spelling of its selected definition. Alternative d
 A normalized exact headword match uses the same class as its display spelling.
 Rank result classes in this order: exact headword, exact gloss, exact component sequence, contiguous sequence, headword prefix, gloss prefix, ordered subsequence, then token matches.
 Ordinary text queries keep their existing lexical class order.
+Canonical converted spellings use these same classes, including prefix, token, and subsequence matches.
+Within one match class, matching stored headwords rank before virtual spellings. The class order still takes precedence over that preference.
+A grouped word card gets stored priority only when a stored candidate supplies its match in that same class.
+Other ties retain the ordinary spelling and ID order. Thus `te` shows stored matches before virtual matches within each shared class.
+Server pagination retains every hit. The browser keeps its documented display limits and reports remaining hits.
 
 A query written as `/.../` selects regular expression matching. It matches anywhere in a headword unless the query supplies anchors.
 For example, `/^ba/` matches a start, and `/nu$/` matches an end.
@@ -362,16 +367,22 @@ One search box shows three groups with visible headings: Lojban words, Definitio
 There is no search-class or meaning-mode switch.
 Lojban words includes headword, segmented, pattern, and rafsi matches. Definitions includes gloss and text matches.
 A word can appear in both groups when it matches both. Each group keeps its own match-class order and alternatives.
-When every space-separated query word has an exact normalized headword in the eligible language index, Lojban words comes first. Otherwise, Definitions comes first.
-A known complete headword also puts Lojban words first. Case, acute stress, and apostrophe aliases follow the headword rules above.
+When every space-separated query word has a known complete spelling in the eligible language index, Lojban words comes first.
+Otherwise, Definitions comes first. A known complete query also puts Lojban words first.
+Known spellings include stored headwords, canonical converted spellings, and established conversion aliases whose virtual rows pass the eligibility and retired-results filters.
+Case, acute stress, and apostrophe aliases follow the headword rules above.
+
 For this test, remove pause periods and commas and read `h` as an apostrophe in each complete spelling.
 Do not segment a query word into cmavo. Other punctuation and unknown words do not count as known spellings.
 A compound cmavo spelling counts only when the dictionary holds that complete spelling as a headword.
+An established `tervecnu` alias counts without a stored `tervecnu` headword when its virtual row passes those same filters.
+An inactive alias counts only with the retired-results filter. An unavailable or unresolved alias never counts.
 
 For example, known `lo` and `ve` never make `love` a known query word. Known `mi` and `klama` make `mi klama` known.
 The forms `mi klama.`, `.i mi klama`, `coi, do`, `la .alis.`, and `kihe` count when their complete words exist.
 
 Server ordering applies its language, effective-receipt, eligibility, and retired-results filters before that test.
+For virtual rows, receipt and eligibility checks resolve their authenticated base. They never require a synthetic virtual receipt.
 Local ordering uses view-bound evidence in version 3 packages from the same snapshot. It follows the same eligibility and retired-results rules.
 
 Older packages without that evidence cannot establish known words. A visible notice asks for a new package, and Definitions comes first.
@@ -486,6 +497,14 @@ Optional `definition`, `snapshot`, and `view` parameters pin the exact base even
 The page makes sure that a pinned base matches the spelling and language. It never substitutes another revision after failure.
 Without a base pin, it shows every eligible computable alternative for that base word in the selected language.
 A `form=tervecnu` parameter keeps the requested spelling after the same morphological analysis establishes it.
+That alias page reads `GET /words/WORD_ID` for the alias word ID and includes stored `tervecnu` definitions and its matching virtuals.
+For an alias without a stored headword, the client supplies `spelling=tervecnu` so that the server can recover the spelling from the request.
+The server requires its NFC word object to hash to `WORD_ID`. A mismatch returns HTTP 400.
+
+The word response owns the combined `layers`, `scores`, `virtuals`, and `virtual_statuses`. Clients never concatenate independently ranked layer lists.
+It applies status precedence first, with deprecated candidates after active candidates, and excludes unavailable candidates from layers.
+For active candidates, the format's [comparison across contexts](format.md#bounded-calculation) subtracts separate score intervals when their weighted context graphs differ.
+The virtual keeps its canonical converted context. A stored alias definition keeps its own word context, with no third calculation or transferred score.
 
 An exact virtual link uses `/virtual-definition/<virtual-id>?base=E&conversion=te&rule=place-conversion-v1`.
 It can also pin `snapshot` and `view`. The client recomputes the ID from the descriptor before accepting that link.
@@ -531,13 +550,16 @@ Native definitions and virtuals with reviewed base frames precede unjudged impor
 Within each category, full target ID decides presentation order. Other candidates keep the positions that ordinary layer ordering gives them.
 A native published predicate frame is its author's review claim. An imported frame requires `legacy.conversion.review: "reviewed"` for this preference.
 Those claims establish no expertise guarantee. This order adds no numerical score or reviewer.
-Without a computable virtual, an ordinary imported definition remains first among the available candidates under those rules.
+Without a computable virtual, an ordinary imported definition stays in the candidate list and keeps its category.
 Unknown scores or reviewer evidence never count as unjudged zero.
 
 A new base revision creates a new virtual target. Judgments stay with the old base revision and never move automatically.
 When a known revision exists, the old block says “A newer base revision is available” and links to it separately.
 The page retains the exact old content, score, and target. An unavailable child does not replace that content or establish a new preferred revision.
 Deprecating or retracting the base deactivates its virtual's judgments. Restoring eligibility reactivates those same judgments.
+The format's [base-state table](format.md#identity-eligibility-and-authorship) defines score status, layers, virtual eligibility, and package status for every base state.
+An `inactive` virtual has a known deprecated base and readable converted content. It sorts after active candidates and never enters the zero-reviewer sublist.
+Deactivated judgments supply no score or effective direct-reviewer count. They remain inspectable as history and resolve normally after restoration.
 Withheld or missing base bytes make the virtual unavailable. A cached converted copy never bypasses a content refusal.
 Virtuals have no separate Retire or Restore control. Those actions apply to the controlled base publication.
 
@@ -550,6 +572,8 @@ The same morphology rules resolve spelling aliases and ambiguous bases in local 
 Group matching alternatives under the requested converted spelling. Do not repeat a word card for every base revision or alias.
 Search previews identify virtual content and link to its converted page or exact virtual target.
 Ordinary match classes and limits apply. Pattern search scans stored headwords and rafsi without enumerating virtual spellings.
+Prefix, token, and subsequence matching on canonical converted spellings remain enabled.
+Within each class, matching stored headwords precede virtual spellings under the section 4 rule. Pagination preserves all hits.
 
 The single search box places virtual definitions in the same three groups as stored definitions:
 
@@ -1509,8 +1533,8 @@ Public reads need no account. Public event admission follows published quotas an
 | `GET /package-parts/HASH`                                         | Canonical derived search-part bytes, with a 4 MiB uncompressed limit.                                                                                                                                                |
 | `GET /packages/LANGUAGE?snapshot=S&version=N`                     | Version 3 search package manifest and content hashes, including stored and virtual candidate rows.                                                                                                                   |
 | `POST /search`                                                    | Remote draft search. The JSON body carries the GET search fields and returns the same `SearchResponse`.                                                                                                              |
-| `GET /search?q=Q&language=L&view=V&snapshot=S&retired=1`          | Optional remote results with view and snapshot metadata. Without `retired=1` the results hold active publications only. With it, each preview carries the publication status. Any other `retired` value is HTTP 400. |
-| `GET /words/WORD_ID?view=V&snapshot=S&reviewers=1`                | Candidate IDs, rafsi claims, and attributed ranking summary. `reviewers=1` adds bounded reviewer details to each score. Any other `reviewers` value is HTTP 400.                                                     |
+| `GET /search?q=Q&language=L&view=V&snapshot=S&retired=1`          | Active publications and active virtual rows are ordinary hits. Retired virtuals follow `retired=1`. Each virtual preview carries the status derived from its base. Signed previews retain publication status. Other `retired` values return HTTP 400. |
+| `GET /words/WORD_ID?view=V&snapshot=S&reviewers=1&spelling=FORM`  | Stored and virtual candidate IDs with combined layers, rafsi claims, and attributed scores. Optional `spelling` resolves an unstored alias and must match `WORD_ID`. `reviewers=1` adds bounded details. Other `reviewers` values return HTTP 400. |
 | `GET /virtual-definitions/ID?base=E&conversion=C&rule=R&view=V&snapshot=S` | Resolve and compute an exact virtual target, its base status, and independent score. No stored event or body is returned for the virtual. |
 | `GET /identities/KEY?view=V&snapshot=S`                           | Effective profile claims, continuity state, and activity counts for one signing key.                                                                                                                                 |
 | `GET /identities/KEY/activity?view=V&snapshot=S&after=ID&limit=N` | Events signed by that key in event-ID order, with their interpretation and local receipt position.                                                                                                                   |
@@ -1528,7 +1552,9 @@ Optional `group` selects `lojban` or `definitions` before matching and paginatio
 Without it, the earlier combined lexical order remains available. Signed records do not change.
 Version 3 package rows carry the view-bound ordering evidence defined below.
 Search responses can include `all_lojban`. It states whether the eligible index knows the complete normalized headword or every space-separated query word.
-Each query word must match one complete normalized dictionary spelling. Case, acute stress, and apostrophe aliases follow section 4.
+This test also accepts canonical converted spellings and established aliases whose virtual rows pass the same eligibility and retired-results filters.
+For example, `tervecnu` sets `all_lojban: true` without a stored headword when its virtual row passes those filters.
+Each query word must match a complete normalized spelling under section 4. Case, acute stress, and apostrophe aliases use its rules.
 Remove pause periods and commas and read `h` as an apostrophe in each complete spelling.
 Segmented cmavo pieces, other punctuation, and unrecognized text do not establish that spelling.
 The response uses the same language, view, snapshot, receipt, eligibility, and retired-results filters as its hits.
@@ -1715,7 +1741,8 @@ SearchResponse = {
   snapshot: ID, view: event-ID, query: string, language: string,
   segmentation?: "complete" | "limited", all_lojban?: boolean,
   hits: [{word: WordObject, word_id: word-ID, match: match-kind,
-          definitions: [candidate-ID]}], virtuals: [VirtualReference], next: cursor | null
+          definitions: [candidate-ID]}], virtuals: [VirtualReference],
+  virtual_statuses: [VirtualStatus], next: cursor | null
 }
 VirtualDescriptor = {base: event-ID, conversion: "se" | "te" | "ve" | "xe", rule: "place-conversion-v1"}
 VirtualReference = {id: virtual-ID, descriptor: VirtualDescriptor, base_body: body-ID,
@@ -1771,6 +1798,9 @@ Every returned virtual target has one `VirtualReference` in the same response. R
 Virtual statuses refer to their real base status. They never fabricate a publication-status event for the virtual.
 `statuses` contains signed publications only. `virtual_statuses` contains one entry for each returned virtual target.
 The search response's `virtuals` array describes every virtual ID in its hits. A display alias does not replace its canonical score word.
+Its `virtual_statuses` supplies each virtual preview's base-derived state under the format's base-state table, including retired hits.
+`eligible` permits active ranking. `inactive` identifies readable content from a known deprecated base. `unavailable` supplies no ranked or ordinary search candidate.
+The table's unavailable score status returns no numerical `Score`. Direct lookups use null, and word responses use `unavailable_scores`.
 Virtual references and candidate fields are required in this prelaunch API revision. Existing prototype data must be rebuilt where those fields are absent.
 
 A virtual lookup requires its complete descriptor in the query. The server makes sure that it hashes to the requested ID.
@@ -1876,7 +1906,7 @@ With `packages_available: true`, empty descriptor arrays mean that the server ha
 
 The availability field is a required boolean. The declared view is a required event ID in this prelaunch contract.
 
-A package manifest contains exactly `version`, `language`, `snapshot`, `search_view`, and `parts`. The target package version is 3.
+A package manifest contains exactly `version`, `language`, `snapshot`, `search_view`, `morphology`, and `parts`. The target package version is 3.
 The manifest response lists that package in `packages` and identifies version 3 in `package_versions`.
 Requests omit `version` or select `version=3`. Other versions are unavailable for this prelaunch target contract.
 Each part contains `hash`, `bytes`, and `count`. Its hash identifies a canonical JSON array of candidate rows.
@@ -1887,6 +1917,18 @@ These derived parts use their dedicated endpoint, rather than the 256 KiB event-
 `search_view` is the selected signed view ID that binds ordering evidence for every row in that snapshot.
 The browser retains that binding once per saved package and passes it to local search.
 The package never repeats the view in each row or part.
+
+`morphology` contains exactly `id` and `version`, as strings from the [morphology profiles](morphology.md).
+The current package profile uses `https://github.com/int19h/jbovlacku/blob/main/docs/morphology.md#extended-lujvo` with version `4`.
+A different supported profile requires its declared identifier and version, plus a rebuilt package manifest.
+The manifest hash binds that pair and its parts. The snapshot and part hashes bind the retained rafsi evidence.
+Alias recovery uses the pinned profile's segmentation and joins, together with rafsi assignments on stored rows.
+Remote search and alias word responses use that same pinned profile for the package's context.
+It never substitutes a newer local profile or enumerates all possible alias spellings.
+
+Missing assignment evidence keeps the affected parse unresolved. A false `rafsi_complete` never proves that an absent assignment does not exist.
+Retained evidence can expose candidates, but incomplete claims cannot establish uniqueness. Competing bases remain separate groups with their own virtual IDs.
+Missing parts or an unsupported profile expose incomplete alias coverage. Canonical spellings remain usable when their own rows pass authentication.
 
 Each version 3 row contains these fields:
 
@@ -1912,6 +1954,7 @@ Its `word` is the canonical converted word. Its text, frame, and glosses come fr
 `search_status` binds each row's known-word ordering evidence to `search_view`.
 Active means eligible, effective, and active for ordinary remote search.
 Retired means eligible and effective, but included only with the retired-results filter. It includes unresolved non-active statuses under that filter.
+That unresolved-status rule applies to stored publications. Virtual rows follow the format's base-state table: deprecated is retired, and unresolved is ineligible.
 Ineligible means that the candidate cannot establish a known query word in that view.
 A virtual derives this status from its exact base eligibility, status, and computability. It needs no synthetic publication receipt.
 This evidence changes with status, eligibility, receipt, or selected-view changes. It is a derived assertion, not signed publication status.
@@ -2030,6 +2073,11 @@ The implementer must demonstrate these end-to-end cases before public release:
 45. Index virtual semantic vectors from their exact converted recipe. Preserve target associations during exact-input deduplication and expose incomplete virtual coverage.
 46. Place virtual spelling matches in Lojban words, converted gloss and text matches in Definitions, and vector matches in Similar in meaning.
 47. Keep virtual identities across search groups and aliases. Bind known-word ordering to the package's view and snapshot without expanding virtual pattern candidates.
+48. Admit both semantic target kinds under one procedure and sort equal distances by full target ID. Reject mismatched base bindings and inputs.
+49. Return active virtual lexical hits and base-derived retired previews. Give `tervecnu` the same known-word ordering locally and remotely under identical filters.
+50. Match canonical converted prefixes and tokens. Within each class, put stored matches first and retain virtual matches through pagination.
+51. Return combined stored and virtual layers for an alias word. Keep its score contexts separate and recover aliases with the package's pinned morphology.
+52. Reconcile profile and search coverage through `SemanticCoverage`, including failed targets, shared vectors, and bases with indeterminate conversions.
 
 The app must also measure cold package load, local search latency, signature latency, backup unlock time, and ranking cost on representative mobile devices.
 No target in this design constitutes a completed browser compatibility or accessibility audit.
@@ -2179,12 +2227,17 @@ The API adds the following endpoints. The server implements each contract when i
 | `DELETE /jobs/ID`          | Request cancellation of that caller's job.                                              |
 | `GET /assist/prompts/FILE` | Public text of a prompt file named by the inference log.                                |
 
-Embedding-profile responses contain exactly profiles. Each entry contains id, label, query_available, indexed, eligible, pending, and limitations.
-Id is a profile hash. Counts are nonnegative integers. Limitations is an array of strings. Query_available is a boolean.
+Embedding-profile responses contain exactly profiles. Each entry contains id, label, query_available, coverage, and limitations.
+Id is a profile hash. Coverage is the format's [SemanticCoverage](format.md#semantic-coverage) object, with no separate flattened counts.
+Limitations is an array of strings. Query_available is a boolean.
 Optional snapshot, view, and language parameters select the profile response's coverage context.
 Without them, coverage uses the completed snapshot, configured view, and all languages.
 Query availability requires a compatible published index for the requested view and selected profile.
-Each result must match the exact event, envelope, body, word, language, and extraction version in the requested snapshot.
+
+Each result passes the format's single [semantic target admission](format.md#semantic-target-admission) procedure under the requested snapshot, view, language, and profile.
+A publication matches its event, envelope representation, authenticated body, word, language, extraction version, and recomputed input.
+A virtual matches its descriptor, authenticated base envelope and body, canonical converted word, language, extraction version, and recomputed input.
+It has no event, envelope, or signed body of its own. Both target kinds require an exact compatible vector association.
 Pending or failed entries remain outside the results. Other indexed definitions remain searchable.
 
 The semantic request contains query, language, snapshot, view, profile, and limit. Query is nonempty text of at most 16 KiB.
@@ -2196,8 +2249,10 @@ Each hit contains `target`, nullable `event`, nullable `virtual`, nullable `base
 A publication uses its event as target. A virtual uses its own ID, descriptor, and authenticated base body hash, with null event.
 Word is the candidate's canonical word ID. Distance is a finite JSON number under this external API.
 
-Position is the one-based search order. Equal distances use target-ID order. Coverage contains indexed, eligible, pending, and failed target counts.
-Those counts include eligible signed and virtual targets separately in their details. A base revision never silently stands in for a missing virtual vector.
+Position is the one-based search order. Equal distances use full target-ID order.
+Coverage is the same `SemanticCoverage` object used by embedding-profile responses.
+Its `signed` and `virtual` objects each contain indexed, eligible, pending, and failed counts. `undetermined_bases` counts bases with indeterminate virtual coverage.
+The format defines their scopes, arithmetic, and mapping of unavailable cases. A base revision never stands in for a missing virtual vector.
 No semantic response labels its distance as a dictionary score. A word-page request supplies editorial calculations separately.
 
 The assist request contains operation, draft_revision, language, meaning, current, context, and profile.
