@@ -1188,7 +1188,7 @@ function publishView(
 ): string {
   const body = {
     name: "Pinned Lensisku SQL import",
-    description: [["Literal extraction from the pinned local SQL snapshot."]],
+    description: [["Attributed extraction from the pinned local SQL snapshot."]],
     roots: [...options.roots].sort((a, b) =>
       a.identity.localeCompare(b.identity),
     ),

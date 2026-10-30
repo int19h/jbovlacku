@@ -879,7 +879,7 @@ export function importCapture(options: ImportOptions): ImportResult {
   );
   const viewBody = {
     name: "Pinned Lensisku import",
-    description: [["Literal extraction of a pinned local Lensisku capture."]],
+    description: [["Attributed extraction of a pinned local Lensisku capture."]],
     roots,
     rafsi_threshold: { numerator: 1, denominator: 1 },
     H: { numerator: 3, denominator: 1 },
