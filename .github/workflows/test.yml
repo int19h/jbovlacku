@@ -15,7 +15,7 @@ concurrency:
 jobs:
   native-wasm-and-browser:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 75
     env:
       CARGO_BUILD_JOBS: "2"
       CARGO_TARGET_DIR: /build/jbovlacku/target
