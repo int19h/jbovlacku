@@ -19,8 +19,10 @@ import { CIRCLED, placeGlyph } from "../model/place-glyphs.ts";
 import {
   editorToRich,
   editedTextPlugin,
-  deleteRichBackward,
-  deleteRichForward,
+  deleteRichInput,
+  isRichDeleteType,
+  type RichDeleteType,
+  type RichDeleteRange,
   pastedRichText,
   placeInputPlugins,
   replaceInline,
@@ -168,6 +170,103 @@ function insertionSelection(view: EditorView, input: InputEvent) {
     return null;
   }
 }
+
+/** Read a deletion extent separately from the actual native caret. */
+function deletionRange(
+  view: EditorView,
+  input?: InputEvent,
+): RichDeleteRange | null {
+  const range = input?.getTargetRanges?.()[0];
+  if (
+    !range ||
+    !view.dom.contains(range.startContainer) ||
+    !view.dom.contains(range.endContainer)
+  )
+    return null;
+  try {
+    return {
+      from: view.posAtDOM(range.startContainer, range.startOffset, -1),
+      to: view.posAtDOM(range.endContainer, range.endOffset, 1),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Ask only for selection motion. Never let the browser delete text. */
+function deletionMotion(
+  view: EditorView,
+  type: RichDeleteType,
+): RichDeleteRange | null {
+  if (
+    !type.startsWith("deleteWord") &&
+    !type.startsWith("deleteSoftLine") &&
+    type !== "deleteEntireSoftLine"
+  )
+    return null;
+  const selection = view.dom.ownerDocument.getSelection();
+  if (!selection?.anchorNode || !selection.focusNode || !selection.modify)
+    return null;
+  const anchor = selection.anchorNode,
+    head = selection.focusNode;
+  const anchorOffset = selection.anchorOffset,
+    headOffset = selection.focusOffset;
+  try {
+    if (type === "deleteEntireSoftLine")
+      selection.modify("move", "backward", "lineboundary");
+    selection.modify(
+      "extend",
+      type.endsWith("Backward") ? "backward" : "forward",
+      type.startsWith("deleteWord") ? "word" : "lineboundary",
+    );
+    const range = selection.rangeCount ? selection.getRangeAt(0) : null;
+    if (
+      !range ||
+      !view.dom.contains(range.startContainer) ||
+      !view.dom.contains(range.endContainer)
+    )
+      return null;
+    return {
+      from: view.posAtDOM(range.startContainer, range.startOffset, -1),
+      to: view.posAtDOM(range.endContainer, range.endOffset, 1),
+    };
+  } catch {
+    return null;
+  } finally {
+    // Queued selectionchange events must observe the restored or dispatched caret.
+    selection.setBaseAndExtent(anchor, anchorOffset, head, headOffset);
+  }
+}
+
+function deletionKey(event: KeyboardEvent): RichDeleteType | null {
+  const mac = /Mac|iP(hone|[oa]d)/u.test(navigator.platform);
+  const {
+    key,
+    ctrlKey: ctrl,
+    altKey: alt,
+    metaKey: meta,
+    shiftKey: shift,
+  } = event;
+  if (mac && !meta && !shift) {
+    if (ctrl && !alt && key === "h") return "deleteContentBackward";
+    if (ctrl && !alt && key === "d") return "deleteContentForward";
+    if (alt && !ctrl && key === "d") return "deleteWordForward";
+    if (ctrl && alt && key === "Backspace") return "deleteWordForward";
+  }
+  if (key !== "Backspace" && key !== "Delete") return null;
+  if (shift && key === "Delete") return null; // Keep the clipboard cut path.
+  if (mac && meta && !ctrl && !alt)
+    return key === "Backspace"
+      ? "deleteSoftLineBackward"
+      : "deleteSoftLineForward";
+  if ((!mac && ctrl && !meta && !alt) || (mac && alt && !meta && !ctrl))
+    return key === "Backspace" ? "deleteWordBackward" : "deleteWordForward";
+  if (!ctrl && !meta && !alt)
+    return key === "Backspace"
+      ? "deleteContentBackward"
+      : "deleteContentForward";
+  return null;
+}
 /** ProseMirror can reuse a link's span when only its label changes. */
 function linkNodeView(node: EditorNode) {
   const type = node.type.name;
@@ -248,9 +347,68 @@ export function richField(label: string, options: RichFieldOptions) {
   let blurSelection: { doc: EditorNode; selection: Selection | null } | null =
     null;
   let blurTimer: number | undefined;
-  let nativeEdit: { doc: EditorNode; from: number; to: number } | null = null;
+  let nativeEdit: {
+    doc: EditorNode;
+    from: number;
+    to: number;
+    deletion?: boolean;
+  } | null = null;
   let compositionDoc: EditorNode | null = null;
   let compositionGeneration = 0;
+  interface DeleteRecovery {
+    type: RichDeleteType;
+    state: EditorState;
+    transaction: Transaction | null;
+    selection: Selection;
+    timer: ReturnType<typeof setTimeout>;
+    settling: boolean;
+  }
+  let deleteRecovery: DeleteRecovery | null = null;
+  const nodeViews = () => ({
+    // New function identities make ProseMirror rebuild its DOM during recovery.
+    word_link: (node: EditorNode) => linkNodeView(node),
+    web_link: (node: EditorNode) => linkNodeView(node),
+  });
+  function cancelDeleteRecovery() {
+    if (!deleteRecovery) return;
+    clearTimeout(deleteRecovery.timer);
+    deleteRecovery = null;
+  }
+  function settleDeleteRecovery(stage: DeleteRecovery, commit: boolean) {
+    if (deleteRecovery !== stage || stage.settling || view.isDestroyed) return;
+    stage.settling = true;
+    clearTimeout(stage.timer);
+    // Keep the guard active while rendering can flush native parsed mutations.
+    view.setProps({ nodeViews: nodeViews() });
+    deleteRecovery = null;
+    if (view.state !== stage.state) return;
+    if (commit && stage.transaction) view.dispatch(stage.transaction);
+    else if (!stage.selection.eq(view.state.selection))
+      view.dispatch(view.state.tr.setSelection(stage.selection));
+  }
+  function prepareDeletion(type: RichDeleteType, input?: InputEvent) {
+    const selection = readNativeSelection() ?? view.state.selection;
+    let transaction: Transaction | null = null;
+    const dispatch = (tr: Transaction) => {
+      transaction = tr;
+    };
+    const ruleUndo =
+      type === "deleteContentBackward" &&
+      selection.empty &&
+      selection.eq(view.state.selection) &&
+      undoInputRule(view.state, (tr) =>
+        dispatch(tr.setMeta("richRuleUndo", true)),
+      );
+    if (!ruleUndo)
+      deleteRichInput(
+        view.state.tr.setSelection(selection),
+        type,
+        dispatch,
+        deletionRange(view, input) ??
+          (selection.empty ? deletionMotion(view, type) : null),
+      );
+    return { transaction, selection };
+  }
   let dialog: HTMLDialogElement | null = null;
   let editLink: HTMLButtonElement | undefined;
   const rulePlugins = placeInputPlugins({
@@ -345,12 +503,6 @@ export function richField(label: string, options: RichFieldOptions) {
             dispatch?.(state.tr.insertText("\n"));
             return true;
           },
-          Backspace: (state, dispatch) =>
-            undoInputRule(
-              state,
-              dispatch && ((tr) => dispatch(tr.setMeta("richRuleUndo", true))),
-            ) || deleteRichBackward(state, dispatch),
-          Delete: deleteRichForward,
           "Mod-z": (state, dispatch) =>
             undo(
               state,
@@ -422,7 +574,7 @@ export function richField(label: string, options: RichFieldOptions) {
   };
   view = new EditorView(host, {
     state: state(),
-    nodeViews: { word_link: linkNodeView, web_link: linkNodeView },
+    nodeViews: nodeViews(),
     attributes: {
       id,
       class: "field rich-editor",
@@ -433,9 +585,16 @@ export function richField(label: string, options: RichFieldOptions) {
       ...(options.lang ? { lang: options.lang } : {}),
     },
     dispatchTransaction(transaction) {
+      if (deleteRecovery) {
+        if (transaction.docChanged) settleDeleteRecovery(deleteRecovery, true);
+        return;
+      }
       if (transaction.docChanged && nativeEdit) {
         // Explicit editor commands do not carry the DOM reader's composition ID.
-        if (transaction.getMeta("composition") !== undefined) {
+        if (
+          nativeEdit.deletion ||
+          transaction.getMeta("composition") !== undefined
+        ) {
           preserveOutsideNativeEdit(transaction, nativeEdit);
           if (view.composing)
             preserveComposingText(view, transaction, nativeEdit);
@@ -451,6 +610,25 @@ export function richField(label: string, options: RichFieldOptions) {
       }
     },
     handleDOMEvents: {
+      keydown(view, event) {
+        if (event.isComposing || event.keyCode === 229) return false;
+        const type = deletionKey(event);
+        if (!type) return false;
+        if (deleteRecovery) settleDeleteRecovery(deleteRecovery, false);
+        event.preventDefault();
+        const { transaction } = prepareDeletion(type);
+        if (transaction) view.dispatch(transaction);
+        return true;
+      },
+      input(_view, event) {
+        const stage = deleteRecovery;
+        if (!stage) return false;
+        settleDeleteRecovery(
+          stage,
+          (event as InputEvent).inputType === stage.type,
+        );
+        return true;
+      },
       focus(view) {
         const before =
           blurSelection?.doc === view.state.doc ? blurSelection : null;
@@ -485,6 +663,44 @@ export function richField(label: string, options: RichFieldOptions) {
       },
       beforeinput(view, event) {
         const input = event as InputEvent;
+        if (deleteRecovery) settleDeleteRecovery(deleteRecovery, false);
+        if (
+          input.inputType === "deleteCompositionText" &&
+          (input.isComposing || view.composing)
+        ) {
+          const ranges = input.getTargetRanges?.();
+          const range = ranges?.length === 1 ? ranges[0] : null;
+          const target = deletionRange(view, input);
+          if (
+            range &&
+            target &&
+            range.startContainer === range.endContainer &&
+            range.startContainer.nodeType === Node.TEXT_NODE &&
+            view.state.doc
+              .resolve(target.from)
+              .sameParent(view.state.doc.resolve(target.to))
+          ) {
+            nativeEdit = { doc: view.state.doc, ...target, deletion: true };
+            return false;
+          }
+        }
+        if (isRichDeleteType(input.inputType)) {
+          const prepared = prepareDeletion(input.inputType, input);
+          if (input.cancelable) {
+            input.preventDefault();
+            if (prepared.transaction) view.dispatch(prepared.transaction);
+          } else {
+            const stage: DeleteRecovery = {
+              ...prepared,
+              type: input.inputType,
+              state: view.state,
+              settling: false,
+              timer: setTimeout(() => settleDeleteRecovery(stage, false), 0),
+            };
+            deleteRecovery = stage;
+          }
+          return true;
+        }
         if (!input.cancelable && input.inputType === "insertCompositionText") {
           const selection = insertionSelection(view, input);
           if (selection)
@@ -577,10 +793,7 @@ export function richField(label: string, options: RichFieldOptions) {
       const to = selection.isCollapsed
         ? from
         : view.posAtDOM(selection.focusNode, selection.focusOffset, 1);
-      return TextSelection.between(
-        view.state.doc.resolve(from),
-        view.state.doc.resolve(to),
-      );
+      return richInsertionSelection(view.state, from, to);
     } catch {
       return null;
     }
@@ -627,6 +840,7 @@ export function richField(label: string, options: RichFieldOptions) {
       current = value;
       nativeEdit = null;
       if (!unchanged) {
+        cancelDeleteRecovery();
         compositionGeneration++;
         compositionDoc = null;
       }
@@ -1076,6 +1290,7 @@ export function richField(label: string, options: RichFieldOptions) {
     node.showModal();
   }
   onDisconnect(wrapper, () => {
+    cancelDeleteRecovery();
     nativeEdit = null;
     compositionGeneration++;
     compositionDoc = null;
