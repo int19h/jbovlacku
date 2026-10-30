@@ -364,6 +364,7 @@ export function richField(label: string, options: RichFieldOptions) {
     settling: boolean;
   }
   let deleteRecovery: DeleteRecovery | null = null;
+  let restoringDelete = false;
   const nodeViews = () => ({
     // New function identities make ProseMirror rebuild its DOM during recovery.
     word_link: (node: EditorNode) => linkNodeView(node),
@@ -374,12 +375,21 @@ export function richField(label: string, options: RichFieldOptions) {
     clearTimeout(deleteRecovery.timer);
     deleteRecovery = null;
   }
+  function restoreDeleteDOM() {
+    if (restoringDelete || view.isDestroyed) return;
+    restoringDelete = true;
+    try {
+      view.setProps({ nodeViews: nodeViews() });
+    } finally {
+      restoringDelete = false;
+    }
+  }
   function settleDeleteRecovery(stage: DeleteRecovery, commit: boolean) {
     if (deleteRecovery !== stage || stage.settling || view.isDestroyed) return;
     stage.settling = true;
     clearTimeout(stage.timer);
     // Keep the guard active while rendering can flush native parsed mutations.
-    view.setProps({ nodeViews: nodeViews() });
+    restoreDeleteDOM();
     deleteRecovery = null;
     if (view.state !== stage.state) return;
     if (commit && stage.transaction) view.dispatch(stage.transaction);
@@ -585,6 +595,7 @@ export function richField(label: string, options: RichFieldOptions) {
       ...(options.lang ? { lang: options.lang } : {}),
     },
     dispatchTransaction(transaction) {
+      if (restoringDelete) return;
       if (deleteRecovery) {
         if (transaction.docChanged) settleDeleteRecovery(deleteRecovery, true);
         return;
@@ -622,10 +633,31 @@ export function richField(label: string, options: RichFieldOptions) {
       },
       input(_view, event) {
         const stage = deleteRecovery;
-        if (!stage) return false;
-        settleDeleteRecovery(
-          stage,
-          (event as InputEvent).inputType === stage.type,
+        const type = (event as InputEvent).inputType;
+        if (stage) {
+          settleDeleteRecovery(stage, type === stage.type);
+          return true;
+        }
+        if (!isRichDeleteType(type ?? "")) return false;
+        if (type === "deleteCompositionText" && nativeEdit?.deletion)
+          return false;
+        // An orphan or duplicate delete input cannot replace the current model.
+        restoreDeleteDOM();
+        return true;
+      },
+      cut(view, event) {
+        if (deleteRecovery) settleDeleteRecovery(deleteRecovery, false);
+        event.preventDefault();
+        const selection = readNativeSelection() ?? view.state.selection;
+        if (selection.empty || !event.clipboardData) return true;
+        const { dom, text } = view.serializeForClipboard(selection.content());
+        event.clipboardData.clearData();
+        event.clipboardData.setData("text/html", dom.innerHTML);
+        event.clipboardData.setData("text/plain", text);
+        deleteRichInput(
+          view.state.tr.setSelection(selection),
+          "deleteByCut",
+          view.dispatch,
         );
         return true;
       },
