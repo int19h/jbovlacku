@@ -1,4 +1,4 @@
-import type { VectorSqlConnection } from "./sql-vector-store.ts";
+import type { SqliteConnection } from "../sqlite.ts";
 
 /** Query text never enters this store. Allocation is separate from document vectors. */
 export interface QueryCache {
@@ -8,7 +8,7 @@ export interface QueryCache {
 
 export class SqlQueryCache implements QueryCache {
   constructor(
-    private sql: VectorSqlConnection,
+    private sql: SqliteConnection,
     private maximumBytes = 32 * 1024 * 1024,
     private maximumEntries = 2048,
   ) {

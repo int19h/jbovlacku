@@ -1,3 +1,4 @@
+import { sqliteConnection } from "../../../packages/service/src/sqlite.ts";
 import { mkdir, open, readFile, link, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -89,29 +90,7 @@ export class SqliteCoordinator extends SqlRowsCoordinator {
   constructor(path: string, retainedSnapshots = 16) {
     const database = new DatabaseSync(path);
     database.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;");
-    super(
-      {
-        exec(sql, ...bindings) {
-          const statement = database.prepare(sql);
-          if (statement.columns().length)
-            return statement.all(...bindings) as Record<string, unknown>[];
-          statement.run(...bindings);
-          return [];
-        },
-        transaction(operation) {
-          database.exec("BEGIN IMMEDIATE");
-          try {
-            const value = operation();
-            database.exec("COMMIT");
-            return value;
-          } catch (error) {
-            database.exec("ROLLBACK");
-            throw error;
-          }
-        },
-      },
-      retainedSnapshots,
-    );
+    super(sqliteConnection(database), retainedSnapshots);
     this.database = database;
     database.exec(
       "CREATE TABLE IF NOT EXISTS evaluation_checkpoint_pin (id INTEGER PRIMARY KEY CHECK(id=1), binding TEXT NOT NULL, hash TEXT NOT NULL, file TEXT NOT NULL)",

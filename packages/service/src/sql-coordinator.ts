@@ -18,13 +18,7 @@ import {
   type StoredEvent,
   type Snapshot,
 } from "./storage.ts";
-export interface SqlConnection {
-  exec(
-    sql: string,
-    ...bindings: (string | number)[]
-  ): Record<string, unknown>[];
-  transaction<T>(operation: () => T): T;
-}
+import type { SqliteConnection } from "./sqlite.ts";
 interface SnapshotRow {
   cache_schema: 1;
   event_revision: number;
@@ -34,7 +28,7 @@ export class SqlRowsCoordinator {
   private loaded?: State;
   private snapshotCache = new Map<string, Snapshot>();
   constructor(
-    private sql: SqlConnection,
+    private sql: SqliteConnection,
     private retainedSnapshots = 16,
   ) {
     if (
