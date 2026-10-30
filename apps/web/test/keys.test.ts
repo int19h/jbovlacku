@@ -335,8 +335,9 @@ test("stay unlocked ends on reload and lock changes update the key page", async 
     page.getByRole("switch", { name: "Stay unlocked this session" }),
   ).toHaveAttribute("aria-checked", "false");
   await page.getByLabel("Passphrase", { exact: true }).fill(PASSPHRASE);
-  await page.getByRole("button", { name: "Unlock", exact: true }).click();
   await page.clock.install();
+  await page.getByRole("button", { name: "Unlock", exact: true }).click();
+  await expect(page.getByText("Unlocked", { exact: true })).toBeVisible();
   await page.clock.fastForward(15 * 60 * 1000 + 100);
   await expect(page.getByText("Locked", { exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: /key locked/ })).toBeVisible();

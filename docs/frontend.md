@@ -157,6 +157,11 @@ It performs ordinary headword, gloss, and text searches locally after that downl
 A remote search mode remains available for large languages or limited devices. Settings contains the local or remote mode choice.
 Before its first remote query, the app states that queries reach the named server.
 A change of mode does not silently upload previously local query history.
+Local mode keeps word and definition queries in the browser. Consented meaning search still sends each new query to the server and provider.
+The search page states this beside the box while meaning search is on and offers “Turn off meaning search”.
+That action saves a lasting search preference, separate from provider consent and the general AI preference.
+While it is off, new queries and reloads show no meaning consent or results and send no meaning request.
+“Turn on meaning search” restores that search preference. Applicable provider consent is still required.
 
 Search normalization affects lookup only. It never rewrites signed spellings or definition text.
 Use NFC, case folding, and explicit apostrophe aliases in search indexes.
@@ -317,7 +322,8 @@ Each nearby call reads the package for its current language, including an empty 
 Changes to the meaning or language invalidate pending results and errors before the next debounced lookup starts.
 The worker ranks all nearby query lists before selecting six rows.
 
-Ordinary local search transfers 20 rows initially. Show all requests only the remaining rows within the browser's 1,000-word limit.
+Ordinary local search transfers up to 20 rows per lexical group initially, so two groups can transfer 40 rows.
+Show all requests only the remaining rows within each group's limit of 1,000 hits.
 Replies include total counts and entry references into the exact package captured by that request. They never copy full definition records back to the page.
 These references preserve matching alternatives, definition order, selected previews, and display spellings.
 
@@ -367,11 +373,58 @@ A receipt date reads “Seen …” and identifies the receiving server in its d
 It never implies the original creation date. Unknown dates remain omitted.
 Identity activity can use receipt chronology for navigation, never causal conflict resolution.
 A text link labeled “notes” opens existing notes. An “also:” link exposes another matching definition of the same word.
-Language filters never erase the existence of alternatives. Search classes have no visible group headings.
+Language filters never erase the existence of alternatives.
+One search box shows three groups with visible headings: Lojban words, Definitions, and Similar in meaning.
+There is no search-class or meaning-mode switch.
+Lojban words includes headword, segmented, pattern, and rafsi matches. Definitions includes gloss and text matches.
+A word can appear in both groups when it matches both. Each group keeps its own match-class order and alternatives.
+When every space-separated query word has an exact normalized headword in the eligible language index, Lojban words comes first. Otherwise, Definitions comes first.
+A known complete headword also puts Lojban words first. Case, acute stress, and apostrophe aliases follow the headword rules above.
+For this test, remove pause periods and commas and read `h` as an apostrophe in each complete spelling.
+Do not segment a query word into cmavo. Other punctuation and unknown words do not count as known spellings.
+A compound cmavo spelling counts only when the dictionary holds that complete spelling as a headword.
 
-The list offers “show all” with the remaining count, “Missing a word for this? Add it,” and a retired-results filter.
-One click reveals all remaining local hits or fetches remote pages in sequence, up to the browser limit of 1,000 hits.
+For example, known `lo` and `ve` never make `love` a known query word. Known `mi` and `klama` make `mi klama` known.
+The forms `mi klama.`, `.i mi klama`, `coi, do`, `la .alis.`, and `kihe` count when their complete words exist.
+
+Server ordering applies its language, effective-receipt, eligibility, and retired-results filters before that test.
+Local ordering uses view-bound evidence in version 2 packages from the same snapshot. It follows the same eligibility and retired-results rules.
+
+Older packages without that evidence cannot establish known words. A visible notice asks for a new package, and Definitions comes first.
+Evidence for a different selected view also cannot establish known words. The notice names its server-view limit and says that Definitions comes first.
+It offers remote search for the chosen view without asking for another download. No local query reaches a server to resolve missing evidence.
+Local hits still include every retained publication. Ordering evidence does not provide complete current publication statuses.
+Pattern queries show only Lojban words.
+
+Similar in meaning uses `POST /search/semantic` after one inline consent in the search page, without a modal.
+The disclosure names the server, provider, task, and fields sent. It covers this query and future search queries.
+Remembered consent applies only to that provider and scope, under section 16. The consent box offers a lasting off choice. Declining keeps ordinary search available.
+“Not now” stops meaning search for this page, including a pending consent save. It keeps stored provider consent for later pages.
+Either off control blocks a pending Allow action before its save finishes. A failed off save keeps consent and off retry available.
+The reader must press Allow again before that canceled acceptance can start meaning search.
+When AI assistance is off, or the server lacks `features.semantic_search` and a `query_available` profile, this group is absent.
+An absent group leaves no gap. Pending or failed indexing appears as a coverage note beside meaning results.
+
+In local mode, meaning search reads a server snapshot that can differ from the downloaded lexical package. Its snapshot and view stay visible beside meaning results.
+
+Back restores the saved meaning response, displayed rows, snapshot, view, profile, and expansion count without another inference request.
+Restoration requires the same query, language, view choice, and remembered provider and scope consent.
+If incomplete lexical history requires newer remote lexical results, saved meaning results still keep their saved snapshot.
+The meaning group shows that separate snapshot and view. Back never starts another inference request to align those snapshots.
+A fresh reload checks current capabilities, profile, and consent instead of restoring the saved meaning group.
+Similarity never becomes an editorial score.
+
+Each group offers pagination and “show all” with its remaining count. The page offers “Missing a word for this? Add it,” and a retired-results filter.
+One click reveals all remaining local hits or fetches remote pages in sequence, up to the browser limit of 1,000 hits per lexical group. Meaning search retains at most 100 definitions and pages them locally.
 Only one expansion runs at once. Navigation cancels it, and repeated cursors or results stop it.
+Each lexical group shows its own loading or failure state. A failed group does not prevent the other group from loading.
+One screen-reader-only count region announces settled lexical counts in displayed group order as soon as both lexical groups finish.
+Local counts state the full total and the shown count when rows remain hidden, including at the browser limit.
+Lexical counts, expansions, Add it, and the retired filter never wait for meaning requests or matched definition reads.
+Each settled meaning update includes the last settled lexical counts before its meaning count, including while a lexical expansion waits.
+Each consent action, retry, or expansion announces its own settled results once. Group statuses remain visible ordinary text without a second visible copy.
+After expansion, focus moves to the first new row. A failed or empty expansion keeps focus on its retry, remaining control, or group status.
+A failed meaning definition read offers Retry reading for that definition. This retry retains successful rows and sends no inference request.
 A rafsi lookup identifies the related word, for example “cku ← cukta,” and exposes competing assignments when present.
 Rafsi lookup does not silently pick an unresolved assignment.
 A single unreviewed definition remains visible. A lack of endorsements is not a negative judgment.
@@ -1311,14 +1364,22 @@ Public reads need no account. Public event admission follows published quotas an
 | `GET /records?snapshot=S&after=ID&limit=N`                        | Snapshot records for local calculation: envelope, body, and body status, bounded by count and bytes. The limit ranges from 1 through 200.                                                                            |
 
 The `POST /search` body requires string fields `q` and `language`.
-Optional fields are `snapshot`, `view`, `after`, `retired`, `literal`, and `limit`.
-The first five use the same strings as GET. `limit` accepts a positive integer or its decimal string.
+Optional fields are `snapshot`, `view`, `after`, `retired`, `literal`, `group`, and `limit`.
+The string fields use the same values as GET. `limit` accepts a positive integer or its decimal string.
 Unknown fields and query parameters on a POST search return HTTP 400.
 Both search methods apply the same bounds, cursor rules, and result selection. Draft text stays in the POST body.
 Both methods accept the pattern syntax in section 4 by default.
 With `literal=1`, they search the query literally instead. Any other `literal` value returns HTTP 400.
 The meaning wizard sets `literal` to `"1"` in its consented POST search. Ordinary word searches keep pattern mode.
-Search cursors include the literal mode. A cursor from another mode returns HTTP 400 with `bad_cursor`.
+Optional `group` selects `lojban` or `definitions` before matching and pagination. Other values return HTTP 400.
+Without it, the earlier combined lexical order remains available. Signed records do not change.
+Version 2 package entries can carry the optional ordering evidence defined below.
+Search responses can include `all_lojban`. It states whether the eligible index knows the complete normalized headword or every space-separated query word.
+Each query word must match one complete normalized dictionary spelling. Case, acute stress, and apostrophe aliases follow section 4.
+Remove pause periods and commas and read `h` as an apostrophe in each complete spelling.
+Segmented cmavo pieces, other punctuation, and unrecognized text do not establish that spelling.
+The response uses the same language, view, snapshot, receipt, eligibility, and retired-results filters as its hits.
+Search cursors include the group and literal mode. A cursor from another mode returns HTTP 400 with `bad_cursor`.
 `pattern_invalid` returns HTTP 400, and `pattern_timeout` returns HTTP 422.
 An excess pattern request returns HTTP 503 with `search_busy` and `Retry-After: 1`.
 These errors return no partial hits. Both hosts enforce the shared compiled-work limits and their documented execution limits.
@@ -1498,7 +1559,7 @@ WordResponse = {
 }
 SearchResponse = {
   snapshot: ID, view: event-ID, query: string, language: string,
-  segmentation?: "complete" | "limited",
+  segmentation?: "complete" | "limited", all_lojban?: boolean,
   hits: [{word: WordObject, word_id: word-ID, match: match-kind,
           definitions: [event-ID]}], next: cursor | null
 }
@@ -1639,7 +1700,9 @@ With `packages_available: true`, empty descriptor arrays mean that the server ha
 Older servers can omit both new fields. Clients retain the earlier word-response view lookup when no explicit view choice exists.
 An absent availability field retains the earlier package-discovery behavior. A present field must be a boolean, and a present view must be an event ID.
 
-A package manifest contains exactly `version`, `language`, `snapshot`, and `parts`. Version is 1 or 2.
+A package manifest contains `version`, `language`, `snapshot`, and `parts`. Version is 1 or 2.
+Version 2 can also contain `search_view`, the signed view ID that binds ordering evidence for every entry in that package.
+No other fields are permitted. Version 1 keeps exactly its original four fields.
 The manifest response lists version 1 packages in `packages` and every other version in `package_versions`.
 A client requests a version explicitly with the `version` query. The default remains version 1.
 Each part contains `hash`, `bytes`, and `count`. Part hashes identify canonical JSON arrays of search entries.
@@ -1649,6 +1712,16 @@ Their dedicated endpoint uses that limit rather than the 256 KiB event-body limi
 An entry contains `event`, `word`, `language`, `glosses`, `plain_text`, `classification`, and `body`.
 Event is the publication ID. Word is its word object. Body is its body hash or null.
 A version 2 entry adds `issuer`, `notes`, `rafsi`, `rafsi_complete`, and `attribution`.
+With `search_view`, each entry carries `search_status` as `active`, `retired`, or `ineligible`. Store the view once per package, never per entry or part.
+The browser keeps that binding once in its saved package and passes it to local search.
+Older version 2 packages can omit ordering evidence or use `search_status` with exactly `view` and `status` per entry.
+A package without `search_view` accepts that older object form only. A package with `search_view` requires the compact status on every entry.
+Malformed view IDs, invalid statuses, mixed forms, and extra fields fail package validation.
+The view is the selected signed view ID for that package's snapshot. Status is `active`, `retired`, or `ineligible`. Active means eligible, effective, and active for ordinary remote search.
+Retired means eligible and effective, but included only when remote search includes retired results. It includes unresolved non-active statuses under that filter.
+Ineligible means that the publication cannot establish a known query word in that view.
+This is derived server evidence for ordering, rather than signed publication status. It changes with status, eligibility, receipt, or selected-view changes.
+Version 1 emitted entries keep their original fields. Older version 2 clients can use their recorded version 1 fallback.
 Issuer is the signing key, which is the importer for an import. Notes is true when the definition has notes.
 Rafsi lists the spellings of retained rafsi claim bodies for the word, sorted, at most 64 of them. `rafsi_complete` is false when the word has more claims than the list holds. Missing, unreadable, or invalid claim bytes also set `rafsi_complete` to false. A client never treats a cut list as a complete conflict inventory. The exact claims of a word are the `rafsi` event IDs of the word route and their claim bodies.
 Attribution is null for a native publication.
@@ -1803,7 +1876,10 @@ The system prompt puts `explain.txt` after the task file. For `sources`, it foll
 The language block stays last. Without a language block, `explain.txt` is last.
 
 The Assistance group of Settings has one checkbox, “Use AI assistance”. It is on by default when the server offers assistance.
-When it is off, the app hides every AI tagged button, every suggestion panel and its notes, the consent dialog, the “by meaning” search mode, and every AI hint line. Hidden controls leave no gap, and every manual path stays complete. The app sends nothing to a provider.
+When it is off, the app hides every AI tagged button, suggestion panel, and AI hint line.
+It also hides suggestion notes, consent dialogs, inline meaning consent, and the Similar in meaning group.
+The nearby panel also hides its “by meaning” choice. Hidden controls leave no gap, and every manual path stays complete.
+The app sends nothing to a provider.
 When no assistance capability is available, the app looks the same. The checkbox is replaced by the line “Not available on this server.” The user's own choice is kept for a server that offers assistance later.
 
 The server offers assistance when capabilities expose a generation operation or a query-available embedding profile.
@@ -1811,10 +1887,14 @@ A generation operation requires `features.assistance` and an `assistance_profile
 Meaning search requires `features.semantic_search` and a `query_available` embedding profile. A partial setup keeps the checkbox and exposes only available actions.
 If neither capability is available, the checkbox gives way to “Not available on this server.”
 
-While assistance is off, search uses “by words” and keeps the stored mode unchanged.
-When assistance returns, the stored mode returns if its required capability is available.
-The same fallback applies whenever the stored mode's capability is unavailable, including when assistance is on for generation alone.
-Search uses “by words” and preserves the stored preference. The stored mode returns when its capability becomes available.
+While assistance is off or meaning search is unavailable, the search page keeps its Lojban and definition groups.
+The meaning group returns when its required capability is available, assistance is on, and the separate meaning-search preference is on.
+Turning meaning search off preserves provider and scope consent and all other AI preferences. Its on control remains beside search when assistance and a query profile are available.
+This search-page preference does not change the wizard's nearby mode or its stored choice.
+Remembered provider and scope consent stays unchanged.
+The nearby panel in the wizard's meaning step retains its explicit “by words” and “by meaning” choices.
+When AI assistance is off or meaning search is unavailable, that panel hides “by meaning” and uses “by words”.
+It keeps the stored choice and restores it when assistance and the required capability return.
 
 The baseline provider interface is a documented subset of OpenAI-compatible Chat Completions and Embeddings over HTTP and JSON.
 It uses `/chat/completions` and `/embeddings` under a configured base URL. It does not depend on legacy text completions.
@@ -1856,6 +1936,7 @@ Localhost means the machine that makes the request. A container's local provider
 Public clients cannot turn an inference request into an arbitrary outbound URL fetch. Only configured provider and source adapters make network requests.
 
 The first AI request shows one consent dialog for the selected provider and its declared tasks and data scope.
+The search page uses inline consent with the same provider and scope rules instead of that dialog.
 The dialog names the server, provider, and fields sent. A broad scope is permitted only when the dialog declares it explicitly.
 Remembered consent applies only to that provider and scope. A new provider or expanded scope requires a new disclosure.
 Related public dictionary definitions and analysis of an already supplied spelling do not expand that scope.
