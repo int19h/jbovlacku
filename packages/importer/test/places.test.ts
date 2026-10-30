@@ -51,6 +51,8 @@ test("equations, component variables, quotations, nested relations and malformed
     "\\text{x_1}",
     "$x_1",
     "\\(x_1",
+    "\\[x_1\\)",
+    "\\(x_1\\]",
     "x1",
     '"x_1',
     "'x_1'",

@@ -46,7 +46,8 @@ export function convertPlaces(source: string | null, field: string) {
         ? raw.slice(2, -2).trim()
         : raw.startsWith("$") && raw.endsWith("$") && raw.length > 1
           ? raw.slice(1, -1).trim()
-          : /^\\[([]/.test(raw) && /\\[)\]]$/.test(raw)
+          : (raw.startsWith("\\(") && raw.endsWith("\\)")) ||
+              (raw.startsWith("\\[") && raw.endsWith("\\]"))
             ? raw.slice(2, -2).trim()
             : raw;
     const match = /^x_(?:([1-9][0-9]{0,4})|\{([1-9][0-9]{0,4})\})$/.exec(
