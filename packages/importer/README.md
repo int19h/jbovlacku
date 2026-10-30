@@ -39,7 +39,7 @@ The tests use the operating system's temporary directory by default. Set `JVC_TE
 
 Create an external file that contains a disposable seed as 64 lowercase hexadecimal digits. Create a roots file that contains the operator's explicit array of identity allocations, or `[]`. Keep the seed outside the output directory.
 
-The manifest names `source`, `url`, `retrieved_at`, `sha256`, `extraction`, `recipe`, and `unavailable_fields`. Use `extraction: "lensisku-list-literal-v2"` and `recipe: "lensisku-definitions-list-v1"`. The optional `expected_rows` field makes the row count mandatory.
+The manifest names `source`, `url`, `retrieved_at`, `sha256`, `extraction`, `recipe`, and `unavailable_fields`. Use `extraction: "lensisku-list-fidelity-v3"` and `recipe: "lensisku-definitions-list-v1"`. The optional `expected_rows` field makes the row count mandatory.
 
 For this local example, put the disposable seed and roots files in `.cache/import-input`.
 The output goes into a separate directory. These paths are examples, not capture provenance.
@@ -224,7 +224,7 @@ Without the flag, a new directory retains the core's default limit.
 `JVC_VIEW` overrides the saved view. `JVC_STATE_TRAVERSAL_LIMIT` overrides the saved traversal limit.
 
 The loader requires exclusive local access. It is not an online import endpoint or a Worker deployment command.
-Source account management, cross-post marker reconciliation, and inferred place conversion remain outside this importer.
+Source account management, cross-post marker reconciliation, and model-assisted place conversion remain outside this importer.
 
 
 ## Places, rafsi, and attribution
