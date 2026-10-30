@@ -167,6 +167,9 @@ async function boundaryMatrix(
           kind === "prose"
             ? [[...left.slice(0, 2), "abcd\nef", ...right.slice(1)], outside]
             : [[...left, ...right], outside];
+        await soft
+          .poll(() => richNodes(field), { timeout: 400 })
+          .toEqual(joined);
         const observed = await richNodes(field);
         console.log(
           "R6_CASE",
@@ -178,9 +181,6 @@ async function boundaryMatrix(
             expected: joined,
           }),
         );
-        await soft
-          .poll(() => richNodes(field), { timeout: 400 })
-          .toEqual(joined);
         const undone: RichText =
           kind === "prose"
             ? [left, ["cd\nef", ...right.slice(1)], outside]
@@ -297,29 +297,38 @@ test("r6 cut copies selected text once and collapsed cut keeps the value", async
   await page.keyboard.press("Shift+Delete");
   expect(await richNodes(field)).toEqual(original);
   await choose(field, [0, 0, 1], [0, 2, 1]);
-  if (browserName === "chromium") {
+  await field.evaluate((field) =>
+    field.addEventListener("cut", (event) => {
+      (window as any).r6CutText = (
+        event as ClipboardEvent
+      ).clipboardData?.getData("text/plain");
+    }),
+  );
+  if (browserName === "chromium")
     await page
       .context()
       .grantPermissions(["clipboard-read", "clipboard-write"]);
-    await page.keyboard.press("Shift+Delete");
+  await page.keyboard.press("Shift+Delete");
+  expect(await page.evaluate(() => (window as any).r6CutText)).toBe("bcodec");
+  if (browserName === "chromium")
     expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
       "bcodec",
     );
-  } else {
-    // Firefox blocks async clipboard reads in this headless fixture.
-    const copied = await field.evaluate((field) => {
-      const clipboardData = new DataTransfer();
-      field.dispatchEvent(
-        new ClipboardEvent("cut", {
-          bubbles: true,
-          cancelable: true,
-          clipboardData,
-        }),
-      );
-      return clipboardData.getData("text/plain");
-    });
-    expect(copied).toBe("bcodec");
-  }
+  await expect.poll(() => richNodes(field)).toEqual([["ad\nef"], ["outer\r"]]);
+  await reset(field, original);
+  await choose(field, [0, 0, 1], [0, 2, 1]);
+  const copied = await field.evaluate((field) => {
+    const clipboardData = new DataTransfer();
+    field.dispatchEvent(
+      new ClipboardEvent("cut", {
+        bubbles: true,
+        cancelable: true,
+        clipboardData,
+      }),
+    );
+    return clipboardData.getData("text/plain");
+  });
+  expect(copied).toBe("bcodec");
   await expect.poll(() => richNodes(field)).toEqual([["ad\nef"], ["outer\r"]]);
 });
 
@@ -391,14 +400,13 @@ test("r6 word and line deletion without target ranges keeps its full extent", as
       ]);
       await choose(field, [0, 0, backward ? 12 : 6]);
       expect(await beforeinput(field, inputType)).toBe(true);
-      const word = inputType.startsWith("deleteWord");
-      const expected = word
-        ? backward
-          ? "first \nthird"
-          : "first \nthird"
-        : backward
-          ? "\nthird"
-          : "first \nthird";
+      const expected =
+        inputType === "deleteHardLineForward"
+          ? "first "
+          : inputType === "deleteHardLineBackward" ||
+              inputType === "deleteSoftLineBackward"
+            ? "\nthird"
+            : "first \nthird";
       await expect
         .poll(() => richNodes(field))
         .toEqual([[node(kind, expected)], ["outside\r"]]);
@@ -434,42 +442,60 @@ for (const inputType of inputs) {
     page,
   }) => {
     const field = await mount(page);
-    await reset(field, [["keep\r", "ab"], ["cd\r\nef"], ["outside\r"]]);
-    const backward = inputType.endsWith("Backward");
-    const cut = inputType === "deleteByCut";
-    await choose(
-      field,
-      cut ? [0, 1, 1] : backward ? [1, 0, 0] : [0, 1, 2],
-      cut ? [1, 0, 1] : undefined,
-    );
-    const prevented = await field.evaluate((field, inputType) => {
-      const event = new InputEvent("beforeinput", { bubbles: true, inputType });
-      field.dispatchEvent(event);
-      // A draft mirror with the same value must keep the pending intent.
-      (field as any).value = JSON.parse(JSON.stringify((field as any).value));
-      // Model the browser splitting saved prose at its inline LF.
-      field.innerHTML = "<p>browser result</p><p>ef</p>";
-      field.dispatchEvent(
-        new InputEvent("input", { bubbles: true, inputType }),
-      );
-      field.dispatchEvent(
-        new InputEvent("input", { bubbles: true, inputType }),
-      );
-      return event.defaultPrevented;
-    }, inputType);
-    expect(prevented).toBe(false);
-    const expected: RichText = [
-      ["keep\r", cut ? "ad\nef" : "abcd\nef"],
-      ["outside\r"],
+    const outside: RichText[number] = [
+      "outside\r",
+      node("code", "raw\r\ncode"),
+      node("word", "raw\rword"),
+      node("web", "raw\r\nweb"),
     ];
-    await expect.poll(() => richNodes(field)).toEqual(expected);
-    await expect(field.locator("p")).toHaveCount(2);
-    await history(
-      page,
-      field,
-      [["keep\r", "ab"], ["cd\nef"], ["outside\r"]],
-      expected,
-    );
+    for (const kind of kinds) {
+      const raw = "cd\r\nef";
+      const original: RichText = [["keep\r", node(kind, "ab")], [raw], outside];
+      await reset(field, original);
+      const backward = inputType.endsWith("Backward");
+      const cut = inputType === "deleteByCut";
+      await choose(
+        field,
+        cut ? [0, 1, 1] : backward ? [1, 0, 0] : [0, 1, 2],
+        cut ? [1, 0, 1] : undefined,
+      );
+      const prevented = await field.evaluate((field, inputType) => {
+        const event = new InputEvent("beforeinput", {
+          bubbles: true,
+          inputType,
+        });
+        field.dispatchEvent(event);
+        (field as any).value = JSON.parse(JSON.stringify((field as any).value));
+        field.innerHTML = "<p>browser result</p><p>ef</p>";
+        field.dispatchEvent(
+          new InputEvent("input", { bubbles: true, inputType }),
+        );
+        field.dispatchEvent(
+          new InputEvent("input", { bubbles: true, inputType }),
+        );
+        return event.defaultPrevented;
+      }, inputType);
+      expect(prevented).toBe(false);
+      const expected: RichText =
+        kind === "prose"
+          ? [["keep\r", cut ? "ad\nef" : "abcd\nef"], outside]
+          : [
+              ["keep\r", node(kind, cut ? "a" : "ab"), cut ? "d\nef" : raw],
+              outside,
+            ];
+      await expect.poll(() => richNodes(field)).toEqual(expected);
+      await expect(field.locator("p")).toHaveCount(2);
+      await history(
+        page,
+        field,
+        [
+          ["keep\r", node(kind, "ab")],
+          [cut || kind === "prose" ? "cd\nef" : raw],
+          outside,
+        ],
+        expected,
+      );
+    }
   });
 }
 
@@ -653,4 +679,179 @@ test("r6 word deletion has a bounded fallback without native selection motion", 
   await expect
     .poll(() => richNodes(field))
     .toEqual([["first ", node("code", ""), " third\r\nfourth"], ["outside\r"]]);
+});
+
+for (const inputType of [
+  "deleteHardLineBackward",
+  "deleteHardLineForward",
+] as const) {
+  test(`r6 ${inputType} crosses inline newlines and containers without a target range`, async ({
+    page,
+  }) => {
+    const field = await mount(page);
+    for (const kind of kinds) {
+      const outside: RichText[number] = ["outside\r", node("code", "raw\r\n")];
+      const backward = inputType.endsWith("Backward");
+      await reset(field, [
+        ["before\r\n", node(kind, "one\r\ntwo"), " after\r\nend"],
+        outside,
+      ]);
+      await choose(field, [0, 1, 7]);
+      expect(await beforeinput(field, inputType)).toBe(true);
+      await expect
+        .poll(() => richNodes(field))
+        .toEqual(
+          backward
+            ? [[node(kind, "o"), " after\r\nend"], outside]
+            : [["before\r\n", node(kind, "one\ntw")], outside],
+        );
+    }
+  });
+}
+
+test("r6 removing an editor cancels its staged deletion", async ({ page }) => {
+  const field = await mount(page);
+  await reset(field, [["ab"], ["cd\r\nef"]]);
+  await choose(field, [1, 0, 0]);
+  const value = await field.evaluate(async (field: any) => {
+    field.dispatchEvent(
+      new InputEvent("beforeinput", {
+        bubbles: true,
+        inputType: "deleteContentBackward",
+      }),
+    );
+    field.closest(".field-group")!.remove();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    field.dispatchEvent(
+      new InputEvent("input", {
+        bubbles: true,
+        inputType: "deleteContentBackward",
+      }),
+    );
+    return field.value;
+  });
+  expect(value).toEqual([["ab"], ["cd\r\nef"]]);
+});
+
+for (const inputType of [
+  "deleteContent",
+  "deleteByDrag",
+  "deleteUnrecognized",
+  "deleteCompositionText",
+]) {
+  test(`r6 ${inputType} owns selections and explicit targets outside composition`, async ({
+    page,
+  }) => {
+    const field = await mount(page);
+    const original: RichText = [
+      ["ab", node("code", "middle")],
+      [node("word", "link"), "cd\r\nef"],
+      ["outside\r"],
+    ];
+    for (const selected of [true, false]) {
+      await reset(field, original);
+      await choose(field, [0, 0, 1], selected ? [1, 1, 1] : undefined);
+      expect(
+        await beforeinput(field, inputType, [
+          [0, 0, 1],
+          [1, 1, 1],
+        ]),
+      ).toBe(true);
+      await expect
+        .poll(() => richNodes(field))
+        .toEqual([["ad\nef"], ["outside\r"]]);
+    }
+    await reset(field, original);
+    await choose(field, [1, 1, 0]);
+    expect(await beforeinput(field, inputType)).toBe(true);
+    expect(await richNodes(field)).toEqual(original);
+  });
+}
+
+test("r6 deleteEntireSoftLine owns its visual extent and explicit target", async ({
+  page,
+}) => {
+  const field = await mount(page);
+  const original: RichText = [
+    ["before\r\n", node("code", "middle"), " after\r\nend"],
+    ["outside\r"],
+  ];
+  await reset(field, original);
+  await choose(field, [0, 1, 3]);
+  expect(
+    await beforeinput(field, "deleteEntireSoftLine", [
+      [0, 0, 0],
+      [0, 2, 6],
+    ]),
+  ).toBe(true);
+  await expect.poll(() => richNodes(field)).toEqual([["\nend"], ["outside\r"]]);
+  await reset(field, [["first second\r\nthird"], ["outside\r"]]);
+  await choose(field, [0, 0, 8]);
+  expect(await beforeinput(field, "deleteEntireSoftLine")).toBe(true);
+  await expect
+    .poll(() => richNodes(field))
+    .toEqual([["\nthird"], ["outside\r"]]);
+});
+
+test("r6 composition deletion needs a mapped range inside one native text node", async ({
+  page,
+}) => {
+  const field = await mount(page);
+  const value: RichText = [
+    ["left\r\n", node("code", "ab\r\ncd"), node("word", "raw\rword")],
+    ["outside\r\n"],
+  ];
+  await reset(field, value);
+  await choose(field, [0, 1, 2]);
+  await field.dispatchEvent("compositionstart");
+  expect(
+    await beforeinput(
+      field,
+      "deleteCompositionText",
+      [
+        [0, 1, 1],
+        [0, 1, 2],
+      ],
+      true,
+    ),
+  ).toBe(false);
+  await field.evaluate((field) => {
+    field.querySelector(".rich-code")!.firstChild!.textContent = "a\r\ncd";
+    field.dispatchEvent(
+      new InputEvent("input", {
+        bubbles: true,
+        inputType: "deleteCompositionText",
+        isComposing: true,
+      }),
+    );
+  });
+  await page.waitForTimeout(30);
+  await field.dispatchEvent("compositionend");
+  await expect
+    .poll(() => richNodes(field))
+    .toEqual([
+      ["left\r\n", node("code", "a\ncd"), node("word", "raw\rword")],
+      ["outside\r\n"],
+    ]);
+  await reset(field, [
+    ["ab"],
+    [node("code", "cd\r\nef"), node("web", "raw\r\n")],
+  ]);
+  await choose(field, [1, 0, 0]);
+  await field.dispatchEvent("compositionstart");
+  expect(
+    await beforeinput(
+      field,
+      "deleteCompositionText",
+      [
+        [0, 0, 2],
+        [1, 0, 0],
+      ],
+      true,
+    ),
+  ).toBe(true);
+  await field.dispatchEvent("compositionend");
+  await expect
+    .poll(() => richNodes(field))
+    .toEqual([["ab", node("code", "cd\r\nef"), node("web", "raw\r\n")]]);
 });
