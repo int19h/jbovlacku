@@ -327,7 +327,7 @@ test("deferred normalization preserves composition rule conversion and its Backs
 
 const exactCode = { code: "code\r\nexact" };
 const exactWord = {
-  word: { language: "jbo", spelling: "cukta" },
+  word: { language: "jbo" as const, spelling: "cukta" },
   label: "word\rexact",
 };
 const exactWeb = { url: "https://example.org/", label: "web\r\nexact" };

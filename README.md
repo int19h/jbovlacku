@@ -155,6 +155,7 @@ Revise copies a publication into a new draft with its exact parent and keeps eve
 
 The rich editors change the stored node tree directly. CR is a carriage return. LF is a line feed. CRLF is their two-character sequence.
 Editing prose, code, or a link label changes CR and CRLF in that node to LF.
+If an edit combines prose fragments into one stored string, that complete string uses LF.
 
 The rule also applies to composition, paste, deletion, undo, and redo. Untouched nodes keep their exact text.
 Changing only a link target keeps its label unchanged. New prose joins nearby text while untouched saved boundaries stay exact.

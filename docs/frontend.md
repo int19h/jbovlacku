@@ -770,6 +770,7 @@ CR is a carriage return. LF is a line feed. CRLF is their two-character sequence
 
 When an author edits prose, code, or a link label, CR and CRLF in that text node become LF.
 This rule applies to every input and edit command, including composition, undo, and redo.
+If an edit combines prose fragments into one stored string, that complete string uses LF.
 Text nodes that the author does not edit keep their exact text. Changing only a link target keeps its label unchanged.
 
 Blank paragraphs stay in the live editor for the caret and undo history.
