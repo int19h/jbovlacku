@@ -46,7 +46,7 @@ async function choose(field: Locator, offset: number, end = offset) {
 }
 for (const kind of kinds) {
   for (const inserted of ["X", "漢"]) {
-    test(`r4 ${kind} ${inserted === "X" ? "typing" : "composition"} normalizes only its edited node`, async ({
+    test(`r4 ${kind} ${inserted === "X" ? "typing" : "non-ASCII input"} normalizes only its edited node`, async ({
       page,
     }) => {
       const value: RichText = [
@@ -78,6 +78,72 @@ for (const kind of kinds) {
         .toEqual([[...neighbor, node(kind, changed)], value[1]]);
     });
   }
+  test(`r4 ${kind} native composition normalizes only its edited node`, async ({
+    page,
+    browserName,
+  }) => {
+    const value: RichText = [[...neighbor, node(kind, original)]];
+    const field = await mount(page, value);
+    const offset = original.indexOf("exact") + 3;
+    await choose(field, offset);
+    await field.evaluate((field) => {
+      (window as any).r4CompositionEvents = [];
+      for (const type of [
+        "compositionstart",
+        "compositionend",
+        "beforeinput",
+        "input",
+      ])
+        field.addEventListener(type, (event) => {
+          const input = event as InputEvent;
+          (window as any).r4CompositionEvents.push({
+            type: event.type,
+            inputType: input.inputType,
+            isComposing: input.isComposing,
+          });
+        });
+    });
+    if (browserName === "chromium") {
+      const cdp = await page.context().newCDPSession(page);
+      await cdp.send("Input.imeSetComposition", {
+        text: "漢",
+        selectionStart: 1,
+        selectionEnd: 1,
+      });
+      await cdp.send("Input.insertText", { text: "漢" });
+      await cdp.detach();
+    } else await page.keyboard.type("漢");
+    const events = await page.evaluate(
+      () =>
+        (window as any).r4CompositionEvents as {
+          type: string;
+          inputType?: string;
+          isComposing?: boolean;
+        }[],
+    );
+    expect(events.some((event) => event.type === "compositionstart")).toBe(
+      true,
+    );
+    expect(events.some((event) => event.type === "compositionend")).toBe(true);
+    expect(
+      events.some(
+        (event) =>
+          event.inputType === "insertCompositionText" && event.isComposing,
+      ),
+    ).toBe(true);
+    const changed = (
+      original.slice(0, offset) +
+      "漢" +
+      original.slice(offset)
+    ).replace(/\r\n?/gu, "\n");
+    await expect
+      .poll(() => richNodes(field))
+      .toEqual([[...neighbor, node(kind, changed)]]);
+    await field.press("Control+z");
+    await expect
+      .poll(() => richNodes(field))
+      .toEqual([[...neighbor, node(kind, original.replace(/\r\n?/gu, "\n"))]]);
+  });
   test(`r4 ${kind} paste deletion and newline edits normalize only their node`, async ({
     page,
   }) => {
