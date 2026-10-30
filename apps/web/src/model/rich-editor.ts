@@ -613,6 +613,11 @@ function equivalentCaret(doc: EditorNode, position: number) {
   return position;
 }
 
+/** Inline closing and opening positions can share one visible caret. */
+export function sameRichCaret(doc: EditorNode, from: number, to: number) {
+  return equivalentCaret(doc, from) === equivalentCaret(doc, to);
+}
+
 /** Trim each inline node separately so a range cannot merge different types. */
 function deleteRichRange(
   tr: Transaction,

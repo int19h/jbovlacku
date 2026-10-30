@@ -28,6 +28,7 @@ import {
   replaceInline,
   richEditorSchema,
   richInsertionSelection,
+  sameRichCaret,
   richToEditor,
 } from "../model/rich-editor.ts";
 import type { RichText } from "../model/types.ts";
@@ -148,7 +149,11 @@ function preserveComposingText(
     );
 }
 /** Native selection changes can still be pending when beforeinput runs. */
-function insertionSelection(view: EditorView, input: InputEvent) {
+function insertionSelection(
+  view: EditorView,
+  input: InputEvent,
+  resolve = richInsertionSelection,
+) {
   const target = input.getTargetRanges?.()[0];
   const selection = view.dom.ownerDocument.getSelection();
   const range =
@@ -164,7 +169,7 @@ function insertionSelection(view: EditorView, input: InputEvent) {
     const to = range.collapsed
       ? from
       : view.posAtDOM(range.endContainer, range.endOffset, 1);
-    return richInsertionSelection(view.state, from, to);
+    return resolve(view.state, from, to);
   } catch {
     // Let the native input path read DOM changes that are not mapped yet.
     return null;
@@ -365,6 +370,19 @@ export function richField(label: string, options: RichFieldOptions) {
   }
   let deleteRecovery: DeleteRecovery | null = null;
   let restoringDelete = false;
+  // A browser can move an unchanged visible caret into the neighboring node.
+  // Retain the command's context until an edit or deliberate selection replaces it.
+  let deletionCaret: { doc: EditorNode; selection: Selection } | null = null;
+  function editingSelection(state: EditorState, from: number, to: number) {
+    if (
+      deletionCaret?.doc === state.doc &&
+      from === to &&
+      sameRichCaret(state.doc, from, deletionCaret.selection.from)
+    )
+      return deletionCaret.selection;
+    deletionCaret = null;
+    return richInsertionSelection(state, from, to);
+  }
   const nodeViews = { word_link: linkNodeView, web_link: linkNodeView };
   function cancelDeleteRecovery() {
     if (!deleteRecovery) return;
@@ -469,7 +487,7 @@ export function richField(label: string, options: RichFieldOptions) {
           props: {
             handleTextInput(view, from, to, value) {
               if (view.composing) return false;
-              const selection = richInsertionSelection(view.state, from, to);
+              const selection = editingSelection(view.state, from, to);
               view.dispatch(
                 view.state.tr
                   .setSelection(selection)
@@ -633,6 +651,10 @@ export function richField(label: string, options: RichFieldOptions) {
         if (transaction.docChanged) settleDeleteRecovery(deleteRecovery, true);
         return;
       }
+      const ownsCaret =
+        transaction.getMeta("richDelete") ||
+        transaction.getMeta("richRuleUndo");
+      if (ownsCaret) nativeEdit = null;
       if (transaction.docChanged && nativeEdit) {
         // Explicit editor commands do not carry the DOM reader's composition ID.
         if (
@@ -648,8 +670,22 @@ export function richField(label: string, options: RichFieldOptions) {
       const result = view.state.applyTransaction(transaction);
       view.updateState(result.state);
       // ProseMirror can leave a visually equal caret in another inline node.
-      if (result.transactions.some((tr) => tr.getMeta("richDelete")))
+      if (ownsCaret) {
+        deletionCaret = view.state.selection.empty
+          ? { doc: view.state.doc, selection: view.state.selection }
+          : null;
         syncDeletionCaret();
+      } else if (
+        deletionCaret &&
+        (deletionCaret.doc !== view.state.doc ||
+          !view.state.selection.empty ||
+          !sameRichCaret(
+            view.state.doc,
+            view.state.selection.from,
+            deletionCaret.selection.from,
+          ))
+      )
+        deletionCaret = null;
       syncLinkAction();
       if (result.transactions.some((tr) => tr.docChanged)) {
         current = editorToRich(view.state.doc, compositionDoc ?? undefined);
@@ -658,6 +694,13 @@ export function richField(label: string, options: RichFieldOptions) {
     },
     handleDOMEvents: {
       keydown(_view, event) {
+        if (
+          /^(Arrow(?:Left|Right|Up|Down)|Home|End|PageUp|PageDown|Tab)$/u.test(
+            event.key,
+          ) ||
+          ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a")
+        )
+          deletionCaret = null;
         if (event.isComposing || event.keyCode === 229) return false;
         const type = deletionKey(event);
         if (!type) return false;
@@ -688,6 +731,7 @@ export function richField(label: string, options: RichFieldOptions) {
         return true;
       },
       cut(_view, event) {
+        nativeEdit = null;
         const selection = readNativeSelection() ?? view.state.selection;
         if (deleteRecovery)
           settleDeleteRecovery(deleteRecovery, false, selection);
@@ -725,6 +769,7 @@ export function richField(label: string, options: RichFieldOptions) {
         return false;
       },
       pointerdown() {
+        deletionCaret = null;
         pointerFocus = true;
         return false;
       },
@@ -742,7 +787,7 @@ export function richField(label: string, options: RichFieldOptions) {
         const incomingSelection = deleteRecovery
           ? isRichDeleteType(input.inputType)
             ? readNativeSelection()
-            : insertionSelection(view, input)
+            : insertionSelection(view, input, editingSelection)
           : null;
         const incomingRange = deleteRecovery
           ? deletionRange(view, input)
@@ -774,6 +819,7 @@ export function richField(label: string, options: RichFieldOptions) {
           }
         }
         if (isRichDeleteType(input.inputType)) {
+          nativeEdit = null;
           const prepared = prepareDeletion(
             input.inputType,
             input,
@@ -797,7 +843,8 @@ export function richField(label: string, options: RichFieldOptions) {
         }
         if (!input.cancelable && input.inputType === "insertCompositionText") {
           const selection =
-            incomingSelection ?? insertionSelection(view, input);
+            incomingSelection ??
+            insertionSelection(view, input, editingSelection);
           if (selection)
             nativeEdit = {
               doc: view.state.doc,
@@ -813,7 +860,9 @@ export function richField(label: string, options: RichFieldOptions) {
           view.composing
         )
           return false;
-        const selection = incomingSelection ?? insertionSelection(view, input);
+        const selection =
+          incomingSelection ??
+          insertionSelection(view, input, editingSelection);
         if (!selection) return false;
         input.preventDefault();
         if (!selection.eq(view.state.selection))
@@ -888,7 +937,7 @@ export function richField(label: string, options: RichFieldOptions) {
       const to = selection.isCollapsed
         ? from
         : view.posAtDOM(selection.focusNode, selection.focusOffset, 1);
-      return richInsertionSelection(view.state, from, to);
+      return editingSelection(view.state, from, to);
     } catch {
       return null;
     }
@@ -935,6 +984,7 @@ export function richField(label: string, options: RichFieldOptions) {
       current = value;
       nativeEdit = null;
       if (!unchanged) {
+        deletionCaret = null;
         cancelDeleteRecovery();
         compositionGeneration++;
         compositionDoc = null;
@@ -942,9 +992,11 @@ export function richField(label: string, options: RichFieldOptions) {
       if (view.isDestroyed) return;
       // External draft changes start a new history for this field.
       if (!unchanged) view.updateState(state());
-      else if (enabled() !== previousMode)
+      else if (enabled() !== previousMode) {
         // Mode changes start a new undo boundary without moving the caret.
+        deletionCaret = null;
         view.updateState(state(view.state.doc, view.state.selection));
+      }
       previousMode = enabled();
       syncMode();
       syncLinkAction();
@@ -1385,6 +1437,7 @@ export function richField(label: string, options: RichFieldOptions) {
     node.showModal();
   }
   onDisconnect(wrapper, () => {
+    deletionCaret = null;
     cancelDeleteRecovery();
     nativeEdit = null;
     compositionGeneration++;
