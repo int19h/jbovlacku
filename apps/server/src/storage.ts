@@ -1,3 +1,4 @@
+import { sqliteConnection } from "../../../packages/service/src/sqlite.ts";
 import { mkdir, open, readFile, link, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -35,7 +36,10 @@ export async function durableDirectory(
   }
 }
 export class FileObjectStore implements ObjectStore {
-  constructor(private directory: string) {}
+  constructor(
+    private directory: string,
+    private onIo?: (operation: "read" | "write") => void,
+  ) {}
   private path(hash: string) {
     if (!/^(snapshot2?:sha256:|sha256:)[a-f0-9]{64}$/.test(hash))
       throw new Error("Invalid object key.");
@@ -43,7 +47,9 @@ export class FileObjectStore implements ObjectStore {
   }
   async get(hash: string): Promise<Uint8Array | null> {
     try {
-      return await readFile(this.path(hash));
+      const path = this.path(hash);
+      this.onIo?.("read");
+      return await readFile(path);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
       throw error;
@@ -55,6 +61,7 @@ export class FileObjectStore implements ObjectStore {
     const temporary = join(this.directory, `.pending-${randomUUID()}`);
     const file = await open(temporary, "wx", 0o600);
     try {
+      this.onIo?.("write");
       await file.writeFile(bytes);
       await file.sync();
       await file.close();
@@ -62,6 +69,7 @@ export class FileObjectStore implements ObjectStore {
         await link(temporary, path);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        this.onIo?.("read");
         const old = await readFile(path);
         if (!Buffer.from(bytes).equals(old))
           throw new Error("Object hash collision.");
@@ -89,29 +97,7 @@ export class SqliteCoordinator extends SqlRowsCoordinator {
   constructor(path: string, retainedSnapshots = 16) {
     const database = new DatabaseSync(path);
     database.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;");
-    super(
-      {
-        exec(sql, ...bindings) {
-          const statement = database.prepare(sql);
-          if (statement.columns().length)
-            return statement.all(...bindings) as Record<string, unknown>[];
-          statement.run(...bindings);
-          return [];
-        },
-        transaction(operation) {
-          database.exec("BEGIN IMMEDIATE");
-          try {
-            const value = operation();
-            database.exec("COMMIT");
-            return value;
-          } catch (error) {
-            database.exec("ROLLBACK");
-            throw error;
-          }
-        },
-      },
-      retainedSnapshots,
-    );
+    super(sqliteConnection(database), retainedSnapshots);
     this.database = database;
     database.exec(
       "CREATE TABLE IF NOT EXISTS evaluation_checkpoint_pin (id INTEGER PRIMARY KEY CHECK(id=1), binding TEXT NOT NULL, hash TEXT NOT NULL, file TEXT NOT NULL)",

@@ -151,7 +151,6 @@ test("the CLI clears a legacy profile cooldown without retrying or changing reta
       ],
       {
         cwd: fileURLToPath(new URL("../../../", import.meta.url)),
-        // Worker environment types do not describe this isolated Node process.
         env: environment as NodeJS.ProcessEnv,
         stdio: ["ignore", "pipe", "pipe"],
       },

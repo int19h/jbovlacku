@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { promisify, stripVTControlCharacters } from "node:util";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -42,6 +42,51 @@ test("Playwright runs isolate data and workers reuse only their run directory", 
     });
     assert.deepEqual(worker, first);
     assert.equal(await readFile(first.fixture, "utf8"), "live fixture");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Playwright discovery excludes Node unit execution and keeps browser cases", async () => {
+  const parent = process.env.JVC_TEST_ROOT ?? tmpdir();
+  await mkdir(parent, { recursive: true });
+  const directory = await mkdtemp(join(parent, "discovery-case-"));
+  try {
+    const env: NodeJS.ProcessEnv = { ...process.env, JVC_TEST_ROOT: directory };
+    delete env.TEST_WORKER_INDEX;
+    delete env.JVC_PLAYWRIGHT_RUN_ROOT;
+    delete env.NODE_TEST_CONTEXT;
+    const { stdout, stderr } = await exec(
+      process.execPath,
+      [
+        join(root, "node_modules/playwright/cli.js"),
+        "test",
+        "--config",
+        "apps/web/playwright.config.ts",
+        "--list",
+      ],
+      { cwd: root, env, timeout: 30000, maxBuffer: 4 * 1024 * 1024 },
+    );
+    const output = stripVTControlCharacters(stdout);
+    const lines = output.trim().split(/\r?\n/u);
+    assert.equal(lines[0], "Listing tests:");
+    assert.match(lines.at(-1)!, /^Total: \d+ tests in \d+ files$/u);
+    assert.ok(
+      lines
+        .slice(1, -1)
+        .every((line) => /^  .*\.test\.ts:\d+:\d+ › /u.test(line)),
+      "Discovery must print only browser case locations, without Node unit output.",
+    );
+    assert.match(output, /(?:^|\n)  (?:.*[\\/])?search\.test\.ts:\d+:\d+ › /u);
+    assert.match(
+      output,
+      /(?:^|\n)  (?:.*[\\/])?materialization-retry\.test\.ts:\d+:\d+ › /u,
+    );
+    assert.doesNotMatch(output, /(?:^|[\\/])unit[\\/]/mu);
+    assert.doesNotMatch(
+      stripVTControlCharacters(stdout + stderr),
+      /(?:^|\n)\s*(?:[✔✖]|TAP version \d+|# Subtest:|(?:ok|not ok) \d+ -)/u,
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
