@@ -82,13 +82,17 @@ export function importedRafsiClaims(definition: Carrier, lexical: Lexical) {
             ? { valsi: original.valsi }
             : sql
               ? {
+                  valsi: original.valsi,
                   definitions: {
                     definitionid: original.definitions.definitionid,
                     valsiid: original.definitions.valsiid,
                     rafsi: original.definitions.rafsi,
                   },
                 }
-              : { [field]: originalField(original, field).value },
+              : {
+                  valsiword: originalField(original, "valsiword").value,
+                  [field]: originalField(original, field).value,
+                },
           attribution: {
             author: null,
             editor: null,

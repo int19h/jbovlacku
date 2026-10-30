@@ -1240,6 +1240,7 @@ test("official rafsi claims use plain spelling while retaining accented source e
     (item) => item.envelope.header.action.kind === "rafsi.publish",
   )!;
   assert.equal(claim.body.word.spelling, "mar");
+  assert.equal(claim.body.legacy.original.valsiword, "már");
   const definition = result.journal.entries["4"].versions[0].carrier;
   assert.equal(definition.body.word.spelling, "már");
   assert.equal(
