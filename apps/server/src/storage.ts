@@ -36,7 +36,10 @@ export async function durableDirectory(
   }
 }
 export class FileObjectStore implements ObjectStore {
-  constructor(private directory: string) {}
+  constructor(
+    private directory: string,
+    private onIo?: (operation: "read" | "write") => void,
+  ) {}
   private path(hash: string) {
     if (!/^(snapshot2?:sha256:|sha256:)[a-f0-9]{64}$/.test(hash))
       throw new Error("Invalid object key.");
@@ -44,7 +47,9 @@ export class FileObjectStore implements ObjectStore {
   }
   async get(hash: string): Promise<Uint8Array | null> {
     try {
-      return await readFile(this.path(hash));
+      const path = this.path(hash);
+      this.onIo?.("read");
+      return await readFile(path);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
       throw error;
@@ -56,6 +61,7 @@ export class FileObjectStore implements ObjectStore {
     const temporary = join(this.directory, `.pending-${randomUUID()}`);
     const file = await open(temporary, "wx", 0o600);
     try {
+      this.onIo?.("write");
       await file.writeFile(bytes);
       await file.sync();
       await file.close();
@@ -63,6 +69,7 @@ export class FileObjectStore implements ObjectStore {
         await link(temporary, path);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        this.onIo?.("read");
         const old = await readFile(path);
         if (!Buffer.from(bytes).equals(old))
           throw new Error("Object hash collision.");
