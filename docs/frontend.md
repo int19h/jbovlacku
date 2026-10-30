@@ -715,6 +715,8 @@ The sum over query words decides relevance. Equal relevance uses full target-ID 
 These exact senses keep separate candidate entries. Later lexical hits omit their spellings and every other duplicate spelling.
 The list excludes selected context events, including a virtual whose signed base is in that context. It holds at most 30 candidate entries.
 
+The virtual-entry form described here is target behavior that the current [prompt files](../prompts/README.md#request) do not yet implement.
+
 Stored entries supply their type and definition text without notes.
 A virtual entry identifies its computed content, full target ID, descriptor, and exact signed base event and word.
 It supplies the converted definition and the base's original definition separately. Its base classification is labeled as provenance, not the virtual's own classification.
