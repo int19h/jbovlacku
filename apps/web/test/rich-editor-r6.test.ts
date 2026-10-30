@@ -936,3 +936,93 @@ test("r6 clipboard cut keeps partial code and link nodes", async ({ page }) => {
     .poll(() => richNodes(field))
     .toEqual([[node("code", "pre"), node("web", "fix")], ["outside\r"]]);
 });
+
+test("r6 a superseding delete keeps its different caret and target range", async ({
+  page,
+}) => {
+  const field = await mount(page);
+  await reset(field, [["first second"], ["cd\r\nef"]]);
+  await choose(field, [1, 0, 0]);
+  const prevented = await field.evaluate((field) => {
+    field.dispatchEvent(
+      new InputEvent("beforeinput", {
+        bubbles: true,
+        inputType: "deleteWordBackward",
+      }),
+    );
+    const text = field.querySelector(".rich-literal")!.firstChild!;
+    getSelection()!.setBaseAndExtent(text, 12, text, 12);
+    const range = document.createRange();
+    range.setStart(text, 3);
+    range.setEnd(text, 12);
+    const event = new InputEvent("beforeinput", {
+      bubbles: true,
+      cancelable: true,
+      inputType: "deleteWordBackward",
+    });
+    Object.defineProperty(event, "getTargetRanges", { value: () => [range] });
+    field.dispatchEvent(event);
+    return event.defaultPrevented;
+  });
+  expect(prevented).toBe(true);
+  await expect.poll(() => richNodes(field)).toEqual([["fir"], ["cd\r\nef"]]);
+});
+
+test("r6 superseding insertText and cut keep their new selections", async ({
+  page,
+}) => {
+  const field = await mount(page);
+  const original: RichText = [["ab"], ["cd\r\nef"]];
+  await reset(field, original);
+  await choose(field, [1, 0, 0]);
+  await field.evaluate((field) => {
+    field.dispatchEvent(
+      new InputEvent("beforeinput", {
+        bubbles: true,
+        inputType: "deleteWordBackward",
+      }),
+    );
+    const text = field.querySelector(".rich-literal")!.firstChild!;
+    getSelection()!.setBaseAndExtent(text, 0, text, 1);
+    const range = document.createRange();
+    range.setStart(text, 0);
+    range.setEnd(text, 1);
+    const event = new InputEvent("beforeinput", {
+      bubbles: true,
+      cancelable: true,
+      inputType: "insertText",
+      data: "X",
+    });
+    Object.defineProperty(event, "getTargetRanges", { value: () => [range] });
+    field.dispatchEvent(event);
+  });
+  await expect.poll(() => richNodes(field)).toEqual([["Xb"], ["cd\r\nef"]]);
+  await reset(field, original);
+  await choose(field, [1, 0, 0]);
+  const copied = await field.evaluate((field) => {
+    field.dispatchEvent(
+      new InputEvent("beforeinput", {
+        bubbles: true,
+        inputType: "deleteWordBackward",
+      }),
+    );
+    const text = field.querySelectorAll(".rich-literal");
+    getSelection()!.setBaseAndExtent(
+      text[0].firstChild!,
+      1,
+      text[1].firstChild!,
+      1,
+    );
+    const clipboardData = new DataTransfer();
+    field.dispatchEvent(
+      new ClipboardEvent("cut", {
+        bubbles: true,
+        cancelable: true,
+        clipboardData,
+      }),
+    );
+    return clipboardData.getData("text/plain");
+  });
+  expect(copied).toMatch(/^b\n+c$/u);
+  await expect.poll(() => richNodes(field)).toEqual([["ad\nef"]]);
+});
