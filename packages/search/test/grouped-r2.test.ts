@@ -31,13 +31,12 @@ for (const query of [
   "move",
   "use",
   "klama ☃",
-  "klama.",
   "riha",
 ])
   test(`known-word ordering requires exact dictionary tokens: ${query}`, () => {
     assert.equal(selectMatches(entries, query).allLojban, false);
   });
-for (const query of ["klama", "mi klama", "MI KLÁMA", "iseri'abo"])
+for (const query of ["klama", "klama.", "mi klama", "MI KLÁMA", "iseri'abo"])
   test(`known dictionary spelling orders Lojban first: ${query}`, () => {
     assert.equal(selectMatches(entries, query).allLojban, true);
   });

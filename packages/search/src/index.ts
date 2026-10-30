@@ -50,7 +50,11 @@ export interface LexicalEntry {
   glosses: { text: string }[];
   plain_text: string;
   rafsi?: string[];
-  search_status?: { view: string; status: "active" | "retired" | "ineligible" };
+  search_status?:
+    | "active"
+    | "retired"
+    | "ineligible"
+    | { view: string; status: "active" | "retired" | "ineligible" };
 }
 export interface SearchMetrics {
   entries: number;
@@ -78,6 +82,9 @@ export function normalizeQuery(value: string): string {
     .trim();
 }
 const headwordKey = (value: string) => stripAcuteAccents(normalizeQuery(value));
+// These are whole spelling aliases. They never use morphology segmentation.
+const knownSpelling = (value: string) =>
+  value.replace(/[.,]/gu, "").replaceAll("h", "'");
 
 interface Components {
   words: string[];
@@ -87,6 +94,7 @@ interface Components {
 }
 interface PreparedEntry {
   spelling: string;
+  knownSpelling: string;
   canonical: string;
   glosses: string[];
   text: string;
@@ -216,6 +224,7 @@ function prepareEntry(
   const spelling = headwordKey(entry.word.spelling);
   const indexed = {
     spelling,
+    knownSpelling: knownSpelling(spelling),
     canonical: canonicalWord(spelling),
     glosses: entry.glosses.map((gloss) => normalizeQuery(gloss.text)),
     text: normalizeQuery(entry.plain_text),
@@ -249,6 +258,8 @@ export interface SearchOptions {
   group?: SearchGroup;
   includeRetired?: boolean;
   view?: string | null;
+  /** The view that binds compact status fields in a local package. */
+  packageView?: string;
   knownWord?: (entry: LexicalEntry) => boolean;
   rafsiFor?: (entry: LexicalEntry) => readonly string[];
 }
@@ -420,8 +431,9 @@ export function selectMatches<T extends LexicalEntry>(
   );
   let segmentation = prepared.segmentation;
   const known = new Set<string>();
-  const queryWords = prepared.headword.split(/\s+/u);
+  const queryWords = prepared.headword.split(/\s+/u).map(knownSpelling);
   const querySpellings = new Set(queryWords);
+  const wholeSpelling = knownSpelling(prepared.headword);
   let wholeKnown = false;
   if (!prepared.text) return { rows, segmentation, allLojban: false };
   const single =
@@ -442,8 +454,10 @@ export function selectMatches<T extends LexicalEntry>(
     if (metrics) metrics.entries++;
     if (!accept(entry)) continue;
     if (!options.knownWord || options.knownWord(entry)) {
-      if (querySpellings.has(index.spelling)) known.add(index.spelling);
-      if (index.spelling === prepared.headword) wholeKnown = true;
+      if (index.knownSpelling && querySpellings.has(index.knownSpelling))
+        known.add(index.knownSpelling);
+      if (wholeSpelling && index.knownSpelling === wholeSpelling)
+        wholeKnown = true;
     }
     if (index.limited) segmentation = "limited";
     const sequence = sequenceMatch(index, prepared, coverage, metrics);
