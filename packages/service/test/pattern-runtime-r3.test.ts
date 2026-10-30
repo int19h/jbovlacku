@@ -5,16 +5,14 @@ import { EventEmitter, getEventListeners } from "node:events";
 import { Worker } from "node:worker_threads";
 import { initializeCore } from "../../core/src/index.ts";
 import { NodePatternScanner } from "../../../apps/server/src/pattern-search.ts";
-import { workerPatternScanner } from "../../../apps/worker/src/pattern-search.ts";
 import type { PatternScanner } from "../../search/src/pattern-scan.ts";
 import { DictionaryService } from "../src/service.ts";
-let wasm: Uint8Array, memory: WebAssembly.Memory;
+let wasm: Uint8Array;
 before(async () => {
   wasm = await readFile(
     new URL("../../core/generated/jvc_runtime_bg.wasm", import.meta.url),
   );
-  memory = ((await initializeCore(wasm)) as { memory: WebAssembly.Memory })
-    .memory;
+  await initializeCore(wasm);
 });
 class ControlledWorker extends EventEmitter {
   messages: any[] = [];
@@ -215,160 +213,4 @@ test("Node abort during worker construction settles before startup or task messa
   } finally {
     await scanner.close();
   }
-});
-test("Cloudflare holds at most two compiled scans across factories and cancels before D1 replies", async () => {
-  const entries = process.env.JVC_PATTERN_EN_KEYS
-    ? (await readFile(process.env.JVC_PATTERN_EN_KEYS, "utf8"))
-        .trimEnd()
-        .split("\n")
-        .map((spelling) => ({ spelling, rafsi: [] }))
-    : Array.from({ length: 33_267 }, () => ({
-        spelling: "basturfa",
-        rafsi: [],
-      }));
-  assert.equal(entries.length, 33_267);
-  let reads = 0,
-    release!: () => void;
-  const held = new Promise<void>((resolve) => (release = resolve));
-  const index = {
-    prepare(sql: string) {
-      assert.equal(sql, "SELECT 1");
-      return {
-        first() {
-          reads++;
-          return held;
-        },
-      };
-    },
-  } as any;
-  const scans = [workerPatternScanner(index), workerPatternScanner(index)];
-  const abort = new AbortController();
-  const before = memory.buffer.byteLength;
-  const jobs = Array.from({ length: 64 }, (_, i) =>
-    scans[i % 2](entries, String.raw`/^\w{100}$/`, abort.signal).then(
-      (rows) => ({ rows }),
-      (e) => ({ code: e.code, name: e.name }),
-    ),
-  );
-  const peak = memory.buffer.byteLength;
-  try {
-    assert.equal(reads, 2);
-    assert.ok(
-      peak - before < 32 * 1024 * 1024,
-      `Wasm grew ${peak - before} bytes`,
-    );
-    const response = await service(scans[1]).fetch(request());
-    assert.equal(response.status, 503);
-    assert.equal(response.headers.get("retry-after"), "1");
-    const body: any = await response.json();
-    assert.equal(body.code, "search_busy");
-    assert.equal(body.hits, undefined);
-    abort.abort();
-    const outcomes = await Promise.all(jobs);
-    assert.equal(
-      outcomes.filter((r: any) => r.code === "search_busy").length,
-      54,
-    );
-    assert.equal(
-      outcomes.filter((r: any) => r.name === "AbortError").length,
-      10,
-    );
-    assert.equal(getEventListeners(abort.signal, "abort").length, 0);
-    // The old I/O remains held. Its completion cannot touch the freed matcher.
-    const free = workerPatternScanner({
-      prepare: () => ({ first: async () => null }),
-    } as any);
-    assert.deepEqual(await free([{ spelling: "bangu", rafsi: [] }], "ba*"), [
-      { index: 0, match: "headword-pattern" },
-    ]);
-    release();
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.deepEqual(await free([], "*"), []);
-    console.log(
-      JSON.stringify({
-        flood: 64,
-        reads,
-        wasmBefore: before,
-        wasmPeak: peak,
-        wasmAdded: peak - before,
-      }),
-    );
-  } finally {
-    abort.abort();
-    release();
-    await Promise.all(jobs);
-  }
-});
-test("Cloudflare failure and queued cancellation release each admission slot once", async () => {
-  let release!: () => void,
-    reads = 0;
-  const held = new Promise<void>((r) => (release = r));
-  const scan = workerPatternScanner({
-    prepare: () => ({
-      first: () => {
-        reads++;
-        return held;
-      },
-    }),
-  } as any);
-  const active = new AbortController(),
-    queued = new AbortController();
-  const jobs = [
-    scan(
-      Array(9000).fill({ spelling: "bangu", rafsi: [] }),
-      "*",
-      active.signal,
-    ).catch((e) => e),
-    scan(
-      Array(9000).fill({ spelling: "bangu", rafsi: [] }),
-      "*",
-      active.signal,
-    ).catch((e) => e),
-  ];
-  const canceled = scan([], "*", queued.signal);
-  queued.abort();
-  await assert.rejects(canceled, abortError);
-  const invalid = scan([], "/[/");
-  active.abort();
-  await assert.rejects(invalid, (e: any) => e.code === "pattern_invalid");
-  await Promise.all(jobs);
-  assert.equal(reads, 2);
-  let replacementReads = 0,
-    releaseReplacement!: () => void;
-  const replacementHeld = new Promise<void>((r) => (releaseReplacement = r));
-  const replacementAbort = new AbortController();
-  const replacement = workerPatternScanner({
-    prepare: () => ({
-      first: () => {
-        replacementReads++;
-        return replacementHeld;
-      },
-    }),
-  } as any);
-  const replacements = Array.from({ length: 10 }, () =>
-    replacement([], "*", replacementAbort.signal).catch((e) => e),
-  );
-  release();
-  await new Promise((r) => setImmediate(r));
-  try {
-    // Late replies from the canceled scans cannot release replacement slots.
-    assert.equal(replacementReads, 2);
-    await assert.rejects(replacement([], "*"), busy);
-  } finally {
-    replacementAbort.abort();
-    await Promise.all(replacements);
-    releaseReplacement();
-  }
-  const fail = workerPatternScanner({
-    prepare: () => ({
-      first: async () => {
-        throw new Error("Synthetic D1 failure");
-      },
-    }),
-  } as any);
-  await assert.rejects(fail([], "*"), /D1 failure/);
-  const free = workerPatternScanner({
-    prepare: () => ({ first: async () => null }),
-  } as any);
-  assert.deepEqual(await free([], "*"), []);
 });

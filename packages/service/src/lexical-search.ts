@@ -11,7 +11,7 @@ import {
   type SearchMetrics,
 } from "../../search/src/index.ts";
 import {
-  scanPatternsChunked,
+  scanPatterns,
   type PatternScanner,
 } from "../../search/src/pattern-scan.ts";
 import type { SearchEntry } from "./packages.ts";
@@ -136,7 +136,7 @@ export function lexicalSearch(
   );
 }
 
-/** Hosts supply their own bounded pattern runtime. Ordinary retrieval stays literal when requested. */
+/** The Node server supplies its bounded pattern runtime. Ordinary retrieval stays literal when requested. */
 export async function lexicalSearchAsync(
   entries: SearchEntry[],
   query: string,
@@ -144,11 +144,10 @@ export async function lexicalSearchAsync(
   evaluation: Evaluation,
   includeRetired = false,
   rafsi: Record<string, string[]> = {},
-  scanner: PatternScanner = (entries, query, signal) =>
-    scanPatternsChunked(entries, query, {
-      yield: () => new Promise((resolve) => setTimeout(resolve, 0)),
-      signal,
-    }),
+  scanner: PatternScanner = async (entries, query, signal) => {
+    signal?.throwIfAborted();
+    return scanPatterns(entries, query);
+  },
   signal?: AbortSignal,
   options: SearchOptions = {},
 ) {
