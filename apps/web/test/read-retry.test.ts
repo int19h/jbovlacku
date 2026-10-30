@@ -90,6 +90,7 @@ for (const surface of ["word", "search"] as const)
     await expect(page.getByRole("status")).toHaveText(
       "Still unavailable after retry 1. This view is temporarily unavailable while the next snapshot is published.",
     );
+    await expect(main.locator("h1")).toBeFocused();
     await retry.focus();
     await page.keyboard.press("Enter");
     await expect.poll(() => requests).toBe(3);
@@ -97,6 +98,7 @@ for (const surface of ["word", "search"] as const)
     await expect(page.getByRole("status")).toHaveText(
       "Still unavailable after retry 2. This view is temporarily unavailable while the next snapshot is published.",
     );
+    await expect(main.locator("h1")).toBeFocused();
     blocked = false;
     await retry.focus();
     await page.keyboard.press("Enter");
