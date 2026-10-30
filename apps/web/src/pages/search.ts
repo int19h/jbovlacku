@@ -158,7 +158,11 @@ export async function searchPage(
     el("h1", { class: "sr", text: query ? `Search: ${query}` : "Search" }),
   );
   const countLine = el("div", { class: "count-line" });
-  const count = el("p", { class: "count sr", "aria-live": "polite", text: "" });
+  const count = el("p", {
+    class: query ? "count sr" : "count",
+    "aria-live": "polite",
+    text: "",
+  });
   const languageSelect = el("select", {
     class: "inline-select",
     "aria-label": "Definition language",
@@ -307,7 +311,6 @@ export async function searchPage(
   }
 
   if (!query) {
-    count.classList.remove("sr");
     count.textContent = "Type a word or a meaning to search.";
     if (app.session.preferences.searchMode === "local" && !cached) {
       const note = p(

@@ -1439,6 +1439,12 @@ test("r3: count announcements follow displayed order without a second visible st
   page,
 }) => {
   await localPackage(page);
+  await expect(page.locator("main .count-line .count")).toHaveText(
+    "Type a word or a meaning to search.",
+  );
+  await expect(page.locator("main .count-line .count")).not.toHaveClass(
+    /\bsr\b/,
+  );
   for (const [query, message] of [
     ["book", "20 definition results. 0 Lojban results."],
     ["se", "20 Lojban results. 20 definition results."],
