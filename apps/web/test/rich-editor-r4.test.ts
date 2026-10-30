@@ -31,18 +31,35 @@ async function mount(page: Page, value: RichText) {
 }
 async function choose(field: Locator, offset: number, end = offset) {
   await field.focus();
-  await field.evaluate(
+  const selected = await field.evaluate(
     (field, { offset, end }) => {
-      const text = field.querySelector("p")!.lastElementChild!.firstChild!;
+      const containers = field
+        .querySelector("p")!
+        .querySelectorAll(
+          ".rich-literal,.rich-code,.rich-word-link,.rich-web-link",
+        );
+      const text = containers[containers.length - 1].firstChild!;
       const range = document.createRange();
       range.setStart(text, offset);
       range.setEnd(text, end);
       getSelection()!.removeAllRanges();
       getSelection()!.addRange(range);
       document.dispatchEvent(new Event("selectionchange"));
+      return {
+        text: text.textContent,
+        nodeType: text.nodeType,
+        from: range.startOffset,
+        to: range.endOffset,
+      };
     },
     { offset, end },
   );
+  expect(selected).toEqual({
+    text: original,
+    nodeType: 3,
+    from: offset,
+    to: end,
+  });
 }
 for (const kind of kinds) {
   for (const inserted of ["X", "漢"]) {
