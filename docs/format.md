@@ -1532,8 +1532,11 @@ A converted span includes its math delimiters and their internal whitespace.
 
 Adjacent letters, digits, underscores, braces, or exponent notation prevent a conversion within a larger expression.
 Equations, component variables, ordinary bracketed relations, code, and quotations remain literal.
+
 Quoted text includes paired straight or typographic double quotes, guillemets, backticks, and Lojban `lu` or `lo'u` quotations.
 Single quoted forms also remain literal when their quotes do not belong to adjacent words.
+A `zo` quotation keeps its next token literal. After `zoi` or `la'o`, the rest stays literal because the recipe does not parse their delimiters.
+
 The recipe leaves notes, etymology, examples, and source history literal.
 It records unresolved variable patterns as warnings. Its annotations remain unreviewed importer claims.
 

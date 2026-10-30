@@ -14,14 +14,18 @@ export function convertPlaces(source: string | null, field: string) {
   const unresolved: Record<string, number> = {};
   // Treat each delimited expression as one unit. Never rewrite part of an equation.
   const units =
-    /`[^`]*(?:`|$)|"(?:\\.|[^"\\])*(?:"|$)|“[^”]*(?:”|$)|«[^»]*(?:»|$)|(?<![a-zA-Z])'[^'\n]+'(?![a-zA-Z])|\blu\b[\s\S]*?\bli'u\b|\blo'u\b[\s\S]*?\ble'u\b|\$\$[\s\S]*?(?:\$\$|$)|\$[^$]*(?:\$|$)|\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\]|\([^()]*\)|\[[^\[\]]*\]|\\[a-zA-Z]+(?:\{[^{}]*\})?|[a-zA-Z][a-zA-Z0-9]*_(?:\{[^{}]*\}|[a-zA-Z0-9]+)|\bx[0-9]+\b|\$[\s\S]*$|\\[([][\s\S]*$/g;
+    /`[^`]*(?:`|$)|"(?:\\.|[^"\\])*(?:"|$)|“[^”]*(?:”|$)|«[^»]*(?:»|$)|(?<![a-zA-Z])'[^'\n]+'(?![a-zA-Z])|\b(?:zoi|la'o)\b[\s\S]*$|\bzo\s+\S+|\blu\b[\s\S]*?(?:\bli'u\b|$)|\blo'u\b[\s\S]*?(?:\ble'u\b|$)|\$\$[\s\S]*?(?:\$\$|$)|\$[^$]*(?:\$|$)|\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\]|\\[a-zA-Z]+(?:\{[^{}]*\})?|(?<![a-zA-Z0-9])[a-zA-Z][a-zA-Z0-9]*_(?:\{[^{}]*\}|[a-zA-Z0-9]+)|\bx[0-9]+\b|\$[\s\S]*$|\\[([][\s\S]*$/g;
   let end = 0;
   let scalarEnd = 0;
   const nesting: string[] = [];
   const scanGap = (gap: string) => {
     for (const char of gap) {
       if ("([{".includes(char)) nesting.push(char);
-      else if (")]}".includes(char)) nesting.pop();
+      else if (")]}".includes(char)) {
+        const expected = { ")": "(", "]": "[", "}": "{" }[char];
+        if (nesting.at(-1) === expected) nesting.pop();
+        else nesting.push("?");
+      }
     }
   };
   const literal = (value: string) => {

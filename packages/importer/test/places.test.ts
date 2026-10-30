@@ -55,6 +55,12 @@ test("equations, component variables, quotations, nested relations and malformed
     '"x_1',
     "'x_1'",
     "((x_1) means x_2)",
+    "([x_1) and x_2]",
+    "zoi gy. x_1 gy.",
+    "la'o gy. x_1 gy.",
+    "zo x_1",
+    "lu x_1",
+    "lo'u x_1",
     "$$x_1$",
     "$x_1$$",
   ]) {
@@ -77,4 +83,11 @@ test("mixed real TeX forms convert conservative places and retain unresolved exp
   assert.ok(converted.conversion.warnings.length > 0);
   assert.deepEqual(converted.unresolved, { g_1: 1, m_4: 1, "$x_2 + 1$": 1 });
   assert.equal(convertPlaces("", "/definition").text.length, 0);
+});
+
+test("a long literal word preserves its boundary before a later place", () => {
+  const literal = "a".repeat(100000);
+  assert.deepEqual(convertPlaces(literal + " x_1", "/definition").text, [
+    [literal + " ", 1],
+  ]);
 });
