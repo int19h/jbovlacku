@@ -98,6 +98,32 @@ for (const [ending, lineBreak] of [
       });
     }
     for (const kind of kinds.filter((kind) => kind !== "prose")) {
+      test(`r5 ${key} joins saved ${ending} prose directly after ${kind}`, async ({
+        page,
+      }) => {
+        const raw = `cd${lineBreak}ef`;
+        const left: RichNode[] = ["left\r\n", node(kind, "ab")];
+        const right: RichNode[] = [raw, { code: "guard\r" }, " tail\r\n"];
+        const outside: RichText[number] = ["outer\r\n", " exact\r"];
+        const value: RichText = [left, right, outside];
+        const field = await mount(page, value);
+        expect(await richNodes(field)).toEqual(value);
+        if (key === "Backspace") await choose(field, 1, 0, raw, 0);
+        else await choose(field, 0, 1, "ab", 2);
+        await page.keyboard.press(key);
+        await expect
+          .poll(() => richNodes(field))
+          .toEqual([[...left, ...right], outside]);
+        expect(await page.evaluate(() => (window as any).r5KeyHandled)).toBe(
+          true,
+        );
+        await field.press("Control+z");
+        await expect.poll(() => richNodes(field)).toEqual(value);
+        await field.press("Control+Shift+z");
+        await expect
+          .poll(() => richNodes(field))
+          .toEqual([[...left, ...right], outside]);
+      });
       test(`r5 ${key} joins at saved ${ending} ${kind} boundary`, async ({
         page,
       }) => {
