@@ -1026,3 +1026,47 @@ test("r6 superseding insertText and cut keep their new selections", async ({
   expect(copied).toMatch(/^b\n+c$/u);
   await expect.poll(() => richNodes(field)).toEqual([["ad\nef"]]);
 });
+
+test("r6 deletion direction keeps the correct code or link context for later typing", async ({
+  page,
+}) => {
+  const field = await mount(page);
+  for (const [left, right] of [
+    ["code", "prose"],
+    ["code", "word"],
+    ["word", "web"],
+    ["web", "code"],
+    ["prose", "web"],
+  ] as const) {
+    for (const [inputType, selected, end] of [
+      ["deleteContentBackward", true, false],
+      ["deleteContentForward", true, true],
+      ["deleteWordForward", false, false],
+    ] as const) {
+      for (const reverse of selected ? [false, true] : [false]) {
+        await reset(field, [
+          [node(left, "prefix"), node(right, "suffix")],
+          ["outside\r"],
+        ]);
+        const from: Point = [0, 0, 3],
+          to: Point = [0, 1, 3];
+        await choose(
+          field,
+          reverse ? to : from,
+          selected ? (reverse ? from : to) : undefined,
+        );
+        expect(await beforeinput(field, inputType, [from, to])).toBe(true);
+        await page.keyboard.type("X");
+        await expect
+          .poll(() => richNodes(field))
+          .toEqual([
+            [
+              node(left, end ? "pre" : "preX"),
+              node(right, end ? "Xfix" : "fix"),
+            ],
+            ["outside\r"],
+          ]);
+      }
+    }
+  }
+});

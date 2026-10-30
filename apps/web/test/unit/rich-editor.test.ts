@@ -164,6 +164,58 @@ test("cross-node ranges retain partial code and link labels", () => {
   }
 });
 
+test("selected forward deletion keeps the ending context and collapsed word deletion keeps the starting context", () => {
+  for (const [inputType, selected, expectedCode, expectedProse] of [
+    ["deleteContentBackward", true, "taX", "est"],
+    ["deleteContentForward", true, "ta", "Xest"],
+    ["deleteWordForward", false, "taX", "est"],
+  ] as const) {
+    let state = EditorState.create({
+      doc: richToEditor([["first second", { code: "tail" }, "rest"]]),
+    });
+    const tr = state.tr.setSelection(
+      TextSelection.create(state.doc, 18, selected ? 23 : 18),
+    );
+    richEditor.deleteRichInput(
+      tr,
+      inputType,
+      (next) => {
+        state = state.applyTransaction(next).state;
+      },
+      { from: 18, to: 23 },
+    );
+    state = state.apply(state.tr.insertText("X"));
+    assert.deepEqual(editorToRich(state.doc), [
+      ["first second", { code: expectedCode }, expectedProse],
+    ]);
+  }
+});
+
+test("collapsed forward deletion keeps equivalent inner and outer caret contexts", () => {
+  for (const caret of [20, 21]) {
+    let state = EditorState.create({
+      doc: richToEditor([["first second", { code: "tail" }, "rest"]]),
+    });
+    const tr = state.tr.setSelection(TextSelection.create(state.doc, caret));
+    richEditor.deleteRichInput(
+      tr,
+      "deleteWordForward",
+      (next) => {
+        state = state.applyTransaction(next).state;
+      },
+      { from: caret === 20 ? 21 : 20, to: 23 },
+    );
+    state = state.apply(state.tr.insertText("X"));
+    assert.deepEqual(editorToRich(state.doc), [
+      [
+        "first second",
+        { code: caret === 20 ? "tailX" : "tail" },
+        caret === 20 ? "est" : "Xest",
+      ],
+    ]);
+  }
+});
+
 test("current insertion ranges replace stale selections and keep equivalent outer carets", () => {
   let state = EditorState.create({
     doc: richToEditor([["keep"], ["replace"]]),
