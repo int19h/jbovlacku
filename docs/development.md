@@ -639,6 +639,10 @@ npx tsx scripts/test-server-security.ts
 `JVC_SECURITY_BROWSERS` selects a comma-separated subset of `chromium,firefox,webkit`.
 The probe verifies real runtime WebAssembly, blocked JavaScript evaluation, blocked inline scripts, and blocked framing.
 `scripts/measure-service-io.ts` uses the same corpus variables to count object operations and sample Node and Wasm memory.
+`logical_get` and `logical_put` count calls to the object store.
+`object_get` counts file read attempts, including missing objects and existing-object checks after a link collision.
+`object_put` counts temporary-file write attempts, including duplicate puts. New objects need no read before the write.
+`operations` totals those file reads and writes. It excludes directory operations, links, file syncs, and metadata access.
 `JVC_IO_REPORT` selects an output report file. Its disposable database is removed when the measurement finishes.
 The importer tests use pinned JSON captures and a small SQL fixture with source provenance.
 Inferred place conversion and automatic rafsi publication remain unfinished.
@@ -663,7 +667,7 @@ The Node server accepts these variables:
 | ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `JVC_AI_ENABLED`                   | Set `enabled` to offer assistance. The default is disabled.                                                                                                          |
 | `JVC_AI_BASE_URL`                  | Provider base URL. The default is `https://openrouter.ai/api/v1`. Use HTTPS, or HTTP on loopback for a local provider.                                               |
-| `JVC_AI_KEY_FILE`                  | Path to the server-held provider key. Node reads the file for each model turn.                                        |
+| `JVC_AI_KEY_FILE`                  | Path to the server-held provider key. Node reads the file for each model turn.                                                                                       |
 | `JVC_AI_PROVIDER_NAME`             | Public provider name. The default is `OpenRouter`. Capability metadata uses this name and the route, without the private endpoint URL.                               |
 | `JVC_AI_MODEL`                     | Model name. The default is `meta/muse-spark-1.3-contributor`.                                                                                                        |
 | `JVC_AI_PROVIDER_ROUTE`            | Single permitted route. The default is `meta`.                                                                                                                       |
@@ -672,7 +676,7 @@ The Node server accepts these variables:
 | `JVC_AI_DECISION_REPORTS`          | Set `enabled` to request a written decision report before the tool call. The default is disabled.                                                                    |
 | `JVC_AI_MAX_TOKENS`                | Optional output limit per provider turn. An explicit value replaces automatic task, effort, and report limits. The permitted range is 128 through 20,480.            |
 | `JVC_AI_TIMEOUT_MS`                | Time limit for the complete job. The default is 120,000 milliseconds. The permitted range is 10 through 540,000. Job expiry leaves a reading window after this time. |
-| `JVC_AI_CONCURRENCY`               | Maximum active jobs. The default is two. Node permits one through four.                                                           |
+| `JVC_AI_CONCURRENCY`               | Maximum active jobs. The default is two. Node permits one through four.                                                                                              |
 | `JVC_AI_INPUT_PRICE`               | Model input price in USD per million tokens. The default is 0.10.                                                                                                    |
 | `JVC_AI_OUTPUT_PRICE`              | Model output price in USD per million tokens. The default is 0.20.                                                                                                   |
 | `JVC_AI_EMBEDDING_MODEL`           | Embedding model. The adapter permits only `qwen/qwen3-embedding-8b`, which is the default.                                                                           |
@@ -906,8 +910,9 @@ An operator can inspect these records and request a new bounded attempt through 
 The earlier charge remains. A stuck transport requires its completion or a service restart before its slot returns.
 Job pause, resume, and explicit retry links belong to later indexing work.
 
-These host methods expose no browser route. Semantic search remains disabled until storage and query services pass their tests.
-Compatible query caching and current-view filtering also belong to those later services.
+These embedding host methods expose no browser route.
+The Node server exposes meaning search through the [semantic routes](semantic-search.md#enable-node-meaning-search).
+Those routes use compatible query caching and current-view filtering.
 At most 16,384 cost records remain within a day. Reaching this bound also refuses new jobs with a retry interval.
 On a later admission, the service combines completed operator batches with known costs into hourly summary rows.
 Queries, generation jobs, errors, and unknown charges keep their individual rows.

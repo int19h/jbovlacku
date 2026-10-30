@@ -136,7 +136,7 @@ New SQL and REST publications omit derived vectors and caches with explicit sour
 REST publications also omit viewer-specific values.
 The current importer records unknown rights. The source-notice convention below remains a target change.
 
-The committed adapter comparison uses one signed profile event. Importer tests include a two-row fixture derived from a pinned 2,429-row API capture.
+The committed Node adapter test uses one signed profile event. Importer tests include a two-row fixture derived from a pinned 2,429-row API capture.
 
 The SQL fixture retains four source definitions in English, French, and Russian, with available version history and numbered keywords.
 SQL extraction streams COPY blocks and joins source rows on disk. It retains separate language tags and separate word-level and definition-level rafsi evidence.
@@ -451,7 +451,6 @@ No command in this setup deploys a service.
 The [ranking measurements](crates/jvc-rank/README.md) cover eleven synthetic scenarios in native Rust and WebAssembly.
 The weighted sixteen-actor case takes 8.119 seconds in WebAssembly despite zero completed expansion work.
 The expansion budget does not bound total CPU time. These measurements do not establish performance for real community graphs.
-
 
 The current default state work budget can run out at roughly 4,500 events in a flat history.
 This is an approximate limit. Histories with more edges can reach it sooner, and the requested state also affects the work.
