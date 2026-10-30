@@ -21,7 +21,7 @@ export function richHasContent(value: RichText): boolean {
   );
 }
 
-/** Live blank lines have no stored paragraph. Nonblank nodes stay exact. */
+/** Edited fields omit blank paragraphs. Nonblank nodes stay exact. */
 export function canonicalRich(value: RichText): RichText {
   const paragraphs = value.filter((paragraph) => richHasContent([paragraph]));
   return paragraphs.length === value.length ? value : paragraphs;
