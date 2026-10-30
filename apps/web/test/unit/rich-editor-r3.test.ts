@@ -71,7 +71,7 @@ test("r3 a saved single blank paragraph has one canonical value before edits and
   assert.deepEqual(editorToRich(state.doc), []);
 });
 
-test("r3 draft writes canonical rich values in every retained field and omits empty optional values", () => {
+test("r3 edited empty notes stay absent while untouched draft fields keep their values", () => {
   const blank: RichText = [["\n"], [" \t"]];
   const retained: RichText = [[" first", " second ", { code: "" }]];
   const padded: RichText = [blank[0], retained[0], blank[1]];
@@ -162,24 +162,25 @@ test("r3 draft writes canonical rich values in every retained field and omits em
     blank,
   );
   const originalText = structuredClone(draft.text);
+  draft.notes = editorToRich(richToEditor(blank));
   const saved = normalizeDraft(draft);
-  assert.deepEqual(saved.text, retained);
+  assert.deepEqual(saved.text, padded);
   assert.deepEqual(saved.notes, []);
-  assert.deepEqual(saved.places[0].description, retained);
+  assert.deepEqual(saved.places[0].description, padded);
   const { body } = draftToBody(draft);
   assert.ok(body);
-  assert.deepEqual(body.text, retained);
-  assert.deepEqual(body.frame!.places[0].description, retained);
-  assert.deepEqual(body.frame!.places[0].constraints, [retained]);
-  assert.deepEqual(body.frame!.constraints, [retained]);
-  assert.deepEqual(body.operands[0].description, retained);
-  assert.deepEqual(body.examples[0].notes, retained);
-  assert.deepEqual(body.examples[0].translation, []);
+  assert.deepEqual(body.text, padded);
+  assert.deepEqual(body.frame!.places[0].description, padded);
+  assert.deepEqual(body.frame!.places[0].constraints, [blank, padded]);
+  assert.deepEqual(body.frame!.constraints, [blank, padded]);
+  assert.deepEqual(body.operands[0].description, padded);
+  assert.deepEqual(body.examples[0].notes, padded);
+  assert.deepEqual(body.examples[0].translation, blank);
   assert.deepEqual(body.notes, []);
-  assert.deepEqual(body.etymology.text, []);
+  assert.deepEqual(body.etymology.text, [...blank, ...blank]);
   const wire = omitDefinitionDefaults(body) as any;
   assert.equal("notes" in wire, false);
-  assert.equal("etymology" in wire, false);
+  assert.deepEqual(wire.etymology.text, [...blank, ...blank]);
   assert.deepEqual(
     draft.text,
     originalText,

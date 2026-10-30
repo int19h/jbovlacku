@@ -207,11 +207,11 @@ test("r3 live blank paragraphs stay editable while getters, saved drafts, and pu
     });
 });
 
-test("r3 undo of a saved single blank agrees with its canonical stored value", async ({
+test("r3 editing a saved blank makes its undo use the canonical stored value", async ({
   page,
 }) => {
   const field = await mount(page, [["\n"]]);
-  expect(await richNodes(field)).toEqual([]);
+  expect(await richNodes(field)).toEqual([["\n"]]);
   await field.pressSequentially("x");
   expect(await richNodes(field)).toEqual([["x"]]);
   await field.press("Control+z");

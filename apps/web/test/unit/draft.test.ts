@@ -1228,7 +1228,7 @@ test("signed evidence alone decides whether cached draft source rows publish", (
         assert.deepEqual(restored.formation!.sources, [
           {
             ...privateRow,
-            notes: privateRow.notes.filter((paragraph) => paragraph.length),
+            notes: privateRow.notes,
             word_ipa: privateRow.word_ipa ?? null,
           },
         ]);

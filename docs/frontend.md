@@ -765,11 +765,20 @@ A toolbar insertion appends when the field never received focus.
 Web links require HTTPS addresses that [URL parsing](https://url.spec.whatwg.org/#concept-basic-url-parser) accepts.
 
 The editor preserves adjacent saved nodes, empty labels, paragraph boundaries, and every unchanged field. New prose joins nearby text unless an untouched saved boundary separates it.
-Blank paragraphs stay in the live editor for the caret and undo history.
-Saved drafts and published values omit every whitespace-only paragraph, including leading, interior, and trailing paragraphs.
-Nonblank paragraphs keep their exact nodes and whitespace. An empty field remains `[]`, and an empty optional field stays absent from publication.
 
-Loading a saved single blank paragraph and undoing an edit both produce the canonical empty value.
+CR is a carriage return. LF is a line feed. CRLF is their two-character sequence.
+
+When an author edits prose, code, or a link label, CR and CRLF in that text node become LF.
+This rule applies to every input and edit command, including composition, undo, and redo.
+Text nodes that the author does not edit keep their exact text. Changing only a link target keeps its label unchanged.
+
+Blank paragraphs stay in the live editor for the caret and undo history.
+Only edited fields omit whitespace-only paragraphs on save and publication, including leading, interior, and trailing paragraphs.
+Untouched fields keep their exact stored values, including whitespace-only paragraphs.
+An edited empty field remains `[]`, and an edited empty optional field stays absent from publication.
+
+Loading a saved single blank paragraph keeps its stored value until the first edit.
+After an edit, undo uses the edited-field rules and returns the canonical empty value.
 Updating place rows preserves each retained editor's caret and undo history.
 Pointer focus and an existing native selection keep their chosen caret position.
 An editor repairs its native caret only after its retained wrapper moves, when no pointer or native selection chooses another position.

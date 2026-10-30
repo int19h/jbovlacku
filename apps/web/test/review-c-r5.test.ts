@@ -83,8 +83,8 @@ test("R5 nearby edits preserve rare stored values", async ({ page }) => {
       return { text: draft.text, notes: draft.notes };
     });
   expect(await read()).toEqual({
-    text: [original.text[0], original.text[2]],
-    notes: [original.notes[0]],
+    text: original.text,
+    notes: original.notes,
   });
   await appendRichText(editor, " added");
   await expect(
@@ -92,7 +92,7 @@ test("R5 nearby edits preserve rare stored values", async ({ page }) => {
   ).toBeVisible();
   expect(await read()).toEqual({
     text: [original.text[0], ["last added"]],
-    notes: [original.notes[0]],
+    notes: original.notes,
   });
 });
 
