@@ -50,6 +50,7 @@ Identifiers have these forms:
 | Identity | `ed25519:` plus 64 lowercase hexadecimal digits for the public key. |
 | Body | `sha256:` plus SHA-256 of its canonical JSON bytes. |
 | Event | `jve1:` plus SHA-256 of `jbovlacku-event-v1\n` followed by canonical header bytes. |
+| Virtual definition | `jvv1:` plus SHA-256 of `jbovlacku-virtual-definition-v1\n` followed by canonical descriptor bytes from section 7. |
 | Word | `jvw1:` plus SHA-256 of `jbovlacku-word-v1\n` followed by canonical word-object bytes. |
 | Rafsi pair | `jvr1:` plus SHA-256 of `jbovlacku-rafsi-v1\n` followed by canonical pair-object bytes. |
 | View | The event ID of a `view.publish` event. |
@@ -219,7 +220,7 @@ The following table defines all version 1 actions. Objects contain exactly their
 | `identity.compromise` | `safe` sorted own frontier | Null. |
 | `definition.publish` | `word`, `language`, `parents`, `origin` | Required definition body. |
 | `rafsi.publish` | `word`, `assignment` rafsi-pair ID, `origin` | Required rafsi body. |
-| `judgment.set` | `target`, `value` | Null or explanation body. |
+| `judgment.set` | `target`, `value`, and `virtual` only for a virtual target | Null or explanation body. |
 | `trust.set` | `subject`, `scope`, `value` | Null or explanation body. |
 | `status.set` | `target`, `value` | Null or explanation body. |
 | `import.status` | `target`, `claim`, `value` | Null or explanation body. |
@@ -250,7 +251,21 @@ A missing newer profile body does not restore an older profile as current. It sh
 
 An explanation body contains exactly `text`, as rich text. It does not affect the verdict.
 The judgment register key is actor plus target ID. Values are `bless`, `curse`, and `clear`.
-A definition target is its exact publication ID. A rafsi target is its immutable pair ID, shared by all publications asserting that pair.
+A stored definition target is its exact publication ID. A virtual definition target is its exact `jvv1:` ID.
+A rafsi target is its immutable pair ID, shared by all publications asserting that pair.
+
+`target` remains a string. For a virtual target, the action requires `virtual`, the descriptor defined in section 7.
+For event and rafsi targets, the action omits `virtual`. Null is not an omission.
+The descriptor's derived ID must equal `target`. This requirement also applies to `clear` judgments.
+The descriptor's base event counts toward the other-event-reference limit and follows ordinary dependency resolution.
+The descriptor does not create a second register key. Identical virtual IDs share one register across spelling aliases.
+
+Without an authentic base envelope, the judgment remains pending.
+An invalid descriptor or a resolved base that fails the definition or conversion rules makes the action inert.
+An authentic base header without available content leaves the virtual candidate and its scores unavailable.
+Unknown rule versions, a non-definition base, and unsupported place permutations supply no effective judgment target.
+An inert action still retains its causal position under section 4 without asserting a verdict.
+A valid judgment header with unavailable base content never falls back to an earlier verdict.
 
 Judgments on a rafsi pair assess the assignment, not a particular publisher or rationale. Publication itself supplies no implicit blessing.
 A conflicted judgment contributes zero. A clear contributes zero and remains visible in history.
@@ -266,6 +281,8 @@ Without a native status action, a native publication is active. Section 11 defin
 Conflicting status makes a publication unavailable for ordinary ranking until resolved.
 Deprecated definitions retain judgments, but those judgments contribute zero while deprecated.
 Restoring a definition reactivates its existing judgments. A rafsi claim status instead affects pair eligibility, as specified below.
+Virtual definitions have no independent status register. A `status.set` or `import.status` action targeting a virtual definition is inert.
+Section 7 defines how a virtual definition follows its exact base publication's status without moving judgments to a revision.
 
 A rafsi body contains `word`, `rafsi`, `rationale`, `sources`, and `legacy`.
 Its word is the same word-object shape as a definition. Its rationale uses rich text without place or operand nodes.
@@ -760,7 +777,8 @@ Cardinality describes the construction, not outer predicate arity.
 A `ka` entry can declare a bridi operand and a constructed-predicate frame separately.
 A `se` entry can describe a transformation without inventing places belonging to `se` itself.
 
-Version 1 has no executable grammar plugin. Detailed transformations remain notes until a separate, reviewed extension defines their semantics.
+Version 1 has no executable grammar plugin. The place-conversion rule below is its only computed grammatical transformation.
+Other detailed transformations remain descriptive notes without executable semantics.
 
 ### Remaining body fields
 
@@ -837,6 +855,157 @@ This complete body omits unused optional fields. Pretty-printed examples become 
   "license":{"expression":"CC0-1.0","url":"https://creativecommons.org/publicdomain/zero/1.0/"}
 }
 ```
+
+### Virtual place conversions
+
+A virtual definition is computed content with an independent judgment target.
+It has no publication event, stored definition body, signer, signature, or independently controlled status.
+The shared core implements `place-conversion-v1` in Rust and WebAssembly. Both hosts must produce the same content and ID.
+Clients authenticate the exact base publication before computing its content. Server-derived previews retain their ordinary assertion status.
+
+A virtual descriptor contains exactly `base`, `conversion`, and `rule`:
+
+```json
+{
+  "base":"jve1:<64 hex digits>",
+  "conversion":"te",
+  "rule":"place-conversion-v1"
+}
+```
+
+Base names one exact `definition.publish` event. It cannot name a virtual definition, word, rafsi pair, or mutable latest revision.
+Virtual IDs cannot serve as own predecessors, definition parents, or exact source-publication references.
+Conversion is `se`, `te`, `ve`, or `xe`. Rule is exactly `place-conversion-v1`.
+The virtual ID hashes the canonical descriptor with the domain prefix in section 3.
+The descriptor has no snapshot, display spelling, author, selected view, or judgment fields. Those fields never affect its ID.
+A different base event, conversion, or future rule version produces a different target.
+Different descriptors with the same digest cause a hard integrity failure. Quarantine both rather than choose one.
+
+This hashing vector uses the canonical descriptor bytes below, without a trailing LF:
+
+```json
+{"base":"jve1:0000000000000000000000000000000000000000000000000000000000000000","conversion":"te","rule":"place-conversion-v1"}
+```
+
+The domain prefix includes its single LF. The resulting ID is:
+
+```text
+jvv1:621af66a8812cbb27dcdeb5bf42f35b6f9ee9aca6a46a9e04775ad70971c2756
+```
+
+This vector establishes hashing only. It does not assert that the zero-filled base ID names an available or valid publication.
+
+An example judgment action has this shape:
+
+```json
+{
+  "kind":"judgment.set",
+  "target":"jvv1:<derived 64 hex digits>",
+  "value":"bless",
+  "virtual":{
+    "base":"jve1:<64 hex digits>",
+    "conversion":"te",
+    "rule":"place-conversion-v1"
+  }
+}
+```
+
+The action's issuer signs that judgment. It does not sign a new definition or claim authorship of the base content.
+Normal causal replacement, continuity, conflict, compromise, and suspension rules apply to these judgments.
+Version 1 supplies no separate endorsement action. A blessing is the ordinary `judgment.set` value `bless`.
+
+#### Conversion rule
+
+Apply section 7's defaults to a separate interpreted copy of the authenticated base body.
+The converted content contains exactly `word`, `language`, `text`, `frame`, `operands`, `glosses`, and `notes`.
+Language is the base definition language. Word contains `language: "jbo"` and the conversion followed by one space and the exact base spelling.
+The base spelling already uses NFC. A display alias never replaces this canonical word.
+The canonical converted spelling must satisfy section 3's word rules, including the 256-byte limit.
+If the added conversion exceeds that limit, version 1 supplies no valid virtual candidate for that form. The base remains readable.
+This deterministic limit failure is an invalid target, distinct from missing content or unavailable calculation resources.
+Text, frame, operands, and notes start from the base's interpreted values. Glosses follow the place rule below.
+This derived object is not a valid publication body or an additional stored body object.
+
+Let `k` equal 2 for `se`, 3 for `te`, 4 for `ve`, and 5 for `xe`.
+The permutation exchanges indices 1 and `k`, and preserves every other index.
+Apply it once to each place's `index`, then sort the complete place objects by their new indices.
+Move every place field with its object, including descriptions, glosses, type hints, defaults, constraints, and derivation.
+
+Apply the same permutation to every integer rich-text node that names the current outer frame.
+These nodes occur in text, notes, frame constraints, place descriptions, place constraints, default conditions, and default explanations.
+They also occur in tail descriptions, type notes, and operand descriptions.
+Evaluate each output from the original input. Never apply the permutation twice to an already transformed value.
+
+Other integers remain unchanged. This includes relation arities, operand cardinalities, and each derivation item's source `place`.
+Preserve source words, exact source events, operand IDs, and derivation explanations.
+Literal strings, code, link labels, examples, and foreign variables remain unchanged. The rule never guesses their place bindings.
+Retain formation, classification, examples, labels, sources, rights, legacy data, and the base's top-level glosses as base evidence only.
+They describe the base publication and do not assert a new lexical class, formation, provenance, or signature for the converted word.
+
+The converted top-level glosses are exactly the original base place `k` glosses, with their languages and sense qualifiers.
+An empty place gloss list stays empty. The rule never substitutes the base top-level glosses or generates text.
+The moved base place 1 retains its own place glosses.
+
+An illustrative `vecnu` frame declares seller, goods, buyer, and price at indices 1 through 4.
+Its `te` conversion maps those indices to 3, 2, 1, and 4.
+Base text `[1," sells ",2," to ",3," for ",4]` becomes `[3," sells ",2," to ",1," for ",4]`.
+Its top-level glosses come from the buyer place. This example supplies no source definition or new annotations.
+
+Only a `predicate` frame permits this conversion:
+
+- A fixed frame permits it when `count` reaches `k`. Preserve the count.
+- A variadic frame permits it only when its explicit prefix includes places 1 and `k`. Preserve `minimum` and `tail.from`.
+- A context frame permits it only when places 1 and `k` both have explicit declarations. Preserve the mode and all gaps.
+- A null or `constructed-predicate` frame permits no automatic conversion.
+
+Permute outer-frame nodes within variadic tail metadata. The repeated tail otherwise remains unchanged.
+A place beyond the variadic minimum remains illustrative after conversion. The result makes no stronger completeness claim than the base.
+No rule creates a declaration, extends an arity, materializes a repeated-tail place, or treats a null frame as zero places.
+For example, `xe` of a three-place fixed frame supplies no virtual definition.
+The descriptor can be hashed before resolution, but an unsupported conversion never becomes an eligible candidate.
+
+#### Identity, eligibility, and authorship
+
+Spelling recognition uses the morphology profile and retained rafsi evidence described in the [frontend specification](frontend.md#place-conversions).
+It places one leading conversion of one recognized brivla. Automatic recognition excludes conversion chains, arbitrary phrases, and `zei` chains.
+This recognition governs aliases and page placement. It does not change the descriptor hash or the shared core's numeric frame transformation.
+The core computes from the authenticated predicate frame without invoking an external parser or guessing a rafsi assignment.
+An experimental base with an explicit predicate frame can therefore use its exact descriptor even when automatic spelling recognition is unavailable.
+Virtual candidates appear only on matching converted-word pages and search results. Base-word pages can link to those pages.
+Generate at most four virtual descriptors per exact base event. Ordinary result, package, and work limits also bound derived candidates.
+
+`te vecnu` and an established `tervecnu` analysis expose the same exact virtual IDs.
+They share judgments, reviewer counts, and scores. No stored alias event or conversion link in a lujvo publication is required.
+An ordinary native or imported definition of either spelling retains its own publication target and meaning.
+Morphology establishes a spelling analysis. It never proves semantic equivalence with an independently written definition.
+
+If a short rafsi names several bases, preserve a separate group for each established base word and conversion.
+Each exact base event yields its own virtual ID. Display the base evidence and require an explicit choice where the analysis remains unresolved.
+Never combine those groups, guess one base, or merge their judgments because their surface spellings match.
+
+A virtual is eligible only when its exact base is eligible in the selected snapshot and view, and its conversion is computable.
+Imported bases require the ordinary import-selection and account-status rules. Native bases retain the ordinary native-publication rules.
+A missing selection, unavailable body, uncertain authority, or unresolved status remains unavailable. It never becomes an unjudged zero-score candidate.
+A known invalid body or unsupported permutation supplies no eligible virtual content.
+Withholding base content also withholds the derived content. A cached converted copy cannot bypass the retention decision.
+
+Retiring or retracting a base uses its ordinary native or imported deprecation control.
+Deprecating the exact base deactivates judgments on all its virtuals. Their signed judgment records remain stored.
+Restoring that base reactivates those same judgments when eligibility and computability also return.
+A revision creates new virtual IDs and inherits no judgments, including the base author's judgments or blessings of the earlier virtual.
+The old virtual remains bound to the old base. A reader shows a newer-base notice and a separate link when a known revision exists.
+It never silently changes that target, content, or pending signature to the newer revision.
+
+A virtual starts with zero author weight and no implicit blessing. The base's judgments supply no virtual score or reviewer count.
+Attribution says that the content derives from the named source author and links to the exact base event.
+For imports, preserve the distinction between source author and importer. Neither becomes the virtual's signer.
+The reader must never claim that the source author signed or approved the converted text.
+Any actor, including the base author, can explicitly judge the exact virtual target under ordinary rules.
+
+Shuns, local blocks, and view exclusions remove the affected actor's influence and routes under section 8.
+They do not automatically erase derived content or remove other reviewers' judgments because the base names that actor.
+Separate base eligibility, lifecycle authority, and content-retention rules still apply.
+The public and personal views use these same unsigned-candidate rules. Neither invents an author contribution.
 
 ## 8. Editorial trust and ranking
 
@@ -925,6 +1094,10 @@ Version 1 does not scope trust by free-form vocabulary labels or infer dialect e
 A rafsi context has no definition language, so it matches only `language: "*"`.
 
 The comparison context uses the target definition's word and language, or the rafsi pair's word with no definition language. Every route edge must match that same context.
+For a virtual definition, use the word ID of its canonical converted spelling and its exact base definition's language.
+For example, all spelling aliases of `te vecnu` use `wordId("te vecnu")` as their word context.
+Neither the base word nor an SE-rafsi spelling replaces that context. An alias page cannot change a virtual's score.
+Stored definitions keep their own word contexts. Comparing them with a virtual on an alias page can require different context graphs.
 
 Resolve each exact trust register before comparing scopes. Discard `clear` values.
 A scope is narrower when its matching contexts form a strict subset of another scope's contexts.
@@ -1014,13 +1187,14 @@ This is intentional delegated influence. It is not seven independent reviewers o
 
 Unused shares disappear. There is no final normalization by used influence.
 
-The scorer counts each actor's effective judgment once per definition publication or rafsi pair.
+The scorer counts each actor's effective judgment once per definition publication, virtual definition, or rafsi pair.
 Support sums weights for blessings. Opposition sums weights for curses. Net support equals support minus opposition.
 A deprecated definition contributes no score and sorts after every active definition in its word and language context.
 
 A publication alone gives its author no automatic blessing. The reference client publishes a separate signed author blessing with each definition or rafsi claim.
 This is client behavior, not a condition for valid publication. Other clients and importers can publish without that judgment.
 A new revision receives no automatic transfer of other people's judgments.
+Virtual candidates use only judgments on their own exact virtual target. The scorer never inherits judgments from their base publications.
 
 ### Bounded calculation
 
@@ -1113,8 +1287,27 @@ For different context graphs, subtract separate score intervals instead. Word-sc
 Overlapping intervals remain unresolved. Exact equal scores remain ties.
 
 The default list groups candidates into successive nondominated layers. A nondominated candidate has no certainly higher candidate among the remaining candidates.
-Within a layer, use full event ID order for stable presentation. Label this as presentation order, not a quality distinction.
+Stored native definitions, imports, and virtual definitions compete under those same certified comparison rules.
+Within a layer, start with full target ID order for stable presentation.
+The starting-order rule below refines only known unjudged zero-score candidates. Label the result as presentation order, not a quality distinction.
 The client offers more computation and exposes the intervals.
+
+For each layer, select only the sublist with a known count of zero effective direct reviewers and an exact net interval `[0,0]`.
+Every other candidate retains its occupied position, including candidates with nonzero reviewer counts or unresolved score or reviewer information.
+Sort that sublist by the following categories, then by full target ID. Write it back into only its original positions:
+
+1. Stored native definitions and virtual definitions whose base has a reviewed frame.
+2. Stored imported definitions.
+3. Virtual definitions whose base frame is unreviewed.
+
+A valid native publication with an explicit predicate frame supplies its author's review claim for that frame.
+An imported frame counts as reviewed only when its exact base body's `legacy.conversion.review` equals `reviewed`.
+These are provenance claims, not guarantees of expertise or correctness. A frame must still permit the requested conversion.
+An unavailable or uncomputable virtual never receives this preference. Without a computable virtual, the ordinary import remains in the list.
+
+This rule adds no numerical score, author weight, blessing, or reviewer.
+A judgment from an actor with zero influence still counts as a direct review and excludes that candidate from the selected sublist.
+Apply the rule to each completed layer as a whole. A pairwise native-versus-import tie exception cannot replace this deterministic ordering.
 
 A resumable calculation retains its complete-stage prefixes and lower totals. It never resumes by treating upper-bound contributions as exact credit. It never silently substitutes a hop limit or random estimate.
 Graph comparison, cached weights, and retained prefixes must use the same profile.
@@ -1284,11 +1477,38 @@ Other operators and prior recipients can retain their copies. The protocol promi
 
 Signed headers also contain arbitrary bytes. Refusing one can make descendants pending even when their signatures still pass.
 
+### Derived conversion indexes
+
+Lexical search indexes virtual definitions by their canonical converted spelling, converted text, and new place 1 glosses.
+The [frontend specification](frontend.md#search-package-contract) defines conversion-capable package version 3 and its bounded row and manifest shapes.
+It uses candidate `target` IDs, with a virtual descriptor and `base_body` hash for each virtual row.
+A virtual row has no event, issuer, stored body hash, or independently claimed classification.
+Its `word` is the canonical converted word. Its `base_word` preserves the exact base spelling.
+Aliases remain page placements established by morphology. They never alter a target or merge word identities.
+
+A consumer resolves the descriptor's exact base event and authenticates its body against that event's signed content descriptor.
+The authenticated hash must equal `base_body`. The descriptor must reproduce the row's virtual target.
+The consumer recomputes the converted word, language, text, frame, and glosses under `place-conversion-v1`.
+Disagreement makes the row unusable. Missing or withheld evidence makes its coverage unavailable, rather than authenticating the server's assertion.
+Admission of a derived row never grants base eligibility, imports content into an accepted selection, or supplies editorial influence.
+
+Version 3 retains structured frame content and enough base and rafsi evidence for the declared morphology coverage.
+The consumer resolves conversion-shaped queries against that evidence. It never enumerates every possible rafsi spelling.
+Competing established bases retain separate virtual targets and groups. Missing assignment evidence supplies an unresolved analysis rather than a guessed match.
+All generated rows and query alternatives follow the ordinary search and work limits.
+Pattern search scans stored headwords and rafsi without expanding virtual conversions.
+
+Earlier packages without those fields do not supply conversion coverage. They require reconstruction from retained base records, not guessed field upgrades.
+The client exposes incomplete coverage and never uploads a local query silently to compensate.
+Derived package hashes authenticate package bytes, not the truth of their content. Signed base records remain the evidence for recomputation.
+Virtual lookup requires its descriptor as well as its ID. An ID alone does not reveal the base preimage.
+Immutable event APIs remain restricted to signed `jve1:` events. A virtual lookup returns a derived candidate, never an invented signed event.
+
 ### Optional derived embeddings
 
 An embedding is a numerical representation used to compare meaning.
 Embeddings are external service artifacts, not dictionary events, author judgments, or part of the canonical repository manifest.
-Deleting an embedding cache does not change a definition, its signature, or its endorsements.
+Deleting an embedding cache does not change signed publications, candidate identities, or judgments.
 Peers can exchange these artifacts separately to avoid repeating expensive inference. Each operator chooses accepted profiles and producers.
 
 A profile describes one vector space and its input rules. Its ID hashes its canonical JSON bytes with the sha256 prefix.
@@ -1311,10 +1531,18 @@ Silent provider-side truncation is not a conforming profile. An adapter must det
 A profile alone is a metadata claim. The receiving operator must establish that its query adapter produces compatible vectors.
 
 The reference document recipe is `definition-json-v1`.
-Construct a canonical object containing language, text, glosses, and places from the authenticated definition's interpreted values.
-Apply the definition field defaults before constructing this derived input. The original signed body remains unchanged.
-Text is the definition's rich text. Glosses is its top-level gloss array. Places is its frame's place array, or an empty array without a frame.
+It accepts an authenticated publication's interpreted content or the exact virtual projection from `place-conversion-v1`.
+Construct a canonical object containing exactly language, text, glosses, and places from that content.
+Apply all definition and place defaults before constructing this derived input. The original signed base body remains unchanged.
+Text is the candidate's rich text. Glosses is its top-level gloss array. Places is its frame's interpreted place array, or an empty array without a frame.
 Encode that object as canonical UTF-8 JSON, prepend the profile's literal document prefix, and hash the resulting input bytes.
+
+Virtual definitions use vectors associated with their own targets and exact converted input hashes.
+Shared provenance or semantic similarity never permits substituting the base vector. Similarity between vectors never establishes identity or a valid permutation.
+An existing vector can satisfy a new explicit target association only when its profile and full recomputed input bytes match exactly.
+Spelling aliases share the virtual's target and vector. They do not trigger separate inference.
+The recipe name stays `definition-json-v1` because its input object and byte encoding remain unchanged.
+Its virtual input requires the authenticated projection, not an invented signed body.
 
 The recipe excludes the headword, votes, source attribution, etymology, examples, and notes. Another recipe requires another profile.
 The reference query recipe is `literal-query-v1`: exact UTF-8 query text after its literal query prefix, without hidden normalization.
@@ -1332,9 +1560,14 @@ The operator exposes unknown revision and routing provenance instead of inventin
 A vector object contains dimension times four bytes, using little-endian IEEE 754 binary32 values.
 Reject NaN, infinity, a zero vector for cosine, and a byte length that disagrees with the dimension.
 For unit-l2, require the norm to differ from one by at most 0.0001. Do not silently renormalize a signed artifact.
-A vector part concatenates equal-length vectors. An index part is a canonical JSON array with one entry per vector, in event-ID order.
+A vector part concatenates equal-length vectors. An index part is a canonical JSON array with one entry per vector, in full target-ID order.
 
-Each index entry contains exactly event, body, and input. These are the definition event ID, authenticated body hash, and recipe input hash.
+Each index entry contains exactly `target`, `event`, `body`, `virtual`, `base_body`, and `input`.
+Target is a definition publication ID or virtual definition ID. Input is the exact recipe input hash.
+For a publication, target equals event. Body is that event's authenticated body hash. Virtual and base_body are null.
+For a virtual, target is its `jvv1:` ID. Event and body are null. Virtual is its descriptor, and base_body is the exact authenticated base body hash.
+These null fields are required. A virtual entry never invents a publication event or converted body hash.
+The descriptor must reproduce target, and its exact base event must authenticate base_body.
 A part contains at most 8,192 entries. Both its vector and index objects have an 8 MiB uncompressed limit.
 Parts can split a large dictionary into bounded transfers. A missing part leaves explicit partial coverage, not an empty dictionary.
 
@@ -1344,8 +1577,8 @@ Version is 1. Profile is its hash. Producer is an Ed25519 identity. Created_at i
 Each part reference contains index, vectors, count, and vector_bytes. Index and vectors are content hashes. Count and vector_bytes are positive integers.
 Parts sort by index hash without duplicates. The manifest has at most 4,096 parts and a 1 MiB limit.
 
-An event cannot appear twice across parts of one manifest. The receiver also detects overlapping events across accepted manifests.
-Different valid vectors for the same event and profile are conflicting cache claims, not replacements chosen by arrival time.
+A target cannot appear twice across parts of one manifest. The receiver also detects overlapping targets across accepted manifests.
+Different valid vectors for the same target and profile are conflicting cache claims, not replacements chosen by arrival time.
 The operator chooses a producer or recomputes the affected vector. It does not average conflicting vectors silently.
 
 The producer signs the canonical manifest with the same SSHSIG algorithm profile as dictionary events, under namespace `jbovlacku-derived-v1`.
@@ -1357,10 +1590,24 @@ Revoking a producer suspends its unreviewed artifacts under local cache policy. 
 
 Before indexing a shared artifact, the receiver authenticates the producer and hashes each object.
 It must make sure that dimensions and finite values satisfy the artifact profile.
-It resolves every definition and body locally, then recomputes the declared recipe input hash.
-A missing or changed body prevents activation of that entry. A valid signature proves provenance, not that inference produced the claimed vector.
+It resolves each publication event and body locally. For a virtual, it resolves the descriptor's exact base event and authenticated body instead.
+It makes sure that the target is eligible in the selected snapshot and view, then recomputes the exact recipe input bytes and hash.
+For a virtual entry, it also establishes descriptor identity and computability under the declared conversion rule.
+Missing content, mismatched hashes, invalid permutations, or unresolved eligibility prevent activation. They never supply a zero vector or an unverified base-vector association.
+A valid producer signature proves provenance, not that inference produced the claimed vector.
 Trusted producers, reproducible model artifacts, and optional spot recomputation address that remaining trust decision.
 The receiver never downloads or executes model code merely because a peer profile names it.
+
+A virtual entry remains active only while its exact base selection, status, content availability, and conversion remain eligible.
+Base withdrawal, selection removal, or withholding removes that entry from live search. Historical artifacts retain their exact original target.
+Restoration permits activation only after the same checks pass again.
+A base revision or rule change creates a new target and requires its own entry with a freshly computed exact input hash.
+Identical input bytes retain the same content hash. They never merge targets, judgments, or provenance.
+A revision alone never moves or deactivates an earlier target's entry. Its exact base eligibility still controls activation.
+
+Bounded normal indexing jobs cover at most four valid virtual targets per exact base event.
+Coverage counts include eligible publication and virtual targets. The service reports indexed, pending, and unavailable counts for known targets.
+Missing source evidence marks coverage incomplete when the service cannot determine the valid virtual targets.
 
 Derived exchange uses these optional endpoints, separate from `/api/v1`:
 
@@ -1892,6 +2139,26 @@ Implementation starts with shared fixtures for these cases:
 23. Omitted and explicit optional fields with equal interpreted values but unchanged, distinct body hashes and event IDs.
 24. Nested defaults, duplicate type alternatives after defaults, required place declarations, missing variadic tails, and invalid present values.
 25. Revisions that omit earlier notes without inheriting them, and imports that cannot omit required source evidence.
+26. The virtual hashing vector above, identical outputs across Rust and WebAssembly, distinct base and conversion IDs, and no stored virtual events.
+27. Required virtual descriptors for `jvv1:` judgments, forbidden descriptors for other targets, digest mismatches, and virtual bases rejected as dependencies.
+28. Missing base envelopes that keep judgments pending, authentic missing bodies that keep scores unavailable, and invalid bases that make actions inert.
+29. Fixed-frame limits, variadic explicit prefixes, context-frame gaps, null frames, and constructed-predicate frames without invented places.
+30. One-pass permutation of every outer-frame node and complete moved annotations, with unchanged derivation indices, relation arities, literals, examples, and provenance.
+31. Place `k` glosses that become top-level glosses, including an empty list without a fallback to the base glosses.
+32. One virtual target and canonical score context through `te vecnu` and `tervecnu`, with separate IDs and explicit groups for competing short-rafsi bases.
+33. Independent virtual blessings and curses, no inherited base reviews, zero author contribution, and source attribution without a claimed converted signature.
+34. A newer base revision with new virtual targets, unchanged old judgments, and a reader notice that never silently changes the target.
+35. Exact-base retirement and restoration, unavailable imported status, and inert attempts to control virtual status independently.
+36. Source-author shuns and blocks that remove only the ordinary influence and routes, while independent reviewers and retained derived content remain eligible.
+37. Reviewed-frame virtuals before unjudged imports at exact zero, unreviewed-frame virtuals after imports, and certified positive or negative score differences that override presentation order.
+38. Stable full-target ordering within categories and unchanged occupied positions for judged or unresolved candidates during the zero-sublist sort.
+39. A zero-weight effective reviewer that excludes its candidate from that sublist, and unavailable content that never qualifies as a zero-score candidate.
+40. Derived conversion indexes with mismatched base hashes or descriptors, incomplete morphology evidence, withheld bases, bounded enumeration, and explicit missing coverage.
+41. Canonical converted spellings at the 256-byte bound and rejected longer forms, with readable bases and no false resource-unavailable result.
+42. Exact virtual embedding inputs, independent target associations, permitted exact-input deduplication, and rejected base-vector reuse based only on provenance or semantic similarity.
+43. Required nullable embedding-index fields, wrong descriptor and body bindings, duplicate targets, and sorting by full target ID.
+44. Base-selection changes, retirement, withholding, restoration, and revised targets without moving old vector associations or judgments.
+45. Bounded virtual-indexing jobs and explicit coverage counts that include eligible virtual targets without inventing coverage from unavailable source evidence.
 
 The implementations must agree on logical state from the same fixtures. Their certified bounds must contain independently calculated exact small-graph scores.
 Performance measurements must cover the imported dictionary and adversarial trust graphs. The design does not claim completed runtime benchmarks.

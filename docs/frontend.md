@@ -131,6 +131,7 @@ The app provides these addressable routes:
 | `/search?q=...&lang=en`     | Search results and filters.                                                                                                                |
 | `/word/<word-id>?lang=en`   | All definitions and rafsi claims for a word.                                                                                               |
 | `/conversion/<encoded-base-spelling>/<se-or-te-or-ve-or-xe>?lang=en` | A computed place conversion of a base word. |
+| `/virtual-definition/<virtual-id>?base=E&conversion=te&rule=place-conversion-v1` | One exact virtual target and its verifiable base descriptor. |
 | `/definition/<event-id>`    | One immutable definition revision.                                                                                                         |
 | `/rafsi/<encoded-spelling>` | Assignments and conflicts for a rafsi.                                                                                                     |
 | `/identity/<encoded-key>`   | Public identity claims and activity.                                                                                                       |
@@ -200,9 +201,8 @@ Conflict notices group by normalized rafsi spelling and list different stored sp
 When coverage is limited, claimant counts say “At least”. The page does not claim that a retained count is complete.
 It shows 20 assignment cards first. “Show all” reveals the remaining retained cards without another match scan.
 
-Rafsi patterns use retained claim bodies and the same 64-spelling limit per word as version 2 packages.
-Version 1 local packages support headword patterns only. The search page states that they contain no rafsi data.
-The rafsi page requires version 2 data and reports missing packages or incomplete coverage. It never treats absent metadata as no claims.
+Rafsi patterns use retained claim bodies and the 64-spelling limit per word in version 3 packages.
+The rafsi page reports missing packages or incomplete coverage. It never treats absent metadata as no claims.
 
 Patterns permit at most 256 UTF-8 bytes, including expression delimiters. Compilation permits at most 32 levels of nesting.
 The generated expression permits at most 4,096 UTF-8 bytes after glob expansion.
@@ -402,169 +402,151 @@ Literal circled characters remain literal text. A reader can inspect the structu
 
 ### Place conversions
 
-A place conversion swaps place 1 with another numbered place.
-`se`, `te`, `ve`, and `xe` exchange place 1 with places 2, 3, 4, and 5 respectively.
-A meaning that only changes this order uses the base definition through a computed view.
-The app creates no separate definition, signature, endorsement, or rafsi claim for that view.
-The [place frame](format.md#place-frames) and rich-text rules already supply the required fields. The signed format does not change.
+A virtual definition is computed content with its own judgment target.
+A place conversion creates one by exchanging base place 1 with place 2, 3, 4, or 5 through `se`, `te`, `ve`, or `xe`.
+The [format rule](format.md#virtual-place-conversions) defines `place-conversion-v1`, its `jvv1:` identity, and the signed judgment descriptor.
+The shared Rust and WebAssembly core supplies identical converted content and IDs. A browser never invents a separate conversion algorithm.
+The virtual has no publication event, stored body, signer, or signature.
+It competes with native and imported definitions under the ordinary editorial calculation. It starts with no implicit author blessing or weight.
 
-#### Computing the view
+#### Content and availability
 
-Each view uses one exact base definition, its language, the selected editorial view, and one snapshot.
-The client authenticates the base body before computing from records. Server-derived results retain their ordinary assertion status.
-Competing base definitions produce separate converted alternatives. The app never combines fields from different definitions.
-Apply the [field defaults](format.md#absent-fields-and-compatibility) to a separate interpreted copy first.
-Retain the base body, its hash, event ID, and original field presence unchanged.
+Each virtual uses one exact base publication. It never combines competing base definitions or follows a mutable latest-revision pointer.
+The core interprets defaults without changing authenticated base bytes.
+It exchanges the place objects and every outer-frame integer reference once, including references inside the moved annotations.
+It takes the new top-level glosses only from the base place that becomes place 1.
+Source-place indices, nested relation arities, operand cardinalities, literal text, code, and foreign variables keep their original meanings.
+The reader retains classification, examples, formation, rights, and legacy information as base evidence. It never claims a new signed body for that evidence.
 
-Let `k` be the selected place, from 2 through 5. The permutation exchanges `1` and `k` and leaves every other index unchanged.
-Apply that permutation once to each place object's `index`, then sort the objects by their new indices.
-Move the whole place object, including its description, glosses, type hints, defaults, constraints, and derivation.
-Apply the same permutation to every integer rich-text node that refers to the current frame.
-This includes text, notes, frame constraints, place descriptions and constraints, default conditions and explanations, tail descriptions, type notes, and operand descriptions.
-The integers in these fields name the outer frame. They do not name an abstracted relation's arguments.
+Only the frame cases in the format rule produce virtuals:
 
-Other integers keep their original meaning. In particular, retain relation arities, operand cardinalities, and each derivation item's source `place`.
-Retain source words, exact source events, operand IDs, formation evidence, and source references.
-Derivation explanations prohibit outer-place nodes and remain unchanged.
-Examples, code nodes, link labels, quoted variables, and literal `x_1` strings remain literal.
-If literal place notation remains in the prose, show “Literal place notation stays as source text.”
-The app never rewrites such text by guessing its scope.
+- A fixed predicate frame must contain the target place. Its count stays unchanged.
+- A variadic predicate frame must declare both exchanged places in its prefix. Its minimum and repeated tail stay unchanged.
+- A context predicate frame must declare both exchanged places. Its gaps and incomplete scope stay unchanged.
+- A null or constructed-predicate frame supplies no automatic virtual.
 
-The view's top-level glosses are exactly the base place `k` glosses, including their languages and sense qualifiers.
-An empty place gloss list stays empty. The app never substitutes the base top-level glosses or generates a translation.
-The moved base place 1 keeps its own place glosses. The base top-level glosses remain visible through the base link.
-Attribution, rights, and historical evidence describe the base publication. They never claim that its author signed the converted display.
-Show “Computed from” beside the permanent base revision link. Formation evidence and examples stay inside a disclosure labeled “Base definition”.
+The canonical converted spelling must also fit the format's word limit.
+An invalid conversion has no candidate or zero-score placeholder. For a three-place frame, both `ve` and `xe` are absent.
+The reader explains the unavailable conversion and links to “Describe the base places”.
+An unspecified frame reads “This definition does not describe its places.” Missing content remains a separate availability state.
+The app never extends arity, invents a repeated-tail declaration, or guesses a literal variable's scope.
+If literal place notation remains, show “Literal place notation stays as source text.”
 
-For example, an illustrative `vecnu` frame has four places: seller, goods, buyer, and price.
-Its `te` view maps base places `1, 2, 3, 4` to converted places `3, 2, 1, 4`.
-Base text `[1, " sells ", 2, " to ", 3, " for ", 4]` becomes `[3, " sells ", 2, " to ", 1, " for ", 4]`.
-The view takes its top-level glosses from the buyer place. This example supplies no new source definition or annotations.
+A base word page lists conversion links under “Place conversions”. It does not add the virtual definition blocks to the base's definition list.
+Each link names the converted form and its new place 1 glosses. At most four forms appear per exact base event.
+An available conversion opens its converted word page. An unavailable item explains the missing place or frame information.
 
-The following frame rules determine availability:
+#### Identity, spelling, and pages
 
-- A fixed predicate frame permits a conversion only when its count reaches `k`. Preserve that count.
-- A variadic predicate frame permits a conversion only within its explicit prefix. Preserve its minimum and `tail.from`.
-- A context predicate frame permits a conversion only when places 1 and `k` both have explicit declarations. Preserve context mode and every gap.
-- A null frame supplies no conversion. A constructed-predicate frame requires separate grammatical rules and supplies no automatic conversion here.
+The descriptor contains the exact base event, conversion, and `place-conversion-v1` rule.
+The [format](format.md#virtual-place-conversions) defines its canonical bytes and domain-separated hash.
+Display aliases, the snapshot, and the reader's trust view never change that target ID.
+One `te vecnu` virtual therefore appears under the same ID on the `te vecnu` and `tervecnu` pages.
+Those placements share judgments, scores, reviewer counts, and permanent links. They do not merge independently stored word identities or definitions.
 
-For a variadic frame, permute outer-place references inside the tail metadata too. The repeated tail otherwise stays unchanged.
-A target inside the repeated tail has no individual place object. The app does not materialize that target or invent glosses for it.
-A declaration beyond the variadic minimum remains illustrative after conversion. The view makes no stronger completeness claim than the base.
-If a required declaration is absent, explain which place lacks information and link to the base definition.
-For a three-place fixed frame, `ve` reads “This definition has no place 4”.
-Its `xe` view reads “This definition has no place 5”.
-For an unspecified frame, use “This definition does not describe its places.”
-These states never create empty places, extend an arity, or interpret an absent frame as zero places.
-Other base definitions with sufficient structure remain available as separate alternatives.
+The canonical route is `/conversion/<encoded-base-spelling>/<conversion>?lang=en`.
+For example, `/conversion/vecnu/te?lang=en` opens the converted word page with the heading `te vecnu`.
+Optional `definition`, `snapshot`, and `view` parameters pin the exact base event, snapshot, and editorial view.
+The page makes sure that a pinned base matches the spelling and language. It never substitutes another revision after failure.
+Without a base pin, it shows every eligible computable alternative for that base word in the selected language.
+A `form=tervecnu` parameter keeps the requested spelling after the same morphological analysis establishes it.
 
-#### Spelling and navigation
+An exact virtual link uses `/virtual-definition/<virtual-id>?base=E&conversion=te&rule=place-conversion-v1`.
+It can also pin `snapshot` and `view`. The client recomputes the ID from the descriptor before accepting that link.
+The page fetches and authenticates the base before presenting a locally computed definition or preparing a judgment.
+A missing base keeps the exact target visible with an availability explanation. It never redirects to a different definition.
+An expired snapshot follows the ordinary expiry flow without changing the target or descriptor.
 
-The base word page lists `se`, `te`, `ve`, and `xe` under “Place conversions” for each definition language.
-Each item names the converted form and the glosses of its new place 1. Unavailable items explain their frame limit.
-A definition with no available conversion still exposes the explanation and “Describe the base places”.
-That action starts an ordinary base revision. Improving that revision improves the views that use it after explicit revision selection.
+A converted word page combines its ordinary native definitions, ordinary imports, and matching virtual definitions in the normal editorial layers.
+Imported definitions remain visible as full candidates. There is no automatic collapsed import group or semantic duplicate verdict.
+Morphology identifies a possible spelling relationship. It does not establish that a separately written sense has the same meaning.
+A native lujvo with its own meaning remains an ordinary definition and records no conversion relationship.
+The page links related converted spellings without copying their stored definitions into another word identity.
 
-The canonical conversion route contains the NFC base spelling and exactly one conversion cmavo.
-For example, `/conversion/vecnu/te?lang=en` has the heading `te vecnu`.
-An optional `definition` parameter pins an exact base event. An optional `snapshot` parameter pins the source snapshot.
-An optional `view` parameter pins the editorial view. Display links retain all explicit pins.
-The client makes sure that a pinned definition matches the base word and language. It never substitutes another revision after a failure.
-Without a definition pin, the page shows converted alternatives in the base word's ordinary editorial layers.
-The page retains normal language selection, browser history, source disclosures, and links back to the base word.
-Its copy control copies `te vecnu`. Its revision link names the signed base and retains the conversion route as a separate display link.
-If cached data lacks the base body, explain that the full converted view needs that body. Offer a consented download or the available preview.
+Conversion-shaped lujvo start with `sel`, `ter`, `vel`, or `xel` under the chosen morphology profile.
+Analysis must recover the first rafsi and the complete base with its joins. Removing three letters is insufficient.
+For example, `selbri` requires the assignment from `bri` to `bridi`.
+A compound base requires the remaining component sequence as a whole. Current automatic recognition excludes conversion chains, arbitrary phrases, and `zei` chains.
+The snapshot supplies the rafsi evidence. Missing evidence and parser limits produce an unavailable analysis, not a guessed base.
+Automatic spelling recognition is separate from the core's deterministic frame transformation. An exact descriptor can still identify an experimental base with an explicit predicate frame.
+When a short rafsi names several established bases, show their evidence in separate groups and offer an explicit base choice.
+Each base event supplies its own virtual ID. A shared surface spelling never merges their judgments.
 
-Conversion-shaped lujvo use `sel`, `ter`, `vel`, or `xel` as their first rafsi.
-Morphological analysis must recover that first rafsi and a complete base, including any required joins.
-Removing three letters is insufficient. For example, `selbri` needs the source assignment from `bri` to `bridi`.
-For a compound base, recover the remaining component sequence as a whole. Do not choose a meaning from its individual components.
-Use the selected morphology profile and the snapshot's rafsi evidence. An unresolved or competing source assignment requires an explicit base choice.
-Keep that choice in navigation state with its evidence. Do not store a conversion link in the lujvo's word identity or definition.
-Parser limits and missing assignment evidence produce an unavailable analysis, rather than a guessed base.
-The initial design supports one leading conversion. It does not enumerate chains of conversions or arbitrary converted phrases.
-The base is one recognized brivla, including a lujvo with several components. Initial automatic recognition excludes `zei` chains.
+#### Reviews, authorship, and base changes
 
-The `tervecnu` word page shows the computed `te vecnu` alternatives before qualifying imported definitions.
-Its heading remains `tervecnu`, with “Place conversion: te vecnu” and the base word link.
-Native definitions of `tervecnu` remain ordinary lujvo definitions, visible outside the import disclosure.
-When no stored `tervecnu` entry exists, search opens the canonical conversion route with `form=tervecnu`.
-The route accepts `form` only after the same morphological analysis establishes its base and conversion.
-It shows the requested spelling beside `te vecnu` and creates no word record.
-Stored `te vecnu` entries use the same presentation rule on their ordinary word page.
+A virtual block says “Derived from” with the exact base revision and its source author.
+Its detail says “This definition is computed from the base. The base author did not sign the converted text.”
+For imports, source author and importer remain separately inspectable. An unknown source author stays unknown.
+The block has its own Endorse, Oppose, Clear my judgment, score, and reviewer disclosure.
+Their exact target is the virtual ID, with the descriptor required by the format. Base judgments never supply these values.
+Before a first signature or an unlock wait, retain the virtual ID and descriptor. Afterward, resume that exact target.
 
-#### Imported conversion-shaped definitions
+A reader can judge an unsigned virtual because the judgment's issuer signs that opinion.
+The derived content itself acquires no signer, root allocation, automatic author judgment, or inherited support.
+Public and personal calculations apply ordinary influence, scope, continuity, and conflict rules to its explicit reviewers.
+The virtual's score context uses its canonical converted word and base language on every alias page.
+A stored lujvo still uses its own word context. The format's different-context comparison rule applies when those graphs differ.
+A word-scoped block on the base alone does not silently become a block on the converted word.
+Matching shuns and blocks remove actor influence and routes. They do not erase the virtual merely because that actor authored the base.
+Base eligibility, lifecycle authority, status, and content-retention rules still determine whether its content can appear.
 
-The folding rule uses morphology and source origin. It does not compare English prose, use an AI judgment, or infer meaning from a gloss.
-An imported definition qualifies when its complete spelling parses as one conversion cmavo plus a base, or as the SE-rafsi form above.
-The base must have an eligible definition in the selected language, snapshot, and editorial view.
-At least one such base definition must support the requested computed view.
-Ambiguous bases, missing bodies, absent places, or incomplete morphology leave the imported definition in the ordinary list with an explanation.
-An author's name, including `noralujv`, never establishes semantic equivalence or controls folding.
+For unjudged exact-zero candidates, apply the format's deterministic starting order within each editorial layer.
+Native definitions and virtuals with reviewed base frames precede unjudged imports. Imports precede virtuals with unreviewed frames.
+Within each category, full target ID decides presentation order. Other candidates keep the positions that ordinary layer ordering gives them.
+A native published predicate frame is its author's review claim. An imported frame requires `legacy.conversion.review: "reviewed"` for this preference.
+Those claims establish no expertise guarantee. This order adds no numerical score or reviewer.
+Without a computable virtual, an ordinary imported definition remains first among the available candidates under those rules.
+Unknown scores or reviewer evidence never count as unjudged zero.
 
-Morphology establishes a conversion-shaped spelling, not proof that two definitions mean the same thing.
-The app groups qualifying imports under the initially collapsed disclosure “Imported definitions for tervecnu (N)”.
-Substitute the actual spelling and count. The disclosure text reads:
+A new base revision creates a new virtual target. Judgments stay with the old base revision and never move automatically.
+When a known revision exists, the old block says “A newer base revision is available” and links to it separately.
+The page retains the exact old content, score, and target. An unavailable child does not replace that content or establish a new preferred revision.
+Deprecating or retracting the base deactivates its virtual's judgments. Restoring eligibility reactivates those same judgments.
+Withheld or missing base bytes make the virtual unavailable. A cached converted copy never bypasses a content refusal.
+Virtuals have no separate Retire or Restore control. Those actions apply to the controlled base publication.
 
-> This spelling can use te vecnu. These imported definitions keep their own wording and reviews. Their meanings can differ from the computed view.
+#### Search and indexing
 
-Substitute the actual converted form. Opening the disclosure shows every original definition with its attribution, rights, sources, status, reviews, and revision controls.
-“Show these definitions first” changes a private presentation preference for that spelling. It signs nothing and does not change ranking.
-An immutable `/definition/<event-id>` link always opens the original publication directly, outside any collapsed group.
-A search match in an imported definition opens that exact definition or expands its group on the word page.
-Folding changes presentation only. It never removes a source record or declares an imported meaning wrong.
+Lexical search indexes the virtual's converted text and its own top-level glosses.
+For example, `buyer` finds `te vecnu` through the base place 3 gloss. The queries `te vecnu` and `tervecnu` find the same virtual target.
+This works without a stored definition for either spelling. An empty new-place gloss list stays empty and does not borrow the base glosses.
+The same morphology rules resolve spelling aliases and ambiguous bases in local and remote search.
+Group matching alternatives under the requested converted spelling. Do not repeat a word card for every base revision or alias.
+Search previews identify virtual content and link to its converted page or exact virtual target.
+Ordinary match classes and limits apply. Pattern search scans stored headwords and rafsi without enumerating virtual spellings.
 
-#### Search and editorial support
+Search packages use the version 3 contract below. They retain the descriptor, exact base body hash, converted fields, and sufficient morphology evidence.
+The client recomputes a virtual from its authenticated base before treating it as verified content or signing a judgment.
+Derived package bytes remain server assertions until that recomputation. No synthetic event, body hash, or issuer stands in for a virtual.
+Earlier prelaunch packages must be rebuilt for this feature. There is no compatibility fallback that guesses missing places.
+A missing package still permits a consented download or manual reading. It never silently uploads a local query.
 
-Ordinary search includes each available conversion's new place 1 glosses.
-For example, `buyer` finds `te vecnu` when the base place 3 has the English gloss `buyer`.
-The spelling queries `te vecnu` and `tervecnu` find that view through the same morphological rules.
-Both queries work without a stored definition for either spelling. Missing base coverage remains visible.
-Each converted result says “Place conversion of vecnu” and links to its computed page.
-Its preview uses the permuted text and names the exact base event. A view with no matching place gloss remains findable by spelling.
+Semantic indexing embeds each eligible virtual separately through the named profile's exact converted input recipe.
+It uses the virtual target, descriptor, exact base body hash, and computed input hash. It never labels the base vector as the virtual's vector because they seem similar.
+Exact profile and input-byte equality still permits ordinary vector deduplication with a separate association for each target.
+Semantic similarity does not prove a place permutation or replace deterministic spelling recognition and gloss search.
+Changing the base event or conversion-rule version creates a new target association. Identical input bytes can still have the same input hash.
+Status or selection changes deactivate entries under the same snapshot rules as ordinary definitions.
+Index jobs bound work and expose coverage for eligible stored and virtual targets. They never activate invalid permutations or mix snapshots.
 
-Conversion results use the ordinary exact headword, exact gloss, prefix, and token classes as applicable.
-An exact stored headword precedes a computed spelling alias within the same class. Other ties use base word ID, conversion, then base event ID.
-Group alternatives by base word and conversion. Do not count several base definitions as several words or duplicate a stored spelling card.
-That card distinguishes computed alternatives from stored definitions. A stored import can still match through its own text or glosses.
-Pattern search scans stored headwords and rafsi only. It does not expand a pattern into virtual conversions.
-Meaning search still searches signed definitions. It creates no separate vectors or synthetic endorsement targets for these views.
+#### Editing and accessibility
 
-Local and remote lexical search use the same conversion rules and identify the source snapshot.
-Existing version 1 and 2 packages lack the structured places required for complete conversion search.
-A versioned derived-data extension must carry base event IDs, rich text, frames, place glosses, and sufficient morphology evidence.
-The client must report missing conversion coverage when that extension is absent. It never silently uploads a local query to fill that gap.
-Full source bodies remain the evidence for recomputation. Derived indexes create no dictionary publications.
-The search limits also bound generated results. Pagination retains the snapshot, language, base evidence, and conversion matching version.
+Typed headwords and `existing.conversion` use the same core resolver. An offer reads “Use te vecnu” for either supported spelling.
+It opens the converted word page and preserves the current draft. It creates no publication or automatic judgment.
+“Edit base places” starts a native revision of the exact base in its original place order and opens its relevant descriptions and glosses.
+For `te vecnu`, the editor focuses base place 3 and says “You are editing vecnu. Its place 3 supplies te vecnu.”
+The preview states that publication creates a new virtual target and retains old judgments on the old target.
+The normal review, rights notice, saved-draft handling, and Publish action apply.
+A different intended meaning uses “Write a different meaning for tervecnu” and an ordinary lujvo draft, or Other for a multiword form.
+The editor never copies a pure permutation into a separate stored definition merely to change its gloss or description.
 
-A computed view has no independent score, author judgment, reviewer count, retirement state, or revision history.
-It displays “Reviews of the base definition” beside the base score and reviewer disclosure.
-Converted alternatives follow the exact base publications' eligibility, status, editorial layers, and unavailable-score rules.
-Trust scopes use the base word and language. A scope for `tervecnu` applies to its stored definitions, not to the base conversion.
-“Endorse base definition” and “Oppose base definition” name the exact base target before any signature.
-Unlock or key creation resumes that pinned target. The client never signs a judgment on a computed form.
-Imported definitions retain their own independent targets and scores inside their disclosure. The app never transfers those reviews to the base.
-
-#### Editing and access
-
-“Edit base places” starts a revision of the exact base publication in its original place order.
-The editor focuses the base place that becomes place 1 and opens its descriptions and glosses.
-For `te vecnu`, that place is base place 3. A notice reads “You are editing vecnu. Its place 3 supplies te vecnu.”
-The conversion preview updates beside the draft. Only ordinary review and Publish can create a signed base revision.
-The action preserves the previous draft through the saved-draft rules in step 2.
-
-If the intended meaning differs, the author selects “Write a different meaning for tervecnu”.
-This starts an ordinary lujvo draft with its own text, places, glosses, formation evidence, and publication review.
-It records no conversion relationship. A different multiword meaning uses the ordinary Other path.
-The app never copies a converted view into a separate publication merely to improve its gloss or place description.
-
-The heading and accessible page name identify the conversion and base word in Latin text, including under another orthography.
-The place table states “Converted place 1, base place 3” for `te vecnu`, and exposes the whole mapping without hover.
-Inline markers link to the converted rows and announce the converted number. Repeated markers retain their numeric identity.
-The imported-definition disclosure exposes its name, count, and expanded state to assistive technology.
-Keyboard focus stays on its control when it opens or closes. A direct imported-result link opens the group before focusing its target.
-Conversion selection announces the new form through the noninterrupting status region and preserves browser Back.
-The mapping, unavailable-place explanation, edit target, and base-review labels remain readable at 360 CSS pixels and under zoom.
+Accessible headings identify the virtual, converted spelling, and base in Latin text under every orthography.
+The place table exposes the full mapping, such as “Converted place 1, base place 3”, without hover.
+Inline markers announce converted place numbers and link to converted rows. Their numeric tokens establish their identity.
+Judgment controls expose the exact virtual target and ordinary pressed, conflicted, pending, and unavailable states.
+A newer-base notice links to the newer target without moving keyboard focus or changing a pending judgment.
+Conversion selection uses the noninterrupting status region and preserves browser Back.
+All mappings, candidate states, source links, review details, and edit actions remain reachable at 360 CSS pixels and under zoom.
 
 ## 5. Add a definition
 
@@ -662,8 +644,8 @@ An improved definition appears with Revise this one. This action creates a local
 The editor shows the same notice as ordinary Revise about changes to CC0, imported legacy content, and native origin.
 The improved text starts as a separate suggestion. Use this applies it with persistent Undo.
 For a conversion, such as `te vecnu`, the block offers Use te vecnu instead of Add a definition.
-That action uses `existing.conversion` to open the computed page for the exact `existing.event` and `existing.word`.
-It preserves the current draft and creates no publication. The page offers “Edit base places” for glosses and descriptions.
+That action uses `existing.conversion` to resolve the virtual target from the exact `existing.event` and `existing.word`.
+It opens the converted page, preserves the current draft, and creates no publication or judgment. The page offers “Edit base places”.
 The client makes sure that the resolved base and frame support that conversion. A failed resolution keeps the suggestion and exposes the missing evidence.
 It never falls back to Add a definition for a pure reordering.
 A conversion with an improved definition also offers Revise this one for the existing word in its own place order.
@@ -1146,7 +1128,7 @@ A generation tool uses only a uniquely preferred assignment under the selected v
 ## 7. Endorsements and trust
 
 The visible judgment actions are “Endorse,” “Oppose,” and “Clear my judgment.”
-Their help text maps them to bless, curse, and clear. Definition judgments apply to the exact revision shown. Rafsi judgments apply to the exact word and rafsi pair.
+Their help text maps them to bless, curse, and clear. Definition judgments apply to the exact publication or virtual target shown. A virtual judgment includes its base descriptor. Rafsi judgments apply to the exact word and rafsi pair.
 A reason is optional. The UI does not demand prose for every curator action.
 A changed judgment follows the contributor's known event frontier and replaces their earlier causally ordered judgment.
 
@@ -1476,10 +1458,11 @@ Public reads need no account. Public event admission follows published quotas an
 | `POST /events`                                                    | One envelope plus a canonical body object or null, encoded as UTF-8 JSON.                                                                                                                                            |
 | `GET /receipts/ID`                                                | This server's receipt and interpretation outcome for that event.                                                                                                                                                     |
 | `GET /package-parts/HASH`                                         | Canonical derived search-part bytes, with a 4 MiB uncompressed limit.                                                                                                                                                |
-| `GET /packages/LANGUAGE?snapshot=S&version=N`                     | Search package manifest and content hashes. Version 1 is the default. Version 2 adds row metadata.                                                                                                                   |
+| `GET /packages/LANGUAGE?snapshot=S&version=N`                     | Version 3 search package manifest and content hashes, including stored and virtual candidate rows.                                                                                                                   |
 | `POST /search`                                                    | Remote draft search. The JSON body carries the GET search fields and returns the same `SearchResponse`.                                                                                                              |
 | `GET /search?q=Q&language=L&view=V&snapshot=S&retired=1`          | Optional remote results with view and snapshot metadata. Without `retired=1` the results hold active publications only. With it, each preview carries the publication status. Any other `retired` value is HTTP 400. |
 | `GET /words/WORD_ID?view=V&snapshot=S&reviewers=1`                | Candidate IDs, rafsi claims, and attributed ranking summary. `reviewers=1` adds bounded reviewer details to each score. Any other `reviewers` value is HTTP 400.                                                     |
+| `GET /virtual-definitions/ID?base=E&conversion=C&rule=R&view=V&snapshot=S` | Resolve and compute an exact virtual target, its base status, and independent score. No stored event or body is returned for the virtual. |
 | `GET /identities/KEY?view=V&snapshot=S`                           | Effective profile claims, continuity state, and activity counts for one signing key.                                                                                                                                 |
 | `GET /identities/KEY/activity?view=V&snapshot=S&after=ID&limit=N` | Events signed by that key in event-ID order, with their interpretation and local receipt position.                                                                                                                   |
 | `GET /records?snapshot=S&after=ID&limit=N`                        | Snapshot records for local calculation: envelope, body, and body status, bounded by count and bytes. The limit ranges from 1 through 200.                                                                            |
@@ -1619,7 +1602,7 @@ Calculation = {
   exact: boolean, overlay: ID, inventory: ID, logical_inventory: ID
 }
 Score = {
-  target: event-ID | rafsi-pair-ID, support: [rational, rational],
+  target: event-ID | virtual-ID | rafsi-pair-ID, support: [rational, rational],
   opposition: [rational, rational], net: [rational, rational],
   direct_reviewers: integer, status: "active" | "deprecated" | "conflicted" | "unavailable",
   reviewers?: [ReviewerDetail], reviewers_complete?: boolean
@@ -1665,17 +1648,27 @@ PublicationStatus = {
 }
 WordResponse = {
   snapshot: ID, view: event-ID, calculation: Calculation | null,
-  word: WordObject | null, definitions: [event-ID], rafsi: [event-ID],
+  word: WordObject | null, definitions: [candidate-ID], rafsi: [event-ID],
+  virtuals: [VirtualReference], virtual_statuses: [VirtualStatus],
   assignments: [{id: rafsi-pair-ID, claims: [event-ID], status: pair-status}],
-  scores: [Score], statuses: [PublicationStatus], layers: [[event-ID]],
-  unavailable_scores: [event-ID | rafsi-pair-ID]
+  scores: [Score], statuses: [PublicationStatus], layers: [[candidate-ID]],
+  unavailable_scores: [candidate-ID | rafsi-pair-ID]
 }
 SearchResponse = {
   snapshot: ID, view: event-ID, query: string, language: string,
   segmentation?: "complete" | "limited",
   hits: [{word: WordObject, word_id: word-ID, match: match-kind,
-          definitions: [event-ID]}], next: cursor | null
+          definitions: [candidate-ID]}], virtuals: [VirtualReference], next: cursor | null
 }
+VirtualDescriptor = {base: event-ID, conversion: "se" | "te" | "ve" | "xe", rule: "place-conversion-v1"}
+VirtualReference = {id: virtual-ID, descriptor: VirtualDescriptor, base_body: body-ID,
+                    word: WordObject, base_word: WordObject}
+VirtualStatus = {id: virtual-ID, base: event-ID, eligibility: "eligible" | "inactive" | "unavailable",
+                 base_status: PublicationStatus | null, reasons: [code-string]}
+VirtualResponse = {snapshot: ID, view: event-ID, id: virtual-ID, descriptor: VirtualDescriptor,
+                   base_body: body-ID | null, word: WordObject | null,
+                   content: VirtualProjection | null, status: VirtualStatus,
+                   score: Score | null, calculation: Calculation | null}
 Error = {code: string, message: string, event: event-ID | null, field: string | null}
 ```
 
@@ -1715,8 +1708,22 @@ The records transport returns the committed envelope representation of the snaps
 `body_status` `missing` means that the snapshot never retained the body. `unavailable` means that the snapshot retained it and storage did not return it now. A client keeps the two apart: a missing body is a fact of the snapshot, and an unavailable one deserves another request.
 A client authenticates each envelope and body through the shared core and compares the complete set with the snapshot inventory before claiming a complete local calculation.
 
-Word layers contain definition IDs only. Assignment status is `eligible`, `inactive`, or `unknown`, with distinct pair scores.
-Statuses contains one entry for each returned definition, sorted by event ID. It uses the response's exact snapshot and view.
+A candidate ID is a signed definition event ID or a `jvv1:` virtual ID. Word layers contain those candidate IDs only.
+Every returned virtual target has one `VirtualReference` in the same response. References sort by virtual ID without duplicates.
+`VirtualProjection` is the exact seven-field content object in the format's [conversion rule](format.md#conversion-rule).
+Virtual statuses refer to their real base status. They never fabricate a publication-status event for the virtual.
+`statuses` contains signed publications only. `virtual_statuses` contains one entry for each returned virtual target.
+The search response's `virtuals` array describes every virtual ID in its hits. A display alias does not replace its canonical score word.
+Virtual references and candidate fields are required in this prelaunch API revision. Existing prototype data must be rebuilt where those fields are absent.
+
+A virtual lookup requires its complete descriptor in the query. The server makes sure that it hashes to the requested ID.
+A malformed or mismatched descriptor returns HTTP 400. A deterministically invalid base or permutation returns HTTP 422 with `invalid_virtual`.
+Unavailable base content returns null content and score, with its unavailable status and reason. A resource failure follows the ordinary HTTP 503 rule.
+The client authenticates the base through the event and body endpoints before calling the local core or signing a judgment.
+`/events` and `/bodies` remain immutable-object routes. They never return a fabricated virtual envelope or body.
+
+Assignment status is `eligible`, `inactive`, or `unknown`, with distinct pair scores.
+Statuses contains one entry for each returned signed definition, sorted by event ID. It uses the response's exact snapshot and view.
 Frontier lists the deciding maximal status actions, or their union during a controller dispute. Event-ID arrays are sorted and duplicate-free.
 
 Controller_candidates contains the candidate period claim IDs. Deciding_claim names the period that supplies the value, or null for a default, dispute, or unavailable selection.
@@ -1810,30 +1817,51 @@ When publication receipts cannot be evaluated, the manifest sets `packages_avail
 Package downloads then return HTTP 503 with `resource_unavailable`. Existing downloaded packages remain available in the browser under their saved snapshots.
 With `packages_available: true`, empty descriptor arrays mean that the server has no language packages in that snapshot.
 
-Older servers can omit both new fields. Clients retain the earlier word-response view lookup when no explicit view choice exists.
-An absent availability field retains the earlier package-discovery behavior. A present field must be a boolean, and a present view must be an event ID.
+The availability field is a required boolean. The declared view is a required event ID in this prelaunch contract.
 
-A package manifest contains exactly `version`, `language`, `snapshot`, and `parts`. Version is 1 or 2.
-The manifest response lists version 1 packages in `packages` and every other version in `package_versions`.
-A client requests a version explicitly with the `version` query. The default remains version 1.
-Each part contains `hash`, `bytes`, and `count`. Part hashes identify canonical JSON arrays of search entries.
-Parts contain at most 2,000 entries and 4 MiB uncompressed. These are derived artifacts, not signed event bodies.
+A package manifest contains exactly `version`, `language`, `snapshot`, and `parts`. The target package version is 3.
+The manifest response lists that package in `packages` and identifies version 3 in `package_versions`.
+Requests omit `version` or select `version=3`. Other versions are unavailable for this prelaunch target contract.
+Each part contains `hash`, `bytes`, and `count`. Its hash identifies a canonical JSON array of candidate rows.
+Each part holds at most 2,000 rows and 4 MiB uncompressed. Split larger data into additional parts.
+The manifest hash covers its canonical bytes. Compression remains outside the hashes.
 
-Their dedicated endpoint uses that limit rather than the 256 KiB event-body limit. Split a larger package into more parts.
-An entry contains `event`, `word`, `language`, `glosses`, `plain_text`, `classification`, and `body`.
-Event is the publication ID. Word is its word object. Body is its body hash or null.
-A version 2 entry adds `issuer`, `notes`, `rafsi`, `rafsi_complete`, and `attribution`.
-Issuer is the signing key, which is the importer for an import. Notes is true when the definition has notes.
-Rafsi lists the spellings of retained rafsi claim bodies for the word, sorted, at most 64 of them. `rafsi_complete` is false when the word has more claims than the list holds. Missing, unreadable, or invalid claim bytes also set `rafsi_complete` to false. A client never treats a cut list as a complete conflict inventory. The exact claims of a word are the `rafsi` event IDs of the word route and their claim bodies.
-Attribution is null for a native publication.
-If an advertised version 2 package fails its checks, the client uses the version 1 package instead and records the reason with the cached package. It shows that state wherever it describes the package. It never falls back without that record.
-For an import it contains `source`, nullable `author`, nullable `account` with `origin` and `account`, and `dates`, a map of source date labels to source strings.
-These fields are server assertions derived from the records. They are not part of the signed format, and a client can authenticate them against the records.
+Each version 3 row contains these fields:
 
-Other fields use definition shapes, except plain_text, which is a literal search string derived from rich text.
-The package sorts entries by event ID and preserves alternatives. It does not encode one chosen definition per word.
-The manifest hash covers its canonical bytes. Package entries are derived index data, not new signed claims.
-The app can reconstruct them from authenticated publications and flag disagreements.
+```text
+{
+  target: candidate-ID, event: event-ID | null, virtual: VirtualDescriptor | null,
+  body: body-ID | null, base_body: body-ID | null, issuer: identity-string | null,
+  word: WordObject, base_word: WordObject | null, language: string,
+  text: RichText, frame: Frame | null, glosses: [Gloss], plain_text: string,
+  classification: Classification | null, notes: boolean,
+  rafsi: [string], rafsi_complete: boolean, attribution: SourceAttribution | null
+}
+```
+
+For a stored definition, `target` equals `event`. Its `body` and `issuer` name the ordinary signed evidence.
+Its `virtual`, `base_body`, and `base_word` fields are null. Other fields derive from that exact publication with defaults applied.
+For a virtual, `target` is its recomputed virtual ID. Its descriptor, `base_body`, and `base_word` identify the exact signed base evidence.
+Its `event`, `body`, `issuer`, and `classification` fields are null. The virtual has no signed record or independent lexical classification.
+Its `word` is the canonical converted word. Its text, frame, and glosses come from the shared core's projection.
+`plain_text` renders that text for lexical matching. `notes` reports whether the projected notes are nonempty.
+
+Rafsi lists retained claims for the row's displayed canonical word, not inherited assignments from the base.
+It holds at most 64 sorted spellings. `rafsi_complete` is false for missing, invalid, unreadable, or cut claim evidence.
+A virtual by itself creates no rafsi assignment. Alias spelling analysis uses separate snapshot-bound morphology evidence.
+The exact word route retains every rafsi claim event and conflict, as before.
+
+`SourceAttribution` contains `source`, nullable `author`, nullable `account` with `origin` and `account`, and a source `dates` map.
+It is null for a native publication. An import derives it from its exact legacy evidence.
+A virtual uses its base's available source attribution and identifies it as derived attribution. It never treats that source as a virtual signer.
+These fields remain derived assertions. They do not change source authorship, signatures, or rights.
+
+Rows sort by full target ID without duplicates. The package retains competing stored and virtual definitions and creates no chosen universal sense.
+Its generation pins the snapshot, selected view, conversion rule, and morphology evidence that determine eligibility and placements.
+A client can reconstruct a row from authenticated records and flag any mismatch.
+A descriptor, source hash, or computed-content mismatch rejects the row and reports incomplete coverage. It never activates a guessed virtual.
+An unsupported rule or missing base remains unavailable. The client never fills missing places from an earlier prelaunch package.
+
 
 ## 12. Admission, privacy, and rendering
 
@@ -1919,12 +1947,17 @@ The implementer must demonstrate these end-to-end cases before public release:
 32. Permanent refusal stays auto-paused. Stopping neither retracts public records nor promises cancellation of an in-flight request.
 33. Outlined control boundaries meet 3:1 contrast in every enabled state in both themes.
 34. Discard refuses a stopped record when a later local own record depends on it, directly or transitively. Resume and Save as file remain available. Discarding an independent stopped leaf restores its retained predecessors to the frontier when they become maximal. No later signature names the discarded ID.
-35. Compute each conversion from one exact base event without changing its bytes. Preserve every moved annotation and every foreign source-place index.
+35. Compute identical virtual IDs and content in Rust and WebAssembly from the same base descriptor. Preserve base bytes, moved annotations, and foreign source-place indices.
 36. Refuse `ve` and `xe` beyond a fixed frame, preserve a variadic tail, and retain sparse context and unspecified-frame limits.
 37. Find `te vecnu` through `buyer`, `te vecnu`, and `tervecnu` with local and remote conversion coverage. Expose absent package coverage without a query upload.
-38. Fold only qualifying imports under the named disclosure. Keep native lujvo definitions visible, retain distinct reviews, and open direct source links without hidden content.
-39. Route typed conversion forms and `existing.conversion` through the same base revision. Preserve the saved draft, exact judgment target, and original base order.
-40. Read the conversion mapping, expand imports, and edit base places with keyboard and screen-reader controls at narrow widths and under zoom.
+38. Rank native, imported, and virtual definitions together without a collapsed import group. Give a reviewed-frame virtual the specified unjudged starting order without numerical author weight.
+39. Route typed forms and `existing.conversion` through the same virtual target. Judge that target independently and edit the base in its original order.
+40. Read mappings, compare ordinary and virtual candidates, judge a virtual, and edit base places with keyboard and screen-reader controls at narrow widths.
+41. Keep virtual judgments on their exact old base after a revision. Show a newer-base notice without changing the old target or copying its judgments.
+42. Deactivate and restore virtual judgments with base eligibility. Distinguish missing content, invalid conversion, source-author blocks, and unrelated reviewer influence.
+43. Share one virtual ID across converted spelling aliases. Keep ambiguous short-rafsi bases separate and use canonical converted score contexts.
+44. Authenticate version 3 virtual package rows against their exact base. Reject invented virtual bodies, mismatched descriptors, and mixed-snapshot inputs.
+45. Index virtual semantic vectors from their exact converted recipe. Preserve target associations during exact-input deduplication and expose incomplete virtual coverage.
 
 The app must also measure cold package load, local search latency, signature latency, backup unlock time, and ranking cost on representative mobile devices.
 No target in this design constitutes a completed browser compatibility or accessibility audit.
@@ -1960,9 +1993,9 @@ A cache still needs a compatible query-vector service. Downloaded document vecto
 The browser can offer offline semantic search only when it also has a compatible local model and enough retained vectors.
 Ordinary offline search and the manual wizard remain available without either.
 
-A result identifies its profile and definition revision. New or changed definitions show pending indexing until their vectors are available.
+A result identifies its profile and exact signed or virtual target. New or changed targets show pending indexing until their vectors are available.
 The server never substitutes a vector for another revision without proving that its declared input bytes match under the same profile.
-It also retains the target event association explicitly. Identical text does not merge authors, definitions, or judgments.
+It also retains each exact target association explicitly. Identical text does not merge authors, definitions, or judgments.
 
 Different profile distances never enter a common sorted scale. The first release shows one selected profile at a time.
 A later rank-fusion feature must label its algorithm and every contributing profile.
@@ -2084,9 +2117,12 @@ Language is a definition-language tag. Snapshot and profile are hashes. View is 
 The selected profile can impose a tighter input limit, including its literal prefix. The server rejects that limit before paid dispatch.
 
 The response contains snapshot, view, profile, query_hash, hits, and coverage.
-Each hit contains event, word, distance, and position. Word is its word ID. Distance is a finite JSON number under this external API.
+Each hit contains `target`, nullable `event`, nullable `virtual`, nullable `base_body`, `word`, `distance`, and `position`.
+A publication uses its event as target. A virtual uses its own ID, descriptor, and authenticated base body hash, with null event.
+Word is the candidate's canonical word ID. Distance is a finite JSON number under this external API.
 
-Position is the one-based search order. Equal distances use event-ID order. Coverage contains indexed, eligible, pending, and failed counts.
+Position is the one-based search order. Equal distances use target-ID order. Coverage contains indexed, eligible, pending, and failed target counts.
+Those counts include eligible signed and virtual targets separately in their details. A base revision never silently stands in for a missing virtual vector.
 No semantic response labels its distance as a dictionary score. A word-page request supplies editorial calculations separately.
 
 The assist request contains operation, draft_revision, language, meaning, current, context, and profile.
