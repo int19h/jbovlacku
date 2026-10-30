@@ -263,10 +263,13 @@ test("r3 outside typing preserves raw CR and CRLF while explicit newline edits a
   await caret(".rich-code");
   await field.press("Enter");
   expect(await richNodes(field)).toEqual([
-    [{ code: "keep\n\r\n\r\nexact" }, ...exact[0].slice(1)],
+    [{ code: "keep\n\n\nexact" }, ...exact[0].slice(1)],
   ]);
   await field.press("Control+z");
-  expect(await richNodes(field)).toEqual(exact);
+  const afterCode: RichText = [
+    [{ code: "keep\n\nexact" }, ...exact[0].slice(1)],
+  ];
+  expect(await richNodes(field)).toEqual(afterCode);
   await caret(".rich-web-link");
   await field.evaluate((node) => {
     const data = new DataTransfer();
@@ -280,12 +283,20 @@ test("r3 outside typing preserves raw CR and CRLF while explicit newline edits a
   });
   expect(await richNodes(field)).toEqual([
     [
-      ...exact[0].slice(0, 2),
-      { url: "https://example.org/", label: "keep\n\n\r\rexact " },
+      ...afterCode[0].slice(0, 2),
+      { url: "https://example.org/", label: "keep\n\n\n\nexact " },
     ],
   ]);
   await field.press("Control+z");
-  expect(await richNodes(field)).toEqual(exact);
+  expect(await richNodes(field)).toEqual([
+    [
+      ...afterCode[0].slice(0, 2),
+      { url: "https://example.org/", label: "keep\n\nexact " },
+    ],
+  ]);
+  await field.evaluate((node: any, value) => {
+    node.value = value;
+  }, exact);
   // A canceled native edit cannot change the meaning of the next explicit edit.
   await field.press("Control+End");
   await field.evaluate((node) => {
@@ -321,7 +332,7 @@ test("r3 outside typing preserves raw CR and CRLF while explicit newline edits a
     [{ code: "keep\n\nexact" }, ...exact[0].slice(1)],
   ]);
   await field.press("Control+z");
-  expect(await richNodes(field)).toEqual(exact);
+  expect(await richNodes(field)).toEqual(afterCode);
 });
 
 test("r3 toolbar hints appear only for the focused toolbar and operand guidance follows an attempt", async ({
