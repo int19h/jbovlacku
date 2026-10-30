@@ -130,6 +130,7 @@ The app provides these addressable routes:
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
 | `/search?q=...&lang=en`     | Search results and filters.                                                                                                                |
 | `/word/<word-id>?lang=en`   | All definitions and rafsi claims for a word.                                                                                               |
+| `/conversion/<encoded-base-spelling>/<se-or-te-or-ve-or-xe>?lang=en` | A computed place conversion of a base word. |
 | `/definition/<event-id>`    | One immutable definition revision.                                                                                                         |
 | `/rafsi/<encoded-spelling>` | Assignments and conflicts for a rafsi.                                                                                                     |
 | `/identity/<encoded-key>`   | Public identity claims and activity.                                                                                                       |
@@ -399,6 +400,172 @@ A marker's numeric identity comes from the token, not its glyph or position in t
 
 Literal circled characters remain literal text. A reader can inspect the structured representation when needed.
 
+### Place conversions
+
+A place conversion swaps place 1 with another numbered place.
+`se`, `te`, `ve`, and `xe` exchange place 1 with places 2, 3, 4, and 5 respectively.
+A meaning that only changes this order uses the base definition through a computed view.
+The app creates no separate definition, signature, endorsement, or rafsi claim for that view.
+The [place frame](format.md#place-frames) and rich-text rules already supply the required fields. The signed format does not change.
+
+#### Computing the view
+
+Each view uses one exact base definition, its language, the selected editorial view, and one snapshot.
+The client authenticates the base body before computing from records. Server-derived results retain their ordinary assertion status.
+Competing base definitions produce separate converted alternatives. The app never combines fields from different definitions.
+Apply the [field defaults](format.md#absent-fields-and-compatibility) to a separate interpreted copy first.
+Retain the base body, its hash, event ID, and original field presence unchanged.
+
+Let `k` be the selected place, from 2 through 5. The permutation exchanges `1` and `k` and leaves every other index unchanged.
+Apply that permutation once to each place object's `index`, then sort the objects by their new indices.
+Move the whole place object, including its description, glosses, type hints, defaults, constraints, and derivation.
+Apply the same permutation to every integer rich-text node that refers to the current frame.
+This includes text, notes, frame constraints, place descriptions and constraints, default conditions and explanations, tail descriptions, type notes, and operand descriptions.
+The integers in these fields name the outer frame. They do not name an abstracted relation's arguments.
+
+Other integers keep their original meaning. In particular, retain relation arities, operand cardinalities, and each derivation item's source `place`.
+Retain source words, exact source events, operand IDs, formation evidence, and source references.
+Derivation explanations prohibit outer-place nodes and remain unchanged.
+Examples, code nodes, link labels, quoted variables, and literal `x_1` strings remain literal.
+If literal place notation remains in the prose, show “Literal place notation stays as source text.”
+The app never rewrites such text by guessing its scope.
+
+The view's top-level glosses are exactly the base place `k` glosses, including their languages and sense qualifiers.
+An empty place gloss list stays empty. The app never substitutes the base top-level glosses or generates a translation.
+The moved base place 1 keeps its own place glosses. The base top-level glosses remain visible through the base link.
+Attribution, rights, and historical evidence describe the base publication. They never claim that its author signed the converted display.
+Show “Computed from” beside the permanent base revision link. Formation evidence and examples stay inside a disclosure labeled “Base definition”.
+
+For example, an illustrative `vecnu` frame has four places: seller, goods, buyer, and price.
+Its `te` view maps base places `1, 2, 3, 4` to converted places `3, 2, 1, 4`.
+Base text `[1, " sells ", 2, " to ", 3, " for ", 4]` becomes `[3, " sells ", 2, " to ", 1, " for ", 4]`.
+The view takes its top-level glosses from the buyer place. This example supplies no new source definition or annotations.
+
+The following frame rules determine availability:
+
+- A fixed predicate frame permits a conversion only when its count reaches `k`. Preserve that count.
+- A variadic predicate frame permits a conversion only within its explicit prefix. Preserve its minimum and `tail.from`.
+- A context predicate frame permits a conversion only when places 1 and `k` both have explicit declarations. Preserve context mode and every gap.
+- A null frame supplies no conversion. A constructed-predicate frame requires separate grammatical rules and supplies no automatic conversion here.
+
+For a variadic frame, permute outer-place references inside the tail metadata too. The repeated tail otherwise stays unchanged.
+A target inside the repeated tail has no individual place object. The app does not materialize that target or invent glosses for it.
+A declaration beyond the variadic minimum remains illustrative after conversion. The view makes no stronger completeness claim than the base.
+If a required declaration is absent, explain which place lacks information and link to the base definition.
+For a three-place fixed frame, `ve` reads “This definition has no place 4”.
+Its `xe` view reads “This definition has no place 5”.
+For an unspecified frame, use “This definition does not describe its places.”
+These states never create empty places, extend an arity, or interpret an absent frame as zero places.
+Other base definitions with sufficient structure remain available as separate alternatives.
+
+#### Spelling and navigation
+
+The base word page lists `se`, `te`, `ve`, and `xe` under “Place conversions” for each definition language.
+Each item names the converted form and the glosses of its new place 1. Unavailable items explain their frame limit.
+A definition with no available conversion still exposes the explanation and “Describe the base places”.
+That action starts an ordinary base revision. Improving that revision improves the views that use it after explicit revision selection.
+
+The canonical conversion route contains the NFC base spelling and exactly one conversion cmavo.
+For example, `/conversion/vecnu/te?lang=en` has the heading `te vecnu`.
+An optional `definition` parameter pins an exact base event. An optional `snapshot` parameter pins the source snapshot.
+An optional `view` parameter pins the editorial view. Display links retain all explicit pins.
+The client makes sure that a pinned definition matches the base word and language. It never substitutes another revision after a failure.
+Without a definition pin, the page shows converted alternatives in the base word's ordinary editorial layers.
+The page retains normal language selection, browser history, source disclosures, and links back to the base word.
+Its copy control copies `te vecnu`. Its revision link names the signed base and retains the conversion route as a separate display link.
+If cached data lacks the base body, explain that the full converted view needs that body. Offer a consented download or the available preview.
+
+Conversion-shaped lujvo use `sel`, `ter`, `vel`, or `xel` as their first rafsi.
+Morphological analysis must recover that first rafsi and a complete base, including any required joins.
+Removing three letters is insufficient. For example, `selbri` needs the source assignment from `bri` to `bridi`.
+For a compound base, recover the remaining component sequence as a whole. Do not choose a meaning from its individual components.
+Use the selected morphology profile and the snapshot's rafsi evidence. An unresolved or competing source assignment requires an explicit base choice.
+Keep that choice in navigation state with its evidence. Do not store a conversion link in the lujvo's word identity or definition.
+Parser limits and missing assignment evidence produce an unavailable analysis, rather than a guessed base.
+The initial design supports one leading conversion. It does not enumerate chains of conversions or arbitrary converted phrases.
+The base is one recognized brivla, including a lujvo with several components. Initial automatic recognition excludes `zei` chains.
+
+The `tervecnu` word page shows the computed `te vecnu` alternatives before qualifying imported definitions.
+Its heading remains `tervecnu`, with “Place conversion: te vecnu” and the base word link.
+Native definitions of `tervecnu` remain ordinary lujvo definitions, visible outside the import disclosure.
+When no stored `tervecnu` entry exists, search opens the canonical conversion route with `form=tervecnu`.
+The route accepts `form` only after the same morphological analysis establishes its base and conversion.
+It shows the requested spelling beside `te vecnu` and creates no word record.
+Stored `te vecnu` entries use the same presentation rule on their ordinary word page.
+
+#### Imported conversion-shaped definitions
+
+The folding rule uses morphology and source origin. It does not compare English prose, use an AI judgment, or infer meaning from a gloss.
+An imported definition qualifies when its complete spelling parses as one conversion cmavo plus a base, or as the SE-rafsi form above.
+The base must have an eligible definition in the selected language, snapshot, and editorial view.
+At least one such base definition must support the requested computed view.
+Ambiguous bases, missing bodies, absent places, or incomplete morphology leave the imported definition in the ordinary list with an explanation.
+An author's name, including `noralujv`, never establishes semantic equivalence or controls folding.
+
+Morphology establishes a conversion-shaped spelling, not proof that two definitions mean the same thing.
+The app groups qualifying imports under the initially collapsed disclosure “Imported definitions for tervecnu (N)”.
+Substitute the actual spelling and count. The disclosure text reads:
+
+> This spelling can use te vecnu. These imported definitions keep their own wording and reviews. Their meanings can differ from the computed view.
+
+Substitute the actual converted form. Opening the disclosure shows every original definition with its attribution, rights, sources, status, reviews, and revision controls.
+“Show these definitions first” changes a private presentation preference for that spelling. It signs nothing and does not change ranking.
+An immutable `/definition/<event-id>` link always opens the original publication directly, outside any collapsed group.
+A search match in an imported definition opens that exact definition or expands its group on the word page.
+Folding changes presentation only. It never removes a source record or declares an imported meaning wrong.
+
+#### Search and editorial support
+
+Ordinary search includes each available conversion's new place 1 glosses.
+For example, `buyer` finds `te vecnu` when the base place 3 has the English gloss `buyer`.
+The spelling queries `te vecnu` and `tervecnu` find that view through the same morphological rules.
+Both queries work without a stored definition for either spelling. Missing base coverage remains visible.
+Each converted result says “Place conversion of vecnu” and links to its computed page.
+Its preview uses the permuted text and names the exact base event. A view with no matching place gloss remains findable by spelling.
+
+Conversion results use the ordinary exact headword, exact gloss, prefix, and token classes as applicable.
+An exact stored headword precedes a computed spelling alias within the same class. Other ties use base word ID, conversion, then base event ID.
+Group alternatives by base word and conversion. Do not count several base definitions as several words or duplicate a stored spelling card.
+That card distinguishes computed alternatives from stored definitions. A stored import can still match through its own text or glosses.
+Pattern search scans stored headwords and rafsi only. It does not expand a pattern into virtual conversions.
+Meaning search still searches signed definitions. It creates no separate vectors or synthetic endorsement targets for these views.
+
+Local and remote lexical search use the same conversion rules and identify the source snapshot.
+Existing version 1 and 2 packages lack the structured places required for complete conversion search.
+A versioned derived-data extension must carry base event IDs, rich text, frames, place glosses, and sufficient morphology evidence.
+The client must report missing conversion coverage when that extension is absent. It never silently uploads a local query to fill that gap.
+Full source bodies remain the evidence for recomputation. Derived indexes create no dictionary publications.
+The search limits also bound generated results. Pagination retains the snapshot, language, base evidence, and conversion matching version.
+
+A computed view has no independent score, author judgment, reviewer count, retirement state, or revision history.
+It displays “Reviews of the base definition” beside the base score and reviewer disclosure.
+Converted alternatives follow the exact base publications' eligibility, status, editorial layers, and unavailable-score rules.
+Trust scopes use the base word and language. A scope for `tervecnu` applies to its stored definitions, not to the base conversion.
+“Endorse base definition” and “Oppose base definition” name the exact base target before any signature.
+Unlock or key creation resumes that pinned target. The client never signs a judgment on a computed form.
+Imported definitions retain their own independent targets and scores inside their disclosure. The app never transfers those reviews to the base.
+
+#### Editing and access
+
+“Edit base places” starts a revision of the exact base publication in its original place order.
+The editor focuses the base place that becomes place 1 and opens its descriptions and glosses.
+For `te vecnu`, that place is base place 3. A notice reads “You are editing vecnu. Its place 3 supplies te vecnu.”
+The conversion preview updates beside the draft. Only ordinary review and Publish can create a signed base revision.
+The action preserves the previous draft through the saved-draft rules in step 2.
+
+If the intended meaning differs, the author selects “Write a different meaning for tervecnu”.
+This starts an ordinary lujvo draft with its own text, places, glosses, formation evidence, and publication review.
+It records no conversion relationship. A different multiword meaning uses the ordinary Other path.
+The app never copies a converted view into a separate publication merely to improve its gloss or place description.
+
+The heading and accessible page name identify the conversion and base word in Latin text, including under another orthography.
+The place table states “Converted place 1, base place 3” for `te vecnu`, and exposes the whole mapping without hover.
+Inline markers link to the converted rows and announce the converted number. Repeated markers retain their numeric identity.
+The imported-definition disclosure exposes its name, count, and expanded state to assistive technology.
+Keyboard focus stays on its control when it opens or closes. A direct imported-result link opens the group before focusing its target.
+Conversion selection announces the new form through the noninterrupting status region and preserves browser Back.
+The mapping, unavailable-place explanation, edit target, and base-review labels remain readable at 360 CSS pixels and under zoom.
+
 ## 5. Add a definition
 
 The app offers a guided wizard and an advanced editor over the same local draft.
@@ -430,6 +597,10 @@ An unknown spelling with a valid name mark follows the ordinary experimental cla
 An accented spelling requires the `cmevla` classification, or `lujvo` under the format's [bounded `zei` rule](format.md#definition-payload).
 The app compares its `wordId` with the local language package. Remote lookup requires explicit consent for that word and language.
 An existing word shows “Already exists”, its linked word page, its definitions, and “Add a definition”.
+Conversion-shaped typed headwords also follow the [place conversion flow](#place-conversions), without an AI request.
+The conversion offer reads “Use te vecnu” for either `te vecnu` or an unambiguous `tervecnu` analysis.
+The author can inspect the conversion, edit the base places, or write a different meaning through the ordinary lujvo or Other path.
+The offer never asserts semantic equivalence from spelling alone. An unavailable analysis preserves the draft and explains its missing evidence.
 The author can continue with another definition of that word. An unavailable check says that the word could not be checked.
 A local package only establishes presence or absence in its named language and snapshot.
 
@@ -491,7 +662,10 @@ An improved definition appears with Revise this one. This action creates a local
 The editor shows the same notice as ordinary Revise about changes to CC0, imported legacy content, and native origin.
 The improved text starts as a separate suggestion. Use this applies it with persistent Undo.
 For a conversion, such as `te vecnu`, the block offers Use te vecnu instead of Add a definition.
-That action opens the existing word page and shows the converted form. It creates no draft or publication.
+That action uses `existing.conversion` to open the computed page for the exact `existing.event` and `existing.word`.
+It preserves the current draft and creates no publication. The page offers “Edit base places” for glosses and descriptions.
+The client makes sure that the resolved base and frame support that conversion. A failed resolution keeps the suggestion and exposes the missing evidence.
+It never falls back to Add a definition for a pure reordering.
 A conversion with an improved definition also offers Revise this one for the existing word in its own place order.
 Adding or revising saves the previous draft separately and offers Return to the saved draft.
 Add a definition copies every current field and uses the Step 1 spelling-change action. It preserves notes, places, glosses, sources, and evidence for review.
@@ -1745,6 +1919,12 @@ The implementer must demonstrate these end-to-end cases before public release:
 32. Permanent refusal stays auto-paused. Stopping neither retracts public records nor promises cancellation of an in-flight request.
 33. Outlined control boundaries meet 3:1 contrast in every enabled state in both themes.
 34. Discard refuses a stopped record when a later local own record depends on it, directly or transitively. Resume and Save as file remain available. Discarding an independent stopped leaf restores its retained predecessors to the frontier when they become maximal. No later signature names the discarded ID.
+35. Compute each conversion from one exact base event without changing its bytes. Preserve every moved annotation and every foreign source-place index.
+36. Refuse `ve` and `xe` beyond a fixed frame, preserve a variadic tail, and retain sparse context and unspecified-frame limits.
+37. Find `te vecnu` through `buyer`, `te vecnu`, and `tervecnu` with local and remote conversion coverage. Expose absent package coverage without a query upload.
+38. Fold only qualifying imports under the named disclosure. Keep native lujvo definitions visible, retain distinct reviews, and open direct source links without hidden content.
+39. Route typed conversion forms and `existing.conversion` through the same base revision. Preserve the saved draft, exact judgment target, and original base order.
+40. Read the conversion mapping, expand imports, and edit base places with keyboard and screen-reader controls at narrow widths and under zoom.
 
 The app must also measure cold package load, local search latency, signature latency, backup unlock time, and ranking cost on representative mobile devices.
 No target in this design constitutes a completed browser compatibility or accessibility audit.
