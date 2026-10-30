@@ -216,6 +216,30 @@ test("collapsed forward deletion keeps equivalent inner and outer caret contexts
   }
 });
 
+test("forward deletion without a target range removes the full word or line extent", () => {
+  for (const [inputType, text] of [
+    ["deleteWordForward", "first \nthird"],
+    ["deleteSoftLineForward", "first \nthird"],
+    ["deleteHardLineForward", "first "],
+  ]) {
+    let state = EditorState.create({
+      doc: richToEditor([
+        ["first second\r\nthird"],
+        ["outside\r", { code: "raw\r\n" }],
+      ]),
+      plugins: [richEditor.editedTextPlugin()],
+    });
+    const tr = state.tr.setSelection(TextSelection.create(state.doc, 8));
+    richEditor.deleteRichInput(tr, inputType, (next) => {
+      state = state.applyTransaction(next).state;
+    });
+    assert.deepEqual(editorToRich(state.doc), [
+      [text],
+      ["outside\r", { code: "raw\r\n" }],
+    ]);
+  }
+});
+
 test("current insertion ranges replace stale selections and keep equivalent outer carets", () => {
   let state = EditorState.create({
     doc: richToEditor([["keep"], ["replace"]]),

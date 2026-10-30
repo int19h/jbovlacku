@@ -103,6 +103,10 @@ async function beforeinput(
         inputType,
         isComposing,
       });
+      // Some engines discard input types that their constructor does not know.
+      // These synthetic events test the requested protocol value explicitly.
+      if (event.inputType !== inputType)
+        Object.defineProperty(event, "inputType", { value: inputType });
       if (target) {
         const point = ([paragraph, inline, offset]: Point) => {
           const container = field
@@ -319,13 +323,12 @@ test("r6 cut copies selected text once and collapsed cut keeps the value", async
   await choose(field, [0, 0, 1], [0, 2, 1]);
   const copied = await field.evaluate((field) => {
     const clipboardData = new DataTransfer();
-    field.dispatchEvent(
-      new ClipboardEvent("cut", {
-        bubbles: true,
-        cancelable: true,
-        clipboardData,
-      }),
-    );
+    const event = new ClipboardEvent("cut", {
+      bubbles: true,
+      cancelable: true,
+    });
+    Object.defineProperty(event, "clipboardData", { value: clipboardData });
+    field.dispatchEvent(event);
     return clipboardData.getData("text/plain");
   });
   expect(copied).toBe("bcodec");
@@ -922,13 +925,12 @@ test("r6 clipboard cut keeps partial code and link nodes", async ({ page }) => {
   await choose(field, [0, 0, 3], [0, 2, 3]);
   const copied = await field.evaluate((field) => {
     const clipboardData = new DataTransfer();
-    field.dispatchEvent(
-      new ClipboardEvent("cut", {
-        bubbles: true,
-        cancelable: true,
-        clipboardData,
-      }),
-    );
+    const event = new ClipboardEvent("cut", {
+      bubbles: true,
+      cancelable: true,
+    });
+    Object.defineProperty(event, "clipboardData", { value: clipboardData });
+    field.dispatchEvent(event);
     return clipboardData.getData("text/plain");
   });
   expect(copied).toBe("fixmiddlesuf");
@@ -1014,13 +1016,12 @@ test("r6 superseding insertText and cut keep their new selections", async ({
       1,
     );
     const clipboardData = new DataTransfer();
-    field.dispatchEvent(
-      new ClipboardEvent("cut", {
-        bubbles: true,
-        cancelable: true,
-        clipboardData,
-      }),
-    );
+    const event = new ClipboardEvent("cut", {
+      bubbles: true,
+      cancelable: true,
+    });
+    Object.defineProperty(event, "clipboardData", { value: clipboardData });
+    field.dispatchEvent(event);
     return clipboardData.getData("text/plain");
   });
   expect(copied).toMatch(/^b\n+c$/u);
