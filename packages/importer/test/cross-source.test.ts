@@ -522,7 +522,7 @@ test("r3 N2 new REST observations reference the exact archive instead of copying
     archive: manifest.sha256,
     locator: "definitions/definitionid=4",
   });
-  assert.equal(observation.extraction, "lensisku-list-literal-v2");
+  assert.equal(observation.extraction, "lensisku-list-fidelity-v3");
   assert.deepEqual(
     await readFile(
       join(f.output, "source-archive", `${manifest.sha256.slice(7)}.json`),

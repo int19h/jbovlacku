@@ -181,10 +181,12 @@ test("SQL fixture produces signed definitions in three languages and retains his
   ]);
   assert.ok(estimate > 0 && estimate < 4_000_000_000);
   const records = await carriers(input.output);
-  assert.equal(records.length, 5);
+  assert.equal(records.length, 10);
   for (const carrier of records)
     assert.equal(prepareAdmission(utf8(canonical(carrier))).action_valid, true);
-  const definitions = records.filter((item) => item.body.legacy);
+  const definitions = records.filter(
+    (item) => item.envelope.header.action.kind === "definition.publish",
+  );
   const first = definitions.find((item) => item.body.legacy.record.id === 4)!;
   assert.equal(first.body.legacy.source, SQL_SOURCE);
   assert.equal(
@@ -195,11 +197,11 @@ test("SQL fixture produces signed definitions in three languages and retains his
     $source_number: "4",
   });
   assert.equal(first.body.license.expression, "unknown");
-  assert.equal(Object.hasOwn(first.body, "frame"), false);
+  assert.equal(first.body.frame.arity.mode, "context");
   assert.equal(Object.hasOwn(first.body, "operands"), false);
   assert.equal(Object.hasOwn(first.body, "examples"), false);
   const interpreted = interpretDefinition<any>(first.body);
-  assert.equal(interpreted.frame, null);
+  assert.equal(interpreted.frame.arity.mode, "context");
   assert.deepEqual(interpreted.operands, []);
   assert.deepEqual(interpreted.examples, []);
   assert.deepEqual(interpreted.legacy, first.body.legacy);
@@ -400,7 +402,7 @@ test("lost journal, corrupt envelopes, changed source, and signing failure canno
     /simulated/,
   );
   const recovered = await importSqlSnapshot(interrupted);
-  assert.equal((await carriers(interrupted.output)).length, 5);
+  assert.equal((await carriers(interrupted.output)).length, 10);
   assert.equal(recovered.report.reused, 4);
 });
 
@@ -439,7 +441,12 @@ test("changed roots publish a new view without republishing definitions", async 
   assert.notEqual(second.view, first.view);
   assert.equal(second.selection, first.selection);
   const records = await carriers(input.output);
-  assert.equal(records.filter((item) => item.body.legacy).length, 4);
+  assert.equal(
+    records.filter(
+      (item) => item.envelope.header.action.kind === "definition.publish",
+    ).length,
+    4,
+  );
   assert.equal(records.filter((item) => !item.body.legacy).length, 2);
   const view = records.find((item) => item.envelope.id === second.view)!;
   assert.deepEqual(view.body.roots, roots);
@@ -676,7 +683,7 @@ test("r2 F1 derived vectors, cache columns, metadata, and computed word values s
   const input = await setup();
   await importSqlSnapshot(input);
   for (const carrier of (await carriers(input.output)).filter(
-    (item) => item.body.legacy,
+    (item) => item.envelope.header.action.kind === "definition.publish",
   )) {
     const original = carrier.body.legacy.original;
     for (const row of [
@@ -695,13 +702,13 @@ test("r2 F1 derived vectors, cache columns, metadata, and computed word values s
         Object.keys(row).join(","),
       );
     }
-    assert.match(carrier.body.legacy.extraction, /v2$/);
+    assert.match(carrier.body.legacy.extraction, /v3$/);
     assert.ok(
       carrier.body.legacy.limitations.some(
         (item: string) => /embedding/.test(item) && /archive/.test(item),
       ),
     );
-    assert.equal(carrier.body.legacy.attribution.author, null);
+    assert.equal(typeof carrier.body.legacy.attribution.author, "string");
   }
 });
 
@@ -1555,4 +1562,67 @@ test("SQL imports map source fu'ivla classifications and preserve source evidenc
     assert.equal(prepareAdmission(utf8(canonical(row))).action_valid, true);
     assert.equal(row.body.legacy.original.valsitypes.descriptor, "fu'ivla");
   }
+});
+
+test("fidelity import retains source spans, cached display names, original dates and official rafsi", async () => {
+  const input = await setup();
+  const first = await importSqlSnapshot(input);
+  const records = await carriers(input.output);
+  const definition = records.find(
+    (item) =>
+      item.envelope.header.action.kind === "definition.publish" &&
+      item.body.legacy.record.id === 4,
+  )!;
+  const body = definition.body;
+  assert.equal(
+    body.legacy.original.definitions.definition,
+    "$x_{1}$ runs on surface $x_{2}$ using limbs $x_{3}$ with gait $x_{4}$.",
+  );
+  assert.deepEqual(body.text, [
+    [1, " runs on surface ", 2, " using limbs ", 3, " with gait ", 4, "."],
+  ]);
+  assert.equal(body.frame.arity.mode, "context");
+  assert.deepEqual(
+    body.frame.places.map((item: any) => item.index),
+    [1, 2, 3, 4],
+  );
+  assert.equal(body.legacy.conversion.method, "heuristic");
+  assert.equal(body.legacy.conversion.review, "unreviewed");
+  for (const mapping of body.legacy.conversion.mappings) {
+    assert.equal(mapping.field, "/definitions/definition");
+    assert.equal(
+      [...body.legacy.original.definitions.definition]
+        .slice(mapping.start, mapping.end)
+        .join(""),
+      `$x_{${mapping.place}}$`,
+    );
+  }
+  assert.equal(body.legacy.attribution.author, "officialdata");
+  assert.equal(body.legacy.attribution.author_account.account, 1);
+  assert.equal(
+    body.legacy.attribution.author_account.evidence.kind,
+    "source-id",
+  );
+  assert.equal(body.legacy.original.username_lookup.purpose, "display-only");
+  assert.equal(body.legacy.attribution.dates.time, "1046655416");
+  const claims = records.filter(
+    (item) => item.envelope.header.action.kind === "rafsi.publish",
+  );
+  assert.deepEqual(claims.map((item) => item.body.rafsi).sort(), [
+    "baj",
+    "bajr",
+    "na'u",
+    "nac",
+    "namc",
+  ]);
+  assert.ok(claims.every((item) => item.body.legacy.record.kind === "word"));
+  const selection = JSON.parse(
+    await readFile(join(input.output, "import-selection.json"), "utf8"),
+  );
+  assert.ok(claims.every((item) => selection.includes(item.envelope.id)));
+  assert.equal(first.report.fidelity.official_rafsi_claims, 5);
+  assert.equal(first.report.fidelity.named_definitions, 4);
+  const bytes = await readFile(join(input.output, "carriers.jsonl"));
+  await importSqlSnapshot(input);
+  assert.deepEqual(await readFile(join(input.output, "carriers.jsonl")), bytes);
 });

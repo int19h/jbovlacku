@@ -1,3 +1,4 @@
+import { rafsiClaimKey } from "./fidelity.ts";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -117,6 +118,9 @@ export function openLedger(
       db.exec(
         "CREATE TABLE IF NOT EXISTS versions(record INTEGER,digest TEXT,lexical TEXT,carrier TEXT,event TEXT PRIMARY KEY); CREATE INDEX IF NOT EXISTS versions_record ON versions(record,digest); CREATE TABLE IF NOT EXISTS entries(record INTEGER PRIMARY KEY,selected TEXT,baseline TEXT); CREATE TABLE IF NOT EXISTS views(event TEXT PRIMARY KEY,body TEXT,carrier TEXT); CREATE TABLE IF NOT EXISTS unresolved(snapshot TEXT,record INTEGER,locator TEXT,reason TEXT);",
       );
+      db.exec(
+        "CREATE TABLE IF NOT EXISTS rafsi_claims(event TEXT PRIMARY KEY,claim_key TEXT UNIQUE NOT NULL,carrier TEXT NOT NULL)",
+      );
       initializeRuns(db);
       db.exec("COMMIT");
     } catch (error) {
@@ -128,6 +132,16 @@ export function openLedger(
     db.close();
     throw error;
   }
+}
+
+function hasRafsiClaims(db: DatabaseSync): boolean {
+  return (
+    db
+      .prepare(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='rafsi_claims'",
+      )
+      .get() !== undefined
+  );
 }
 
 export function validateLedger(
@@ -151,7 +165,10 @@ export function validateLedger(
     previous: string[] = [];
   for (const item of db
     .prepare(
-      "SELECT record,digest,lexical,carrier,event,NULL AS view_body FROM versions UNION ALL SELECT NULL,NULL,NULL,carrier,event,body FROM views",
+      "SELECT record,digest,lexical,carrier,event,NULL AS view_body,NULL AS claim_key FROM versions UNION ALL SELECT NULL,NULL,NULL,carrier,event,body,NULL FROM views" +
+        (hasRafsiClaims(db)
+          ? " UNION ALL SELECT NULL,NULL,NULL,carrier,event,NULL,claim_key FROM rafsi_claims"
+          : ""),
     )
     .iterate()) {
     const text = item.carrier as string,
@@ -177,6 +194,14 @@ export function validateLedger(
         throw new Error(
           "The ledger source record or lexical digest is inconsistent.",
         );
+    } else if (item.claim_key !== null) {
+      if (
+        carrier.envelope.header.action.kind !== "rafsi.publish" ||
+        carrier.envelope.header.action.origin !== "import" ||
+        carrier.body.legacy?.source !== source ||
+        rafsiClaimKey(carrier.body) !== item.claim_key
+      )
+        throw new Error("The ledger contains an invalid imported rafsi claim.");
     } else if (
       carrier.envelope.header.action.kind !== "view.publish" ||
       item.view_body !== canonical(carrier.body)
@@ -283,5 +308,12 @@ export function journalFromLedger(
     .prepare("SELECT carrier FROM views ORDER BY rowid")
     .all()
     .map((row) => parse<Carrier>(row.carrier as string));
+  if (hasRafsiClaims(db)) {
+    const claims = db
+      .prepare("SELECT carrier FROM rafsi_claims ORDER BY rowid")
+      .all()
+      .map((row) => parse<Carrier>(row.carrier as string));
+    if (claims.length) journal.rafsi_claims = claims;
+  }
   return journal;
 }

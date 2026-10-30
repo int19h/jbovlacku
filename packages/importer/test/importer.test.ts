@@ -8,6 +8,7 @@ import {
   utf8,
   evaluate,
   interpretDefinition,
+  prepareSelection,
   wordId,
 } from "../../core/src/index.ts";
 import {
@@ -130,7 +131,7 @@ test("source extraction preserves exact numbers and reserved-key source objects"
   );
 });
 
-test("literal attributed imports and selected views pass the shared state evaluator", () => {
+test("attributed place imports and selected views pass the shared state evaluator", () => {
   const result = run();
   assert.equal(result.report.added, 2);
   const body = result.journal.entries["4"].versions[0].carrier.body;
@@ -139,12 +140,13 @@ test("literal attributed imports and selected views pass the shared state evalua
     body.legacy.attribution.author_account.evidence.kind,
     "source-id",
   );
-  assert.deepEqual(body.text, [[rows()[0].definition]]);
-  assert.ok(!Object.hasOwn(body, "frame"));
-  assert.equal(interpretDefinition<any>(body).frame, null);
+  assert.deepEqual(body.text, [
+    [1, " runs on surface ", 2, " using limbs ", 3, " with gait ", 4, "."],
+  ]);
+  assert.equal(interpretDefinition<any>(body).frame.arity.mode, "context");
   assert.equal(body.license.expression, "unknown");
   assert.deepEqual(body.legacy.original.score, { $source_number: "100001.0" });
-  assert.deepEqual(body.legacy.conversion.mappings, []);
+  assert.equal(body.legacy.conversion.mappings.length, 4);
   assert.equal(result.view.body.account_authority, false);
   assert.deepEqual(result.view.body.account_witnesses, []);
   assert.deepEqual(result.view.body.roots, []);
@@ -231,7 +233,7 @@ test("source scores and author display changes never create fabricated lexical r
   assert.equal(
     result.journal.entries["4"].versions[0].carrier.body.legacy.attribution
       .author,
-    null,
+    "officialdata",
   );
 });
 
@@ -839,13 +841,12 @@ test("r3 N2 REST publications omit derived, display, and viewer fields while kee
     has_image: true,
     sound_url: "/sounds/generated",
     langrealname: "English display name",
-    username: "joined-display-name",
     metadata: { processed_text: "derived text" },
     cached_definition: "derived cache",
     canonical_word: "computed-word",
     processed_text: "derived search text",
   };
-  Object.assign(altered[0], omitted);
+  Object.assign(altered[0], omitted, { username: "joined-display-name" });
   altered[0].user_id = 1;
   const bytes = utf8(JSON.stringify({ definitions: altered }));
   const result = importCapture({
@@ -866,15 +867,21 @@ test("r3 N2 REST publications omit derived, display, and viewer fields while kee
       `Missing limitation for ${key}`,
     );
   }
-  assert.equal(body.legacy.extraction, "lensisku-list-literal-v2");
-  assert.equal(body.legacy.attribution.author, null);
-  assert.equal(body.legacy.attribution.author_account.username, null);
+  assert.equal(body.legacy.extraction, "lensisku-list-fidelity-v3");
+  assert.equal(body.legacy.attribution.author, "joined-display-name");
+  assert.equal(
+    body.legacy.attribution.author_account.username,
+    "joined-display-name",
+  );
   assert.equal(body.legacy.attribution.author_account.account, 1);
   assert.equal(
     body.legacy.attribution.author_account.evidence.kind,
     "source-id",
   );
-  assert.equal(body.license.attribution, "Lensisku source author unknown");
+  assert.equal(
+    body.license.attribution,
+    "Lensisku source author: joined-display-name",
+  );
   assert.deepEqual(body.legacy.original.score, { $source_number: "100001" });
   assert.equal(body.legacy.original.definition, altered[0].definition);
   assert.equal(body.legacy.original.notes, altered[0].notes);
@@ -885,7 +892,7 @@ test("r3 N2 REST publications omit derived, display, and viewer fields while kee
   });
   assert.equal(
     result.journal.entries["4"].observations[0].extraction,
-    "lensisku-list-literal-v2",
+    "lensisku-list-fidelity-v3",
   );
 });
 
@@ -945,7 +952,7 @@ test("r3 N2 v2 captures retain old v1 envelopes on reuse and filter only newly s
   );
   assert.equal(
     reused.journal.entries["4"].observations.at(-1)!.extraction,
-    "lensisku-list-literal-v2",
+    "lensisku-list-fidelity-v3",
   );
   assert.equal(
     canonical(reused.journal.entries["4"].versions[0].carrier),
@@ -969,7 +976,7 @@ test("r3 N2 v2 captures retain old v1 envelopes on reuse and filter only newly s
   });
   const latest = revised.journal.entries["4"].versions.at(-1)!.carrier;
   assert.equal(revised.report.revised, 1);
-  assert.equal(latest.body.legacy.extraction, "lensisku-list-literal-v2");
+  assert.equal(latest.body.legacy.extraction, "lensisku-list-fidelity-v3");
   assert.equal(Object.hasOwn(latest.body.legacy.original, "embedding"), false);
   assert.deepEqual(latest.envelope.header.action.parents, [
     oldCarrier.envelope.id,
@@ -1014,7 +1021,7 @@ test("r3 N2 filtering preserves escaped source object key order", () => {
   ]);
   assert.equal(
     original.$source_object.some(
-      ([key]: [string, unknown]) => key === "embedding" || key === "username",
+      ([key]: [string, unknown]) => key === "embedding",
     ),
     false,
   );
@@ -1038,4 +1045,223 @@ test("REST imports map the source fu'ivla label to fuhivla", () => {
     result.journal.entries[String(row.definitionid)].versions[0].carrier.body;
   assert.equal(body.classification.kind, "fuhivla");
   assert.equal(body.legacy.original.type_name, "fu'ivla");
+});
+
+test("official rafsi claims retain distinct source evidence and reuse their exact envelopes", async () => {
+  const row = {
+    ...rows()[0],
+    official_rafsi: "baj bajr baj",
+    experimental_rafsi: "bau",
+    username: "synthetic source name",
+  };
+  const first = capture([row], undefined, []);
+  assert.equal(first.report.fidelity.official_rafsi_claims, 2);
+  assert.equal(first.report.fidelity.experimental_rafsi_claims, 0);
+  const claims = first.carriers.filter(
+    (item) => item.envelope.header.action.kind === "rafsi.publish",
+  );
+  assert.deepEqual(claims.map((item) => item.body.rafsi).sort(), [
+    "baj",
+    "bajr",
+  ]);
+  assert.ok(
+    claims.every((item) => item.body.legacy.record.kind === "definition"),
+  );
+  assert.ok(
+    claims.every((item) => first.selection.ids.includes(item.envelope.id)),
+  );
+  assert.ok(
+    !first.carriers.some(
+      (item) => item.envelope.header.action.kind === "judgment.set",
+    ),
+  );
+  const second = capture([row], first.journal, []);
+  assert.equal(canonical(second.carriers), canonical(first.carriers));
+  const directory = await mkdtemp(
+    join(process.env.JVC_TEST_ROOT ?? tmpdir(), "fidelity-rest-"),
+  );
+  testDirectories.push(directory);
+  const bytes = utf8(JSON.stringify({ definitions: [row] }));
+  const pinned = {
+    ...manifest,
+    sha256: contentHash(bytes),
+    expected_rows: 1,
+    unavailable_fields: [],
+  };
+  await publishProposal(directory, bytes, pinned, first);
+  const retained = await readJournal(directory);
+  const third = capture([row], retained, []);
+  assert.equal(canonical(third.carriers), canonical(first.carriers));
+});
+
+test("a display-only username never invents a numeric source account", () => {
+  const row: Record<string, any> = {
+    ...rows()[0],
+    username: "synthetic source name",
+  };
+  delete row.user_id;
+  const bytes = utf8(JSON.stringify({ definitions: [row] }));
+  const result = importCapture({
+    sourceBytes: bytes,
+    manifest: {
+      ...manifest,
+      url: "https://lensisku.lojban.org/api/jbovlaste/definitions/list",
+      sha256: contentHash(bytes),
+      expected_rows: 1,
+    },
+    seed,
+    roots: [],
+  });
+  const body =
+    result.journal.entries[String(row.definitionid)].versions[0].carrier.body;
+  assert.equal(body.legacy.attribution.author, row.username);
+  assert.equal(body.legacy.attribution.author_account, null);
+  assert.equal(result.view.body.account_authority, false);
+});
+
+test("imported rafsi eligibility follows the active definition gate", () => {
+  const first = capture(
+    [{ ...rows()[0], official_rafsi: "baj", experimental_rafsi: null }],
+    undefined,
+    [],
+  );
+  const claim = first.carriers.find(
+    (item) => item.envelope.header.action.kind === "rafsi.publish",
+  )!;
+  const evaluateWith = (
+    extra: any[],
+    view: any,
+    selection: { hash: string; canonical: string; ids: string[] },
+  ) =>
+    evaluate({
+      events: [...first.carriers, ...extra].map((item) =>
+        canonical(item.envelope),
+      ),
+      bodies: Object.fromEntries(
+        [...first.carriers, ...extra]
+          .filter((item) => item.body !== null)
+          .map((item) => [item.envelope.id, canonical(item.body)]),
+      ),
+      selected_view: view.envelope.id,
+      import_selections: { [selection.hash]: selection.ids },
+    });
+  assert.equal(
+    evaluateWith([], first.view, first.selection).publications[
+      claim.envelope.id
+    ].eligible,
+    "eligible",
+  );
+  const selection = prepareSelection(utf8(canonical([claim.envelope.id])));
+  const view = createEvent(
+    seed,
+    [first.journal.head!],
+    "a".repeat(32),
+    { kind: "view.publish", parents: [first.view.envelope.id] },
+    {
+      ...first.view.body,
+      import_sets: [
+        {
+          source: first.journal.source,
+          importer: first.journal.importer,
+          selection: selection.hash,
+        },
+      ],
+    },
+  );
+  assert.equal(
+    evaluateWith([view], view, selection).publications[claim.envelope.id]
+      .eligible,
+    "unknown",
+  );
+  const contributor = new Uint8Array(32).fill(79);
+  const body = structuredClone(
+    first.journal.entries["4"].versions[0].carrier.body,
+  );
+  body.legacy = null;
+  const native = createEvent(
+    contributor,
+    [],
+    "b".repeat(32),
+    {
+      kind: "definition.publish",
+      word: wordId(body.word),
+      language: body.language,
+      parents: [],
+      origin: "native",
+    },
+    body,
+  );
+  const retired = createEvent(
+    contributor,
+    [native.envelope.id],
+    "c".repeat(32),
+    { kind: "status.set", target: native.envelope.id, value: "deprecated" },
+    null,
+  );
+  assert.equal(
+    evaluateWith([view, native, retired], view, selection).publications[
+      claim.envelope.id
+    ].eligible,
+    "inactive",
+  );
+});
+
+test("official rafsi claims use plain spelling while retaining accented source evidence", () => {
+  const result = capture(
+    [
+      {
+        ...rows()[0],
+        valsiword: "már",
+        type_name: "cmevla",
+        official_rafsi: "mar",
+        experimental_rafsi: null,
+      },
+    ],
+    undefined,
+    [],
+  );
+  assert.equal(result.report.added, 1);
+  const claim = result.carriers.find(
+    (item) => item.envelope.header.action.kind === "rafsi.publish",
+  )!;
+  assert.equal(claim.body.word.spelling, "mar");
+  const definition = result.journal.entries["4"].versions[0].carrier;
+  assert.equal(definition.body.word.spelling, "már");
+  assert.equal(
+    claim.envelope.header.action.word,
+    definition.envelope.header.action.word,
+  );
+});
+
+test("removed official assignments stay retained without entering the new selection", () => {
+  const row = {
+    ...rows()[0],
+    official_rafsi: "baj bajr",
+    experimental_rafsi: null,
+  };
+  const first = capture([row], undefined, []);
+  const old = first.carriers.find((item) => item.body.rafsi === "bajr")!;
+  const second = capture(
+    [{ ...row, official_rafsi: "baj" }],
+    first.journal,
+    [],
+  );
+  assert.equal(second.report.revised, 1);
+  assert.ok(second.carriers.some((item) => canonical(item) === canonical(old)));
+  assert.ok(!second.selection.ids.includes(old.envelope.id));
+  assert.equal(second.report.fidelity.official_rafsi_claims, 1);
+});
+
+test("a username-only correction records provenance without replacing an old signature", () => {
+  const first = run();
+  const changed = rows();
+  changed[0].username = "new display name";
+  const second = capture(changed, first.journal);
+  assert.equal(second.report.revised, 0);
+  assert.deepEqual(second.carriers, first.carriers);
+  assert.ok(
+    second.report.notices.some((notice) =>
+      /attribution or source dates changed/.test(notice),
+    ),
+  );
 });
