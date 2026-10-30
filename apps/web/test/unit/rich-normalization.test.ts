@@ -450,3 +450,80 @@ test("a retained saved-string boundary keeps its untouched CR text exact", () =>
     ["leftX\n", " right\r\n", exactCode, exactWord, exactWeb],
   ]);
 });
+
+test("a CRLF pair across combined fragments normalizes once in joins and preedit", () => {
+  let state = EditorState.create({
+    doc: richToEditor([
+      [exactCode, "left\r"],
+      ["\nright", exactWord, exactWeb],
+    ]),
+    plugins: [editedTextPlugin(), history()],
+  });
+  const dispatch = (transaction: typeof state.tr) => {
+    state = state.applyTransaction(transaction).state;
+  };
+  dispatch(
+    state.tr.setSelection(
+      TextSelection.create(state.doc, state.doc.firstChild!.nodeSize + 1),
+    ),
+  );
+  assert.equal(joinBackward(state, dispatch), true);
+  const joined = [[exactCode, "left\nright", exactWord, exactWeb]];
+  assert.deepEqual(editorToRich(state.doc), joined);
+  assert.equal(undoDepth(state), 1);
+  assert.equal(undo(state, dispatch), true);
+  assert.deepEqual(editorToRich(state.doc), [
+    [exactCode, "left\n"],
+    ["right", exactWord, exactWeb],
+  ]);
+  assert.equal(undoDepth(state), 0);
+  assert.equal(redo(state, dispatch), true);
+  assert.deepEqual(editorToRich(state.doc), joined);
+  assert.equal(undoDepth(state), 1);
+  let composing = true;
+  const base = richToEditor([[exactCode, "left\r", exactWord, exactWeb]]);
+  state = EditorState.create({
+    doc: base,
+    plugins: [editedTextPlugin({ composing: () => composing }), history()],
+  });
+  dispatch(
+    state.tr.setSelection(
+      TextSelection.create(
+        state.doc,
+        1 +
+          base.firstChild!.child(0).nodeSize +
+          base.firstChild!.child(1).nodeSize,
+      ),
+    ),
+  );
+  dispatch(state.tr.setMeta("richCompositionStart", true));
+  dispatch(state.tr.insertText("\nright").setMeta("composition", 1));
+  assert.deepEqual(editorToRich(state.doc, base), joined);
+  assert.deepEqual(editorToRich(state.doc), [
+    [exactCode, "left\r\nright", exactWord, exactWeb],
+  ]);
+  composing = false;
+  dispatch(state.tr.setMeta("richCompositionEnd", true));
+  assert.deepEqual(editorToRich(state.doc), joined);
+  assert.equal(undo(state, dispatch), true);
+  assert.deepEqual(editorToRich(state.doc), [
+    [exactCode, "left\n", exactWord, exactWeb],
+  ]);
+  assert.equal(undoDepth(state), 0);
+  assert.equal(redo(state, dispatch), true);
+  assert.deepEqual(editorToRich(state.doc), joined);
+  const retained = richToEditor([
+    ["left\r", "\nright", exactCode, exactWord, exactWeb],
+  ]);
+  state = EditorState.create({ doc: retained, plugins: [editedTextPlugin()] });
+  const codeEnd =
+    1 +
+    retained.firstChild!.child(0).nodeSize +
+    retained.firstChild!.child(1).nodeSize +
+    retained.firstChild!.child(2).nodeSize -
+    1;
+  dispatch(state.tr.insertText("X", codeEnd));
+  assert.deepEqual(editorToRich(state.doc), [
+    ["left\r", "\nright", { code: "code\nexactX" }, exactWord, exactWeb],
+  ]);
+});

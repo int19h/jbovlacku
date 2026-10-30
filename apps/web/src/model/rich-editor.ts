@@ -167,48 +167,63 @@ export function editedTextPlugin(
       (composition ?? before.doc).descendants((node) => {
         retained.add(node);
       });
-      const changes: { from: number; to: number; text: string }[] = [];
-      for (const paragraph of storedNodeGroups(state.doc))
-        for (const group of paragraph)
-          for (const { node, position } of group.parts) {
-            const combined = group.prose && group.parts.length > 1;
-            if (
-              !node.isText &&
-              !["literal", "code", "word_link", "web_link"].includes(
-                node.type.name,
-              )
-            )
-              continue;
-            if (
-              (!combined && retained.has(node)) ||
-              !node.textContent.includes("\r")
-            )
-              continue;
-            // A changed target does not make its unchanged link label an edit.
-            let original = position;
-            for (const transaction of [...transactions].reverse())
-              original = transaction.mapping.invert().map(original, 1);
-            const previous = before.doc.nodeAt(original);
-            if (
-              !combined &&
-              previous?.type === node.type &&
-              !previous.sameMarkup(node) &&
-              previous.content.eq(node.content)
-            )
-              continue;
-            const from = position + (node.isText ? 0 : 1);
-            // Keep maps outside each line ending, including the typed text, exact.
-            for (const match of node.textContent.matchAll(/\r\n?/gu))
-              changes.push({
-                from: from + match.index,
-                to: from + match.index + match[0].length,
-                text: "\n",
-              });
-          }
-      if (!changes.length) return null;
       const transaction = state.tr;
-      for (const change of changes.reverse())
-        transaction.insertText(change.text, change.from, change.to);
+      for (;;) {
+        const changes: { from: number; to: number; text: string }[] = [];
+        for (const paragraph of storedNodeGroups(transaction.doc))
+          for (const group of paragraph)
+            for (const [index, { node, position }] of group.parts.entries()) {
+              const combined = group.prose && group.parts.length > 1;
+              if (
+                !node.isText &&
+                !["literal", "code", "word_link", "web_link"].includes(
+                  node.type.name,
+                )
+              )
+                continue;
+              if (
+                (!combined && retained.has(node)) ||
+                !node.textContent.includes("\r")
+              )
+                continue;
+              // A changed target does not make its unchanged link label an edit.
+              let original = transaction.mapping.invert().map(position, 1);
+              for (const prior of [...transactions].reverse())
+                original = prior.mapping.invert().map(original, 1);
+              const previous = before.doc.nodeAt(original);
+              if (
+                !combined &&
+                previous?.type === node.type &&
+                !previous.sameMarkup(node) &&
+                previous.content.eq(node.content)
+              )
+                continue;
+              const from = position + (node.isText ? 0 : 1);
+              // Keep maps outside each line ending, including the typed text, exact.
+              for (const match of node.textContent.matchAll(/\r\n?/gu)) {
+                changes.push({
+                  from: from + match.index,
+                  to: from + match.index + match[0].length,
+                  text: "\n",
+                });
+                // A stored CRLF pair can cross two editor containers.
+                const next = group.parts[index + 1];
+                if (
+                  combined &&
+                  match[0] === "\r" &&
+                  match.index === node.textContent.length - 1 &&
+                  next?.node.textContent.startsWith("\n")
+                ) {
+                  const at = next.position + (next.node.isText ? 0 : 1);
+                  changes.push({ from: at, to: at + 1, text: "" });
+                }
+              }
+            }
+        if (!changes.length) break;
+        for (const change of changes.reverse())
+          transaction.insertText(change.text, change.from, change.to);
+      }
+      if (!transaction.docChanged) return null;
       for (const plugin of state.plugins) {
         if (!plugin.spec.isInputRules) continue;
         const rule = plugin.getState(state) as {
@@ -284,8 +299,8 @@ export function editorToRich(
   editedFrom?.descendants((node) => {
     retained.add(node);
   });
-  const text = (node: EditorNode, combined = false) =>
-    editedFrom && (combined || !retained.has(node))
+  const text = (node: EditorNode) =>
+    editedFrom && !retained.has(node)
       ? node.textContent.replace(/\r\n?/gu, "\n")
       : node.textContent;
   const value: RichText = [];
@@ -293,11 +308,12 @@ export function editorToRich(
     const nodes: RichNode[] = [];
     for (const group of paragraph) {
       if (group.prose) {
-        nodes.push(
-          group.parts
-            .map(({ node }) => text(node, group.parts.length > 1))
-            .join(""),
-        );
+        const joined = group.parts.map(({ node }) => node.textContent).join("");
+        const edited =
+          editedFrom &&
+          (group.parts.length > 1 ||
+            group.parts.some(({ node }) => !retained.has(node)));
+        nodes.push(edited ? joined.replace(/\r\n?/gu, "\n") : joined);
         continue;
       }
       const node = group.parts[0].node;
