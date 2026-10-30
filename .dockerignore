@@ -24,7 +24,6 @@
 **/target/
 **/dist/
 **/generated/
-**/.wrangler/
 **/.cache/
 **/test-results/
 **/playwright-report/

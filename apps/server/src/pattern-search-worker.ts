@@ -1,19 +1,11 @@
 import { parentPort, workerData } from "node:worker_threads";
 import { initializeCore } from "../../../packages/core/src/index.ts";
-import { createPatternScan } from "../../../packages/search/src/pattern-scan.ts";
+import { scanPatterns } from "../../../packages/search/src/pattern-scan.ts";
 import { PatternError } from "../../../packages/search/src/pattern.ts";
 await initializeCore(workerData.wasm);
 parentPort!.on("message", ({ id, entries, query }) => {
   try {
-    const scan = createPatternScan(entries, query);
-    try {
-      while (!scan.step()) {
-        /* The parent enforces the hard deadline. */
-      }
-      parentPort!.postMessage({ id, rows: scan.rows });
-    } finally {
-      scan.free();
-    }
+    parentPort!.postMessage({ id, rows: scanPatterns(entries, query) });
   } catch (error) {
     parentPort!.postMessage({
       id,

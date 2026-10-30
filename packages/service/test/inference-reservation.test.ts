@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { before, test } from "node:test";
 import { readFile } from "node:fs/promises";
-import { parseConfigFileTextToJson } from "typescript";
 import { initializeCore } from "../../core/src/index.ts";
 import {
   AssistanceService,
@@ -564,23 +563,6 @@ test("none and minimal effort use the low-effort caps without changing the provi
         taskMaxTokens({ ...provider, reasoningEffort: "low" }, task),
       );
     }
-});
-
-test("ordinary Worker variables select the same automatic caps as Node", async () => {
-  const path = new URL("../../../apps/worker/wrangler.jsonc", import.meta.url);
-  const { config: worker, error } = parseConfigFileTextToJson(
-    path.pathname,
-    await readFile(path, "utf8"),
-  );
-  assert.equal(error, undefined);
-  assert.equal(Object.hasOwn(worker.vars, "JVC_AI_MAX_TOKENS"), false);
-  const node = config();
-  const provider = providerConfig(
-    { ...worker.vars, JVC_AI_ENABLED: "enabled" },
-    async () => "disposable-worker-key",
-  )!;
-  for (const task of ["type", "hints", "sources", "definition"] as const)
-    assert.equal(taskMaxTokens(provider, task), taskMaxTokens(node, task));
 });
 
 test("initial inference requests enforce the same byte limit before reservation and provider work", async () => {

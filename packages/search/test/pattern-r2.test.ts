@@ -10,7 +10,7 @@ import {
   PatternError,
 } from "../src/index.ts";
 import { compilePattern } from "../src/pattern.ts";
-import { scanPatternsChunked } from "../src/pattern-scan.ts";
+import { scanPatterns, type PatternCandidate } from "../src/pattern-scan.ts";
 before(async () =>
   initializeCore(
     await readFile(
@@ -192,50 +192,30 @@ test("expanded optional repetitions are refused before one expensive candidate",
     pattern.free();
   }
 });
-test("chunked scans enforce elapsed and independent frozen-clock work bounds", async () => {
-  const entries = Array.from({ length: 35_000 }, () => ({
-    spelling: "basturfa",
-    rafsi: [],
-  }));
-  let clock = 0,
-    yields = 0;
-  const delayed = await scanPatternsChunked(entries, "*", {
-    now: () => clock,
-    yield: async () => {
-      yields++;
-      clock += 1200;
-    },
-  });
-  assert.equal(delayed.length, entries.length);
-  assert.ok(yields > 1);
-  clock = 0;
-  await assert.rejects(
-    scanPatternsChunked(entries, "*", {
-      now: () => (clock += 1300),
-      yield: async () => {},
-    }),
-    (error: unknown) =>
-      error instanceof PatternError && error.code === "pattern_timeout",
-  );
-  await assert.rejects(
-    scanPatternsChunked(
-      [{ spelling: "ab".repeat(127) + "a", rafsi: [] }],
-      "/(?:[ab]?){1000}c/",
-      { now: () => 0, yield: async () => {} },
-    ),
-    (error: unknown) =>
-      error instanceof PatternError && error.code === "pattern_timeout",
-  );
-  const long = Array.from({ length: 25_000 }, () => ({
-    spelling: "a".repeat(254) + "b",
-    rafsi: [],
-  }));
-  await assert.rejects(
-    scanPatternsChunked(long, "/(a+)+$/", {
-      now: () => 0,
-      yield: async () => {},
-    }),
-    (error: unknown) =>
-      error instanceof PatternError && error.code === "pattern_timeout",
-  );
+test("server scans retain shared candidate and aggregate work bounds", () => {
+  const entries = [
+    { spelling: "klama", rafsi: ["kla"] },
+    { spelling: "bangu", rafsi: ["ban"] },
+    { spelling: "basturfa", rafsi: ["kla"] },
+  ];
+  assert.deepEqual(scanPatterns(entries, "kla*"), [
+    { index: 0, match: "headword-pattern" },
+    { index: 2, match: "rafsi-pattern" },
+  ]);
+  const limitedCases: [PatternCandidate[], string][] = [
+    [[{ spelling: "ab".repeat(127) + "a", rafsi: [] }], "/(?:[ab]?){1000}c/"],
+    [
+      Array.from({ length: 25_000 }, () => ({
+        spelling: "a".repeat(254) + "b",
+        rafsi: [],
+      })),
+      "/(a+)+$/",
+    ],
+  ];
+  for (const [candidates, query] of limitedCases)
+    assert.throws(
+      () => scanPatterns(candidates, query),
+      (error: unknown) =>
+        error instanceof PatternError && error.code === "pattern_timeout",
+    );
 });

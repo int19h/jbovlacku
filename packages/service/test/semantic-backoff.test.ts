@@ -797,7 +797,7 @@ globalThis.fetch = async (url, init) => {
       ],
       {
         cwd: fileURLToPath(new URL("../../../", import.meta.url)),
-        // The generated Worker environment types do not describe this isolated Node process.
+        // Use only the listed environment variables for this isolated Node process.
         env: environment as NodeJS.ProcessEnv,
         stdio: ["ignore", "pipe", "pipe"],
       },
