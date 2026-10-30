@@ -709,6 +709,8 @@ export function deleteRichInput(
   dispatch?: (tr: Transaction) => void,
   target?: RichDeleteRange | null,
 ): boolean {
+  const apply = dispatch;
+  dispatch = apply && ((next) => apply(next.setMeta("richDelete", true)));
   if (!tr.selection.empty) {
     dispatch?.(
       deleteRichRange(
@@ -806,10 +808,11 @@ export function deleteRichInput(
       const next = text.slice(offset).search(/[\r\n]/u);
       end = next < 0 ? units.length : offset + next;
     }
-    if (!units.length || edge === end) return true;
+    const start = Math.min(edge, offset);
+    if (!units.length || start === end) return true;
     const from =
       backward || inputType === "deleteEntireSoftLine"
-        ? units[Math.min(edge, offset)].from
+        ? units[start].from
         : caret;
     const to = backward ? caret : units[end - 1].to;
     tr.setSelection(

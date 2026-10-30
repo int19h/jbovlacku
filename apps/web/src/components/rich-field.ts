@@ -365,11 +365,7 @@ export function richField(label: string, options: RichFieldOptions) {
   }
   let deleteRecovery: DeleteRecovery | null = null;
   let restoringDelete = false;
-  const nodeViews = () => ({
-    // New function identities make ProseMirror rebuild its DOM during recovery.
-    word_link: (node: EditorNode) => linkNodeView(node),
-    web_link: (node: EditorNode) => linkNodeView(node),
-  });
+  const nodeViews = { word_link: linkNodeView, web_link: linkNodeView };
   function cancelDeleteRecovery() {
     if (!deleteRecovery) return;
     clearTimeout(deleteRecovery.timer);
@@ -379,10 +375,36 @@ export function richField(label: string, options: RichFieldOptions) {
     if (restoringDelete || view.isDestroyed) return;
     restoringDelete = true;
     try {
-      view.setProps({ nodeViews: nodeViews() });
+      const previous = view;
+      const dom = previous.dom;
+      const focused = previous.hasFocus();
+      const props = { ...previous.props, nodeViews };
+      // A destroyed observer cannot reparse records from before this recovery.
+      // Keep the same field element and EditorState, including undo history.
+      previous.destroy();
+      if (!host.contains(dom)) host.append(dom);
+      view = new EditorView({ mount: dom }, props);
+      if (focused) view.focus();
     } finally {
       restoringDelete = false;
     }
+  }
+  function syncDeletionCaret() {
+    const selection = view.state.selection;
+    if (!selection.empty || !view.hasFocus()) return;
+    const $cursor = selection.$from;
+    let point = view.domAtPos(selection.from);
+    if ($cursor.parent.isInline) {
+      const text = view.nodeDOM($cursor.before())?.firstChild;
+      if (
+        text?.nodeType === Node.TEXT_NODE &&
+        text.textContent === $cursor.parent.textContent
+      )
+        point = { node: text, offset: $cursor.parentOffset };
+    }
+    view.dom.ownerDocument
+      .getSelection()
+      ?.setBaseAndExtent(point.node, point.offset, point.node, point.offset);
   }
   function settleDeleteRecovery(
     stage: DeleteRecovery,
@@ -417,7 +439,7 @@ export function richField(label: string, options: RichFieldOptions) {
       selection.empty &&
       selection.eq(view.state.selection) &&
       undoInputRule(view.state, (tr) =>
-        dispatch(tr.setMeta("richRuleUndo", true)),
+        dispatch(tr.setMeta("richRuleUndo", true).setMeta("richDelete", true)),
       );
     if (!ruleUndo)
       deleteRichInput(
@@ -595,7 +617,7 @@ export function richField(label: string, options: RichFieldOptions) {
   };
   view = new EditorView(host, {
     state: state(),
-    nodeViews: nodeViews(),
+    nodeViews,
     attributes: {
       id,
       class: "field rich-editor",
@@ -625,6 +647,9 @@ export function richField(label: string, options: RichFieldOptions) {
       }
       const result = view.state.applyTransaction(transaction);
       view.updateState(result.state);
+      // ProseMirror can leave a visually equal caret in another inline node.
+      if (result.transactions.some((tr) => tr.getMeta("richDelete")))
+        syncDeletionCaret();
       syncLinkAction();
       if (result.transactions.some((tr) => tr.docChanged)) {
         current = editorToRich(view.state.doc, compositionDoc ?? undefined);
@@ -632,7 +657,7 @@ export function richField(label: string, options: RichFieldOptions) {
       }
     },
     handleDOMEvents: {
-      keydown(view, event) {
+      keydown(_view, event) {
         if (event.isComposing || event.keyCode === 229) return false;
         const type = deletionKey(event);
         if (!type) return false;
@@ -662,7 +687,7 @@ export function richField(label: string, options: RichFieldOptions) {
         restoreDeleteDOM();
         return true;
       },
-      cut(view, event) {
+      cut(_view, event) {
         const selection = readNativeSelection() ?? view.state.selection;
         if (deleteRecovery)
           settleDeleteRecovery(deleteRecovery, false, selection);
@@ -711,7 +736,7 @@ export function richField(label: string, options: RichFieldOptions) {
         pointerFocus = false;
         return false;
       },
-      beforeinput(view, event) {
+      beforeinput(_view, event) {
         const input = event as InputEvent;
         // Read incoming DOM points before an older stage rebuilds their nodes.
         const incomingSelection = deleteRecovery
