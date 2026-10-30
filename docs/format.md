@@ -1313,7 +1313,11 @@ For different context graphs, subtract separate score intervals instead. Word-sc
 
 Overlapping intervals remain unresolved. Exact equal scores remain ties.
 
-The default list groups candidates into successive nondominated layers. A nondominated candidate has no certainly higher candidate among the remaining candidates.
+The default list first partitions candidates by status. Only active candidates form the successive nondominated layers.
+An active layer contains only active candidates. A nondominated candidate has no certainly higher candidate among the remaining active candidates.
+Deprecated candidates, including deprecated-base virtuals, follow in retired layers after every active candidate.
+Their `[0,0]` score values remain on score objects but take no part in dominance or active sublist positions.
+
 Stored native definitions, imports, and virtual definitions compete under those same certified comparison rules.
 Within a layer, start with full target ID order for stable presentation.
 The starting-order rule below refines only known unjudged zero-score candidates. Label the result as presentation order, not a quality distinction.
