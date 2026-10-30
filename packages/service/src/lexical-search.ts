@@ -138,7 +138,9 @@ export function lexicalSearch(
   );
 }
 
-/** The Node server supplies its bounded pattern runtime. Ordinary retrieval stays literal when requested. */
+/** The Node server supplies its bounded pattern runtime. Other callers use a five-second fallback.
+ * Ordinary retrieval stays literal when requested.
+ */
 export async function lexicalSearchAsync(
   entries: SearchEntry[],
   query: string,
@@ -146,10 +148,11 @@ export async function lexicalSearchAsync(
   evaluation: Evaluation,
   includeRetired = false,
   rafsi: Record<string, string[]> = {},
-  scanner: PatternScanner = async (entries, query, signal) => {
-    signal?.throwIfAborted();
-    return scanPatterns(entries, query);
-  },
+  scanner: PatternScanner = async (entries, query, signal) =>
+    scanPatterns(entries, query, {
+      signal,
+      deadline: performance.now() + 5000,
+    }),
   signal?: AbortSignal,
   options: SearchOptions = {},
 ) {
