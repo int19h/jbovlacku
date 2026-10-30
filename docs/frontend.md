@@ -551,6 +551,19 @@ Group matching alternatives under the requested converted spelling. Do not repea
 Search previews identify virtual content and link to its converted page or exact virtual target.
 Ordinary match classes and limits apply. Pattern search scans stored headwords and rafsi without enumerating virtual spellings.
 
+The single search box places virtual definitions in the same three groups as stored definitions:
+
+- Lojban words includes matches on the canonical converted spelling or an established alias through ordinary headword and component rules.
+- Definitions includes matches on the converted text and new place 1 glosses. For example, `buyer` finds `te vecnu` here.
+- Similar in meaning includes each indexed virtual through its own converted vector, under the same consent, profile, snapshot, and coverage rules.
+
+A virtual can appear in several groups when it matches each group. Its target and judgments stay the same across groups.
+Each group retains its own match order, alternatives, pagination, and limits. Pattern queries keep the stored-headword and rafsi rule above.
+Known-word ordering uses complete converted spellings and established aliases only when their candidates pass the selected view's ordering filters.
+Inferred cmavo pieces, unresolved bases, and unavailable morphology evidence never establish a known spelling.
+Local ordering requires the same snapshot-bound morphology evidence and `search_view` as the package's `search_status` values.
+Missing evidence keeps the ordinary Definitions-first notice and never triggers a query upload.
+
 Search packages use the version 3 contract below. They retain the descriptor, exact base body hash, converted fields, and sufficient morphology evidence.
 The client recomputes a virtual from its authenticated base before treating it as verified content or signing a judgment.
 Derived package bytes remain server assertions until that recomputation. No synthetic event, body hash, or issuer stands in for a virtual.
@@ -2015,6 +2028,8 @@ The implementer must demonstrate these end-to-end cases before public release:
 43. Share one virtual ID across converted spelling aliases. Keep ambiguous short-rafsi bases separate and use canonical converted score contexts.
 44. Authenticate version 3 virtual package rows against their exact base. Reject invented virtual bodies, mismatched descriptors, and mixed-snapshot inputs.
 45. Index virtual semantic vectors from their exact converted recipe. Preserve target associations during exact-input deduplication and expose incomplete virtual coverage.
+46. Place virtual spelling matches in Lojban words, converted gloss and text matches in Definitions, and vector matches in Similar in meaning.
+47. Keep virtual identities across search groups and aliases. Bind known-word ordering to the package's view and snapshot without expanding virtual pattern candidates.
 
 The app must also measure cold package load, local search latency, signature latency, backup unlock time, and ranking cost on representative mobile devices.
 No target in this design constitutes a completed browser compatibility or accessibility audit.
