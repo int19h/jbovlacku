@@ -7,7 +7,6 @@ import {
   type Transaction,
 } from "prosemirror-state";
 import { inputRules } from "prosemirror-inputrules";
-import { joinBackward, joinForward } from "prosemirror-commands";
 import { CIRCLED_SOURCE, circledPlace, placeDisplay } from "./place-glyphs.ts";
 import type { RichNode, RichText } from "./types.ts";
 import { canonicalRich } from "./rich-values.ts";
@@ -445,20 +444,20 @@ export function richInsertionSelection(
 
 /** Join from the paragraph edge so native editing cannot split saved text. */
 function joinRichParagraph(
-  state: EditorState,
   tr: Transaction,
   position: number,
   direction: -1 | 1,
   dispatch?: (tr: Transaction) => void,
 ): boolean {
-  tr.setSelection(TextSelection.create(tr.doc, position));
-  const join = direction < 0 ? joinBackward : joinForward;
-  join(state.apply(tr), (next) => {
-    for (const step of next.steps) tr.step(step);
+  const $cursor = tr.doc.resolve(position);
+  const boundary = direction < 0 ? $cursor.before(1) : $cursor.after(1);
+  if (boundary > 0 && boundary < tr.doc.content.size) {
+    // The schema contains only paragraphs at this depth. Keep every step on tr.
+    tr.join(boundary);
     tr.setSelection(
-      TextSelection.near(tr.doc.resolve(next.selection.from), direction),
+      TextSelection.near(tr.doc.resolve(boundary - 1), direction),
     );
-  });
+  }
   if (tr.docChanged) dispatch?.(tr.scrollIntoView());
   // Consume the key even when there is no neighboring paragraph to join.
   return true;
@@ -469,9 +468,14 @@ export function deleteRichBackward(
   state: EditorState,
   dispatch?: (tr: Transaction) => void,
 ): boolean {
-  if (!state.selection.empty) return false;
-  const tr = state.tr;
-  let $cursor = state.selection.$from;
+  return deleteBackward(state.tr, dispatch);
+}
+function deleteBackward(
+  tr: Transaction,
+  dispatch?: (tr: Transaction) => void,
+): boolean {
+  if (!tr.selection.empty) return false;
+  let $cursor = tr.selection.$from;
   if ($cursor.parent.isInline && !$cursor.parent.content.size) {
     const literal = $cursor.parent.type.name === "literal";
     tr.delete($cursor.before(), $cursor.after());
@@ -491,7 +495,7 @@ export function deleteRichBackward(
     $cursor = tr.doc.resolve(position);
     previous = $cursor.nodeBefore;
   }
-  if (!previous) return joinRichParagraph(state, tr, $cursor.pos, -1, dispatch);
+  if (!previous) return joinRichParagraph(tr, $cursor.pos, -1, dispatch);
   let end = $cursor.pos;
   let source: string;
   if (previous.isText) source = previous.text!;
@@ -518,27 +522,28 @@ export function deleteRichForward(
   state: EditorState,
   dispatch?: (tr: Transaction) => void,
 ): boolean {
-  if (!state.selection.empty) return false;
-  let $cursor = state.selection.$from;
+  return deleteForward(state.tr, dispatch);
+}
+function deleteForward(
+  tr: Transaction,
+  dispatch?: (tr: Transaction) => void,
+): boolean {
+  if (!tr.selection.empty) return false;
+  let $cursor = tr.selection.$from;
   if ($cursor.parent.isInline && !$cursor.parent.content.size) {
-    dispatch?.(
-      state.tr.delete($cursor.before(), $cursor.after()).scrollIntoView(),
-    );
+    dispatch?.(tr.delete($cursor.before(), $cursor.after()).scrollIntoView());
     return true;
   }
   if (!$cursor.nodeAfter && $cursor.parent.isInline)
-    $cursor = state.doc.resolve($cursor.after());
+    $cursor = tr.doc.resolve($cursor.after());
   const next = $cursor.nodeAfter;
-  if (!next)
-    return joinRichParagraph(state, state.tr, $cursor.pos, 1, dispatch);
+  if (!next) return joinRichParagraph(tr, $cursor.pos, 1, dispatch);
   if (
     (!next.isText && next.isAtom) ||
     (next.isInline && !next.isText && !next.content.size)
   ) {
     dispatch?.(
-      state.tr
-        .delete($cursor.pos, $cursor.pos + next.nodeSize)
-        .scrollIntoView(),
+      tr.delete($cursor.pos, $cursor.pos + next.nodeSize).scrollIntoView(),
     );
     return true;
   }
@@ -546,9 +551,163 @@ export function deleteRichForward(
   const first = graphemes.segment(source).containing(0)?.segment;
   if (!first) return false;
   const start = $cursor.pos + (next.isText ? 0 : 1);
-  const tr = state.tr.delete(start, start + first.length);
+  tr.delete(start, start + first.length);
   tr.setSelection(TextSelection.near(tr.doc.resolve($cursor.pos), 1));
   dispatch?.(tr.scrollIntoView());
+  return true;
+}
+
+export type RichDeleteType = string;
+const deleteTypes = new Set<string>([
+  "deleteContentBackward",
+  "deleteContentForward",
+  "deleteWordBackward",
+  "deleteWordForward",
+  "deleteSoftLineBackward",
+  "deleteSoftLineForward",
+  "deleteHardLineBackward",
+  "deleteHardLineForward",
+  "deleteByCut",
+]);
+export function isRichDeleteType(
+  inputType: string,
+): inputType is RichDeleteType {
+  return inputType.startsWith("delete");
+}
+export interface RichDeleteRange {
+  from: number;
+  to: number;
+}
+
+/** Flatten one paragraph for bounded word motion without changing its nodes. */
+function paragraphText(tr: Transaction) {
+  const $cursor = tr.selection.$from;
+  const units: RichDeleteRange[] = [];
+  let text = "";
+  $cursor.node(1).descendants((node, position) => {
+    const from = $cursor.start(1) + position;
+    if (node.isText) {
+      for (let offset = 0; offset < node.nodeSize; offset++)
+        units.push({ from: from + offset, to: from + offset + 1 });
+      text += node.text;
+    } else if (
+      node.isAtom ||
+      (node.isInline && !node.content.size && node.type.name !== "literal")
+    ) {
+      text += "\ufffc";
+      units.push({ from, to: from + node.nodeSize });
+    }
+  });
+  const next = units.findIndex((unit) => unit.to > $cursor.pos);
+  return { text, units, offset: next < 0 ? units.length : next };
+}
+const words = new Intl.Segmenter(undefined, { granularity: "word" });
+
+/** Own every deletion, including browser ranges that cross inline containers. */
+export function deleteRichInput(
+  tr: Transaction,
+  inputType: RichDeleteType,
+  dispatch?: (tr: Transaction) => void,
+  target?: RichDeleteRange | null,
+): boolean {
+  if (!tr.selection.empty) {
+    dispatch?.(
+      tr
+        .deleteSelection()
+        .setMeta("uiEvent", inputType === "deleteByCut" ? "cut" : "input")
+        .scrollIntoView(),
+    );
+    return true;
+  }
+  if (inputType === "deleteByCut") return true;
+  if (
+    target &&
+    (target.from < 0 ||
+      target.to > tr.doc.content.size ||
+      target.from >= target.to)
+  )
+    target = null;
+  if (!deleteTypes.has(inputType) && inputType !== "deleteEntireSoftLine") {
+    // Without a known direction, only an explicit target gives a safe extent.
+    if (target) {
+      tr.setSelection(
+        TextSelection.between(
+          tr.doc.resolve(target.from),
+          tr.doc.resolve(target.to),
+        ),
+      );
+      dispatch?.(tr.deleteSelection().scrollIntoView());
+    }
+    return true;
+  }
+  const backward = inputType.endsWith("Backward");
+  const character = backward ? deleteBackward : deleteForward;
+  const { text, units, offset } = paragraphText(tr);
+  // Paragraph edges take precedence over a browser's word or line extent.
+  if (
+    inputType !== "deleteEntireSoftLine" &&
+    ((backward ? offset === 0 : offset === units.length) ||
+      inputType.startsWith("deleteContent"))
+  )
+    return character(tr, dispatch);
+  const caret = tr.selection.from;
+  if (
+    target &&
+    target.from < target.to &&
+    (inputType === "deleteEntireSoftLine" ||
+      (backward ? target.to === caret : target.from === caret))
+  ) {
+    tr.setSelection(
+      TextSelection.between(
+        tr.doc.resolve(target.from),
+        tr.doc.resolve(target.to),
+      ),
+    );
+  } else {
+    let edge = backward ? 0 : units.length;
+    if (inputType.startsWith("deleteWord")) {
+      const segments = [...words.segment(text)];
+      if (backward) {
+        const segment = segments
+          .reverse()
+          .find((segment) => segment.index < offset && segment.segment.trim());
+        edge = segment?.index ?? 0;
+      } else {
+        const segment = segments.find(
+          (segment) =>
+            segment.index + segment.segment.length > offset &&
+            segment.segment.trim(),
+        );
+        edge = segment ? segment.index + segment.segment.length : units.length;
+      }
+    } else if (
+      inputType.startsWith("deleteSoftLine") ||
+      inputType === "deleteEntireSoftLine"
+    ) {
+      // A view normally supplies visual motion. Without it, use an inline LF.
+      if (backward || inputType === "deleteEntireSoftLine") {
+        const prefix = text.slice(0, offset);
+        edge = Math.max(prefix.lastIndexOf("\n"), prefix.lastIndexOf("\r")) + 1;
+      } else {
+        const next = text.slice(offset).search(/[\r\n]/u);
+        edge = next < 0 ? units.length : offset + next;
+      }
+    }
+    if (edge === offset && inputType !== "deleteEntireSoftLine")
+      return character(tr, dispatch);
+    let end = Math.max(edge, offset);
+    if (inputType === "deleteEntireSoftLine") {
+      const next = text.slice(offset).search(/[\r\n]/u);
+      end = next < 0 ? units.length : offset + next;
+    }
+    if (!units.length || edge === end) return true;
+    const from = units[Math.min(edge, offset)].from;
+    const to = units[end - 1].to;
+    tr.setSelection(
+      TextSelection.between(tr.doc.resolve(from), tr.doc.resolve(to)),
+    );
+  }
+  dispatch?.(tr.deleteSelection().scrollIntoView());
   return true;
 }
 
