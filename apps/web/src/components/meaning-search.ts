@@ -19,7 +19,7 @@ import {
   type EmbeddingProfile,
   type SemanticResult,
 } from "../data/semantic-search.ts";
-import { button, describe, el, link, p } from "../lib/dom.ts";
+import { button, describe, el, icon, link, p } from "../lib/dom.ts";
 import { richTextToText } from "../model/richtext.ts";
 import {
   eventId,
@@ -113,7 +113,10 @@ export async function meaningSearchGroup(
     app.session.preferences.useMeaningSearch === false
   )
     return;
-  const group = el("section", { "aria-labelledby": "meaning-heading" });
+  const group = el("section", {
+    class: "result-group",
+    "aria-labelledby": "meaning-heading",
+  });
   group.hidden = true;
   host.append(group);
   const canceled = new AbortController();
@@ -201,47 +204,43 @@ export async function meaningSearchGroup(
       server = `${selfPeer.label} (${capabilities.server_id})`;
     }
     if (!live()) return;
-    const status = el("p", { class: "count", tabindex: "-1" });
+    const status = el("span", { class: "count", tabindex: "-1" });
     const body = el("div");
     group.append(
-      el("h2", {
-        id: "meaning-heading",
-        class: "section",
-        text: "Similar in meaning",
-      }),
-      status,
+      el(
+        "div",
+        { class: "result-group-heading" },
+        el("h2", {
+          id: "meaning-heading",
+          text: "Similar in meaning",
+        }),
+        status,
+      ),
       body,
     );
     group.hidden = false;
     const setStatus = (message: string, summary = message) => {
       if (status.textContent !== message) status.textContent = message;
+      status.hidden = !message;
       expansion.summary(summary);
     };
     const allowed = () => consented(provider, scope);
     const run = async (focusAfter = false) => {
       if (!live() || !allowed() || declined || savingOff) return;
-      body.replaceChildren(
-        p(
-          `Profile: ${profile.label}. Similarity is a suggestion, not an editorial score.`,
-          "meta",
-        ),
-        el("p", {
-          class: "meta",
-          style: "overflow-wrap:anywhere",
-          text: `Meaning snapshot: ${source.snapshot}. View: ${source.view}.`,
-        }),
+      const provenance = el(
+        "details",
+        { class: "disclosure small" },
+        el("summary", {}, icon("chevron", "chev"), "Search source"),
         el(
-          "details",
-          { class: "disclosure small" },
-          el("summary", { text: "Meaning search profile" }),
-          el(
-            "div",
-            { class: "body", style: "overflow-wrap:anywhere" },
-            p(`Profile: ${profile.id}`),
-            ...profile.limitations.map((limitation) => p(limitation)),
-          ),
+          "div",
+          { class: "body", style: "overflow-wrap:anywhere" },
+          p(`Server: ${server}. Provider: ${provider}.`),
+          p(`Meaning snapshot: ${source.snapshot}. View: ${source.view}.`),
+          p(`Profile: ${profile.id}`),
+          ...profile.limitations.map((limitation) => p(limitation)),
         ),
       );
+      body.replaceChildren(provenance);
       setStatus("Searching for similar meanings.");
       try {
         const result =
@@ -251,7 +250,7 @@ export async function meaningSearchGroup(
           }));
         if (!live()) return;
         if (result.coverage.pending || result.coverage.failed)
-          body.append(
+          provenance.before(
             p(
               `${result.coverage.indexed} of ${result.coverage.eligible} definitions are indexed. ${result.coverage.pending} ${result.coverage.pending === 1 ? "is" : "are"} pending indexing. ${result.coverage.failed} failed indexing.`,
               "meta",
@@ -259,7 +258,7 @@ export async function meaningSearchGroup(
           );
         const rows = el("div");
         const controls = el("div", { class: "end-line" });
-        body.append(rows, controls);
+        provenance.before(rows, controls);
         const displayed = new Map<number, SearchHit>(
           saved?.displayed.map((row) => [row.position, row.hit]),
         );
@@ -287,7 +286,7 @@ export async function meaningSearchGroup(
         const refresh = () => {
           group.setAttribute("aria-busy", String(loading));
           setStatus(
-            `${displayed.size} meaning ${displayed.size === 1 ? "result" : "results"} shown${offset > displayed.size ? `, ${offset - displayed.size} unavailable` : ""}.`,
+            `· ${displayed.size}${offset > displayed.size ? `, ${offset - displayed.size} unavailable` : ""}`,
             `${displayed.size} meaning ${displayed.size === 1 ? "result" : "results"}${offset > displayed.size ? `, ${offset - displayed.size} unavailable` : ""}.`,
           );
           controls.replaceChildren();
@@ -424,8 +423,12 @@ export async function meaningSearchGroup(
         if (!live()) return;
         saved = null;
         setStatus(`Meaning search failed. ${describe(error)}`);
-        appendReadRetry(body, error, context, app.announce);
-        body.append(button("Try meaning search again", () => void run(true)));
+        const recovery = el("div");
+        appendReadRetry(recovery, error, context, app.announce);
+        recovery.append(
+          button("Try meaning search again", () => void run(true)),
+        );
+        provenance.before(recovery);
       } finally {
         if (live()) {
           expansion.changed();
@@ -436,37 +439,41 @@ export async function meaningSearchGroup(
     };
     const consent = (focus = false) => {
       consentVersion++;
-      setStatus("Meaning search needs your permission.", "");
+      setStatus("", "");
       const notice = el("div", {
         class: "notice",
         role: "group",
         "aria-label": "Meaning search consent",
       });
-      const accept = button("Allow meaning search", async () => {
-        if (!live() || savingConsent || savingOff) return;
-        const current = ++consentVersion;
-        declined = false;
-        savingConsent = true;
-        refreshConsentActions();
-        try {
-          if (!allowed())
-            await app.session.setPreferences({
-              aiConsents: [
-                ...app.session.preferences.aiConsents,
-                { provider, scope, tasks: [task], dataScope },
-              ],
-            });
-          if (live() && current === consentVersion) await run(true);
-        } catch (error) {
-          if (live() && current === consentVersion) {
-            setStatus(describe(error));
-            expansion.changed();
-          }
-        } finally {
-          savingConsent = false;
+      const accept = button(
+        "Allow",
+        async () => {
+          if (!live() || savingConsent || savingOff) return;
+          const current = ++consentVersion;
+          declined = false;
+          savingConsent = true;
           refreshConsentActions();
-        }
-      });
+          try {
+            if (!allowed())
+              await app.session.setPreferences({
+                aiConsents: [
+                  ...app.session.preferences.aiConsents,
+                  { provider, scope, tasks: [task], dataScope },
+                ],
+              });
+            if (live() && current === consentVersion) await run(true);
+          } catch (error) {
+            if (live() && current === consentVersion) {
+              setStatus(describe(error));
+              expansion.changed();
+            }
+          } finally {
+            savingConsent = false;
+            refreshConsentActions();
+          }
+        },
+        { "aria-label": "Allow meaning search" },
+      );
       const turnOff = button("Turn off meaning search", async () => {
         if (!live() || savingOff) return;
         const writing = saveMeaningSearchOff(app, context);
@@ -476,10 +483,10 @@ export async function meaningSearchGroup(
           if (context.live())
             navigate(location.pathname + location.search, { replace: true });
         } catch (error) {
+          const failure = `The saved meaning search choice is unchanged. ${describe(error)}`;
+          app.announce(failure);
           if (live() && current === consentVersion) {
-            setStatus(
-              `The saved meaning search choice is unchanged. ${describe(error)}`,
-            );
+            setStatus(failure);
             expansion.changed();
           }
         }
@@ -487,29 +494,51 @@ export async function meaningSearchGroup(
       consentActions = { accept, off: turnOff };
       refreshConsentActions();
       notice.append(
-        p(`Server: ${server}. Provider: ${provider}.`),
-        p(`Profile: ${profile.id}`, "meta"),
         p(
-          "Task: find similar meanings. Dictionary fields sent: search query, definition language, snapshot, view, profile, and result limit of 100.",
+          `Find similar meanings too? Your search text goes to ${server} and ${provider}.`,
         ),
-        p(
-          "The provider receives the search query for embedding. This browser remembers consent for this provider and scope for future search queries.",
+        el(
+          "div",
+          { class: "meaning-consent-actions" },
+          accept,
+          button(
+            "Not now",
+            () => {
+              consentVersion++;
+              declined = true;
+              consentActions = undefined;
+              setStatus("Meaning search is off for this page.");
+              const enable = button("Enable meaning search", () =>
+                consent(true),
+              );
+              body.replaceChildren(enable);
+              enable.focus();
+              expansion.changed();
+            },
+            { class: "btn btn-quiet" },
+          ),
         ),
-        p(
-          "Turn off meaning search here, or turn off AI assistance in Settings. Lojban and definition searches remain available.",
+        el(
+          "details",
+          { class: "disclosure small" },
+          el("summary", {}, icon("chevron", "chev"), "Details"),
+          el(
+            "div",
+            { class: "body", style: "overflow-wrap:anywhere" },
+            p(`Server: ${server}. Provider: ${provider}.`),
+            p(`Profile: ${profile.id}`),
+            p(
+              "Task: find similar meanings. Dictionary fields sent: search query, definition language, snapshot, view, profile, and result limit of 100.",
+            ),
+            p(
+              "The provider receives the search query for embedding. This browser remembers consent for this provider and scope for future search queries.",
+            ),
+            p(
+              "Turn off meaning search here, or turn off AI assistance in Settings. Lojban and definition searches remain available.",
+            ),
+            turnOff,
+          ),
         ),
-        accept,
-        turnOff,
-        button("Not now", () => {
-          consentVersion++;
-          declined = true;
-          consentActions = undefined;
-          setStatus("Meaning search is off for this page.");
-          const enable = button("Enable meaning search", () => consent(true));
-          body.replaceChildren(enable);
-          enable.focus();
-          expansion.changed();
-        }),
       );
       body.replaceChildren(notice);
       if (focus) accept.focus();
