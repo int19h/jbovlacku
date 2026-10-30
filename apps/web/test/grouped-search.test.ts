@@ -360,6 +360,22 @@ test("AI off, missing semantic capability, unavailable profiles, and patterns ha
     "Lojban words",
   ]);
   expect(state.calls).toHaveLength(0);
+  await page.goto("/search?q=book&lang=en");
+  const meaning = group(page, "Similar in meaning");
+  await meaning.getByRole("button", { name: "Allow meaning search" }).click();
+  await expect(meaning.locator("article")).toHaveCount(1);
+  const counts = page.locator("main .count-line .count");
+  await expect(counts).toContainText("1 meaning result shown.");
+  await page.evaluate(async () => {
+    const { Session } = await import(String("/src/app/session.ts"));
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const writer = new Session(new LocalStore());
+    await writer.load();
+    await writer.setPreferences({ useAiAssistance: false });
+  });
+  await expect(meaning).toHaveCount(0);
+  await expect(counts).not.toContainText("meaning result");
+  expect(state.calls).toHaveLength(1);
 });
 
 test("meaning results have separate pagination and recover after a 503 without changing the language", async ({

@@ -112,6 +112,7 @@ export async function meaningSearchGroup(
       canceled.abort();
       group.remove();
       expansion.summary("");
+      expansion.changed();
     }
   });
   context.signal.addEventListener("abort", unsubscribe, { once: true });
