@@ -286,7 +286,7 @@ for (const inputType of inputs) {
   });
 }
 
-test("r6 cut copies selected text once and collapsed cut keeps the value", async ({
+test("r6 real Shift-Delete copies selected text once and collapsed cut keeps the value", async ({
   page,
   browserName,
 }) => {
@@ -319,6 +319,16 @@ test("r6 cut copies selected text once and collapsed cut keeps the value", async
       "bcodec",
     );
   await expect.poll(() => richNodes(field)).toEqual([["ad\nef"], ["outer\r"]]);
+});
+
+test("r6 synthetic clipboard cut copies the selected range", async ({
+  page,
+}) => {
+  const field = await mount(page);
+  const original: RichText = [
+    ["ab", node("code", "code"), "cd\r\nef"],
+    ["outer\r"],
+  ];
   await reset(field, original);
   await choose(field, [0, 0, 1], [0, 2, 1]);
   const copied = await field.evaluate((field) => {
@@ -862,6 +872,47 @@ test("r6 composition deletion needs a mapped range inside one native text node",
     .toEqual([["ab", node("code", "cd\r\nef"), node("web", "raw\r\n")]]);
 });
 
+test("r6 canceled native composition deletion cannot repair a later owned CR deletion", async ({
+  page,
+}) => {
+  const field = await mount(page);
+  for (const kind of kinds) {
+    const value: RichText = [
+      [node("code", "ab"), node("word", "keep\r")],
+      [node(kind, "first\r\nsecond"), node("web", "outside\r\n")],
+    ];
+    await reset(field, value);
+    await choose(field, [0, 0, 1]);
+    await field.dispatchEvent("compositionstart");
+    await field.evaluate((field) => {
+      field.addEventListener("beforeinput", (event) => event.preventDefault(), {
+        once: true,
+      });
+    });
+    expect(
+      await beforeinput(
+        field,
+        "deleteCompositionText",
+        [
+          [0, 0, 0],
+          [0, 0, 1],
+        ],
+        true,
+      ),
+    ).toBe(true);
+    expect(await richNodes(field)).toEqual(value);
+    await choose(field, [1, 0, 5], [1, 0, 6]);
+    expect(await beforeinput(field, "deleteContentForward")).toBe(true);
+    await field.dispatchEvent("compositionend");
+    await expect
+      .poll(() => richNodes(field))
+      .toEqual([
+        value[0],
+        [node(kind, "first\nsecond"), node("web", "outside\r\n")],
+      ]);
+  }
+});
+
 test("r6 partial ranges retain code and both link types", async ({ page }) => {
   const field = await mount(page);
   for (const [leftKind, rightKind] of [
@@ -1068,6 +1119,101 @@ test("r6 deletion direction keeps the correct code or link context for later typ
             ["outside\r"],
           ]);
       }
+    }
+  }
+});
+
+test("r6 history restores the deletion typing context across code and link boundaries", async ({
+  page,
+}) => {
+  const field = await mount(page);
+  for (const [left, right] of [
+    ["code", "prose"],
+    ["word", "web"],
+    ["web", "code"],
+  ] as const) {
+    for (const forward of [false, true]) {
+      const original: RichText = [
+        [node(left, "prefix"), node(right, "suffix")],
+        ["outside\r"],
+      ];
+      const deleted: RichText = [
+        [node(left, "pre"), node(right, "fix")],
+        original[1],
+      ];
+      await reset(field, original);
+      await choose(field, [0, 0, 3], [0, 1, 3]);
+      expect(
+        await beforeinput(
+          field,
+          forward ? "deleteContentForward" : "deleteContentBackward",
+        ),
+      ).toBe(true);
+      await expect.poll(() => richNodes(field)).toEqual(deleted);
+      await history(page, field, original, deleted);
+      // Draft mirrors must retain the context restored by redo.
+      await field.evaluate((field: any) => (field.value = field.value));
+      await page.keyboard.type("X");
+      await expect
+        .poll(() => richNodes(field))
+        .toEqual([
+          [
+            node(left, forward ? "pre" : "preX"),
+            node(right, forward ? "Xfix" : "fix"),
+          ],
+          original[1],
+        ]);
+    }
+  }
+});
+
+test("r6 deliberate caret changes replace the retained deletion context", async ({
+  page,
+}) => {
+  const field = await mount(page);
+  for (const action of ["pointer", "navigation", "target"]) {
+    await reset(field, [[node("code", "prefix"), "suffix"]]);
+    await choose(field, [0, 0, 3], [0, 1, 3]);
+    expect(await beforeinput(field, "deleteContentForward")).toBe(true);
+    await expect
+      .poll(() => richNodes(field))
+      .toEqual([[node("code", "pre"), "fix"]]);
+    if (action === "navigation") {
+      await page.keyboard.press("ArrowLeft");
+      await page.keyboard.type("X");
+      await expect
+        .poll(() => richNodes(field))
+        .toEqual([[node("code", "prXe"), "fix"]]);
+    } else if (action === "pointer") {
+      // A precise protocol pointer selection can choose the equivalent code end.
+      await field.dispatchEvent("pointerdown");
+      await choose(field, [0, 0, 3]);
+      await field.dispatchEvent("pointerup");
+      await page.keyboard.type("X");
+      await expect
+        .poll(() => richNodes(field))
+        .toEqual([[node("code", "preX"), "fix"]]);
+    } else {
+      // A nonempty browser target remains authoritative at the old caret.
+      await field.evaluate((field) => {
+        const text = field.querySelector(".rich-code")!.firstChild!;
+        const range = document.createRange();
+        range.setStart(text, 0);
+        range.setEnd(text, 2);
+        const event = new InputEvent("beforeinput", {
+          bubbles: true,
+          cancelable: true,
+          inputType: "insertText",
+          data: "X",
+        });
+        Object.defineProperty(event, "getTargetRanges", {
+          value: () => [range],
+        });
+        field.dispatchEvent(event);
+      });
+      await expect
+        .poll(() => richNodes(field))
+        .toEqual([[node("code", "Xe"), "fix"]]);
     }
   }
 });

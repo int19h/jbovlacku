@@ -216,6 +216,21 @@ test("collapsed forward deletion keeps equivalent inner and outer caret contexts
   }
 });
 
+test("retained deletion carets match only equivalent inline endpoints", () => {
+  for (const right of [
+    "fix",
+    { word: { language: "jbo", spelling: "cukta" }, label: "fix" },
+    { url: "https://example.org/target", label: "fix" },
+  ] as const) {
+    const doc = richToEditor([[{ code: "pre" }, right, 1, "tail"], ["next"]]);
+    assert.equal(richEditor.sameRichCaret(doc, 5, 7), true);
+    assert.equal(richEditor.sameRichCaret(doc, 6, 7), true);
+    assert.equal(richEditor.sameRichCaret(doc, 4, 7), false);
+    assert.equal(richEditor.sameRichCaret(doc, 10, 12), false);
+    assert.equal(richEditor.sameRichCaret(doc, 17, 20), false);
+  }
+});
+
 test("forward deletion without a target range removes the full word or line extent", () => {
   for (const [inputType, text] of [
     ["deleteWordForward", "first \nthird"],
