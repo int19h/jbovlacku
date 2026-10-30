@@ -1437,6 +1437,8 @@ If the normalized spelling fails the word rules, retain the row in the source ar
 Keep exact SQL place indices when available. Preserve missing API indices as unassigned legacy keywords.
 
 Keep older word-level rafsi and newer definition-level rafsi as distinct source evidence for separate word-level claims.
+Official and experimental source fields produce separate imported claims. Each rationale and legacy object identifies its source field.
+Both kinds start active and unreviewed, without an importer-created blessing. A source official marker grants no ranking privilege.
 An importer does not infer authenticated individual votes from aggregate scores.
 The initial jbovlaste import lacks change history. Lensisku history does not retroactively reconstruct it.
 

@@ -1,4 +1,4 @@
-This importer prepares signed proposals from pinned local Lensisku JSON captures and SQL snapshots. A proposal contains attributed definitions, official rafsi claims, an import selection, and a view. An import selection lists the exact publications that the view accepts.
+This importer prepares signed proposals from pinned local Lensisku JSON captures and SQL snapshots. A proposal contains attributed definitions, rafsi claims, an import selection, and a view. An import selection lists the exact publications that the view accepts.
 
 ## REST captures
 
@@ -111,8 +111,8 @@ Numeric account evidence uses that same origin.
 Each imported body retains authored source fields, available version rows, keyword indices, dates, and separate word-level and definition-level rafsi.
 Derived vectors and caches remain only in the source archive, except for cached usernames retained as separate display evidence.
 Each body records these limits. The numeric definition author still comes from `definitions.userid`.
-Explicit x-place forms receive a context frame, without a fixed arity claim. Known official rafsi produce separate imported claims.
-Experimental definition-level rafsi remain distinct source evidence. This recipe does not publish them.
+Explicit x-place forms receive a context frame, without a fixed arity claim. Known official and experimental rafsi produce separate imported claims.
+Each claim names its source field and remains unreviewed without an automatic endorsement.
 
 The sanitized SQL dump contains no aggregate definition scores or individual votes.
 Keyword-placement scores remain separate source evidence.
@@ -235,12 +235,14 @@ The importer preserves exact source strings and records each converted span with
 It declares observed indices in a context frame. It does not infer a complete place list.
 Notes, etymology, examples, source history, equations, component variables, and quoted relations remain literal.
 
-Known `official_rafsi` tokens create separate `rafsi.publish` records under the importer's key.
-SQL claims cite `valsi.rafsi` with a word record. REST claims cite their definition's `official_rafsi` evidence.
+Known `official_rafsi` and `experimental_rafsi` tokens create separate `rafsi.publish` records under the importer's key.
+SQL official claims cite `valsi.rafsi` with a word record. Experimental claims cite `definitions.rafsi` with a definition record.
+REST claims cite the corresponding field of their source definition.
 The importer selects these claims with their definitions and retains exact envelopes for repeat imports.
 A removed source assignment leaves its old claim retained but outside the current import selection.
 The existing definition gate still applies. A claim needs an active eligible definition for its word.
-Publication supplies no endorsement. Experimental rafsi stay in the archived and signed source evidence without claims.
+Both kinds start active and unreviewed. Publication supplies no endorsement or ranking privilege.
+A token present in both fields retains separate source claims for the same pair.
 
 SQL `cached_username` and REST `username` supply names for display only.
 Source references identify those fields. SQL bodies retain the lookup separately from numeric account evidence.
@@ -252,7 +254,7 @@ Unknown dates stay absent. The Source disclosure keeps each original date label.
 The proposal's `fidelity` report counts fully converted, partly converted, and untouched selected definitions.
 A fully converted definition contains converted places and no remaining recognized variable patterns in its main text.
 A partly converted definition contains both. An untouched definition contains no converted places.
-The report also counts unconverted patterns, named definitions, and selected official rafsi claims.
+The report also counts unconverted patterns, named definitions, and selected rafsi claims by source field.
 These counts describe the selected output, including publications reused from an earlier extraction.
 A routine repeat import does not rewrite old signed bodies to apply new software.
 Use an explicitly authorized new proposal when the operator needs a fresh extraction.

@@ -1,7 +1,7 @@
 import { convertPlaces } from "./places.ts";
 import {
   displayUsername,
-  officialRafsiClaims,
+  importedRafsiClaims,
   emptyFidelity,
   countFidelity,
 } from "./fidelity.ts";
@@ -773,7 +773,7 @@ function extract(
     "This SQL file omits definition aggregate scores and authenticated individual votes. Keyword best-place scores remain distinct source evidence.",
     "Available version rows identify editors. They do not establish original authors or complete historical coverage.",
     "Explicit x-place forms use a context frame. SQL keyword indices remain source evidence without a fixed arity claim.",
-    "Official word-level rafsi can produce separate imported claims. Experimental definition-level rafsi remain source evidence.",
+    "Official word-level and experimental definition-level rafsi produce separate unreviewed imported claims.",
     "The source contains no rights statement. Rights remain unknown.",
     "The exact source remains at the verified external archive path. Keep that file and the original manifest available.",
     "Derived source columns are excluded from published rows: embedding, metadata (including processed_text), cached_*, canonical_word, and cached_decomposition. Their exact values remain in the source archive. Cached usernames supply display evidence only. Numeric author evidence comes from definitions.userid.",
@@ -1700,7 +1700,7 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
         const selectedLexical = retainedVersion
           ? JSON.parse(retainedVersion.lexical as string)
           : planned.lexical;
-        for (const claim of officialRafsiClaims(
+        for (const claim of importedRafsiClaims(
           selectedBody as Carrier,
           selectedLexical,
         ))
@@ -1873,6 +1873,10 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
         );
       const ids: string[] = [];
       const claims = new Set<string>();
+      const byAuthority = {
+        official: new Set<string>(),
+        experimental: new Set<string>(),
+      };
       for (const selected of journal
         .prepare(
           "SELECT versions.carrier,versions.lexical FROM entries JOIN versions ON entries.selected=versions.event ORDER BY entries.record",
@@ -1881,7 +1885,7 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
         const definition = JSON.parse(selected.carrier as string) as Carrier;
         ids.push(definition.envelope.id);
         countFidelity(result.fidelity, definition);
-        for (const claim of officialRafsiClaims(
+        for (const claim of importedRafsiClaims(
           definition,
           JSON.parse(selected.lexical as string),
         )) {
@@ -1902,9 +1906,11 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
             retained = { event: carrier.envelope.id };
           }
           claims.add(retained.event as string);
+          byAuthority[claim.authority].add(retained.event as string);
         }
       }
-      result.fidelity.official_rafsi_claims = claims.size;
+      result.fidelity.official_rafsi_claims = byAuthority.official.size;
+      result.fidelity.experimental_rafsi_claims = byAuthority.experimental.size;
       ids.push(...claims);
       ids.sort();
       const selection = prepareSelection(utf8(canonical(ids)));

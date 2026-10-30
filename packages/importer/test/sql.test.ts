@@ -283,10 +283,15 @@ test("source changes create parented revisions and source reversions reuse origi
   const revised = await carriers(input.output);
   const publication = revised.find(
     (item) =>
+      item.envelope.header.action.kind === "definition.publish" &&
       item.body.legacy?.record.id === 4 &&
       item.body.legacy.snapshot !== fixtureManifest.sha256,
   )!;
-  const old = original.find((item) => item.body.legacy?.record.id === 4)!;
+  const old = original.find(
+    (item) =>
+      item.envelope.header.action.kind === "definition.publish" &&
+      item.body.legacy?.record.id === 4,
+  )!;
   assert.deepEqual(publication.envelope.header.action.parents, [
     old.envelope.id,
   ]);
@@ -490,7 +495,7 @@ test("an exact older snapshot retains later absent records and records the rever
   const selection = JSON.parse(
     await readFile(join(input.output, "import-selection.json"), "utf8"),
   );
-  assert.equal(selection.length, 5);
+  assert.equal(selection.length, 10);
   assert.notEqual(returned.selection, first.selection);
   assert.equal(returned.selection, second.selection);
   assert.deepEqual(returned.report.omitted, [9999999]);
@@ -530,7 +535,7 @@ test("classification status labels, dialect tags, exact source numbers, and rese
   const result = await importSqlSnapshot(input);
   assert.equal(result.report.added, 4, JSON.stringify(result.report));
   const records = (await carriers(input.output)).filter(
-    (item) => item.body.legacy,
+    (item) => item.envelope.header.action.kind === "definition.publish",
   );
   assert.ok(records.some((item) => item.body.language === "en-bpfk"));
   const original = records.find((item) => item.body.legacy.record.id === 74481)!
@@ -654,7 +659,9 @@ test("SQL imports keep acute cmevla display, source spelling, and plain identity
   const result = await importSqlSnapshot(input);
   assert.equal(result.report.added, 4, JSON.stringify(result.report));
   const record = (await carriers(input.output)).find(
-    (item) => item.body.legacy?.record.id === 74481,
+    (item) =>
+      item.envelope.header.action.kind === "definition.publish" &&
+      item.body.legacy?.record.id === 74481,
   )!;
   assert.equal(record.body.word.spelling, spelling.normalize("NFC"));
   assert.equal(record.body.legacy.original.valsi.word, spelling);
@@ -742,7 +749,9 @@ for (const [table, affected] of [
     const fresh = await importSqlSnapshot(before);
     assert.ok(
       !(await carriers(before.output)).some(
-        (item) => item.body.legacy?.record.id === affected,
+        (item) =>
+          item.envelope.header.action.kind === "definition.publish" &&
+          item.body.legacy?.record.id === affected,
       ),
     );
     assert.ok(fresh.report.added < 4);
@@ -842,7 +851,9 @@ test("r2 F8 latest publication in the returning context becomes the revision par
   const input = await setup();
   await importSqlSnapshot(input);
   const first = (await carriers(input.output)).find(
-    (item) => item.body.legacy?.record.id === 4,
+    (item) =>
+      item.envelope.header.action.kind === "definition.publish" &&
+      item.body.legacy?.record.id === 4,
   )!;
   const moved = tableMutation(fixture, "valsi", (fields) =>
     fields[0] === "4" ? [fields[0], "bajru", ...fields.slice(2)] : fields,
@@ -855,7 +866,9 @@ test("r2 F8 latest publication in the returning context becomes the revision par
   await updateSource(input, returned);
   await importSqlSnapshot(input);
   const records = (await carriers(input.output)).filter(
-    (item) => item.body.legacy?.record.id === 4,
+    (item) =>
+      item.envelope.header.action.kind === "definition.publish" &&
+      item.body.legacy?.record.id === 4,
   );
   const revision = records.find((item) =>
     JSON.stringify(item.body.text).includes("new text in old context"),
@@ -879,7 +892,9 @@ test("r2 Grok language edits change the definition language and gloss-only langu
   );
   const current = (await carriers(input.output)).find(
     (item) =>
-      selected.includes(item.envelope.id) && item.body.legacy?.record.id === 4,
+      selected.includes(item.envelope.id) &&
+      item.envelope.header.action.kind === "definition.publish" &&
+      item.body.legacy?.record.id === 4,
   )!;
   assert.equal(current.body.language, "en-simple");
   assert.equal(current.body.glosses[0].language, "en-simple");
@@ -890,7 +905,9 @@ test("r2 Grok language edits change the definition language and gloss-only langu
   const glossInput = await setup(mixed);
   await importSqlSnapshot(glossInput);
   const old = (await carriers(glossInput.output)).find(
-    (item) => item.body.legacy?.record.id === 36101,
+    (item) =>
+      item.envelope.header.action.kind === "definition.publish" &&
+      item.body.legacy?.record.id === 36101,
   )!;
   await updateSource(
     glossInput,
@@ -904,7 +921,9 @@ test("r2 Grok language edits change the definition language and gloss-only langu
   );
   const updated = (await carriers(glossInput.output)).find(
     (item) =>
-      ids.includes(item.envelope.id) && item.body.legacy?.record.id === 36101,
+      ids.includes(item.envelope.id) &&
+      item.envelope.header.action.kind === "definition.publish" &&
+      item.body.legacy?.record.id === 36101,
   )!;
   assert.equal(updated.body.language, "ru");
   assert.equal(updated.body.glosses[0].language, "en-simple");
@@ -980,7 +999,9 @@ test("r2 Grok historical candidates with equal lexical digests retain the right 
   const input = await setup(source);
   const first = await importSqlSnapshot(input);
   const old = (await carriers(input.output)).find(
-    (item) => item.body.legacy?.record.id === 36101,
+    (item) =>
+      item.envelope.header.action.kind === "definition.publish" &&
+      item.body.legacy?.record.id === 36101,
   )!;
   const changed = tableMutation(source, "languages", (fields) =>
     fields[0] === "2" ? [fields[0], "en-simple", ...fields.slice(2)] : fields,
@@ -1001,7 +1022,9 @@ test("r2 F8 a source reversion determines the latest observed parent across cont
   const input = await setup();
   await importSqlSnapshot(input);
   const first = (await carriers(input.output)).find(
-    (item) => item.body.legacy?.record.id === 4,
+    (item) =>
+      item.envelope.header.action.kind === "definition.publish" &&
+      item.body.legacy?.record.id === 4,
   )!;
   const changed = mutate(fixture, (fields) => {
     if (fields[3] === "4") fields[4] += " newer known text";
@@ -1024,6 +1047,7 @@ test("r2 F8 a source reversion determines the latest observed parent across cont
   await importSqlSnapshot(input);
   const final = (await carriers(input.output)).find(
     (item) =>
+      item.envelope.header.action.kind === "definition.publish" &&
       item.body.legacy?.record.id === 4 &&
       JSON.stringify(item.body.text).includes("final context text"),
   )!;
@@ -1118,7 +1142,9 @@ test("r2 F3 a split definition tail cannot impersonate a complete record ID", as
   assert.ok(!result.report.unresolved.some((issue) => issue.record === 4));
   assert.ok(
     (await carriers(input.output)).some(
-      (carrier) => carrier.body.legacy?.record.id === 4,
+      (carrier) =>
+        carrier.envelope.header.action.kind === "definition.publish" &&
+        carrier.body.legacy?.record.id === 4,
     ),
   );
 });
@@ -1171,7 +1197,7 @@ test("r3 N1 a raw CRLF inside history notes leaves only its owner unresolved", a
     JSON.stringify(result.report.unresolved),
   );
   const publications = (await carriers(input.output)).filter(
-    (carrier) => carrier.body.legacy,
+    (carrier) => carrier.envelope.header.action.kind === "definition.publish",
   );
   assert.deepEqual(
     publications
@@ -1552,7 +1578,7 @@ test("SQL imports map source fu'ivla classifications and preserve source evidenc
   const result = await importSqlSnapshot(input);
   assert.equal(result.report.added, 4);
   const definitions = (await carriers(input.output)).filter(
-    (row) => row.body.legacy,
+    (row) => row.envelope.header.action.kind === "definition.publish",
   );
   const changed = definitions.filter(
     (row) => row.body.classification.kind === "fuhivla",
@@ -1629,4 +1655,54 @@ test("fidelity import retains source spans, cached display names, original dates
   const bytes = await readFile(join(input.output, "carriers.jsonl"));
   await importSqlSnapshot(input);
   assert.deepEqual(await readFile(join(input.output, "carriers.jsonl")), bytes);
+});
+
+test("SQL experimental rafsi retain definition evidence and share no official source claim", async () => {
+  const input = await setup(
+    mutate(fixture, (fields) => {
+      if (fields[3] === "4") fields[25] = "baj bau";
+    }),
+  );
+  const result = await importSqlSnapshot(input);
+  assert.equal(result.report.fidelity.official_rafsi_claims, 5);
+  assert.equal(result.report.fidelity.experimental_rafsi_claims, 2);
+  const records = await carriers(input.output);
+  const experimental = records.filter(
+    (item) =>
+      item.envelope.header.action.kind === "rafsi.publish" &&
+      item.body.legacy.record.kind === "definition",
+  );
+  assert.deepEqual(experimental.map((item) => item.body.rafsi).sort(), [
+    "baj",
+    "bau",
+  ]);
+  assert.ok(
+    experimental.every(
+      (item) =>
+        item.body.legacy.record.id === 4 &&
+        item.body.legacy.original.definitions.rafsi === "baj bau",
+    ),
+  );
+  assert.ok(
+    experimental.every(
+      (item) =>
+        item.body.rationale[0][0].includes("experimental") &&
+        item.body.legacy.conversion.review === "unreviewed",
+    ),
+  );
+  const baj = records.filter(
+    (item) =>
+      item.envelope.header.action.kind === "rafsi.publish" &&
+      item.body.rafsi === "baj",
+  );
+  assert.equal(baj.length, 2);
+  assert.equal(
+    baj[0].envelope.header.action.assignment,
+    baj[1].envelope.header.action.assignment,
+  );
+  assert.ok(
+    !records.some(
+      (item) => item.envelope.header.action.kind === "judgment.set",
+    ),
+  );
 });

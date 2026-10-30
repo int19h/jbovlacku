@@ -1051,18 +1051,20 @@ test("official rafsi claims retain distinct source evidence and reuse their exac
   const row = {
     ...rows()[0],
     official_rafsi: "baj bajr baj",
-    experimental_rafsi: "bau",
+    experimental_rafsi: "baj bau",
     username: "synthetic source name",
   };
   const first = capture([row], undefined, []);
   assert.equal(first.report.fidelity.official_rafsi_claims, 2);
-  assert.equal(first.report.fidelity.experimental_rafsi_claims, 0);
+  assert.equal(first.report.fidelity.experimental_rafsi_claims, 2);
   const claims = first.carriers.filter(
     (item) => item.envelope.header.action.kind === "rafsi.publish",
   );
   assert.deepEqual(claims.map((item) => item.body.rafsi).sort(), [
     "baj",
+    "baj",
     "bajr",
+    "bau",
   ]);
   assert.ok(
     claims.every((item) => item.body.legacy.record.kind === "definition"),
@@ -1074,6 +1076,19 @@ test("official rafsi claims retain distinct source evidence and reuse their exac
     !first.carriers.some(
       (item) => item.envelope.header.action.kind === "judgment.set",
     ),
+  );
+  const samePair = claims.filter((item) => item.body.rafsi === "baj");
+  assert.equal(samePair.length, 2);
+  assert.equal(
+    samePair[0].envelope.header.action.assignment,
+    samePair[1].envelope.header.action.assignment,
+  );
+  assert.notEqual(
+    samePair[0].body.legacy.locator,
+    samePair[1].body.legacy.locator,
+  );
+  assert.ok(
+    claims.every((item) => item.body.legacy.conversion.review === "unreviewed"),
   );
   const second = capture([row], first.journal, []);
   assert.equal(canonical(second.carriers), canonical(first.carriers));

@@ -25,89 +25,105 @@ export function rafsiClaimKey(body: Record<string, any>): string {
     body.legacy.source,
     body.legacy.record.kind,
     body.legacy.record.id,
+    body.legacy.locator,
     wordId(body.word),
     body.rafsi,
   ]);
 }
 
-/** Only known official tokens produce claims. Experimental evidence stays separate. */
-export function officialRafsiClaims(definition: Carrier, lexical: Lexical) {
-  const value = lexical.official_rafsi;
-  if (!("known" in value) || !Array.isArray(value.known)) return [];
+/** Each source field retains its own claim and source record. */
+export function importedRafsiClaims(definition: Carrier, lexical: Lexical) {
   const original = definition.body.legacy.original;
   const legacy = definition.body.legacy;
   const sql = legacy.extraction.startsWith("lensisku-sql-");
-  return value.known.map((rafsi: string) => {
-    const record = sql
-      ? { kind: "word", id: Number(original.valsi.valsiid.$source_number) }
-      : legacy.record;
-    const locator = sql
-      ? `valsi/valsiid=${record.id}/rafsi`
-      : `${legacy.locator}/official_rafsi`;
-    const source = {
-      label: sql
-        ? "Lensisku word-level official rafsi"
-        : "Lensisku official_rafsi",
-      url: definition.body.sources[0].url ?? null,
-      event: null,
-      locator,
-    };
-    const body = {
-      word: {
-        ...definition.body.word,
-        spelling: definition.body.word.spelling
-          .normalize("NFD")
-          .replaceAll("\u0301", "")
-          .normalize("NFC"),
-      },
-      rafsi,
-      rationale: [
-        [
-          "Imported official rafsi evidence. This claim carries no implicit endorsement.",
-        ],
-      ],
-      sources: [source],
-      legacy: {
-        source: legacy.source,
-        snapshot: legacy.snapshot,
-        extraction: legacy.extraction,
-        record,
+  const claims = [];
+  for (const authority of ["official", "experimental"] as const) {
+    const field = `${authority}_rafsi` as const;
+    const value = lexical[field];
+    if (!("known" in value) || !Array.isArray(value.known)) continue;
+    for (const rafsi of value.known as string[]) {
+      const wordLevel = sql && authority === "official";
+      const record = wordLevel
+        ? { kind: "word", id: Number(original.valsi.valsiid.$source_number) }
+        : legacy.record;
+      const locator = wordLevel
+        ? `valsi/valsiid=${record.id}/rafsi`
+        : `${legacy.locator}/${sql ? "rafsi" : field}`;
+      const source = {
+        label: wordLevel
+          ? "Lensisku word-level official rafsi"
+          : `Lensisku definition-level ${authority} rafsi`,
+        url: definition.body.sources[0].url ?? null,
+        event: null,
         locator,
-        original: sql
-          ? { valsi: original.valsi }
-          : { official_rafsi: originalField(original, "official_rafsi").value },
-        attribution: {
-          author: null,
-          editor: null,
-          author_account: null,
-          dates: {},
+      };
+      const body = {
+        word: {
+          ...definition.body.word,
+          spelling: definition.body.word.spelling
+            .normalize("NFD")
+            .replaceAll("\u0301", "")
+            .normalize("NFC"),
         },
-        conversion: {
-          method: "literal",
-          tool: "jbovlacku-lensisku-import",
-          version: "official-rafsi-v1",
-          model: null,
-          review: "unreviewed",
-          mappings: [],
-          warnings: [],
-        },
-        limitations: [
-          "The source marks these rafsi as official. The importer supplies no endorsement or historical author claim.",
-          "Experimental definition-level rafsi remain source evidence and create no claims in this recipe.",
+        rafsi,
+        rationale: [
+          [
+            `Imported ${authority} rafsi evidence. This claim carries no implicit endorsement.`,
+          ],
         ],
-      },
-    };
-    return {
-      key: rafsiClaimKey(body),
-      action: {
-        kind: "rafsi.publish",
-        word: wordId(body.word),
-        assignment: rafsiPairId(wordId(body.word), rafsi),
-        origin: "import",
-      },
-      body,
-    };
-  });
+        sources: [source],
+        legacy: {
+          source: legacy.source,
+          snapshot: legacy.snapshot,
+          extraction: legacy.extraction,
+          record,
+          locator,
+          original: wordLevel
+            ? { valsi: original.valsi }
+            : sql
+              ? {
+                  definitions: {
+                    definitionid: original.definitions.definitionid,
+                    valsiid: original.definitions.valsiid,
+                    rafsi: original.definitions.rafsi,
+                  },
+                }
+              : { [field]: originalField(original, field).value },
+          attribution: {
+            author: null,
+            editor: null,
+            author_account: null,
+            dates: {},
+          },
+          conversion: {
+            method: "literal",
+            tool: "jbovlacku-lensisku-import",
+            version: "source-rafsi-v1",
+            model: null,
+            review: "unreviewed",
+            mappings: [],
+            warnings: [],
+          },
+          limitations: [
+            `The source marks this rafsi as ${authority}. The importer supplies no endorsement or historical author claim.`,
+            "Word-level and definition-level rafsi remain separate source evidence. The active definition gate still applies.",
+          ],
+        },
+      };
+      claims.push({
+        key: rafsiClaimKey(body),
+        authority,
+        action: {
+          kind: "rafsi.publish",
+          word: wordId(body.word),
+          assignment: rafsiPairId(wordId(body.word), rafsi),
+          origin: "import",
+        },
+        body,
+      });
+    }
+  }
+  return claims;
 }
 
 export function emptyFidelity() {

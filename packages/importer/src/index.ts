@@ -2,7 +2,7 @@ import { convertPlaces } from "./places.ts";
 import {
   displayUsername,
   originalField,
-  officialRafsiClaims,
+  importedRafsiClaims,
   rafsiClaimKey,
   emptyFidelity,
   countFidelity,
@@ -349,7 +349,7 @@ function definition(
     "Explicit x-place forms use a context frame. Unindexed place keywords remain source evidence.",
     "The source capture does not include a rights statement. Rights remain unknown.",
     `Unavailable endpoint fields: ${manifest.unavailable_fields.join(", ")}.`,
-    "Known official rafsi can produce separate imported claims. Experimental rafsi remain source evidence.",
+    "Known official and experimental rafsi produce separate unreviewed imported claims.",
     "The extraction omits embedding, similarity, can_edit, user_vote, comment_count, has_image, sound_url, langrealname, metadata, cached_*, canonical_word, and processed_text. These derived, display, and viewer values remain in the exact source archive.",
     "Joined usernames supply display evidence only. An explicit numeric author or capture filter supplies account evidence.",
   ];
@@ -841,13 +841,17 @@ export function importCapture(options: ImportOptions): ImportResult {
     );
   const ids: string[] = [];
   const claims = new Set<string>();
+  const byAuthority = {
+    official: new Set<string>(),
+    experimental: new Set<string>(),
+  };
   for (const entry of Object.values(journal.entries)) {
     const version = entry.versions.find(
       (item) => item.carrier.envelope.id === entry.selected,
     )!;
     ids.push(entry.selected);
     countFidelity(report.fidelity, version.carrier);
-    for (const claim of officialRafsiClaims(version.carrier, version.lexical)) {
+    for (const claim of importedRafsiClaims(version.carrier, version.lexical)) {
       journal.rafsi_claims ??= [];
       let carrier = journal.rafsi_claims.find(
         (item) => rafsiClaimKey(item.body) === claim.key,
@@ -857,9 +861,11 @@ export function importCapture(options: ImportOptions): ImportResult {
         journal.rafsi_claims.push(carrier);
       }
       claims.add(carrier.envelope.id);
+      byAuthority[claim.authority].add(carrier.envelope.id);
     }
   }
-  report.fidelity.official_rafsi_claims = claims.size;
+  report.fidelity.official_rafsi_claims = byAuthority.official.size;
+  report.fidelity.experimental_rafsi_claims = byAuthority.experimental.size;
   ids.push(...claims);
   ids.sort();
   const prepared = prepareSelection(utf8(canonical(ids)));

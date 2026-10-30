@@ -101,7 +101,8 @@ test("imported places, official rafsi, source name and source date reach word an
     .locator("article.hit")
     .filter({ hasText: "fildycku" })
     .first();
-  await expect(row.getByText("fid", { exact: true })).toBeVisible();
+  await expect(row.locator(".rafsi")).toContainText("fid");
+  await expect(row.locator(".rafsi")).toContainText("fai");
   await expect(row).toContainText("fidelity source author");
   await expect(row).toContainText("Jan 2026");
   await expect(

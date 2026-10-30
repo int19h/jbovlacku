@@ -432,8 +432,8 @@ They cover populated builders, key states, delivery records, expanded place fiel
 They measure retired-key reporting, trust without a key, delivered outbox links, and the untested-backup action on Publish.
 They check sentences in the first-signature dialog, identity continuity, and Publish root, component, and competing claim notices.
 
-Model-assisted import conversion and experimental rafsi publication remain unfinished.
-Known official rafsi produce separate imported claims, subject to the active definition gate.
+Model-assisted import conversion remains unfinished.
+Known official and experimental rafsi produce separate unreviewed imported claims, subject to the active definition gate.
 Captured usernames supply display attribution without establishing numeric authorship.
 The complete `jvc` command catalog in the format specification remains a target interface.
 The [development guide](docs/development.md) describes the implemented native commands.
