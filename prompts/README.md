@@ -1,7 +1,7 @@
 # AI prompts
 
 This folder holds the prompts for the optional AI actions that the [frontend specification](../docs/frontend.md) describes.
-The shared service uses these files for both server adapters.
+The shared service uses these files on the Node server.
 The four tasks below retain the studied prompts. Local mock tests cover the application loop and answer checks.
 Provider availability still depends on operator configuration.
 
