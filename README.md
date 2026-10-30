@@ -136,7 +136,9 @@ A download keeps its requested language even when the language selector changes 
 Signing needs localhost or HTTPS. A plain HTTP Tailscale address supports reading only.
 
 The importer prepares signed proposals from pinned local Lensisku JSON captures and SQL snapshots. Repeat imports reuse signed records and retain source evidence.
-It keeps definitions literal and preserves unknown fields as unknown. It does not infer places or individual votes.
+It converts supported explicit x-place forms and preserves unknown fields as unknown. It does not infer individual votes.
+The versioned conversion preserves exact source text, records Unicode scalar spans, and declares observed indices without a fixed arity claim.
+Equations, quotations, component variables, notes, and etymology remain literal.
 New SQL and REST publications omit derived vectors and caches with explicit source limitations.
 REST publications also omit viewer-specific values.
 The current importer records unknown rights. The source-notice convention below remains a target change.
@@ -430,7 +432,9 @@ They cover populated builders, key states, delivery records, expanded place fiel
 They measure retired-key reporting, trust without a key, delivered outbox links, and the untested-backup action on Publish.
 They check sentences in the first-signature dialog, identity continuity, and Publish root, component, and competing claim notices.
 
-Automatic rafsi publications and structured import conversion remain unfinished.
+Model-assisted import conversion and experimental rafsi publication remain unfinished.
+Known official rafsi produce separate imported claims, subject to the active definition gate.
+Captured usernames supply display attribution without establishing numeric authorship.
 The complete `jvc` command catalog in the format specification remains a target interface.
 The [development guide](docs/development.md) describes the implemented native commands.
 
