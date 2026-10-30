@@ -128,7 +128,12 @@ export function validateEntry(
   language: string,
   version: 1 | 2 = 1,
 ): asserts value is PackageEntry {
-  if (value && typeof value === "object" && "search_status" in value) {
+  if (
+    version === 2 &&
+    value &&
+    typeof value === "object" &&
+    "search_status" in value
+  ) {
     const { search_status, ...base } = value as Record<string, any>;
     if (
       !fields(search_status, ["view", "status"]) ||

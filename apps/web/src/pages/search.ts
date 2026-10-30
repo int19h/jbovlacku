@@ -1,3 +1,4 @@
+import { meaningPrivacy } from "../components/meaning-privacy.ts";
 import { meaningSearchGroup } from "../components/meaning-search.ts";
 import {
   matchGroup,
@@ -242,6 +243,8 @@ export async function searchPage(
         query ? [query] : [],
         {
           signal: context.signal,
+          view: getPreferredView(),
+          includeRetired,
           ...(query && isPatternQuery(query)
             ? { group: "lojban" as const }
             : { grouped: true }),
@@ -276,6 +279,22 @@ export async function searchPage(
         fillLanguages();
       })
       .catch(() => {});
+  countLine.before(meaningPrivacy(app, !!cached));
+  if (
+    cached &&
+    cached.entries.some(
+      (entry) =>
+        !entry.search_status ||
+        (getPreferredView() && entry.search_status.view !== getPreferredView()),
+    )
+  )
+    results.before(
+      p(
+        "Known-word ordering is unavailable for this package or view. Download a new package for the server view in Settings. Definitions appear first.",
+        "notice",
+      ),
+    );
+
   if (!query) {
     count.textContent = "Type a word or a meaning to search.";
     if (app.session.preferences.searchMode === "local" && !cached) {
@@ -287,7 +306,7 @@ export async function searchPage(
     } else if (cached)
       results.append(
         p(
-          `Local search package from snapshot ${cached.snapshot.slice(7, 19)}…. Queries stay in this browser.`,
+          `Local search package from snapshot ${cached.snapshot.slice(7, 19)}….`,
           "meta",
         ),
       );
@@ -347,6 +366,7 @@ export async function searchPage(
       total: number;
       initial: LocalHit[];
       loaded: boolean;
+      failed: boolean;
     }
   >;
   for (const [index, key] of (["lojban", "definitions"] as const).entries()) {
@@ -358,7 +378,8 @@ export async function searchPage(
     });
     const status = el("p", {
       class: "count",
-      "aria-live": "polite",
+      text: "Searching…",
+      tabindex: "-1",
     });
     const rows = el("div");
     const end = el("div", { class: "end-line" });
@@ -383,6 +404,7 @@ export async function searchPage(
       total: initialLocal?.totals[index] ?? 0,
       initial: initialLocal?.hits[index] ?? [],
       loaded: false,
+      failed: false,
     };
   }
   const remember = () => {
@@ -434,6 +456,20 @@ export async function searchPage(
       );
     }
   };
+  let initialized = false;
+  let meaningCount = "";
+  const announceCounts = () => {
+    if (!initialized || expanding || !context.live()) return;
+    const message = [
+      ...Object.values(groups)
+        .filter((group) => !group.node.hidden)
+        .map((group) => group.status.textContent),
+      meaningCount,
+    ]
+      .filter(Boolean)
+      .join(" ");
+    if (count.textContent !== message) count.textContent = message;
+  };
   const refresh = () => {
     provenance
       .querySelector(".body")!
@@ -459,14 +495,6 @@ export async function searchPage(
     const before = results.firstElementChild;
     if (before !== ordered[0].node)
       results.prepend(...ordered.map((group) => group.node));
-    const total = Object.values(groups).reduce(
-      (sum, group) => sum + (cached ? group.total : group.hits.length),
-      0,
-    );
-    const activeGroups = pattern ? [groups.lojban] : Object.values(groups);
-    count.textContent = activeGroups.every((group) => !group.loaded)
-      ? "Search results are unavailable."
-      : `${total}${!cached && activeGroups.some((group) => !group.loaded || group.next) ? " or more" : ""} ${pattern ? "Lojban" : "word and definition"} ${total === 1 ? "result" : "results"}`;
     for (const [key, group] of Object.entries(groups) as [
       SearchGroup,
       typeof groups.lojban,
@@ -476,9 +504,13 @@ export async function searchPage(
         : group.next
           ? null
           : 0;
-      group.status.textContent = !group.loaded
-        ? "Results are unavailable."
+      const statusText = !group.loaded
+        ? group.failed
+          ? "Results are unavailable."
+          : "Searching…"
         : `${group.hits.length}${remaining === null ? " or more" : ""} ${key === "lojban" ? "Lojban" : "definition"} ${group.hits.length === 1 && remaining !== null ? "result" : "results"} shown.`;
+      if (group.status.textContent !== statusText)
+        group.status.textContent = statusText;
       group.end.replaceChildren();
       if (remaining === null || remaining > 0) {
         group.end.append(
@@ -512,9 +544,19 @@ export async function searchPage(
                 expanding = false;
                 if (context.live()) {
                   refresh();
-                  group.rows
-                    .querySelectorAll<HTMLElement>("article .hw")
-                    [firstNew]?.focus();
+                  const target =
+                    group.rows.querySelectorAll<HTMLElement>("article .hw")[
+                      firstNew
+                    ] ??
+                    group.rows.querySelector<HTMLElement>(
+                      ".read-error button",
+                    ) ??
+                    group.end.querySelector<HTMLElement>(
+                      "button:not(:disabled)",
+                    ) ??
+                    group.status;
+                  target.focus();
+                  announceCounts();
                 }
               }
             },
@@ -535,11 +577,11 @@ export async function searchPage(
     ))
       control.disabled = expanding;
   };
-  const retry = el("div");
-  results.before(retry);
   const showError = (key: SearchGroup, error: unknown) => {
     const group = groups[key];
-    group.rows.append(
+    group.failed = true;
+    const notice = el("div", { class: "read-error", tabindex: "-1" });
+    notice.append(
       p(
         error instanceof TransportError && !cached
           ? `${error.message} Download a search package in Settings to search without a connection.`
@@ -547,10 +589,8 @@ export async function searchPage(
         "notice",
       ),
     );
-    if (!retry.querySelector("button")) {
-      retry.replaceChildren();
-      appendReadRetry(retry, error, context, app.announce);
-    }
+    appendReadRetry(notice, error, context, app.announce);
+    group.rows.append(notice);
   };
   const loadNext = async (key: SearchGroup, all = false) => {
     const group = groups[key];
@@ -569,6 +609,8 @@ export async function searchPage(
           offset: group.hits.length,
           limit,
           signal: context.signal,
+          view: getPreferredView(),
+          includeRetired,
         });
         if (!context.live()) return;
         hits = page.hits[0];
@@ -676,6 +718,8 @@ export async function searchPage(
             group: key,
             limit: saved.groups[key].hits.length,
             signal: context.signal,
+            view: getPreferredView(),
+            includeRetired,
           });
           if (!context.live()) return;
           group.total = page.totals[0];
@@ -693,8 +737,8 @@ export async function searchPage(
         await loadNext(key);
       } catch (error) {
         if (context.live()) showError(key, error);
-        // The first remote page must establish one snapshot before other groups read it.
-        if (!cached && !snapshot) break;
+        groups[key].failed = true;
+        refresh();
       }
       if (!context.live()) return;
     }
@@ -711,7 +755,7 @@ export async function searchPage(
       group.rows.append(p("No matches in this group.", "small"));
   }
   if (!pattern)
-    void meaningSearchGroup(
+    await meaningSearchGroup(
       results,
       query,
       language,
@@ -721,6 +765,10 @@ export async function searchPage(
       (hit, source) => hitRow(app, hit, query, language, source, context),
       {
         busy: () => expanding,
+        changed: announceCounts,
+        summary: (message) => {
+          meaningCount = message;
+        },
         async run(work) {
           if (expanding || !context.live()) return;
           expanding = true;
@@ -729,11 +777,16 @@ export async function searchPage(
             await work();
           } finally {
             expanding = false;
-            if (context.live()) refresh();
+            if (context.live()) {
+              refresh();
+              announceCounts();
+            }
           }
         },
       },
     );
+  initialized = true;
+  announceCounts();
   const retired = el("span", { class: "meta" });
   if (!cached)
     retired.append(

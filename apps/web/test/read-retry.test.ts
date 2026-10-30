@@ -32,15 +32,15 @@ for (const surface of ["word", "search"] as const)
         ? `**/api/v1/words/${encodeURIComponent(f.words.cukta)}*`
         : "**/api/v1/search*";
     await page.route(pattern, async (route) => {
+      expect(new URL(route.request().url()).searchParams.get("view")).toBe(
+        f.views.shun,
+      );
       if (
         surface === "search" &&
         new URL(route.request().url()).searchParams.get("group") ===
           "definitions"
       )
         return route.continue();
-      expect(new URL(route.request().url()).searchParams.get("view")).toBe(
-        f.views.shun,
-      );
       requests++;
       if (blocked)
         return route.fulfill({
@@ -165,15 +165,15 @@ for (const surface of ["word", "search"] as const)
           : "No connection to the server.";
       let requests = 0;
       await page.route(pattern, async (route) => {
+        expect(new URL(route.request().url()).searchParams.get("view")).toBe(
+          f.views.shun,
+        );
         if (
           surface === "search" &&
           new URL(route.request().url()).searchParams.get("group") ===
             "definitions"
         )
           return route.continue();
-        expect(new URL(route.request().url()).searchParams.get("view")).toBe(
-          f.views.shun,
-        );
         expect(route.request().method()).toBe("GET");
         requests++;
         if (requests === 1)

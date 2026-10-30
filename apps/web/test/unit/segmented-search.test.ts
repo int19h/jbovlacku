@@ -217,3 +217,32 @@ test("known-word ordering agrees locally and remotely for whole query tokens and
     false,
   );
 });
+
+test("ordering evidence is optional v2 metadata with strict field validation", async () => {
+  const { validateEntry } = await import("../../src/data/search.ts");
+  const { identityFromSeed } =
+    await import("../../../../packages/core/src/index.ts");
+  const base = entries(["klama"])[0];
+  const search_status = { view: "jve1:" + "a".repeat(64), status: "active" };
+  const v2 = {
+    ...base,
+    issuer: identityFromSeed(new Uint8Array(32).fill(71)),
+    notes: false,
+    rafsi: [],
+    rafsi_complete: true,
+    attribution: null,
+  };
+  assert.doesNotThrow(() => validateEntry(v2, "en", 2));
+  assert.doesNotThrow(() => validateEntry({ ...v2, search_status }, "en", 2));
+  assert.throws(() => validateEntry({ ...base, search_status }, "en", 1));
+  for (const invalid of [
+    null,
+    {},
+    { ...search_status, view: "invalid" },
+    { ...search_status, status: "unknown" },
+    { ...search_status, extra: true },
+  ])
+    assert.throws(() =>
+      validateEntry({ ...v2, search_status: invalid }, "en", 2),
+    );
+});

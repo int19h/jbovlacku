@@ -159,6 +159,8 @@ The search surface corresponds to `/search?q=...&lang=en`.
 A count line and quiet definition-language select appear above the results. English is the initial definition language.
 The active view appears in the footer. Local or remote search mode lives in Settings.
 The first remote request discloses the named server. Switching modes never uploads local query history silently.
+While meaning search is on, a visible note beside search names its query upload and offers “Turn off meaning search”.
+Local mode keeps word and definition searches in the browser, while consented meaning search uses the server.
 
 Each row has three content lines, separated from the next row by a thin rule and 16px vertical padding.
 The first line shows the linked headword, italic rafsi, type, and selma'o for cmavo.
@@ -171,10 +173,12 @@ The importer signer remains inspectable separately. A shared display name never 
 Search order follows exact headword, exact gloss, exact component sequence, contiguous sequence, headword prefix, gloss prefix, ordered subsequence, and token matches.
 One search box has no mode switch. Visible headings divide results into Lojban words, Definitions, and Similar in meaning.
 Lojban words includes headword, segmented, pattern, and rafsi matches. Definitions includes gloss and text matches.
-When every query word is a known Lojban word, Lojban words comes first. Otherwise, Definitions comes first.
+When every space-separated query word has an exact normalized headword, Lojban words comes first. Otherwise, Definitions comes first.
+The eligible language index must hold each complete spelling. Cmavo segments alone cannot establish a known word.
 Pattern queries show only Lojban words. Each group keeps its own pagination and “show all” action.
 Meaning search needs one inline consent under the frontend's provider and scope rules.
 When AI is off or meaning search is unavailable, that group is absent and leaves no gap.
+The meaning group shows its own server snapshot and view when lexical results use a local package.
 Individual cards follow in query order for words outside exact or contiguous compound spans, with repeated identities grouped.
 Subsequence matches keep those cards. A one-word query shows its exact word and prefix family before compounds that contain it.
 Case and acute headword stress marks do not change the order.

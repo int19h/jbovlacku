@@ -148,7 +148,8 @@ export async function preferencesPage(
     options: [
       {
         value: "local",
-        label: "Local: use downloaded packages, queries stay in this browser",
+        label:
+          "Local: use downloaded packages for word and definition searches",
       },
       {
         value: "remote",
@@ -156,7 +157,7 @@ export async function preferencesPage(
       },
     ],
     value: prefs.searchMode,
-    hint: "Without a downloaded package for a language, local mode still asks the server for that language.",
+    hint: "Without a downloaded package for a language, local mode asks the server. Meaning search sends queries to the server and provider after consent.",
   });
   modeField.input.addEventListener("change", async () => {
     const mode = modeField.input.value as "local" | "remote";

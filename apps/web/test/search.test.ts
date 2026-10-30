@@ -69,7 +69,7 @@ test("downloaded local search sends nothing and offline signing uses saved histo
     results.getByRole("link", { name: "notes" }).first(),
   ).toBeVisible();
   await expect(
-    page.getByText(/^\d+ word and definition results?$/),
+    page.locator("main .count-line [aria-live=polite]"),
   ).toBeVisible();
   privacy.assertPrivate();
   await privacy.dispose();
@@ -473,11 +473,11 @@ test("remote search pages pin snapshot and view, survive browser back, and rejec
       return route.fulfill({ json: { snapshot, view, hits: [], next: null } });
     requests.push(url.search);
     expect(url.searchParams.get("limit")).toBe("20");
+    expect(url.searchParams.get("snapshot")).toBe(snapshot);
+    expect(url.searchParams.get("view")).toBe(view);
     const after = url.searchParams.get("after");
     if (after) {
       expect(after).toBe("next-page");
-      expect(url.searchParams.get("snapshot")).toBe(snapshot);
-      expect(url.searchParams.get("view")).toBe(view);
     }
     return route.fulfill({
       json: {

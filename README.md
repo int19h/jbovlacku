@@ -73,9 +73,12 @@ If storage cannot be read, the saved page keeps known records and offers Retry r
 Delivered records leave the list but keep their receipts in retained history. With no waiting or stopped records, the page shows a short empty state.
 
 The search page uses one box and separate Lojban word, definition, and optional meaning groups.
-Each group has its own pages and show all action. Known Lojban queries put word matches first. Other queries put definitions first.
+Each group has its own pages and show all action. Known complete dictionary spellings put word matches first. Other queries put definitions first.
+Version 2 packages carry optional view-bound eligibility evidence for that order. Older packages keep Definitions first and ask for a refresh.
 Meaning search uses inline consent for the named provider and scope. It stays absent when AI is off or the service is unavailable.
-Pending and failed indexing remain visible beside meaning results.
+Pending and failed indexing remain visible beside meaning results. The meaning snapshot and view stay visible in local mode.
+Back restores saved meaning results without another provider request. A failed matched-definition read retries without repeating inference.
+A visible notice explains meaning uploads and offers an off control. Each completed action announces one result count and preserves keyboard focus.
 Downloaded search packages permit local search without a request for each query. Version 2 packages carry authors, notes, and rafsi for result rows.
 Local and server search share TypeScript morphology and match ranking. Compound cmavo match exact component sequences, contiguous runs, and ordered subsequences.
 For example, `i seri'a bo`, `ise ri'abo`, and `iseri'abo` find the same compound. `i bo` also finds `iseri'abo`.

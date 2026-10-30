@@ -157,6 +157,8 @@ It performs ordinary headword, gloss, and text searches locally after that downl
 A remote search mode remains available for large languages or limited devices. Settings contains the local or remote mode choice.
 Before its first remote query, the app states that queries reach the named server.
 A change of mode does not silently upload previously local query history.
+Local mode keeps word and definition queries in the browser. Consented meaning search still sends each new query to the server and provider.
+The search page states this beside the box while meaning search is on and offers “Turn off meaning search”.
 
 Search normalization affects lookup only. It never rewrites signed spellings or definition text.
 Use NFC, case folding, and explicit apostrophe aliases in search indexes.
@@ -317,7 +319,8 @@ Each nearby call reads the package for its current language, including an empty 
 Changes to the meaning or language invalidate pending results and errors before the next debounced lookup starts.
 The worker ranks all nearby query lists before selecting six rows.
 
-Ordinary local search transfers 20 rows initially. Show all requests only the remaining rows within the browser's 1,000-word limit.
+Ordinary local search transfers up to 20 rows per lexical group initially, so two groups can transfer 40 rows.
+Show all requests only the remaining rows within each group's limit of 1,000 hits.
 Replies include total counts and entry references into the exact package captured by that request. They never copy full definition records back to the page.
 These references preserve matching alternatives, definition order, selected previews, and display spellings.
 
@@ -372,8 +375,17 @@ One search box shows three groups with visible headings: Lojban words, Definitio
 There is no search-class or meaning-mode switch.
 Lojban words includes headword, segmented, pattern, and rafsi matches. Definitions includes gloss and text matches.
 A word can appear in both groups when it matches both. Each group keeps its own match-class order and alternatives.
-When every query word is a known Lojban word in the eligible language index, Lojban words comes first. Otherwise, Definitions comes first.
-A known complete headword also puts Lojban words first. Unknown words do not establish this order. Limited query segmentation requires a known complete headword.
+When every space-separated query word has an exact normalized headword in the eligible language index, Lojban words comes first. Otherwise, Definitions comes first.
+A known complete headword also puts Lojban words first. Normalization follows the headword rules above, without segmenting a query word into cmavo.
+A compound cmavo spelling counts only when the dictionary holds that complete spelling as a headword.
+For example, known `lo` and `ve` never make `love` a known query word. Known `mi` and `klama` make `mi klama` known.
+
+Server ordering applies its language, effective-receipt, eligibility, and retired-results filters before that test.
+Local ordering uses view-bound evidence in version 2 packages from the same snapshot. It follows the same eligibility and retired-results rules.
+
+Older packages without that evidence cannot establish known words. A visible notice asks for a new package, and Definitions comes first.
+Evidence for a different selected view also cannot establish known words. No local query reaches a server to resolve missing evidence.
+Local hits still include every retained publication. Ordering evidence does not provide complete current publication statuses.
 Pattern queries show only Lojban words.
 
 Similar in meaning uses `POST /search/semantic` after one inline consent in the search page, without a modal.
@@ -381,11 +393,18 @@ The disclosure names the server, provider, task, and fields sent. It covers this
 Remembered consent applies only to that provider and scope, under section 16. Declining keeps ordinary search available.
 When AI assistance is off, or the server lacks `features.semantic_search` and a `query_available` profile, this group is absent.
 An absent group leaves no gap. Pending or failed indexing appears as a coverage note beside meaning results.
+In local mode, meaning search reads a server snapshot that can differ from the downloaded lexical package. Its snapshot and view stay visible beside meaning results.
+Back restores the saved meaning response, displayed rows, snapshot, view, profile, and expansion count without another inference request.
+Restoration requires the same query, language, view choice, and remembered provider and scope consent.
 Similarity never becomes an editorial score.
 
 Each group offers pagination and “show all” with its remaining count. The page offers “Missing a word for this? Add it,” and a retired-results filter.
 One click reveals all remaining local hits or fetches remote pages in sequence, up to the browser limit of 1,000 hits per lexical group. Meaning search retains at most 100 definitions and pages them locally.
 Only one expansion runs at once. Navigation cancels it, and repeated cursors or results stop it.
+Each lexical group shows its own loading or failure state. A failed group does not prevent the other group from loading.
+One live count region announces the settled results once per search, consent action, retry, or expansion. Group statuses remain ordinary text.
+After expansion, focus moves to the first new row. A failed or empty expansion keeps focus on its retry, remaining control, or group status.
+A failed meaning definition read offers Retry reading for that definition. This retry retains successful rows and sends no inference request.
 A rafsi lookup identifies the related word, for example “cku ← cukta,” and exposes competing assignments when present.
 Rafsi lookup does not silently pick an unresolved assignment.
 A single unreviewed definition remains visible. A lack of endorsements is not a negative judgment.
@@ -1333,8 +1352,11 @@ Both methods accept the pattern syntax in section 4 by default.
 With `literal=1`, they search the query literally instead. Any other `literal` value returns HTTP 400.
 The meaning wizard sets `literal` to `"1"` in its consented POST search. Ordinary word searches keep pattern mode.
 Optional `group` selects `lojban` or `definitions` before matching and pagination. Other values return HTTP 400.
-Without it, the earlier combined lexical order remains available. Package bytes and signed records do not change.
-Search responses can include `all_lojban`, which states whether the eligible index knows the complete query or each recognized query word.
+Without it, the earlier combined lexical order remains available. Signed records do not change.
+Version 2 package entries can carry the optional ordering evidence defined below.
+Search responses can include `all_lojban`. It states whether the eligible index knows the complete normalized headword or every space-separated query word.
+Each query word must match one complete normalized dictionary spelling. Segmented cmavo pieces, punctuation aliases, and unrecognized text do not establish that spelling.
+The response uses the same language, view, snapshot, receipt, eligibility, and retired-results filters as its hits.
 Search cursors include the group and literal mode. A cursor from another mode returns HTTP 400 with `bad_cursor`.
 `pattern_invalid` returns HTTP 400, and `pattern_timeout` returns HTTP 422.
 An excess pattern request returns HTTP 503 with `search_busy` and `Retry-After: 1`.
@@ -1666,6 +1688,12 @@ Their dedicated endpoint uses that limit rather than the 256 KiB event-body limi
 An entry contains `event`, `word`, `language`, `glosses`, `plain_text`, `classification`, and `body`.
 Event is the publication ID. Word is its word object. Body is its body hash or null.
 A version 2 entry adds `issuer`, `notes`, `rafsi`, `rafsi_complete`, and `attribution`.
+It can also carry `search_status`, with exactly `view` and `status`. The view is the selected signed view ID for that package's snapshot.
+Status is `active`, `retired`, or `ineligible`. Active means eligible, effective, and active for ordinary remote search.
+Retired means eligible and effective, but included only when remote search includes retired results. It includes unresolved non-active statuses under that filter.
+Ineligible means that the publication cannot establish a known query word in that view.
+This is derived server evidence for ordering, rather than signed publication status. It changes with status, eligibility, receipt, or selected-view changes.
+Version 1 emitted entries keep their original fields. Older version 2 clients can use their recorded version 1 fallback.
 Issuer is the signing key, which is the importer for an import. Notes is true when the definition has notes.
 Rafsi lists the spellings of retained rafsi claim bodies for the word, sorted, at most 64 of them. `rafsi_complete` is false when the word has more claims than the list holds. Missing, unreadable, or invalid claim bytes also set `rafsi_complete` to false. A client never treats a cut list as a complete conflict inventory. The exact claims of a word are the `rafsi` event IDs of the word route and their claim bodies.
 Attribution is null for a native publication.
@@ -1821,7 +1849,9 @@ The language block stays last. Without a language block, `explain.txt` is last.
 
 The Assistance group of Settings has one checkbox, “Use AI assistance”. It is on by default when the server offers assistance.
 When it is off, the app hides every AI tagged button, suggestion panel, and AI hint line.
-It also hides suggestion notes, consent dialogs, inline meaning consent, and the Similar in meaning group. Hidden controls leave no gap, and every manual path stays complete. The app sends nothing to a provider.
+It also hides suggestion notes, consent dialogs, inline meaning consent, and the Similar in meaning group.
+The nearby panel also hides its “by meaning” choice. Hidden controls leave no gap, and every manual path stays complete.
+The app sends nothing to a provider.
 When no assistance capability is available, the app looks the same. The checkbox is replaced by the line “Not available on this server.” The user's own choice is kept for a server that offers assistance later.
 
 The server offers assistance when capabilities expose a generation operation or a query-available embedding profile.
@@ -1831,7 +1861,10 @@ If neither capability is available, the checkbox gives way to “Not available o
 
 While assistance is off or meaning search is unavailable, the search page keeps its Lojban and definition groups.
 The meaning group returns when its required capability is available and assistance is on.
-Remembered provider and scope consent stays unchanged. Nearby search in the meaning step retains its explicit “by meaning” choice.
+Remembered provider and scope consent stays unchanged.
+The nearby panel in the wizard's meaning step retains its explicit “by words” and “by meaning” choices.
+When AI assistance is off or meaning search is unavailable, that panel hides “by meaning” and uses “by words”.
+It keeps the stored choice and restores it when assistance and the required capability return.
 
 The baseline provider interface is a documented subset of OpenAI-compatible Chat Completions and Embeddings over HTTP and JSON.
 It uses `/chat/completions` and `/embeddings` under a configured base URL. It does not depend on legacy text completions.
