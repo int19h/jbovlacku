@@ -197,24 +197,38 @@ No key reaches the browser. The browser never receives query or document vectors
 The selected generation must match the requested view and complete profile.
 Search checks every event against its exact envelope, body, word, language, and semantic extraction version in the requested snapshot.
 Unchanged definitions remain searchable after other events change the snapshot. New definitions remain pending until their vectors exist.
-Missing or mismatched associations cannot enter the results. A failed entry does not disable unrelated indexed definitions.
+
+Missing or mismatched associations count as pending and cannot enter the results.
+An extraction-version change can make an association stale even when its snapshot stays unchanged.
+Failed coverage counts input errors and failed or ambiguous provider attempts only when their stored associations still match.
+A failed entry does not disable unrelated indexed definitions.
+
 The profile must remain compatible. A context with no indexed definitions returns empty hits with its pending and failed counts, without paid inference.
 
-Set `JVC_SEMANTIC_INDEXING=enabled` to index new definitions while the server runs.
+Set `JVC_SEMANTIC_INDEXING=enabled` to index new definitions and rebuild stale associations while the server runs.
 The server checks the latest completed snapshot every five seconds after each cycle ends.
 It uses its existing directory lock and AssistanceService, including the same execution slots, spending ledger, and limits.
+
 The operator must first publish a completed generation for the selected profile and view.
 The server does not adopt unfinished operator jobs, which can contain failed or ambiguous sends.
+
 The background job stages bounded pages, publishes partial coverage, probes the retained profile, and embeds one batch at a time.
 Existing exact input hashes reuse retained vectors. Other inputs receive fresh vectors.
-The server does not create a new generation when all eligible events already have vectors.
+
+An extraction change starts a new generation when current coverage contains stale associations, including within the same snapshot.
+The preceding generation serves its still-valid hits until the new generation finishes preparation and publishes.
+If extraction preserves the exact input bytes, the new associations reuse stored vectors without another embedding call.
+The server does not create a new generation when all eligible events have matching current bindings and stored vectors.
+
 Completed background generations leave storage when no current, rollback, active background pointer, or in-flight search retains them.
 A search retains its generation through inference, scanning, and final retention checks. Cancellation releases it after the worker stops reading.
 Profile coverage reads also retain their generation until their shared calculation finishes.
+
 Retirement marks an unreferenced generation as retired before it deletes rows.
 Each transaction deletes at most 128 associations or batch-input links.
 It yields between transactions. New readers and publication cannot select that generation.
 Each transaction removes only inputs and vectors without a remaining association. It updates storage counts in the same transaction.
+
 An interrupted retirement keeps its cleanup marker. A later background prune or explicit retirement continues that cleanup.
 Operator-created generations remain under explicit operator control. The existing capacity limits still apply.
 
