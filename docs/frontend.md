@@ -398,7 +398,7 @@ Pattern queries show only Lojban words.
 
 Similar in meaning uses `POST /search/semantic` after one inline consent in the search page, without a modal.
 The disclosure names the server, provider, task, and fields sent. It covers this query and future search queries.
-Remembered consent applies only to that provider and scope, under section 16. Declining keeps ordinary search available.
+Remembered consent applies only to that provider and scope, under section 16. The consent box offers a lasting off choice. Declining keeps ordinary search available.
 When AI assistance is off, or the server lacks `features.semantic_search` and a `query_available` profile, this group is absent.
 An absent group leaves no gap. Pending or failed indexing appears as a coverage note beside meaning results.
 
@@ -416,8 +416,9 @@ One click reveals all remaining local hits or fetches remote pages in sequence, 
 Only one expansion runs at once. Navigation cancels it, and repeated cursors or results stop it.
 Each lexical group shows its own loading or failure state. A failed group does not prevent the other group from loading.
 One screen-reader-only count region announces settled lexical counts in displayed group order as soon as both lexical groups finish.
+Local counts state the full total and the shown count when rows remain hidden, including at the browser limit.
 Lexical counts, expansions, Add it, and the retired filter never wait for meaning requests or matched definition reads.
-Meaning results announce their own settled count separately, including while a lexical expansion waits.
+Each settled meaning update includes the last settled lexical counts before its meaning count, including while a lexical expansion waits.
 Each consent action, retry, or expansion announces its own settled results once. Group statuses remain visible ordinary text without a second visible copy.
 After expansion, focus moves to the first new row. A failed or empty expansion keeps focus on its retry, remaining control, or group status.
 A failed meaning definition read offers Retry reading for that definition. This retry retains successful rows and sends no inference request.
@@ -1885,7 +1886,7 @@ If neither capability is available, the checkbox gives way to “Not available o
 
 While assistance is off or meaning search is unavailable, the search page keeps its Lojban and definition groups.
 The meaning group returns when its required capability is available, assistance is on, and the separate meaning-search preference is on.
-Turning meaning search off preserves provider and scope consent and all other AI preferences. Its on control remains beside search.
+Turning meaning search off preserves provider and scope consent and all other AI preferences. Its on control remains beside search when assistance and a query profile are available.
 This search-page preference does not change the wizard's nearby mode or its stored choice.
 Remembered provider and scope consent stays unchanged.
 The nearby panel in the wizard's meaning step retains its explicit “by words” and “by meaning” choices.

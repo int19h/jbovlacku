@@ -157,12 +157,13 @@ Named disclosures have a chevron, secondary label, and at least a 44px target.
 
 The search surface corresponds to `/search?q=...&lang=en`.
 A quiet definition-language select appears above the results. English is the initial definition language.
-Each group shows its count once. One screen-reader-only region announces concise counts in displayed group order, with a separate later meaning count.
+Each group shows its count once. One screen-reader-only region announces concise counts in displayed group order.
+Local counts state the full total and the shown count when rows remain hidden. Each settled meaning update includes the last settled lexical counts before its meaning count.
 The active view appears in the footer. Local or remote search mode lives in Settings.
 The first remote request discloses the named server. Switching modes never uploads local query history silently.
 While meaning search is on, a visible note beside search names its query upload and offers “Turn off meaning search”.
 Local mode keeps word and definition searches in the browser, while consented meaning search uses the server.
-The off choice persists separately from consent and other AI choices. “Turn on meaning search” remains beside search.
+The off choice persists separately from consent and other AI choices. “Turn on meaning search” remains beside search when AI and a query profile are available.
 
 Each row has three content lines, separated from the next row by a thin rule and 16px vertical padding.
 The first line shows the linked headword, italic rafsi, type, and selma'o for cmavo.

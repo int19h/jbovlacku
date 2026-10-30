@@ -83,10 +83,11 @@ Meaning search uses inline consent for the named provider and scope. It stays ab
 Pending and failed indexing remain visible beside meaning results. The meaning snapshot and view stay visible in local mode.
 Back restores saved meaning results without another provider request. A failed matched-definition read retries without repeating inference.
 
-A visible notice explains meaning uploads. Its off control saves a lasting search preference and keeps consent and other AI choices.
-The reader can turn meaning search on again beside search. Lexical counts and controls do not wait for meaning requests or definition reads.
+A visible notice explains meaning uploads. The notice and the consent box offer a lasting off choice. That choice keeps consent and other AI choices.
+When AI and a query profile are available, the on control returns beside search. Lexical counts and controls do not wait for meaning requests or definition reads.
 
-One screen-reader count region announces lexical groups in displayed order, then meaning results separately. Group counts stay visible without a second status line.
+One screen-reader count region announces lexical groups in displayed order. Local counts include the full total and the shown count when rows remain hidden.
+A settled meaning update includes those lexical counts before its meaning count. Group counts stay visible without a second status line.
 Each expansion preserves keyboard focus.
 Downloaded search packages permit local search without a request for each query. Version 2 packages carry authors, notes, and rafsi for result rows.
 
