@@ -273,6 +273,10 @@ test("inline meaning consent can be declined, accepted, remembered, and renewed 
   const meaning = group(page, "Similar in meaning");
   await expect(meaning).toContainText("Provider: Synthetic Embedding Provider");
   await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(page.locator("main [aria-live=polite]")).toHaveCount(1);
+  await expect(page.locator("main .count-line")).not.toContainText(
+    "needs your permission",
+  );
   expect(state.calls).toHaveLength(0);
   await meaning.getByRole("button", { name: "Not now", exact: true }).click();
   await expect(meaning).toContainText("Meaning search is off for this page.");

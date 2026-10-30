@@ -378,6 +378,7 @@ A word can appear in both groups when it matches both. Each group keeps its own 
 When every space-separated query word has an exact normalized headword in the eligible language index, Lojban words comes first. Otherwise, Definitions comes first.
 A known complete headword also puts Lojban words first. Normalization follows the headword rules above, without segmenting a query word into cmavo.
 A compound cmavo spelling counts only when the dictionary holds that complete spelling as a headword.
+
 For example, known `lo` and `ve` never make `love` a known query word. Known `mi` and `klama` make `mi klama` known.
 
 Server ordering applies its language, effective-receipt, eligibility, and retired-results filters before that test.
@@ -393,7 +394,9 @@ The disclosure names the server, provider, task, and fields sent. It covers this
 Remembered consent applies only to that provider and scope, under section 16. Declining keeps ordinary search available.
 When AI assistance is off, or the server lacks `features.semantic_search` and a `query_available` profile, this group is absent.
 An absent group leaves no gap. Pending or failed indexing appears as a coverage note beside meaning results.
+
 In local mode, meaning search reads a server snapshot that can differ from the downloaded lexical package. Its snapshot and view stay visible beside meaning results.
+
 Back restores the saved meaning response, displayed rows, snapshot, view, profile, and expansion count without another inference request.
 Restoration requires the same query, language, view choice, and remembered provider and scope consent.
 If incomplete lexical history requires newer remote lexical results, saved meaning results still keep their saved snapshot.
