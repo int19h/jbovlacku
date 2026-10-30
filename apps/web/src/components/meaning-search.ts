@@ -175,9 +175,9 @@ export async function meaningSearchGroup(
       body,
     );
     group.hidden = false;
-    const setStatus = (message: string) => {
+    const setStatus = (message: string, summary = message) => {
       if (status.textContent !== message) status.textContent = message;
-      expansion.summary(message);
+      expansion.summary(summary);
     };
     const allowed = () => consented(provider, scope);
     const run = async (focusAfter = false) => {
@@ -395,7 +395,7 @@ export async function meaningSearchGroup(
       }
     };
     const consent = (focus = false) => {
-      setStatus("Meaning search needs your permission.");
+      setStatus("Meaning search needs your permission.", "");
       const notice = el("div", {
         class: "notice",
         role: "group",
