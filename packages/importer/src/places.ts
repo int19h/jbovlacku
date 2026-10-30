@@ -60,8 +60,8 @@ export function convertPlaces(source: string | null, field: string) {
       !/[\p{L}\p{M}\p{N}_\\{]$/u.test(before.slice(-2)) &&
       !/^[\p{L}\p{M}\p{N}_{}^]/u.test(after.slice(0, 2));
     const equation =
-      /[=+*/^<>−-]/.test(before.trimEnd().at(-1) ?? "") ||
-      /[=+*/^<>−-]/.test(after.trimStart()[0] ?? "");
+      /[\p{Sm}\p{Pd}*/^]\s*$/u.test(before) ||
+      /^\s*[\p{Sm}\p{Pd}*/^]/u.test(after);
     if (
       place > 0 &&
       place <= 65535 &&
