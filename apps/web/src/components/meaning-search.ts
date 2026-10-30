@@ -43,11 +43,7 @@ interface SavedMeaning {
   count: number;
   displayed: { position: number; hit: SearchHit }[];
 }
-function savedMeaning(
-  query: string,
-  language: string,
-  pinned: SemanticContext | null,
-): SavedMeaning | null {
+function savedMeaning(query: string, language: string): SavedMeaning | null {
   const saved = history.state?.dictionaryMeaning as SavedMeaning | undefined;
   if (
     !saved ||
@@ -60,8 +56,6 @@ function savedMeaning(
     saved.profileInfo?.id !== saved.profile ||
     typeof saved.provider !== "string" ||
     typeof saved.scope !== "string" ||
-    (pinned &&
-      (saved.snapshot !== pinned.snapshot || saved.view !== pinned.view)) ||
     !saved.result ||
     saved.result.snapshot !== saved.snapshot ||
     saved.result.view !== saved.view ||
@@ -122,7 +116,7 @@ export async function meaningSearchGroup(
   });
   context.signal.addEventListener("abort", unsubscribe, { once: true });
   try {
-    let saved = savedMeaning(query, language, pinned);
+    let saved = savedMeaning(query, language);
     const consented = (provider: string, scope: string) =>
       app.session.preferences.aiConsents.some(
         (consent) =>

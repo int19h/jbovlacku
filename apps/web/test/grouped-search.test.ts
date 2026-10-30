@@ -1036,3 +1036,87 @@ test("r2: an old package keeps its hits and visibly explains missing ordering ev
     ),
   ).toBeVisible();
 });
+
+test("r2: Back retains the meaning context when incomplete lexical history reads a newer snapshot", async ({
+  page,
+}) => {
+  const state = await meaningService(page, 25);
+  await page.goto("/search?q=book&lang=en");
+  const meaning = group(page, "Similar in meaning");
+  await meaning.getByRole("button", { name: "Allow meaning search" }).click();
+  await expect(meaning.locator("article")).toHaveCount(20);
+  await meaning.getByRole("button", { name: "show all", exact: true }).click();
+  await expect(meaning.locator("article")).toHaveCount(25);
+  const original = state.calls[0];
+  await page.evaluate(() =>
+    history.replaceState(
+      {
+        ...history.state,
+        dictionarySearch: {
+          ...history.state.dictionarySearch,
+          complete: false,
+        },
+      },
+      "",
+    ),
+  );
+  await page.getByRole("link", { name: "Settings", exact: true }).click();
+  await page.route("**/api/v1/search?**", (route) =>
+    route.fulfill({
+      json: {
+        snapshot: "sha256:" + "f".repeat(64),
+        view: fixture().view,
+        hits: [],
+        next: null,
+        all_lojban: false,
+      },
+    }),
+  );
+  state.fail = true;
+  await page.goBack();
+  await expect(meaning.locator("article")).toHaveCount(25);
+  await expect(meaning).toContainText(original.snapshot);
+  expect(state.calls).toHaveLength(1);
+  expect(
+    await page.evaluate(() => history.state.dictionarySearch.snapshot),
+  ).toBe("sha256:" + "f".repeat(64));
+});
+
+test("r2: failed consent revocation remains visible and keeps the off control usable", async ({
+  page,
+}) => {
+  await meaningService(page);
+  await localPackage(page);
+  await page.goto("/search?q=se&lang=en");
+  await page.getByRole("button", { name: "Allow meaning search" }).click();
+  await expect(
+    group(page, "Similar in meaning").locator("article"),
+  ).toHaveCount(1);
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const original = LocalStore.prototype.setPreferences;
+    LocalStore.prototype.setPreferences = async function (patch: any) {
+      if (patch.aiConsents)
+        throw new Error("Synthetic revocation storage failure.");
+      return original.call(this, patch);
+    };
+  });
+  await page
+    .getByRole("button", { name: "Turn off meaning search", exact: true })
+    .click();
+  await expect(page.locator("main")).toContainText(
+    "The saved consent is unchanged.",
+  );
+  await expect(page.locator("main")).toContainText(
+    "Synthetic revocation storage failure.",
+  );
+  await expect(
+    page.getByRole("button", { name: "Turn off meaning search", exact: true }),
+  ).toBeEnabled();
+  await expect(
+    group(page, "Similar in meaning").locator("article"),
+  ).toHaveCount(1);
+  expect(errors).toEqual([]);
+});
