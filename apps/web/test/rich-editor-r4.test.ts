@@ -1,5 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { richNodes } from "./rich-helpers.ts";
+import { createIdentity, acceptFirstSignature } from "./helpers.ts";
 import type { RichNode, RichText } from "../src/model/types.ts";
 
 const original = "keep\r\nline\rbare\r\nexact";
@@ -130,6 +131,31 @@ for (const kind of kinds) {
       await cdp.send("Input.insertText", { text: "漢" });
       await cdp.detach();
     } else await page.keyboard.type("漢");
+    await expect
+      .poll(
+        async () =>
+          page.evaluate(() => {
+            const events = (window as any).r4CompositionEvents as {
+              type: string;
+              inputType?: string;
+              isComposing?: boolean;
+            }[];
+            return {
+              start: events.some((event) => event.type === "compositionstart"),
+              end: events.some((event) => event.type === "compositionend"),
+              input: events.some(
+                (event) =>
+                  event.inputType === "insertCompositionText" &&
+                  event.isComposing,
+              ),
+            };
+          }),
+        {
+          message:
+            "Native composition prerequisites complete before value assertions",
+        },
+      )
+      .toEqual({ start: true, end: true, input: true });
     const events = await page.evaluate(
       () =>
         (window as any).r4CompositionEvents as {
@@ -231,7 +257,11 @@ test("r4 an untouched field keeps blank paragraphs on save and publication", asy
     await new LocalStore().put("drafts", "current", draft);
     return { text: draft.text, notes: draft.notes };
   });
-  await page.goto("/new/editor");
+  await createIdentity(page);
+  await page.getByRole("link", { name: "Add a word", exact: true }).click();
+  await page
+    .getByRole("link", { name: "Skip to the full editor", exact: true })
+    .click();
   const field = page.getByRole("textbox", {
     name: "Definition text",
     exact: true,
@@ -253,9 +283,65 @@ test("r4 an untouched field keeps blank paragraphs on save and publication", asy
       }),
     )
     .toEqual({ spelling: "brode", saved: exact, published: exact });
-  await field.press("Control+End");
-  await field.pressSequentially("X");
-  expect(await richNodes(field)).toEqual([exact.text[0], ["lastX"]]);
+  expect(await richNodes(field)).toEqual(exact.text);
+  await page.getByRole("button", { name: "Review", exact: true }).click();
+  await page
+    .locator("aside")
+    .getByRole("button", { name: "Publish", exact: true })
+    .click();
+  await acceptFirstSignature(page);
+  await expect(page).toHaveTitle("brode · jbovlacku");
+  const published = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const records = await new LocalStore().list("outbox");
+    const record = records
+      .map((row: any) => JSON.parse(row.transport))
+      .find((transport: any) => transport.body?.word?.spelling === "brode");
+    return { text: record?.body.text, notes: record?.body.notes };
+  });
+  expect(published).toEqual(exact);
+});
+
+test("r4 saving switching resuming and replacing drafts preserve untouched fields", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const values = await page.evaluate(async () => {
+    const { newDraft } = await import(String("/src/model/draft.ts"));
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore();
+    const draft = newDraft({ spelling: "broda", kind: "gismu" });
+    draft.text = [["first\r\n", " adjacent\r"], [" \t"], ["last"]];
+    await store.saveDraft("current", draft, "absent");
+    const saved = await store.get("drafts", "current");
+    const second = await store.switchDraft(
+      saved.revision,
+      newDraft({ spelling: "brode", kind: "gismu" }),
+    );
+    const links = await store.savedDrafts();
+    const retained = await store.get("drafts", links[0].key);
+    const resumed = await store.switchDraft(second.revision, {
+      resume: links[0].key,
+    });
+    const replacement = {
+      ...resumed,
+      spelling: "brodi",
+      revision: crypto.randomUUID(),
+    };
+    await store.replaceDraft("current", replacement, resumed);
+    const replaced = await store.get("drafts", "current");
+    return {
+      exact: draft.text,
+      saved: saved.text,
+      retained: retained.text,
+      resumed: resumed.text,
+      replaced: replaced.text,
+    };
+  });
+  expect(values.saved).toEqual(values.exact);
+  expect(values.retained).toEqual(values.exact);
+  expect(values.resumed).toEqual(values.exact);
+  expect(values.replaced).toEqual(values.exact);
 });
 
 for (const kind of ["word", "web"] as const) {
