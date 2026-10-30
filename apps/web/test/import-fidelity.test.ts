@@ -98,7 +98,7 @@ test("imported places, official rafsi, source name and source date reach word an
   );
   await page.goto("/search?q=fildycku&lang=en");
   const row = page
-    .locator("article.result-row")
+    .locator("article.hit")
     .filter({ hasText: "fildycku" })
     .first();
   await expect(row.getByText("fid", { exact: true })).toBeVisible();
