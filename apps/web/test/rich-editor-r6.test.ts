@@ -1229,11 +1229,11 @@ test("r6 deliberate caret changes replace the retained deletion context", async 
       .poll(() => richNodes(field))
       .toEqual([[node("code", "pre"), "fix"]]);
     if (action === "navigation") {
-      await page.keyboard.press("ArrowLeft");
+      await page.keyboard.press("Control+Home");
       await page.keyboard.type("X");
       await expect
         .poll(() => richNodes(field))
-        .toEqual([[node("code", "prXe"), "fix"]]);
+        .toEqual([["X", node("code", "pre"), "fix"]]);
     } else if (action === "pointer") {
       // A precise protocol pointer selection can choose the equivalent code end.
       await field.dispatchEvent("pointerdown");
