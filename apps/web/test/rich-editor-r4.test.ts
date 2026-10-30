@@ -118,9 +118,16 @@ for (const kind of kinds) {
             type: event.type,
             inputType: input.inputType,
             isComposing: input.isComposing,
+            trusted: event.isTrusted,
+            value: (field as any).value,
           });
         });
     });
+    const changed = (
+      original.slice(0, offset) +
+      "漢" +
+      original.slice(offset)
+    ).replace(/\r\n?/gu, "\n");
     if (browserName === "chromium") {
       const cdp = await page.context().newCDPSession(page);
       await cdp.send("Input.imeSetComposition", {
@@ -128,9 +135,41 @@ for (const kind of kinds) {
         selectionStart: 1,
         selectionEnd: 1,
       });
+      await expect
+        .poll(() => richNodes(field))
+        .toEqual([[...neighbor, node(kind, changed)]]);
+      const mirror = await field.evaluate((field: any) => {
+        const nodes = field
+          .querySelector("p")
+          .querySelectorAll(
+            ".rich-literal,.rich-code,.rich-word-link,.rich-web-link",
+          );
+        const target = nodes[nodes.length - 1];
+        const text = target.textContent,
+          native = target.firstChild;
+        const selection = getSelection()!;
+        const anchor = selection.anchorNode,
+          offset = selection.anchorOffset;
+        field.value = field.value;
+        return {
+          sameNode: target.firstChild === native,
+          sameText: target.textContent === text,
+          sameCaret:
+            selection.anchorNode === anchor &&
+            selection.anchorOffset === offset,
+        };
+      });
+      expect(mirror).toEqual({
+        sameNode: true,
+        sameText: true,
+        sameCaret: true,
+      });
       await cdp.send("Input.insertText", { text: "漢" });
       await cdp.detach();
     } else await page.keyboard.type("漢");
+    await expect
+      .poll(() => richNodes(field))
+      .toEqual([[...neighbor, node(kind, changed)]]);
     await expect
       .poll(
         async () =>
@@ -151,8 +190,7 @@ for (const kind of kinds) {
             };
           }),
         {
-          message:
-            "Native composition prerequisites complete before value assertions",
+          message: "Native composition completes with its actual input events",
         },
       )
       .toEqual({ start: true, end: true, input: true });
@@ -162,6 +200,8 @@ for (const kind of kinds) {
           type: string;
           inputType?: string;
           isComposing?: boolean;
+          trusted: boolean;
+          value: RichText;
         }[],
     );
     expect(events.some((event) => event.type === "compositionstart")).toBe(
@@ -174,14 +214,18 @@ for (const kind of kinds) {
           event.inputType === "insertCompositionText" && event.isComposing,
       ),
     ).toBe(true);
-    const changed = (
-      original.slice(0, offset) +
-      "漢" +
-      original.slice(offset)
-    ).replace(/\r\n?/gu, "\n");
-    await expect
-      .poll(() => richNodes(field))
-      .toEqual([[...neighbor, node(kind, changed)]]);
+    const emitted = events.filter(
+      (event) => event.type === "input" && !event.trusted,
+    );
+    expect(emitted.length).toBeGreaterThan(0);
+    for (const event of emitted)
+      expect(event.value).toEqual([[...neighbor, node(kind, changed)]]);
+    await page
+      .getByRole("button", { name: "Insert place 1", exact: true })
+      .focus();
+    expect(await richNodes(field)).toEqual([
+      [...neighbor, node(kind, changed)],
+    ]);
     await field.press("Control+z");
     await expect
       .poll(() => richNodes(field))

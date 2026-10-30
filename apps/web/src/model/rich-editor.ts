@@ -105,13 +105,31 @@ export const richEditorSchema = new Schema({
 const schema = richEditorSchema;
 const contents = (value: string) => (value ? schema.text(value) : undefined);
 /** Normalize edited containers in the same history event as their input. */
-export function editedTextPlugin(): Plugin {
-  return new Plugin({
+export function editedTextPlugin(
+  options: { composing?: () => boolean } = {},
+): Plugin {
+  const plugin = new Plugin<EditorNode | null>({
+    state: {
+      init: () => null,
+      apply(transaction, previous) {
+        if (transaction.getMeta("richCompositionStart")) return transaction.doc;
+        if (transaction.getMeta("richCompositionEnd")) return null;
+        return previous;
+      },
+    },
     appendTransaction(transactions, before, state) {
-      if (!transactions.some((transaction) => transaction.docChanged))
+      if (options.composing?.()) return null;
+      const composition = plugin.getState(before);
+      if (
+        !transactions.some(
+          (transaction) =>
+            transaction.docChanged ||
+            (composition && transaction.getMeta("richCompositionEnd")),
+        )
+      )
         return null;
       const retained = new Set<EditorNode>();
-      before.doc.descendants((node) => {
+      (composition ?? before.doc).descendants((node) => {
         retained.add(node);
       });
       const changes: { from: number; to: number; text: string }[] = [];
@@ -163,9 +181,12 @@ export function editedTextPlugin(): Plugin {
           combined.step(step);
         transaction.setMeta(plugin, { ...rule, transform: combined });
       }
-      return transaction.setMeta("addToHistory", false);
+      return transaction
+        .setMeta("addToHistory", false)
+        .setMeta("richNormalization", true);
     },
   });
+  return plugin;
 }
 let nextOrigin = 0;
 export function richToEditor(value: RichText): EditorNode {
@@ -211,7 +232,19 @@ export function richToEditor(value: RichText): EditorNode {
   );
   return doc;
 }
-export function editorToRich(doc: EditorNode): RichText {
+/** Active composition exports LF text without rewriting its native DOM. */
+export function editorToRich(
+  doc: EditorNode,
+  editedFrom?: EditorNode,
+): RichText {
+  const retained = new Set<EditorNode>();
+  editedFrom?.descendants((node) => {
+    retained.add(node);
+  });
+  const text = (node: EditorNode) =>
+    editedFrom && !retained.has(node)
+      ? node.textContent.replace(/\r\n?/gu, "\n")
+      : node.textContent;
   const value: RichText = [];
   doc.forEach((paragraph) => {
     const nodes: RichNode[] = [];
@@ -235,8 +268,8 @@ export function editorToRich(doc: EditorNode): RichText {
               origin.index === previousOrigin.index + 1;
             const last = nodes.length - 1;
             if (typeof nodes[last] === "string" && !retainedBoundary)
-              nodes[last] = (nodes[last] as string) + node.textContent;
-            else nodes.push(node.textContent);
+              nodes[last] = (nodes[last] as string) + text(node);
+            else nodes.push(text(node));
             previousOrigin = origin;
           }
           break;
@@ -247,13 +280,13 @@ export function editorToRich(doc: EditorNode): RichText {
           nodes.push({ operand: node.attrs.id });
           break;
         case "code":
-          nodes.push({ code: node.textContent });
+          nodes.push({ code: text(node) });
           break;
         case "word_link":
-          nodes.push({ word: { ...node.attrs.word }, label: node.textContent });
+          nodes.push({ word: { ...node.attrs.word }, label: text(node) });
           break;
         case "web_link":
-          nodes.push({ url: node.attrs.url, label: node.textContent });
+          nodes.push({ url: node.attrs.url, label: text(node) });
           break;
       }
       if (!["text", "literal"].includes(node.type.name)) previousOrigin = null;
@@ -581,6 +614,7 @@ export function placeInputPlugins(options: PlaceRuleOptions): Plugin[] {
     state: {
       init: () => ({ before: null, inserted: false, committed: false }),
       apply(tr, previous) {
+        if (tr.getMeta("richNormalization")) return previous;
         if (tr.getMeta("richCompositionStart"))
           return { before: tr.doc, inserted: false, committed: false };
         if (tr.getMeta("richCompositionEnd"))

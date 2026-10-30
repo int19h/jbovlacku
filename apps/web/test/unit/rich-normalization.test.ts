@@ -263,3 +263,64 @@ test("line-ending normalization keeps immediate input-rule Backspace intact", ()
   );
   assert.deepEqual(editorToRich(state.doc), [["keep\n___"]]);
 });
+
+test("preedit serializes edited nodes to LF before commit without changing the active model", () => {
+  const base = richToEditor([[...left, raw]]);
+  let composing = true;
+  let state = EditorState.create({
+    doc: base,
+    plugins: [editedTextPlugin({ composing: () => composing }), history()],
+  });
+  const dispatch = (transaction: typeof state.tr) => {
+    state = state.applyTransaction(transaction).state;
+  };
+  dispatch(state.tr.setMeta("richCompositionStart", true));
+  const at = base.content.size - 2;
+  dispatch(state.tr.insertText("漢", at).setMeta("composition", 1));
+  assert.deepEqual(editorToRich(state.doc), [[...left, raw + "漢"]]);
+  assert.deepEqual(editorToRich(state.doc, base), [[...left, "a\nb\nc漢"]]);
+  composing = false;
+  dispatch(state.tr.setMeta("richCompositionEnd", true));
+  assert.deepEqual(editorToRich(state.doc), [[...left, "a\nb\nc漢"]]);
+  assert.equal(undoDepth(state), 1);
+  assert.equal(undo(state, dispatch), true);
+  assert.deepEqual(editorToRich(state.doc), [[...left, "a\nb\nc"]]);
+  assert.equal(undoDepth(state), 0);
+});
+
+test("deferred normalization preserves composition rule conversion and its Backspace", () => {
+  let composing = true;
+  const rules = placeInputPlugins({
+    enabled: () => true,
+    composing: () => composing,
+  });
+  let state = EditorState.create({
+    doc: richToEditor([[raw + "__50_"]]),
+    plugins: [
+      editedTextPlugin({ composing: () => composing }),
+      ...rules,
+      history(),
+    ],
+  });
+  const dispatch = (transaction: typeof state.tr) => {
+    state = state.applyTransaction(transaction).state;
+  };
+  dispatch(
+    state.tr.setSelection(
+      TextSelection.create(state.doc, state.doc.content.size - 2),
+    ),
+  );
+  dispatch(state.tr.setMeta("richCompositionStart", true));
+  dispatch(state.tr.insertText("_").setMeta("composition", 1));
+  assert.deepEqual(editorToRich(state.doc), [[raw + "__50__"]]);
+  composing = false;
+  dispatch(state.tr.setMeta("richCompositionEnd", true));
+  assert.deepEqual(editorToRich(state.doc), [["a\nb\nc", 50]]);
+  assert.equal(
+    undoInputRule(state, (transaction) =>
+      dispatch(transaction.setMeta("richRuleUndo", true)),
+    ),
+    true,
+  );
+  assert.deepEqual(editorToRich(state.doc), [["a\nb\nc__50__"]]);
+});

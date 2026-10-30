@@ -69,6 +69,82 @@ function preserveOutsideNativeEdit(
     return false;
   });
 }
+/** Keep the active native composition intact until its commit event. */
+function preserveComposingText(
+  view: EditorView,
+  transaction: Transaction,
+  edit: { doc: EditorNode; from: number; to: number },
+) {
+  if (transaction.before !== edit.doc) return;
+  const selection = view.dom.ownerDocument.getSelection();
+  const points: {
+    position: number;
+    mapping: number;
+    anchor?: number;
+    head?: number;
+  }[] = [];
+  edit.doc.descendants((node, position) => {
+    if (!["literal", "code", "word_link", "web_link"].includes(node.type.name))
+      return;
+    if (position + node.nodeSize <= edit.from || position >= edit.to)
+      return false;
+    const dom = view.nodeDOM(position);
+    const mapped = transaction.mapping.map(position, 1);
+    const parsed = transaction.doc.nodeAt(mapped);
+    const raw = dom?.textContent;
+    if (
+      !dom ||
+      !parsed ||
+      !raw?.includes("\r") ||
+      !node.sameMarkup(parsed) ||
+      raw === parsed.textContent ||
+      raw.replace(/\r\n?/gu, "\n") !== parsed.textContent
+    )
+      return false;
+    const offset = (point: Node | null, at: number) => {
+      if (!point || !dom.contains(point)) return undefined;
+      const range = view.dom.ownerDocument.createRange();
+      range.selectNodeContents(dom);
+      range.setEnd(point, at);
+      return range.toString().length;
+    };
+    const anchor = offset(
+      selection?.anchorNode ?? null,
+      selection?.anchorOffset ?? 0,
+    );
+    const head = offset(
+      selection?.focusNode ?? null,
+      selection?.focusOffset ?? 0,
+    );
+    transaction.replaceWith(
+      mapped,
+      mapped + parsed.nodeSize,
+      parsed.type.create(parsed.attrs, richEditorSchema.text(raw)),
+    );
+    points.push({
+      position: mapped,
+      mapping: transaction.mapping.maps.length,
+      anchor,
+      head,
+    });
+    return false;
+  });
+  let anchor = transaction.selection.anchor,
+    head = transaction.selection.head;
+  for (const point of points) {
+    const start =
+      transaction.mapping.slice(point.mapping).map(point.position, -1) + 1;
+    if (point.anchor !== undefined) anchor = start + point.anchor;
+    if (point.head !== undefined) head = start + point.head;
+  }
+  if (points.length)
+    transaction.setSelection(
+      TextSelection.between(
+        transaction.doc.resolve(anchor),
+        transaction.doc.resolve(head),
+      ),
+    );
+}
 /** Native selection changes can still be pending when beforeinput runs. */
 function insertionSelection(view: EditorView, input: InputEvent) {
   const target = input.getTargetRanges?.()[0];
@@ -173,6 +249,8 @@ export function richField(label: string, options: RichFieldOptions) {
     null;
   let blurTimer: number | undefined;
   let nativeEdit: { doc: EditorNode; from: number; to: number } | null = null;
+  let compositionDoc: EditorNode | null = null;
+  let compositionGeneration = 0;
   let dialog: HTMLDialogElement | null = null;
   let editLink: HTMLButtonElement | undefined;
   const rulePlugins = placeInputPlugins({
@@ -184,7 +262,7 @@ export function richField(label: string, options: RichFieldOptions) {
       doc,
       selection: selection ?? TextSelection.atEnd(doc),
       plugins: [
-        editedTextPlugin(),
+        editedTextPlugin({ composing: () => view?.composing ?? false }),
         ...rulePlugins,
         new Plugin({
           props: {
@@ -357,15 +435,18 @@ export function richField(label: string, options: RichFieldOptions) {
     dispatchTransaction(transaction) {
       if (transaction.docChanged && nativeEdit) {
         // Explicit editor commands do not carry the DOM reader's composition ID.
-        if (transaction.getMeta("composition") !== undefined)
+        if (transaction.getMeta("composition") !== undefined) {
           preserveOutsideNativeEdit(transaction, nativeEdit);
+          if (view.composing)
+            preserveComposingText(view, transaction, nativeEdit);
+        }
         nativeEdit = null;
       }
       const result = view.state.applyTransaction(transaction);
       view.updateState(result.state);
       syncLinkAction();
       if (result.transactions.some((tr) => tr.docChanged)) {
-        current = editorToRich(view.state.doc);
+        current = editorToRich(view.state.doc, compositionDoc ?? undefined);
         view.dom.dispatchEvent(new Event("input", { bubbles: true }));
       }
     },
@@ -439,6 +520,8 @@ export function richField(label: string, options: RichFieldOptions) {
         return true;
       },
       compositionstart() {
+        compositionGeneration++;
+        compositionDoc = view.state.doc;
         view.dispatch(view.state.tr.setMeta("richCompositionStart", true));
         return false;
       },
@@ -462,11 +545,14 @@ export function richField(label: string, options: RichFieldOptions) {
         return true;
       },
       compositionend() {
+        const generation = compositionGeneration;
         // Android can commit DOM changes without handleTextInput.
         setTimeout(() => {
+          if (generation !== compositionGeneration) return;
           if (!view.isDestroyed)
             view.dispatch(view.state.tr.setMeta("richCompositionEnd", true));
           nativeEdit = null;
+          compositionDoc = null;
         }, 0);
         return false;
       },
@@ -540,6 +626,10 @@ export function richField(label: string, options: RichFieldOptions) {
       const unchanged = JSON.stringify(current) === JSON.stringify(value);
       current = value;
       nativeEdit = null;
+      if (!unchanged) {
+        compositionGeneration++;
+        compositionDoc = null;
+      }
       if (view.isDestroyed) return;
       // External draft changes start a new history for this field.
       if (!unchanged) view.updateState(state());
@@ -987,6 +1077,8 @@ export function richField(label: string, options: RichFieldOptions) {
   }
   onDisconnect(wrapper, () => {
     nativeEdit = null;
+    compositionGeneration++;
+    compositionDoc = null;
     clearMove();
     dialog?.close();
     view.destroy();
