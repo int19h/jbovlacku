@@ -162,7 +162,10 @@ async function start() {
   };
   let revision = 0;
   let controller = new AbortController();
-  const render = async (route: Route, options: { focusHeading: boolean }) => {
+  const render = async (
+    route: Route,
+    options: { focusHeading: boolean; restoringHistory?: boolean },
+  ) => {
     const current = ++revision;
     controller.abort();
     controller = new AbortController();
@@ -182,6 +185,7 @@ async function start() {
       live: () => current === revision,
       signal,
       readRetryAttempt: takeReadRetryAttempt(),
+      restoringHistory: options.restoringHistory,
       focus: (target, options) =>
         current === revision && readerFocus.focus(target, options),
       title: (value) => {
@@ -287,6 +291,14 @@ async function start() {
         : guardDraftNavigation(target),
     );
   installRouter();
-  await render(currentRoute(), { focusHeading: false });
+  await render(currentRoute(), {
+    focusHeading: false,
+    restoringHistory:
+      (
+        performance.getEntriesByType("navigation")[0] as
+          | PerformanceNavigationTiming
+          | undefined
+      )?.type === "back_forward",
+  });
 }
 void start();

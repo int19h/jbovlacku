@@ -166,6 +166,8 @@ export interface OutboxItem {
 }
 export type Preferences = {
   useAiAssistance: boolean;
+  /** Search-page meaning queries. Consent remains a separate choice. */
+  useMeaningSearch: boolean;
   aiConsents: {
     provider: string;
     scope: string;
@@ -197,6 +199,7 @@ export interface PeerConfig {
 }
 export const defaultPreferences: Preferences = {
   useAiAssistance: true,
+  useMeaningSearch: true,
   aiConsents: [],
   definitionLanguage: "en",
   searchMode: "local",

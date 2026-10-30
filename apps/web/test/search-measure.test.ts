@@ -174,7 +174,11 @@ test("measure real package routes and browser main-thread CPU", async ({
   );
   const broadStart = await cpu();
   await navigate("/search?q=a&lang=en");
-  await expect(page.locator("article.hit")).toHaveCount(20);
+  const definitions = page.getByRole("region", {
+    name: "Definitions",
+    exact: true,
+  });
+  await expect(definitions.locator("article.hit")).toHaveCount(20);
   const firstCpu = 1000 * ((await cpu()) - broadStart);
   const firstTransfers = await page.evaluate(
     (start) => (window as any).packageTransfers.slice(start),
@@ -188,13 +192,16 @@ test("measure real package routes and browser main-thread CPU", async ({
     }),
   );
   expect(firstTransfers).toHaveLength(1);
-  expect(firstTransfers[0].rows).toEqual([20]);
+  expect(firstTransfers[0].rows).toHaveLength(2);
+  expect(firstTransfers[0].rows.every((rows: number) => rows <= 20)).toBe(true);
   expect(firstTransfers[0].utf8_json_bytes).toBeLessThan(100_000);
-  expect(firstTransfers[0].totals[0]).toBeGreaterThan(1000);
+  expect(firstTransfers[0].totals[1]).toBeGreaterThan(1000);
   expect(firstCpu).toBeLessThan(400);
   const showAllStart = await cpu();
-  await page.getByRole("button", { name: "show all", exact: true }).click();
-  await expect(page.locator("article.hit")).toHaveCount(1000);
+  await definitions
+    .getByRole("button", { name: "show all", exact: true })
+    .click();
+  await expect(definitions.locator("article.hit")).toHaveCount(1000);
   const showAllTransfers = await page.evaluate(
     (start) => (window as any).packageTransfers.slice(start + 1),
     transferStart,

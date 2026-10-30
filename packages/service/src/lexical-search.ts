@@ -45,19 +45,14 @@ export function lexicalSearch(
     }
   >();
   const pattern = options.patterns !== false && isPatternQuery(query);
-  const source = pattern
-    ? (function* () {
-        for (const entry of entries)
-          yield {
-            ...entry,
-            rafsi: rafsi[evaluation.publications[entry.event]?.word] ?? [],
-          };
-      })()
-    : entries;
   const selected = selectedRows
-    ? { rows: selectedRows, segmentation: "complete" as const }
+    ? {
+        rows: options.group === "definitions" ? [] : selectedRows,
+        segmentation: "complete" as const,
+        allLojban: false,
+      }
     : selectMatches(
-        source,
+        entries,
         query,
         metrics,
         (entry) => {
@@ -70,7 +65,13 @@ export function lexicalSearch(
             (publication.status === "active" || includeRetired)
           );
         },
-        options,
+        {
+          ...options,
+          rafsiFor: (entry) =>
+            rafsi[
+              evaluation.publications[(entry as SearchEntry).event]?.word
+            ] ?? [],
+        },
       );
   for (const { entry, match, position } of selected.rows) {
     const publication = evaluation.publications[entry.event];
@@ -133,6 +134,7 @@ export function lexicalSearch(
       return hit;
     }),
     selected.segmentation,
+    selected.allLojban,
   );
 }
 
@@ -188,7 +190,7 @@ export async function lexicalSearchAsync(
     includeRetired,
     undefined,
     rafsi,
-    {},
+    options,
     matches.map((row) => ({
       entry: source[row.index],
       match: row.match,

@@ -68,7 +68,9 @@ test("downloaded local search sends nothing and offline signing uses saved histo
   await expect(
     results.getByRole("link", { name: "notes" }).first(),
   ).toBeVisible();
-  await expect(page.getByText(/^\d+ words?$/)).toBeVisible();
+  await expect(
+    page.locator("main .count-line [aria-live=polite]"),
+  ).toBeVisible();
   privacy.assertPrivate();
   await privacy.dispose();
   // Offline signing uses the remembered local history only.
@@ -467,13 +469,15 @@ test("remote search pages pin snapshot and view, survive browser back, and rejec
   const requests: string[] = [];
   await page.route("**/api/v1/search?**", (route) => {
     const url = new URL(route.request().url());
+    if (url.searchParams.get("group") === "lojban")
+      return route.fulfill({ json: { snapshot, view, hits: [], next: null } });
     requests.push(url.search);
     expect(url.searchParams.get("limit")).toBe("20");
+    expect(url.searchParams.get("snapshot")).toBe(snapshot);
+    expect(url.searchParams.get("view")).toBe(view);
     const after = url.searchParams.get("after");
     if (after) {
       expect(after).toBe("next-page");
-      expect(url.searchParams.get("snapshot")).toBe(snapshot);
-      expect(url.searchParams.get("view")).toBe(view);
     }
     return route.fulfill({
       json: {
@@ -532,6 +536,8 @@ test("remote search pages pin snapshot and view, survive browser back, and rejec
   await page.route("**/api/v1/search?**", (route) => {
     const url = new URL(route.request().url());
     const later = url.searchParams.has("after");
+    if (url.searchParams.get("group") === "lojban")
+      return route.fulfill({ json: { snapshot, view, hits: [], next: null } });
     return route.fulfill({
       json: {
         snapshot,
@@ -782,7 +788,9 @@ test("the retired-results filter asks the server for retired publications and sh
   });
   await page.goto("/search?q=retirementprobe&lang=en");
   await expect(
-    page.getByText("No matching definitions on this server.", { exact: true }),
+    page
+      .getByRole("region", { name: "Definitions", exact: true })
+      .getByText("No matches in this group.", { exact: true }),
   ).toBeVisible();
   expect(requests.at(-1)).not.toContain("retired=");
   await expect(
@@ -802,7 +810,9 @@ test("the retired-results filter asks the server for retired publications and sh
   await page.getByLabel("Include retired results").uncheck();
   await expect(page).not.toHaveURL(/retired=1/);
   await expect(
-    page.getByText("No matching definitions on this server.", { exact: true }),
+    page
+      .getByRole("region", { name: "Definitions", exact: true })
+      .getByText("No matches in this group.", { exact: true }),
   ).toBeVisible();
   expect(requests.at(-1)).not.toContain("retired=");
 });
@@ -1221,7 +1231,10 @@ test("a restored search belongs to the view choice that produced it: a changed c
   const f = fixture();
   const requests: string[] = [];
   await page.route("**/api/v1/search?**", (route) => {
-    requests.push(new URL(route.request().url()).search);
+    if (
+      new URL(route.request().url()).searchParams.get("group") !== "definitions"
+    )
+      requests.push(new URL(route.request().url()).search);
     return route.continue();
   });
   const results = page.getByRole("region", { name: "Search results" });
