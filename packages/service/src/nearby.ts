@@ -4,7 +4,7 @@ export function nearbyQuery(meaning: string): string[] {
     ...new Set(
       meaning
         .replace(
-          /(?<![\p{L}\p{N}])\$?x_?\{?\d+\}?\$?(?![\p{L}\p{N}])|\{place\s+\d+\}|[①-⑳]/giu,
+          /(?<![\p{L}\p{N}])\$?x_?\{?\d+\}?\$?(?![\p{L}\p{N}])|\{place\s+\d+\}|[①-⑳㉑-㉟㊱-㊿]/giu,
           " ",
         )
         .split(/\s+/u)

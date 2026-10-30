@@ -1,3 +1,5 @@
+import { richHasContent } from "../model/rich-values.ts";
+import { editorLoadError } from "../components/editor-load-error.ts";
 /** Public identity: fingerprint, profile when known, trust actions, and this server's evidence. */
 import { deliveryAccepted } from "../data/delivery.ts";
 import {
@@ -19,18 +21,12 @@ import {
   identityLink,
   forgetProfile,
 } from "../components/attribution.ts";
-import {
-  countNodes,
-  renderRichText,
-  richTextToText,
-  textToRichText,
-} from "../model/richtext.ts";
+import { countNodes, renderRichText } from "../model/richtext.ts";
 import { routes, type RenderContext, type Route } from "../app/router.ts";
 import type { App } from "../app/context.ts";
 import {
   identityId,
   type ProfileBody,
-  type RichText,
   type IdentityResponse,
 } from "../model/types.ts";
 import { trustPanel } from "../components/trustpanel.ts";
@@ -263,16 +259,22 @@ export async function personPage(
       response?.profile.state === "known"
         ? (response.profile.claims[0]?.body ?? null)
         : null;
-    const editor = profileEditor(app, identity, current, () => {
+    try {
+      const editor = await profileEditor(app, identity, current, () => {
+        if (!context.live()) return;
+        main.replaceChildren();
+        void personPage(route, context, app, true);
+      });
       if (!context.live()) return;
-      main.replaceChildren();
-      void personPage(route, context, app, true);
-    });
-    main.append(editor);
-    // The key page links here with #edit. Focus the connected first field.
-    const firstField = editor.querySelector<HTMLInputElement>("input");
-    if (location.hash === "#edit" && firstField && context.focus(firstField))
-      editor.scrollIntoView();
+      main.append(editor);
+      // The key page links here with #edit. Focus the connected first field.
+      const firstField = editor.querySelector<HTMLInputElement>("input");
+      if (location.hash === "#edit" && firstField && context.focus(firstField))
+        editor.scrollIntoView();
+    } catch (error) {
+      if (!context.live()) return;
+      main.append(editorLoadError(error));
+    }
   }
   const view = await loadSiteView(context.signal).catch(() => null);
   if (!context.live()) return;
@@ -360,10 +362,30 @@ export async function personPage(
       class: "btn btn-quiet",
       "aria-expanded": "false",
     });
-    const report = button("Report abuse", () => reportDialog(app, identity), {
-      class: "btn btn-quiet",
-      style: "margin-left:auto",
-    });
+    let openingReport = false;
+    const reportError = el("div");
+    const report = button(
+      "Report abuse",
+      async () => {
+        if (openingReport) return;
+        openingReport = true;
+        report.disabled = true;
+        reportError.replaceChildren();
+        try {
+          await reportDialog(app, identity, report);
+        } catch (error) {
+          if (context.live() && report.isConnected)
+            reportError.append(editorLoadError(error));
+        } finally {
+          openingReport = false;
+          report.disabled = !app.session.storageAvailable;
+        }
+      },
+      {
+        class: "btn btn-quiet",
+        style: "margin-left:auto",
+      },
+    );
     if (!app.session.storageAvailable)
       for (const control of [trustButton, ignoreButton, report]) {
         control.disabled = true;
@@ -371,7 +393,7 @@ export async function personPage(
           "Browser storage is unavailable, so trust choices and reports cannot be signed or kept.";
       }
     actions.append(trustButton, ignoreButton, report);
-    main.append(actions, slot);
+    main.append(actions, reportError, slot);
   }
   main.append(el("h2", { class: "section", text: "Recent" }));
   const list = el("ol", { "aria-label": "Recent activity" });
@@ -498,21 +520,7 @@ function activityRow(
   return li;
 }
 /** Names the parts of a biography that the plain text editor cannot keep. */
-function richBioParts(bio: RichText): string[] {
-  const parts: string[] = [];
-  for (const paragraph of bio)
-    for (const node of paragraph) {
-      if (typeof node === "string") continue;
-      if (typeof node === "number") parts.push(`place reference ${node}`);
-      else if ("url" in node)
-        parts.push(`the link "${node.label}" to ${node.url}`);
-      else if ("word" in node)
-        parts.push(`the word link "${node.label}" to ${node.word.spelling}`);
-      else if ("code" in node) parts.push(`the code "${node.code}"`);
-      else if ("operand" in node) parts.push(`the operand "${node.operand}"`);
-    }
-  return parts;
-}
+
 /** The format limits of an identity profile. */
 const PROFILE_LIMITS = { name: 80, links: 8, nodes: 8192 };
 /**
@@ -520,12 +528,13 @@ const PROFILE_LIMITS = { name: 80, links: 8, nodes: 8192 };
  * claim. The editor shows the format limits, checks every field before the
  * preview, and signs only from the preview.
  */
-function profileEditor(
+async function profileEditor(
   app: App,
   identity: string,
   current: ProfileBody | null,
   onSigned: () => void,
-): HTMLElement {
+): Promise<HTMLElement> {
+  const { richField } = await import("../components/rich-field.ts");
   const section = el("section", {
     id: "edit",
     class: "card",
@@ -559,28 +568,12 @@ function profileEditor(
     hint: `At most ${PROFILE_LIMITS.name} characters. Shown with your fingerprint, never instead of it.`,
     autocomplete: "off",
   });
-  /** The biography text that the current claim shows in the editor. Unchanged text keeps the exact claim. */
-  const currentBioText = current ? richTextToText(current.bio) : "";
-  const richParts = current ? richBioParts(current.bio) : [];
-  const bio = field("Biography", {
-    multiline: true,
+  const bio = richField("Biography", {
+    value: current?.bio ?? [],
+    local: false,
     rows: 4,
-    value: currentBioText,
-    hint: richParts.length
-      ? "Plain text. A blank line starts a new paragraph. The current biography has links or code that this editor shows as plain text. Leave the field unchanged to keep them exactly."
-      : "Plain text. A blank line starts a new paragraph.",
+    hint: "Use the controls to insert links and code. Enter starts a new paragraph.",
   });
-  // A rich biography is replaced only after an explicit choice.
-  let replaceConfirmed = false;
-  const replaceRich = checkbox(
-    "Replace the links and code of the current biography with this plain text",
-    false,
-    (checked) => {
-      replaceConfirmed = checked;
-      previewBox.replaceChildren();
-    },
-  );
-  replaceRich.hidden = true;
   const links = field("Links", {
     multiline: true,
     rows: 3,
@@ -602,7 +595,6 @@ function profileEditor(
   form.append(
     name.wrapper,
     bio.wrapper,
-    replaceRich,
     links.wrapper,
     problems,
     el("div", { class: "actions" }, submit),
@@ -619,21 +611,7 @@ function profileEditor(
       errors.push(
         `The name has ${[...nameValue].length} characters. The limit is ${PROFILE_LIMITS.name}.`,
       );
-    const bioText = bio.input.value.replace(/\r\n/g, "\n").normalize("NFC");
-    const unchanged = current !== null && bioText === currentBioText;
-    // The exact current claim is reused while its text is unchanged. A changed
-    // text that drops links or code needs the explicit choice.
-    const bioRich = unchanged
-      ? current.bio
-      : bioText.trim()
-        ? textToRichText(bioText, false)
-        : [];
-    const dropsRich = !unchanged && richParts.length > 0;
-    replaceRich.hidden = !dropsRich;
-    if (dropsRich && !replaceConfirmed)
-      errors.push(
-        `The edited biography is plain text. Signing it drops from the current biography: ${richParts.join("; ")}. Keep the field unchanged to keep them, or confirm the replacement below.`,
-      );
+    const bioRich = richHasContent(bio.input.value) ? bio.input.value : [];
     const nodes = countNodes(bioRich);
     if (nodes > PROFILE_LIMITS.nodes)
       errors.push(
@@ -758,8 +736,9 @@ function describeKey(key: string) {
     .filter(Boolean)
     .join(", ");
 }
-function reportDialog(app: App, subject: string) {
-  const opener = document.activeElement as HTMLElement | null;
+async function reportDialog(app: App, subject: string, opener: HTMLElement) {
+  const { richField } = await import("../components/rich-field.ts");
+  if (opener && !opener.isConnected) return;
   const dialog = el("dialog", {
     class: "sheet",
     "aria-labelledby": "report-title",
@@ -778,12 +757,7 @@ function reportDialog(app: App, subject: string) {
   });
   for (const [value, label] of categories)
     category.append(el("option", { value, text: label }));
-  const reason = el("textarea", {
-    class: "field",
-    id: "report-reason",
-    rows: "4",
-    required: "true",
-  });
+  const reason = richField("Explanation", { value: [], local: false, rows: 4 });
   const submit = el("button", {
     type: "submit",
     class: "btn btn-primary",
@@ -808,29 +782,20 @@ function reportDialog(app: App, subject: string) {
       }),
       category,
     ),
-    el(
-      "div",
-      { class: "field-group" },
-      el("label", {
-        for: "report-reason",
-        class: "field-label",
-        text: "Explanation",
-      }),
-      reason,
-    ),
+    reason.wrapper,
     el("div", { class: "actions" }, submit, cancel),
   );
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const explanation = reason.value.trim();
-    if (!explanation) return;
+    const explanation = reason.input.value;
+    if (!richHasContent(explanation)) return;
     const preview = el(
       "div",
       { class: "stack small", style: "margin-top:12px" },
       p(
         `Public report about ${fingerprintText(subject)}: ${categories.find(([v]) => v === category.value)?.[1]}.`,
       ),
-      el("p", {}, el("bdi", { text: explanation })),
+      renderRichText(explanation, { placeHref: null }),
       p(
         "Signed with your key. It does not ban anyone. It stays in history after a later clear.",
       ),
@@ -839,6 +804,8 @@ function reportDialog(app: App, subject: string) {
       "Sign and publish the report",
       async () => {
         dialog.close("signed");
+        // The disclosure needs an opener that survives the queued close event.
+        if (opener.isConnected) opener.focus();
         await app.session.requireUnlocked(
           `Reporting ${subject.slice(8, 16)}`,
           async () => {
@@ -852,7 +819,7 @@ function reportDialog(app: App, subject: string) {
                     category: category.value,
                     value: "report",
                   },
-                  body: { text: [[explanation]] },
+                  body: { text: explanation },
                 },
               ]);
               app.own.invalidate();

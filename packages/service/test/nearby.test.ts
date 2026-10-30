@@ -50,6 +50,11 @@ test("nearby cleanup keeps inner apostrophes and whole words that contain place-
 
 test("circled and braced place markers separate adjacent words", () => {
   assert.deepEqual(nearbyQuery("①eats ②"), ["eats"]);
+  assert.deepEqual(nearbyQuery("㉑eats ㉟food ㊱slowly ㊿"), [
+    "eats",
+    "food",
+    "slowly",
+  ]);
   assert.deepEqual(nearbyQuery("x₁ bowl ①bowl"), ["bowl"]);
   assert.deepEqual(nearbyQuery("before{place 2}after ⑳thin"), [
     "before",

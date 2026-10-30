@@ -1087,6 +1087,161 @@ test("draft validation enforces operation fields, schema and exact context IDs",
     ),
   );
 });
+test("explicit place limits fail before a provider request and preserve manual gaps", async () => {
+  let calls = 0;
+  const instance = service({
+    provider: makeConfig({
+      fetch: (async () => {
+        calls++;
+        throw new Error("The provider must not run.");
+      }) as typeof fetch,
+    }),
+  });
+  const headers = await session(instance);
+  for (const [meaning, text, message] of [
+    ["① ⑰", [], "at most 16"],
+    [
+      "test",
+      [Array.from({ length: 17 }, (_, index) => index + 1)],
+      "at most 16",
+    ],
+    ["① and ④", [], "gaps"],
+    ["test", [[1, " and ", 4]], "gaps"],
+  ] as const) {
+    const request = draft("places-glosses");
+    request.meaning = meaning;
+    request.current.text = structuredClone(
+      text,
+    ) as unknown as AssistRequest["current"]["text"];
+    const response = await instance.fetch(
+      privateRequest("/assist", headers, request),
+    );
+    assert.equal(response.status, 400);
+    const error = (await response.json()) as any;
+    assert.equal(error.code, "explicit_places");
+    assert.match(error.message, new RegExp(message));
+  }
+  assert.equal(calls, 0);
+  const request = draft("places-glosses", {
+    text: [[1, " and ", 4]],
+    frame: {
+      ...structuredClone(frame),
+      arity: { mode: "context" },
+      places: [1, 4].map((index) => ({
+        ...structuredClone(frame.places[0]),
+        index,
+        description: [],
+      })),
+    },
+  });
+  request.meaning = "① and ④";
+  assert.doesNotThrow(() => parseAssistRequest(request));
+  assert.deepEqual(
+    request.current.frame!.places.map((place: any) => [
+      place.index,
+      place.description,
+    ]),
+    [
+      [1, []],
+      [4, []],
+    ],
+  );
+  const indices = Array.from({ length: 17 }, (_, index) => index + 1);
+  const declared = draft("places-glosses", {
+    text: [indices],
+    frame: {
+      ...structuredClone(frame),
+      arity: { mode: "fixed", count: 17 },
+      places: indices.map((index) => ({
+        ...structuredClone(frame.places[0]),
+        index,
+        description: [],
+      })),
+    },
+  });
+  assert.doesNotThrow(() => parseAssistRequest(declared));
+  assert.deepEqual(
+    declared.current.frame!.places.map((place: any) => place.index),
+    indices,
+  );
+  assert.equal(calls, 0);
+});
+for (const [name, meaning, text, count] of [
+  ["blank numbering", "___ gives ___ to ③", [], 3],
+  ["stale Meaning", "x ⑳", [[1, " and ", 2]], 2],
+] as const) {
+  test(`r2 service accepts ${name} and reaches the mocked provider`, async () => {
+    let calls = 0;
+    const answers = [
+      {
+        places: Array.from({ length: count }, (_, index) => ({
+          description: `role ${index + 1}`,
+        })),
+        reason: "The requested roles.",
+      },
+      {
+        word: { gloss: "give", sense: "transfer something to a recipient" },
+        ...Object.fromEntries(
+          Array.from({ length: count }, (_, index) => [
+            `x${index + 1}`,
+            { gloss: `role ${index + 1}`, sense: "" },
+          ]),
+        ),
+      },
+      Object.fromEntries(
+        Array.from({ length: count }, (_, index) => [
+          `x${index + 1}`,
+          [{ type: "referent", reason: "The role is broad." }],
+        ]),
+      ),
+    ];
+    let providerCurrent: AssistRequest["current"] | undefined;
+    const queued = queue(
+      answers.map((answer) => completion(answer)),
+      (body, turn) => {
+        if (turn === 0) {
+          const user = body.messages.find(
+            (message: any) => message.role === "user",
+          );
+          providerCurrent = JSON.parse(user.content.split("\n\n")[0]).current;
+        }
+      },
+    );
+    const instance = service({
+      provider: makeConfig({
+        fetch: (async (...args: Parameters<typeof fetch>) => {
+          calls++;
+          return queued(...args);
+        }) as typeof fetch,
+      }),
+    });
+    const headers = await session(instance);
+    const request = draft("places-glosses");
+    request.meaning = meaning;
+    request.current.text = structuredClone(
+      text,
+    ) as unknown as AssistRequest["current"]["text"];
+    const response = await instance.fetch(
+      privateRequest("/assist", headers, request),
+    );
+    const accepted = (await response.json()) as any;
+    assert.equal(response.status, 202, JSON.stringify(accepted));
+    const done = await poll(instance, accepted.job, headers);
+    assert.equal(done.state, "completed", JSON.stringify(done));
+    assert.equal(calls, 3);
+    assert.equal(request.current.frame, null);
+    assert.equal(parseAssistRequest(request).current.frame, null);
+    assert.equal(providerCurrent!.frame, null);
+    assert.deepEqual(providerCurrent!.text, text);
+    const proposed = done.result.proposals.find(
+      (proposal: any) => proposal.path === "/frame",
+    ).value;
+    assert.deepEqual(
+      proposed.places.map((place: any) => place.index),
+      Array.from({ length: count }, (_, index) => index + 1),
+    );
+  });
+}
 test("all operations return only permitted proposals and preserve non-English glosses", async () => {
   const cases: [AssistRequest, unknown[]][] = [
     [draft("type"), [{ word_type: "lujvo", reason: "A compound fits." }]],

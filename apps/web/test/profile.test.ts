@@ -1,3 +1,5 @@
+import { setRichNodes, appendRichText } from "./rich-helpers.ts";
+import { typeRichText, expectRichText } from "./rich-helpers.ts";
 import { test, expect, type Page } from "@playwright/test";
 import {
   acceptFirstSignature,
@@ -130,12 +132,10 @@ test("the public profile editor checks every limit, previews the signed claim, a
   // The biography node limit and the link count limit are checked too.
   await editor.getByLabel("Name", { exact: true }).fill("Short");
   // 8193 paragraphs are 8193 text parts. The value is set directly, which is faster than typing.
-  await editor
-    .getByLabel("Biography", { exact: true })
-    .evaluate((node: HTMLTextAreaElement) => {
-      node.value = Array(8193).fill("p").join("\n\n");
-      node.dispatchEvent(new Event("input", { bubbles: true }));
-    });
+  await setRichNodes(
+    editor.getByLabel("Biography", { exact: true }),
+    Array.from({ length: 8193 }, () => ["p"]),
+  );
   await editor
     .getByLabel("Links", { exact: true })
     .fill(
@@ -154,9 +154,10 @@ test("the public profile editor checks every limit, previews the signed claim, a
     page.getByRole("region", { name: "Profile preview" }),
   ).toHaveCount(0);
   await editor.getByLabel("Name", { exact: true }).fill("Disposable Tester");
-  await editor
-    .getByLabel("Biography", { exact: true })
-    .fill("A disposable profile for a test.\n\nSecond paragraph.");
+  await typeRichText(
+    editor.getByLabel("Biography", { exact: true }),
+    "A disposable profile for a test.\n\nSecond paragraph.",
+  );
   await editor
     .getByLabel("Links", { exact: true })
     .fill("https://example.org/a");
@@ -340,7 +341,7 @@ async function signRichProfile(page: Page) {
   }, corePath);
 }
 
-test("changing only the name keeps a rich biography exact, and replacing it needs an explicit choice", async ({
+test("name changes and nearby biography edits keep rich nodes exact", async ({
   page,
 }) => {
   await page.goto("/");
@@ -367,12 +368,13 @@ test("changing only the name keeps a rich biography exact, and replacing it need
   );
   await page.getByRole("link", { name: "Edit public profile" }).click();
   const editor = page.getByRole("region", { name: "Edit public profile" });
-  await expect(editor.getByLabel("Biography", { exact: true })).toHaveValue(
+  await expectRichText(
+    editor.getByLabel("Biography", { exact: true }),
     "See the site and the word zo'e.\n\nSecond paragraph.",
   );
-  await expect(editor).toContainText(
-    "The current biography has links or code that this editor shows as plain text.",
-  );
+  await expect(
+    editor.getByLabel("Biography", { exact: true }).locator(".rich-web-link"),
+  ).toContainText("the site");
   // Only the name changes. The signed body carries the exact current biography.
   await editor.getByLabel("Name", { exact: true }).fill("Renamed Tester");
   await editor
@@ -411,31 +413,20 @@ test("changing only the name keeps a rich biography exact, and replacing it need
   ]);
   expect(bodies[1].bio).toEqual(bodies[0].bio);
   expect(bodies[1].links).toEqual(["https://example.org/site"]);
-  // The page rendered again with the new claim. An edited biography names
-  // what the plain text drops and waits for the choice.
   await expect(editor.getByLabel("Name", { exact: true })).toHaveValue(
     "Renamed Tester",
   );
-  await editor
-    .getByLabel("Biography", { exact: true })
-    .fill("A plain biography now.");
-  await editor
-    .getByRole("button", { name: "Preview the signed claim" })
-    .click();
-  await expect(editor).toContainText(
-    'Signing it drops from the current biography: the link "the site" to https://example.org/site; the code "zo\'e".',
+  await appendRichText(
+    editor.getByLabel("Biography", { exact: true }),
+    " More biography.",
   );
-  await expect(preview).toHaveCount(0);
-  await editor
-    .getByLabel(
-      "Replace the links and code of the current biography with this plain text",
-    )
-    .check();
   await editor
     .getByRole("button", { name: "Preview the signed claim" })
     .click();
-  await expect(preview).toContainText("A plain biography now.");
-  await expect(preview.getByRole("link", { name: /the site/ })).toHaveCount(0);
+  await expect(preview).toContainText("More biography.");
+  await expect(
+    preview.getByRole("link", { name: /the site/ }).first(),
+  ).toHaveAttribute("href", "https://example.org/site");
   await preview
     .getByRole("button", { name: "Sign and publish the profile" })
     .click();
@@ -455,7 +446,8 @@ test("changing only the name keeps a rich biography exact, and replacing it need
       items.sort((a: any, b: any) => a.signedAt - b.signedAt).at(-1).transport,
     ).body;
   });
-  expect(last.bio).toEqual([["A plain biography now."]]);
+  expect(last.bio[0]).toEqual(bodies[0].bio[0]);
+  expect(last.bio[1].join("")).toBe("Second paragraph. More biography.");
 });
 
 test("a judgment control built before its card joins the page keeps its subscription, and navigation releases it", async ({

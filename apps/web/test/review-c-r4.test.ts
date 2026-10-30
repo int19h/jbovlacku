@@ -1,3 +1,4 @@
+import { richText, typeRichText } from "./rich-helpers.ts";
 import { expect, test } from "@playwright/test";
 import { corePath } from "./helpers.ts";
 
@@ -18,10 +19,36 @@ test("N1 typed TeX and backslashes keep their values in the saved draft", async 
   }, corePath);
   await page.goto("/new/places");
   const value = String.raw`\rightarrow Tom \& Jerry hello\ world`;
-  const source = `${value} \`\\rho\` [[https://example.org/|\\rm label]] C:\\\n\nNext.\n\n  `;
-  await page
-    .getByRole("textbox", { name: "Definition text", exact: true })
-    .fill(source);
+  const editor = page.getByRole("textbox", {
+    name: "Definition text",
+    exact: true,
+  });
+  const toolbar = page.getByRole("toolbar", {
+    name: "Definition text formatting",
+    exact: true,
+  });
+  await typeRichText(editor, value + " ");
+  await toolbar
+    .getByRole("button", { name: "Insert code", exact: true })
+    .click();
+  const code = page.getByRole("dialog", { name: "Insert code", exact: true });
+  await code
+    .getByLabel("Code", { exact: true })
+    .pressSequentially(String.raw`\rho`);
+  await code.getByRole("button", { name: "Insert", exact: true }).click();
+  await editor.pressSequentially(" ");
+  await toolbar.getByRole("button", { name: "Web link", exact: true }).click();
+  const web = page.getByRole("dialog", { name: "Web link", exact: true });
+  await web
+    .getByLabel("HTTPS address", { exact: true })
+    .fill("https://example.org/");
+  await web
+    .getByLabel("Link label", { exact: true })
+    .pressSequentially(String.raw`\rm label`);
+  await web.getByRole("button", { name: "Insert", exact: true }).click();
+  await editor.pressSequentially(" C:\\");
+  await editor.press("Enter");
+  await editor.pressSequentially("Next.");
   await expect(
     page.getByText("Saved in this browser", { exact: true }),
   ).toBeVisible();
@@ -87,7 +114,7 @@ test("N5 keyboard batches focus the first new row through the final batch", asyn
   ).toBeFocused();
 });
 
-test("N2 and N4 saved prose stays readable and typed trailing whitespace is trimmed", async ({
+test("N2 and N4 saved prose keeps exact line breaks and whitespace", async ({
   page,
 }) => {
   await page.goto("/");
@@ -116,9 +143,9 @@ test("N2 and N4 saved prose stays readable and typed trailing whitespace is trim
     name: "Definition text",
     exact: true,
   });
-  const source = await editor.inputValue();
+  const source = await richText(editor);
   expect(source.split("\n\n")[0]).toBe(prose);
-  await editor.fill(source + "\n\nNext.\n\n  ");
+  await typeRichText(editor, source + "\n\nNext.\n\n  ");
   await expect(
     page.getByText("Saved in this browser", { exact: true }),
   ).toBeVisible();

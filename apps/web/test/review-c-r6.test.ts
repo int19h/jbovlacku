@@ -1,3 +1,5 @@
+import { richNodes, appendRichText as appendNodes } from "./rich-helpers.ts";
+import { appendRichText } from "./rich-helpers.ts";
 import { expect, test } from "@playwright/test";
 import { corePath } from "./helpers.ts";
 
@@ -38,10 +40,12 @@ test("R6 an edit beside padded multiline code keeps literal place notation in co
       return (await new LocalStore().get("drafts", "current")).text;
     });
   expect(await read()).toEqual(original);
-  await editor.fill((await editor.inputValue()) + " appended");
+  await appendRichText(editor, " appended");
   await expect
     .poll(read)
-    .toEqual([[{ code: "x\n① " }, " ", { code: "\nfirst\n①" }, " appended"]]);
+    .toEqual([
+      [{ code: "x\n\n① " }, " ", { code: "\nfirst\n\n①" }, " appended"],
+    ]);
   const problems = await page.evaluate(async () => {
     const { draftToBody } = await import(String("/src/model/draft.ts"));
     const { LocalStore } = await import(String("/src/data/store.ts"));
@@ -132,12 +136,8 @@ for (const [kind, label] of [
     await page.goto("/new/editor");
     const editor = page.getByRole("textbox", { name: label, exact: true });
     await expect(editor).toBeVisible();
-    const source =
-      kind === "rationale"
-        ? "left\nright"
-        : "`left\nright` [[https://example.org/|left\nright]]";
-    expect(await editor.inputValue()).toBe(source);
-    expect(await editor.evaluate((node) => node.tagName)).toBe("TEXTAREA");
+    await expect(editor).toHaveAttribute("contenteditable", "true");
+    if (kind !== "rationale") expect(await richNodes(editor)).toEqual(original);
     const read = () =>
       page.evaluate(async (kind) => {
         const { LocalStore } = await import(String("/src/data/store.ts"));
@@ -152,17 +152,17 @@ for (const [kind, label] of [
         return draft.rafsiClaims[0].rationale;
       }, kind);
     expect(await read()).toEqual(original);
-    await editor.fill(source + " appended");
+    await appendNodes(editor, " appended");
     await expect
       .poll(read)
       .toEqual(
         kind === "rationale"
-          ? "left\nright appended"
+          ? [["left\nright appended"]]
           : [
               [
-                { code: "left\nright" },
+                { code: "left\n\nright" },
                 " ",
-                { url: "https://example.org/", label: "left\nright" },
+                { url: "https://example.org/", label: "left\n\nright" },
                 " appended",
               ],
             ],

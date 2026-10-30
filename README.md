@@ -44,7 +44,7 @@ Search sits in the header of every page. Result rows show the headword, rafsi, t
 Word pages show every definition under the selected view, with place strips, revision notices, comparisons, source evidence, rafsi pair cards, and reviewer details.
 After an HTTP 503 read failure, word and search pages offer Retry reading with the same URL and selected view.
 A failed retry shows its retry number and announces the current error reason, including HTTP 500 and connection failures.
-Untouched rich-text fields keep their exact stored values. Edited fields normalize line endings, string fragments, trailing whitespace, and paragraph breaks. Ordinary TeX and backslashes stay literal. Code and links stay within one paragraph. The editor shows blank lines inside stored code and labels as single line breaks.
+Rich-text fields use accessible ProseMirror editors. Places and operands appear as named inline chips. Code and links keep separate inline nodes. Untouched fields retain their exact stored values.
 Word-link and derivation spelling advice never blocks a format-valid reference. Invalid references show plain error sentences.
 Revision comparisons group changes by readable fields and numbered places, with rich text and complete place and source details.
 They align inserted and removed list items and keep exact structured values in closed disclosures.
@@ -166,9 +166,45 @@ Meaning treats only a backslash before a circled numeral as an escape. It preser
 The Places step and the full editor offer hideable advice above three declared places, with firmer text above five.
 A repeating tail counts once. The advice applies to every word type and never blocks publication or enters signed records.
 Revise copies a publication into a new draft with its exact parent and keeps every field: links, code, operands, literal circled characters, every gloss with its language and sense, every derivation, and the frame role. The page names the only changes a native revision makes. A revision of imported text cites the imported publication and copies the source-rights reference once.
-Each rich text field of a draft holds its exact value, and only an edit of that field parses text, so an untouched field never changes. In structured editing every rich text node has a text form, and a backslash keeps a circled numeral or a token character literal. Pasted circled numbers stay literal unless the author chooses references. Removing a place keeps the referent of every other reference. The shared core checks the finished body before Publish is enabled, and every blocking problem names its field.
-Editing beside multiline code or link labels keeps their node types, literal circled numbers, and edge spacing. Runs of blank lines become single line breaks. All rich-text controls support multiple lines.
-URL targets remove only characters ignored by URL parsing, so edited links keep their destination. Rafsi rationales publish blank lines as separate paragraphs.
+
+The rich editors change the stored node tree directly. CR is a carriage return. LF is a line feed. CRLF is their two-character sequence.
+Editing prose, code, or a link label changes CR and CRLF in that node to LF.
+If an edit combines prose fragments into one stored string, that complete string uses LF.
+
+The LF rule also applies to composition, paste, deletion, undo, and redo. Untouched nodes keep their exact text.
+Changing only a link target keeps its label unchanged. New prose joins nearby text while untouched saved boundaries stay exact.
+
+Character, word, line, selection, and cut requests use editor commands.
+Composition deletion can stay native inside one mapped text node.
+These commands join saved paragraphs without turning inline line breaks into paragraph breaks.
+Partial deletions keep surviving code and link labels in their original node types.
+Cut copies selected text before deletion.
+
+Blank paragraphs stay editable. Edited fields omit whitespace-only paragraphs from saved drafts and published records.
+Edited empty optional fields stay absent. Untouched fields keep their exact values on loading, save, and publication.
+
+Place-row updates preserve the caret and undo history. Pointer focus keeps the clicked caret position. A word link stays a word link when its spelling starts with `https://`.
+
+The toolbar inserts places 1 to 3 directly. A dropdown offers places 4 to 50 and identifies declared places. Labeled dialogs insert word links and code, and Edit link changes an existing target or label. Accessible link names include their targets.
+
+The toolbar uses one tab stop with arrow-key navigation. Keyboard guidance appears for the focused toolbar. Operand controls follow the current declarations and explain a missing declaration after an insertion attempt. The same editor supports HTTPS links and operand references.
+
+Typing `___` inserts the next free place, and `__N__` inserts place N from 1 through 50. Typed circled numbers also insert places. A semicolon restarts automatic numbering. Backspace restores the characters immediately after conversion. Literal mode keeps circled numbers and underscores as text. It preserves code and links.
+
+Paste reads only plain text. Clipboard content without plain text leaves the selection unchanged. Paste inside code or a link label stays in that node. Pasted circled numbers elsewhere stay literal unless the author chooses references. Pasted markup and underscores stay literal.
+
+Copy retains readable place glyphs and operand names. Removing a place keeps the referent of every other reference. The shared core checks the finished body before Publish is enabled, and every blocking problem names its field.
+
+AI frame generation supports up to 16 consecutive places. Manual frames support explicit gaps and more than 16 places. The guard counts blanks with explicit Meaning numbers and prefers current definition places. Numbers above 16 or with gaps require manual declarations before separate gloss and type suggestions.
+
+Reading pages load no ProseMirror code or CSS. Authoring pages load the editor on demand.
+Whitespace-only text stays empty for required definitions, report explanations, biographies, and manual formation reasons.
+
+Chromium and Firefox tests cover keyboard deletion and simulated deletion input without a key event.
+The simulated tests include events that cannot be canceled and later changes to the browser document.
+The editor command determines the saved result in those tests.
+Chromium tests also simulate text composition with an input method editor.
+Real macOS, Android, and iOS keyboard tests remain pending.
 Word links and place derivations use the shared format rules. Valid uppercase references retain their exact targets and do not block publication.
 A draft saved by the earlier prototype opens a choice to export it, convert it into a wizard draft, or discard it. The old license and attribution fields stay in the export only, because new definitions publish under CC0 1.0.
 Remote lexical search, word pages, and downloaded language packages exclude definitions whose receipts are not effective.

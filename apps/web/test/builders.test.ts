@@ -1,3 +1,4 @@
+import { typeRichText } from "./rich-helpers.ts";
 import { test, expect, type Page } from "@playwright/test";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -334,7 +335,13 @@ test("the gismu generator scores exactly, shares ranks, lists conflicts, and rec
   await expect(primary).toBeDisabled();
   await selected.getByRole("checkbox").check();
   await expect(primary).toBeEnabled();
-  await page.getByLabel("Why this form").fill("Only a test.");
+  await expect(
+    page.getByLabel("Why this form", { exact: true }),
+  ).toHaveAttribute("contenteditable", "true");
+  await typeRichText(
+    page.getByLabel("Why this form", { exact: true }),
+    "Only a test.",
+  );
   await primary.click();
   await expect(page).toHaveURL(/\/new\/places$/);
   const draft = await currentDraft(page);
@@ -362,6 +369,7 @@ test("the gismu generator scores exactly, shares ranks, lists conflicts, and rec
   ]);
   expect(typeof draft.formation.selected_rank).toBe("number");
   expect(draft.formation.candidates.length).toBeGreaterThan(0);
+  expect(draft.formation.selection_reason).toEqual([["Only a test."]]);
 });
 
 test("a custom profile needs a positive weight and an unfinished row never gets an invented value", async ({

@@ -1,3 +1,4 @@
+import { richField } from "../../components/rich-field.ts";
 import { packageWordEntries } from "../../data/search.ts";
 import { normalizeAcuteDisplay } from "../../../../../packages/morphology/src/accents.ts";
 import { kindLabel } from "../../model/types.ts";
@@ -68,7 +69,6 @@ import {
   loadDraft,
   stepBar,
 } from "./common.ts";
-import { editorText, editorToRichText } from "../../model/draft.ts";
 
 function originLabel(origin: string): string | null {
   switch (origin) {
@@ -277,17 +277,19 @@ export async function lujvoPage(
     class: "side-col",
     style: "display:flex;flex-direction:column;gap:14px",
   });
-  const definitionField = field("Current definition", {
+  const definitionField = richField("Current definition", {
     multiline: true,
     rows: 4,
-    value: editorText(draft.text, draft.structured),
+    value: draft.text,
+    structured: () => draft.structured,
+    places: () =>
+      draft.frameMode === "none"
+        ? []
+        : draft.places.map((place) => place.index),
     lang: draft.language,
   });
   definitionField.input.addEventListener("input", () => {
-    draft.text = editorToRichText(
-      definitionField.input.value,
-      draft.structured,
-    );
+    draft.text = definitionField.input.value;
     saver.touch();
   });
   aside.append(

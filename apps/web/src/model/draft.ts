@@ -1,3 +1,6 @@
+import { numberMeaningParts } from "../../../../packages/core/src/place-assistance.ts";
+import { editedRich, richHasContent, richValue } from "./rich-values.ts";
+import { circledPlace } from "./place-glyphs.ts";
 /**
  * The local definition draft. The wizard and the full editor edit the same
  * draft. Nothing here signs or sends. The draft keeps the original meaning
@@ -183,7 +186,7 @@ import {
 } from "./builders.ts";
 export interface DraftRafsiClaim {
   rafsi: string;
-  rationale: string;
+  rationale: string | RichText;
 }
 export interface DraftOperand {
   id: string;
@@ -233,7 +236,7 @@ export interface Draft {
   kind: LexicalKind | null;
   selmaho: string[];
   /** Attributed morphology notes from the manual Form step. */
-  formNotes: string;
+  formNotes: string | RichText;
   /** The definition. Structured mode reads typed circled numerals as place references. */
   text: RichText;
   structured: boolean;
@@ -618,44 +621,16 @@ export function numberPlaceholders(meaning: string): {
   count: number;
   parts: NumberingPart[];
 } {
-  type Segment = { text: string; place?: number; blank?: boolean };
-  const segments: Segment[][] = [[]];
-  const append = (segment: Segment) => segments.at(-1)!.push(segment);
-  // Only a backslash immediately before a circled numeral escapes it in
-  // Meaning. All other backslashes stay literal, including before braces.
-  const tokens = /\\([①-⑳])|([①-⑳])|\{place (\d{1,5})\}|(;)|(_{2,})/gu;
-  let index = 0;
-  for (const match of meaning.matchAll(tokens)) {
-    append({ text: escapeLiteral(meaning.slice(index, match.index)) });
-    const [, escaped, circled, placeNumber, separator, blank] = match;
-    if (escaped !== undefined) append({ text: escapeLiteral(escaped) });
-    else if (separator) segments.push([]);
-    else if (blank) append({ text: "", blank: true });
-    else
-      append({
-        text: match[0],
-        place: circled ? circled.codePointAt(0)! - 0x245f : Number(placeNumber),
-      });
-    index = match.index! + match[0].length;
-  }
-  append({ text: escapeLiteral(meaning.slice(index)) });
-  const parts = segments.map((part): NumberingPart => {
-    const used = new Set(
-      part.flatMap((segment) =>
-        segment.place === undefined ? [] : [segment.place],
-      ),
-    );
-    let next = 1;
-    const text = part
-      .map((segment) => {
-        if (!segment.blank) return segment.text;
-        while (used.has(next)) next++;
-        used.add(next);
-        return referencePlace(next++);
-      })
-      .join("");
-    return { text, places: [...used].sort((a, b) => a - b) };
-  });
+  const parts: NumberingPart[] = numberMeaningParts(meaning).map((part) => ({
+    text: part.segments
+      .map((segment) =>
+        segment.place === undefined
+          ? escapeLiteral(segment.text)
+          : segment.text,
+      )
+      .join(""),
+    places: part.places,
+  }));
   return {
     text: parts.map((part) => part.text).join(";"),
     count: parts.reduce(
@@ -704,7 +679,7 @@ const CODE_CONTENT = String.raw`(?!${PARAGRAPH_BREAK})(?:\\[^\r\n]|\\(?=[\r\n])|
 const LINK_TARGET = String.raw`(?!${PARAGRAPH_BREAK})(?:\\[^\r\n]|\\(?=[\r\n])|[^\\\]|])`;
 const LINK_LABEL = String.raw`(?!${PARAGRAPH_BREAK})(?:\\[^\r\n]|\\(?=[\r\n])|[^\\\]])`;
 const TOKEN = new RegExp(
-  String.raw`\\([\\\x60[{①-⑳])|([①-⑳])|\{place (\d{1,5})\}|\{operand ([a-z][a-z0-9_-]{0,31})\}|\x60((?:${CODE_CONTENT})*)\x60|\[\[((?:${LINK_TARGET})+)(?:\|((?:${LINK_LABEL})*))?\]\]`,
+  String.raw`\\([\\\x60[{①-⑳㉑-㉟㊱-㊿])|([①-⑳㉑-㉟㊱-㊿])|\{place (\d{1,5})\}|\{operand ([a-z][a-z0-9_-]{0,31})\}|\x60((?:${CODE_CONTENT})*)\x60|\[\[((?:${LINK_TARGET})+)(?:\|((?:${LINK_LABEL})*))?\]\]`,
   "gu",
 );
 const unescape = (value: string, code = false) =>
@@ -723,7 +698,7 @@ function editorUrl(value: string): string {
     return value;
   }
 }
-/** Parse only an edited field. Line endings and plain whitespace normalize. */
+/** Import legacy markup text. Line endings and plain whitespace normalize. */
 export function editorToRichText(
   source: string,
   structured: boolean,
@@ -773,7 +748,7 @@ export function editorToRichText(
       continue;
     }
     flush();
-    if (circled) nodes.push(circled.codePointAt(0)! - 0x245f);
+    if (circled) nodes.push(circledPlace(circled)!);
     else if (placeNumber) nodes.push(Number(placeNumber));
     else if (operand) nodes.push({ operand });
     else if (code !== undefined) nodes.push({ code: unescape(code, true) });
@@ -798,7 +773,7 @@ export function editorToRichText(
 /** Escape syntax characters and literal place or operand tokens. */
 function escapeLiteral(value: string): string {
   return value.replace(
-    /[\\`[①-⑳]|\{(?=(?:place \d{1,5}|operand [a-z][a-z0-9_-]{0,31})\})/gu,
+    /[\\`[①-⑳㉑-㉟㊱-㊿]|\{(?=(?:place \d{1,5}|operand [a-z][a-z0-9_-]{0,31})\})/gu,
     (c) => `\\${c}`,
   );
 }
@@ -808,7 +783,7 @@ const inlineBreaks = (value: string) =>
   value
     .replace(/\r\n?/gu, "\n")
     .replace(new RegExp(PARAGRAPH_BREAK, "gu"), "\n");
-/** Show stored rich text without changing the draft. Edits normalize it. */
+/** Project stored nodes into legacy markup for compatibility displays. */
 export function richTextToEditor(value: RichText): string {
   return value
     .map((paragraph) => {
@@ -823,9 +798,7 @@ export function richTextToEditor(value: RichText): string {
         .map((node) => {
           if (typeof node === "string") return escapeLiteral(node);
           if (typeof node === "number")
-            return node <= 20
-              ? String.fromCodePoint(0x245f + node)
-              : `{place ${node}}`;
+            return node <= 50 ? placeGlyph(node) : `{place ${node}}`;
           if ("word" in node)
             return node.label === node.word.spelling
               ? `[[${escapeInside(node.word.spelling)}]]`
@@ -848,12 +821,10 @@ export function richTextToEditor(value: RichText): string {
 }
 /** The literal text form of one place number. */
 const literalPlace = (index: number) =>
-  index <= 20
-    ? `\\${String.fromCodePoint(0x245f + index)}`
-    : `\\{place ${index}}`;
+  index <= 50 ? `\\${placeGlyph(index)}` : `\\{place ${index}}`;
 /** The reference form of one place number. */
 const referencePlace = (index: number) =>
-  index <= 20 ? String.fromCodePoint(0x245f + index) : `{place ${index}}`;
+  index <= 50 ? placeGlyph(index) : `{place ${index}}`;
 /**
  * Maps place numbers in editor text, for removal, moves, and index edits.
  * The text is read with the token syntax, so a circled character inside
@@ -867,7 +838,7 @@ export function remapPlaces(
   return text.replace(TOKEN, (whole, _escaped, circled, placeNumber) => {
     if (!circled && !placeNumber) return whole;
     const index = circled
-      ? (circled as string).codePointAt(0)! - 0x245f
+      ? circledPlace(circled as string)!
       : Number(placeNumber);
     const target = map(index);
     return target === "literal" ? literalPlace(index) : referencePlace(target);
@@ -1059,17 +1030,19 @@ export function remapRich(
   value: RichText,
   map: (index: number) => number | "literal",
 ): RichText {
-  return value.map((paragraph) => {
+  let changed = false;
+  const mapped = value.map((paragraph) => {
     const out: RichNode[] = [];
     for (const node of paragraph) {
       let next: RichNode = node;
       if (typeof node === "number") {
         const target = map(node);
+        if (target !== node) changed = true;
         // The literal text form of a place: the circled character, or the
-        // explicit notation above 20, which the editor escapes as `\{place N}`.
+        // explicit notation above 50, which the editor escapes as `\{place N}`.
         next =
           target === "literal"
-            ? node <= 20
+            ? node <= 50
               ? placeGlyph(node)
               : `{place ${node}}`
             : target;
@@ -1081,6 +1054,7 @@ export function remapRich(
     }
     return out;
   });
+  return changed ? mapped : value;
 }
 /** The fields that refer to a place, by label. */
 export function fieldsReferencing(draft: Draft, index: number): string[] {
@@ -1103,7 +1077,11 @@ export function rewriteReferences(
       !draft.structured && saved && matchesLiteral(value, saved);
     if (!draft.structured && saved) {
       const previousLiteral = saved.literal;
-      saved.structured = remapRich(saved.structured, map);
+      const mapped = remapRich(saved.structured, map);
+      saved.structured =
+        mapped === saved.structured
+          ? mapped
+          : editedRich(mapped, saved.structured);
       saved.literal = remapRich(saved.structured, () => "literal");
       if (
         !unchanged &&
@@ -1117,8 +1095,10 @@ export function rewriteReferences(
       }
       if (unchanged) f.set(structuredClone(saved.literal));
     }
-    if (!unchanged && referencedPlaces(value).size)
-      f.set(remapRich(value, map));
+    if (!unchanged && referencedPlaces(value).size) {
+      const mapped = remapRich(value, map);
+      if (mapped !== value) f.set(editedRich(mapped, value));
+    }
   }
 }
 const sameRich = (a: RichText, b: RichText) =>
@@ -1134,7 +1114,7 @@ function matchesLiteral(
     )
   );
 }
-/** The text form of a rich value for the editor in the given mode. */
+/** Return a legacy text view for imports and compatibility displays. */
 export function editorText(value: RichText, structured: boolean): string {
   return structured ? richTextToEditor(value) : richTextToText(value);
 }
@@ -1146,7 +1126,7 @@ export function literalLoss(draft: Draft): string[] {
 }
 /**
  * Reads the place notation inside text nodes as place references: circled
- * numerals, and `{place N}` above 20. Every other node stays.
+ * numerals, and `{place N}` above 50. Every other node stays.
  */
 function structureStrings(value: RichText): RichText {
   return value.map((paragraph) =>
@@ -1154,12 +1134,10 @@ function structureStrings(value: RichText): RichText {
       if (typeof node !== "string") return [node];
       const out: RichNode[] = [];
       let index = 0;
-      const pattern = /([①-⑳])|\{place (\d{1,5})\}/gu;
+      const pattern = /([①-⑳㉑-㉟㊱-㊿])|\{place (\d{1,5})\}/gu;
       for (const match of node.matchAll(pattern)) {
         if (match.index! > index) out.push(node.slice(index, match.index));
-        out.push(
-          match[1] ? match[1].codePointAt(0)! - 0x245f : Number(match[2]),
-        );
+        out.push(match[1] ? circledPlace(match[1])! : Number(match[2]));
         index = match.index! + match[0].length;
       }
       if (index < node.length) out.push(node.slice(index));
@@ -1192,10 +1170,14 @@ export function switchMode(draft: Draft, structured: boolean) {
   } else {
     for (const f of referenceFields(draft)) {
       const saved = draft.literalModeRestore?.[f.key!];
+      const current = f.get();
+      const structuredValue = structureStrings(current);
       f.set(
-        saved && matchesLiteral(f.get(), saved)
+        saved && matchesLiteral(current, saved)
           ? structuredClone(saved.structured)
-          : structureStrings(f.get()),
+          : sameRich(current, structuredValue)
+            ? current
+            : editedRich(structuredValue, current),
       );
     }
     delete draft.literalModeRestore;
@@ -1213,9 +1195,7 @@ function literalView(draft: Draft): Draft {
   copy.structured = false;
   return copy;
 }
-function plainRich(text: string): RichText {
-  return textToRichText(text, false);
-}
+
 /** Every rich text field of the body, with its field name and whether place references are allowed. */
 interface RichField {
   field: string;
@@ -1950,7 +1930,7 @@ export function draftToBody(input: Draft): {
     value: text,
     local: true,
   });
-  if (!countNodes(draft.text))
+  if (!richHasContent(draft.text))
     problems.push({
       field: "text",
       message: "Write the definition.",
@@ -2014,7 +1994,7 @@ export function draftToBody(input: Draft): {
     value: notes,
     local: true,
   });
-  const etymologyText = [...draft.etymologyText, ...plainRich(draft.formNotes)];
+  const etymologyText = [...draft.etymologyText, ...richValue(draft.formNotes)];
   rich.push({
     field: "etymology",
     key: richFieldKey(draft, "etymologyText", false),
