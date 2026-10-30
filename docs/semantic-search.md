@@ -211,13 +211,15 @@ It uses its existing directory lock and AssistanceService, including the same ex
 The operator must first publish a completed generation for the selected profile and view.
 The server does not adopt unfinished operator jobs, which can contain failed or ambiguous sends.
 
-The background job stages bounded pages, publishes partial coverage, probes the retained profile, and embeds one batch at a time.
+The background job stages bounded pages, publishes partial coverage, and embeds one batch at a time.
+Before embedding missing document vectors, it probes the retained profile.
 Existing exact input hashes reuse retained vectors. Other inputs receive fresh vectors.
 
 An extraction change starts a new generation when current coverage contains stale associations, including within the same snapshot.
 The preceding generation serves its still-valid hits until the new generation finishes preparation and publishes.
 If extraction preserves the exact input bytes, the new associations reuse stored vectors without another embedding call.
 The server does not create a new generation when all eligible events have matching current bindings and stored vectors.
+When every valid input has a stored vector, `input_limit` errors trigger no provider probe and keep their failed counts.
 
 Completed background generations leave storage when no current, rollback, active background pointer, or in-flight search retains them.
 A search retains its generation through inference, scanning, and final retention checks. Cancellation releases it after the worker stops reading.

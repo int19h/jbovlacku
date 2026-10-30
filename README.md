@@ -354,6 +354,7 @@ New definitions remain pending while unchanged definitions stay searchable. Opti
 Stale event bindings count as pending. Background indexing rebuilds them after an extraction change, even within the same snapshot.
 The preceding generation serves still-valid hits until the replacement publishes. Unchanged input bytes reuse stored vectors without another embedding call.
 Matching associations with input errors or failed provider attempts still count as failed.
+When every valid input has a stored vector, `input_limit` errors trigger no provider probe and keep their failed counts.
 
 Background jobs retry transient failures with bounded backoff and linked retries. They preserve earlier charges and wait for provider cooldowns and budget windows.
 Paid or unknown probe failures receive three retries, then a one-hour cooldown. Their counts and deadlines survive server restarts.

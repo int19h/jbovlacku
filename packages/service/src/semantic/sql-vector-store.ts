@@ -810,6 +810,18 @@ export class SqlVectorStore implements VectorStore {
       );
     });
   }
+  async needsEmbedding(id: string): Promise<boolean> {
+    const generation = this.active(id);
+    return (
+      this.sql.exec(
+        `SELECT 1 FROM semantic_associations a
+      LEFT JOIN semantic_vectors v ON v.profile=? AND v.input=a.input
+      WHERE a.generation=? AND a.error IS NULL AND a.input IS NOT NULL AND v.input IS NULL LIMIT 1`,
+        generation.profile,
+        id,
+      ).length > 0
+    );
+  }
   async coverage(id: string, language?: string) {
     const generation = this.active(id);
     const row = this.sql.exec(

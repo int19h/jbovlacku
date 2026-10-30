@@ -24,6 +24,7 @@ import { scanPages, type VectorScanner } from "../src/semantic/scan.ts";
 import { AssistanceService } from "../src/assistance.ts";
 import { providerConfig } from "../src/inference.ts";
 import type { IndexDocument } from "../src/semantic/source.ts";
+import type { IndexEmbedder } from "../src/semantic/indexer.ts";
 import type { Snapshot } from "../src/storage.ts";
 
 before(async () =>
@@ -210,6 +211,53 @@ function mock() {
       drift = true;
     },
   };
+}
+function recordingEmbedder(axis = 0) {
+  const calls: string[] = [];
+  const assistance: IndexEmbedder = {
+    embed: async (inputs, caller, _signal, before) => {
+      calls.push(caller.kind);
+      const operation = `embedding:${caller.kind}:recorded-${calls.length}`;
+      await before?.(operation);
+      return {
+        operation,
+        vectors: inputs.map(() => unit(axis)),
+        usage,
+        model: profile.model,
+      };
+    },
+    embeddingOperationPending: () => false,
+  };
+  return { calls, assistance };
+}
+async function failedBackgroundGeneration(
+  store: SqliteVectorStore,
+  docs: IndexDocument[],
+  ctx: SearchContext,
+  state: "failed" | "ambiguous",
+) {
+  const generation = await store.create(
+    {
+      snapshot: ctx.snapshot.snapshot,
+      view: ctx.evaluation.selected_view,
+      profile: profileId(profile),
+      eligible: docs.length,
+    },
+    profile,
+  );
+  await store.stage(generation.id, null, {
+    documents: docs,
+    next: docs.at(-1)!.event,
+    done: true,
+  });
+  await store.setBackgroundGeneration(generation.id);
+  await store.start(generation.id);
+  const batch = (await store.claim(generation.id))!;
+  if (state === "ambiguous")
+    await store.sent(batch.id, "embedding:index:failed-parent");
+  await store.fail(batch.id, "embedding_provider");
+  await store.pause(generation.id, "embedding_provider");
+  return { generation, batch };
 }
 const request = (query = "a meaning") => ({
   query,
@@ -1954,6 +2002,244 @@ for (const owner of ["operator", "background"] as const)
         sql.close();
       }
     }));
+
+test("stale cached inputs and an unchanged input limit rebuild without any embedding or probe call", async () =>
+  fixture(async ({ store, scanner }) => {
+    const { BackgroundSemanticIndexer } =
+      await import("../src/semantic/background.ts");
+    const docs = rows(5);
+    docs[4] = {
+      ...docs[4],
+      input: null,
+      input_hash: null,
+      error: "input_limit",
+    };
+    const ctx = context(docs, hash(9650));
+    const old = await publish(
+      store,
+      docs.map((row) => ({ ...row, extraction_version: 2 })),
+      ctx,
+    );
+    const provider = recordingEmbedder();
+    const engine = new SemanticSearch(
+      { profile: old.profile, store, cache: store.queryCache, scanner },
+      provider.assistance,
+      true,
+    );
+    assert.equal((await engine.profiles(ctx))[0].pending, docs.length);
+    const background = new BackgroundSemanticIndexer({
+      store,
+      profile: old.profile,
+      view: old.view,
+      assistance: provider.assistance,
+      source: async () => ({
+        context: {
+          snapshot: old.snapshot,
+          view: old.view,
+          profile: old.profile,
+          eligible: docs.length,
+        },
+        page: async () => ({
+          documents: docs,
+          next: docs.at(-1)!.event,
+          done: true,
+        }),
+      }),
+      needed: async () =>
+        (await engine.profiles(ctx)).some((row) => row.pending > 0),
+      probe: (generation, selectedProfile) =>
+        engine.probe(generation, selectedProfile),
+      report: (error) => {
+        throw error;
+      },
+    });
+    try {
+      await background.cycle();
+      const current = (await store.current(old.profile, old.view))!;
+      assert.notEqual(current, old.id);
+      assert.equal((await store.generation(current)).snapshot, old.snapshot);
+      assert.equal((await store.generation(current)).state, "completed");
+      assert.deepEqual(await store.coverage(current), {
+        eligible: 5,
+        indexed: 4,
+        pending: 0,
+        failed: 1,
+      });
+      assert.equal((await store.summary(current)).batches, 0);
+      assert.equal((await store.page(current)).rows[4].error, "input_limit");
+      assert(
+        (await engine.profiles(ctx))[0].limitations.includes(
+          "1 definitions failed indexing.",
+        ),
+      );
+      assert.deepEqual(provider.calls, []);
+    } finally {
+      await background.close();
+    }
+  }));
+
+for (const state of ["failed", "ambiguous"] as const)
+  for (const outcome of ["missing", "cached", "drift"] as const)
+    test(`${state} background retry probes only missing vectors before dispatch (${outcome})`, async () =>
+      fixture(async ({ store, scanner }) => {
+        const { BackgroundSemanticIndexer } =
+          await import("../src/semantic/background.ts");
+        const docs = rows(5);
+        const ctx = context(docs, hash(9660));
+        const { generation, batch } = await failedBackgroundGeneration(
+          store,
+          docs,
+          ctx,
+          state,
+        );
+        if (outcome === "cached") await publish(store, docs, ctx);
+        const provider = recordingEmbedder(outcome === "drift" ? 1 : 0);
+        const statuses: string[] = [];
+        const engine = new SemanticSearch(
+          {
+            profile: generation.profile,
+            store,
+            cache: store.queryCache,
+            scanner,
+          },
+          provider.assistance,
+          true,
+        );
+        const background = new BackgroundSemanticIndexer({
+          store,
+          profile: generation.profile,
+          view: generation.view,
+          assistance: provider.assistance,
+          source: async () => {
+            throw new Error("A prepared retry needs no source read");
+          },
+          probe: (selected, selectedProfile) =>
+            engine.probe(selected, selectedProfile),
+          report: (error) => {
+            throw error;
+          },
+          status: (message) => statuses.push(message),
+        });
+        try {
+          await background.cycle();
+          const batches = await store.batches(generation.id);
+          assert.equal(
+            batches.find((row) => row.id === batch.id)!.state,
+            state,
+          );
+          if (outcome === "drift") {
+            assert.deepEqual(provider.calls, ["probe"]);
+            assert.equal(
+              await store.compatibility(generation.profile),
+              "semantic_model_drift",
+            );
+            assert.equal(
+              (await store.generation(generation.id)).state,
+              "paused",
+            );
+            assert.equal(batches.length, 1);
+            assert(
+              statuses.some((message) =>
+                message.includes("semantic_model_drift"),
+              ),
+            );
+          } else {
+            assert.deepEqual(
+              provider.calls,
+              outcome === "cached" ? [] : ["probe", "index"],
+            );
+            assert.equal(
+              (await store.generation(generation.id)).state,
+              "completed",
+            );
+            assert.deepEqual(await store.coverage(generation.id), {
+              eligible: 5,
+              indexed: 5,
+              pending: 0,
+              failed: 0,
+            });
+            assert.equal(batches.length, outcome === "cached" ? 1 : 2);
+            if (outcome === "missing")
+              assert.equal(
+                batches.find((row) => row.previous === batch.id)!.state,
+                "completed",
+              );
+          }
+        } finally {
+          await background.close();
+        }
+      }));
+
+test("a held input that becomes due before claim still receives a drift probe", async (t) =>
+  fixture(async ({ store, scanner }) => {
+    const { BackgroundSemanticIndexer } =
+      await import("../src/semantic/background.ts");
+    let now = Date.now();
+    t.mock.method(Date, "now", () => now);
+    const docs = rows(5);
+    const ctx = context(docs, hash(9670));
+    const { generation, batch } = await failedBackgroundGeneration(
+      store,
+      docs,
+      ctx,
+      "failed",
+    );
+    const deadline = now + 1000;
+    await store.holdBackgroundInputs(
+      batch,
+      {
+        next_attempt: deadline,
+        not_before: 0,
+        sent_attempts: 4,
+        refusals: 0,
+        exhausted: true,
+        reason: "embedding_provider",
+      },
+      false,
+      now,
+    );
+    const provider = recordingEmbedder();
+    const engine = new SemanticSearch(
+      { profile: generation.profile, store, cache: store.queryCache, scanner },
+      provider.assistance,
+      true,
+    );
+    const background = new BackgroundSemanticIndexer({
+      store,
+      profile: generation.profile,
+      view: generation.view,
+      assistance: provider.assistance,
+      source: async () => {
+        throw new Error("A prepared retry needs no source read");
+      },
+      probe: (selected, selectedProfile) =>
+        engine.probe(selected, selectedProfile),
+      report: (error) => {
+        throw error;
+      },
+    });
+    const start = store.start.bind(store);
+    store.start = async (id) => {
+      assert.deepEqual(provider.calls, ["probe"]);
+      now = deadline;
+      await start(id);
+    };
+    try {
+      await background.cycle();
+      assert.deepEqual(provider.calls, ["probe", "index"]);
+      assert.equal((await store.generation(generation.id)).state, "completed");
+      assert.equal((await store.coverage(generation.id)).indexed, docs.length);
+      const batches = await store.batches(generation.id);
+      assert.equal(batches.length, 2);
+      assert.equal(
+        batches.find((row) => row.previous === batch.id)!.state,
+        "completed",
+      );
+    } finally {
+      store.start = start;
+      await background.close();
+    }
+  }));
 
 test("a snapshot change with complete exact coverage does not create a background generation", async () =>
   fixture(async ({ store, scanner, docs, ctx }) => {

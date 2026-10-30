@@ -159,9 +159,8 @@ export class BackgroundSemanticIndexer {
         await this.defer(await store.generation(job.id, true), undefined);
         return;
       }
-      const coverage = await store.coverage(job.id);
       if (
-        (coverage.pending || coverage.failed) &&
+        (await store.needsEmbedding(job.id)) &&
         (await store.references(current.id)).length
       )
         await this.options.probe(current, profile);
