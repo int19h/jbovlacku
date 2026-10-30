@@ -3860,7 +3860,9 @@ test("type existing word adds a definition while the original draft stays saved"
   await page.reload();
   await page.getByRole("link", { name: "Return to the saved draft" }).click();
   await expect(page).toHaveURL(/\/new\/meaning/);
-  expect((await stored(page)).spelling).toBe(before.spelling);
+  await expect
+    .poll(async () => (await stored(page)).spelling)
+    .toBe(before.spelling);
   expect((await stored(page)).formNotes).toBe("Original evidence.");
   expect(await savedRows()).toHaveLength(1);
   for (const path of [

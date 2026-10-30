@@ -35,6 +35,12 @@ for (const surface of ["word", "search"] as const)
       expect(new URL(route.request().url()).searchParams.get("view")).toBe(
         f.views.shun,
       );
+      if (
+        surface === "search" &&
+        new URL(route.request().url()).searchParams.get("group") ===
+          "definitions"
+      )
+        return route.continue();
       requests++;
       if (blocked)
         return route.fulfill({
@@ -84,6 +90,7 @@ for (const surface of ["word", "search"] as const)
     await expect(page.getByRole("status")).toHaveText(
       "Still unavailable after retry 1. This view is temporarily unavailable while the next snapshot is published.",
     );
+    await expect(main.locator("h1")).toBeFocused();
     await retry.focus();
     await page.keyboard.press("Enter");
     await expect.poll(() => requests).toBe(3);
@@ -91,6 +98,7 @@ for (const surface of ["word", "search"] as const)
     await expect(page.getByRole("status")).toHaveText(
       "Still unavailable after retry 2. This view is temporarily unavailable while the next snapshot is published.",
     );
+    await expect(main.locator("h1")).toBeFocused();
     blocked = false;
     await retry.focus();
     await page.keyboard.press("Enter");
@@ -162,6 +170,12 @@ for (const surface of ["word", "search"] as const)
         expect(new URL(route.request().url()).searchParams.get("view")).toBe(
           f.views.shun,
         );
+        if (
+          surface === "search" &&
+          new URL(route.request().url()).searchParams.get("group") ===
+            "definitions"
+        )
+          return route.continue();
         expect(route.request().method()).toBe("GET");
         requests++;
         if (requests === 1)

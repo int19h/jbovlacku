@@ -45,9 +45,11 @@ import {
 } from "./checkpoint.ts";
 import {
   buildPackages,
+  hasPackageSearchView,
   preparePackageSearch,
   rebasePackages,
   sameEffectiveDefinitions,
+  sameSearchDefinitions,
   type MaterializedPackages,
   type PackageRecord,
 } from "./packages.ts";
@@ -634,6 +636,16 @@ export class DictionaryService {
               );
               if (
                 !payload.packages.searchRafsi ||
+                !hasPackageSearchView(
+                  payload.packages,
+                  this.options.selectedView ?? zeroView,
+                ) ||
+                payload.packages.searchView !==
+                  (this.options.selectedView ?? zeroView) ||
+                !sameSearchDefinitions(
+                  payload.packages.searchDefinitions,
+                  this.searchDefinitionStatuses(session.state),
+                ) ||
                 !sameEffectiveDefinitions(
                   payload.packages.effectiveDefinitions,
                   effectiveDefinitions,
@@ -646,6 +658,9 @@ export class DictionaryService {
                   undefined,
                   true,
                   effectiveDefinitions,
+                  undefined,
+                  this.searchDefinitionStatuses(session.state),
+                  this.options.selectedView ?? zeroView,
                 );
             } catch (error) {
               session.free();
@@ -1012,6 +1027,11 @@ export class DictionaryService {
           previous &&
           base &&
           !base.changed.length &&
+          previous.searchView === (this.options.selectedView ?? zeroView) &&
+          sameSearchDefinitions(
+            previous.searchDefinitions,
+            this.searchDefinitionStatuses(evaluation),
+          ) &&
           sameEffectiveDefinitions(
             previous.effectiveDefinitions,
             effectiveDefinitions,
@@ -1025,6 +1045,9 @@ export class DictionaryService {
           previous && base ? { previous, changed: base.changed } : undefined,
           true,
           effectiveDefinitions,
+          undefined,
+          this.searchDefinitionStatuses(evaluation),
+          this.options.selectedView ?? zeroView,
         );
       })
       .then(async (built) => {
@@ -1159,6 +1182,19 @@ export class DictionaryService {
       },
     );
     return pending;
+  }
+  private searchDefinitionStatuses(
+    evaluation: Evaluation,
+  ): Record<string, "active" | "retired"> {
+    return Object.fromEntries(
+      Object.entries(evaluation.publications).flatMap(([id, publication]) =>
+        publication.kind === "definition.publish" &&
+        publication.eligible === "eligible" &&
+        evaluation.receipts[id]?.interpretation === "effective"
+          ? [[id, publication.status === "active" ? "active" : "retired"]]
+          : [],
+      ),
+    );
   }
   private packageDefinitionIds(evaluation: Evaluation): string[] | null {
     if (evaluation.reasons.includes("resource_unavailable")) return null;
@@ -2268,6 +2304,7 @@ export class DictionaryService {
         "after",
         "retired",
         "literal",
+        "group",
       ];
       if (!fields || typeof fields !== "object" || Array.isArray(fields))
         throw new ApiError(
@@ -2548,6 +2585,13 @@ export class DictionaryService {
       if (literalFlag !== null && literalFlag !== "1")
         throw new ApiError(400, "literal", "literal must be 1 when present.");
       const literal = literalFlag === "1";
+      const group = url.searchParams.get("group");
+      if (group !== null && group !== "lojban" && group !== "definitions")
+        throw new ApiError(
+          400,
+          "group",
+          "Search group must be lojban or definitions.",
+        );
       const packages = await this.packages(snapshot);
       const ordered = await lexicalSearchAsync(
         packages.entries,
@@ -2558,7 +2602,7 @@ export class DictionaryService {
         packages.searchRafsi,
         this.options.patternScanner,
         request.signal,
-        { patterns: !literal },
+        { patterns: !literal, ...(group ? { group } : {}) },
       );
       const cursorHash = this.hashJson({
         search: "patterns-v3",
@@ -2568,6 +2612,7 @@ export class DictionaryService {
         view,
         retired: includeRetired,
         literal,
+        group,
       }).slice(7);
       const after = url.searchParams.get("after");
       let offset = 0;
@@ -2596,6 +2641,7 @@ export class DictionaryService {
         view,
         query,
         segmentation: ordered.segmentation,
+        all_lojban: ordered.allLojban,
         language,
         hits: page,
         next:

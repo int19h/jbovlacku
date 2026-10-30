@@ -173,3 +173,44 @@ test("one hundred query words match a genuine subsequence and reject repeated pr
   assert.equal(metrics.queryWords, 100);
   assert.ok(metrics.componentComparisons <= 4 * 2 * (100 + 101));
 });
+
+test("groups select their own strongest class and require known eligible words for Lojban order", () => {
+  const rows = [
+    entry("se"),
+    entry("bo"),
+    { ...entry("sebo"), glosses: [{ text: "se bo" }], plain_text: "A book." },
+  ];
+  const search = (
+    query: string,
+    group: "lojban" | "definitions",
+    accept = (_: LexicalEntry) => true,
+  ) => selectMatches(rows, query, undefined, accept, { group });
+  assert.deepEqual(
+    search("se bo", "lojban").rows.map((row) => row.match),
+    ["sequence-exact"],
+  );
+  assert.deepEqual(
+    search("se bo", "definitions").rows.map((row) => row.match),
+    ["gloss"],
+  );
+  assert.equal(search("se bo", "lojban").allLojban, true);
+  assert.equal(search("sebo", "lojban").allLojban, true);
+  assert.equal(
+    search("se bo", "lojban", (row) => row.word.spelling !== "bo").allLojban,
+    false,
+  );
+  for (const query of ["book", "sei", "se mibaoz", "i".repeat(129)])
+    assert.equal(search(query, "lojban").allLojban, false, query);
+  const claimed = { ...entry("cukta"), rafsi: ["cku"] };
+  assert.equal(
+    selectMatches([claimed], "cku", undefined, undefined, { group: "lojban" })
+      .rows[0].match,
+    "rafsi-pattern",
+  );
+  assert.equal(
+    selectMatches([claimed], "cku", undefined, undefined, {
+      group: "definitions",
+    }).rows.length,
+    0,
+  );
+});

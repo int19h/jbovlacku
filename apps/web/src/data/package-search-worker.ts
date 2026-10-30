@@ -1,6 +1,7 @@
 import { initializeCore } from "../../../../packages/core/src/browser.ts";
 import {
   prepareIndex,
+  prepareQuery,
   searchMetrics,
   PatternError,
   isPatternQuery,
@@ -95,11 +96,26 @@ self.onmessage = ({ data }) => {
         data.queries.some(isPatternQuery)
       )
         reply({ request: data.request, started: true });
-      const hits: ReturnType<typeof localSearch>[] = data.queries.map(
-        (query: string) =>
+      // Both groups share one bounded query parse.
+      const queries = options.grouped
+        ? data.queries.map((query: string) =>
+            prepareQuery(query, metrics, {
+              patterns: options.patterns !== false && !options.nearby,
+            }),
+          )
+        : data.queries;
+      const hits: ReturnType<typeof localSearch>[] = (
+        options.grouped ? ["lojban", "definitions"] : [options.group]
+      ).flatMap((group) =>
+        queries.map((query: Parameters<typeof localSearch>[1]) =>
           localSearch(stored.pkg.entries, query, metrics, options.rafsiOnly, {
             patterns: options.patterns !== false && !options.nearby,
+            group: group as PackageSearchOptions["group"],
+            view: options.view,
+            packageView: stored.pkg.search_view,
+            includeRetired: options.includeRetired,
           }),
+        ),
       );
       const segmentation = hits.some(
         (rows: ReturnType<typeof localSearch>) =>
@@ -135,6 +151,7 @@ self.onmessage = ({ data }) => {
           segmentation,
           metrics,
           prepared: !!data.pkg,
+          allLojban: hits[0]?.allLojban ?? false,
         },
       });
     } catch (error) {

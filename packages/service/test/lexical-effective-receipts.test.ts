@@ -922,3 +922,274 @@ test("retired search retains effective deprecated definitions and exact earlier 
     assert.equal(retained.hits[0].preview.status, "active");
   }
 });
+
+test("group pages bind cursors to the group and report known Lojban queries", async () => {
+  const f = await fixture();
+  const records = Array.from({ length: 4 }, (_, index) => {
+    const spelling = index ? "klama" + index : "klama";
+    const word = { language: "jbo" as const, spelling };
+    return createEvent(
+      publisher,
+      [],
+      (900 + index).toString(16).padStart(32, "0"),
+      {
+        kind: "definition.publish",
+        word: wordId(word),
+        language: "en",
+        parents: [],
+        origin: "native",
+      },
+      {
+        word,
+        language: "en",
+        text: [["klama is in this synthetic definition."]],
+        classification: { kind: "other" },
+        license: { expression: "CC0-1.0" },
+      },
+    );
+  });
+  await f.admit(f.view, ...records);
+  const first = await f.read(
+    "/search?q=klama&language=en&group=lojban&limit=2",
+  );
+  assert.equal(first.all_lojban, true);
+  assert.equal(first.hits.length, 2);
+  assert.ok(first.next);
+  assert.ok(
+    first.hits.every((hit: any) =>
+      ["headword", "headword-prefix"].includes(hit.match),
+    ),
+  );
+  const second = await f.read(
+    `/search?q=klama&language=en&group=lojban&limit=2&snapshot=${first.snapshot}&after=${first.next}`,
+  );
+  assert.equal(second.hits.length, 2);
+  assert.equal(second.next, null);
+  const definitions = await f.read(
+    "/search?q=klama&language=en&group=definitions&limit=2",
+  );
+  assert.ok(definitions.hits.every((hit: any) => hit.match === "token"));
+  const invalid = await f.service.fetch(
+    new Request(
+      `http://local.invalid/api/v1/search?q=klama&language=en&group=definitions&after=${first.next}`,
+    ),
+  );
+  assert.equal(invalid.status, 400);
+  assert.equal(((await invalid.json()) as { code: string }).code, "bad_cursor");
+  const badGroup = await f.service.fetch(
+    new Request(
+      "http://local.invalid/api/v1/search?q=klama&language=en&group=unknown",
+    ),
+  );
+  assert.equal(badGroup.status, 400);
+});
+
+test("known-word package evidence follows status-only changes, retirement filters, views, and legacy checkpoint upgrade", async () => {
+  let saved: ServiceCheckpoint | undefined;
+  const f = await fixture({
+    coreVersion: "search-status-r2",
+    checkpointIntervalMs: 0,
+    checkpoints: {
+      async load() {
+        return saved ? structuredClone(saved) : null;
+      },
+      async save(_binding, value) {
+        saved = structuredClone(value);
+      },
+    },
+  });
+  const definition = signedDefinition();
+  await f.admit(f.view, definition);
+  const prior = await f.snapshot();
+  const packageRows = async (snapshot: string) =>
+    (await f.entries(snapshot, 2)) as any[];
+  assert.equal((await packageRows(prior))[0].search_status, "active");
+  const firstManifest = await f.read(
+    `/packages/en?snapshot=${prior}&version=2`,
+  );
+  assert.equal(firstManifest.search_view, f.view.envelope.id);
+  const v1 = await f.entries(prior, 1);
+  assert.equal("search_status" in v1[0], false);
+  assert.ok(saved);
+  delete (saved.packages as any).searchDefinitions;
+  delete (saved.packages as any).searchView;
+  saved.packages = await buildPackages(
+    (await f.coordinator.getSnapshot(prior))!,
+    f.objects,
+    undefined,
+    undefined,
+    false,
+    [definition.envelope.id],
+  );
+  await f.restart();
+  assert.equal((await packageRows(prior))[0].search_status, "active");
+  await f.admit(
+    createEvent(
+      publisher,
+      [definition.envelope.id],
+      "c".repeat(32),
+      {
+        kind: "status.set",
+        target: definition.envelope.id,
+        value: "deprecated",
+      },
+      null,
+    ),
+  );
+  const current = await f.snapshot();
+  const retiredRows = await packageRows(current);
+  assert.equal(retiredRows[0].search_status, "retired");
+  const secondManifest = await f.read(
+    `/packages/en?snapshot=${current}&version=2`,
+  );
+  assert.equal(secondManifest.search_view, f.view.envelope.id);
+  assert.notEqual(secondManifest.parts[0].hash, firstManifest.parts[0].hash);
+  assert.equal((await packageRows(prior))[0].search_status, "active");
+  Object.assign(globalThis, {
+    location: new URL("http://local.invalid"),
+    history: { state: null },
+  });
+  const { localSearch } = await import("../../../apps/web/src/data/search.ts");
+  for (const includeRetired of [false, true]) {
+    const params = new URLSearchParams({
+      q: "klama",
+      language: "en",
+      group: "lojban",
+      snapshot: current,
+      view: f.view.envelope.id,
+    });
+    if (includeRetired) params.set("retired", "1");
+    const remote = await f.read("/search?" + params);
+    const local = localSearch(retiredRows, "klama", undefined, false, {
+      packageView: secondManifest.search_view,
+      includeRetired,
+      view: f.view.envelope.id,
+    });
+    assert.equal(local.allLojban, includeRetired);
+    assert.equal(local.allLojban, remote.all_lojban);
+  }
+  assert.equal(
+    localSearch(retiredRows, "klama", undefined, false, {
+      packageView: secondManifest.search_view,
+      includeRetired: true,
+      view: "jve1:" + "f".repeat(64),
+    }).allLojban,
+    false,
+  );
+  assert.equal(localSearch(v1 as any, "klama").allLojban, false);
+});
+
+test("r3: package evidence stores one view per manifest and keeps v1 and signed bytes unchanged", async () => {
+  const f = await fixture();
+  const definition = signedDefinition();
+  await f.admit(f.view, definition);
+  const snapshot = await f.snapshot();
+  const manifest = await f.read(`/packages/en?snapshot=${snapshot}&version=2`);
+  assert.equal(manifest.search_view, f.view.envelope.id);
+  const rows = (await f.entries(snapshot, 2)) as any[];
+  assert.equal(rows[0].search_status, "active");
+  assert.equal(JSON.stringify(rows).includes(f.view.envelope.id), false);
+  const v1 = await f.read(`/packages/en?snapshot=${snapshot}&version=1`);
+  assert.deepEqual(Object.keys(v1).sort(), [
+    "language",
+    "parts",
+    "snapshot",
+    "version",
+  ]);
+  assert.equal("search_status" in (await f.entries(snapshot, 1))[0], false);
+  const savedEnvelope = await f.read(
+    `/events/${definition.envelope.id}?snapshot=${snapshot}`,
+  );
+  assert.deepEqual(savedEnvelope, definition.envelope);
+  assert.deepEqual(
+    await f.read(`/bodies/${definition.envelope.header.content!.hash}`),
+    definition.body,
+  );
+  const base = await buildPackages(
+    (await f.coordinator.getSnapshot(snapshot))!,
+    f.objects,
+    undefined,
+    undefined,
+    false,
+    [definition.envelope.id],
+    undefined,
+    { [definition.envelope.id]: "active" },
+    f.view.envelope.id,
+  );
+  const alternate = await buildPackages(
+    (await f.coordinator.getSnapshot(snapshot))!,
+    f.objects,
+    undefined,
+    { previous: base, changed: [] },
+    false,
+    [definition.envelope.id],
+    undefined,
+    { [definition.envelope.id]: "active" },
+    "jve1:" + "f".repeat(64),
+  );
+  assert.deepEqual(
+    alternate.packages2.en.manifest.parts,
+    base.packages2.en.manifest.parts,
+  );
+  assert.notEqual(alternate.packages2.en.hash, base.packages2.en.hash);
+  assert.equal(
+    (alternate.packages2.en.manifest as any).search_view,
+    "jve1:" + "f".repeat(64),
+  );
+  assert.equal(
+    alternate.packages.en.hash,
+    contentHash(utf8(canonicalize(utf8(JSON.stringify(v1))))),
+  );
+});
+
+test("r3: checkpoint restore upgrades old per-entry view metadata and preserves compatible new packages", async () => {
+  let saved: ServiceCheckpoint | undefined;
+  const f = await fixture({
+    coreVersion: "r3-metadata",
+    checkpointIntervalMs: 0,
+    checkpoints: {
+      async load() {
+        return saved ? structuredClone(saved) : null;
+      },
+      async save(_binding, value) {
+        saved = structuredClone(value);
+      },
+    },
+  });
+  const definition = signedDefinition();
+  await f.admit(f.view, definition);
+  const snapshot = await f.snapshot();
+  assert.ok(saved);
+  const compact = await f.read(`/packages/en?snapshot=${snapshot}&version=2`);
+  const rows = (await f.entries(snapshot, 2)) as any[];
+  for (const row of rows)
+    row.search_status = { view: f.view.envelope.id, status: "active" };
+  const bytes = utf8(canonicalize(utf8(JSON.stringify(rows))));
+  const hash = contentHash(bytes);
+  await f.objects.put(hash, bytes);
+  const { search_view, ...legacy } = compact;
+  const oldManifest = {
+    ...legacy,
+    parts: [{ hash, bytes: bytes.length, count: rows.length }],
+  };
+  const manifestBytes = utf8(canonicalize(utf8(JSON.stringify(oldManifest))));
+  const manifestHash = contentHash(manifestBytes);
+  await f.objects.put(manifestHash, manifestBytes);
+  saved.packages.packages2.en = {
+    manifest: oldManifest,
+    hash: manifestHash,
+    bytes: manifestBytes.length,
+  };
+  await f.restart();
+  const upgraded = await f.read(`/packages/en?snapshot=${snapshot}&version=2`);
+  assert.equal(upgraded.search_view, f.view.envelope.id);
+  assert.equal(
+    ((await f.entries(snapshot, 2)) as any[])[0].search_status,
+    "active",
+  );
+  await f.restart();
+  assert.deepEqual(
+    await f.read(`/packages/en?snapshot=${snapshot}&version=2`),
+    upgraded,
+  );
+});

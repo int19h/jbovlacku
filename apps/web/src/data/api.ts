@@ -276,8 +276,11 @@ export function loadRecord<B = unknown>(
   }
   return pending as Promise<LoadedRecord<B>>;
 }
-export const loadDefinition = (id: string, snapshot?: string) =>
-  loadRecord<DefinitionBody>(id, snapshot);
+export const loadDefinition = (
+  id: string,
+  snapshot?: string,
+  options: RequestOptions = {},
+) => loadRecord<DefinitionBody>(id, snapshot, options);
 export function clearRecordCache() {
   recordCache.clear();
 }
@@ -652,7 +655,11 @@ export async function remoteSearch(
   pageLimit: number,
   context: { snapshot: string; view: string } | null,
   after: string | null,
-  options: RequestOptions & { retired?: boolean; literal?: boolean } = {},
+  options: RequestOptions & {
+    retired?: boolean;
+    literal?: boolean;
+    group?: import("../../../../packages/search/src/index.ts").SearchGroup;
+  } = {},
   draftBody = false,
 ): Promise<SearchResponse> {
   const params = new URLSearchParams({
@@ -663,6 +670,7 @@ export async function remoteSearch(
   // Retired results are excluded unless the reader asks for them.
   if (options.retired) params.set("retired", "1");
   if (options.literal) params.set("literal", "1");
+  if (options.group) params.set("group", options.group);
   if (context) {
     params.set("snapshot", context.snapshot);
     params.set("view", context.view);
@@ -687,6 +695,9 @@ export async function remoteSearch(
       (result.snapshot !== context.snapshot || result.view !== context.view)) ||
     !(result.next === null || validCursor(result.next)) ||
     !(
+      result.all_lojban === undefined || typeof result.all_lojban === "boolean"
+    ) ||
+    !(
       result.segmentation === undefined ||
       result.segmentation === "complete" ||
       result.segmentation === "limited"
@@ -703,6 +714,7 @@ export async function remoteSearch(
     language,
     hits,
     next: result.next as string | null,
+    all_lojban: result.all_lojban as boolean | undefined,
     ...(result.segmentation === undefined
       ? {}
       : { segmentation: result.segmentation as "complete" | "limited" }),
