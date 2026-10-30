@@ -245,6 +245,7 @@ Both kinds start active and unreviewed. Publication supplies no endorsement or r
 A token present in both fields retains separate source claims for the same pair.
 
 SQL `cached_username` and REST `username` supply names for display only.
+The pinned [Lensisku cache migration](https://github.com/lojban/lensisku/blob/38eb956ad81138b52a4ac1d2f77589548e49cde9/migrations/V156__cached_glosswords_pipe_separator.sql#L61-L79) joins names through `definitions.userid`.
 Source references identify those fields. SQL bodies retain the lookup separately from numeric account evidence.
 A username alone never supplies an account number or author controls.
 SQL `time` supplies the source timestamp as its original seconds string.
