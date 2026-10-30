@@ -1,0 +1,565 @@
+{
+  "version": 1,
+  "kind": "place-conversions-reviewed-test-fixture",
+  "record_kind": "native-revision",
+  "source_snapshot": "sha256:9b03484481ac3b510d955054347610a8c0d1103c6012d6bb7cccc7e116a15aae",
+  "source_file_snapshot": "sha256:bc5ad87fda0668bf8fa2010aeddf71d1d0395549086bd5085bd9d87d77f93ddb",
+  "model": "google/gemini-3.1-pro-preview",
+  "model_cost_usd": 0.053158,
+  "generation_request_sha256": "735d7347bf72686b953e12dd2f2458f7d4aa38ebf9b112b2efd66f74b86d68be",
+  "review": {
+    "actor": "implementing agent",
+    "method": "manual comparison with the supplied source prose",
+    "words": 30,
+    "places": 91,
+    "semantic_corrections": [
+      {
+        "word": "ji'efri",
+        "place": 1,
+        "glosses": ["live-experience"],
+        "reason": "The source names a live-experience, not an experiencer. Its exact referent type stays unspecified."
+      },
+      {
+        "word": "plicru",
+        "place": 1,
+        "glosses": ["let"],
+        "reason": "The source uses the unclear role label let. Permission alone does not identify the participant. Keep that uncertainty."
+      },
+      {
+        "word": "tavla",
+        "place": 2,
+        "glosses": ["addressee"],
+        "reason": "Being spoken to does not establish that the addressee listens."
+      },
+      {
+        "word": "ctuca",
+        "place": 2,
+        "glosses": ["audience"],
+        "reason": "The source names an audience and does not require successful learning or student status."
+      },
+      {
+        "word": "vecnu",
+        "place": 2,
+        "glosses": ["goods", "service", "commodity"],
+        "reason": "Keep all three explicit source alternatives."
+      },
+      {
+        "word": "prami",
+        "place": 2,
+        "tags": ["referent"],
+        "reason": "Object or state is broader than state alone."
+      },
+      {
+        "word": "pilno",
+        "place": 2,
+        "tags": ["referent"],
+        "glosses": ["used resource"],
+        "reason": "The source includes tools, apparatus, machines, agents, and material. Agent alone excludes other listed fillers."
+      },
+      {
+        "word": "darxi",
+        "place": 2,
+        "glosses": ["target"],
+        "reason": "The place holds the referent that is hit, not the hitting action."
+      },
+      {
+        "word": "xamgu",
+        "place": 1,
+        "tags": ["referent"],
+        "reason": "Object or event is broader than event alone."
+      },
+      {
+        "word": "kurji",
+        "place": 2,
+        "tags": ["referent"],
+        "reason": "Object, event, or person is broader than event alone."
+      },
+      {
+        "word": "nelci",
+        "place": 2,
+        "tags": ["referent"],
+        "reason": "Object or state is broader than state alone."
+      },
+      {
+        "word": "troci",
+        "place": 2,
+        "tags": ["event", "relation"],
+        "reason": "State is already narrower than event. Keep property as the separate relation alternative."
+      }
+    ]
+  },
+  "issuer": "ed25519:e404c769c73e43095101cc98a01941c65654c349993f2e4ffa043e90640b0db1",
+  "view": "jve1:4f684855c2a804c83b63ec9fc0d366f22b23f81b40a9b0feae156cfbf31b93b1",
+  "selection": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+  "files": {
+    "carriers.jsonl": "sha256:349409d194e1ef091c2ff2e8c28abb88b52b138657d2824e6bc7b3c5bfed1063",
+    "import-selection.json": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "selected-view.json": "sha256:28251282bde473e27104a71bd8b50f3e087d3d1a674716530d48effd6ff6701f"
+  },
+  "definitions": [
+    {
+      "word": "ji'efri",
+      "source_definition": 8551,
+      "source_event": "jve1:68e877cadae1c33275699e037cc771b858e4be05dfb98a2e70208c006af7f319",
+      "source_body": "sha256:cdc48771e76a5502e007248abd1e4d3c320a0831ff999b54f908398e885630b7",
+      "source_text": [["$x_{1}$ is a live-experience with happening $x_{2}$."]],
+      "event": "jve1:af2bdec25267eff83f75421f0f010d3da92a10f759066be94d8396a9ecb30ae7",
+      "body": "sha256:e9e750f58a9d3cce840b4128e3a0ca64b906e6695d5d6a7c210b145da72874d6",
+      "place_count": 2,
+      "conversion_aliases": ["selji'efri"],
+      "uncertainty": "The source label live-experience does not establish whether place 1 is an experiencer, an experience, or another referent."
+    },
+    {
+      "word": "plicru",
+      "source_definition": 9122,
+      "source_event": "jve1:ae1b285dd0e0605f673f54c19290a8062c60edf4ecf487f35a2413e134e70cdd",
+      "source_body": "sha256:f6eea410d9f42d489fff4c524311afb54dd3d6b51922e51243036b114f830702",
+      "source_text": [
+        [
+          "$x_{1}$ is a let with use $x_{2}$ with used $x_{3}$ with use purpose  $x_{4}$ with permission condition $x_{5}$."
+        ]
+      ],
+      "event": "jve1:1b697c6752da4e45655bb3e5f588244143bb604763956e70a89f2d65af0573d8",
+      "body": "sha256:32e053c82373b74f3bc6e432fd4c50caef0d831d9f41c5d5406bc18dbe1f15b3",
+      "place_count": 5,
+      "conversion_aliases": ["terplicru"],
+      "uncertainty": "The source labels let and use do not fully explain their place roles. These test annotations preserve that uncertainty."
+    },
+    {
+      "word": "bridi",
+      "source_definition": 72,
+      "source_event": "jve1:15988c3e9cb4d650ee2fb9892f0e4b5d2ae7d344e0d6137b92829c4e64ed98e4",
+      "source_body": "sha256:9919f13d44d101033caeef372455c19a3d7011243d5936c4f0f25e5fa28fb3a3",
+      "source_text": [
+        [
+          "$x_{1}$ (du'u) is a predicate relationship with relation $x_{2}$ among arguments (sequence/set) $x_{3}$."
+        ]
+      ],
+      "event": "jve1:8190c2b52dda74c495e1ec6141e53791d918de771ad242b383aaf6dd5e387e4b",
+      "body": "sha256:7d78ddbf430663d13c90a6ee91d2f45a5dc6fb8dd304cfedc073ceb48f19543a",
+      "place_count": 3,
+      "conversion_aliases": ["selbri", "terbri"],
+      "uncertainty": ""
+    },
+    {
+      "word": "klama",
+      "source_definition": 583,
+      "source_event": "jve1:0ec5c75144c9bda11c29d44613dc9c2aa841b0b2f2be2e4ea4d636805fe0d9e8",
+      "source_body": "sha256:3d85de698a90349a3edb189323fda69bb1549333f4436a43197d8f0dabc7af22",
+      "source_text": [
+        [
+          "$x_{1}$ comes/goes to destination $x_{2}$ from origin $x_{3}$ via route $x_{4}$ using means/vehicle $x_{5}$."
+        ]
+      ],
+      "event": "jve1:4c79aaf52bd23f0a9daf543832a69e9b1381c09455b7af742ad0260a2b4c3854",
+      "body": "sha256:2f383393ce86d0990fa8111fd213cb4535151a4b83a6e69d3ec7d192ffa81551",
+      "place_count": 5,
+      "conversion_aliases": ["selkla", "terkla", "velkla", "xelkla"],
+      "uncertainty": ""
+    },
+    {
+      "word": "vecnu",
+      "source_definition": 1219,
+      "source_event": "jve1:bf24e369f3bfef37aaa7d8f3f5cb9f78d644c6ce289ba2af1ecfe30fe914d4b6",
+      "source_body": "sha256:f758da55b5c17f6692f41974ac3c8e1c8c9acd554c505e432e71db8a9cc5e34c",
+      "source_text": [
+        [
+          "$x_{1}$ [seller] sells/vends $x_{2}$ [goods/service/commodity] to buyer $x_{3}$ for amount/cost/expense $x_{4}$."
+        ]
+      ],
+      "event": "jve1:4c0d6d3b99d3685e1679515e219bce1a12b944ca8c89e4885ac70a74b3008d6f",
+      "body": "sha256:7d427aa32073306ce07f912de1c0a9d1c67c74ab39f8168dae1e02d290f854d9",
+      "place_count": 4,
+      "conversion_aliases": ["selve'u", "terve'u", "velve'u"],
+      "uncertainty": ""
+    },
+    {
+      "word": "dunda",
+      "source_definition": 311,
+      "source_event": "jve1:e19947725fdd08304c99c9647cbea482681c7240d228bd08e09b8768bd15e812",
+      "source_body": "sha256:6e501373c1bdb73bdc99a21e0507340410d7439ef7a552d57e613530266f2ee4",
+      "source_text": [
+        [
+          "$x_{1}$ [donor] gives/donates gift/present $x_{2}$ to recipient/beneficiary $x_{3}$ [without payment/exchange]."
+        ]
+      ],
+      "event": "jve1:361637574c937a0d3b1ee66e2be54f427c87410e55322328ff2c1165e925d4a4",
+      "body": "sha256:db17c565de08c539ef5054f80b67a35b51ee75afcb48cf45b503f11d21ce22a2",
+      "place_count": 3,
+      "conversion_aliases": ["seldu'a", "terdu'a"],
+      "uncertainty": ""
+    },
+    {
+      "word": "tavla",
+      "source_definition": 1146,
+      "source_event": "jve1:e935343afed8f7a335302279f11ae90dc7dc6b559119df89d62283a32f5f6c28",
+      "source_body": "sha256:ba86d5ed46e9df8674e64f6bcdcf9a5a96253b0312563d533c77e150b4fffeb0",
+      "source_text": [
+        [
+          "$x_{1}$ talks/speaks to $x_{2}$ about subject $x_{3}$ in language $x_{4}$."
+        ]
+      ],
+      "event": "jve1:2d631da3bde7779ea1a1c5cf84e6887e9698a086f00efa0777233c64abe12ce6",
+      "body": "sha256:ac067d838525a5e2462a18bbc179e489b5eab9d7614b655bbb5212a4c17ca932",
+      "place_count": 4,
+      "conversion_aliases": ["selta'a", "terta'a", "velta'a"],
+      "uncertainty": ""
+    },
+    {
+      "word": "prami",
+      "source_definition": 879,
+      "source_event": "jve1:b71e68af8652ac4c68a7538d0f7ca04c93728ec0a3c80094bc6afc3aaead9230",
+      "source_body": "sha256:3ecfa02be92b2fe53de5a387bafc9493b85148e6982cad14ddd584e180477be6",
+      "source_text": [
+        [
+          "$x_{1}$ loves/feels strong affectionate devotion towards $x_{2}$ (object/state)."
+        ]
+      ],
+      "event": "jve1:6d9f838060c69871f5f20cbfb30fc3529b2de7f2ff865c4128868caca4c2ec71",
+      "body": "sha256:9c3a71b39e6798a859bef2810fde018ad7d987dfea1b84f0ab2594cf49be6e2f",
+      "place_count": 2,
+      "conversion_aliases": ["selpa'i"],
+      "uncertainty": ""
+    },
+    {
+      "word": "ctuca",
+      "source_definition": 226,
+      "source_event": "jve1:119204d70557707f40bb5216254062393db6242e360507c92d91b61576f21fd8",
+      "source_body": "sha256:6e12824b4deacb79cab6b2e0c09ec30b386b35ce65056b52e6a1642310324808",
+      "source_text": [
+        [
+          "$x_{1}$ teaches audience $x_{2}$ ideas/methods/lore $x_{3}$ (du'u) about subject(s) $x_{4}$ by method $x_{5}$ (event)."
+        ]
+      ],
+      "event": "jve1:7a706282ba57a2288f6a6ad05c0bcc5f627c2184627cdb9d693d04c6aca911bd",
+      "body": "sha256:93509862d3ca704e29385a92ad99a9dd453aa85929adc72c7f84bf731e5ccb85",
+      "place_count": 5,
+      "conversion_aliases": ["selctu", "terctu", "velctu", "xelctu"],
+      "uncertainty": ""
+    },
+    {
+      "word": "tadni",
+      "source_definition": 1124,
+      "source_event": "jve1:3b2f631002e1367d51c07081e76d8cbbdccc0052fdac9b054687f4fb011bd8de",
+      "source_body": "sha256:9a05ac15bbfc86a13a691c8cfb02085953ffd37e863aecf8ff95298b267a21e7",
+      "source_text": [
+        [
+          "$x_{1}$ studies/is a student of $x_{2}$; $x_{1}$ is a scholar; (adjective:) $x_{1}$ is scholarly."
+        ]
+      ],
+      "event": "jve1:08cd9b8bd09b871a9323eafe890cea212f5714604b9aa907ae03466f71967bc2",
+      "body": "sha256:3eff5925d4a5042f28dc6fafc62755146e30fca837722752efebbb56de790ffd",
+      "place_count": 2,
+      "conversion_aliases": ["seltadni"],
+      "uncertainty": ""
+    },
+    {
+      "word": "cukta",
+      "source_definition": 228,
+      "source_event": "jve1:5dc05308582e28db596d970e3acdff6684e3f85ac4522697f544b0aaaae64cd3",
+      "source_body": "sha256:e9634f85fd8861c1e858162a11c12af208066ca38591b14ae0c5a0dcfb99d0c5",
+      "source_text": [
+        [
+          "$x_{1}$ is a book containing work $x_{2}$ by author $x_{3}$ for audience $x_{4}$ preserved in medium $x_{5}$."
+        ]
+      ],
+      "event": "jve1:3643b48187188edf2661818aa1cfab18b23d34ed1e993579f5912e4e5351dc09",
+      "body": "sha256:325a2e8290cb686cb91b464069a261f52bb7af54f8ccfc046c63cabd72881646",
+      "place_count": 5,
+      "conversion_aliases": ["selcku", "tercku", "velcku", "xelcku"],
+      "uncertainty": ""
+    },
+    {
+      "word": "gerku",
+      "source_definition": 396,
+      "source_event": "jve1:859d156fdfd25affa361180b1590996712274ae0dcd63a183a6bc44f0fb95790",
+      "source_body": "sha256:8207e3bc87438a091343a51a45ffef01916166da90ddbe79d8d20c1e67db905c",
+      "source_text": [
+        ["$x_{1}$ is a dog/canine/[bitch] of species/breed $x_{2}$."]
+      ],
+      "event": "jve1:a22b5432f27a8cf2d8082fafaff3bb88d9ed4ede3fa1d54baebacbf505abf69e",
+      "body": "sha256:ff3e6e2c8c7d87f2381c2175b00d08770e97c66fa06417f670ee47ef31860d6d",
+      "place_count": 2,
+      "conversion_aliases": ["selge'u"],
+      "uncertainty": ""
+    },
+    {
+      "word": "mlatu",
+      "source_definition": 740,
+      "source_event": "jve1:5f78f1c4cf0c630d07a3dc17155646279e223f0934ba1643f89a17521375dfae",
+      "source_body": "sha256:447bca580aa20d5b5701e4182cd123c3f3cbc4644da41d7e66f011e36072ef70",
+      "source_text": [
+        [
+          "$x_{1}$ is a cat/[puss/pussy/kitten] [feline animal] of species/breed $x_{2}$; (adjective:) $x_{1}$ is feline."
+        ]
+      ],
+      "event": "jve1:0784e76c7adcd87456678919636a660745074b0cc7b67877311d94bd2767b099",
+      "body": "sha256:ca1c42879388631d401a13b37da7aa9f16cb305ed5dead61f7142ffb2851eeff",
+      "place_count": 2,
+      "conversion_aliases": ["selmlatu"],
+      "uncertainty": ""
+    },
+    {
+      "word": "pilno",
+      "source_definition": 847,
+      "source_event": "jve1:86a4fedc4bb7c157e8c5788c7b1e7fe057745de43a7a3a6575b506b96e53188d",
+      "source_body": "sha256:17475c36cfeea7055379cb55f7a209ae48a544826c32ad5c16a0cd78a9c28138",
+      "source_text": [
+        [
+          "$x_1$ uses/employs $x_2$ [tool, apparatus, machine, agent, acting entity, material] for purpose $x_3$."
+        ]
+      ],
+      "event": "jve1:b0df95deda51f8d95f34f9c8eeedbe19303cb8c9674d27759361e9449bad4843",
+      "body": "sha256:92948018ea4ea695260dd83cec245b0cf7545b2b2c82d56a64e4495b09d6cb8d",
+      "place_count": 3,
+      "conversion_aliases": ["selpli", "terpli"],
+      "uncertainty": ""
+    },
+    {
+      "word": "zbasu",
+      "source_definition": 1316,
+      "source_event": "jve1:40d274d4dfa3a946327a6f2f99b295bac1856e938020af7026219c74b9d50e27",
+      "source_body": "sha256:dfb87508a86f01740e1dc7a31391274c9b986f8d3d30b18db65252b5e68a50fe",
+      "source_text": [
+        [
+          "$x_{1}$ makes/assembles/builds/manufactures/creates $x_{2}$ out of materials/parts/components $x_{3}$."
+        ]
+      ],
+      "event": "jve1:25197c2b4403f8292ad01acd749d14323d424d489dfae9367391c1560c43a7d0",
+      "body": "sha256:ce7e072094ace2a96a81b368549dda50110d4a545bf791851b843fc5e6bd781f",
+      "place_count": 3,
+      "conversion_aliases": ["selzba", "terzba"],
+      "uncertainty": ""
+    },
+    {
+      "word": "darxi",
+      "source_definition": 263,
+      "source_event": "jve1:5b8270c8205cdd39d117dd83576f24b3c5bce5ab00fa1cc236bd45ebd33838fb",
+      "source_body": "sha256:f657a0ee0bec82d81fb4e348592ab90d528fa5bc9b992c0feb7daeb1942e6765",
+      "source_text": [
+        [
+          "$x_{1}$ hits/strikes/[beats] $x_{2}$ with instrument [or body-part] $x_{3}$ at locus $x_{4}$."
+        ]
+      ],
+      "event": "jve1:e7857a767dc11e4aab24b796b072864d58319d55951c1687cdd84b300d737888",
+      "body": "sha256:8155a43b9cca0cde1070a7b28cb727326561c6350e8c05128d03273136d9423b",
+      "place_count": 4,
+      "conversion_aliases": ["selda'i", "terda'i", "velda'i"],
+      "uncertainty": ""
+    },
+    {
+      "word": "xamgu",
+      "source_definition": 1262,
+      "source_event": "jve1:38fec27d827b42c23157c97beb22dd230e107e540449552529327fe2bcac7916",
+      "source_body": "sha256:63784aa945e81067b7db1ddeebfdce484c0a177857a4fdd2ea7861563c544e58",
+      "source_text": [
+        [
+          "$x_{1}$ (object/event) is good/beneficial/nice/[acceptable] for $x_{2}$ by standard $x_{3}$."
+        ]
+      ],
+      "event": "jve1:faef1906bcdf4c745b97f9102d9d81fa5c92364cf8185229bd22cca1ea6b0657",
+      "body": "sha256:e4585780b03df7a257642ce9b84eef7acabf7fb968b71eb2190e81d21e2545f4",
+      "place_count": 3,
+      "conversion_aliases": ["selxau", "terxau"],
+      "uncertainty": ""
+    },
+    {
+      "word": "zdani",
+      "source_definition": 1318,
+      "source_event": "jve1:d3ed705ce0943be158a91112f2d652cdcc12fbfbf610db25ee69437f313aee5e",
+      "source_body": "sha256:f3402b46989bb2b843ca60228c6fdf76cd0a657161bf036a24a82a828c3ce461",
+      "source_text": [
+        ["$x_{1}$ is a nest/house/lair/den/[home] of/for $x_{2}$."]
+      ],
+      "event": "jve1:bff59b4998f886467c9126df76f67a75ad95b59a610e44cb8e368e4d346f2edc",
+      "body": "sha256:196aaff9c9b894e8856cffa1d7c87f9d8eef348e444a6de95f763a09747c00c2",
+      "place_count": 2,
+      "conversion_aliases": ["selzda"],
+      "uncertainty": ""
+    },
+    {
+      "word": "bajra",
+      "source_definition": 4,
+      "source_event": "jve1:35579b68ade24bf9a5b8d6caf2f47bef4d323d2876d67023be9f16fd3bd70b63",
+      "source_body": "sha256:a4ebfd590b71e2b8438bd909f682e30ddb4fd3a4249375fabea83e4da4975ed4",
+      "source_text": [
+        [
+          "$x_{1}$ runs on surface $x_{2}$ using limbs $x_{3}$ with gait $x_{4}$."
+        ]
+      ],
+      "event": "jve1:cdb971168b41eb69acab9175901d07b8eaaa560e2bca46b8ba7bca7b7a68f654",
+      "body": "sha256:3159c4739f39a97d844a33d5e5cd2decccd7e99a6458fd3743eef07a6a373a48",
+      "place_count": 4,
+      "conversion_aliases": ["selbajra", "terbajra", "velbajra"],
+      "uncertainty": ""
+    },
+    {
+      "word": "cadzu",
+      "source_definition": 88,
+      "source_event": "jve1:06fa63b866d7a36f9b6897d2183462d1df10f4b36414db81a4a88bc2d378defb",
+      "source_body": "sha256:8052e096e152a2fcfbbe6441a3dfdf7f00db964ec5762971ab112f1bf8798368",
+      "source_text": [
+        ["$x_{1}$ walks/strides/paces on surface $x_{2}$ using limbs $x_{3}$."]
+      ],
+      "event": "jve1:84cd7ccaace386a4ea341db2c192bbaa54325e2e8d743a2706a1dff50b2487f4",
+      "body": "sha256:b255cb4b33c3298c7bb7fa554386c9d0d5c5a8d7f5d2e00f7fa2eb9327e3a147",
+      "place_count": 3,
+      "conversion_aliases": ["seldzu", "terdzu"],
+      "uncertainty": ""
+    },
+    {
+      "word": "jdima",
+      "source_definition": 459,
+      "source_event": "jve1:a251ffe41c2288117f8a0766ecf31d7d8a6c188085d451d2c20db910aa161b3e",
+      "source_body": "sha256:633a44a5404a6190a759185a3164f26e7404e87ab842d0569fd6d7aed2df0cd1",
+      "source_text": [
+        [
+          "$x_{1}$ [amount] is the price of $x_{2}$ to purchaser/consumer $x_{3}$ set by vendor $x_{4}$."
+        ]
+      ],
+      "event": "jve1:b22a1f5792b5f73dcc7913606cb2f7186be61516dd677ae56d44154e04521514",
+      "body": "sha256:6129212c1d80c81d7bb69674288f2aecf9597ab503d470fe779c3600c0b132ea",
+      "place_count": 4,
+      "conversion_aliases": ["seldi'a", "terdi'a", "veldi'a"],
+      "uncertainty": ""
+    },
+    {
+      "word": "zarci",
+      "source_definition": 1310,
+      "source_event": "jve1:25c6a57a2b961cfbd809575a661b435040b33933063e2c79a603ba6eb0b1fba1",
+      "source_body": "sha256:f8e1bbf4fa904f72d87b829b0d2dbcb8873dac2a25adb6f32f7e04020249762b",
+      "source_text": [
+        [
+          "$x_{1}$ is a market/store/exchange/shop(s) selling/trading (for) $x_{2}$, operated by/with participants $x_{3}$."
+        ]
+      ],
+      "event": "jve1:f3d1d2ae076e33076f793f11ba316a6abb7f804edcd500eb061e9922a0d020d1",
+      "body": "sha256:ad53f16dcdbd283a4633b5dc9b9ddd7ebbb18e83ca968cf99e3dd1a8bd22c386",
+      "place_count": 3,
+      "conversion_aliases": ["selzai", "terzai"],
+      "uncertainty": ""
+    },
+    {
+      "word": "gasnu",
+      "source_definition": 391,
+      "source_event": "jve1:8a183baeafe6585f9c4bd5c204dc87c5c258983e8726cfbbdbc1e5f2e01f98a7",
+      "source_body": "sha256:efd42ad4433435416af550adeff2e90c615e293634211789bc33409fb18f473c",
+      "source_text": [
+        [
+          "$x_{1}$ [person/agent] is an agentive cause of event $x_{2}$; $x_{1}$ does/brings about $x_{2}$."
+        ]
+      ],
+      "event": "jve1:8d1a784cf1c2c5d738888be01218e126b2a8abfdeb5ad8119d0cba544ada2446",
+      "body": "sha256:a4c0905b492bbda6ce4a9116f9992be419770e78296d99c4931833523e19390a",
+      "place_count": 2,
+      "conversion_aliases": ["selgau"],
+      "uncertainty": ""
+    },
+    {
+      "word": "catlu",
+      "source_definition": 108,
+      "source_event": "jve1:f6399d21ef7b63f9bcd64286fd1372a6266fda22a4d7a34d61e413442e50a5de",
+      "source_body": "sha256:5c653a3b8ab3f87f89d7af143bd091bc66093125edc175d016a4dd439d94db67",
+      "source_text": [
+        [
+          "$x_{1}$ looks at/examines/views/inspects/regards/watches/gazes at $x_{2}$."
+        ]
+      ],
+      "event": "jve1:2b46954e3bb4760def944253190828b496027b553c4c2e80514a75548e28817d",
+      "body": "sha256:68549c0ba24d29c73a965e203fc678b86e9e5b9776a7363d6eee962b577ce252",
+      "place_count": 2,
+      "conversion_aliases": ["selcta"],
+      "uncertainty": ""
+    },
+    {
+      "word": "viska",
+      "source_definition": 1234,
+      "source_event": "jve1:8eabf14e539dcad1230d67bd39fceb455815f01952e30d485858b4bf362afcf6",
+      "source_body": "sha256:f3fcfffcb8b35d77631cc5b5cef2b1a53bf7378661e8893c2d8c63b384f73814",
+      "source_text": [
+        [
+          "$x_{1}$ sees/views/perceives visually $x_{2}$ under conditions $x_{3}$."
+        ]
+      ],
+      "event": "jve1:3a9f2e960b057922a1b590ea708117ca27588254239b5616d96fd0f49fac13e2",
+      "body": "sha256:eb1cc8e4eeae005f588e3ffe133f88b205822d405cc85a68db18ce85d0bafde8",
+      "place_count": 3,
+      "conversion_aliases": ["selvi'a", "tervi'a"],
+      "uncertainty": ""
+    },
+    {
+      "word": "kurji",
+      "source_definition": 621,
+      "source_event": "jve1:dc864b193b2a595c7f86e1c1eb5df138bf97f7c7bf57d4b2610d9e23517f390e",
+      "source_body": "sha256:9a294c7c4e893ffecec69a1ead137f3467ab99f8d7a374d68cad2737f20ee2b5",
+      "source_text": [
+        [
+          "$x_{1}$ takes-care-of/looks after/attends to/provides for/is caretaker for $x_{2}$ (object/event/person)."
+        ]
+      ],
+      "event": "jve1:f607b4e3a9114cc8077408767f224cb097cf9df57899e367697804046f0dd83c",
+      "body": "sha256:6ce77c3ad44df67e85ed40c9c0a6a96fe2bf3b592cf792ff072d15896ca6e134",
+      "place_count": 2,
+      "conversion_aliases": ["selku'i"],
+      "uncertainty": ""
+    },
+    {
+      "word": "nelci",
+      "source_definition": 786,
+      "source_event": "jve1:e66e981b2e949e03b3da1e4d1d0ee4f3f74853c89f2ed4713c68c983695c04f4",
+      "source_body": "sha256:6636da7bc25f97222127705ae2d3e5846bde77c74c8caa99e57311386ca62ad6",
+      "source_text": [
+        ["$x_{1}$ is fond of/likes/has a taste for $x_{2}$ (object/state)."]
+      ],
+      "event": "jve1:4c6521086bf495d22e48b2f35a562299f277d4b30a4119dfb368fe995beb12ca",
+      "body": "sha256:9679812280941a8d43504447de912f6e401819e5c208112f2f9b09bda9e01929",
+      "place_count": 2,
+      "conversion_aliases": ["selnei"],
+      "uncertainty": ""
+    },
+    {
+      "word": "pendo",
+      "source_definition": 834,
+      "source_event": "jve1:1322f5412733ef706775573d96db20e60025e44e9fc3ab6c677e0f640b1b49c1",
+      "source_body": "sha256:53a51b247a1ed7d00f26f948fd719efde918f7bf690e6fdc21bfdea24bc86270",
+      "source_text": [
+        [
+          "$x_{1}$ is/acts as a friend of/to $x_{2}$ (experiencer); $x_{2}$ befriends $x_{1}$."
+        ]
+      ],
+      "event": "jve1:4fffc382d29ab063ab71635bcb437900853088ba9f8867c84a7ef0b879bbbc99",
+      "body": "sha256:85cbebc2bcf8da824ec9e7b323222cbc909ce21ea54fc9617661550eaec8cdcf",
+      "place_count": 2,
+      "conversion_aliases": ["selpe'o"],
+      "uncertainty": ""
+    },
+    {
+      "word": "troci",
+      "source_definition": 1191,
+      "source_event": "jve1:5e13ac8f60ba524a5c6db2c00cce48be15438f09bd2c676e7bf61e44ab88467d",
+      "source_body": "sha256:ecf41ceaa7be6575b87c05dff865386ab6a1e470f9be6d1fad651a85251ba1c8",
+      "source_text": [
+        [
+          "$x_{1}$ tries/attempts/makes an effort to do/attain $x_{2}$ (event/state/property) by actions/method $x_{3}$."
+        ]
+      ],
+      "event": "jve1:0a70adf285a76f1a118f8b3fa23a6a65320c143ab7e30abc973931b7323847c2",
+      "body": "sha256:e0ab1321a7e73162904629eb803b00538b8d1bfdddd8543d63c375f20ef02fb4",
+      "place_count": 3,
+      "conversion_aliases": ["seltoi", "tertoi"],
+      "uncertainty": ""
+    },
+    {
+      "word": "skami",
+      "source_definition": 1022,
+      "source_event": "jve1:c12e7cdbfc4ef71803f91a25ecd027ec1da4113cfbc99c8bb2dee3a91bc66aa1",
+      "source_body": "sha256:b4e6d558ea6d16de579847354c4b00cf88ffba749ab70fcb235fddee1788d346",
+      "source_text": [["$x_{1}$ is a computer for purpose $x_{2}$."]],
+      "event": "jve1:0785849033aa8707215ec5bea6bbd1d084f2ad088207acac4d421f7c1e6df6b3",
+      "body": "sha256:884968f2d357dc21e34d45fab6b18766aebe98725a33be4fff59b089a4a2d7b3",
+      "place_count": 2,
+      "conversion_aliases": ["selskami"],
+      "uncertainty": ""
+    }
+  ]
+}
