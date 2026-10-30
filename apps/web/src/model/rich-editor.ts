@@ -614,7 +614,12 @@ function equivalentCaret(doc: EditorNode, position: number) {
 }
 
 /** Trim each inline node separately so a range cannot merge different types. */
-function deleteRichRange(tr: Transaction, from: number, to: number) {
+function deleteRichRange(
+  tr: Transaction,
+  from: number,
+  to: number,
+  affinity: -1 | 1 = -1,
+) {
   const paragraphs: { node: EditorNode; position: number }[] = [];
   tr.doc.forEach((node, position) => {
     if (position < to && position + node.nodeSize > from)
@@ -623,7 +628,8 @@ function deleteRichRange(tr: Transaction, from: number, to: number) {
   if (!paragraphs.length) return tr;
   const nodes: EditorNode[] = [];
   let size = 0,
-    caret: number | null = null;
+    caret: number | null = null,
+    endCaret: number | null = null;
   const append = (node: EditorNode) => {
     nodes.push(node);
     size += node.nodeSize;
@@ -633,7 +639,10 @@ function deleteRichRange(tr: Transaction, from: number, to: number) {
       const start = paragraph.position + 1 + offset,
         end = start + node.nodeSize;
       if (end <= from || start >= to) {
-        if (start >= to && caret === null) caret = size;
+        if (start >= to) {
+          if (caret === null) caret = size;
+          if (endCaret === null) endCaret = size;
+        }
         append(node);
         return;
       }
@@ -648,18 +657,29 @@ function deleteRichRange(tr: Transaction, from: number, to: number) {
       );
       if (caret === null)
         caret = size + (from <= start ? 0 : (node.isText ? 0 : 1) + left);
-      if (from <= start && to >= end) return;
-      if (left === right) {
-        append(node);
-        return;
+      let kept: EditorNode | null = null;
+      if (!(from <= start && to >= end)) {
+        if (left === right) kept = node;
+        else if (node.isText) {
+          const text = node.text!.slice(0, left) + node.text!.slice(right);
+          if (text) kept = schema.text(text);
+        } else
+          kept = node.copy(
+            node.content.cut(0, left).append(node.content.cut(right)),
+          );
       }
-      if (node.isText) {
-        const text = node.text!.slice(0, left) + node.text!.slice(right);
-        if (text) append(schema.text(text));
-      } else
-        append(
-          node.copy(node.content.cut(0, left).append(node.content.cut(right))),
-        );
+      if (endCaret === null && to <= end) {
+        endCaret =
+          size +
+          (!kept
+            ? 0
+            : to >= end
+              ? kept.nodeSize
+              : left === right
+                ? to - start
+                : (node.isText ? 0 : 1) + left);
+      }
+      if (kept) append(kept);
     });
   const first = paragraphs[0],
     last = paragraphs.at(-1)!;
@@ -671,7 +691,14 @@ function deleteRichRange(tr: Transaction, from: number, to: number) {
       paragraph,
     );
   return tr.setSelection(
-    TextSelection.near(tr.doc.resolve(first.position + 1 + (caret ?? size))),
+    TextSelection.near(
+      tr.doc.resolve(
+        first.position +
+          1 +
+          (affinity > 0 ? (endCaret ?? size) : (caret ?? size)),
+      ),
+      affinity,
+    ),
   );
 }
 
@@ -684,7 +711,12 @@ export function deleteRichInput(
 ): boolean {
   if (!tr.selection.empty) {
     dispatch?.(
-      deleteRichRange(tr, tr.selection.from, tr.selection.to)
+      deleteRichRange(
+        tr,
+        tr.selection.from,
+        tr.selection.to,
+        inputType.endsWith("Forward") ? 1 : -1,
+      )
         .setMeta("uiEvent", inputType === "deleteByCut" ? "cut" : "input")
         .scrollIntoView(),
     );
@@ -731,11 +763,11 @@ export function deleteRichInput(
         : equivalentCaret(tr.doc, target.from) ===
           equivalentCaret(tr.doc, caret)))
   ) {
+    const from =
+      backward || inputType === "deleteEntireSoftLine" ? target.from : caret;
+    const to = backward ? caret : target.to;
     tr.setSelection(
-      TextSelection.between(
-        tr.doc.resolve(target.from),
-        tr.doc.resolve(target.to),
-      ),
+      TextSelection.between(tr.doc.resolve(from), tr.doc.resolve(to)),
     );
   } else {
     let edge = backward ? 0 : units.length;
@@ -775,8 +807,11 @@ export function deleteRichInput(
       end = next < 0 ? units.length : offset + next;
     }
     if (!units.length || edge === end) return true;
-    const from = units[Math.min(edge, offset)].from;
-    const to = units[end - 1].to;
+    const from =
+      backward || inputType === "deleteEntireSoftLine"
+        ? units[Math.min(edge, offset)].from
+        : caret;
+    const to = backward ? caret : units[end - 1].to;
     tr.setSelection(
       TextSelection.between(tr.doc.resolve(from), tr.doc.resolve(to)),
     );
