@@ -1124,3 +1124,50 @@ test("r2: failed consent revocation remains visible and keeps the off control us
   ).toHaveCount(1);
   expect(errors).toEqual([]);
 });
+
+test("r2: Back after a reload keeps the saved meaning results without another inference request", async ({
+  page,
+}) => {
+  const state = await meaningService(page, 25);
+  await page.goto("/search?q=book&lang=en");
+  const meaning = group(page, "Similar in meaning");
+  await meaning.getByRole("button", { name: "Allow meaning search" }).click();
+  await expect(meaning.locator("article")).toHaveCount(20);
+  await page.reload();
+  await expect(meaning.locator("article")).toHaveCount(20);
+  expect(state.calls).toHaveLength(2);
+  expect(
+    await page.evaluate(
+      () =>
+        (
+          performance.getEntriesByType(
+            "navigation",
+          )[0] as PerformanceNavigationTiming
+        ).type,
+    ),
+  ).toBe("reload");
+  await meaning.getByRole("button", { name: "show all", exact: true }).click();
+  await expect(meaning.locator("article")).toHaveCount(25);
+  await page.getByRole("link", { name: "Settings", exact: true }).click();
+  state.fail = true;
+  await page.goBack();
+  await expect(meaning.locator("article")).toHaveCount(25);
+  expect(state.calls).toHaveLength(2);
+});
+
+test("r2: cross-document Back restores meaning results without inference", async ({
+  page,
+}) => {
+  const state = await meaningService(page, 25);
+  await page.goto("/search?q=book&lang=en");
+  const meaning = group(page, "Similar in meaning");
+  await meaning.getByRole("button", { name: "Allow meaning search" }).click();
+  await expect(meaning.locator("article")).toHaveCount(20);
+  await meaning.getByRole("button", { name: "show all", exact: true }).click();
+  await expect(meaning.locator("article")).toHaveCount(25);
+  await page.goto("/preferences");
+  state.fail = true;
+  await page.goBack();
+  await expect(meaning.locator("article")).toHaveCount(25);
+  expect(state.calls).toHaveLength(1);
+});

@@ -104,9 +104,11 @@ test("local sequences share rank across spellings, fall back to query words, and
   await page.goto(
     "/search?" + new URLSearchParams({ q: "i".repeat(129), lang: "en" }),
   );
-  await expect(page.locator("main > .notice")).toContainText(
-    "Word segmentation reached a limit.",
-  );
+  await expect(
+    page
+      .locator("main > .notice")
+      .filter({ hasText: "Word segmentation reached a limit." }),
+  ).toContainText("Word segmentation reached a limit.");
   expect(forbidden).toEqual([]);
 });
 
@@ -163,7 +165,9 @@ test("remote sequence classes and a limited-segmentation notice survive paginati
   await page.route("**/api/v1/events/**", (route) => route.abort());
   await page.goto("/search?q=i%20bo&lang=en");
   const results = page.getByRole("region", { name: "Search results" });
-  const notice = page.locator("main > .notice");
+  const notice = page
+    .locator("main > .notice")
+    .filter({ hasText: "Word segmentation reached a limit." });
   await expect(results.locator("article .hw")).toHaveText(["ibo", "iboku"]);
   await expect(notice).toContainText("Word segmentation reached a limit.");
   await page.getByRole("button", { name: "show all" }).click();

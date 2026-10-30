@@ -401,6 +401,7 @@ Back restores the saved meaning response, displayed rows, snapshot, view, profil
 Restoration requires the same query, language, view choice, and remembered provider and scope consent.
 If incomplete lexical history requires newer remote lexical results, saved meaning results still keep their saved snapshot.
 The meaning group shows that separate snapshot and view. Back never starts another inference request to align those snapshots.
+A fresh reload checks current capabilities, profile, and consent instead of restoring the saved meaning group.
 Similarity never becomes an editorial score.
 
 Each group offers pagination and “show all” with its remaining count. The page offers “Missing a word for this? Add it,” and a retired-results filter.

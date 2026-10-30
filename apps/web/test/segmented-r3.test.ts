@@ -360,7 +360,7 @@ test("R3 a broad local page keeps its total and show-all cap", async ({
   );
   await open(page, "/search?q=shared&lang=en");
   await expect(page.locator("main > .count-line .count")).toHaveText(
-    "1005 word and definition results",
+    "0 Lojban results shown. 20 definition results shown.",
   );
   const definitions = page.getByRole("region", {
     name: "Definitions",
@@ -368,14 +368,16 @@ test("R3 a broad local page keeps its total and show-all cap", async ({
   });
   const words = page.getByRole("region", { name: "Lojban words", exact: true });
   await expect(definitions.locator("article.hit")).toHaveCount(20);
+  await expect(definitions).toContainText("985 more");
   await expect(words.locator("article.hit")).toHaveCount(0);
   await definitions
     .getByRole("button", { name: "show all", exact: true })
     .click();
   await expect(definitions.locator("article.hit")).toHaveCount(1000);
+  await expect(definitions).toContainText("5 more");
   await expect(words.locator("article.hit")).toHaveCount(0);
   await expect(page.locator("main > .count-line .count")).toHaveText(
-    "1005 word and definition results",
+    "0 Lojban results shown. 1000 definition results shown.",
   );
   await expect(
     page.getByRole("button", { name: "show all", exact: true }),

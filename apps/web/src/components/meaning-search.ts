@@ -116,7 +116,10 @@ export async function meaningSearchGroup(
   });
   context.signal.addEventListener("abort", unsubscribe, { once: true });
   try {
-    let saved = savedMeaning(query, language);
+    let saved =
+      context.restoringHistory || context.readRetryAttempt
+        ? savedMeaning(query, language)
+        : null;
     const consented = (provider: string, scope: string) =>
       app.session.preferences.aiConsents.some(
         (consent) =>
