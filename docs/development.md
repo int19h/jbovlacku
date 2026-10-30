@@ -1035,7 +1035,7 @@ The draft model and the builder metadata have Node unit tests:
 npm run test:web-unit
 ```
 
-Playwright loads these files when it lists tests, but it does not run them. Run this command as well as `npm run test:web`.
+Playwright excludes the Node unit directory from discovery. Run `npm run test:web-unit` as well as `npm run test:web`.
 
 On this VM, place browser binaries and test data under a task-specific `/build/jbovlacku` directory.
 
