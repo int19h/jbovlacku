@@ -1,0 +1,265 @@
+import assert from "node:assert/strict";
+import { before, test } from "node:test";
+import { readFile } from "node:fs/promises";
+import { initializeCore } from "../../../../packages/core/src/index.ts";
+import {
+  newDraft,
+  newPlace,
+  draftToBody,
+  switchMode,
+} from "../../src/model/draft.ts";
+import { applyProposals, type Suggestion } from "../../src/model/assistance.ts";
+import { EditorState, TextSelection } from "prosemirror-state";
+import { history, undo, redo, undoDepth } from "prosemirror-history";
+import { splitBlock, joinBackward } from "prosemirror-commands";
+import {
+  editedTextPlugin,
+  placeInputPlugins,
+  editorToRich,
+  richToEditor,
+} from "../../src/model/rich-editor.ts";
+import { undoInputRule } from "prosemirror-inputrules";
+import {
+  canonicalRichFields,
+  editedRich,
+} from "../../src/model/rich-values.ts";
+import type { RichNode, RichText } from "../../src/model/types.ts";
+
+const raw = "a\r\nb\rc";
+before(async () =>
+  initializeCore(
+    await readFile(
+      new URL(
+        "../../../../packages/core/generated/jvc_runtime_bg.wasm",
+        import.meta.url,
+      ),
+    ),
+  ),
+);
+const left: RichNode[] = ["left\r\n", " adjacent\r", { code: "keep\r\n" }];
+for (const kind of ["prose", "code", "word", "web"] as const) {
+  const node = (text: string): RichNode =>
+    kind === "prose"
+      ? text
+      : kind === "code"
+        ? { code: text }
+        : kind === "word"
+          ? { word: { language: "jbo", spelling: "cukta" }, label: text }
+          : { url: "https://example.org/", label: text };
+  test(`edited ${kind} text uses LF through input undo redo and deletion`, () => {
+    let state = EditorState.create({
+      doc: richToEditor([[...left, node(raw), "right\r\n"]]),
+      plugins: [editedTextPlugin(), history()],
+    });
+    const at =
+      1 +
+      left.reduce<number>(
+        (sum, _node, index) =>
+          sum + state.doc.firstChild!.child(index).nodeSize,
+        0,
+      ) +
+      1;
+    const dispatch = (transaction: typeof state.tr) => {
+      state = state.applyTransaction(transaction).state;
+    };
+    dispatch(
+      state.tr
+        .setSelection(TextSelection.create(state.doc, at + raw.length))
+        .insertText("X"),
+    );
+    const expected: RichText = [[...left, node("a\nb\ncX"), "right\r\n"]];
+    assert.deepEqual(editorToRich(state.doc), expected);
+    assert.equal(undoDepth(state), 1);
+    assert.equal(undo(state, dispatch), true);
+    assert.deepEqual(editorToRich(state.doc), [
+      [...left, node("a\nb\nc"), "right\r\n"],
+    ]);
+    assert.equal(undoDepth(state), 0);
+    assert.equal(redo(state, dispatch), true);
+    assert.deepEqual(editorToRich(state.doc), expected);
+    assert.equal(undoDepth(state), 1);
+    dispatch(state.tr.delete(at + 2, at + 3));
+    assert.deepEqual(editorToRich(state.doc), [
+      [...left, node("a\n\ncX"), "right\r\n"],
+    ]);
+  });
+}
+
+test("split and join normalize edited prose fragments and preserve neighboring containers", () => {
+  let state = EditorState.create({
+    doc: richToEditor([[...left, raw, "right\r\n"]]),
+    plugins: [editedTextPlugin(), history()],
+  });
+  const at =
+    1 +
+    left.reduce<number>(
+      (sum, _, index) => sum + state.doc.firstChild!.child(index).nodeSize,
+      0,
+    ) +
+    1;
+  const dispatch = (transaction: typeof state.tr) => {
+    state = state.applyTransaction(transaction).state;
+  };
+  dispatch(state.tr.setSelection(TextSelection.create(state.doc, at + 3)));
+  assert.equal(splitBlock(state, dispatch), true);
+  assert.deepEqual(editorToRich(state.doc), [
+    [...left, "a\n"],
+    ["b\nc", "right\r\n"],
+  ]);
+  dispatch(
+    state.tr.setSelection(
+      TextSelection.create(state.doc, state.doc.firstChild!.nodeSize + 1),
+    ),
+  );
+  assert.equal(joinBackward(state, dispatch), true);
+  assert.deepEqual(editorToRich(state.doc), [
+    [...left, "a\nb\nc", "right\r\n"],
+  ]);
+});
+
+test("accepted rich replacements clean only changed fields and text nodes", () => {
+  const before = {
+    text: [["before\r\n", { code: raw }], [" \t"]],
+    notes: [["note\r"], [" "]],
+  };
+  const next = {
+    text: [["before\r\n", { code: raw + "X" }], [" \t"]],
+    notes: before.notes,
+  };
+  const result = canonicalRichFields(next, before);
+  assert.deepEqual(result.text, [["before\r\n", { code: "a\nb\ncX" }]]);
+  assert.equal(result.notes, before.notes);
+  assert.deepEqual(
+    editedRich(
+      [[{ url: "https://example.org/new", label: raw }]],
+      [[{ url: "https://example.org/old", label: raw }]],
+    ),
+    [[{ url: "https://example.org/new", label: raw }]],
+  );
+  const ai = {
+    log_json: '{"text":[[" "]]}',
+    records: [{ result: { proposals: [{ value: [[" \t"]] }] } }],
+  };
+  assert.equal(canonicalRichFields({ ai }).ai, ai);
+});
+
+test("accepted replacements preserve moved unchanged nodes and frame descriptions", () => {
+  const code = { code: raw };
+  const label = { url: "https://example.org/", label: raw };
+  assert.deepEqual(editedRich([["inserted", label, code]], [[code, label]]), [
+    ["inserted", label, code],
+  ]);
+  const description: RichText = [["description\r\n", " adjacent\r"], [" \t"]];
+  const before = {
+    frame: {
+      places: [
+        { index: 1, description },
+        { index: 2, description: [["second"]] },
+      ],
+    },
+  };
+  const next = {
+    frame: {
+      places: [
+        { index: 2, description: [["changed"]] },
+        { index: 1, description: structuredClone(description) },
+      ],
+    },
+  };
+  assert.deepEqual(
+    canonicalRichFields(next, before).frame.places[1].description,
+    description,
+  );
+});
+
+test("proposal acceptance keeps moved fields exact and changes only proposed text", () => {
+  const exact: RichText = [[raw, " adjacent"], [" \t"]];
+  const second = newPlace(2),
+    third = newPlace(3);
+  second.description = exact;
+  third.description = [["third"]];
+  const draft = newDraft({
+    spelling: "broda",
+    kind: "gismu",
+    text: [["definition"]],
+    notes: exact,
+    frameMode: "context",
+    places: [second, third],
+  });
+  const frame = structuredClone(draftToBody(draft).body!.frame!);
+  frame.places.unshift({
+    ...structuredClone(frame.places[1]),
+    index: 1,
+    description: [["new\r\nplace"]],
+  });
+  const suggestion = {
+    operation: "definition",
+    proposals: [
+      { path: "/text", value: [["changed\r\ntext"]] },
+      { path: "/frame", value: frame },
+    ],
+  } as Suggestion;
+  const evidence = structuredClone(suggestion);
+  applyProposals(draft, suggestion);
+  assert.deepEqual(draft.text, [["changed\ntext"]]);
+  assert.deepEqual(draft.places[0].description, [["new\nplace"]]);
+  assert.deepEqual(draft.places[1].description, exact);
+  assert.deepEqual(draft.notes, exact);
+  assert.deepEqual(suggestion, evidence);
+});
+
+test("switching a restored literal mode without text changes preserves exact fields", () => {
+  const exact: RichText = [[raw, " adjacent"], [" \t"]];
+  const draft = newDraft({
+    spelling: "broda",
+    kind: "gismu",
+    text: exact,
+    notes: exact,
+    structured: false,
+  });
+  switchMode(draft, true);
+  assert.deepEqual(draft.text, exact);
+  assert.deepEqual(draft.notes, exact);
+});
+
+test("line-ending normalization keeps immediate input-rule Backspace intact", () => {
+  const rules = placeInputPlugins({ enabled: () => true });
+  let state = EditorState.create({
+    doc: richToEditor([["keep\r\n__"]]),
+    plugins: [editedTextPlugin(), ...rules, history()],
+  });
+  const dispatch = (transaction: typeof state.tr) => {
+    state = state.applyTransaction(transaction).state;
+  };
+  dispatch(
+    state.tr.setSelection(
+      TextSelection.create(state.doc, 2 + "keep\r\n__".length),
+    ),
+  );
+  const view = {
+    get state() {
+      return state;
+    },
+    dispatch,
+    composing: false,
+  };
+  assert.equal(
+    rules[0].props.handleTextInput!.call(
+      rules[0],
+      view as never,
+      state.selection.from,
+      state.selection.to,
+      "_",
+      () => state.tr.insertText("_"),
+    ),
+    true,
+  );
+  assert.deepEqual(editorToRich(state.doc), [["keep\n", 1]]);
+  assert.equal(
+    undoInputRule(state, (transaction) =>
+      dispatch(transaction.setMeta("richRuleUndo", true)),
+    ),
+    true,
+  );
+  assert.deepEqual(editorToRich(state.doc), [["keep\n___"]]);
+});

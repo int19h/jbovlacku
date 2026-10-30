@@ -18,6 +18,7 @@ import { onDisconnect } from "../lib/lifetime.ts";
 import { CIRCLED, placeGlyph } from "../model/place-glyphs.ts";
 import {
   editorToRich,
+  editedTextPlugin,
   deleteRichBackward,
   deleteRichForward,
   pastedRichText,
@@ -28,7 +29,6 @@ import {
   richToEditor,
 } from "../model/rich-editor.ts";
 import type { RichText } from "../model/types.ts";
-import { canonicalRich } from "../model/rich-values.ts";
 
 export interface RichFieldOptions extends Omit<
   FieldOptions,
@@ -164,7 +164,7 @@ export function richField(label: string, options: RichFieldOptions) {
       : options.structured !== false);
   let previousMode = enabled();
   let view: EditorView;
-  let current = canonicalRich(options.value);
+  let current = options.value;
   let moved = false;
   let pointerFocus = false;
   let tabSelection: boolean | null = null;
@@ -184,6 +184,7 @@ export function richField(label: string, options: RichFieldOptions) {
       doc,
       selection: selection ?? TextSelection.atEnd(doc),
       plugins: [
+        editedTextPlugin(),
         ...rulePlugins,
         new Plugin({
           props: {
@@ -536,14 +537,12 @@ export function richField(label: string, options: RichFieldOptions) {
   Object.defineProperty(input, "value", {
     get: () => current,
     set: (value: RichText) => {
-      current = canonicalRich(value);
+      const unchanged = JSON.stringify(current) === JSON.stringify(value);
+      current = value;
       nativeEdit = null;
       if (view.isDestroyed) return;
       // External draft changes start a new history for this field.
-      if (
-        JSON.stringify(editorToRich(view.state.doc)) !== JSON.stringify(current)
-      )
-        view.updateState(state());
+      if (!unchanged) view.updateState(state());
       else if (enabled() !== previousMode)
         // Mode changes start a new undo boundary without moving the caret.
         view.updateState(state(view.state.doc, view.state.selection));
@@ -765,6 +764,10 @@ export function richField(label: string, options: RichFieldOptions) {
         rows: 2,
         hint: "The label can be empty.",
       });
+      let labelEdited = false;
+      label.input.addEventListener("input", () => {
+        labelEdited = true;
+      });
       const error = el("p", { role: "status", class: "notice", hidden: true });
       openDialog(
         "Edit link",
@@ -783,13 +786,14 @@ export function richField(label: string, options: RichFieldOptions) {
             target.input.focus();
             return false;
           }
+          const labelText = labelEdited
+            ? label.input.value
+            : existing.node.textContent;
           const replacement = existing.node.type.create(
             word
               ? { word: { language: "jbo", spelling: value } }
               : { url: value },
-            label.input.value
-              ? richEditorSchema.text(label.input.value)
-              : undefined,
+            labelText ? richEditorSchema.text(labelText) : undefined,
           );
           const tr = view.state.tr.replaceWith(
             existing.position,

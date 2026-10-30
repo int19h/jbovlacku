@@ -13,7 +13,6 @@ import {
 } from "./outbox-graph.ts";
 import type { Envelope, Transport } from "../model/types.ts";
 import type { Draft } from "../model/draft.ts";
-import { canonicalRichFields } from "../model/rich-values.ts";
 
 /** Only authenticated, well-formed lifecycle actions can disable ordinary signing. */
 function lifecycleMarkers(identity: string, envelopes: Envelope[]) {
@@ -550,7 +549,7 @@ export class LocalStore {
           tx.abort();
           return;
         }
-        drafts.put(canonicalRichFields(draft), key);
+        drafts.put(draft, key);
       };
       current.onsuccess = proceed;
       if (published) published.onsuccess = proceed;
@@ -674,10 +673,8 @@ export class LocalStore {
               !index.entries.some((entry) => entry.key === consumed))
           )
             throw new SavedDraftUnavailableError();
-          next = canonicalRichFields(
-            structuredClone(
-              consumed ? (resumed!.result as Draft) : (replacement as Draft),
-            ),
+          next = structuredClone(
+            consumed ? (resumed!.result as Draft) : (replacement as Draft),
           );
           const savedKey = previous ? `saved:${crypto.randomUUID()}` : null;
           index.entries = [
@@ -689,8 +686,7 @@ export class LocalStore {
           next.savedDrafts = index.entries;
           next.revision = crypto.randomUUID();
           next.updatedAt = Date.now();
-          if (previous && savedKey)
-            drafts.add(canonicalRichFields(previous), savedKey);
+          if (previous && savedKey) drafts.add(previous, savedKey);
           drafts.put(index, "saved-index");
           drafts.put(next, "current");
           if (consumed) drafts.delete(consumed);
@@ -750,7 +746,7 @@ export class LocalStore {
           return;
         }
         if (next === null) drafts.delete(key);
-        else drafts.put(canonicalRichFields(next), key);
+        else drafts.put(next, key);
       };
       current.onsuccess = proceed;
       if (key === "current") this.readSavedIndex(drafts, () => proceed());

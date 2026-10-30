@@ -27,6 +27,37 @@ export function canonicalRich(value: RichText): RichText {
   return paragraphs.length === value.length ? value : paragraphs;
 }
 
+/** Replaced fields clean blank paragraphs and normalize only changed text. */
+export function editedRich(value: RichText, previous: RichText = []): RichText {
+  const oldNodes = previous.flat();
+  return canonicalRich(
+    value.map((paragraph) =>
+      paragraph.map((node) => {
+        if (typeof node === "string")
+          return oldNodes.includes(node) ? node : node.replace(/\r\n?/gu, "\n");
+        if (typeof node === "number" || "operand" in node) return node;
+        const field = "code" in node ? "code" : "label";
+        const text = "code" in node ? node.code : node.label;
+        if (typeof text !== "string") return node;
+        if (
+          oldNodes.some(
+            (old) =>
+              old &&
+              typeof old === "object" &&
+              ("code" in node
+                ? "code" in old && old.code === text
+                : "word" in node
+                  ? "word" in old && old.label === text
+                  : "url" in old && old.label === text),
+          )
+        )
+          return node;
+        return { ...node, [field]: text.replace(/\r\n?/gu, "\n") };
+      }),
+    ),
+  );
+}
+
 const richFields = new Set([
   "text",
   "notes",
@@ -60,8 +91,12 @@ const richContainers = new Set([
   "gismu",
   "rows",
 ]);
-/** Normalize authored fields. Inference logs and proposal evidence stay exact. */
-export function canonicalRichFields<T>(value: T, rich = false): T {
+/** Normalize accepted changes. Inference logs and proposal evidence stay exact. */
+export function canonicalRichFields<T>(
+  value: T,
+  previous?: T,
+  rich = false,
+): T {
   if (Array.isArray(value)) {
     if (
       rich &&
@@ -78,8 +113,34 @@ export function canonicalRichFields<T>(value: T, rich = false): T {
           ),
       )
     )
-      return canonicalRich(value as RichText) as T;
-    const items = value.map((item) => canonicalRichFields(item, rich));
+      return JSON.stringify(value) === JSON.stringify(previous)
+        ? value
+        : (editedRich(
+            value as RichText,
+            Array.isArray(previous) ? (previous as RichText) : [],
+          ) as T);
+    const oldItems = Array.isArray(previous) ? previous : [];
+    const items = value.map((item, index) => {
+      const exact = oldItems.find(
+        (old) => JSON.stringify(old) === JSON.stringify(item),
+      );
+      const key =
+        item && typeof item === "object"
+          ? Object.hasOwn(item, "id")
+            ? "id"
+            : Object.hasOwn(item, "index")
+              ? "index"
+              : null
+          : null;
+      const old =
+        exact ??
+        (key
+          ? oldItems.find(
+              (old) => old && typeof old === "object" && old[key] === item[key],
+            )
+          : oldItems[index]);
+      return canonicalRichFields(item, old, rich);
+    });
     return items.every((item, index) => item === value[index])
       ? value
       : (items as T);
@@ -87,10 +148,14 @@ export function canonicalRichFields<T>(value: T, rich = false): T {
   if (value === null || typeof value !== "object") return value;
   let changed = false;
   const fields = Object.entries(value).map(([key, original]) => {
+    const before =
+      previous && typeof previous === "object"
+        ? (previous as Record<string, unknown>)[key]
+        : undefined;
     const next = richFields.has(key)
-      ? canonicalRichFields(original, true)
+      ? canonicalRichFields(original, before, true)
       : richContainers.has(key)
-        ? canonicalRichFields(original)
+        ? canonicalRichFields(original, before)
         : original;
     changed ||= next !== original;
     return [key, next];

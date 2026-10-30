@@ -1,9 +1,5 @@
 import { numberMeaningParts } from "../../../../packages/core/src/place-assistance.ts";
-import {
-  canonicalRichFields,
-  richHasContent,
-  richValue,
-} from "./rich-values.ts";
+import { editedRich, richHasContent, richValue } from "./rich-values.ts";
 import { circledPlace } from "./place-glyphs.ts";
 /**
  * The local definition draft. The wizard and the full editor edit the same
@@ -371,7 +367,7 @@ function richPlace(place: PlaceInput, structured: boolean): DraftPlace {
 export function newDraft(patch: DraftInput = {}): Draft {
   const now = Date.now();
   const structured = patch.structured ?? true;
-  return canonicalRichFields<Draft>({
+  return {
     version: 2,
     id: "current",
     revision: crypto.randomUUID(),
@@ -432,7 +428,7 @@ export function newDraft(patch: DraftInput = {}): Draft {
       ...o,
       description: rich(o.description, structured),
     })),
-  });
+  };
 }
 export function newPlace(index: number): DraftPlace {
   return {
@@ -1081,7 +1077,11 @@ export function rewriteReferences(
       !draft.structured && saved && matchesLiteral(value, saved);
     if (!draft.structured && saved) {
       const previousLiteral = saved.literal;
-      saved.structured = remapRich(saved.structured, map);
+      const mapped = remapRich(saved.structured, map);
+      saved.structured =
+        mapped === saved.structured
+          ? mapped
+          : editedRich(mapped, saved.structured);
       saved.literal = remapRich(saved.structured, () => "literal");
       if (
         !unchanged &&
@@ -1095,8 +1095,10 @@ export function rewriteReferences(
       }
       if (unchanged) f.set(structuredClone(saved.literal));
     }
-    if (!unchanged && referencedPlaces(value).size)
-      f.set(remapRich(value, map));
+    if (!unchanged && referencedPlaces(value).size) {
+      const mapped = remapRich(value, map);
+      if (mapped !== value) f.set(editedRich(mapped, value));
+    }
   }
 }
 const sameRich = (a: RichText, b: RichText) =>
@@ -1168,10 +1170,14 @@ export function switchMode(draft: Draft, structured: boolean) {
   } else {
     for (const f of referenceFields(draft)) {
       const saved = draft.literalModeRestore?.[f.key!];
+      const current = f.get();
+      const structuredValue = structureStrings(current);
       f.set(
-        saved && matchesLiteral(f.get(), saved)
+        saved && matchesLiteral(current, saved)
           ? structuredClone(saved.structured)
-          : structureStrings(f.get()),
+          : sameRich(current, structuredValue)
+            ? current
+            : editedRich(structuredValue, current),
       );
     }
     delete draft.literalModeRestore;
@@ -1841,9 +1847,7 @@ export function draftToBody(input: Draft): {
 } {
   // Literal mode publishes no place references, whatever set the mode. A
   // reference that reached a field becomes the circled character as text.
-  const view = canonicalRichFields(
-    input.structured ? input : literalView(input),
-  );
+  const view = input.structured ? input : literalView(input);
   const draft = {
     ...view,
     formation: view.formation ? { ...view.formation } : null,

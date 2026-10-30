@@ -104,6 +104,69 @@ export const richEditorSchema = new Schema({
 });
 const schema = richEditorSchema;
 const contents = (value: string) => (value ? schema.text(value) : undefined);
+/** Normalize edited containers in the same history event as their input. */
+export function editedTextPlugin(): Plugin {
+  return new Plugin({
+    appendTransaction(transactions, before, state) {
+      if (!transactions.some((transaction) => transaction.docChanged))
+        return null;
+      const retained = new Set<EditorNode>();
+      before.doc.descendants((node) => {
+        retained.add(node);
+      });
+      const changes: { from: number; to: number; text: string }[] = [];
+      state.doc.descendants((node, position) => {
+        if (
+          !node.isText &&
+          !["literal", "code", "word_link", "web_link"].includes(node.type.name)
+        )
+          return;
+        if (retained.has(node) || !node.textContent.includes("\r"))
+          return false;
+        // A changed target does not make its unchanged link label an edit.
+        let original = position;
+        for (const transaction of [...transactions].reverse())
+          original = transaction.mapping.invert().map(original, 1);
+        const previous = before.doc.nodeAt(original);
+        if (
+          previous?.type === node.type &&
+          !previous.sameMarkup(node) &&
+          previous.content.eq(node.content)
+        )
+          return false;
+        const from = position + (node.isText ? 0 : 1);
+        // Keep maps outside each line ending, including the typed text, exact.
+        for (const match of node.textContent.matchAll(/\r\n?/gu))
+          changes.push({
+            from: from + match.index,
+            to: from + match.index + match[0].length,
+            text: "\n",
+          });
+        return false;
+      });
+      if (!changes.length) return null;
+      const transaction = state.tr;
+      for (const change of changes.reverse())
+        transaction.insertText(change.text, change.from, change.to);
+      for (const plugin of state.plugins) {
+        if (!plugin.spec.isInputRules) continue;
+        const rule = plugin.getState(state) as {
+          transform: Transaction;
+          from: number;
+          to: number;
+          text: string;
+        } | null;
+        if (!rule || !rule.transform.doc.eq(state.doc)) continue;
+        // Backspace must undo the conversion and its line-ending changes together.
+        const combined = EditorState.create({ doc: rule.transform.before }).tr;
+        for (const step of [...rule.transform.steps, ...transaction.steps])
+          combined.step(step);
+        transaction.setMeta(plugin, { ...rule, transform: combined });
+      }
+      return transaction.setMeta("addToHistory", false);
+    },
+  });
+}
 let nextOrigin = 0;
 export function richToEditor(value: RichText): EditorNode {
   const source = nextOrigin++;
