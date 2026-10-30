@@ -2173,6 +2173,7 @@ test("r5: pending off blocks Allow and its failure cannot replace Not now", asyn
   await expect(
     meaning.getByRole("button", { name: "Allow meaning search" }),
   ).toBeEnabled();
+  await openMeaningDetails(page);
   await expect(
     meaning.getByRole("button", {
       name: "Turn off meaning search",
@@ -2301,7 +2302,9 @@ for (const colorScheme of ["light", "dark"] as const)
     await expect(page.locator(".meaning-privacy")).toHaveText(
       "Meaning search on·Turn off",
     );
-    const source = meaning.locator("details");
+    const source = meaning.locator("details").filter({
+      has: page.getByText("Search source", { exact: true }),
+    });
     await expect(source.locator("summary")).toHaveText("Search source");
     expect(
       await source.evaluate(

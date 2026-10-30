@@ -538,7 +538,10 @@ export async function searchPage(
     const before = results.firstElementChild;
     if (before !== ordered[0].node)
       results.prepend(...ordered.map((group) => group.node));
-    for (const group of Object.values(groups)) {
+    for (const [key, group] of Object.entries(groups) as [
+      SearchGroup,
+      typeof groups.lojban,
+    ][]) {
       const remaining = cached
         ? group.total - group.hits.length
         : group.next
