@@ -1604,6 +1604,10 @@ test("fidelity import retains source spans, cached display names, original dates
     "source-id",
   );
   assert.equal(body.legacy.original.username_lookup.purpose, "display-only");
+  assert.equal(
+    body.legacy.original.username_lookup.evidence.kind,
+    "username-lookup",
+  );
   assert.equal(body.legacy.attribution.dates.time, "1046655416");
   const claims = records.filter(
     (item) => item.envelope.header.action.kind === "rafsi.publish",

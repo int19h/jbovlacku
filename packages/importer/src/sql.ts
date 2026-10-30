@@ -873,7 +873,10 @@ function extract(
           ? {
               username_lookup: {
                 username,
-                source: { ...source, locator: `${locator}/cached_username` },
+                evidence: {
+                  kind: "username-lookup",
+                  source: { ...source, locator: `${locator}/cached_username` },
+                },
                 purpose: "display-only",
               },
             }
