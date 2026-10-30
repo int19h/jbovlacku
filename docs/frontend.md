@@ -284,7 +284,7 @@ The shared search box can read short English phrases as Lojban cmavo.
 For example, `to go` can also return cards for `to` and `go`, and `so no` can find `sono`.
 An exact headword or gloss for the whole query always precedes those sequence hits.
 
-The component index exists only in memory. Package entries and persistent server index rows keep their existing formats.
+The component index exists only in memory. Package rows and persistent server index rows do not store that component index.
 The shared matcher rejects impossible cmavo shapes before parsing. It retains at most 4,096 parsed normalized spellings in a process-local LRU cache.
 An LRU cache removes the least recently used item when it reaches its limit.
 
@@ -468,7 +468,7 @@ The reader retains classification, examples, formation, rights, and legacy infor
 Only the frame cases in the format rule produce virtuals:
 
 - A fixed predicate frame must contain the target place. Its count stays unchanged.
-- A variadic predicate frame must declare both exchanged places in its prefix. Its minimum and repeated tail stay unchanged.
+- A variadic predicate frame must declare both exchanged places in its prefix, with `k <= minimum`. Its minimum and repeated tail stay unchanged.
 - A context predicate frame must declare both exchanged places. Its gaps and incomplete scope stay unchanged.
 - A null or constructed-predicate frame supplies no automatic virtual.
 
@@ -493,6 +493,7 @@ Those placements share judgments, scores, reviewer counts, and permanent links. 
 
 The canonical route is `/conversion/<encoded-base-spelling>/<conversion>?lang=en`.
 For example, `/conversion/vecnu/te?lang=en` opens the converted word page with the heading `te vecnu`.
+An unstored canonical conversion uses the word lookup with its canonical word ID and `spelling=te vecnu`.
 Optional `definition`, `snapshot`, and `view` parameters pin the exact base event, snapshot, and editorial view.
 The page makes sure that a pinned base matches the spelling and language. It never substitutes another revision after failure.
 Without a base pin, it shows every eligible computable alternative for that base word in the selected language.
@@ -676,9 +677,14 @@ If the package is missing, offer a download or continue manually. No private dra
 An explicit remote lexical request requires disclosure and consent for the text sent.
 A “by meaning” choice enables the selected semantic-search profile after consent.
 The panel shows exact words, definitions, and languages beside each result.
-Its best match offers “Add a definition” and “Revise this one.” Other matches offer “Use this word.”
+
+For stored definitions, the best match offers “Add a definition” and “Revise this one.” Other stored matches offer “Use this word.”
+A virtual match offers “Use te vecnu”, with its actual converted spelling, and “Edit base places” under the [virtual editing rules](#editing-and-accessibility).
+These actions open the conversion or revise its exact signed base in the original place order. They preserve the current draft.
+The panel never offers plain Add or Revise on a virtual or stores a pure permutation as a new definition.
+
 Similarity is a suggestion, not proof that the meaning already exists. The author can choose an existing word or continue with a new word.
-Choosing an existing word offers adding a sense or revising a particular definition. It never silently overwrites that definition.
+Choosing a stored definition offers adding a sense or revising that signed definition. It never silently overwrites it.
 
 The primary button reads “New word” and remains available even when similar entries exist.
 
@@ -701,18 +707,32 @@ The server finds related public definitions inside the type job from the origina
 The lexical fallback uses up to six distinct query words. It removes whole-token place marks and punctuation at token ends and keeps inner apostrophes.
 It ranks words by matching query count, then summed search positions, then stable word ID.
 Each query scans the dictionary once with the same match tiers and order as ordinary lexical search.
+
 Up to three current definitions of the trimmed, NFC-normalized typed spelling come first.
 They follow ordinary editorial layers when available. Within one layer, exact gloss matches count three, gloss prefixes two, and definition-text matches one.
-The sum over query words decides relevance. Equal relevance uses stable event ID order.
-These exact senses keep separate records. Later lexical hits omit their spellings and every other duplicate spelling.
-The list excludes selected context events and holds at most 30 records in total.
-Each entry supplies its type and definition text without notes. A definition above 500 Unicode code points is cut and marked as truncated.
-The inference log records the snapshot and exact events in list order.
+The sum over query words decides relevance. Equal relevance uses full target-ID order across signed and virtual hits.
+
+These exact senses keep separate candidate entries. Later lexical hits omit their spellings and every other duplicate spelling.
+The list excludes selected context events, including a virtual whose signed base is in that context. It holds at most 30 candidate entries.
+
+Stored entries supply their type and definition text without notes.
+A virtual entry identifies its computed content, full target ID, descriptor, and exact signed base event and word.
+It supplies the converted definition and the base's original definition separately. Its base classification is labeled as provenance, not the virtual's own classification.
+A supplied definition above 500 Unicode code points is cut and marked as truncated.
+
+The inference log records the snapshot and full target IDs in list order.
+For each virtual hit, it also records the descriptor and signed base event. A stored hit's target is its publication event.
 It records lexical retrieval with its query words, semantic retrieval with its profile ID, or none when no search runs.
 The service sends its own spelling analysis when a spelling is present and records the morphology version in the log.
+
 The type prompt retains its approved `fuivla` identifier. The service translates between it and the app's `fuhivla` identifier at the type boundary.
 
-An existing-word block links to the word and offers Add a definition when the current definition fits.
+The model uses only supplied references. The service maps a virtual reference to its descriptor's signed base event for `existing.event`.
+For that hit, `existing.word` is the exact base spelling, and `existing.conversion` is the descriptor's conversion.
+The model must never return a virtual ID where the answer contract requires a signed event, including `existing.event`.
+The service rejects such an answer. Any `existing.revised_definition` for a virtual hit describes the signed base in its original place order.
+
+For a stored hit, the existing-word block links to the word and offers Add a definition when the current definition fits.
 An improved definition appears with Revise this one. This action creates a local revision with the exact publication as its parent.
 The editor shows the same notice as ordinary Revise about changes to CC0, imported legacy content, and native origin.
 The improved text starts as a separate suggestion. Use this applies it with persistent Undo.
@@ -721,7 +741,7 @@ That action uses `existing.conversion` to resolve the virtual target from the ex
 It opens the converted page, preserves the current draft, and creates no publication or judgment. The page offers “Edit base places”.
 The client makes sure that the resolved base and frame support that conversion. A failed resolution keeps the suggestion and exposes the missing evidence.
 It never falls back to Add a definition for a pure reordering.
-A conversion with an improved definition also offers Revise this one for the existing word in its own place order.
+For a conversion with an improved base definition, offer “Revise vecnu” with the actual base spelling and original place order.
 Adding or revising saves the previous draft separately and offers Return to the saved draft.
 Add a definition copies every current field and uses the Step 1 spelling-change action. It preserves notes, places, glosses, sources, and evidence for review.
 An independent private `saved-index` row holds saved-draft links through every wizard route and reload.
@@ -1801,6 +1821,9 @@ The search response's `virtuals` array describes every virtual ID in its hits. A
 Its `virtual_statuses` supplies each virtual preview's base-derived state under the format's base-state table, including retired hits.
 `eligible` permits active ranking. `inactive` identifies readable content from a known deprecated base. `unavailable` supplies no ranked or ordinary search candidate.
 The table's unavailable score status returns no numerical `Score`. Direct lookups use null, and word responses use `unavailable_scores`.
+For import-derived virtuals, ordinary word responses include selected bases only, even without an exact base-event pin.
+Virtuals of unselected imports appear in none of `definitions`, `virtuals`, `virtual_statuses`, `layers`, `scores`, or `unavailable_scores`.
+An explicit descriptor lookup still reports an unselected base as unavailable under the base-state table.
 Virtual references and candidate fields are required in this prelaunch API revision. Existing prototype data must be rebuilt where those fields are absent.
 
 A virtual lookup requires its complete descriptor in the query. The server makes sure that it hashes to the requested ID.
@@ -2062,6 +2085,7 @@ The implementer must demonstrate these end-to-end cases before public release:
 34. Discard refuses a stopped record when a later local own record depends on it, directly or transitively. Resume and Save as file remain available. Discarding an independent stopped leaf restores its retained predecessors to the frontier when they become maximal. No later signature names the discarded ID.
 35. Compute identical virtual IDs and content in Rust and WebAssembly from the same base descriptor. Preserve base bytes, moved annotations, and foreign source-place indices.
 36. Refuse `ve` and `xe` beyond a fixed frame, preserve a variadic tail, and retain sparse context and unspecified-frame limits.
+    Refuse `se` with `minimum: 1` and explicit places 1 and 2. Permit it with `minimum: 2` without changing the minimum or which places are required.
 37. Find `te vecnu` through `buyer`, `te vecnu`, and `tervecnu` with local and remote conversion coverage. Expose absent package coverage without a query upload.
 38. Rank native, imported, and virtual definitions together without a collapsed import group. Give a reviewed-frame virtual the specified unjudged starting order without numerical author weight.
 39. Route typed forms and `existing.conversion` through the same virtual target. Judge that target independently and edit the base in its original order.
@@ -2235,9 +2259,12 @@ Without them, coverage uses the completed snapshot, configured view, and all lan
 Query availability requires a compatible published index for the requested view and selected profile.
 
 Each result passes the format's single [semantic target admission](format.md#semantic-target-admission) procedure under the requested snapshot, view, language, and profile.
-A publication matches its event, envelope representation, authenticated body, word, language, extraction version, and recomputed input.
-A virtual matches its descriptor, authenticated base envelope and body, canonical converted word, language, extraction version, and recomputed input.
-It has no event, envelope, or signed body of its own. Both target kinds require an exact compatible vector association.
+A publication matches its event, envelope representation, authenticated body, word, language, semantic extraction version, and recomputed input.
+A virtual matches its descriptor, authenticated base envelope and body, canonical converted word, language, semantic extraction version, and recomputed input.
+
+That integer versions the core's semantic projection, not Lensisku import extraction. Shared index entries carry it as `extraction_version` under the format contract.
+
+A virtual has no event, envelope, or signed body of its own. Both target kinds require an exact compatible vector association.
 Pending or failed entries remain outside the results. Other indexed definitions remain searchable.
 
 The semantic request contains query, language, snapshot, view, profile, and limit. Query is nonempty text of at most 16 KiB.

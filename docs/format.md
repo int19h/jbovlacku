@@ -954,12 +954,14 @@ Its top-level glosses come from the buyer place. This example supplies no source
 Only a `predicate` frame permits this conversion:
 
 - A fixed frame permits it when `count` reaches `k`. Preserve the count.
-- A variadic frame permits it only when its explicit prefix includes places 1 and `k`. Preserve `minimum` and `tail.from`.
+- A variadic frame requires explicit places 1 and `k` in its prefix, with `k <= minimum`. Preserve `minimum` and `tail.from`.
 - A context frame permits it only when places 1 and `k` both have explicit declarations. Preserve the mode and all gaps.
 - A null or `constructed-predicate` frame permits no automatic conversion.
 
 Permute outer-frame nodes within variadic tail metadata. The repeated tail otherwise remains unchanged.
-A place beyond the variadic minimum remains illustrative after conversion. The result makes no stronger completeness claim than the base.
+Permitted variadic conversions exchange required places only. Required places never become illustrative, and illustrative places never become required.
+For `minimum: 1` with prefix places 1 and 2, `se` produces no candidate because base place 2 is illustrative.
+With `minimum: 2` and that same prefix, `se` is permitted and the minimum stays 2.
 No rule creates a declaration, extends an arity, materializes a repeated-tail place, or treats a null frame as zero places.
 For example, `xe` of a three-place fixed frame supplies no virtual definition.
 The descriptor can be hashed before resolution, but an unsupported conversion never becomes an eligible candidate.
@@ -1008,7 +1010,8 @@ The response retains every applicable reason.
 `inactive` means that a readable, computable virtual has a known deprecated base. It remains readable through retired results and exact links.
 `unavailable` means that the evidence cannot establish an active or known deprecated candidate under these rules.
 A conflicted base therefore keeps its explicit conflict reason but supplies no virtual score or layer.
-Unavailable scores have no numerical values. Direct lookups return `score: null`, and word responses list the target in `unavailable_scores`.
+Unavailable scores have no numerical values. Direct lookups return `score: null`.
+Word responses list unavailable virtuals only within their base-selection scope. They do not enumerate virtuals of unselected imports in `unavailable_scores`.
 The package value above describes ordering eligibility. A missing projection produces no row, rather than a fabricated ineligible projection.
 
 Retiring or retracting a base uses its ordinary native or imported deprecation control.
@@ -1599,8 +1602,9 @@ Reject NaN, infinity, a zero vector for cosine, and a byte length that disagrees
 For unit-l2, require the norm to differ from one by at most 0.0001. Do not silently renormalize a signed artifact.
 A vector part concatenates equal-length vectors. An index part is a canonical JSON array with one entry per vector, in full target-ID order.
 
-Each index entry contains exactly `target`, `event`, `body`, `virtual`, `base_body`, and `input`.
+Each index entry contains exactly `target`, `event`, `body`, `virtual`, `base_body`, `input`, and `extraction_version`.
 Target is a definition publication ID or virtual definition ID. Input is the exact recipe input hash.
+`extraction_version` is the semantic projection version defined under [semantic target admission](#semantic-target-admission), for both publication and virtual entries.
 For a publication, target equals event. Body is that event's authenticated body hash. Virtual and base_body are null.
 For a virtual, target is its `jvv1:` ID. Event and body are null. Virtual is its descriptor, and base_body is the exact authenticated base body hash.
 These null fields are required. A virtual entry never invents a publication event or converted body hash.
@@ -1645,17 +1649,32 @@ All semantic coverage uses the [coverage object](#semantic-coverage) below, incl
 #### Semantic target admission
 
 One admission procedure governs both signed and virtual targets before indexing or returning a semantic hit.
-It requires the requested snapshot, view, language, full profile, extraction version, and recomputed recipe input to match the retained association.
+
+The semantic extraction version identifies the core projection used to build the embedded input.
+It is a positive integer, currently `4`, exposed by `SEMANTIC_PROJECTION_VERSION` in the shared core.
+It applies to native, imported, and virtual targets. It is separate from the Lensisku import string in `legacy.extraction`.
+For a virtual, it versions the semantic input projection of computed content. The conversion rule remains `place-conversion-v1`.
+
+Each retained association and shared index entry carries this integer as `extraction_version`.
+Admission requires a supported matching semantic projection version, the full profile, target binding, and recomputed recipe input.
+An absent, unknown, or mismatched version prevents activation. The receiver never substitutes the import string or guesses a projection version.
+
+The receiver selects its snapshot and view, authenticates the target's content, and derives language locally.
+Shared artifacts need not carry snapshot, view, or language. The receiver builds its local association under that selected context.
 The target must be active and eligible under that context. The vector must satisfy the profile's dimension, encoding, and normalization rules.
 
 For a publication, `target` equals its exact event ID.
-Its event, snapshot envelope representation, authenticated body hash, word, and language must match the retained association.
+Its event and authenticated body hash must match the artifact entry or retained association.
+The receiver derives the word and language from that content and records its snapshot's exact envelope representation in the local association.
+Later local reads match that representation, word, and language. The shared entry needs no separate envelope hash.
 Its `virtual` and `base_body` fields are null.
 
 For a virtual, `target` must equal the hash of its exact descriptor.
 The snapshot authenticates the descriptor's base event, its envelope representation, and its body hash, which must equal `base_body`.
 The shared core must reproduce its canonical converted word, language, and projection under the descriptor's conversion rule.
-The full recomputed recipe input bytes and hash must match the association under the same profile and extraction version.
+
+The receiver constructs the full recipe input bytes under the same profile and semantic extraction version. Their hash must equal the entry's `input`.
+A retained local association must also match its stored input bytes.
 Its own event and body fields are null. It needs no envelope or signed body of its own.
 
 Missing content, mismatched bindings, invalid permutations, or unresolved eligibility prevent admission for either target kind.
@@ -2229,7 +2248,8 @@ Implementation starts with shared fixtures for these cases:
 26. The virtual hashing vector above, identical outputs across Rust and WebAssembly, distinct base and conversion IDs, and no stored virtual events.
 27. Required virtual descriptors for `jvv1:` judgments, forbidden descriptors for other targets, digest mismatches, and virtual bases rejected as dependencies.
 28. Missing base envelopes that keep judgments pending, authentic missing bodies that keep scores unavailable, and invalid bases that make actions inert.
-29. Fixed-frame limits, variadic explicit prefixes, context-frame gaps, null frames, and constructed-predicate frames without invented places.
+29. Fixed-frame limits, variadic required-prefix limits, context-frame gaps, null frames, and constructed-predicate frames without invented places.
+    With explicit places 1 and 2, `minimum: 1` rejects `se`, while `minimum: 2` permits it without changing required places or the minimum.
 30. One-pass permutation of every outer-frame node and complete moved annotations, with unchanged derivation indices, relation arities, literals, examples, and provenance.
 31. Place `k` glosses that become top-level glosses, including an empty list without a fallback to the base glosses.
 32. One virtual target and canonical score context through `te vecnu` and `tervecnu`, with separate IDs and explicit groups for competing short-rafsi bases.
@@ -2243,7 +2263,7 @@ Implementation starts with shared fixtures for these cases:
 40. Derived conversion indexes with mismatched base hashes or descriptors, incomplete morphology evidence, withheld bases, bounded enumeration, and explicit missing coverage.
 41. Canonical converted spellings at the 256-byte bound and rejected longer forms, with readable bases and no false resource-unavailable result.
 42. Exact virtual embedding inputs, independent target associations, permitted exact-input deduplication, and rejected base-vector reuse based only on provenance or semantic similarity.
-43. Required nullable embedding-index fields, wrong descriptor and body bindings, duplicate targets, and sorting by full target ID.
+43. Required nullable embedding-index fields, semantic projection versions, wrong descriptor and body bindings, duplicate targets, and sorting by full target ID.
 44. Base-selection changes, retirement, withholding, restoration, and revised targets without moving old vector associations or judgments.
 45. Bounded virtual-indexing jobs and explicit coverage counts that include eligible virtual targets without inventing coverage from unavailable source evidence.
 46. Base-state mappings with inactive deprecated virtuals after active candidates, zero effective reviewers during deactivation, and no retired candidate in the unjudged-zero sublist.

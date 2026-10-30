@@ -199,9 +199,12 @@ No key reaches the browser. The browser never receives query or document vectors
 
 The selected generation must match the requested view and complete profile.
 Every target passes the format's single [semantic target admission](format.md#semantic-target-admission) procedure in the requested snapshot and language.
-A publication matches its event, envelope representation, authenticated body, word, language, extraction version, and recomputed recipe input.
-A virtual matches its descriptor, authenticated base envelope and body, canonical converted word, language, extraction version, and recomputed recipe input.
+A publication matches its event, envelope representation, authenticated body, word, language, semantic extraction version, and recomputed recipe input.
+A virtual matches its descriptor, authenticated base envelope and body, canonical converted word, language, semantic extraction version, and recomputed recipe input.
 Both kinds need an exact compatible vector association. A virtual never needs an envelope or signed body of its own.
+
+The semantic extraction version is the core's `SEMANTIC_PROJECTION_VERSION`, currently integer `4`. It is separate from the Lensisku import string `legacy.extraction`.
+Shared index entries carry it as `extraction_version`. Receivers select their own snapshot and view and derive language from authenticated content.
 
 Trusted semantic projections retain these authenticated bindings, so scans do not reread original definition bodies.
 Unchanged targets remain searchable after other events change the snapshot. New targets remain pending until their vectors exist.
