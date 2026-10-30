@@ -22,9 +22,12 @@ const runtime = (await initializeCore(
     new URL("../packages/core/generated/jvc_runtime_bg.wasm", import.meta.url),
   ),
 )) as { memory: WebAssembly.Memory };
-const objects = new FileObjectStore(join(directory, "objects"));
+let counts = { logical_get: 0, logical_put: 0, object_get: 0, object_put: 0 };
+const objects = new FileObjectStore(join(directory, "objects"), (operation) => {
+  if (operation === "read") counts.object_get++;
+  else counts.object_put++;
+});
 const rows = new SqliteCoordinator(join(directory, "coordinator.sqlite"), 3);
-let counts = { logical_get: 0, logical_put: 0, r2_get: 0, r2_put: 0 };
 const memory: unknown[] = [];
 const sample = (phase: string) =>
   memory.push({
@@ -45,18 +48,10 @@ const coordinator = {
 const counted = {
   async get(hash: string) {
     counts.logical_get++;
-    counts.r2_get++;
     return objects.get(hash);
   },
   async put(hash: string, bytes: Uint8Array) {
     counts.logical_put++;
-    counts.r2_get++;
-    const old = await objects.get(hash);
-    if (old) {
-      assert(Buffer.from(old).equals(bytes));
-      return;
-    }
-    counts.r2_put++;
     await objects.put(hash, bytes);
   },
 };
@@ -75,7 +70,7 @@ try {
   const batch = await service.admitMany(carriers);
   const batchCounts = {
     ...counts,
-    operations: counts.r2_get + counts.r2_put,
+    operations: counts.object_get + counts.object_put,
     milliseconds: performance.now() - started,
   };
   sample("after_batch");
@@ -88,7 +83,7 @@ try {
   );
   assert.equal(selection.status, 201);
   sample("after_selection");
-  counts = { logical_get: 0, logical_put: 0, r2_get: 0, r2_put: 0 };
+  counts = { logical_get: 0, logical_put: 0, object_get: 0, object_put: 0 };
   const cold = new DictionaryService(counted, coordinator, {
     serverId: "measurement",
     policyUrl: "https://example.invalid/policy",
@@ -101,7 +96,7 @@ try {
   assert.equal(search.status, 200, await search.clone().text());
   const searchCounts = {
     ...counts,
-    operations: counts.r2_get + counts.r2_put,
+    operations: counts.object_get + counts.object_put,
     milliseconds: performance.now() - searchStarted,
   };
   sample("after_cold_search");

@@ -1,3 +1,4 @@
+import { waitForAssistance } from "./fixtures/assistance-work.ts";
 import assert from "node:assert/strict";
 import { before, test } from "node:test";
 import { readFile } from "node:fs/promises";
@@ -10,7 +11,7 @@ import {
   type AssistRequest,
 } from "../src/assistance.ts";
 import { providerConfig, type ProviderConfig } from "../src/inference.ts";
-import { workerAssistanceBudgetStore } from "../../../apps/worker/src/assistance.ts";
+import { SqliteAssistanceBudgetStore } from "../../../apps/server/src/assistance.ts";
 
 before(async () =>
   initializeCore(
@@ -197,51 +198,24 @@ test(
         active: false,
       });
     assert(snapshot.entries.length < 16384 - 8000);
-    assert(
-      new TextEncoder().encode(JSON.stringify(snapshot)).byteLength <
-        32 * 1024 * 1024,
-    );
-    const values = new Map<string, unknown>();
-    const transaction = {
-      async get<T>(key: string) {
-        return values.get(key) as T | undefined;
-      },
-      async put<T>(key: string, value: T) {
-        values.set(key, value);
-      },
-      async delete(key: string) {
-        return values.delete(key);
-      },
-    };
-    const workerStore = workerAssistanceBudgetStore({
-      ...transaction,
-      async transaction<T>(run: (value: typeof transaction) => Promise<T>) {
-        return run(transaction);
-      },
-      async sync() {},
-    });
-    await workerStore.save(snapshot);
-    assert.deepEqual(await workerStore.load(), snapshot);
-    for (const part of values.values())
-      if (part instanceof Uint8Array) assert(part.byteLength <= 64 * 1024);
-    const work: Promise<unknown>[] = [];
+    const restoredBudget = new SqliteAssistanceBudgetStore(":memory:");
+    t.after(() => restoredBudget.close());
+    await restoredBudget.save(snapshot);
+    assert.deepEqual(await restoredBudget.load(), snapshot);
     provider.networkHourlyBudgetUsd =
       estimateAssistanceCost(draft, [], provider) + perInput;
     const restored = new AssistanceService(
       {
         provider,
-        budgetStore: workerStore,
-        waitUntil: (promise) => {
-          work.push(promise);
-        },
+        budgetStore: restoredBudget,
       },
       "capacity",
       async () => [],
     );
     assert.equal((await generate(restored)).status, 202);
-    await Promise.all(work);
+    await waitForAssistance(restored);
     assert.equal(generationCalls, 1);
-    const written = await workerStore.load();
+    const written = await restoredBudget.load();
     assert(written?.version === 2);
     assert.equal(
       written.entries.reduce((sum, entry) => sum + entry.settledUsd, 0),
@@ -360,14 +334,11 @@ test("operator batches whose caller stopped waiting keep their individual charge
     });
   });
   const durable = budget();
-  const background: Promise<unknown>[] = [];
+
   const service = new AssistanceService(
     {
       provider,
       budgetStore: durable.store,
-      waitUntil: (work) => {
-        background.push(work);
-      },
     },
     "capacity",
     async () => [],
@@ -382,7 +353,7 @@ test("operator batches whose caller stopped waiting keep their individual charge
     return !!operation;
   });
   resolve();
-  await Promise.all(background);
+  await waitForAssistance(service);
   await service.embed([bytes], { kind: "probe" });
   assert(
     durable

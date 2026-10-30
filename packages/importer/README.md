@@ -223,7 +223,7 @@ The loader saves this limit in `loaded-view.json` with the selected view and sel
 Without the flag, a new directory retains the core's default limit.
 `JVC_VIEW` overrides the saved view. `JVC_STATE_TRAVERSAL_LIMIT` overrides the saved traversal limit.
 
-The loader requires exclusive local access. It is not an online import endpoint or a Worker deployment command.
+The loader requires exclusive local access. It is not an online import endpoint.
 Source account management, cross-post marker reconciliation, and model-assisted place conversion remain outside this importer.
 
 

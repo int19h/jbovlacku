@@ -135,16 +135,6 @@ The license texts below retain upstream wording. Shared text appears once with e
 
 | Package | Version | Declared license |
 | --- | --- | --- |
-| `@cloudflare/kv-asset-handler` | 0.5.0 | MIT OR Apache-2.0 |
-| `@cloudflare/unenv-preset` | 2.16.2 | MIT OR Apache-2.0 |
-| `@cloudflare/workerd-darwin-64` | 1.20261006.1 | Apache-2.0 |
-| `@cloudflare/workerd-darwin-arm64` | 1.20261006.1 | Apache-2.0 |
-| `@cloudflare/workerd-linux-64` | 1.20261006.1 | Apache-2.0 |
-| `@cloudflare/workerd-linux-arm64` | 1.20261006.1 | Apache-2.0 |
-| `@cloudflare/workerd-windows-64` | 1.20261006.1 | Apache-2.0 |
-| `@cloudflare/workers-types` | 5.20261011.1 | MIT OR Apache-2.0 |
-| `@cspotcode/source-map-support` | 0.8.1 | MIT |
-| `@emnapi/runtime` | 1.11.3 | MIT |
 | `@esbuild/aix-ppc64` | 0.28.1 | MIT |
 | `@esbuild/android-arm` | 0.28.1 | MIT |
 | `@esbuild/android-arm64` | 0.28.1 | MIT |
@@ -171,41 +161,8 @@ The license texts below retain upstream wording. Shared text appears once with e
 | `@esbuild/win32-arm64` | 0.28.1 | MIT |
 | `@esbuild/win32-ia32` | 0.28.1 | MIT |
 | `@esbuild/win32-x64` | 0.28.1 | MIT |
-| `@img/colour` | 1.1.0 | MIT |
-| `@img/sharp-darwin-arm64` | 0.35.5 | Apache-2.0 |
-| `@img/sharp-darwin-x64` | 0.35.5 | Apache-2.0 |
-| `@img/sharp-freebsd-wasm32` | 0.35.5 | Apache-2.0 |
-| `@img/sharp-libvips-darwin-arm64` | 1.3.4 | LGPL-3.0-or-later |
-| `@img/sharp-libvips-darwin-x64` | 1.3.4 | LGPL-3.0-or-later |
-| `@img/sharp-libvips-linux-arm` | 1.3.4 | LGPL-3.0-or-later |
-| `@img/sharp-libvips-linux-arm64` | 1.3.4 | LGPL-3.0-or-later |
-| `@img/sharp-libvips-linux-ppc64` | 1.3.4 | LGPL-3.0-or-later |
-| `@img/sharp-libvips-linux-riscv64` | 1.3.4 | LGPL-3.0-or-later |
-| `@img/sharp-libvips-linux-s390x` | 1.3.4 | LGPL-3.0-or-later |
-| `@img/sharp-libvips-linux-x64` | 1.3.4 | LGPL-3.0-or-later |
-| `@img/sharp-libvips-linuxmusl-arm64` | 1.3.4 | LGPL-3.0-or-later |
-| `@img/sharp-libvips-linuxmusl-x64` | 1.3.4 | LGPL-3.0-or-later |
-| `@img/sharp-linux-arm` | 0.35.5 | Apache-2.0 |
-| `@img/sharp-linux-arm64` | 0.35.5 | Apache-2.0 |
-| `@img/sharp-linux-ppc64` | 0.35.5 | Apache-2.0 |
-| `@img/sharp-linux-riscv64` | 0.35.5 | Apache-2.0 |
-| `@img/sharp-linux-s390x` | 0.35.5 | Apache-2.0 |
-| `@img/sharp-linux-x64` | 0.35.5 | Apache-2.0 |
-| `@img/sharp-linuxmusl-arm64` | 0.35.5 | Apache-2.0 |
-| `@img/sharp-linuxmusl-x64` | 0.35.5 | Apache-2.0 |
-| `@img/sharp-wasm32` | 0.35.5 | Apache-2.0 AND LGPL-3.0-or-later AND MIT |
-| `@img/sharp-webcontainers-wasm32` | 0.35.5 | Apache-2.0 |
-| `@img/sharp-win32-arm64` | 0.35.5 | Apache-2.0 AND LGPL-3.0-or-later |
-| `@img/sharp-win32-ia32` | 0.35.5 | Apache-2.0 AND LGPL-3.0-or-later |
-| `@img/sharp-win32-x64` | 0.35.5 | Apache-2.0 AND LGPL-3.0-or-later |
-| `@jridgewell/resolve-uri` | 3.1.2 | MIT |
-| `@jridgewell/sourcemap-codec` | 1.6.0 | MIT |
-| `@jridgewell/trace-mapping` | 0.3.9 | MIT |
 | `@napi-rs/lzma-linux-x64-gnu` | 1.5.1 | MIT |
 | `@playwright/test` | 1.58.2 | Apache-2.0 |
-| `@poppinss/colors` | 4.1.6 | MIT |
-| `@poppinss/dumper` | 0.6.5 | MIT |
-| `@poppinss/exception` | 1.2.3 | MIT |
 | `@rollup/rollup-android-arm-eabi` | 4.64.5 | MIT |
 | `@rollup/rollup-android-arm64` | 4.64.5 | MIT |
 | `@rollup/rollup-darwin-arm64` | 4.64.5 | MIT |
@@ -231,24 +188,14 @@ The license texts below retain upstream wording. Shared text appears once with e
 | `@rollup/rollup-win32-ia32-msvc` | 4.64.5 | MIT |
 | `@rollup/rollup-win32-x64-gnu` | 4.64.5 | MIT |
 | `@rollup/rollup-win32-x64-msvc` | 4.64.5 | MIT |
-| `@sindresorhus/is` | 7.2.0 | MIT |
-| `@speed-highlight/core` | 1.2.24 | CC0-1.0 |
 | `@types/estree` | 1.0.9 | MIT |
 | `@types/node` | 24.10.1 | MIT |
-| `blake3-wasm` | 2.1.5 | MIT |
-| `cookie` | 1.1.1 | MIT |
-| `detect-libc` | 2.1.2 | Apache-2.0 |
-| `error-stack-parser-es` | 1.0.5 | MIT |
 | `esbuild` | 0.28.1 | MIT |
 | `fdir` | 6.5.0 | MIT |
 | `fsevents` | 2.3.3 | MIT |
 | `get-tsconfig` | 4.14.3 | MIT |
 | `jose` | 6.1.3 | MIT |
-| `kleur` | 4.1.5 | MIT |
-| `miniflare` | 5.20261006.1-alpha | MIT |
 | `nanoid` | 3.3.20 | MIT |
-| `path-to-regexp` | 6.3.0 | MIT |
-| `pathe` | 2.0.3 | MIT |
 | `picocolors` | 1.1.1 | ISC |
 | `picomatch` | 4.0.7 | MIT |
 | `playwright` | 1.58.2 | Apache-2.0 |
@@ -259,11 +206,8 @@ The license texts below retain upstream wording. Shared text appears once with e
 | `resolve-pkg-maps` | 1.0.0 | MIT |
 | `rollup` | 4.64.5 | MIT |
 | `semver` | 7.8.5 | ISC |
-| `sharp` | 0.35.5 | Apache-2.0 |
 | `source-map-js` | 1.2.2 | BSD-3-Clause |
-| `supports-color` | 10.2.2 | MIT |
 | `tinyglobby` | 0.2.17 | MIT |
-| `tslib` | 2.8.1 | 0BSD |
 | `tsx` | 4.20.6 | MIT |
 | `tsx/node_modules/@esbuild/aix-ppc64` | 0.25.12 | MIT |
 | `tsx/node_modules/@esbuild/android-arm` | 0.25.12 | MIT |
@@ -293,42 +237,8 @@ The license texts below retain upstream wording. Shared text appears once with e
 | `tsx/node_modules/@esbuild/win32-x64` | 0.25.12 | MIT |
 | `tsx/node_modules/esbuild` | 0.25.12 | MIT |
 | `typescript` | 5.9.3 | Apache-2.0 |
-| `undici` | 7.29.1 | MIT |
 | `undici-types` | 7.16.0 | MIT |
-| `unenv` | 2.0.0-rc.24 | MIT |
 | `vite` | 7.3.7 | MIT |
-| `workerd` | 1.20261006.1 | Apache-2.0 |
-| `wrangler` | 4.149.0 | MIT OR Apache-2.0 |
-| `wrangler/node_modules/@esbuild/aix-ppc64` | 0.28.2 | MIT |
-| `wrangler/node_modules/@esbuild/android-arm` | 0.28.2 | MIT |
-| `wrangler/node_modules/@esbuild/android-arm64` | 0.28.2 | MIT |
-| `wrangler/node_modules/@esbuild/android-x64` | 0.28.2 | MIT |
-| `wrangler/node_modules/@esbuild/darwin-arm64` | 0.28.2 | MIT |
-| `wrangler/node_modules/@esbuild/darwin-x64` | 0.28.2 | MIT |
-| `wrangler/node_modules/@esbuild/freebsd-arm64` | 0.28.2 | MIT |
-| `wrangler/node_modules/@esbuild/freebsd-x64` | 0.28.2 | MIT |
-| `wrangler/node_modules/@esbuild/linux-arm` | 0.28.2 | MIT |
-| `wrangler/node_modules/@esbuild/linux-arm64` | 0.28.2 | MIT |
-| `wrangler/node_modules/@esbuild/linux-ia32` | 0.28.2 | MIT |
-| `wrangler/node_modules/@esbuild/linux-loong64` | 0.28.2 | MIT |
-| `wrangler/node_modules/@esbuild/linux-mips64el` | 0.28.2 | MIT |
-| `wrangler/node_modules/@esbuild/linux-ppc64` | 0.28.2 | MIT |
-| `wrangler/node_modules/@esbuild/linux-riscv64` | 0.28.2 | MIT |
-| `wrangler/node_modules/@esbuild/linux-s390x` | 0.28.2 | MIT |
-| `wrangler/node_modules/@esbuild/linux-x64` | 0.28.2 | MIT |
-| `wrangler/node_modules/@esbuild/netbsd-arm64` | 0.28.2 | MIT |
-| `wrangler/node_modules/@esbuild/netbsd-x64` | 0.28.2 | MIT |
-| `wrangler/node_modules/@esbuild/openbsd-arm64` | 0.28.2 | MIT |
-| `wrangler/node_modules/@esbuild/openbsd-x64` | 0.28.2 | MIT |
-| `wrangler/node_modules/@esbuild/openharmony-arm64` | 0.28.2 | MIT |
-| `wrangler/node_modules/@esbuild/sunos-x64` | 0.28.2 | MIT |
-| `wrangler/node_modules/@esbuild/win32-arm64` | 0.28.2 | MIT |
-| `wrangler/node_modules/@esbuild/win32-ia32` | 0.28.2 | MIT |
-| `wrangler/node_modules/@esbuild/win32-x64` | 0.28.2 | MIT |
-| `wrangler/node_modules/esbuild` | 0.28.2 | MIT |
-| `ws` | 8.21.0 | MIT |
-| `youch` | 4.1.0-beta.10 | MIT |
-| `youch-core` | 0.3.3 | MIT |
 | `@peggyjs/from-mem` | 4.0.0 | MIT |
 | `commander` | 14.0.3 | MIT |
 | `peggy` | 5.1.1 | MIT |

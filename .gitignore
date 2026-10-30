@@ -1,7 +1,6 @@
 target/
 dist/
 node_modules/
-.wrangler/
 .cache/
 playwright-report/
 test-results/

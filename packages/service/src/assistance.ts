@@ -106,7 +106,6 @@ export interface AssistResult {
 }
 export interface AssistanceOptions {
   provider?: ProviderConfig;
-  waitUntil?: (promise: Promise<unknown>) => void;
   /** Lower limits allow deterministic expiry and quota tests. */
   ttlMs?: number;
   sessionTtlMs?: number;
@@ -1470,8 +1469,6 @@ export class AssistanceService {
         clearTimeout(timer);
         if (!operationId || !this.embeddingSlots.has(operationId)) drained();
       });
-    // Both hosts retain their existing background-work policy.
-    this.options.waitUntil?.(work.catch(() => {}));
     try {
       return await abortable(
         work,
@@ -2526,8 +2523,7 @@ export class AssistanceService {
             },
             context,
           );
-          if (this.options.waitUntil) this.options.waitUntil(work);
-          else void work;
+          void work;
           return json(
             {
               job: id,

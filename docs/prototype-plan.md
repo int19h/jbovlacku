@@ -94,7 +94,7 @@ Do not rerun historical document mutation scripts as validators.
 ## Stage 5: Browser and standalone service
 
 Build one small end-to-end path with the standalone Node.js service and SQLite.
-Serve the same browser assets that the Cloudflare adapter will use.
+Serve the built browser assets from the Node host.
 The browser retains encrypted keys, drafts, pending submissions, and known own-history references.
 It does not need the complete dictionary history.
 
@@ -111,23 +111,21 @@ Required demonstrations:
 Keep inference disabled for this stage. Include a manual definition path before adding word-generation assistance.
 Test browser storage loss separately from network failure. A key backup does not contain unpublished drafts or pending events.
 
-## Stage 6: Cloudflare parity
+## Stage 6: Server durability and exchange
 
-Add the Workers adapter to the shared service layer. Use R2, D1, and a Durable Object as specified.
-Run its local development environment against the same fixtures before any hosted deployment.
-Native Git mirroring remains a separate job. HTTP exchange carries the same signed dictionary records.
+Run independent Node servers against the same fixtures. HTTP exchange carries the same signed dictionary records.
+Native Git mirroring remains an optional local job.
 
 Required demonstrations:
 
-1. Exchange snapshots between the standalone and Workers adapters.
+1. Exchange snapshots between independent Node servers.
 2. Produce the same logical state from the same records and view.
 3. Preserve acknowledged writes through interrupted snapshot builds.
 4. Resume bounded import and ranking jobs without changing their interpretation.
-5. Run the standalone service without Cloudflare credentials or network dependencies on Cloudflare.
+5. Run the standalone service with local files and SQLite, without external storage services.
 6. Package the standalone service as an OCI image and test a persistent-volume restart with Podman or Docker.
 
-Record platform limits and measured costs. No public deployment is part of prototype preparation.
-If a calculation cannot fit Workers, report the measured limit before changing the hosting design.
+Record resource limits and measured costs. No public deployment is part of prototype preparation.
 
 ## Stage 7: Complete the authoring flow
 
