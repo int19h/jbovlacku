@@ -61,6 +61,23 @@ test("imported places, official rafsi, source name and source date reach word an
     imported.view,
     imported.selection.canonical,
   );
+  await expect
+    .poll(
+      async () => {
+        const response = await page.request.get(
+          `/api/v1/words/${String(imported.journal.entries["89991"].versions[0].carrier.envelope.header.action.word)}?view=${imported.view.envelope.id}`,
+        );
+        if (!response.ok()) return false;
+        const word = await response.json();
+        return (
+          word.definitions?.includes(
+            imported.journal.entries["89991"].selected,
+          ) === true
+        );
+      },
+      { timeout: 30000 },
+    )
+    .toBe(true);
   await page.goto("/search");
   await page.evaluate(async (view) => {
     const { LocalStore } = await import(String("/src/data/store.ts"));
