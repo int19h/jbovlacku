@@ -40,6 +40,7 @@ test("equations, component variables, quotations, nested relations and malformed
     "x_1 ≤ x_2",
     "x_1 → x_2",
     "x_1–x_2",
+    "x_1 \\times x_2",
     '"x_1 sees x_2"',
     "`x_1`",
     "(x_1 sees x_2)",
