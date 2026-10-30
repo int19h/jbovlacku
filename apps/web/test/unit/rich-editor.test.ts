@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { EditorState, Plugin, TextSelection } from "prosemirror-state";
 import { undoInputRule } from "prosemirror-inputrules";
 import { baseKeymap } from "prosemirror-commands";
+import * as richEditor from "../../src/model/rich-editor.ts";
 import {
   editorToRich,
   nextAutomaticPlace,
@@ -128,6 +129,67 @@ test("paragraph joins keep step positions before plugins append coordinate chang
   assert.deepEqual(editorToRich(state.doc), [["prefixabcd"]]);
   assert.equal(state.doc.childCount, 1);
   state.doc.check();
+});
+
+test("range deletion keeps inline types and equivalent outer carets", () => {
+  for (const inline of [
+    { code: "tail" },
+    { word: { language: "jbo", spelling: "cukta" }, label: "tail" },
+    { url: "https://example.org/target", label: "tail" },
+  ] as const) {
+    for (const caret of [15, 16]) {
+      let state = EditorState.create({
+        doc: richToEditor([["first second", inline, "rest"], ["outside\r"]]),
+      });
+      const tr = state.tr.setSelection(TextSelection.create(state.doc, caret));
+      richEditor.deleteRichInput(
+        tr,
+        "deleteSoftLineBackward",
+        (next) => {
+          state = state.applyTransaction(next).state;
+        },
+        { from: 8, to: 16 },
+      );
+      assert.deepEqual(editorToRich(state.doc), [
+        ["first ", inline, "rest"],
+        ["outside\r"],
+      ]);
+    }
+  }
+});
+
+test("cross-node ranges retain partial code and link labels", () => {
+  for (const [left, right] of [
+    [
+      { code: "prefix" },
+      { url: "https://example.org/target", label: "suffix" },
+    ],
+    [
+      { word: { language: "jbo", spelling: "cukta" }, label: "prefix" },
+      { code: "suffix" },
+    ],
+  ] as const) {
+    let state = EditorState.create({
+      doc: richToEditor([[left, "middle", right], ["outside\r"]]),
+    });
+    const tr = state.tr.setSelection(TextSelection.create(state.doc, 21));
+    richEditor.deleteRichInput(
+      tr,
+      "deleteWordBackward",
+      (next) => {
+        state = state.applyTransaction(next).state;
+      },
+      { from: 5, to: 21 },
+    );
+    const expectedLeft =
+      "code" in left ? { code: "pre" } : { ...left, label: "pre" };
+    const expectedRight =
+      "code" in right ? { code: "fix" } : { ...right, label: "fix" };
+    assert.deepEqual(editorToRich(state.doc), [
+      [expectedLeft, expectedRight],
+      ["outside\r"],
+    ]);
+  }
 });
 
 test("current insertion ranges replace stale selections and keep equivalent outer carets", () => {

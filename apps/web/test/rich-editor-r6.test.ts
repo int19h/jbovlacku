@@ -470,6 +470,7 @@ for (const inputType of inputs) {
         field.dispatchEvent(
           new InputEvent("input", { bubbles: true, inputType }),
         );
+        field.innerHTML = "<p>duplicate native mutation</p>";
         field.dispatchEvent(
           new InputEvent("input", { bubbles: true, inputType }),
         );
@@ -516,14 +517,15 @@ test("r6 noncancelable deletion can be canceled or replaced without replay", asy
   );
   await page.waitForTimeout(30);
   expect(await richNodes(field)).toEqual(original);
-  await field.evaluate((field) =>
+  await field.evaluate((field) => {
+    field.innerHTML = "<p>late canceled mutation</p>";
     field.dispatchEvent(
       new InputEvent("input", {
         bubbles: true,
         inputType: "deleteWordBackward",
       }),
-    ),
-  );
+    );
+  });
   expect(await richNodes(field)).toEqual(original);
   await choose(field, [1, 0, 0]);
   await field.evaluate((field: any) => {
@@ -534,6 +536,7 @@ test("r6 noncancelable deletion can be canceled or replaced without replay", asy
       }),
     );
     field.value = [["replacement\r\nvalue"]];
+    field.innerHTML = "<p>late replaced mutation</p>";
     field.dispatchEvent(
       new InputEvent("input", {
         bubbles: true,
@@ -854,4 +857,82 @@ test("r6 composition deletion needs a mapped range inside one native text node",
   await expect
     .poll(() => richNodes(field))
     .toEqual([["ab", node("code", "cd\r\nef"), node("web", "raw\r\n")]]);
+});
+
+test("r6 partial ranges retain code and both link types", async ({ page }) => {
+  const field = await mount(page);
+  for (const [leftKind, rightKind] of [
+    ["code", "word"],
+    ["word", "web"],
+    ["web", "code"],
+  ] as const) {
+    for (const paragraphs of [false, true]) {
+      for (const inputType of [
+        "deleteWordBackward",
+        "deleteSoftLineForward",
+        "deleteByCut",
+      ]) {
+        const original: RichText = paragraphs
+          ? [
+              ["before\r", node(leftKind, "prefix\r\n"), " middle\r"],
+              ["middle", node(rightKind, "suffix\r\n"), " after\r"],
+              ["outside\r"],
+            ]
+          : [
+              [
+                "before\r",
+                node(leftKind, "prefix\r\n"),
+                "middle",
+                node(rightKind, "suffix\r\n"),
+                " after\r",
+              ],
+              ["outside\r"],
+            ];
+        await reset(field, original);
+        const from: Point = [0, 1, 3],
+          to: Point = paragraphs ? [1, 1, 3] : [0, 3, 3];
+        await choose(
+          field,
+          inputType.endsWith("Backward") ? to : from,
+          inputType === "deleteByCut" ? to : undefined,
+        );
+        expect(await beforeinput(field, inputType, [from, to])).toBe(true);
+        await expect
+          .poll(() => richNodes(field))
+          .toEqual([
+            [
+              "before\r",
+              node(leftKind, "pre"),
+              node(rightKind, "fix\n"),
+              " after\r",
+            ],
+            ["outside\r"],
+          ]);
+      }
+    }
+  }
+});
+
+test("r6 clipboard cut keeps partial code and link nodes", async ({ page }) => {
+  const field = await mount(page);
+  await reset(field, [
+    [node("code", "prefix"), "middle", node("web", "suffix")],
+    ["outside\r"],
+  ]);
+  await choose(field, [0, 0, 3], [0, 2, 3]);
+  const copied = await field.evaluate((field) => {
+    const clipboardData = new DataTransfer();
+    field.dispatchEvent(
+      new ClipboardEvent("cut", {
+        bubbles: true,
+        cancelable: true,
+        clipboardData,
+      }),
+    );
+    return clipboardData.getData("text/plain");
+  });
+  expect(copied).toBe("fixmiddlesuf");
+  await expect
+    .poll(() => richNodes(field))
+    .toEqual([[node("code", "pre"), node("web", "fix")], ["outside\r"]]);
 });
