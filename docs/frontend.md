@@ -125,6 +125,8 @@ The app provides these addressable routes:
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
 | `/search?q=...&lang=en`     | Search results and filters.                                                                                                                |
 | `/word/<word-id>?lang=en`   | All definitions and rafsi claims for a word.                                                                                               |
+| `/conversion/<encoded-base-spelling>/<se-or-te-or-ve-or-xe>?lang=en` | A computed place conversion of a base word. |
+| `/virtual-definition/<virtual-id>?base=E&conversion=te&rule=place-conversion-v1` | One exact virtual target and its verifiable base descriptor. |
 | `/definition/<event-id>`    | One immutable definition revision.                                                                                                         |
 | `/rafsi/<encoded-spelling>` | Assignments and conflicts for a rafsi.                                                                                                     |
 | `/identity/<encoded-key>`   | Public identity claims and activity.                                                                                                       |
@@ -171,6 +173,11 @@ Each result keeps the display spelling of its selected definition. Alternative d
 A normalized exact headword match uses the same class as its display spelling.
 Rank result classes in this order: exact headword, exact gloss, exact component sequence, contiguous sequence, headword prefix, gloss prefix, ordered subsequence, then token matches.
 Ordinary text queries keep their existing lexical class order.
+Canonical converted spellings use these same classes, including prefix, token, and subsequence matches.
+Within one match class, matching stored headwords rank before virtual spellings. The class order still takes precedence over that preference.
+A grouped word card gets stored priority only when a stored candidate supplies its match in that same class.
+Other ties retain the ordinary spelling and ID order. Thus `te` shows stored matches before virtual matches within each shared class.
+Server pagination retains every hit. The browser keeps its documented display limits and reports remaining hits.
 
 A query written as `/.../` selects regular expression matching. It matches anywhere in a headword unless the query supplies anchors.
 For example, `/^ba/` matches a start, and `/nu$/` matches an end.
@@ -204,9 +211,8 @@ Conflict notices group by normalized rafsi spelling and list different stored sp
 When coverage is limited, claimant counts say “At least”. The page does not claim that a retained count is complete.
 It shows 20 assignment cards first. “Show all” reveals the remaining retained cards without another match scan.
 
-Rafsi patterns use retained claim bodies and the same 64-spelling limit per word as version 2 packages.
-Version 1 local packages support headword patterns only. The search page states that they contain no rafsi data.
-The rafsi page requires version 2 data and reports missing packages or incomplete coverage. It never treats absent metadata as no claims.
+Rafsi patterns use retained claim bodies and the 64-spelling limit per word in version 3 packages.
+The rafsi page reports missing packages or incomplete coverage. It never treats absent metadata as no claims.
 
 Patterns permit at most 256 UTF-8 bytes, including expression delimiters. Compilation permits at most 32 levels of nesting.
 The generated expression permits at most 4,096 UTF-8 bytes after glob expansion.
@@ -283,7 +289,7 @@ The shared search box can read short English phrases as Lojban cmavo.
 For example, `to go` can also return cards for `to` and `go`, and `so no` can find `sono`.
 An exact headword or gloss for the whole query always precedes those sequence hits.
 
-The component index exists only in memory. Package entries and persistent server index rows keep their existing formats.
+The component index exists only in memory. Package rows and persistent server index rows do not store that component index.
 The shared matcher rejects impossible cmavo shapes before parsing. It retains at most 4,096 parsed normalized spellings in a process-local LRU cache.
 An LRU cache removes the least recently used item when it reaches its limit.
 
@@ -366,17 +372,23 @@ One search box shows three groups with visible headings: Lojban words, Definitio
 There is no search-class or meaning-mode switch.
 Lojban words includes headword, segmented, pattern, and rafsi matches. Definitions includes gloss and text matches.
 A word can appear in both groups when it matches both. Each group keeps its own match-class order and alternatives.
-When every space-separated query word has an exact normalized headword in the eligible language index, Lojban words comes first. Otherwise, Definitions comes first.
-A known complete headword also puts Lojban words first. Case, acute stress, and apostrophe aliases follow the headword rules above.
+When every space-separated query word has a known complete spelling in the eligible language index, Lojban words comes first.
+Otherwise, Definitions comes first. A known complete query also puts Lojban words first.
+Known spellings include stored headwords, canonical converted spellings, and established conversion aliases whose virtual rows pass the eligibility and retired-results filters.
+Case, acute stress, and apostrophe aliases follow the headword rules above.
+
 For this test, remove pause periods and commas and read `h` as an apostrophe in each complete spelling.
 Do not segment a query word into cmavo. Other punctuation and unknown words do not count as known spellings.
 A compound cmavo spelling counts only when the dictionary holds that complete spelling as a headword.
+An established `tervecnu` alias counts without a stored `tervecnu` headword when its virtual row passes those same filters.
+An inactive alias counts only with the retired-results filter. An unavailable or unresolved alias never counts.
 
 For example, known `lo` and `ve` never make `love` a known query word. Known `mi` and `klama` make `mi klama` known.
 The forms `mi klama.`, `.i mi klama`, `coi, do`, `la .alis.`, and `kihe` count when their complete words exist.
 
 Server ordering applies its language, effective-receipt, eligibility, and retired-results filters before that test.
-Local ordering uses view-bound evidence in version 2 packages from the same snapshot. It follows the same eligibility and retired-results rules.
+For virtual rows, receipt and eligibility checks resolve their authenticated base. They never require a synthetic virtual receipt.
+Local ordering uses view-bound evidence in version 3 packages from the same snapshot. It follows the same eligibility and retired-results rules.
 
 Older packages without that evidence cannot establish known words. A visible notice asks for a new package, and Definitions comes first.
 Evidence for a different selected view also cannot establish known words. The notice names its server-view limit and says that Definitions comes first.
@@ -446,6 +458,181 @@ A marker's numeric identity comes from the token, not its glyph or position in t
 
 Literal circled characters remain literal text. A reader can inspect the structured representation when needed.
 
+### Place conversions
+
+A virtual definition is computed content with its own judgment target.
+A place conversion creates one by exchanging base place 1 with place 2, 3, 4, or 5 through `se`, `te`, `ve`, or `xe`.
+The [format rule](format.md#virtual-place-conversions) defines `place-conversion-v1`, its `jvv1:` identity, and the signed judgment descriptor.
+The shared Rust and WebAssembly core supplies identical converted content and IDs. A browser never invents a separate conversion algorithm.
+The virtual has no publication event, stored body, signer, or signature.
+It competes with native and imported definitions under the ordinary editorial calculation. It starts with no implicit author blessing or weight.
+
+#### Content and availability
+
+Each virtual uses one exact base publication. It never combines competing base definitions or follows a mutable latest-revision pointer.
+The core interprets defaults without changing authenticated base bytes.
+It exchanges the place objects and every outer-frame integer reference once, including references inside the moved annotations.
+It takes the new top-level glosses only from the base place that becomes place 1.
+Source-place indices, nested relation arities, operand cardinalities, literal text, code, and foreign variables keep their original meanings.
+The reader retains classification, examples, formation, rights, and legacy information as base evidence. It never claims a new signed body for that evidence.
+
+Only the frame cases in the format rule produce virtuals:
+
+- A fixed predicate frame must contain the target place. Its count stays unchanged.
+- A variadic predicate frame must declare both exchanged places in its prefix, with `k <= minimum`. Its minimum and repeated tail stay unchanged.
+- A context predicate frame must declare both exchanged places. Its gaps and incomplete scope stay unchanged.
+- A null or constructed-predicate frame supplies no automatic virtual.
+
+The canonical converted spelling must also fit the format's word limit.
+An invalid conversion has no candidate or zero-score placeholder. For a three-place frame, both `ve` and `xe` are absent.
+The reader explains the unavailable conversion and links to “Describe the base places”.
+An unspecified frame reads “This definition does not describe its places.” Missing content remains a separate availability state.
+The app never extends arity, invents a repeated-tail declaration, or guesses a literal variable's scope.
+If literal place notation remains, show “Literal place notation stays as source text.”
+
+A base word page lists conversion links under “Place conversions”. It does not add the virtual definition blocks to the base's definition list.
+Each link names the converted form and its new place 1 glosses. At most four forms appear per exact base event.
+An available conversion opens its converted word page. An unavailable item explains the missing place or frame information.
+
+#### Identity, spelling, and pages
+
+The descriptor contains the exact base event, conversion, and `place-conversion-v1` rule.
+The [format](format.md#virtual-place-conversions) defines its canonical bytes and domain-separated hash.
+Display aliases, the snapshot, and the reader's trust view never change that target ID.
+One `te vecnu` virtual therefore appears under the same ID on the `te vecnu` and `tervecnu` pages.
+Those placements share judgments, scores, reviewer counts, and permanent links. They do not merge independently stored word identities or definitions.
+
+The canonical route is `/conversion/<encoded-base-spelling>/<conversion>?lang=en`.
+For example, `/conversion/vecnu/te?lang=en` opens the converted word page with the heading `te vecnu`.
+An unstored canonical conversion uses the word lookup with its canonical word ID and `spelling=te vecnu`.
+Optional `definition`, `snapshot`, and `view` parameters pin the exact base event, snapshot, and editorial view.
+The page makes sure that a pinned base matches the spelling and language. It never substitutes another revision after failure.
+Without a base pin, it shows every eligible computable alternative for that base word in the selected language.
+A `form=tervecnu` parameter keeps the requested spelling after the same morphological analysis establishes it.
+That alias page reads `GET /words/WORD_ID` for the alias word ID and includes stored `tervecnu` definitions and its matching virtuals.
+For an alias without a stored headword, the client supplies `spelling=tervecnu` so that the server can recover the spelling from the request.
+The server requires its NFC word object to hash to `WORD_ID`. A mismatch returns HTTP 400.
+
+The word response owns the combined `layers`, `scores`, `virtuals`, and `virtual_statuses`. Clients never concatenate independently ranked layer lists.
+It applies status precedence first, with deprecated candidates after active candidates, and excludes unavailable candidates from layers.
+For active candidates, the format's [comparison across contexts](format.md#bounded-calculation) subtracts separate score intervals when their weighted context graphs differ.
+The virtual keeps its canonical converted context. A stored alias definition keeps its own word context, with no third calculation or transferred score.
+
+An exact virtual link uses `/virtual-definition/<virtual-id>?base=E&conversion=te&rule=place-conversion-v1`.
+It can also pin `snapshot` and `view`. The client recomputes the ID from the descriptor before accepting that link.
+The page fetches and authenticates the base before presenting a locally computed definition or preparing a judgment.
+A missing base keeps the exact target visible with an availability explanation. It never redirects to a different definition.
+An expired snapshot follows the ordinary expiry flow without changing the target or descriptor.
+
+A converted word page combines its ordinary native definitions, ordinary imports, and matching virtual definitions in the normal editorial layers.
+Imported definitions remain visible as full candidates. There is no automatic collapsed import group or semantic duplicate verdict.
+Morphology identifies a possible spelling relationship. It does not establish that a separately written sense has the same meaning.
+A native lujvo with its own meaning remains an ordinary definition and records no conversion relationship.
+The page links related converted spellings without copying their stored definitions into another word identity.
+
+Conversion-shaped lujvo start with `sel`, `ter`, `vel`, or `xel` under the chosen morphology profile.
+Analysis must recover the first rafsi and the complete base with its joins. Removing three letters is insufficient.
+For example, `selbri` requires the assignment from `bri` to `bridi`.
+A compound base requires the remaining component sequence as a whole. Current automatic recognition excludes conversion chains, arbitrary phrases, and `zei` chains.
+The snapshot supplies the rafsi evidence. Missing evidence and parser limits produce an unavailable analysis, not a guessed base.
+Automatic spelling recognition is separate from the core's deterministic frame transformation. An exact descriptor can still identify an experimental base with an explicit predicate frame.
+When a short rafsi names several established bases, show their evidence in separate groups and offer an explicit base choice.
+Each base event supplies its own virtual ID. A shared surface spelling never merges their judgments.
+
+#### Reviews, authorship, and base changes
+
+A virtual block says “Derived from” with the exact base revision and its source author.
+Its detail says “This definition is computed from the base. The base author did not sign the converted text.”
+For imports, source author and importer remain separately inspectable. An unknown source author stays unknown.
+The block has its own Endorse, Oppose, Clear my judgment, score, and reviewer disclosure.
+Their exact target is the virtual ID, with the descriptor required by the format. Base judgments never supply these values.
+Before a first signature or an unlock wait, retain the virtual ID and descriptor. Afterward, resume that exact target.
+
+A reader can judge an unsigned virtual because the judgment's issuer signs that opinion.
+The derived content itself acquires no signer, root allocation, automatic author judgment, or inherited support.
+Public and personal calculations apply ordinary influence, scope, continuity, and conflict rules to its explicit reviewers.
+The virtual's score context uses its canonical converted word and base language on every alias page.
+A stored lujvo still uses its own word context. The format's different-context comparison rule applies when those graphs differ.
+A word-scoped block on the base alone does not silently become a block on the converted word.
+Matching shuns and blocks remove actor influence and routes. They do not erase the virtual merely because that actor authored the base.
+Base eligibility, lifecycle authority, status, and content-retention rules still determine whether its content can appear.
+
+For unjudged exact-zero candidates, apply the format's deterministic starting order within each editorial layer.
+Native definitions and virtuals with reviewed base frames precede unjudged imports. Imports precede virtuals with unreviewed frames.
+Within each category, full target ID decides presentation order. Other candidates keep the positions that ordinary layer ordering gives them.
+A native published predicate frame is its author's review claim. An imported frame requires `legacy.conversion.review: "reviewed"` for this preference.
+Those claims establish no expertise guarantee. This order adds no numerical score or reviewer.
+Without a computable virtual, an ordinary imported definition stays in the candidate list and keeps its category.
+Unknown scores or reviewer evidence never count as unjudged zero.
+
+A new base revision creates a new virtual target. Judgments stay with the old base revision and never move automatically.
+When a known revision exists, the old block says “A newer base revision is available” and links to it separately.
+The page retains the exact old content, score, and target. An unavailable child does not replace that content or establish a new preferred revision.
+Deprecating or retracting the base deactivates its virtual's judgments. Restoring eligibility reactivates those same judgments.
+The format's [base-state table](format.md#identity-eligibility-and-authorship) defines score status, layers, virtual eligibility, and package status for every base state.
+An `inactive` virtual has a known deprecated base and readable converted content. It sorts after active candidates and never enters the zero-reviewer sublist.
+Deactivated judgments supply no score or effective direct-reviewer count. They remain inspectable as history and resolve normally after restoration.
+Withheld or missing base bytes make the virtual unavailable. A cached converted copy never bypasses a content refusal.
+Virtuals have no separate Retire or Restore control. Those actions apply to the controlled base publication.
+
+#### Search and indexing
+
+Lexical search indexes the virtual's converted text and its own top-level glosses.
+For example, `buyer` finds `te vecnu` through the base place 3 gloss. The queries `te vecnu` and `tervecnu` find the same virtual target.
+This works without a stored definition for either spelling. An empty new-place gloss list stays empty and does not borrow the base glosses.
+The same morphology rules resolve spelling aliases and ambiguous bases in local and remote search.
+Group matching alternatives under the requested converted spelling. Do not repeat a word card for every base revision or alias.
+Search previews identify virtual content and link to its converted page or exact virtual target.
+Ordinary match classes and limits apply. Pattern search scans stored headwords and rafsi without enumerating virtual spellings.
+Prefix, token, and subsequence matching on canonical converted spellings remain enabled.
+Within each class, matching stored headwords precede virtual spellings under the section 4 rule. Pagination preserves all hits.
+
+The single search box places virtual definitions in the same three groups as stored definitions:
+
+- Lojban words includes matches on the canonical converted spelling or an established alias through ordinary headword and component rules.
+- Definitions includes matches on the converted text and new place 1 glosses. For example, `buyer` finds `te vecnu` here.
+- Similar in meaning includes each indexed virtual through its own converted vector, under the same consent, profile, snapshot, and coverage rules.
+
+A virtual can appear in several groups when it matches each group. Its target and judgments stay the same across groups.
+Each group retains its own match order, alternatives, pagination, and limits. Pattern queries keep the stored-headword and rafsi rule above.
+Known-word ordering uses complete converted spellings and established aliases only when their candidates pass the selected view's ordering filters.
+Inferred cmavo pieces, unresolved bases, and unavailable morphology evidence never establish a known spelling.
+Local ordering requires the same snapshot-bound morphology evidence and `search_view` as the package's `search_status` values.
+Missing evidence keeps the ordinary Definitions-first notice and never triggers a query upload.
+
+Search packages use the version 3 contract below. They retain the descriptor, exact base body hash, converted fields, and sufficient morphology evidence.
+The client recomputes a virtual from its authenticated base before treating it as verified content or signing a judgment.
+Derived package bytes remain server assertions until that recomputation. No synthetic event, body hash, or issuer stands in for a virtual.
+Earlier prelaunch packages must be rebuilt for this feature. There is no compatibility fallback that guesses missing places.
+A missing package still permits a consented download or manual reading. It never silently uploads a local query.
+
+Semantic indexing embeds each eligible virtual separately through the named profile's exact converted input recipe.
+It uses the virtual target, descriptor, exact base body hash, and computed input hash. It never labels the base vector as the virtual's vector because they seem similar.
+Exact profile and input-byte equality still permits ordinary vector deduplication with a separate association for each target.
+Semantic similarity does not prove a place permutation or replace deterministic spelling recognition and gloss search.
+Changing the base event or conversion-rule version creates a new target association. Identical input bytes can still have the same input hash.
+Status or selection changes deactivate entries under the same snapshot rules as ordinary definitions.
+Index jobs bound work and expose coverage for eligible stored and virtual targets. They never activate invalid permutations or mix snapshots.
+
+#### Editing and accessibility
+
+Typed headwords and `existing.conversion` use the same core resolver. An offer reads “Use te vecnu” for either supported spelling.
+It opens the converted word page and preserves the current draft. It creates no publication or automatic judgment.
+“Edit base places” starts a native revision of the exact base in its original place order and opens its relevant descriptions and glosses.
+For `te vecnu`, the editor focuses base place 3 and says “You are editing vecnu. Its place 3 supplies te vecnu.”
+The preview states that publication creates a new virtual target and retains old judgments on the old target.
+The normal review, rights notice, saved-draft handling, and Publish action apply.
+A different intended meaning uses “Write a different meaning for tervecnu” and an ordinary lujvo draft, or Other for a multiword form.
+The editor never copies a pure permutation into a separate stored definition merely to change its gloss or description.
+
+Accessible headings identify the virtual, converted spelling, and base in Latin text under every orthography.
+The place table exposes the full mapping, such as “Converted place 1, base place 3”, without hover.
+Inline markers announce converted place numbers and link to converted rows. Their numeric tokens establish their identity.
+Judgment controls expose the exact virtual target and ordinary pressed, conflicted, pending, and unavailable states.
+A newer-base notice links to the newer target without moving keyboard focus or changing a pending judgment.
+Conversion selection uses the noninterrupting status region and preserves browser Back.
+All mappings, candidate states, source links, review details, and edit actions remain reachable at 360 CSS pixels and under zoom.
+
 ## 5. Add a definition
 
 The app offers a guided wizard and an advanced editor over the same local draft.
@@ -477,6 +664,10 @@ An unknown spelling with a valid name mark follows the ordinary experimental cla
 An accented spelling requires the `cmevla` classification, or `lujvo` under the format's [bounded `zei` rule](format.md#definition-payload).
 The app compares its `wordId` with the local language package. Remote lookup requires explicit consent for that word and language.
 An existing word shows “Already exists”, its linked word page, its definitions, and “Add a definition”.
+Conversion-shaped typed headwords also follow the [place conversion flow](#place-conversions), without an AI request.
+The conversion offer reads “Use te vecnu” for either `te vecnu` or an unambiguous `tervecnu` analysis.
+The author can inspect the conversion, edit the base places, or write a different meaning through the ordinary lujvo or Other path.
+The offer never asserts semantic equivalence from spelling alone. An unavailable analysis preserves the draft and explains its missing evidence.
 The author can continue with another definition of that word. An unavailable check says that the word could not be checked.
 A local package only establishes presence or absence in its named language and snapshot.
 
@@ -497,9 +688,14 @@ If the package is missing, offer a download or continue manually. No private dra
 An explicit remote lexical request requires disclosure and consent for the text sent.
 A “by meaning” choice enables the selected semantic-search profile after consent.
 The panel shows exact words, definitions, and languages beside each result.
-Its best match offers “Add a definition” and “Revise this one.” Other matches offer “Use this word.”
+
+For stored definitions, the best match offers “Add a definition” and “Revise this one.” Other stored matches offer “Use this word.”
+A virtual match offers “Use te vecnu”, with its actual converted spelling, and “Edit base places” under the [virtual editing rules](#editing-and-accessibility).
+These actions open the conversion or revise its exact signed base in the original place order. They preserve the current draft.
+The panel never offers plain Add or Revise on a virtual or stores a pure permutation as a new definition.
+
 Similarity is a suggestion, not proof that the meaning already exists. The author can choose an existing word or continue with a new word.
-Choosing an existing word offers adding a sense or revising a particular definition. It never silently overwrites that definition.
+Choosing a stored definition offers adding a sense or revising that signed definition. It never silently overwrites it.
 
 The primary button reads “New word” and remains available even when similar entries exist.
 
@@ -522,24 +718,43 @@ The server finds related public definitions inside the type job from the origina
 The lexical fallback uses up to six distinct query words. It removes whole-token place marks and punctuation at token ends and keeps inner apostrophes.
 It ranks words by matching query count, then summed search positions, then stable word ID.
 Each query scans the dictionary once with the same match tiers and order as ordinary lexical search.
+
 Up to three current definitions of the trimmed, NFC-normalized typed spelling come first.
 They follow ordinary editorial layers when available. Within one layer, exact gloss matches count three, gloss prefixes two, and definition-text matches one.
-The sum over query words decides relevance. Equal relevance uses stable event ID order.
-These exact senses keep separate records. Later lexical hits omit their spellings and every other duplicate spelling.
-The list excludes selected context events and holds at most 30 records in total.
-Each entry supplies its type and definition text without notes. A definition above 500 Unicode code points is cut and marked as truncated.
-The inference log records the snapshot and exact events in list order.
+The sum over query words decides relevance. Equal relevance uses full target-ID order across signed and virtual hits.
+
+These exact senses keep separate candidate entries. Later lexical hits omit their spellings and every other duplicate spelling.
+The list excludes selected context events, including a virtual whose signed base is in that context. It holds at most 30 candidate entries.
+
+The virtual-entry form described here is target behavior that the current [prompt files](../prompts/README.md#request) do not yet implement.
+
+Stored entries supply their type and definition text without notes.
+A virtual entry identifies its computed content, full target ID, descriptor, and exact signed base event and word.
+It supplies the converted definition and the base's original definition separately. Its base classification is labeled as provenance, not the virtual's own classification.
+A supplied definition above 500 Unicode code points is cut and marked as truncated.
+
+The inference log records the snapshot and full target IDs in list order.
+For each virtual hit, it also records the descriptor and signed base event. A stored hit's target is its publication event.
 It records lexical retrieval with its query words, semantic retrieval with its profile ID, or none when no search runs.
 The service sends its own spelling analysis when a spelling is present and records the morphology version in the log.
+
 The type prompt retains its approved `fuivla` identifier. The service translates between it and the app's `fuhivla` identifier at the type boundary.
 
-An existing-word block links to the word and offers Add a definition when the current definition fits.
+The model uses only supplied references. The service maps a virtual reference to its descriptor's signed base event for `existing.event`.
+For that hit, `existing.word` is the exact base spelling, and `existing.conversion` is the descriptor's conversion.
+The model must never return a virtual ID where the answer contract requires a signed event, including `existing.event`.
+The service rejects such an answer. Any `existing.revised_definition` for a virtual hit describes the signed base in its original place order.
+
+For a stored hit, the existing-word block links to the word and offers Add a definition when the current definition fits.
 An improved definition appears with Revise this one. This action creates a local revision with the exact publication as its parent.
 The editor shows the same notice as ordinary Revise about changes to CC0, imported legacy content, and native origin.
 The improved text starts as a separate suggestion. Use this applies it with persistent Undo.
 For a conversion, such as `te vecnu`, the block offers Use te vecnu instead of Add a definition.
-That action opens the existing word page and shows the converted form. It creates no draft or publication.
-A conversion with an improved definition also offers Revise this one for the existing word in its own place order.
+That action uses `existing.conversion` to resolve the virtual target from the exact `existing.event` and `existing.word`.
+It opens the converted page, preserves the current draft, and creates no publication or judgment. The page offers “Edit base places”.
+The client makes sure that the resolved base and frame support that conversion. A failed resolution keeps the suggestion and exposes the missing evidence.
+It never falls back to Add a definition for a pure reordering.
+For a conversion with an improved base definition, offer “Revise vecnu” with the actual base spelling and original place order.
 Adding or revising saves the previous draft separately and offers Return to the saved draft.
 Add a definition copies every current field and uses the Step 1 spelling-change action. It preserves notes, places, glosses, sources, and evidence for review.
 An independent private `saved-index` row holds saved-draft links through every wizard route and reload.
@@ -1019,7 +1234,7 @@ A generation tool uses only a uniquely preferred assignment under the selected v
 ## 7. Endorsements and trust
 
 The visible judgment actions are “Endorse,” “Oppose,” and “Clear my judgment.”
-Their help text maps them to bless, curse, and clear. Definition judgments apply to the exact revision shown. Rafsi judgments apply to the exact word and rafsi pair.
+Their help text maps them to bless, curse, and clear. Definition judgments apply to the exact publication or virtual target shown. A virtual judgment includes its base descriptor. Rafsi judgments apply to the exact word and rafsi pair.
 A reason is optional. The UI does not demand prose for every curator action.
 A changed judgment follows the contributor's known event frontier and replaces their earlier causally ordered judgment.
 
@@ -1349,10 +1564,11 @@ Public reads need no account. Public event admission follows published quotas an
 | `POST /events`                                                    | One envelope plus a canonical body object or null, encoded as UTF-8 JSON.                                                                                                                                            |
 | `GET /receipts/ID`                                                | This server's receipt and interpretation outcome for that event.                                                                                                                                                     |
 | `GET /package-parts/HASH`                                         | Canonical derived search-part bytes, with a 4 MiB uncompressed limit.                                                                                                                                                |
-| `GET /packages/LANGUAGE?snapshot=S&version=N`                     | Search package manifest and content hashes. Version 1 is the default. Version 2 adds row metadata.                                                                                                                   |
+| `GET /packages/LANGUAGE?snapshot=S&version=N`                     | Version 3 search package manifest and content hashes, including stored and virtual candidate rows.                                                                                                                   |
 | `POST /search`                                                    | Remote draft search. The JSON body carries the GET search fields and returns the same `SearchResponse`.                                                                                                              |
-| `GET /search?q=Q&language=L&view=V&snapshot=S&retired=1`          | Optional remote results with view and snapshot metadata. Without `retired=1` the results hold active publications only. With it, each preview carries the publication status. Any other `retired` value is HTTP 400. |
-| `GET /words/WORD_ID?view=V&snapshot=S&reviewers=1`                | Candidate IDs, rafsi claims, and attributed ranking summary. `reviewers=1` adds bounded reviewer details to each score. Any other `reviewers` value is HTTP 400.                                                     |
+| `GET /search?q=Q&language=L&view=V&snapshot=S&retired=1`          | Active publications and active virtual rows are ordinary hits. Retired virtuals follow `retired=1`. Each virtual preview carries the status derived from its base. Signed previews retain publication status. Other `retired` values return HTTP 400. |
+| `GET /words/WORD_ID?view=V&snapshot=S&reviewers=1&spelling=FORM`  | Stored and virtual candidate IDs with combined layers, rafsi claims, and attributed scores. Optional `spelling` resolves an unstored alias and must match `WORD_ID`. `reviewers=1` adds bounded details. Other `reviewers` values return HTTP 400. |
+| `GET /virtual-definitions/ID?base=E&conversion=C&rule=R&view=V&snapshot=S` | Resolve and compute an exact virtual target, its base status, and independent score. No stored event or body is returned for the virtual. |
 | `GET /identities/KEY?view=V&snapshot=S`                           | Effective profile claims, continuity state, and activity counts for one signing key.                                                                                                                                 |
 | `GET /identities/KEY/activity?view=V&snapshot=S&after=ID&limit=N` | Events signed by that key in event-ID order, with their interpretation and local receipt position.                                                                                                                   |
 | `GET /records?snapshot=S&after=ID&limit=N`                        | Snapshot records for local calculation: envelope, body, and body status, bounded by count and bytes. The limit ranges from 1 through 200.                                                                            |
@@ -1367,9 +1583,11 @@ With `literal=1`, they search the query literally instead. Any other `literal` v
 The meaning wizard sets `literal` to `"1"` in its consented POST search. Ordinary word searches keep pattern mode.
 Optional `group` selects `lojban` or `definitions` before matching and pagination. Other values return HTTP 400.
 Without it, the earlier combined lexical order remains available. Signed records do not change.
-Version 2 package entries can carry the optional ordering evidence defined below.
+Version 3 package rows carry the view-bound ordering evidence defined below.
 Search responses can include `all_lojban`. It states whether the eligible index knows the complete normalized headword or every space-separated query word.
-Each query word must match one complete normalized dictionary spelling. Case, acute stress, and apostrophe aliases follow section 4.
+This test also accepts canonical converted spellings and established aliases whose virtual rows pass the same eligibility and retired-results filters.
+For example, `tervecnu` sets `all_lojban: true` without a stored headword when its virtual row passes those filters.
+Each query word must match a complete normalized spelling under section 4. Case, acute stress, and apostrophe aliases use its rules.
 Remove pause periods and commas and read `h` as an apostrophe in each complete spelling.
 Segmented cmavo pieces, other punctuation, and unrecognized text do not establish that spelling.
 The response uses the same language, view, snapshot, receipt, eligibility, and retired-results filters as its hits.
@@ -1500,7 +1718,7 @@ Calculation = {
   exact: boolean, overlay: ID, inventory: ID, logical_inventory: ID
 }
 Score = {
-  target: event-ID | rafsi-pair-ID, support: [rational, rational],
+  target: event-ID | virtual-ID | rafsi-pair-ID, support: [rational, rational],
   opposition: [rational, rational], net: [rational, rational],
   direct_reviewers: integer, status: "active" | "deprecated" | "conflicted" | "unavailable",
   reviewers?: [ReviewerDetail], reviewers_complete?: boolean
@@ -1546,17 +1764,28 @@ PublicationStatus = {
 }
 WordResponse = {
   snapshot: ID, view: event-ID, calculation: Calculation | null,
-  word: WordObject | null, definitions: [event-ID], rafsi: [event-ID],
+  word: WordObject | null, definitions: [candidate-ID], rafsi: [event-ID],
+  virtuals: [VirtualReference], virtual_statuses: [VirtualStatus],
   assignments: [{id: rafsi-pair-ID, claims: [event-ID], status: pair-status}],
-  scores: [Score], statuses: [PublicationStatus], layers: [[event-ID]],
-  unavailable_scores: [event-ID | rafsi-pair-ID]
+  scores: [Score], statuses: [PublicationStatus], layers: [[candidate-ID]],
+  unavailable_scores: [candidate-ID | rafsi-pair-ID]
 }
 SearchResponse = {
   snapshot: ID, view: event-ID, query: string, language: string,
   segmentation?: "complete" | "limited", all_lojban?: boolean,
   hits: [{word: WordObject, word_id: word-ID, match: match-kind,
-          definitions: [event-ID]}], next: cursor | null
+          definitions: [candidate-ID]}], virtuals: [VirtualReference],
+  virtual_statuses: [VirtualStatus], next: cursor | null
 }
+VirtualDescriptor = {base: event-ID, conversion: "se" | "te" | "ve" | "xe", rule: "place-conversion-v1"}
+VirtualReference = {id: virtual-ID, descriptor: VirtualDescriptor, base_body: body-ID,
+                    word: WordObject, base_word: WordObject}
+VirtualStatus = {id: virtual-ID, base: event-ID, eligibility: "eligible" | "inactive" | "unavailable",
+                 base_status: PublicationStatus | null, reasons: [code-string]}
+VirtualResponse = {snapshot: ID, view: event-ID, id: virtual-ID, descriptor: VirtualDescriptor,
+                   base_body: body-ID | null, word: WordObject | null,
+                   content: VirtualProjection | null, status: VirtualStatus,
+                   score: Score | null, calculation: Calculation | null}
 Error = {code: string, message: string, event: event-ID | null, field: string | null}
 ```
 
@@ -1596,8 +1825,28 @@ The records transport returns the committed envelope representation of the snaps
 `body_status` `missing` means that the snapshot never retained the body. `unavailable` means that the snapshot retained it and storage did not return it now. A client keeps the two apart: a missing body is a fact of the snapshot, and an unavailable one deserves another request.
 A client authenticates each envelope and body through the shared core and compares the complete set with the snapshot inventory before claiming a complete local calculation.
 
-Word layers contain definition IDs only. Assignment status is `eligible`, `inactive`, or `unknown`, with distinct pair scores.
-Statuses contains one entry for each returned definition, sorted by event ID. It uses the response's exact snapshot and view.
+A candidate ID is a signed definition event ID or a `jvv1:` virtual ID. Word layers contain those candidate IDs only.
+Every returned virtual target has one `VirtualReference` in the same response. References sort by virtual ID without duplicates.
+`VirtualProjection` is the exact seven-field content object in the format's [conversion rule](format.md#conversion-rule).
+Virtual statuses refer to their real base status. They never fabricate a publication-status event for the virtual.
+`statuses` contains signed publications only. `virtual_statuses` contains one entry for each returned virtual target.
+The search response's `virtuals` array describes every virtual ID in its hits. A display alias does not replace its canonical score word.
+Its `virtual_statuses` supplies each virtual preview's base-derived state under the format's base-state table, including retired hits.
+`eligible` permits active ranking. `inactive` identifies readable content from a known deprecated base. `unavailable` supplies no ranked or ordinary search candidate.
+The table's unavailable score status returns no numerical `Score`. Direct lookups use null, and word responses use `unavailable_scores`.
+For import-derived virtuals, ordinary word responses include selected bases only, even without an exact base-event pin.
+Virtuals of unselected imports appear in none of `definitions`, `virtuals`, `virtual_statuses`, `layers`, `scores`, or `unavailable_scores`.
+An explicit descriptor lookup still reports an unselected base as unavailable under the base-state table.
+Virtual references and candidate fields are required in this prelaunch API revision. Existing prototype data must be rebuilt where those fields are absent.
+
+A virtual lookup requires its complete descriptor in the query. The server makes sure that it hashes to the requested ID.
+A malformed or mismatched descriptor returns HTTP 400. A deterministically invalid base or permutation returns HTTP 422 with `invalid_virtual`.
+Unavailable base content returns null content and score, with its unavailable status and reason. A resource failure follows the ordinary HTTP 503 rule.
+The client authenticates the base through the event and body endpoints before calling the local core or signing a judgment.
+`/events` and `/bodies` remain immutable-object routes. They never return a fabricated virtual envelope or body.
+
+Assignment status is `eligible`, `inactive`, or `unknown`, with distinct pair scores.
+Statuses contains one entry for each returned signed definition, sorted by event ID. It uses the response's exact snapshot and view.
 Frontier lists the deciding maximal status actions, or their union during a controller dispute. Event-ID arrays are sorted and duplicate-free.
 
 Controller_candidates contains the candidate period claim IDs. Deciding_claim names the period that supplies the value, or null for a default, dispute, or unavailable selection.
@@ -1691,42 +1940,77 @@ When publication receipts cannot be evaluated, the manifest sets `packages_avail
 Package downloads then return HTTP 503 with `resource_unavailable`. Existing downloaded packages remain available in the browser under their saved snapshots.
 With `packages_available: true`, empty descriptor arrays mean that the server has no language packages in that snapshot.
 
-Older servers can omit both new fields. Clients retain the earlier word-response view lookup when no explicit view choice exists.
-An absent availability field retains the earlier package-discovery behavior. A present field must be a boolean, and a present view must be an event ID.
+The availability field is a required boolean. The declared view is a required event ID in this prelaunch contract.
 
-A package manifest contains `version`, `language`, `snapshot`, and `parts`. Version is 1 or 2.
-Version 2 can also contain `search_view`, the signed view ID that binds ordering evidence for every entry in that package.
-No other fields are permitted. Version 1 keeps exactly its original four fields.
-The manifest response lists version 1 packages in `packages` and every other version in `package_versions`.
-A client requests a version explicitly with the `version` query. The default remains version 1.
-Each part contains `hash`, `bytes`, and `count`. Part hashes identify canonical JSON arrays of search entries.
-Parts contain at most 2,000 entries and 4 MiB uncompressed. These are derived artifacts, not signed event bodies.
+A package manifest contains exactly `version`, `language`, `snapshot`, `search_view`, `morphology`, and `parts`. The target package version is 3.
+The manifest response lists that package in `packages` and identifies version 3 in `package_versions`.
+Requests omit `version` or select `version=3`. Other versions are unavailable for this prelaunch target contract.
+Each part contains `hash`, `bytes`, and `count`. Its hash identifies a canonical JSON array of candidate rows.
+Each part holds at most 2,000 rows and 4 MiB uncompressed. Split larger data into additional parts.
+The manifest hash covers its canonical bytes. Compression remains outside the hashes.
+These derived parts use their dedicated endpoint, rather than the 256 KiB event-body limit.
 
-Their dedicated endpoint uses that limit rather than the 256 KiB event-body limit. Split a larger package into more parts.
-An entry contains `event`, `word`, `language`, `glosses`, `plain_text`, `classification`, and `body`.
-Event is the publication ID. Word is its word object. Body is its body hash or null.
-A version 2 entry adds `issuer`, `notes`, `rafsi`, `rafsi_complete`, and `attribution`.
-With `search_view`, each entry carries `search_status` as `active`, `retired`, or `ineligible`. Store the view once per package, never per entry or part.
-The browser keeps that binding once in its saved package and passes it to local search.
-Older version 2 packages can omit ordering evidence or use `search_status` with exactly `view` and `status` per entry.
-A package without `search_view` accepts that older object form only. A package with `search_view` requires the compact status on every entry.
-Malformed view IDs, invalid statuses, mixed forms, and extra fields fail package validation.
-The view is the selected signed view ID for that package's snapshot. Status is `active`, `retired`, or `ineligible`. Active means eligible, effective, and active for ordinary remote search.
-Retired means eligible and effective, but included only when remote search includes retired results. It includes unresolved non-active statuses under that filter.
-Ineligible means that the publication cannot establish a known query word in that view.
-This is derived server evidence for ordering, rather than signed publication status. It changes with status, eligibility, receipt, or selected-view changes.
-Version 1 emitted entries keep their original fields. Older version 2 clients can use their recorded version 1 fallback.
-Issuer is the signing key, which is the importer for an import. Notes is true when the definition has notes.
-Rafsi lists the spellings of retained rafsi claim bodies for the word, sorted, at most 64 of them. `rafsi_complete` is false when the word has more claims than the list holds. Missing, unreadable, or invalid claim bytes also set `rafsi_complete` to false. A client never treats a cut list as a complete conflict inventory. The exact claims of a word are the `rafsi` event IDs of the word route and their claim bodies.
-Attribution is null for a native publication.
-If an advertised version 2 package fails its checks, the client uses the version 1 package instead and records the reason with the cached package. It shows that state wherever it describes the package. It never falls back without that record.
-For an import it contains `source`, nullable `author`, nullable `account` with `origin` and `account`, and `dates`, a map of source date labels to source strings.
-These fields are server assertions derived from the records. They are not part of the signed format, and a client can authenticate them against the records.
+`search_view` is the selected signed view ID that binds ordering evidence for every row in that snapshot.
+The browser retains that binding once per saved package and passes it to local search.
+The package never repeats the view in each row or part.
 
-Other fields use definition shapes, except plain_text, which is a literal search string derived from rich text.
-The package sorts entries by event ID and preserves alternatives. It does not encode one chosen definition per word.
-The manifest hash covers its canonical bytes. Package entries are derived index data, not new signed claims.
-The app can reconstruct them from authenticated publications and flag disagreements.
+`morphology` contains exactly `id` and `version`, as strings from the [morphology profiles](morphology.md).
+The current package profile uses `https://github.com/int19h/jbovlacku/blob/main/docs/morphology.md#extended-lujvo` with version `4`.
+A different supported profile requires its declared identifier and version, plus a rebuilt package manifest.
+The manifest hash binds that pair and its parts. The snapshot and part hashes bind the retained rafsi evidence.
+Alias recovery uses the pinned profile's segmentation and joins, together with rafsi assignments on stored rows.
+Remote search and alias word responses use that same pinned profile for the package's context.
+It never substitutes a newer local profile or enumerates all possible alias spellings.
+
+Missing assignment evidence keeps the affected parse unresolved. A false `rafsi_complete` never proves that an absent assignment does not exist.
+Retained evidence can expose candidates, but incomplete claims cannot establish uniqueness. Competing bases remain separate groups with their own virtual IDs.
+Missing parts or an unsupported profile expose incomplete alias coverage. Canonical spellings remain usable when their own rows pass authentication.
+
+Each version 3 row contains these fields:
+
+```text
+{
+  target: candidate-ID, event: event-ID | null, virtual: VirtualDescriptor | null,
+  body: body-ID | null, base_body: body-ID | null, issuer: identity-string | null,
+  word: WordObject, base_word: WordObject | null, language: string,
+  text: RichText, frame: Frame | null, glosses: [Gloss], plain_text: string,
+  classification: Classification | null, notes: boolean,
+  search_status: "active" | "retired" | "ineligible",
+  rafsi: [string], rafsi_complete: boolean, attribution: SourceAttribution | null
+}
+```
+
+For a stored definition, `target` equals `event`. Its `body` and `issuer` name the ordinary signed evidence.
+Its `virtual`, `base_body`, and `base_word` fields are null. Other fields derive from that exact publication with defaults applied.
+For a virtual, `target` is its recomputed virtual ID. Its descriptor, `base_body`, and `base_word` identify the exact signed base evidence.
+Its `event`, `body`, `issuer`, and `classification` fields are null. The virtual has no signed record or independent lexical classification.
+Its `word` is the canonical converted word. Its text, frame, and glosses come from the shared core's projection.
+`plain_text` renders that text for lexical matching. `notes` reports whether the projected notes are nonempty.
+
+`search_status` binds each row's known-word ordering evidence to `search_view`.
+Active means eligible, effective, and active for ordinary remote search.
+Retired means eligible and effective, but included only with the retired-results filter. It includes unresolved non-active statuses under that filter.
+That unresolved-status rule applies to stored publications. Virtual rows follow the format's base-state table: deprecated is retired, and unresolved is ineligible.
+Ineligible means that the candidate cannot establish a known query word in that view.
+A virtual derives this status from its exact base eligibility, status, and computability. It needs no synthetic publication receipt.
+This evidence changes with status, eligibility, receipt, or selected-view changes. It is a derived assertion, not signed publication status.
+Malformed view IDs, invalid statuses, missing fields, and extra fields reject the package. Earlier package forms require rebuilding, without a compatibility fallback.
+
+Rafsi lists retained claims for the row's displayed canonical word, not inherited assignments from the base.
+It holds at most 64 sorted spellings. `rafsi_complete` is false for missing, invalid, unreadable, or cut claim evidence.
+A virtual by itself creates no rafsi assignment. Alias spelling analysis uses separate snapshot-bound morphology evidence.
+The exact word route retains every rafsi claim event and conflict, as before.
+
+`SourceAttribution` contains `source`, nullable `author`, nullable `account` with `origin` and `account`, and a source `dates` map.
+It is null for a native publication. An import derives it from its exact legacy evidence.
+A virtual uses its base's available source attribution and identifies it as derived attribution. It never treats that source as a virtual signer.
+These fields remain derived assertions. They do not change source authorship, signatures, or rights.
+
+Rows sort by full target ID without duplicates. The package retains competing stored and virtual definitions and creates no chosen universal sense.
+Its generation pins the snapshot, selected view, conversion rule, and morphology evidence that determine eligibility and placements.
+A client can reconstruct a row from authenticated records and flag any mismatch.
+A descriptor, source hash, or computed-content mismatch rejects the row and reports incomplete coverage. It never activates a guessed virtual.
+An unsupported rule or missing base remains unavailable. The client never fills missing places from an earlier prelaunch package.
 
 ## 12. Admission, privacy, and rendering
 
@@ -1812,6 +2096,25 @@ The implementer must demonstrate these end-to-end cases before public release:
 32. Permanent refusal stays auto-paused. Stopping neither retracts public records nor promises cancellation of an in-flight request.
 33. Outlined control boundaries meet 3:1 contrast in every enabled state in both themes.
 34. Discard refuses a stopped record when a later local own record depends on it, directly or transitively. Resume and Save as file remain available. Discarding an independent stopped leaf restores its retained predecessors to the frontier when they become maximal. No later signature names the discarded ID.
+35. Compute identical virtual IDs and content in Rust and WebAssembly from the same base descriptor. Preserve base bytes, moved annotations, and foreign source-place indices.
+36. Refuse `ve` and `xe` beyond a fixed frame, preserve a variadic tail, and retain sparse context and unspecified-frame limits.
+    Refuse `se` with `minimum: 1` and explicit places 1 and 2. Permit it with `minimum: 2` without changing the minimum or which places are required.
+37. Find `te vecnu` through `buyer`, `te vecnu`, and `tervecnu` with local and remote conversion coverage. Expose absent package coverage without a query upload.
+38. Rank native, imported, and virtual definitions together without a collapsed import group. Give a reviewed-frame virtual the specified unjudged starting order without numerical author weight.
+39. Route typed forms and `existing.conversion` through the same virtual target. Judge that target independently and edit the base in its original order.
+40. Read mappings, compare ordinary and virtual candidates, judge a virtual, and edit base places with keyboard and screen-reader controls at narrow widths.
+41. Keep virtual judgments on their exact old base after a revision. Show a newer-base notice without changing the old target or copying its judgments.
+42. Deactivate and restore virtual judgments with base eligibility. Distinguish missing content, invalid conversion, source-author blocks, and unrelated reviewer influence.
+43. Share one virtual ID across converted spelling aliases. Keep ambiguous short-rafsi bases separate and use canonical converted score contexts.
+44. Authenticate version 3 virtual package rows against their exact base. Reject invented virtual bodies, mismatched descriptors, and mixed-snapshot inputs.
+45. Index virtual semantic vectors from their exact converted recipe. Preserve target associations during exact-input deduplication and expose incomplete virtual coverage.
+46. Place virtual spelling matches in Lojban words, converted gloss and text matches in Definitions, and vector matches in Similar in meaning.
+47. Keep virtual identities across search groups and aliases. Bind known-word ordering to the package's view and snapshot without expanding virtual pattern candidates.
+48. Admit both semantic target kinds under one procedure and sort equal distances by full target ID. Reject mismatched base bindings and inputs.
+49. Return active virtual lexical hits and base-derived retired previews. Give `tervecnu` the same known-word ordering locally and remotely under identical filters.
+50. Match canonical converted prefixes and tokens. Within each class, put stored matches first and retain virtual matches through pagination.
+51. Return combined stored and virtual layers for an alias word. Keep its score contexts separate and recover aliases with the package's pinned morphology.
+52. Reconcile profile and search coverage through `SemanticCoverage`, including failed targets, shared vectors, and bases with indeterminate conversions.
 
 The app must also measure cold package load, local search latency, signature latency, backup unlock time, and ranking cost on representative mobile devices.
 No target in this design constitutes a completed browser compatibility or accessibility audit.
@@ -1842,9 +2145,9 @@ A cache still needs a compatible query-vector service. Downloaded document vecto
 The browser can offer offline semantic search only when it also has a compatible local model and enough retained vectors.
 Ordinary offline search and the manual wizard remain available without either.
 
-A result identifies its profile and definition revision. New or changed definitions show pending indexing until their vectors are available.
+A result identifies its profile and exact signed or virtual target. New or changed targets show pending indexing until their vectors are available.
 The server never substitutes a vector for another revision without proving that its declared input bytes match under the same profile.
-It also retains the target event association explicitly. Identical text does not merge authors, definitions, or judgments.
+It also retains each exact target association explicitly. Identical text does not merge authors, definitions, or judgments.
 
 Different profile distances never enter a common sorted scale. The first release shows one selected profile at a time.
 A later rank-fusion feature must label its algorithm and every contributing profile.
@@ -1961,12 +2264,20 @@ The API adds the following endpoints. The server implements each contract when i
 | `DELETE /jobs/ID`          | Request cancellation of that caller's job.                                              |
 | `GET /assist/prompts/FILE` | Public text of a prompt file named by the inference log.                                |
 
-Embedding-profile responses contain exactly profiles. Each entry contains id, label, query_available, indexed, eligible, pending, and limitations.
-Id is a profile hash. Counts are nonnegative integers. Limitations is an array of strings. Query_available is a boolean.
+Embedding-profile responses contain exactly profiles. Each entry contains id, label, query_available, coverage, and limitations.
+Id is a profile hash. Coverage is the format's [SemanticCoverage](format.md#semantic-coverage) object, with no separate flattened counts.
+Limitations is an array of strings. Query_available is a boolean.
 Optional snapshot, view, and language parameters select the profile response's coverage context.
 Without them, coverage uses the completed snapshot, configured view, and all languages.
 Query availability requires a compatible published index for the requested view and selected profile.
-Each result must match the exact event, envelope, body, word, language, and extraction version in the requested snapshot.
+
+Each result passes the format's single [semantic target admission](format.md#semantic-target-admission) procedure under the requested snapshot, view, language, and profile.
+A publication matches its event, envelope representation, authenticated body, word, language, semantic extraction version, and recomputed input.
+A virtual matches its descriptor, authenticated base envelope and body, canonical converted word, language, semantic extraction version, and recomputed input.
+
+That integer versions the core's semantic projection, not Lensisku import extraction. Shared index entries carry it as `extraction_version` under the format contract.
+
+A virtual has no event, envelope, or signed body of its own. Both target kinds require an exact compatible vector association.
 Pending or failed entries remain outside the results. Other indexed definitions remain searchable.
 
 The semantic request contains query, language, snapshot, view, profile, and limit. Query is nonempty text of at most 16 KiB.
@@ -1974,9 +2285,14 @@ Language is a definition-language tag. Snapshot and profile are hashes. View is 
 The selected profile can impose a tighter input limit, including its literal prefix. The server rejects that limit before paid dispatch.
 
 The response contains snapshot, view, profile, query_hash, hits, and coverage.
-Each hit contains event, word, distance, and position. Word is its word ID. Distance is a finite JSON number under this external API.
+Each hit contains `target`, nullable `event`, nullable `virtual`, nullable `base_body`, `word`, `distance`, and `position`.
+A publication uses its event as target. A virtual uses its own ID, descriptor, and authenticated base body hash, with null event.
+Word is the candidate's canonical word ID. Distance is a finite JSON number under this external API.
 
-Position is the one-based search order. Equal distances use event-ID order. Coverage contains indexed, eligible, pending, and failed counts.
+Position is the one-based search order. Equal distances use full target-ID order.
+Coverage is the same `SemanticCoverage` object used by embedding-profile responses.
+Its `signed` and `virtual` objects each contain indexed, eligible, pending, and failed counts. `undetermined_bases` counts bases with indeterminate virtual coverage.
+The format defines their scopes, arithmetic, and mapping of unavailable cases. A base revision never stands in for a missing virtual vector.
 No semantic response labels its distance as a dictionary score. A word-page request supplies editorial calculations separately.
 
 The assist request contains operation, draft_revision, language, meaning, current, context, and profile.

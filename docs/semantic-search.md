@@ -3,11 +3,14 @@
 The Node operator command builds a fresh vector index from the dictionary's private semantic records.
 A vector represents a definition for later meaning comparisons. A generation binds its associations to one snapshot, view, and profile.
 The Node host can search a published generation with partial coverage and a configured query provider.
+The target and coverage contracts below define required behavior. The [README](../README.md) states the implemented scope.
 
 The command uses the application recipe from the [format specification](format.md#optional-derived-embeddings).
-It never reads historical research vectors. It retains complete profile metadata and the original event, envelope, body, and input hashes.
-The evaluator decides whether each definition is effective, selected, active, and eligible under the requested view.
-Equal inputs share one vector under the same profile. They retain separate publication associations.
+It never reads historical research vectors. It retains complete profile metadata and each target's authenticated provenance and exact input hash.
+A publication retains its event, envelope representation, and body hash. A virtual retains its descriptor and authenticated base envelope and body hash.
+Virtuals have no event, envelope, or signed body of their own.
+The evaluator decides whether each signed or virtual target is effective, selected, active, and eligible under the requested view.
+Equal inputs share one vector under the same profile. They retain separate target associations.
 
 ## Prepare a local copy
 
@@ -63,7 +66,8 @@ Use `--concurrency N` to select fewer slots. The maximum is four and cannot exce
 Completed inputs never enter another paid batch in that generation.
 Fresh claims resume from a saved input position and use an index for selected retries.
 A later generation can reuse a retained vector only under the same full profile and exact input hash.
-Changed definitions keep their own event and body associations. New inputs remain pending.
+Changed publications keep their own event and body associations. Changed virtual targets keep their own descriptor and exact base associations.
+New inputs remain pending. A revision never transfers another target's judgments or vector association.
 An over-limit input retains its association and `input_limit` reason.
 It is excluded from embedding and counts in failed coverage.
 The generation completes when every other input has a vector, including when every input is excluded.
@@ -194,10 +198,19 @@ The server reads `semantic-vectors.sqlite` beside its dictionary and spending da
 No key reaches the browser. The browser never receives query or document vectors.
 
 The selected generation must match the requested view and complete profile.
-Search checks every event against its exact envelope, body, word, language, and semantic extraction version in the requested snapshot.
-Unchanged definitions remain searchable after other events change the snapshot. New definitions remain pending until their vectors exist.
+Every target passes the format's single [semantic target admission](format.md#semantic-target-admission) procedure in the requested snapshot and language.
+A publication matches its event, envelope representation, authenticated body, word, language, semantic extraction version, and recomputed recipe input.
+A virtual matches its descriptor, authenticated base envelope and body, canonical converted word, language, semantic extraction version, and recomputed recipe input.
+Both kinds need an exact compatible vector association. A virtual never needs an envelope or signed body of its own.
+
+The semantic extraction version is the core's `SEMANTIC_PROJECTION_VERSION`, currently integer `4`. It is separate from the Lensisku import string `legacy.extraction`.
+Shared index entries carry it as `extraction_version`. Receivers select their own snapshot and view and derive language from authenticated content.
+
+Trusted semantic projections retain these authenticated bindings, so scans do not reread original definition bodies.
+Unchanged targets remain searchable after other events change the snapshot. New targets remain pending until their vectors exist.
 Missing or mismatched associations cannot enter the results. A failed entry does not disable unrelated indexed definitions.
-The profile must remain compatible. A context with no indexed definitions returns empty hits with its pending and failed counts, without paid inference.
+
+The profile must remain compatible. A context with no indexed targets returns empty hits and its full `SemanticCoverage`, without paid inference.
 
 Set `JVC_SEMANTIC_INDEXING=enabled` to index new definitions while the server runs.
 The server checks the latest completed snapshot every five seconds after each cycle ends.
@@ -206,7 +219,7 @@ The operator must first publish a completed generation for the selected profile 
 The server does not adopt unfinished operator jobs, which can contain failed or ambiguous sends.
 The background job stages bounded pages, publishes partial coverage, probes the retained profile, and embeds one batch at a time.
 Existing exact input hashes reuse retained vectors. Other inputs receive fresh vectors.
-The server does not create a new generation when all eligible events already have vectors.
+The server does not create a new generation when all eligible targets already have admitted vectors.
 Completed background generations leave storage when no current, rollback, active background pointer, or in-flight search retains them.
 A search retains its generation through inference, scanning, and final retention checks. Cancellation releases it after the worker stops reading.
 Profile coverage reads also retain their generation until their shared calculation finishes.
@@ -293,11 +306,19 @@ Coverage reads use bounded pages and do not claim an atomic snapshot across thos
 A failure on this optional path makes capabilities report meaning search as unavailable. Other capabilities remain present.
 
 `GET /api/v1/embedding-profiles` returns exactly one `profiles` array.
-Each entry reports its profile hash, label, query availability, indexed count, eligible count, pending count, and limitations.
+Each entry contains `id`, `label`, `query_available`, `coverage`, and `limitations`, under the [frontend API contract](frontend.md#optional-service-api).
+Coverage uses the format's [SemanticCoverage](format.md#semantic-coverage) object for both profile entries and search responses.
 Optional `snapshot`, `view`, and `language` parameters select the coverage context.
 Without those parameters, the request uses the latest completed snapshot, configured view, and all languages.
 An absent current generation returns an empty array.
-Coverage counts exact current event bindings, even when the generation began under an older snapshot.
+Coverage counts exact current target bindings, even when the generation began under an older snapshot.
+
+Its `signed` and `virtual` objects each contain `indexed`, `eligible`, `pending`, and `failed` counts.
+Each target counts once, even when aliases share it or several targets share vector bytes.
+For each kind, `eligible = indexed + pending + failed` under the format's definitions.
+`undetermined_bases` counts selected bases whose unavailable content, unresolved status, or missing evidence prevents determination of eligible virtual targets.
+Known deprecated or unselected bases do not enter these counts. A known null frame determines zero virtual targets.
+Unavailable vectors for known eligible targets count as pending work or failed attempts. Indeterminate virtual target sets count through `undetermined_bases` instead.
 
 `POST /api/v1/search/semantic` accepts these JSON fields:
 
@@ -321,12 +342,16 @@ The server rejects malformed Unicode and does not normalize, trim, or silently t
 Query fields belong in the JSON body, not the URL.
 
 The response names its snapshot, view, profile, and exact query input hash.
-Each hit names an event, word ID, cosine distance, and one-based position.
-Equal distances use event-ID order. Several definitions of one word can appear in the public results.
-Coverage reports indexed, eligible, pending, and failed counts for the selected language.
+Each hit contains exactly `target`, `event`, `virtual`, `base_body`, `word`, `distance`, and `position`.
+For a publication, `target` equals its event ID. Its `event` is that ID, and `virtual` and `base_body` are null.
+For a virtual, `target` is its `jvv1:` ID, `virtual` is its descriptor, and `base_body` is its authenticated base body hash.
+Its `event` is null. Word is the canonical candidate's word ID, distance is a finite cosine distance, and position starts at one.
+Equal distances use full target-ID order across both kinds. Several definitions of one word can appear in the public results.
+Coverage is the same `SemanticCoverage` object for the selected language. Its target admission and count rules match the profile response.
 Distance measures related meaning. It is not a dictionary score, endorsement, or calibrated probability.
 
-The scanner uses the same effective, selected, active definitions as ordinary lexical search.
+The scanner uses the same effective, selected, active candidates as ordinary lexical search without retired results.
+Known deprecated virtuals remain available through retired lexical results and exact links, but never enter semantic hits or semantic eligibility counts.
 It runs in at most two reusable Node workers. Each worker has a bounded SQLite page cache and keeps at most 100 best hits.
 Each client network can hold at most one scan worker, including after cancellation until that worker acknowledges completion.
 Requests with an empty or absent network share one client identity and the same limit.
