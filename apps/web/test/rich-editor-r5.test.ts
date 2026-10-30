@@ -85,16 +85,20 @@ for (const [ending, lineBreak] of [
         else await choose(field, 0, prefix.length, "ab", 2);
         await page.keyboard.press(key);
         const joined: RichText = [[...prefix, "abcd\nef", ...suffix], outside];
-        await expect.poll(() => richNodes(field)).toEqual(joined);
+        await expect
+          .poll(() => richNodes(field), { timeout: 2000 })
+          .toEqual(joined);
         expect(await page.evaluate(() => (window as any).r5KeyHandled)).toBe(
           true,
         );
         await field.press("Control+z");
         await expect
-          .poll(() => richNodes(field))
+          .poll(() => richNodes(field), { timeout: 2000 })
           .toEqual([[...prefix, "ab"], ["cd\nef", ...suffix], outside]);
         await field.press("Control+Shift+z");
-        await expect.poll(() => richNodes(field)).toEqual(joined);
+        await expect
+          .poll(() => richNodes(field), { timeout: 2000 })
+          .toEqual(joined);
       });
     }
     for (const kind of kinds.filter((kind) => kind !== "prose")) {
@@ -112,16 +116,18 @@ for (const [ending, lineBreak] of [
         else await choose(field, 0, 1, "ab", 2);
         await page.keyboard.press(key);
         await expect
-          .poll(() => richNodes(field))
+          .poll(() => richNodes(field), { timeout: 2000 })
           .toEqual([[...left, ...right], outside]);
         expect(await page.evaluate(() => (window as any).r5KeyHandled)).toBe(
           true,
         );
         await field.press("Control+z");
-        await expect.poll(() => richNodes(field)).toEqual(value);
+        await expect
+          .poll(() => richNodes(field), { timeout: 2000 })
+          .toEqual(value);
         await field.press("Control+Shift+z");
         await expect
-          .poll(() => richNodes(field))
+          .poll(() => richNodes(field), { timeout: 2000 })
           .toEqual([[...left, ...right], outside]);
       });
       test(`r5 ${key} joins at saved ${ending} ${kind} boundary`, async ({
@@ -139,16 +145,18 @@ for (const [ending, lineBreak] of [
         await page.keyboard.press(key);
         // Moving an unchanged code or link node does not edit its stored text.
         await expect
-          .poll(() => richNodes(field))
+          .poll(() => richNodes(field), { timeout: 2000 })
           .toEqual([[...left, ...right], outside]);
         expect(await page.evaluate(() => (window as any).r5KeyHandled)).toBe(
           true,
         );
         await field.press("Control+z");
-        await expect.poll(() => richNodes(field)).toEqual(value);
+        await expect
+          .poll(() => richNodes(field), { timeout: 2000 })
+          .toEqual(value);
         await field.press("Control+Shift+z");
         await expect
-          .poll(() => richNodes(field))
+          .poll(() => richNodes(field), { timeout: 2000 })
           .toEqual([[...left, ...right], outside]);
       });
     }
