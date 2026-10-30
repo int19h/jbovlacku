@@ -1378,7 +1378,7 @@ test("retirement yields with rows remaining and blocks concurrent publication or
     const db = new DatabaseSync(path, { readOnly: true });
     const connection = (
       store as unknown as {
-        sql: import("../src/semantic/sql-vector-store.ts").VectorSqlConnection;
+        sql: import("../src/sqlite.ts").SqliteConnection;
       }
     ).sql;
     const transaction = connection.transaction.bind(connection);
@@ -2020,7 +2020,7 @@ test("interrupted retirement resumes bounded cleanup with exact storage accounti
     await store.setBackgroundGeneration(latest.id);
     const connection = (
       store as unknown as {
-        sql: import("../src/semantic/sql-vector-store.ts").VectorSqlConnection;
+        sql: import("../src/sqlite.ts").SqliteConnection;
       }
     ).sql;
     const exec = connection.exec.bind(connection);

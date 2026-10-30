@@ -21,14 +21,7 @@ import type {
   ProbeEvidence,
 } from "./vector-store.ts";
 
-/** Hosts supply binary SQL bindings and atomic transactions. No provider work runs in a transaction. */
-export interface VectorSqlConnection {
-  exec(
-    sql: string,
-    ...bindings: (string | number | Uint8Array | null)[]
-  ): Record<string, unknown>[];
-  transaction<T>(operation: () => T): T;
-}
+import type { SqliteConnection } from "../sqlite.ts";
 export interface VectorLimits {
   associations: number;
   vectors: number;
@@ -76,7 +69,7 @@ export class SqlVectorStore implements VectorStore {
     };
   }
   constructor(
-    private sql: VectorSqlConnection,
+    private sql: SqliteConnection,
     private limits = DEFAULT_VECTOR_LIMITS,
   ) {
     if (Object.values(limits).some((n) => !Number.isSafeInteger(n) || n < 1))

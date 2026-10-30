@@ -3,7 +3,6 @@
 The Node operator command builds a fresh vector index from the dictionary's private semantic records.
 A vector represents a definition for later meaning comparisons. A generation binds its associations to one snapshot, view, and profile.
 The Node host can search a published generation with partial coverage and a configured query provider.
-The Worker host has no configured vector backend and keeps `semantic_search` disabled.
 
 The command uses the application recipe from the [format specification](format.md#optional-derived-embeddings).
 It never reads historical research vectors. It retains complete profile metadata and the original event, envelope, body, and input hashes.

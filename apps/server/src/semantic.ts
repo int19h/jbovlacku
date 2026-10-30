@@ -1,4 +1,5 @@
-import { DatabaseSync, type StatementSync } from "node:sqlite";
+import { DatabaseSync } from "node:sqlite";
+import { sqliteConnection } from "../../../packages/service/src/sqlite.ts";
 import {
   SqlVectorStore,
   type VectorLimits,
@@ -26,29 +27,7 @@ export class SqliteVectorStore extends SqlVectorStore {
   constructor(path: string, limits?: VectorLimits) {
     const database = new DatabaseSync(path);
     database.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;");
-    const statements = new Map<string, StatementSync>();
-    const connection = {
-      exec(sql: string, ...bindings: (string | number | Uint8Array | null)[]) {
-        let statement = statements.get(sql);
-        if (!statement)
-          statements.set(sql, (statement = database.prepare(sql)));
-        if (statement.columns().length)
-          return statement.all(...bindings) as Record<string, unknown>[];
-        statement.run(...bindings);
-        return [];
-      },
-      transaction<T>(operation: () => T): T {
-        database.exec("BEGIN IMMEDIATE");
-        try {
-          const result = operation();
-          database.exec("COMMIT");
-          return result;
-        } catch (error) {
-          database.exec("ROLLBACK");
-          throw error;
-        }
-      },
-    };
+    const connection = sqliteConnection(database, true);
     super(connection, limits);
     this.queryCache = new SqlQueryCache(connection);
     this.database = database;
