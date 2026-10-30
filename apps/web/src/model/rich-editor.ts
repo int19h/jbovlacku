@@ -7,7 +7,7 @@ import {
   type Transaction,
 } from "prosemirror-state";
 import { inputRules } from "prosemirror-inputrules";
-import { joinBackward } from "prosemirror-commands";
+import { joinBackward, joinForward } from "prosemirror-commands";
 import { CIRCLED_SOURCE, circledPlace, placeDisplay } from "./place-glyphs.ts";
 import type { RichNode, RichText } from "./types.ts";
 import { canonicalRich } from "./rich-values.ts";
@@ -443,6 +443,27 @@ export function richInsertionSelection(
   return TextSelection.between(state.doc.resolve(from), state.doc.resolve(to));
 }
 
+/** Join from the paragraph edge so native editing cannot split saved text. */
+function joinRichParagraph(
+  state: EditorState,
+  tr: Transaction,
+  position: number,
+  direction: -1 | 1,
+  dispatch?: (tr: Transaction) => void,
+): boolean {
+  tr.setSelection(TextSelection.create(tr.doc, position));
+  const join = direction < 0 ? joinBackward : joinForward;
+  join(state.apply(tr), (next) => {
+    for (const step of next.steps) tr.step(step);
+    tr.setSelection(
+      TextSelection.near(tr.doc.resolve(next.selection.from), direction),
+    );
+  });
+  if (tr.docChanged) dispatch?.(tr.scrollIntoView());
+  // Consume the key even when there is no neighboring paragraph to join.
+  return true;
+}
+
 /** Delete one character cluster without selecting a whole inline container. */
 export function deleteRichBackward(
   state: EditorState,
@@ -470,18 +491,7 @@ export function deleteRichBackward(
     $cursor = tr.doc.resolve(position);
     previous = $cursor.nodeBefore;
   }
-  if (!previous) {
-    if (!tr.docChanged) return false;
-    // Continue across the paragraph boundary after invisible cleanup.
-    joinBackward(state.apply(tr), (next) => {
-      for (const step of next.steps) tr.step(step);
-      tr.setSelection(
-        TextSelection.near(tr.doc.resolve(next.selection.from), -1),
-      );
-    });
-    dispatch?.(tr.scrollIntoView());
-    return true;
-  }
+  if (!previous) return joinRichParagraph(state, tr, $cursor.pos, -1, dispatch);
   let end = $cursor.pos;
   let source: string;
   if (previous.isText) source = previous.text!;
@@ -519,7 +529,8 @@ export function deleteRichForward(
   if (!$cursor.nodeAfter && $cursor.parent.isInline)
     $cursor = state.doc.resolve($cursor.after());
   const next = $cursor.nodeAfter;
-  if (!next) return false;
+  if (!next)
+    return joinRichParagraph(state, state.tr, $cursor.pos, 1, dispatch);
   if (
     (!next.isText && next.isAtom) ||
     (next.isInline && !next.isText && !next.content.size)
