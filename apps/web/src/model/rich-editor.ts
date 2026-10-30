@@ -603,6 +603,78 @@ function paragraphText(tr: Transaction) {
 }
 const words = new Intl.Segmenter(undefined, { granularity: "word" });
 
+function equivalentCaret(doc: EditorNode, position: number) {
+  const $position = doc.resolve(position);
+  if ($position.parent.isInline) {
+    if ($position.parentOffset === 0) return $position.before();
+    if ($position.parentOffset === $position.parent.content.size)
+      return $position.after();
+  }
+  return position;
+}
+
+/** Trim each inline node separately so a range cannot merge different types. */
+function deleteRichRange(tr: Transaction, from: number, to: number) {
+  const paragraphs: { node: EditorNode; position: number }[] = [];
+  tr.doc.forEach((node, position) => {
+    if (position < to && position + node.nodeSize > from)
+      paragraphs.push({ node, position });
+  });
+  if (!paragraphs.length) return tr;
+  const nodes: EditorNode[] = [];
+  let size = 0,
+    caret: number | null = null;
+  const append = (node: EditorNode) => {
+    nodes.push(node);
+    size += node.nodeSize;
+  };
+  for (const paragraph of paragraphs)
+    paragraph.node.forEach((node, offset) => {
+      const start = paragraph.position + 1 + offset,
+        end = start + node.nodeSize;
+      if (end <= from || start >= to) {
+        if (start >= to && caret === null) caret = size;
+        append(node);
+        return;
+      }
+      const contentStart = start + (node.isText ? 0 : 1);
+      const left = Math.max(
+        0,
+        Math.min(node.textContent.length, from - contentStart),
+      );
+      const right = Math.max(
+        left,
+        Math.min(node.textContent.length, to - contentStart),
+      );
+      if (caret === null)
+        caret = size + (from <= start ? 0 : (node.isText ? 0 : 1) + left);
+      if (from <= start && to >= end) return;
+      if (left === right) {
+        append(node);
+        return;
+      }
+      if (node.isText) {
+        const text = node.text!.slice(0, left) + node.text!.slice(right);
+        if (text) append(schema.text(text));
+      } else
+        append(
+          node.copy(node.content.cut(0, left).append(node.content.cut(right))),
+        );
+    });
+  const first = paragraphs[0],
+    last = paragraphs.at(-1)!;
+  const paragraph = first.node.type.create(first.node.attrs, nodes);
+  if (paragraphs.length > 1 || !first.node.eq(paragraph))
+    tr.replaceWith(
+      first.position,
+      last.position + last.node.nodeSize,
+      paragraph,
+    );
+  return tr.setSelection(
+    TextSelection.near(tr.doc.resolve(first.position + 1 + (caret ?? size))),
+  );
+}
+
 /** Own every deletion, including browser ranges that cross inline containers. */
 export function deleteRichInput(
   tr: Transaction,
@@ -612,8 +684,7 @@ export function deleteRichInput(
 ): boolean {
   if (!tr.selection.empty) {
     dispatch?.(
-      tr
-        .deleteSelection()
+      deleteRichRange(tr, tr.selection.from, tr.selection.to)
         .setMeta("uiEvent", inputType === "deleteByCut" ? "cut" : "input")
         .scrollIntoView(),
     );
@@ -636,7 +707,7 @@ export function deleteRichInput(
           tr.doc.resolve(target.to),
         ),
       );
-      dispatch?.(tr.deleteSelection().scrollIntoView());
+      dispatch?.(deleteRichRange(tr, target.from, target.to).scrollIntoView());
     }
     return true;
   }
@@ -655,7 +726,10 @@ export function deleteRichInput(
     target &&
     target.from < target.to &&
     (inputType === "deleteEntireSoftLine" ||
-      (backward ? target.to === caret : target.from === caret))
+      (backward
+        ? equivalentCaret(tr.doc, target.to) === equivalentCaret(tr.doc, caret)
+        : equivalentCaret(tr.doc, target.from) ===
+          equivalentCaret(tr.doc, caret)))
   ) {
     tr.setSelection(
       TextSelection.between(
@@ -707,7 +781,9 @@ export function deleteRichInput(
       TextSelection.between(tr.doc.resolve(from), tr.doc.resolve(to)),
     );
   }
-  dispatch?.(tr.deleteSelection().scrollIntoView());
+  dispatch?.(
+    deleteRichRange(tr, tr.selection.from, tr.selection.to).scrollIntoView(),
+  );
   return true;
 }
 
