@@ -1,5 +1,10 @@
 import type { App } from "../app/context.ts";
-import { rememberState, routes, type RenderContext } from "../app/router.ts";
+import {
+  navigate,
+  rememberState,
+  routes,
+  type RenderContext,
+} from "../app/router.ts";
 import {
   getCapabilities,
   getManifest,
@@ -434,6 +439,22 @@ export async function meaningSearchGroup(
           }
         }
       });
+      const turnOff = button("Turn off meaning search", async () => {
+        turnOff.disabled = true;
+        try {
+          await app.session.setPreferences({ useMeaningSearch: false });
+          if (context.live())
+            navigate(location.pathname + location.search, { replace: true });
+        } catch (error) {
+          if (live()) {
+            setStatus(
+              `The saved meaning search choice is unchanged. ${describe(error)}`,
+            );
+            turnOff.disabled = false;
+            expansion.changed();
+          }
+        }
+      });
       notice.append(
         p(`Server: ${server}. Provider: ${provider}.`),
         p(`Profile: ${profile.id}`, "meta"),
@@ -444,9 +465,10 @@ export async function meaningSearchGroup(
           "The provider receives the search query for embedding. This browser remembers consent for this provider and scope for future search queries.",
         ),
         p(
-          "Turn off meaning search beside the search box, or turn off AI assistance in Settings. Lojban and definition searches remain available.",
+          "Turn off meaning search here, or turn off AI assistance in Settings. Lojban and definition searches remain available.",
         ),
         accept,
+        turnOff,
         button("Not now", () => {
           setStatus("Meaning search is off for this page.");
           const enable = button("Enable meaning search", () => consent(true));

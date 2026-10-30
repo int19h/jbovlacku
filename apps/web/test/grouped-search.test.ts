@@ -169,6 +169,7 @@ async function meaningService(page: Page, count = 1) {
     failIndices: [] as number[],
     records,
     pending: 3,
+    profileReplies: 0,
   };
   await page.route("**/api/v1/capabilities", async (route) => {
     const response = await route.fetch();
@@ -179,8 +180,8 @@ async function meaningService(page: Page, count = 1) {
     caps.embedding_profiles = [state.profile];
     await route.fulfill({ json: caps });
   });
-  await page.route("**/api/v1/embedding-profiles**", (route) =>
-    route.fulfill({
+  await page.route("**/api/v1/embedding-profiles**", async (route) => {
+    await route.fulfill({
       json: {
         profiles: [
           {
@@ -194,8 +195,9 @@ async function meaningService(page: Page, count = 1) {
           },
         ],
       },
-    }),
-  );
+    });
+    state.profileReplies++;
+  });
   await page.route("**/api/v1/search/semantic", (route) => {
     const body = route.request().postDataJSON();
     state.calls.push({
@@ -1259,7 +1261,7 @@ for (const held of ["semantic", "definition"] as const)
       await page.reload();
       await expect.poll(() => started).toBe(true);
       const counts = page.locator("main .count-line .count");
-      await expect(counts).toContainText("20 Lojban results.");
+      await expect(counts).toContainText("46 Lojban results, 20 shown.");
       await expect(counts).not.toContainText("meaning");
       await expect(counts).toHaveClass(/\bsr\b/);
       await expect(
@@ -1276,18 +1278,20 @@ for (const held of ["semantic", "definition"] as const)
         group(page, "Lojban words").locator("article .hw").nth(20),
       ).toBeFocused();
       await expect(counts).toHaveText(
-        "40 Lojban results. 20 definition results.",
+        "46 Lojban results, 40 shown. 47 definition results, 20 shown.",
       );
       release();
       await expect(meaning.locator("article")).toHaveCount(20);
-      await expect(counts).toHaveText("20 meaning results.");
+      await expect(counts).toHaveText(
+        "46 Lojban results, 40 shown. 47 definition results, 20 shown. 20 meaning results.",
+      );
       await expect(
         group(page, "Lojban words").locator("article .hw").nth(20),
       ).toBeFocused();
       expect(await page.evaluate(() => (window as any).r3Counts)).toEqual([
-        "20 Lojban results. 20 definition results.",
-        "40 Lojban results. 20 definition results.",
-        "20 meaning results.",
+        "46 Lojban results, 20 shown. 47 definition results, 20 shown.",
+        "46 Lojban results, 40 shown. 47 definition results, 20 shown.",
+        "46 Lojban results, 40 shown. 47 definition results, 20 shown. 20 meaning results.",
       ]);
     } finally {
       release();
@@ -1446,8 +1450,8 @@ test("r3: count announcements follow displayed order without a second visible st
     /\bsr\b/,
   );
   for (const [query, message] of [
-    ["book", "20 definition results. 0 Lojban results."],
-    ["se", "20 Lojban results. 20 definition results."],
+    ["book", "47 definition results, 20 shown. 0 Lojban results."],
+    ["se", "46 Lojban results, 20 shown. 47 definition results, 20 shown."],
   ]) {
     await page.goto("/search?" + new URLSearchParams({ q: query, lang: "en" }));
     const counts = page.locator("main .count-line .count");
@@ -1491,7 +1495,7 @@ test("r3: meaning settles independently while a lexical expansion is held", asyn
     await expect.poll(() => started).toBe(true);
     const counts = page.locator("main .count-line .count");
     await expect(counts).toHaveText(
-      "20 Lojban results. 20 definition results.",
+      "46 Lojban results, 20 shown. 47 definition results, 20 shown.",
     );
     await page.evaluate(() => {
       const original = Worker.prototype.postMessage;
@@ -1509,15 +1513,301 @@ test("r3: meaning settles independently while a lexical expansion is held", asyn
       .toBe(true);
     release();
     await expect(meaning.locator("article")).toHaveCount(20);
-    await expect(counts).toHaveText("20 meaning results.");
+    await expect(counts).toHaveText(
+      "46 Lojban results, 20 shown. 47 definition results, 20 shown. 20 meaning results.",
+    );
     await expect(words.locator("article")).toHaveCount(20);
     await page.evaluate(() => (window as any).continueLexical());
     await expect(words.locator("article")).toHaveCount(40);
     await expect(counts).toHaveText(
-      "40 Lojban results. 20 definition results.",
+      "46 Lojban results, 40 shown. 47 definition results, 20 shown.",
     );
     await expect(words.locator("article .hw").nth(20)).toBeFocused();
   } finally {
     release();
   }
+});
+
+test("r4: the consent box saves the off choice before any meaning request", async ({
+  page,
+}) => {
+  const state = await meaningService(page);
+  await page.goto("/search?q=book&lang=en");
+  const consent = page.getByRole("group", {
+    name: "Meaning search consent",
+    exact: true,
+  });
+  await expect(consent).toBeVisible();
+  const preferences = () =>
+    page.evaluate(async () => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      return new LocalStore().preferences();
+    });
+  const before = await preferences();
+  await expect(
+    consent.getByRole("button", {
+      name: "Turn off meaning search",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await consent
+    .getByRole("button", { name: "Turn off meaning search", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Turn on meaning search", exact: true }),
+  ).toBeVisible();
+  for (const query of ["book", "travel"]) {
+    await page.goto("/search?" + new URLSearchParams({ q: query, lang: "en" }));
+    await page.reload();
+    await expect(
+      page.getByRole("button", { name: "Turn on meaning search", exact: true }),
+    ).toBeVisible();
+    await expect(group(page, "Similar in meaning")).toHaveCount(0);
+    await expect(consent).toHaveCount(0);
+  }
+  const after = await preferences();
+  expect(after.useMeaningSearch).toBe(false);
+  expect(after.aiConsents).toEqual(before.aiConsents);
+  expect(after.useAiAssistance).toBe(before.useAiAssistance);
+  expect(state.calls).toHaveLength(0);
+  await page
+    .getByRole("button", { name: "Turn on meaning search", exact: true })
+    .click();
+  await expect(consent).toBeVisible();
+  expect(state.calls).toHaveLength(0);
+  await consent
+    .getByRole("button", { name: "Allow meaning search", exact: true })
+    .click();
+  await expect(
+    group(page, "Similar in meaning").locator("article"),
+  ).toHaveCount(1);
+  expect(state.calls).toHaveLength(1);
+});
+
+for (const unavailable of [
+  "AI off",
+  "semantic capability off",
+  "no query profile",
+] as const)
+  test(`r4: the saved off choice has no on control with ${unavailable}`, async ({
+    page,
+  }) => {
+    const state = await meaningService(page);
+    state.enabled = unavailable !== "semantic capability off";
+    state.available = unavailable !== "no query profile";
+    await page.evaluate(async (unavailable) => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      await new LocalStore().setPreferences({
+        useMeaningSearch: false,
+        useAiAssistance: unavailable !== "AI off",
+      });
+    }, unavailable);
+    const metadata: string[] = [];
+    const uploads: string[] = [];
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (url.pathname === "/api/v1/embedding-profiles")
+        metadata.push(url.search);
+      if (url.pathname === "/api/v1/search/semantic")
+        uploads.push(url.pathname);
+    });
+    await page.goto("/search?q=book&lang=en");
+    await expect(
+      page.getByRole("region", { name: "Search results", exact: true }),
+    ).toHaveAttribute("aria-busy", "false");
+    await expect(
+      page.getByRole("button", { name: "Turn on meaning search", exact: true }),
+    ).toHaveCount(0);
+    await expect(group(page, "Similar in meaning")).toHaveCount(0);
+    if (unavailable === "no query profile")
+      await expect.poll(() => state.profileReplies).toBe(1);
+    else expect(metadata).toEqual([]);
+    // Let metadata responses and the next paint settle before testing absence.
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        ),
+    );
+    await expect(
+      page.getByRole("button", { name: "Turn on meaning search", exact: true }),
+    ).toHaveCount(0);
+    state.enabled = true;
+    state.available = true;
+    await page.evaluate(async () => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      await new LocalStore().setPreferences({ useAiAssistance: true });
+    });
+    await page.reload();
+    await expect(
+      page.getByRole("button", { name: "Turn on meaning search", exact: true }),
+    ).toBeVisible();
+    expect(metadata.length).toBeGreaterThan(0);
+    for (const query of metadata) {
+      expect(new URLSearchParams(query).has("q")).toBe(false);
+      expect(new URLSearchParams(query).has("query")).toBe(false);
+    }
+    expect(uploads).toEqual([]);
+    expect(state.calls).toHaveLength(0);
+    expect(
+      await page.evaluate(async () => {
+        const { LocalStore } = await import(String("/src/data/store.ts"));
+        return (await new LocalStore().preferences()).useMeaningSearch;
+      }),
+    ).toBe(false);
+  });
+
+test("r4: Back delivers lexical counts and restored meaning counts in the frame sequence", async ({
+  page,
+}) => {
+  const state = await meaningService(page, 2);
+  // Empty lexical groups keep the entire Back restoration in one task.
+  await page.route("**/api/v1/search?**", (route) =>
+    route.fulfill({
+      json: {
+        snapshot: "sha256:" + "a".repeat(64),
+        view: fixture().view,
+        hits: [],
+        next: null,
+        all_lojban: false,
+      },
+    }),
+  );
+  await page.goto("/search?q=book&lang=en");
+  await group(page, "Similar in meaning")
+    .getByRole("button", { name: "Allow meaning search" })
+    .click();
+  await expect(
+    group(page, "Similar in meaning").locator("article"),
+  ).toHaveCount(2);
+  await page.getByRole("link", { name: "Settings", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { level: 1, name: "Settings" }),
+  ).toBeVisible();
+  await page.evaluate(() => {
+    const samples: string[] = [];
+    (window as any).r4Frames = samples;
+    const sample = () => {
+      const message = document.querySelector(
+        "main .count-line .count",
+      )?.textContent;
+      if (message && message !== samples.at(-1)) samples.push(message);
+      (window as any).r4Frame = requestAnimationFrame(sample);
+    };
+    (window as any).r4Frame = requestAnimationFrame(sample);
+  });
+  await page.goBack();
+  await expect(
+    group(page, "Similar in meaning").locator("article"),
+  ).toHaveCount(2);
+  // Sample at rendering opportunities so same-task writes settle before delivery.
+  await expect
+    .poll(() => page.evaluate(() => (window as any).r4Frames))
+    .toEqual(["0 definition results. 0 Lojban results. 2 meaning results."]);
+  await page.evaluate(() => cancelAnimationFrame((window as any).r4Frame));
+  expect(state.calls).toHaveLength(1);
+});
+
+test("r4: local singular and zero counts and remote open totals keep their wording", async ({
+  page,
+}) => {
+  await localPackage(page);
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore();
+    const pkg = await store.get("packages", "en");
+    pkg.entries = pkg.entries.slice(0, 1);
+    await store.put("packages", "en", pkg);
+    await store.setPreferences({ useAiAssistance: false });
+  });
+  await page.goto("/search?q=se&lang=en");
+  const counts = page.locator("main .count-line .count");
+  await expect(counts).toHaveText("1 Lojban result. 1 definition result.");
+  await page.goto("/search?q=absent&lang=en");
+  await expect(counts).toHaveText("0 definition results. 0 Lojban results.");
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    await new LocalStore().setPreferences({ searchMode: "remote" });
+  });
+  let more = false;
+  await page.route("**/api/v1/search?**", (route) => {
+    const definitions =
+      new URL(route.request().url()).searchParams.get("group") ===
+      "definitions";
+    return route.fulfill({
+      json: {
+        snapshot: "sha256:" + "a".repeat(64),
+        view: fixture().view,
+        all_lojban: false,
+        hits: definitions
+          ? [
+              {
+                word: { language: "jbo", spelling: "cukta" },
+                word_id: fixture().words.cukta,
+                definitions: [fixture().definitions.cukta1],
+                match: "gloss",
+              },
+            ]
+          : [],
+        next: definitions && more ? "synthetic-next-page" : null,
+      },
+    });
+  });
+  await page.goto("/search?q=book&lang=en");
+  await expect(counts).toHaveText("1 definition result. 0 Lojban results.");
+  more = true;
+  await page.goto("/search?q=books&lang=en");
+  await expect(counts).toHaveText(
+    "1 or more definition results. 0 Lojban results.",
+  );
+});
+
+test("r4: a failed consent-box off save keeps consent and retry usable", async ({
+  page,
+}) => {
+  const state = await meaningService(page);
+  await page.goto("/search?q=book&lang=en");
+  const consent = page.getByRole("group", {
+    name: "Meaning search consent",
+    exact: true,
+  });
+  const off = consent.getByRole("button", {
+    name: "Turn off meaning search",
+    exact: true,
+  });
+  await expect(off).toBeVisible();
+  const before = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const original = LocalStore.prototype.setPreferences;
+    (window as any).r4SetPreferences = original;
+    LocalStore.prototype.setPreferences = async function (patch: any) {
+      if (patch.useMeaningSearch === false)
+        throw new Error("Synthetic consent-box storage failure.");
+      return original.call(this, patch);
+    };
+    return new LocalStore().preferences();
+  });
+  await off.click();
+  await expect(group(page, "Similar in meaning")).toContainText(
+    "The saved meaning search choice is unchanged. Synthetic consent-box storage failure.",
+  );
+  await expect(off).toBeEnabled();
+  await expect(
+    consent.getByRole("button", { name: "Allow meaning search", exact: true }),
+  ).toBeEnabled();
+  const after = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const preferences = await new LocalStore().preferences();
+    LocalStore.prototype.setPreferences = (window as any).r4SetPreferences;
+    return preferences;
+  });
+  expect(after.useMeaningSearch).toBe(before.useMeaningSearch);
+  expect(after.aiConsents).toEqual(before.aiConsents);
+  expect(after.useAiAssistance).toBe(before.useAiAssistance);
+  expect(state.calls).toHaveLength(0);
+  await off.click();
+  await expect(
+    page.getByRole("button", { name: "Turn on meaning search", exact: true }),
+  ).toBeVisible();
+  expect(state.calls).toHaveLength(0);
 });

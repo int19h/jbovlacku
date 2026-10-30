@@ -283,7 +283,7 @@ export async function searchPage(
         fillLanguages();
       })
       .catch(() => {});
-  countLine.before(meaningPrivacy(app, !!cached));
+  countLine.before(meaningPrivacy(app, !!cached, language, context));
   if (cached && !isPatternQuery(query)) {
     const chosen = getPreferredView();
     let missingEvidence = false;
@@ -473,6 +473,7 @@ export async function searchPage(
   };
   let initialized = false;
   let meaningCount = "";
+  let lexicalCount = "";
   const orderedGroups = () =>
     allLojban || pattern
       ? [groups.lojban, groups.definitions]
@@ -485,9 +486,16 @@ export async function searchPage(
         const label = group === groups.lojban ? "Lojban" : "definition";
         if (!group.loaded)
           return `${label === "Lojban" ? label : "Definition"} results are unavailable.`;
-        return `${group.hits.length}${!cached && group.next ? " or more" : ""} ${label} ${group.hits.length === 1 && (cached || !group.next) ? "result" : "results"}.`;
+        const total = cached ? group.total : group.hits.length;
+        const amount = cached ? total.toLocaleString("en-US") : String(total);
+        const shown =
+          cached && total !== group.hits.length
+            ? `, ${group.hits.length.toLocaleString("en-US")} shown`
+            : "";
+        return `${amount}${!cached && group.next ? " or more" : ""} ${label} ${total === 1 && (cached || !group.next) ? "result" : "results"}${shown}.`;
       })
       .join(" ");
+    lexicalCount = message;
     if (count.textContent !== message) count.textContent = message;
   };
   const announceMeaning = () => {
@@ -496,7 +504,10 @@ export async function searchPage(
       announceCounts();
       return;
     }
-    if (count.textContent !== meaningCount) count.textContent = meaningCount;
+    // Keep the last settled lexical counts when meaning finishes in the same
+    // task, or while a lexical expansion still waits for its remaining rows.
+    const message = `${lexicalCount} ${meaningCount}`;
+    if (count.textContent !== message) count.textContent = message;
   };
   const refresh = () => {
     provenance
