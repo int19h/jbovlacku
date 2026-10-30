@@ -2356,6 +2356,10 @@ test("local source notices stay in their disclosure and the retired note follows
     has: page.getByText("Search source and snapshot", { exact: true }),
   });
   const packageNote = source.getByText(/^Local search package from snapshot/);
+  await expect(group(page, "Search results")).toHaveAttribute(
+    "aria-busy",
+    "false",
+  );
   await expect(packageNote).toBeHidden();
   await expect(
     page.getByText(/^Local results include every retained publication/),
