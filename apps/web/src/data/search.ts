@@ -77,6 +77,8 @@ export const packageWordEntries = createPackageWordIndex();
 
 export interface CachedPackage {
   snapshot: string;
+  /** The server view that binds compact per-entry ordering statuses. */
+  search_view?: string;
   /** 1 for the default package, 2 when the entries carry row metadata. */
   version?: 1 | 2;
   entries: PackageEntry[];
@@ -127,6 +129,7 @@ export function validateEntry(
   value: unknown,
   language: string,
   version: 1 | 2 = 1,
+  packageView?: string,
 ): asserts value is PackageEntry {
   if (
     version === 2 &&
@@ -136,9 +139,12 @@ export function validateEntry(
   ) {
     const { search_status, ...base } = value as Record<string, any>;
     if (
-      !fields(search_status, ["view", "status"]) ||
-      !eventId(search_status.view) ||
-      !["active", "retired", "ineligible"].includes(search_status.status)
+      packageView !== undefined
+        ? !eventId(packageView) ||
+          !["active", "retired", "ineligible"].includes(search_status)
+        : !fields(search_status, ["view", "status"]) ||
+          !eventId(search_status.view) ||
+          !["active", "retired", "ineligible"].includes(search_status.status)
     )
       throw invalidPackage();
     validateEntry(base, language, version);
@@ -225,7 +231,15 @@ export function validateCachedPackage(
     !(
       fields(value, ["snapshot", "entries"]) ||
       fields(value, ["snapshot", "version", "entries"]) ||
-      fields(value, ["snapshot", "version", "entries", "downgrade"])
+      fields(value, ["snapshot", "version", "entries", "downgrade"]) ||
+      fields(value, ["snapshot", "version", "entries", "search_view"]) ||
+      fields(value, [
+        "snapshot",
+        "version",
+        "entries",
+        "search_view",
+        "downgrade",
+      ])
     ) ||
     !hashId(value.snapshot) ||
     !Array.isArray(value.entries) ||
@@ -235,6 +249,8 @@ export function validateCachedPackage(
       value.version === 1 ||
       value.version === 2
     ) ||
+    (Object.hasOwn(value, "search_view") &&
+      (value.version !== 2 || !eventId(value.search_view))) ||
     !(
       value.downgrade === undefined ||
       value.downgrade === null ||
@@ -245,7 +261,9 @@ export function validateCachedPackage(
   const version = value.version === 2 ? 2 : 1;
   let previous = "";
   for (const entry of value.entries) {
-    validateEntry(entry, language, version);
+    validateEntry(entry, language, version, value.search_view);
+    if (value.search_view && typeof entry.search_status !== "string")
+      throw invalidPackage();
     if (entry.event <= previous) throw invalidPackage();
     previous = entry.event;
   }
@@ -325,14 +343,14 @@ async function downloadVersion(
     throw new Error("This server offers no search package for that language.");
   if (advertised.length !== 1) throw invalidPackage();
   try {
-    const entries = await downloadEntries(
+    const downloaded = await downloadEntries(
       language,
       version,
       manifest.snapshot,
       advertised[0],
       { ...options, signal },
     );
-    return { snapshot: manifest.snapshot, version, entries, downgrade };
+    return { snapshot: manifest.snapshot, version, ...downloaded, downgrade };
   } catch (error) {
     // Only a package that fails its checks names a version. A transport
     // failure, a server error, or a cancel is reported as it is, and no
@@ -356,7 +374,7 @@ async function downloadEntries(
   snapshot: string,
   advertised: { hash: string; bytes: number },
   options: RequestOptions,
-): Promise<PackageEntry[]> {
+): Promise<Pick<CachedPackage, "entries" | "search_view">> {
   const signal = options.signal;
   const manifest = { snapshot };
   const raw = await objectBytes(
@@ -370,7 +388,18 @@ async function downloadEntries(
     );
   const pkg = JSON.parse(canonicalize(raw));
   if (
-    !fields(pkg, ["version", "language", "snapshot", "parts"]) ||
+    !(
+      fields(pkg, ["version", "language", "snapshot", "parts"]) ||
+      (version === 2 &&
+        fields(pkg, [
+          "version",
+          "language",
+          "snapshot",
+          "parts",
+          "search_view",
+        ]) &&
+        eventId(pkg.search_view))
+    ) ||
     pkg.version !== version ||
     pkg.language !== language ||
     pkg.snapshot !== manifest.snapshot ||
@@ -416,13 +445,18 @@ async function downloadEntries(
     if (!Array.isArray(data) || data.length !== part.count)
       throw invalidPackage();
     for (const entry of data) {
-      validateEntry(entry, language, version);
+      validateEntry(entry, language, version, pkg.search_view);
+      if (pkg.search_view && typeof entry.search_status !== "string")
+        throw invalidPackage();
       if (entry.event <= previous) throw invalidPackage();
       previous = entry.event;
       entries.push(entry);
     }
   }
-  return entries;
+  return {
+    entries,
+    ...(pkg.search_view ? { search_view: pkg.search_view } : {}),
+  };
 }
 export interface LocalHit extends SearchHit {
   /** Every matching entry of the word, strongest first. */
@@ -443,12 +477,19 @@ export function localSearch(
     ? selectRafsiMatches(entries, queryText, metrics, options)
     : selectMatches(entries, query, metrics, undefined, {
         ...options,
-        knownWord: (entry) =>
-          !!entry.search_status &&
-          (!options.view || entry.search_status.view === options.view) &&
-          (entry.search_status.status === "active" ||
-            (options.includeRetired === true &&
-              entry.search_status.status === "retired")),
+        knownWord: (entry) => {
+          const evidence = entry.search_status;
+          const view =
+            typeof evidence === "string" ? options.packageView : evidence?.view;
+          const status =
+            typeof evidence === "string" ? evidence : evidence?.status;
+          return (
+            !!view &&
+            (!options.view || view === options.view) &&
+            (status === "active" ||
+              (options.includeRetired === true && status === "retired"))
+          );
+        },
       });
   const grouped = new Map<string, LocalHit & { position: number }>();
   for (const { entry, match, position, rafsi } of selected.rows) {

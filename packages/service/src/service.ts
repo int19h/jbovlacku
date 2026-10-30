@@ -45,6 +45,7 @@ import {
 } from "./checkpoint.ts";
 import {
   buildPackages,
+  hasPackageSearchView,
   preparePackageSearch,
   rebasePackages,
   sameEffectiveDefinitions,
@@ -635,6 +636,10 @@ export class DictionaryService {
               );
               if (
                 !payload.packages.searchRafsi ||
+                !hasPackageSearchView(
+                  payload.packages,
+                  this.options.selectedView ?? zeroView,
+                ) ||
                 payload.packages.searchView !==
                   (this.options.selectedView ?? zeroView) ||
                 !sameSearchDefinitions(

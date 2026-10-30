@@ -23,7 +23,11 @@ export interface SearchEntry {
   plain_text: string;
   classification: unknown;
   body: string;
-  search_status?: { view: string; status: "active" | "retired" | "ineligible" };
+  search_status?:
+    | "active"
+    | "retired"
+    | "ineligible"
+    | { view: string; status: "active" | "retired" | "ineligible" };
 }
 /** Version 2 adds server-asserted metadata for result rows. */
 export interface SearchEntryV2 extends SearchEntry {
@@ -50,6 +54,8 @@ export interface SearchPackage {
   version: 1 | 2;
   language: string;
   snapshot: string;
+  /** Version 2 ordering evidence uses this view for every entry. */
+  search_view?: string;
   parts: { hash: string; bytes: number; count: number }[];
 }
 export interface MaterializedPackage {
@@ -113,6 +119,15 @@ export function sameSearchDefinitions(
     Object.entries(current).every(
       ([event, status]) => previous[event] === status,
     )
+  );
+}
+/** Older checkpoints need their per-entry view metadata rebuilt once. */
+export function hasPackageSearchView(
+  packages: MaterializedPackages,
+  view: string,
+): boolean {
+  return Object.values(packages.packages2).every(
+    (pkg) => pkg.manifest.search_view === view,
   );
 }
 export function plainDefinitionText(value: unknown): string {
@@ -283,10 +298,7 @@ export async function buildPackages(
       ...entry,
       ...(searchDefinitions && searchView
         ? {
-            search_status: {
-              view: searchView,
-              status: searchDefinitions[record.id] ?? "ineligible",
-            },
+            search_status: searchDefinitions[record.id] ?? "ineligible",
           }
         : {}),
       issuer: record.issuer,
@@ -417,6 +429,9 @@ export async function buildPackages(
         version,
         language,
         snapshot: snapshot.snapshot,
+        ...(version === 2 && searchDefinitions && searchView
+          ? { search_view: searchView }
+          : {}),
         parts,
       };
       const bytes = canonical(manifest);

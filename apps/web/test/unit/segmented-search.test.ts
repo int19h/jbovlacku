@@ -171,7 +171,7 @@ test("known-word ordering agrees locally and remotely for whole query tokens and
       );
     }
   }
-  source[5].search_status!.status = "retired";
+  (source[5].search_status as { status: string }).status = "retired";
   evaluation.publications[source[5].event].status = "deprecated";
   for (const includeRetired of [false, true])
     for (const query of ["klama", "mi klama"])
@@ -200,7 +200,7 @@ test("known-word ordering agrees locally and remotely for whole query tokens and
       true,
     ).allLojban,
   );
-  source[5].search_status!.status = "ineligible";
+  (source[5].search_status as { status: string }).status = "ineligible";
   evaluation.publications[source[5].event].eligible = "unknown";
   assert.equal(
     localSearch(source, "mi klama", undefined, false, {

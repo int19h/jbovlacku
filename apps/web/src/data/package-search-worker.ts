@@ -112,6 +112,7 @@ self.onmessage = ({ data }) => {
             patterns: options.patterns !== false && !options.nearby,
             group: group as PackageSearchOptions["group"],
             view: options.view,
+            packageView: stored.pkg.search_view,
             includeRetired: options.includeRetired,
           }),
         ),
