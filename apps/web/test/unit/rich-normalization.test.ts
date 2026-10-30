@@ -324,3 +324,129 @@ test("deferred normalization preserves composition rule conversion and its Backs
   );
   assert.deepEqual(editorToRich(state.doc), [["a\nb\nc__50__"]]);
 });
+
+const exactCode = { code: "code\r\nexact" };
+const exactWord = {
+  word: { language: "jbo", spelling: "cukta" },
+  label: "word\rexact",
+};
+const exactWeb = { url: "https://example.org/", label: "web\r\nexact" };
+const exactTail = ["untouched\r", " adjacent\r\n"];
+
+test("loaded paragraph joins normalize the combined stored string through undo and redo", () => {
+  let state = EditorState.create({
+    doc: richToEditor([
+      [exactCode, "left\r"],
+      ["right\r\n", exactWord, exactWeb, ...exactTail],
+    ]),
+    plugins: [editedTextPlugin(), history()],
+  });
+  const dispatch = (transaction: typeof state.tr) => {
+    state = state.applyTransaction(transaction).state;
+  };
+  dispatch(
+    state.tr.setSelection(
+      TextSelection.create(state.doc, state.doc.firstChild!.nodeSize + 1),
+    ),
+  );
+  assert.equal(undoDepth(state), 0);
+  assert.equal(joinBackward(state, dispatch), true);
+  const joined = [
+    [exactCode, "left\nright\n", exactWord, exactWeb, ...exactTail],
+  ];
+  assert.deepEqual(editorToRich(state.doc), joined);
+  assert.equal(undoDepth(state), 1);
+  assert.equal(undo(state, dispatch), true);
+  assert.deepEqual(editorToRich(state.doc), [
+    [exactCode, "left\n"],
+    ["right\n", exactWord, exactWeb, ...exactTail],
+  ]);
+  assert.equal(undoDepth(state), 0);
+  assert.equal(redo(state, dispatch), true);
+  assert.deepEqual(editorToRich(state.doc), joined);
+  assert.equal(undoDepth(state), 1);
+});
+
+for (const side of ["prepend", "append"] as const) {
+  test(`outside-container ${side} normalizes every contributor to its stored string`, () => {
+    let state = EditorState.create({
+      doc: richToEditor([[exactCode, raw, exactWord, exactWeb, ...exactTail]]),
+      plugins: [editedTextPlugin(), history()],
+    });
+    const dispatch = (transaction: typeof state.tr) => {
+      state = state.applyTransaction(transaction).state;
+    };
+    const start = 1 + state.doc.firstChild!.firstChild!.nodeSize;
+    const at =
+      start + (side === "append" ? state.doc.firstChild!.child(1).nodeSize : 0);
+    dispatch(
+      state.tr
+        .setSelection(TextSelection.create(state.doc, at))
+        .insertText("X"),
+    );
+    const target = side === "append" ? "a\nb\ncX" : "Xa\nb\nc";
+    assert.deepEqual(editorToRich(state.doc), [
+      [exactCode, target, exactWord, exactWeb, ...exactTail],
+    ]);
+    assert.equal(undoDepth(state), 1);
+    assert.equal(undo(state, dispatch), true);
+    assert.deepEqual(editorToRich(state.doc), [
+      [exactCode, "a\nb\nc", exactWord, exactWeb, ...exactTail],
+    ]);
+    assert.equal(undoDepth(state), 0);
+    assert.equal(redo(state, dispatch), true);
+    assert.deepEqual(editorToRich(state.doc), [
+      [exactCode, target, exactWord, exactWeb, ...exactTail],
+    ]);
+    assert.equal(undoDepth(state), 1);
+  });
+}
+
+test("preedit exports LF for retained contributors to a newly combined stored string", () => {
+  let composing = true;
+  const base = richToEditor([
+    [exactCode, raw, exactWord, exactWeb, ...exactTail],
+  ]);
+  let state = EditorState.create({
+    doc: base,
+    plugins: [editedTextPlugin({ composing: () => composing }), history()],
+  });
+  const dispatch = (transaction: typeof state.tr) => {
+    state = state.applyTransaction(transaction).state;
+  };
+  const at =
+    1 + base.firstChild!.child(0).nodeSize + base.firstChild!.child(1).nodeSize;
+  dispatch(state.tr.setSelection(TextSelection.create(state.doc, at)));
+  dispatch(state.tr.setMeta("richCompositionStart", true));
+  dispatch(state.tr.insertText("漢").setMeta("composition", 1));
+  const expected = [
+    [exactCode, "a\nb\nc漢", exactWord, exactWeb, ...exactTail],
+  ];
+  assert.equal(state.doc.firstChild!.child(1), base.firstChild!.child(1));
+  assert.deepEqual(editorToRich(state.doc, base), expected);
+  assert.deepEqual(editorToRich(state.doc), [
+    [exactCode, raw + "漢", exactWord, exactWeb, ...exactTail],
+  ]);
+  composing = false;
+  dispatch(state.tr.setMeta("richCompositionEnd", true));
+  assert.deepEqual(editorToRich(state.doc), expected);
+  assert.equal(undoDepth(state), 1);
+  assert.equal(undo(state, dispatch), true);
+  assert.deepEqual(editorToRich(state.doc), [
+    [exactCode, "a\nb\nc", exactWord, exactWeb, ...exactTail],
+  ]);
+  assert.equal(undoDepth(state), 0);
+});
+
+test("a retained saved-string boundary keeps its untouched CR text exact", () => {
+  let state = EditorState.create({
+    doc: richToEditor([
+      ["left\r", " right\r\n", exactCode, exactWord, exactWeb],
+    ]),
+    plugins: [editedTextPlugin()],
+  });
+  state = state.applyTransaction(state.tr.insertText("X", 6)).state;
+  assert.deepEqual(editorToRich(state.doc), [
+    ["leftX\n", " right\r\n", exactCode, exactWord, exactWeb],
+  ]);
+});
