@@ -93,3 +93,17 @@ test("a long literal word preserves its boundary before a later place", () => {
     [literal + " ", 1],
   ]);
 });
+
+test("unconverted pattern summaries retain complete Unicode scalar values", () => {
+  const source = '\"' + "a".repeat(75) + "😀 x_1 " + "b".repeat(20) + '\"';
+  const result = convertPlaces(source, "/definition");
+  const pattern = Object.keys(result.unresolved)[0];
+  assert.equal([...pattern].length, 80);
+  assert.equal(
+    new TextDecoder("utf-8", { fatal: true }).decode(
+      new TextEncoder().encode(pattern),
+    ),
+    pattern,
+  );
+  assert.deepEqual(result.text, [[source]]);
+});

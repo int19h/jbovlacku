@@ -80,7 +80,9 @@ export function convertPlaces(source: string | null, field: string) {
     } else {
       literal(raw);
       if (/[a-zA-Z]_|\bx[0-9]+\b/.test(raw)) {
-        const pattern = raw.length > 80 ? raw.slice(0, 77) + "..." : raw;
+        const points = [...raw];
+        const pattern =
+          points.length > 80 ? points.slice(0, 77).join("") + "..." : raw;
         unresolved[pattern] = (unresolved[pattern] ?? 0) + 1;
       }
     }
