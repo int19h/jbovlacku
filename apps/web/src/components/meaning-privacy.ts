@@ -15,6 +15,41 @@ export const meaningSearchDataScope = [
 ];
 export const meaningSearchTask = "meaning-search";
 
+const offWrites = new WeakMap<
+  AbortSignal,
+  { pending: number; listeners: Set<(pending: boolean) => void> }
+>();
+function meaningOffWrites(context: RenderContext) {
+  let state = offWrites.get(context.signal);
+  if (!state) {
+    state = { pending: 0, listeners: new Set() };
+    offWrites.set(context.signal, state);
+  }
+  return state;
+}
+
+/** Stop pending consent actions before either off control waits for storage. */
+export function onMeaningSearchOff(
+  context: RenderContext,
+  listener: (pending: boolean) => void,
+) {
+  const state = meaningOffWrites(context);
+  state.listeners.add(listener);
+  listener(state.pending > 0);
+  return () => state.listeners.delete(listener);
+}
+export async function saveMeaningSearchOff(app: App, context: RenderContext) {
+  const state = meaningOffWrites(context);
+  state.pending++;
+  for (const listener of state.listeners) listener(true);
+  try {
+    await app.session.setPreferences({ useMeaningSearch: false });
+  } finally {
+    state.pending--;
+    for (const listener of state.listeners) listener(state.pending > 0);
+  }
+}
+
 export function meaningSearchEnabled(app: App): boolean {
   return (
     app.session.preferences.useAiAssistance !== false &&
@@ -96,9 +131,11 @@ export function meaningPrivacy(
                 saving = true;
                 off.disabled = true;
                 try {
-                  await app.session.setPreferences({
-                    useMeaningSearch: !enabled,
-                  });
+                  if (enabled) await saveMeaningSearchOff(app, context);
+                  else
+                    await app.session.setPreferences({
+                      useMeaningSearch: true,
+                    });
                   if (context.live())
                     navigate(location.pathname + location.search, {
                       replace: true,

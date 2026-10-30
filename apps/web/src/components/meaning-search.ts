@@ -33,6 +33,8 @@ import { appendReadRetry } from "./readretry.ts";
 import {
   meaningSearchDataScope as dataScope,
   meaningSearchTask as task,
+  onMeaningSearchOff,
+  saveMeaningSearchOff,
 } from "./meaning-privacy.ts";
 interface SavedMeaning {
   query: string;
@@ -117,6 +119,23 @@ export async function meaningSearchGroup(
   const canceled = new AbortController();
   const signal = AbortSignal.any([context.signal, canceled.signal]);
   const live = () => context.live() && !signal.aborted;
+  let consentVersion = 0;
+  let savingConsent = false;
+  let savingOff = false;
+  let declined = false;
+  let consentActions:
+    | { accept: HTMLButtonElement; off: HTMLButtonElement }
+    | undefined;
+  const refreshConsentActions = () => {
+    if (!consentActions) return;
+    consentActions.accept.disabled = savingConsent || savingOff;
+    consentActions.off.disabled = savingOff;
+  };
+  const unsubscribeOff = onMeaningSearchOff(context, (pending) => {
+    savingOff = pending;
+    if (pending) consentVersion++;
+    refreshConsentActions();
+  });
   const unsubscribe = app.session.subscribe(() => {
     if (
       app.session.preferences.useAiAssistance === false ||
@@ -129,6 +148,7 @@ export async function meaningSearchGroup(
     }
   });
   context.signal.addEventListener("abort", unsubscribe, { once: true });
+  context.signal.addEventListener("abort", unsubscribeOff, { once: true });
   try {
     let saved =
       context.restoringHistory || context.readRetryAttempt
@@ -199,7 +219,7 @@ export async function meaningSearchGroup(
     };
     const allowed = () => consented(provider, scope);
     const run = async (focusAfter = false) => {
-      if (!live() || !allowed()) return;
+      if (!live() || !allowed() || declined || savingOff) return;
       body.replaceChildren(
         p(
           `Profile: ${profile.label}. Similarity is a suggestion, not an editorial score.`,
@@ -415,6 +435,7 @@ export async function meaningSearchGroup(
       }
     };
     const consent = (focus = false) => {
+      consentVersion++;
       setStatus("Meaning search needs your permission.", "");
       const notice = el("div", {
         class: "notice",
@@ -422,39 +443,49 @@ export async function meaningSearchGroup(
         "aria-label": "Meaning search consent",
       });
       const accept = button("Allow meaning search", async () => {
-        accept.disabled = true;
+        if (!live() || savingConsent || savingOff) return;
+        const current = ++consentVersion;
+        declined = false;
+        savingConsent = true;
+        refreshConsentActions();
         try {
-          await app.session.setPreferences({
-            aiConsents: [
-              ...app.session.preferences.aiConsents,
-              { provider, scope, tasks: [task], dataScope },
-            ],
-          });
-          if (live()) await run(true);
+          if (!allowed())
+            await app.session.setPreferences({
+              aiConsents: [
+                ...app.session.preferences.aiConsents,
+                { provider, scope, tasks: [task], dataScope },
+              ],
+            });
+          if (live() && current === consentVersion) await run(true);
         } catch (error) {
-          if (live()) {
+          if (live() && current === consentVersion) {
             setStatus(describe(error));
-            accept.disabled = false;
             expansion.changed();
           }
+        } finally {
+          savingConsent = false;
+          refreshConsentActions();
         }
       });
       const turnOff = button("Turn off meaning search", async () => {
-        turnOff.disabled = true;
+        if (!live() || savingOff) return;
+        const writing = saveMeaningSearchOff(app, context);
+        const current = consentVersion;
         try {
-          await app.session.setPreferences({ useMeaningSearch: false });
+          await writing;
           if (context.live())
             navigate(location.pathname + location.search, { replace: true });
         } catch (error) {
-          if (live()) {
+          if (live() && current === consentVersion) {
             setStatus(
               `The saved meaning search choice is unchanged. ${describe(error)}`,
             );
-            turnOff.disabled = false;
             expansion.changed();
           }
         }
       });
+      consentActions = { accept, off: turnOff };
+      refreshConsentActions();
       notice.append(
         p(`Server: ${server}. Provider: ${provider}.`),
         p(`Profile: ${profile.id}`, "meta"),
@@ -470,6 +501,9 @@ export async function meaningSearchGroup(
         accept,
         turnOff,
         button("Not now", () => {
+          consentVersion++;
+          declined = true;
+          consentActions = undefined;
           setStatus("Meaning search is off for this page.");
           const enable = button("Enable meaning search", () => consent(true));
           body.replaceChildren(enable);
@@ -480,7 +514,7 @@ export async function meaningSearchGroup(
       body.replaceChildren(notice);
       if (focus) accept.focus();
     };
-    if (allowed()) await run();
+    if (allowed() && !savingOff && consentVersion === 0) await run();
     else consent();
   } catch {
     group.remove();
