@@ -23,6 +23,7 @@ export interface SearchEntry {
   plain_text: string;
   classification: unknown;
   body: string;
+  search_status?: { view: string; status: "active" | "retired" | "ineligible" };
 }
 /** Version 2 adds server-asserted metadata for result rows. */
 export interface SearchEntryV2 extends SearchEntry {
@@ -62,6 +63,9 @@ export interface MaterializedPackages {
   searchRafsi?: Record<string, string[]>;
   /** Private cache metadata. Null means that publication receipts are unavailable. */
   effectiveDefinitions?: string[] | null;
+  /** Eligible active and retired definitions under the selected view. */
+  searchDefinitions?: Record<string, "active" | "retired">;
+  searchView?: string;
   packages: Record<string, MaterializedPackage>;
   /** Version 2 packages by language. */
   packages2: Record<string, MaterializedPackage>;
@@ -99,6 +103,18 @@ export function sameEffectiveDefinitions(
     previous.every((id, index) => id === current[index])
   );
 }
+export function sameSearchDefinitions(
+  previous: MaterializedPackages["searchDefinitions"],
+  current: NonNullable<MaterializedPackages["searchDefinitions"]>,
+): boolean {
+  return (
+    !!previous &&
+    Object.keys(previous).length === Object.keys(current).length &&
+    Object.entries(current).every(
+      ([event, status]) => previous[event] === status,
+    )
+  );
+}
 export function plainDefinitionText(value: unknown): string {
   if (!Array.isArray(value)) return "";
   return value
@@ -133,6 +149,8 @@ export async function buildPackages(
   trustedHostRecords = false,
   effectiveDefinitions?: string[] | null,
   searchPreparation?: SearchPreparation,
+  searchDefinitions?: MaterializedPackages["searchDefinitions"],
+  searchView?: string,
 ): Promise<MaterializedPackages> {
   const entries: SearchEntry[] = [];
   const entries2: SearchEntryV2[] = [];
@@ -263,6 +281,14 @@ export async function buildPackages(
       if (typeof value === "string") dates[label] = value;
     entries2.push({
       ...entry,
+      ...(searchDefinitions && searchView
+        ? {
+            search_status: {
+              view: searchView,
+              status: searchDefinitions[record.id] ?? "ineligible",
+            },
+          }
+        : {}),
       issuer: record.issuer,
       notes: Array.isArray(body.notes) && body.notes.length > 0,
       rafsi: [...(rafsiByWord.get(String(record.word)) ?? [])]
@@ -320,6 +346,14 @@ export async function buildPackages(
           )
             changedLanguages.add(entry.language);
     }
+    if (version === 2 && reuse && searchDefinitions)
+      for (const entry of entries)
+        if (
+          reuse.previous.searchView !== searchView ||
+          reuse.previous.searchDefinitions?.[entry.event] !==
+            searchDefinitions[entry.event]
+        )
+          changedLanguages.add(entry.language);
     for (const record of prepared ?? [])
       if (
         changedIds.has(record.id) ||
@@ -402,6 +436,7 @@ export async function buildPackages(
         ]),
       ),
       ...(effectiveDefinitions !== undefined ? { effectiveDefinitions } : {}),
+      ...(searchDefinitions ? { searchDefinitions, searchView } : {}),
       packages: await build(entries, 1),
       packages2: await build(entries2, 2),
     },

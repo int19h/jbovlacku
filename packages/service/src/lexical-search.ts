@@ -45,16 +45,6 @@ export function lexicalSearch(
     }
   >();
   const pattern = options.patterns !== false && isPatternQuery(query);
-  const source =
-    pattern || options.group === "lojban"
-      ? (function* () {
-          for (const entry of entries)
-            yield {
-              ...entry,
-              rafsi: rafsi[evaluation.publications[entry.event]?.word] ?? [],
-            };
-        })()
-      : entries;
   const selected = selectedRows
     ? {
         rows: options.group === "definitions" ? [] : selectedRows,
@@ -62,7 +52,7 @@ export function lexicalSearch(
         allLojban: false,
       }
     : selectMatches(
-        source,
+        entries,
         query,
         metrics,
         (entry) => {
@@ -75,7 +65,13 @@ export function lexicalSearch(
             (publication.status === "active" || includeRetired)
           );
         },
-        options,
+        {
+          ...options,
+          rafsiFor: (entry) =>
+            rafsi[
+              evaluation.publications[(entry as SearchEntry).event]?.word
+            ] ?? [],
+        },
       );
   for (const { entry, match, position } of selected.rows) {
     const publication = evaluation.publications[entry.event];

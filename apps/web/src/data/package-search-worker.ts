@@ -111,6 +111,8 @@ self.onmessage = ({ data }) => {
           localSearch(stored.pkg.entries, query, metrics, options.rafsiOnly, {
             patterns: options.patterns !== false && !options.nearby,
             group: group as PackageSearchOptions["group"],
+            view: options.view,
+            includeRetired: options.includeRetired,
           }),
         ),
       );

@@ -278,3 +278,54 @@ test("grouped remote matching keeps language and status filters before known-wor
   evaluation.publications.bo.status = "deprecated";
   assert.equal(search("se bo", "lojban").allLojban, false);
 });
+
+test("grouped searches reuse the prepared index above the spelling cache limit", async () => {
+  const { prepareIndex, searchMetrics } =
+    await import("../../search/src/index.ts");
+  const vowels = ["a", "e", "i", "o", "u"];
+  const consonants = [
+    "b",
+    "c",
+    "d",
+    "f",
+    "g",
+    "j",
+    "k",
+    "l",
+    "m",
+    "n",
+    "p",
+    "r",
+    "s",
+    "t",
+    "v",
+    "x",
+    "z",
+  ];
+  const entries: SearchEntry[] = [];
+  outer: for (const c1 of consonants)
+    for (const v1 of vowels)
+      for (const c2 of consonants)
+        for (const v2 of vowels)
+          for (const c3 of ["b", "d", "k"]) {
+            entries.push(segmentedEntry(`${c1}${v1}${c2}${v2}${c3}a`));
+            if (entries.length === 4200) break outer;
+          }
+  prepareIndex(entries);
+  const evaluation = segmentedEvaluation(entries);
+  for (const group of ["lojban", "lojban", "definitions"] as const) {
+    const metrics = searchMetrics();
+    lexicalSearch(
+      entries,
+      "book",
+      "en",
+      evaluation,
+      false,
+      metrics,
+      {},
+      { group },
+    );
+    assert.equal(metrics.headwordsParsed, 0, group);
+    assert.equal(metrics.entries, entries.length);
+  }
+});

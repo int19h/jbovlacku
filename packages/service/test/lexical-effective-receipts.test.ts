@@ -983,3 +983,106 @@ test("group pages bind cursors to the group and report known Lojban queries", as
   );
   assert.equal(badGroup.status, 400);
 });
+
+test("known-word package evidence follows status-only changes, retirement filters, views, and legacy checkpoint upgrade", async () => {
+  let saved: ServiceCheckpoint | undefined;
+  const f = await fixture({
+    coreVersion: "search-status-r2",
+    checkpointIntervalMs: 0,
+    checkpoints: {
+      async load() {
+        return saved ? structuredClone(saved) : null;
+      },
+      async save(_binding, value) {
+        saved = structuredClone(value);
+      },
+    },
+  });
+  const definition = signedDefinition();
+  await f.admit(f.view, definition);
+  const prior = await f.snapshot();
+  const packageRows = async (snapshot: string) =>
+    (await f.entries(snapshot, 2)) as any[];
+  assert.deepEqual((await packageRows(prior))[0].search_status, {
+    view: f.view.envelope.id,
+    status: "active",
+  });
+  const firstManifest = await f.read(
+    `/packages/en?snapshot=${prior}&version=2`,
+  );
+  const v1 = await f.entries(prior, 1);
+  assert.equal("search_status" in v1[0], false);
+  assert.ok(saved);
+  delete (saved.packages as any).searchDefinitions;
+  delete (saved.packages as any).searchView;
+  saved.packages = await buildPackages(
+    (await f.coordinator.getSnapshot(prior))!,
+    f.objects,
+    undefined,
+    undefined,
+    false,
+    [definition.envelope.id],
+  );
+  await f.restart();
+  assert.deepEqual((await packageRows(prior))[0].search_status, {
+    view: f.view.envelope.id,
+    status: "active",
+  });
+  await f.admit(
+    createEvent(
+      publisher,
+      [definition.envelope.id],
+      "c".repeat(32),
+      {
+        kind: "status.set",
+        target: definition.envelope.id,
+        value: "deprecated",
+      },
+      null,
+    ),
+  );
+  const current = await f.snapshot();
+  const retiredRows = await packageRows(current);
+  assert.deepEqual(retiredRows[0].search_status, {
+    view: f.view.envelope.id,
+    status: "retired",
+  });
+  const secondManifest = await f.read(
+    `/packages/en?snapshot=${current}&version=2`,
+  );
+  assert.notEqual(secondManifest.parts[0].hash, firstManifest.parts[0].hash);
+  assert.deepEqual((await packageRows(prior))[0].search_status, {
+    view: f.view.envelope.id,
+    status: "active",
+  });
+  Object.assign(globalThis, {
+    location: new URL("http://local.invalid"),
+    history: { state: null },
+  });
+  const { localSearch } = await import("../../../apps/web/src/data/search.ts");
+  for (const includeRetired of [false, true]) {
+    const params = new URLSearchParams({
+      q: "klama",
+      language: "en",
+      group: "lojban",
+      snapshot: current,
+      view: f.view.envelope.id,
+    });
+    if (includeRetired) params.set("retired", "1");
+    const remote = await f.read("/search?" + params);
+    const local = localSearch(retiredRows, "klama", undefined, false, {
+      includeRetired,
+      view: f.view.envelope.id,
+    });
+    assert.equal(local.allLojban, includeRetired);
+    assert.equal(local.allLojban, remote.all_lojban);
+  }
+  assert.equal(
+    localSearch(retiredRows, "klama", undefined, false, {
+      includeRetired: true,
+      view: "jve1:" + "f".repeat(64),
+    }).allLojban,
+    false,
+  );
+  assert.equal(localSearch(v1 as any, "klama").allLojban, false);
+});

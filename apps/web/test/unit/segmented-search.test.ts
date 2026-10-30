@@ -126,3 +126,94 @@ test("local and server search share sequence rank, fallback order, display, and 
     ["i", "klama"],
   );
 });
+
+test("known-word ordering agrees locally and remotely for whole query tokens and retired eligibility", () => {
+  const source = entries(["lo", "ve", "ti", "me", "mi", "klama", "iseri'abo"]);
+  const view = "jve1:" + "a".repeat(64);
+  const evaluation = {
+    publications: Object.fromEntries(
+      source.map((row) => [
+        row.event,
+        { word: wordId(row.word), eligible: "eligible", status: "active" },
+      ]),
+    ),
+    receipts: Object.fromEntries(
+      source.map((row) => [row.event, { interpretation: "effective" }]),
+    ),
+  } as unknown as Evaluation;
+  for (const row of source) row.search_status = { view, status: "active" };
+  for (const [query, expected] of [
+    ["love", false],
+    ["time", false],
+    ["klama", true],
+    ["mi klama", true],
+    ["iseri'abo", true],
+  ] as const) {
+    for (const group of ["lojban", "definitions"] as const) {
+      assert.equal(
+        localSearch(source, query, undefined, false, { group, view }).allLojban,
+        expected,
+        query,
+      );
+      assert.equal(
+        lexicalSearch(
+          source as unknown as SearchEntry[],
+          query,
+          "en",
+          evaluation,
+          false,
+          undefined,
+          {},
+          { group },
+        ).allLojban,
+        expected,
+        query,
+      );
+    }
+  }
+  source[5].search_status!.status = "retired";
+  evaluation.publications[source[5].event].status = "deprecated";
+  for (const includeRetired of [false, true])
+    for (const query of ["klama", "mi klama"])
+      assert.equal(
+        localSearch(source, query, undefined, false, { view, includeRetired })
+          .allLojban,
+        lexicalSearch(
+          source as unknown as SearchEntry[],
+          query,
+          "en",
+          evaluation,
+          includeRetired,
+        ).allLojban,
+      );
+  evaluation.publications[source[5].event].status = "unknown" as any;
+  assert.equal(
+    localSearch(source, "klama", undefined, false, {
+      view,
+      includeRetired: true,
+    }).allLojban,
+    lexicalSearch(
+      source as unknown as SearchEntry[],
+      "klama",
+      "en",
+      evaluation,
+      true,
+    ).allLojban,
+  );
+  source[5].search_status!.status = "ineligible";
+  evaluation.publications[source[5].event].eligible = "unknown";
+  assert.equal(
+    localSearch(source, "mi klama", undefined, false, {
+      view,
+      includeRetired: true,
+    }).allLojban,
+    false,
+  );
+  assert.equal(
+    localSearch(
+      source.map(({ search_status, ...row }) => row),
+      "klama",
+    ).allLojban,
+    false,
+  );
+});

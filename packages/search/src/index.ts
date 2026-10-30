@@ -50,6 +50,7 @@ export interface LexicalEntry {
   glosses: { text: string }[];
   plain_text: string;
   rafsi?: string[];
+  search_status?: { view: string; status: "active" | "retired" | "ineligible" };
 }
 export interface SearchMetrics {
   entries: number;
@@ -246,6 +247,10 @@ export function prepareIndex<T extends LexicalEntry>(
 export interface SearchOptions {
   patterns?: boolean;
   group?: SearchGroup;
+  includeRetired?: boolean;
+  view?: string | null;
+  knownWord?: (entry: LexicalEntry) => boolean;
+  rafsiFor?: (entry: LexicalEntry) => readonly string[];
 }
 export interface PreparedQuery {
   text: string;
@@ -391,7 +396,7 @@ export function selectMatches<T extends LexicalEntry>(
         const headword = pattern.test(entry.word.spelling);
         // Scan every retained rafsi, even after a match, under the same budget.
         let rafsi = false;
-        for (const spelling of entry.rafsi ?? [])
+        for (const spelling of options.rafsiFor?.(entry) ?? entry.rafsi ?? [])
           rafsi = pattern.test(spelling) || rafsi;
         if (headword || rafsi)
           rows.push({
@@ -415,6 +420,8 @@ export function selectMatches<T extends LexicalEntry>(
   );
   let segmentation = prepared.segmentation;
   const known = new Set<string>();
+  const queryWords = prepared.headword.split(/\s+/u);
+  const querySpellings = new Set(queryWords);
   let wholeKnown = false;
   if (!prepared.text) return { rows, segmentation, allLojban: false };
   const single =
@@ -434,8 +441,10 @@ export function selectMatches<T extends LexicalEntry>(
   for (const { entry, indexed: index } of source) {
     if (metrics) metrics.entries++;
     if (!accept(entry)) continue;
-    if (prepared.positions.has(index.canonical)) known.add(index.canonical);
-    if (index.spelling === prepared.headword) wholeKnown = true;
+    if (!options.knownWord || options.knownWord(entry)) {
+      if (querySpellings.has(index.spelling)) known.add(index.spelling);
+      if (index.spelling === prepared.headword) wholeKnown = true;
+    }
     if (index.limited) segmentation = "limited";
     const sequence = sequenceMatch(index, prepared, coverage, metrics);
     const prefix = prepared.headword.replace(/[.,]/gu, "");
@@ -459,7 +468,7 @@ export function selectMatches<T extends LexicalEntry>(
     if (index.text.includes(prepared.text)) candidates.push("token");
     if (
       options.group === "lojban" &&
-      (entry.rafsi ?? []).some(
+      (options.rafsiFor?.(entry) ?? entry.rafsi ?? []).some(
         (rafsi: string) =>
           headwordKey(rafsi).replaceAll("h", "'") ===
           prepared.headword.replaceAll("h", "'"),
@@ -502,9 +511,8 @@ export function selectMatches<T extends LexicalEntry>(
     allLojban:
       wholeKnown ||
       !!(
-        prepared.components?.words.length &&
-        !prepared.components.tokens.includes(null) &&
-        prepared.components.words.every((word) => known.has(word))
+        queryWords.length <= SEARCH_QUERY_WORD_LIMIT &&
+        queryWords.every((word) => known.has(word))
       ),
   };
 }

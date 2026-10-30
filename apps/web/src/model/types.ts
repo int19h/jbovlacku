@@ -430,6 +430,8 @@ export interface PackageEntry {
   plain_text: string;
   classification: { kind: LexicalKind; selmaho: string[] };
   body: string | null;
+  /** Server-asserted eligibility for ordering, under the package's view. */
+  search_status?: { view: string; status: "active" | "retired" | "ineligible" };
 }
 export interface ViewBody {
   name: string;

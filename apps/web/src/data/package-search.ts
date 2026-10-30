@@ -28,6 +28,8 @@ export interface PackageSearchOptions {
   nearby?: boolean;
   /** Return independent Lojban and definition pages for one query. */
   grouped?: boolean;
+  includeRetired?: boolean;
+  view?: string | null;
   group?: import("../../../../packages/search/src/index.ts").SearchGroup;
   /** Meaning retrieval and claim previews always use literal text. */
   patterns?: boolean;

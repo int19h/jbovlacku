@@ -128,6 +128,17 @@ export function validateEntry(
   language: string,
   version: 1 | 2 = 1,
 ): asserts value is PackageEntry {
+  if (value && typeof value === "object" && "search_status" in value) {
+    const { search_status, ...base } = value as Record<string, any>;
+    if (
+      !fields(search_status, ["view", "status"]) ||
+      !eventId(search_status.view) ||
+      !["active", "retired", "ineligible"].includes(search_status.status)
+    )
+      throw invalidPackage();
+    validateEntry(base, language, version);
+    return;
+  }
   if (version === 2) {
     if (
       !(fields(value, V2_FIELDS) || fields(value, V2_BOUNDED_FIELDS)) ||
@@ -425,7 +436,15 @@ export function localSearch(
     typeof query === "string" ? query : (query.pattern ?? query.text);
   const selected = rafsiOnly
     ? selectRafsiMatches(entries, queryText, metrics, options)
-    : selectMatches(entries, query, metrics, undefined, options);
+    : selectMatches(entries, query, metrics, undefined, {
+        ...options,
+        knownWord: (entry) =>
+          !!entry.search_status &&
+          (!options.view || entry.search_status.view === options.view) &&
+          (entry.search_status.status === "active" ||
+            (options.includeRetired === true &&
+              entry.search_status.status === "retired")),
+      });
   const grouped = new Map<string, LocalHit & { position: number }>();
   for (const { entry, match, position, rafsi } of selected.rows) {
     const id = wordId({ language: "jbo", spelling: entry.word.spelling });
