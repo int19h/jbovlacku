@@ -1811,3 +1811,391 @@ test("r4: a failed consent-box off save keeps consent and retry usable", async (
   ).toBeVisible();
   expect(state.calls).toHaveLength(0);
 });
+
+test("r5: Not now cancels a pending Allow without removing stored consent", async ({
+  page,
+}) => {
+  const state = await meaningService(page);
+  await page.goto("/search?q=book&lang=en");
+  const meaning = group(page, "Similar in meaning");
+  const allow = meaning.getByRole("button", { name: "Allow meaning search" });
+  await expect(allow).toBeVisible();
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const original = LocalStore.prototype.setPreferences;
+    const barrier = new Promise<void>((resolve) => {
+      (window as any).r5ReleaseConsent = resolve;
+    });
+    LocalStore.prototype.setPreferences = async function (patch: any) {
+      if (patch.aiConsents) await barrier;
+      return original.call(this, patch);
+    };
+    const fetch = window.fetch;
+    (window as any).r5SemanticDispatches = 0;
+    window.fetch = function (...args) {
+      if (String(args[0]).includes("/search/semantic"))
+        (window as any).r5SemanticDispatches++;
+      return fetch.apply(this, args);
+    };
+  });
+  await allow.click();
+  await expect(allow).toBeDisabled();
+  await meaning.getByRole("button", { name: "Not now", exact: true }).click();
+  await expect(meaning).toContainText("Meaning search is off for this page.");
+  expect(state.calls).toHaveLength(0);
+  await page.evaluate(() => (window as any).r5ReleaseConsent());
+  await expect
+    .poll(() =>
+      page.evaluate(async () => {
+        const { LocalStore } = await import(String("/src/data/store.ts"));
+        return (await new LocalStore().preferences()).aiConsents.length;
+      }),
+    )
+    .toBe(1);
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      ),
+  );
+  expect(await page.evaluate(() => (window as any).r5SemanticDispatches)).toBe(
+    0,
+  );
+  expect(state.calls).toHaveLength(0);
+  await expect(meaning).toContainText("Meaning search is off for this page.");
+  await page.reload();
+  await expect(meaning.locator("article")).toHaveCount(1);
+  expect(state.calls).toHaveLength(1);
+});
+
+async function holdMeaningWrites(page: Page) {
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const original = LocalStore.prototype.setPreferences;
+    (window as any).r5Writes = [];
+    LocalStore.prototype.setPreferences = async function (patch: any) {
+      const kind = patch.aiConsents
+        ? "allow"
+        : patch.useMeaningSearch === false
+          ? "off"
+          : null;
+      if (!kind) return original.call(this, patch);
+      const write: any = { kind };
+      write.done = new Promise<void>((resolve) => {
+        write.finish = resolve;
+      });
+      const barrier = new Promise<boolean>((resolve) => {
+        write.release = resolve;
+      });
+      (window as any).r5Writes.push(write);
+      try {
+        if (await barrier)
+          throw new Error("Synthetic delayed preference failure.");
+        return await original.call(this, patch);
+      } finally {
+        write.finish();
+      }
+    };
+    const fetch = window.fetch;
+    (window as any).r5SemanticDispatches = 0;
+    window.fetch = function (...args) {
+      if (String(args[0]).includes("/search/semantic"))
+        (window as any).r5SemanticDispatches++;
+      return fetch.apply(this, args);
+    };
+  });
+}
+async function releaseMeaningWrite(page: Page, index: number, fail = false) {
+  await page.evaluate(
+    async ({ index, fail }) => {
+      const write = (window as any).r5Writes[index];
+      write.release(fail);
+      await write.done;
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      );
+    },
+    { index, fail },
+  );
+}
+const meaningPreferences = (page: Page) =>
+  page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    return new LocalStore().preferences();
+  });
+const meaningWrites = (page: Page) =>
+  page.evaluate(() => (window as any).r5Writes.map((write: any) => write.kind));
+const meaningDispatches = (page: Page) =>
+  page.evaluate(() => (window as any).r5SemanticDispatches);
+
+test("r5: a failed pending Allow cannot replace Not now and a deliberate retry works", async ({
+  page,
+}) => {
+  const state = await meaningService(page);
+  await page.goto("/search?q=book&lang=en");
+  const meaning = group(page, "Similar in meaning");
+  await holdMeaningWrites(page);
+  await meaning.getByRole("button", { name: "Allow meaning search" }).click();
+  await expect.poll(() => meaningWrites(page)).toEqual(["allow"]);
+  await meaning.getByRole("button", { name: "Not now", exact: true }).click();
+  await releaseMeaningWrite(page, 0, true);
+  await expect(meaning).toContainText("Meaning search is off for this page.");
+  await expect(meaning).not.toContainText(
+    "Synthetic delayed preference failure.",
+  );
+  expect(await meaningDispatches(page)).toBe(0);
+  expect((await meaningPreferences(page)).aiConsents).toEqual([]);
+  await meaning.getByRole("button", { name: "Enable meaning search" }).click();
+  await meaning.getByRole("button", { name: "Allow meaning search" }).click();
+  await expect.poll(() => meaningWrites(page)).toEqual(["allow", "allow"]);
+  await releaseMeaningWrite(page, 1);
+  await expect(meaning.locator("article")).toHaveCount(1);
+  expect(state.calls).toHaveLength(1);
+});
+
+test("r5: reopening consent while Allow saves keeps one write and needs a new action", async ({
+  page,
+}) => {
+  const state = await meaningService(page);
+  await page.goto("/search?q=book&lang=en");
+  const meaning = group(page, "Similar in meaning");
+  await holdMeaningWrites(page);
+  await meaning.getByRole("button", { name: "Allow meaning search" }).click();
+  await expect.poll(() => meaningWrites(page)).toEqual(["allow"]);
+  for (let index = 0; index < 2; index++) {
+    await meaning.getByRole("button", { name: "Not now", exact: true }).click();
+    await meaning
+      .getByRole("button", { name: "Enable meaning search" })
+      .click();
+    const allow = meaning.getByRole("button", { name: "Allow meaning search" });
+    await expect(allow).toBeDisabled();
+    await allow.dispatchEvent("click");
+    expect(await meaningWrites(page)).toEqual(["allow"]);
+  }
+  await releaseMeaningWrite(page, 0);
+  expect(await meaningDispatches(page)).toBe(0);
+  expect(state.calls).toHaveLength(0);
+  const allow = meaning.getByRole("button", { name: "Allow meaning search" });
+  await expect(allow).toBeEnabled();
+  await allow.click();
+  await expect(meaning.locator("article")).toHaveCount(1);
+  expect(await meaningWrites(page)).toEqual(["allow"]);
+  expect((await meaningPreferences(page)).aiConsents).toHaveLength(1);
+  expect(state.calls).toHaveLength(1);
+});
+
+for (const control of ["consent", "privacy"] as const) {
+  for (const first of ["allow", "off"] as const)
+    test(`r5: ${control} off stops pending Allow when ${first} saves first`, async ({
+      page,
+    }) => {
+      const state = await meaningService(page);
+      await page.goto("/search?q=book&lang=en");
+      const meaning = group(page, "Similar in meaning");
+      if (control === "privacy") {
+        await meaning
+          .getByRole("button", { name: "Allow meaning search" })
+          .click();
+        await expect(meaning.locator("article")).toHaveCount(1);
+        state.provider = "A different delayed provider";
+        await page.reload();
+      }
+      const consent = meaning.getByRole("group", {
+        name: "Meaning search consent",
+      });
+      await expect(consent).toBeVisible();
+      const before = await meaningPreferences(page);
+      const previousCalls = state.calls.length;
+      await holdMeaningWrites(page);
+      await consent
+        .getByRole("button", { name: "Allow meaning search" })
+        .click();
+      await expect.poll(() => meaningWrites(page)).toEqual(["allow"]);
+      const off =
+        control === "consent"
+          ? consent.getByRole("button", {
+              name: "Turn off meaning search",
+              exact: true,
+            })
+          : page
+              .getByRole("button", {
+                name: "Turn off meaning search",
+                exact: true,
+              })
+              .first();
+      await off.click();
+      await expect.poll(() => meaningWrites(page)).toEqual(["allow", "off"]);
+      await expect(
+        consent.getByRole("button", { name: "Allow meaning search" }),
+      ).toBeDisabled();
+      await releaseMeaningWrite(page, first === "allow" ? 0 : 1);
+      expect(await meaningDispatches(page)).toBe(0);
+      expect(state.calls).toHaveLength(previousCalls);
+      await releaseMeaningWrite(page, first === "allow" ? 1 : 0);
+      await expect(meaning).toHaveCount(0);
+      await expect(
+        page.getByRole("button", {
+          name: "Turn on meaning search",
+          exact: true,
+        }),
+      ).toBeVisible();
+      const after = await meaningPreferences(page);
+      expect(after.useMeaningSearch).toBe(false);
+      expect(after.useAiAssistance).toBe(before.useAiAssistance);
+      expect(after.aiConsents).toHaveLength(before.aiConsents.length + 1);
+      expect(after.aiConsents.slice(0, before.aiConsents.length)).toEqual(
+        before.aiConsents,
+      );
+      expect(await meaningDispatches(page)).toBe(0);
+      expect(state.calls).toHaveLength(previousCalls);
+      await page.reload();
+      await expect(meaning).toHaveCount(0);
+      await expect(
+        page.getByRole("button", {
+          name: "Turn on meaning search",
+          exact: true,
+        }),
+      ).toBeVisible();
+      expect(state.calls).toHaveLength(previousCalls);
+    });
+
+  test(`r5: failed ${control} off does not resume pending Allow and keeps explicit retry usable`, async ({
+    page,
+  }) => {
+    const state = await meaningService(page);
+    await page.goto("/search?q=book&lang=en");
+    const meaning = group(page, "Similar in meaning");
+    if (control === "privacy") {
+      await meaning
+        .getByRole("button", { name: "Allow meaning search" })
+        .click();
+      await expect(meaning.locator("article")).toHaveCount(1);
+      state.provider = "A different delayed provider";
+      await page.reload();
+    }
+    const consent = meaning.getByRole("group", {
+      name: "Meaning search consent",
+    });
+    await expect(consent).toBeVisible();
+    const before = await meaningPreferences(page);
+    const previousCalls = state.calls.length;
+    await holdMeaningWrites(page);
+    const allow = consent.getByRole("button", { name: "Allow meaning search" });
+    await allow.click();
+    await expect.poll(() => meaningWrites(page)).toEqual(["allow"]);
+    const off =
+      control === "consent"
+        ? consent.getByRole("button", {
+            name: "Turn off meaning search",
+            exact: true,
+          })
+        : page
+            .getByRole("button", {
+              name: "Turn off meaning search",
+              exact: true,
+            })
+            .first();
+    await off.click();
+    await expect.poll(() => meaningWrites(page)).toEqual(["allow", "off"]);
+    await releaseMeaningWrite(page, 1, true);
+    await expect(page.locator("main")).toContainText(
+      "Synthetic delayed preference failure.",
+    );
+    await expect(off).toBeEnabled();
+    await expect(allow).toBeDisabled();
+    await releaseMeaningWrite(page, 0);
+    await expect(allow).toBeEnabled();
+    expect(await meaningDispatches(page)).toBe(0);
+    expect(state.calls).toHaveLength(previousCalls);
+    const after = await meaningPreferences(page);
+    expect(after.useMeaningSearch).toBe(before.useMeaningSearch);
+    expect(after.useAiAssistance).toBe(before.useAiAssistance);
+    await allow.click();
+    await expect(meaning.locator("article")).toHaveCount(1);
+    expect(state.calls).toHaveLength(previousCalls + 1);
+    expect(await meaningWrites(page)).toEqual(["allow", "off"]);
+  });
+}
+
+test("r5: pending off blocks Allow and its failure cannot replace Not now", async ({
+  page,
+}) => {
+  const state = await meaningService(page);
+  await page.goto("/search?q=book&lang=en");
+  const meaning = group(page, "Similar in meaning");
+  await holdMeaningWrites(page);
+  await meaning
+    .getByRole("button", { name: "Turn off meaning search", exact: true })
+    .click();
+  await expect.poll(() => meaningWrites(page)).toEqual(["off"]);
+  const allow = meaning.getByRole("button", { name: "Allow meaning search" });
+  await expect(allow).toBeDisabled();
+  await allow.dispatchEvent("click");
+  expect(await meaningWrites(page)).toEqual(["off"]);
+  await meaning.getByRole("button", { name: "Not now", exact: true }).click();
+  await releaseMeaningWrite(page, 0, true);
+  await expect(meaning).toContainText("Meaning search is off for this page.");
+  await expect(meaning).not.toContainText(
+    "Synthetic delayed preference failure.",
+  );
+  expect(await meaningDispatches(page)).toBe(0);
+  expect(state.calls).toHaveLength(0);
+  await meaning.getByRole("button", { name: "Enable meaning search" }).click();
+  await expect(
+    meaning.getByRole("button", { name: "Allow meaning search" }),
+  ).toBeEnabled();
+  await expect(
+    meaning.getByRole("button", {
+      name: "Turn off meaning search",
+      exact: true,
+    }),
+  ).toBeEnabled();
+});
+
+test("r5: pending privacy off blocks an initial request after profile discovery", async ({
+  page,
+}) => {
+  const state = await meaningService(page);
+  await page.goto("/search?q=book&lang=en");
+  const meaning = group(page, "Similar in meaning");
+  await meaning.getByRole("button", { name: "Allow meaning search" }).click();
+  await expect(meaning.locator("article")).toHaveCount(1);
+  let release!: () => void;
+  const barrier = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let waiting = false;
+  await page.route("**/api/v1/embedding-profiles**", async (route) => {
+    waiting = true;
+    await barrier;
+    await route.fallback();
+  });
+  try {
+    await page.reload();
+    await expect.poll(() => waiting).toBe(true);
+    const off = page.getByRole("button", {
+      name: "Turn off meaning search",
+      exact: true,
+    });
+    await expect(off).toBeVisible();
+    await holdMeaningWrites(page);
+    await off.click();
+    await expect.poll(() => meaningWrites(page)).toEqual(["off"]);
+    release();
+    const allow = meaning.getByRole("button", { name: "Allow meaning search" });
+    await expect(allow).toBeDisabled();
+    expect(await meaningDispatches(page)).toBe(0);
+    expect(state.calls).toHaveLength(1);
+    await releaseMeaningWrite(page, 0, true);
+    await expect(page.locator("main")).toContainText(
+      "Synthetic delayed preference failure.",
+    );
+    await expect(allow).toBeEnabled();
+    expect(await meaningDispatches(page)).toBe(0);
+    await allow.click();
+    await expect(meaning.locator("article")).toHaveCount(1);
+    expect(state.calls).toHaveLength(2);
+  } finally {
+    release();
+  }
+});

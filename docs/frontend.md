@@ -399,6 +399,9 @@ Pattern queries show only Lojban words.
 Similar in meaning uses `POST /search/semantic` after one inline consent in the search page, without a modal.
 The disclosure names the server, provider, task, and fields sent. It covers this query and future search queries.
 Remembered consent applies only to that provider and scope, under section 16. The consent box offers a lasting off choice. Declining keeps ordinary search available.
+“Not now” stops meaning search for this page, including a pending consent save. It keeps stored provider consent for later pages.
+Either off control blocks a pending Allow action before its save finishes. A failed off save keeps consent and off retry available.
+The reader must press Allow again before that canceled acceptance can start meaning search.
 When AI assistance is off, or the server lacks `features.semantic_search` and a `query_available` profile, this group is absent.
 An absent group leaves no gap. Pending or failed indexing appears as a coverage note beside meaning results.
 

@@ -80,6 +80,7 @@ Version 2 packages store their ordering view once, with a status per entry. Olde
 A chosen view that differs from the package view keeps Definitions first and explains that limit without asking for another download.
 
 Meaning search uses inline consent for the named provider and scope. It stays absent when AI is off or the service is unavailable.
+“Not now” stops meaning search for this page, including a pending consent save. Stored provider consent stays available for later pages.
 Pending and failed indexing remain visible beside meaning results. The meaning snapshot and view stay visible in local mode.
 Back restores saved meaning results without another provider request. A failed matched-definition read retries without repeating inference.
 
