@@ -43,6 +43,8 @@ test("equations, component variables, quotations, nested relations and malformed
     "lo'u x_2 le'u",
     "ax_1",
     "x_1a",
+    "a\u0301x_1",
+    "x_1\u0301",
     "x_{01}",
     "x_0",
     "x_65536",

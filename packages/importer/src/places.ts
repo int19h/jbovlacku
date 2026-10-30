@@ -57,8 +57,8 @@ export function convertPlaces(source: string | null, field: string) {
     const before = text.slice(0, start);
     const after = text.slice(start + raw.length);
     const boundary =
-      !/[\p{L}\p{N}_\\{]$/u.test(before.slice(-2)) &&
-      !/^[\p{L}\p{N}_{}^]/u.test(after.slice(0, 2));
+      !/[\p{L}\p{M}\p{N}_\\{]$/u.test(before.slice(-2)) &&
+      !/^[\p{L}\p{M}\p{N}_{}^]/u.test(after.slice(0, 2));
     const equation =
       /[=+*/^<>−-]/.test(before.trimEnd().at(-1) ?? "") ||
       /[=+*/^<>−-]/.test(after.trimStart()[0] ?? "");
