@@ -495,7 +495,7 @@ test("query cache enforces byte and entry limits without retaining query text", 
   }
 });
 
-test("current coverage filters old inert associations and checks exact extraction and body bindings", async () =>
+test("current coverage filters old inert associations and counts stale bindings as pending", async () =>
   fixture(async ({ store, scanner, path, docs, ctx }) => {
     const provider = mock();
     const current = structuredClone(ctx.evaluation);
@@ -521,29 +521,39 @@ test("current coverage filters old inert associations and checks exact extractio
     );
     const sql = new DatabaseSync(path);
     try {
-      for (const mutation of [
-        "extraction_version=1",
-        `body='${hash(99999)}'`,
-      ]) {
-        sql.exec(
-          `UPDATE semantic_associations SET ${mutation} WHERE event='${docs[2].event}'`,
-        );
+      for (const [field, value] of [
+        ["extraction_version", 2],
+        ["envelope", hash(99998)],
+        ["body", hash(99999)],
+        ["word", hash(99999, "jvw1:")],
+        ["language", "fr"],
+      ] as const) {
+        sql
+          .prepare(`UPDATE semantic_associations SET ${field}=? WHERE event=?`)
+          .run(value, docs[2].event);
         const changed = new SemanticSearch(options, provider.assistance, true);
-        assert.equal(
-          (await changed.profiles(selected))[0].query_available,
-          true,
+        const description = (await changed.profiles(selected))[0];
+        assert.equal(description.query_available, true);
+        assert.equal(description.pending, 1);
+        assert(
+          !description.limitations.some((line) =>
+            line.includes("failed indexing"),
+          ),
         );
         const result = await changed.search(selected, request(), "local");
-        assert.equal(result.coverage.failed, 1);
+        assert.deepEqual(result.coverage, {
+          eligible: 2,
+          indexed: 1,
+          pending: 1,
+          failed: 0,
+        });
         assert.deepEqual(
           result.hits.map((hit) => hit.event),
           [docs[3].event],
         );
         sql
-          .prepare(
-            `UPDATE semantic_associations SET extraction_version=${semanticProjectionVersion()},body=? WHERE event=?`,
-          )
-          .run(docs[2].body, docs[2].event);
+          .prepare(`UPDATE semantic_associations SET ${field}=? WHERE event=?`)
+          .run(docs[2][field], docs[2].event);
       }
       // Equal aggregate counts cannot hide one absent currently eligible association.
       sql
@@ -562,6 +572,96 @@ test("current coverage filters old inert associations and checks exact extractio
     }
     assert.deepEqual(provider.calls, ["probe", "query"]);
   }));
+
+for (const batchState of ["failed", "ambiguous"] as const)
+  test(`exact input and provider failures stay failed while stale failures become pending (${batchState})`, async () =>
+    fixture(async ({ store, scanner, path }) => {
+      const docs = rows(6);
+      docs[4] = {
+        ...docs[4],
+        input: null,
+        input_hash: null,
+        error: "input_limit",
+      };
+      const ctx = context(docs, hash(9850));
+      const generation = await store.create(
+        {
+          snapshot: ctx.snapshot.snapshot,
+          view: ctx.evaluation.selected_view,
+          profile: profileId(profile),
+          eligible: docs.length,
+        },
+        profile,
+      );
+      await store.stage(generation.id, null, {
+        documents: docs,
+        next: docs.at(-1)!.event,
+        done: true,
+      });
+      await store.start(generation.id);
+      const batch = (await store.claim(generation.id))!;
+      assert.deepEqual(batch.inputs, [docs[5].input_hash]);
+      if (batchState === "ambiguous")
+        await store.sent(batch.id, "embedding:index:provider-failure");
+      await store.fail(batch.id, "embedding_provider");
+      await store.pause(generation.id, "embedding_provider");
+      await store.publish(
+        generation.id,
+        await store.current(generation.profile, generation.view),
+      );
+      const engine = new SemanticSearch(
+        {
+          profile: generation.profile,
+          store,
+          cache: store.queryCache,
+          scanner,
+        },
+        mock().assistance,
+        true,
+      );
+      const exact = await engine.search(
+        ctx,
+        { ...request(), limit: 100 },
+        "local",
+      );
+      assert.deepEqual(exact.coverage, {
+        eligible: 6,
+        indexed: 4,
+        pending: 0,
+        failed: 2,
+      });
+      assert(
+        (await engine.profiles(ctx))[0].limitations.includes(
+          "2 definitions failed indexing.",
+        ),
+      );
+      const sql = new DatabaseSync(path);
+      try {
+        sql
+          .prepare(
+            "UPDATE semantic_associations SET extraction_version=2 WHERE event IN (?,?)",
+          )
+          .run(docs[4].event, docs[5].event);
+        const stale = await engine.search(
+          ctx,
+          { ...request(), limit: 100 },
+          "local",
+        );
+        assert.deepEqual(stale.coverage, {
+          eligible: 6,
+          indexed: 4,
+          pending: 2,
+          failed: 0,
+        });
+        assert.equal((await store.batches(generation.id))[0].state, batchState);
+        assert.equal(
+          (await store.page(generation.id)).rows[4].error,
+          "input_limit",
+        );
+      } finally {
+        sql.close();
+      }
+    }));
 
 test("a complete empty context returns no hits or paid probe and a warm hit survives budget exhaustion", async () =>
   fixture(async ({ store, scanner, ctx }) => {
@@ -695,7 +795,7 @@ test("partial coverage retains unchanged definitions and omits missing or mismat
     const description = (await engine.profiles(changed))[0];
     assert.equal(description.query_available, true);
     assert.equal(description.indexed, 3);
-    assert.equal(description.pending, 1);
+    assert.equal(description.pending, 2);
     const result = await engine.search(
       changed,
       { ...request(), limit: 100 },
@@ -705,8 +805,8 @@ test("partial coverage retains unchanged definitions and omits missing or mismat
     assert.deepEqual(result.coverage, {
       eligible: 5,
       indexed: 3,
-      pending: 1,
-      failed: 1,
+      pending: 2,
+      failed: 0,
     });
     assert.deepEqual(
       result.hits.map((hit) => hit.event),
@@ -1699,6 +1799,159 @@ for (const mode of ["batch", "probe"] as const)
         assert.equal((await store.summary(job.id)).dispatch_intents, 0);
       } finally {
         await background.close();
+      }
+    }));
+
+for (const owner of ["operator", "background"] as const)
+  test(`${owner} generation with stale extraction rebuilds in the same snapshot and reuses vectors`, async () =>
+    fixture(async ({ store, scanner, path, docs, ctx }) => {
+      const { BackgroundSemanticIndexer } =
+        await import("../src/semantic/background.ts");
+      const identity = profileId(profile);
+      const view = ctx.evaluation.selected_view;
+      const old = (await store.current(identity, view))!;
+      if (owner === "background") await store.setBackgroundGeneration(old);
+      const sql = new DatabaseSync(path);
+      const staleCount = owner === "operator" ? 2 : docs.length;
+      sql
+        .prepare(
+          `UPDATE semantic_associations SET extraction_version=2 WHERE event IN (${docs
+            .slice(0, staleCount)
+            .map(() => "?")
+            .join(",")})`,
+        )
+        .run(...docs.slice(0, staleCount).map((row) => row.event));
+      const engine = new SemanticSearch(
+        { profile: identity, store, cache: store.queryCache, scanner },
+        mock().assistance,
+        true,
+      );
+      let staged!: () => void;
+      const staging = new Promise<void>((resolve) => {
+        staged = resolve;
+      });
+      let resume!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        resume = resolve;
+      });
+      let sources = 0;
+      let pages = 0;
+      const background = new BackgroundSemanticIndexer({
+        store,
+        profile: identity,
+        view,
+        needed: async () =>
+          (await engine.profiles(ctx)).some((row) => row.pending > 0),
+        source: async () => {
+          sources++;
+          return {
+            context: {
+              snapshot: ctx.snapshot.snapshot,
+              view,
+              profile: identity,
+              eligible: docs.length,
+            },
+            page: async (after) => {
+              pages++;
+              if (after === null)
+                return {
+                  documents: docs.slice(0, 2),
+                  next: docs[1].event,
+                  done: false,
+                };
+              assert.equal(after, docs[1].event);
+              staged();
+              await gate;
+              return {
+                documents: docs.slice(2),
+                next: docs.at(-1)!.event,
+                done: true,
+              };
+            },
+          };
+        },
+        assistance: {
+          embed: async () => {
+            throw new Error("Unchanged inputs need no embedding call");
+          },
+        },
+        probe: async () => {
+          throw new Error("Reused vectors need no new indexing probe");
+        },
+        report: (error) => {
+          throw error;
+        },
+      });
+      const work = background.cycle();
+      try {
+        assert.equal(
+          await Promise.race([
+            staging.then(() => true),
+            work.then(() => false),
+          ]),
+          true,
+          "Pending extraction changes must start a new generation for the same snapshot",
+        );
+        assert.equal(await store.current(identity, view), old);
+        const partial = await engine.search(
+          ctx,
+          { ...request(), limit: 100 },
+          "local",
+        );
+        assert.deepEqual(partial.coverage, {
+          eligible: 4,
+          indexed: docs.length - staleCount,
+          pending: staleCount,
+          failed: 0,
+        });
+        assert.deepEqual(
+          partial.hits.map((hit) => hit.event),
+          docs.slice(staleCount).map((row) => row.event),
+        );
+        resume();
+        await work;
+        const current = (await store.current(identity, view))!;
+        assert.notEqual(current, old);
+        assert.equal(
+          (await store.generation(current)).snapshot,
+          ctx.snapshot.snapshot,
+        );
+        assert.equal((await store.generation(current)).state, "completed");
+        assert.equal((await store.summary(current)).batches, 0);
+        assert(
+          (await store.page(current)).rows.every(
+            (row) => row.extraction_version === semanticProjectionVersion(),
+          ),
+        );
+        for (const table of ["semantic_inputs", "semantic_vectors"])
+          assert.equal(
+            sql.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()!.n,
+            docs.length,
+          );
+        const rebuilt = await engine.search(
+          ctx,
+          { ...request(), limit: 100 },
+          "local",
+        );
+        assert.deepEqual(rebuilt.coverage, {
+          eligible: 4,
+          indexed: 4,
+          pending: 0,
+          failed: 0,
+        });
+        assert.deepEqual(
+          rebuilt.hits.map((hit) => hit.event),
+          docs.map((row) => row.event),
+        );
+        await background.cycle();
+        assert.equal(await store.current(identity, view), current);
+        assert.equal(sources, 1);
+        assert.equal(pages, 2);
+      } finally {
+        resume();
+        await work;
+        await background.close();
+        sql.close();
       }
     }));
 

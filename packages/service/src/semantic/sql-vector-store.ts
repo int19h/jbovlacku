@@ -486,7 +486,7 @@ export class SqlVectorStore implements VectorStore {
             row.extraction_version !== binding.extraction_version);
         const language = (languages[binding.language] ??= empty());
         const status = mismatch
-          ? "failed"
+          ? "pending"
           : row?.indexed && !row.error
             ? "indexed"
             : row &&
