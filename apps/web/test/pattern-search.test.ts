@@ -241,12 +241,10 @@ test("browser and server agree on every headword and rafsi pattern and preserve 
     },
     { language, queries },
   );
-  await test
-    .info()
-    .attach("server-pattern-attempts.json", {
-      body: JSON.stringify(compared.attempts, null, 2),
-      contentType: "application/json",
-    });
+  await test.info().attach("server-pattern-attempts.json", {
+    body: JSON.stringify(compared.attempts, null, 2),
+    contentType: "application/json",
+  });
   console.log("Server pattern attempts:", JSON.stringify(compared.attempts));
   for (const result of compared.rows)
     expect(result.local, result.q).toEqual(result.remote);
@@ -303,6 +301,9 @@ test("pattern show all keeps stable order and version 1 discloses missing rafsi 
   });
   await page.goto("/search?q=ba*&lang=en");
   await expect(page.locator("article.hit")).toHaveCount(20);
+  await expect(page.locator("main")).not.toContainText(
+    "Definitions appear first.",
+  );
   await expect(
     page.getByText(
       "This package has no rafsi data. Pattern results cover headwords only.",

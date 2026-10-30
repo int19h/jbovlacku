@@ -290,7 +290,7 @@ export async function searchPage(
   )
     results.before(
       p(
-        "Known-word ordering is unavailable for this package or view. Download a new package for the server view in Settings. Definitions appear first.",
+        "Known-word ordering is unavailable for this package or view. Download a new package for the server view in Settings.",
         "notice",
       ),
     );
