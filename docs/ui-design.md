@@ -156,11 +156,13 @@ Named disclosures have a chevron, secondary label, and at least a 44px target.
 ## Search screen
 
 The search surface corresponds to `/search?q=...&lang=en`.
-A count line and quiet definition-language select appear above the results. English is the initial definition language.
+A quiet definition-language select appears above the results. English is the initial definition language.
+Each group shows its count once. One screen-reader-only region announces concise counts in displayed group order, with a separate later meaning count.
 The active view appears in the footer. Local or remote search mode lives in Settings.
 The first remote request discloses the named server. Switching modes never uploads local query history silently.
 While meaning search is on, a visible note beside search names its query upload and offers “Turn off meaning search”.
 Local mode keeps word and definition searches in the browser, while consented meaning search uses the server.
+The off choice persists separately from consent and other AI choices. “Turn on meaning search” remains beside search.
 
 Each row has three content lines, separated from the next row by a thin rule and 16px vertical padding.
 The first line shows the linked headword, italic rafsi, type, and selma'o for cmavo.
@@ -174,7 +176,8 @@ Search order follows exact headword, exact gloss, exact component sequence, cont
 One search box has no mode switch. Visible headings divide results into Lojban words, Definitions, and Similar in meaning.
 Lojban words includes headword, segmented, pattern, and rafsi matches. Definitions includes gloss and text matches.
 When every space-separated query word has an exact normalized headword, Lojban words comes first. Otherwise, Definitions comes first.
-The eligible language index must hold each complete spelling. Cmavo segments alone cannot establish a known word.
+The eligible language index must hold each complete spelling. Pause periods, commas, and the `h` apostrophe alias use that same spelling.
+Cmavo segments alone cannot establish a known word.
 Pattern queries show only Lojban words. Each group keeps its own pagination and “show all” action.
 Meaning search needs one inline consent under the frontend's provider and scope rules.
 When AI is off or meaning search is unavailable, that group is absent and leaves no gap.
@@ -185,6 +188,7 @@ Case and acute headword stress marks do not change the order.
 If segmentation reaches a resource limit, a visible notice states that some sequence matches or word cards can be missing.
 The notice stays through pagination and browser Back.
 Each group ends with its remaining count and “show all.” The page then shows “Missing a word for this? Add it” and the retired-results filter.
+Lexical counts and these controls appear before meaning search finishes. Lexical expansion remains available while meaning work waits.
 A rafsi query shows its word relation, for example “cku ← cukta,” and retains assignment conflicts.
 No official badge appears. No identity, key prompt, or general activity feed precedes reading.
 

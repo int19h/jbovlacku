@@ -159,6 +159,9 @@ Before its first remote query, the app states that queries reach the named serve
 A change of mode does not silently upload previously local query history.
 Local mode keeps word and definition queries in the browser. Consented meaning search still sends each new query to the server and provider.
 The search page states this beside the box while meaning search is on and offers “Turn off meaning search”.
+That action saves a lasting search preference, separate from provider consent and the general AI preference.
+While it is off, new queries and reloads show no meaning consent or results and send no meaning request.
+“Turn on meaning search” restores that search preference. Applicable provider consent is still required.
 
 Search normalization affects lookup only. It never rewrites signed spellings or definition text.
 Use NFC, case folding, and explicit apostrophe aliases in search indexes.
@@ -376,16 +379,20 @@ There is no search-class or meaning-mode switch.
 Lojban words includes headword, segmented, pattern, and rafsi matches. Definitions includes gloss and text matches.
 A word can appear in both groups when it matches both. Each group keeps its own match-class order and alternatives.
 When every space-separated query word has an exact normalized headword in the eligible language index, Lojban words comes first. Otherwise, Definitions comes first.
-A known complete headword also puts Lojban words first. Normalization follows the headword rules above, without segmenting a query word into cmavo.
+A known complete headword also puts Lojban words first. Case, acute stress, and apostrophe aliases follow the headword rules above.
+For this test, remove pause periods and commas and read `h` as an apostrophe in each complete spelling.
+Do not segment a query word into cmavo. Other punctuation and unknown words do not count as known spellings.
 A compound cmavo spelling counts only when the dictionary holds that complete spelling as a headword.
 
 For example, known `lo` and `ve` never make `love` a known query word. Known `mi` and `klama` make `mi klama` known.
+The forms `mi klama.`, `.i mi klama`, `coi, do`, `la .alis.`, and `kihe` count when their complete words exist.
 
 Server ordering applies its language, effective-receipt, eligibility, and retired-results filters before that test.
 Local ordering uses view-bound evidence in version 2 packages from the same snapshot. It follows the same eligibility and retired-results rules.
 
 Older packages without that evidence cannot establish known words. A visible notice asks for a new package, and Definitions comes first.
-Evidence for a different selected view also cannot establish known words. No local query reaches a server to resolve missing evidence.
+Evidence for a different selected view also cannot establish known words. The notice names its server-view limit and says that Definitions comes first.
+It offers remote search for the chosen view without asking for another download. No local query reaches a server to resolve missing evidence.
 Local hits still include every retained publication. Ordering evidence does not provide complete current publication statuses.
 Pattern queries show only Lojban words.
 
@@ -408,7 +415,10 @@ Each group offers pagination and “show all” with its remaining count. The pa
 One click reveals all remaining local hits or fetches remote pages in sequence, up to the browser limit of 1,000 hits per lexical group. Meaning search retains at most 100 definitions and pages them locally.
 Only one expansion runs at once. Navigation cancels it, and repeated cursors or results stop it.
 Each lexical group shows its own loading or failure state. A failed group does not prevent the other group from loading.
-One live count region announces the settled results once per search, consent action, retry, or expansion. Group statuses remain ordinary text.
+One screen-reader-only count region announces settled lexical counts in displayed group order as soon as both lexical groups finish.
+Lexical counts, expansions, Add it, and the retired filter never wait for meaning requests or matched definition reads.
+Meaning results announce their own settled count separately, including while a lexical expansion waits.
+Each consent action, retry, or expansion announces its own settled results once. Group statuses remain visible ordinary text without a second visible copy.
 After expansion, focus moves to the first new row. A failed or empty expansion keeps focus on its retry, remaining control, or group status.
 A failed meaning definition read offers Retry reading for that definition. This retry retains successful rows and sends no inference request.
 A rafsi lookup identifies the related word, for example “cku ← cukta,” and exposes competing assignments when present.
@@ -1361,7 +1371,9 @@ Optional `group` selects `lojban` or `definitions` before matching and paginatio
 Without it, the earlier combined lexical order remains available. Signed records do not change.
 Version 2 package entries can carry the optional ordering evidence defined below.
 Search responses can include `all_lojban`. It states whether the eligible index knows the complete normalized headword or every space-separated query word.
-Each query word must match one complete normalized dictionary spelling. Segmented cmavo pieces, punctuation aliases, and unrecognized text do not establish that spelling.
+Each query word must match one complete normalized dictionary spelling. Case, acute stress, and apostrophe aliases follow section 4.
+Remove pause periods and commas and read `h` as an apostrophe in each complete spelling.
+Segmented cmavo pieces, other punctuation, and unrecognized text do not establish that spelling.
 The response uses the same language, view, snapshot, receipt, eligibility, and retired-results filters as its hits.
 Search cursors include the group and literal mode. A cursor from another mode returns HTTP 400 with `bad_cursor`.
 `pattern_invalid` returns HTTP 400, and `pattern_timeout` returns HTTP 422.
@@ -1684,7 +1696,9 @@ With `packages_available: true`, empty descriptor arrays mean that the server ha
 Older servers can omit both new fields. Clients retain the earlier word-response view lookup when no explicit view choice exists.
 An absent availability field retains the earlier package-discovery behavior. A present field must be a boolean, and a present view must be an event ID.
 
-A package manifest contains exactly `version`, `language`, `snapshot`, and `parts`. Version is 1 or 2.
+A package manifest contains `version`, `language`, `snapshot`, and `parts`. Version is 1 or 2.
+Version 2 can also contain `search_view`, the signed view ID that binds ordering evidence for every entry in that package.
+No other fields are permitted. Version 1 keeps exactly its original four fields.
 The manifest response lists version 1 packages in `packages` and every other version in `package_versions`.
 A client requests a version explicitly with the `version` query. The default remains version 1.
 Each part contains `hash`, `bytes`, and `count`. Part hashes identify canonical JSON arrays of search entries.
@@ -1694,8 +1708,12 @@ Their dedicated endpoint uses that limit rather than the 256 KiB event-body limi
 An entry contains `event`, `word`, `language`, `glosses`, `plain_text`, `classification`, and `body`.
 Event is the publication ID. Word is its word object. Body is its body hash or null.
 A version 2 entry adds `issuer`, `notes`, `rafsi`, `rafsi_complete`, and `attribution`.
-It can also carry `search_status`, with exactly `view` and `status`. The view is the selected signed view ID for that package's snapshot.
-Status is `active`, `retired`, or `ineligible`. Active means eligible, effective, and active for ordinary remote search.
+With `search_view`, each entry carries `search_status` as `active`, `retired`, or `ineligible`. Store the view once per package, never per entry or part.
+The browser keeps that binding once in its saved package and passes it to local search.
+Older version 2 packages can omit ordering evidence or use `search_status` with exactly `view` and `status` per entry.
+A package without `search_view` accepts that older object form only. A package with `search_view` requires the compact status on every entry.
+Malformed view IDs, invalid statuses, mixed forms, and extra fields fail package validation.
+The view is the selected signed view ID for that package's snapshot. Status is `active`, `retired`, or `ineligible`. Active means eligible, effective, and active for ordinary remote search.
 Retired means eligible and effective, but included only when remote search includes retired results. It includes unresolved non-active statuses under that filter.
 Ineligible means that the publication cannot establish a known query word in that view.
 This is derived server evidence for ordering, rather than signed publication status. It changes with status, eligibility, receipt, or selected-view changes.
@@ -1866,7 +1884,9 @@ Meaning search requires `features.semantic_search` and a `query_available` embed
 If neither capability is available, the checkbox gives way to “Not available on this server.”
 
 While assistance is off or meaning search is unavailable, the search page keeps its Lojban and definition groups.
-The meaning group returns when its required capability is available and assistance is on.
+The meaning group returns when its required capability is available, assistance is on, and the separate meaning-search preference is on.
+Turning meaning search off preserves provider and scope consent and all other AI preferences. Its on control remains beside search.
+This search-page preference does not change the wizard's nearby mode or its stored choice.
 Remembered provider and scope consent stays unchanged.
 The nearby panel in the wizard's meaning step retains its explicit “by words” and “by meaning” choices.
 When AI assistance is off or meaning search is unavailable, that panel hides “by meaning” and uses “by words”.

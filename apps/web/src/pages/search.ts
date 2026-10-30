@@ -158,7 +158,7 @@ export async function searchPage(
     el("h1", { class: "sr", text: query ? `Search: ${query}` : "Search" }),
   );
   const countLine = el("div", { class: "count-line" });
-  const count = el("p", { class: "count", "aria-live": "polite", text: "" });
+  const count = el("p", { class: "count sr", "aria-live": "polite", text: "" });
   const languageSelect = el("select", {
     class: "inline-select",
     "aria-label": "Definition language",
@@ -280,22 +280,34 @@ export async function searchPage(
       })
       .catch(() => {});
   countLine.before(meaningPrivacy(app, !!cached));
-  if (
-    cached &&
-    cached.entries.some(
-      (entry) =>
-        !entry.search_status ||
-        (getPreferredView() && entry.search_status.view !== getPreferredView()),
-    )
-  )
-    results.before(
-      p(
-        "Known-word ordering is unavailable for this package or view. Download a new package for the server view in Settings.",
-        "notice",
-      ),
-    );
+  if (cached) {
+    const chosen = getPreferredView();
+    let missingEvidence = false;
+    let differentView =
+      !!chosen && !!cached.search_view && cached.search_view !== chosen;
+    // Compact packages bind every status once. Scan only the older per-entry form.
+    if (!cached.search_view)
+      for (const entry of cached.entries) {
+        const view =
+          typeof entry.search_status === "object"
+            ? entry.search_status.view
+            : undefined;
+        if (!view) missingEvidence = true;
+        else if (chosen && view !== chosen) differentView = true;
+      }
+    if (missingEvidence || differentView)
+      results.before(
+        p(
+          differentView
+            ? "Known-word ordering evidence in this package covers the server view. It cannot establish known words in your chosen view. Definitions comes first. Remote search can use your chosen view."
+            : "Known-word ordering is unavailable for this package. Download a new package in Settings. Definitions comes first.",
+          "notice",
+        ),
+      );
+  }
 
   if (!query) {
+    count.classList.remove("sr");
     count.textContent = "Type a word or a meaning to search.";
     if (app.session.preferences.searchMode === "local" && !cached) {
       const note = p(
@@ -458,17 +470,30 @@ export async function searchPage(
   };
   let initialized = false;
   let meaningCount = "";
+  const orderedGroups = () =>
+    allLojban || pattern
+      ? [groups.lojban, groups.definitions]
+      : [groups.definitions, groups.lojban];
   const announceCounts = () => {
     if (!initialized || expanding || !context.live()) return;
-    const message = [
-      ...Object.values(groups)
-        .filter((group) => !group.node.hidden)
-        .map((group) => group.status.textContent),
-      meaningCount,
-    ]
-      .filter(Boolean)
+    const message = orderedGroups()
+      .filter((group) => !group.node.hidden)
+      .map((group) => {
+        const label = group === groups.lojban ? "Lojban" : "definition";
+        if (!group.loaded)
+          return `${label === "Lojban" ? label : "Definition"} results are unavailable.`;
+        return `${group.hits.length}${!cached && group.next ? " or more" : ""} ${label} ${group.hits.length === 1 && (cached || !group.next) ? "result" : "results"}.`;
+      })
       .join(" ");
     if (count.textContent !== message) count.textContent = message;
+  };
+  const announceMeaning = () => {
+    if (!initialized || !context.live()) return;
+    if (!meaningCount) {
+      announceCounts();
+      return;
+    }
+    if (count.textContent !== meaningCount) count.textContent = meaningCount;
   };
   const refresh = () => {
     provenance
@@ -487,10 +512,7 @@ export async function searchPage(
         ),
       );
     segmentationNote.hidden = segmentation !== "limited";
-    const ordered =
-      allLojban || pattern
-        ? [groups.lojban, groups.definitions]
-        : [groups.definitions, groups.lojban];
+    const ordered = orderedGroups();
     // Keep the DOM order equal to the reading and keyboard order.
     const before = results.firstElementChild;
     if (before !== ordered[0].node)
@@ -575,7 +597,9 @@ export async function searchPage(
     for (const control of results.querySelectorAll<HTMLButtonElement>(
       "section[aria-labelledby=meaning-heading] .end-line button",
     ))
-      control.disabled = expanding;
+      control.disabled =
+        expanding ||
+        control.closest("section")?.getAttribute("aria-busy") === "true";
   };
   const showError = (key: SearchGroup, error: unknown) => {
     const group = groups[key];
@@ -754,37 +778,6 @@ export async function searchPage(
     )
       group.rows.append(p("No matches in this group.", "small"));
   }
-  if (!pattern)
-    await meaningSearchGroup(
-      results,
-      query,
-      language,
-      cached || !snapshot || !view ? null : { snapshot, view },
-      app,
-      context,
-      (hit, source) => hitRow(app, hit, query, language, source, context),
-      {
-        busy: () => expanding,
-        changed: announceCounts,
-        summary: (message) => {
-          meaningCount = message;
-        },
-        async run(work) {
-          if (expanding || !context.live()) return;
-          expanding = true;
-          refresh();
-          try {
-            await work();
-          } finally {
-            expanding = false;
-            if (context.live()) {
-              refresh();
-              announceCounts();
-            }
-          }
-        },
-      },
-    );
   initialized = true;
   announceCounts();
   const retired = el("span", { class: "meta" });
@@ -813,6 +806,37 @@ export async function searchPage(
         "meta",
       ),
     );
+  if (!pattern)
+    void meaningSearchGroup(
+      results,
+      query,
+      language,
+      cached || !snapshot || !view ? null : { snapshot, view },
+      app,
+      context,
+      (hit, source) => hitRow(app, hit, query, language, source, context),
+      {
+        busy: () => expanding,
+        changed: announceMeaning,
+        summary: (message) => {
+          meaningCount = message;
+        },
+        async run(work) {
+          if (expanding || !context.live()) return;
+          expanding = true;
+          refresh();
+          try {
+            await work();
+          } finally {
+            expanding = false;
+            if (context.live()) {
+              refresh();
+              announceMeaning();
+            }
+          }
+        },
+      },
+    ).catch(() => {});
 }
 
 function hitRow(

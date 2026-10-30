@@ -365,7 +365,7 @@ test("AI off, missing semantic capability, unavailable profiles, and patterns ha
   await meaning.getByRole("button", { name: "Allow meaning search" }).click();
   await expect(meaning.locator("article")).toHaveCount(1);
   const counts = page.locator("main .count-line .count");
-  await expect(counts).toContainText("1 meaning result shown.");
+  await expect(counts).toContainText("1 meaning result.");
   await page.evaluate(async () => {
     const { Session } = await import(String("/src/app/session.ts"));
     const { LocalStore } = await import(String("/src/data/store.ts"));
@@ -664,8 +664,9 @@ test("r2: meaning consent names dictionary fields and local privacy follows cons
   await off.click();
   await expect(meaning.locator("article")).toHaveCount(0);
   await page.goto("/search?q=book&lang=en");
+  await expect(meaning).toHaveCount(0);
   await expect(
-    meaning.getByRole("button", { name: "Allow meaning search" }),
+    page.getByRole("button", { name: "Turn on meaning search", exact: true }),
   ).toBeVisible();
   expect(state.calls).toHaveLength(1);
   await page.goto("/search");
@@ -884,7 +885,7 @@ test("r2: a failed word group keeps successful Definitions readable", async ({
 });
 
 for (const local of [true, false])
-  test(`r2: ${local ? "local" : "remote"} exact tokens and retired words control group order`, async ({
+  test(`r3: ${local ? "local" : "remote"} complete spelling aliases and retired words control group order`, async ({
     page,
   }) => {
     await page.goto("/search");
@@ -893,24 +894,36 @@ for (const local of [true, false])
       async ({ corePath, view, issuer }) => {
         const core = await import(corePath);
         await core.initializeCore();
-        return ["lo", "ve", "ti", "me", "mi", "klama", "iseri'abo"].map(
-          (spelling, index) => ({
-            event: "jve1:" + (index + 1).toString(16).padStart(64, "0"),
-            word: { language: "jbo", spelling },
-            word_id: core.wordId({ language: "jbo", spelling }),
-            language: "en",
-            glosses: [],
-            plain_text: "Synthetic definition.",
-            classification: { kind: "cmavo", selmaho: [] },
-            body: null,
-            issuer,
-            notes: false,
-            rafsi: [],
-            rafsi_complete: true,
-            attribution: null,
-            search_status: { view, status: "active" },
-          }),
-        );
+        return [
+          "lo",
+          "ve",
+          "ti",
+          "me",
+          "mi",
+          "klama",
+          "iseri'abo",
+          "i",
+          "coi",
+          "do",
+          "la",
+          "alis",
+          "ki'e",
+        ].map((spelling, index) => ({
+          event: "jve1:" + (index + 1).toString(16).padStart(64, "0"),
+          word: { language: "jbo", spelling },
+          word_id: core.wordId({ language: "jbo", spelling }),
+          language: "en",
+          glosses: [],
+          plain_text: "Synthetic definition.",
+          classification: { kind: "cmavo", selmaho: [] },
+          body: null,
+          issuer,
+          notes: false,
+          rafsi: [],
+          rafsi_complete: true,
+          attribution: null,
+          search_status: { view, status: "active" },
+        }));
       },
       { corePath, view: f.view, issuer: f.identities.author },
     );
@@ -966,6 +979,14 @@ for (const local of [true, false])
       ["time", false],
       ["klama", true],
       ["mi klama", true],
+      ["mi klama.", true],
+      [".i mi klama", true],
+      ["coi, do", true],
+      ["la .alis.", true],
+      ["kihe", true],
+      ["klama!", false],
+      ["coi, unknown", false],
+      ["... ,", false],
     ] as const) {
       await page.goto(
         "/search?" + new URLSearchParams({ q: query, lang: "en" }),
@@ -1050,10 +1071,9 @@ test("r2: an old package keeps its hits and visibly explains missing ordering ev
   ]);
   await expect(group(page, "Lojban words").locator("article")).toHaveCount(20);
   await expect(
-    page.getByText(
-      "Known-word ordering is unavailable for this package or view.",
-      { exact: false },
-    ),
+    page.getByText("Known-word ordering is unavailable for this package.", {
+      exact: false,
+    }),
   ).toBeVisible();
 });
 
@@ -1118,7 +1138,7 @@ test("r2: failed consent revocation remains visible and keeps the off control us
     const { LocalStore } = await import(String("/src/data/store.ts"));
     const original = LocalStore.prototype.setPreferences;
     LocalStore.prototype.setPreferences = async function (patch: any) {
-      if (patch.aiConsents)
+      if (patch.useMeaningSearch === false)
         throw new Error("Synthetic revocation storage failure.");
       return original.call(this, patch);
     };
@@ -1127,7 +1147,7 @@ test("r2: failed consent revocation remains visible and keeps the off control us
     .getByRole("button", { name: "Turn off meaning search", exact: true })
     .click();
   await expect(page.locator("main")).toContainText(
-    "The saved consent is unchanged.",
+    "The saved meaning search choice is unchanged.",
   );
   await expect(page.locator("main")).toContainText(
     "Synthetic revocation storage failure.",
@@ -1186,4 +1206,312 @@ test("r2: cross-document Back restores meaning results without inference", async
   await page.goBack();
   await expect(meaning.locator("article")).toHaveCount(25);
   expect(state.calls).toHaveLength(1);
+});
+
+for (const held of ["semantic", "definition"] as const)
+  test(`r3: held ${held} work leaves lexical counts, actions, and announcements ready`, async ({
+    page,
+  }) => {
+    const state = await meaningService(page, 21);
+    await localPackage(page);
+    await page.goto("/search?q=se&lang=en");
+    const meaning = group(page, "Similar in meaning");
+    await meaning.getByRole("button", { name: "Allow meaning search" }).click();
+    await expect(meaning.locator("article")).toHaveCount(20);
+    await page.addInitScript(() => {
+      (window as any).r3Counts = [];
+      new MutationObserver((records) => {
+        const count = document.querySelector("main .count-line .count");
+        if (
+          count &&
+          records.some(
+            (record) =>
+              record.target === count || count.contains(record.target),
+          )
+        )
+          (window as any).r3Counts.push(count.textContent);
+      }).observe(document, {
+        subtree: true,
+        childList: true,
+        characterData: true,
+      });
+    });
+    let release!: () => void;
+    const waiting = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let started = false;
+    const target =
+      held === "semantic" ? "**/api/v1/search/semantic" : "**/api/v1/events/**";
+    await page.route(target, async (route) => {
+      if (
+        held === "definition" &&
+        !decodeURIComponent(route.request().url()).includes(
+          state.records[0].envelope.id,
+        )
+      )
+        return route.fallback();
+      started = true;
+      await waiting;
+      return route.fallback();
+    });
+    try {
+      await page.reload();
+      await expect.poll(() => started).toBe(true);
+      const counts = page.locator("main .count-line .count");
+      await expect(counts).toContainText("20 Lojban results.");
+      await expect(counts).not.toContainText("meaning");
+      await expect(counts).toHaveClass(/\bsr\b/);
+      await expect(
+        page.getByRole("link", { name: "Add it", exact: true }),
+      ).toBeVisible();
+      await group(page, "Lojban words")
+        .getByRole("button", { name: "Show more", exact: true })
+        .focus();
+      await page.keyboard.press("Enter");
+      await expect(group(page, "Lojban words").locator("article")).toHaveCount(
+        40,
+      );
+      await expect(
+        group(page, "Lojban words").locator("article .hw").nth(20),
+      ).toBeFocused();
+      await expect(counts).toHaveText(
+        "40 Lojban results. 20 definition results.",
+      );
+      release();
+      await expect(meaning.locator("article")).toHaveCount(20);
+      await expect(counts).toHaveText("20 meaning results.");
+      await expect(
+        group(page, "Lojban words").locator("article .hw").nth(20),
+      ).toBeFocused();
+      expect(await page.evaluate(() => (window as any).r3Counts)).toEqual([
+        "20 Lojban results. 20 definition results.",
+        "40 Lojban results. 20 definition results.",
+        "20 meaning results.",
+      ]);
+    } finally {
+      release();
+    }
+  });
+
+test("r3: a held remote meaning request cannot delay retired results or Add it", async ({
+  page,
+}) => {
+  await meaningService(page);
+  await page.goto("/search?q=book&lang=en");
+  await group(page, "Similar in meaning")
+    .getByRole("button", { name: "Allow meaning search" })
+    .click();
+  await expect(
+    group(page, "Similar in meaning").locator("article"),
+  ).toHaveCount(1);
+  let release!: () => void;
+  const waiting = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let completed!: () => void;
+  const settled = new Promise<void>((resolve) => {
+    completed = resolve;
+  });
+  let started = false;
+  await page.route("**/api/v1/search/semantic", async (route) => {
+    started = true;
+    await waiting;
+    try {
+      return await route.fallback();
+    } finally {
+      completed();
+    }
+  });
+  try {
+    await page.reload();
+    await expect.poll(() => started).toBe(true);
+    await expect(page.getByLabel("Include retired results")).toBeVisible();
+    await expect(
+      page.getByRole("link", { name: "Add it", exact: true }),
+    ).toBeVisible();
+    const counts = page.locator("main .count-line .count");
+    await expect(counts).toHaveText(
+      /^\d+(?: or more)? definition results?\. \d+(?: or more)? Lojban results?\.$/,
+    );
+    await expect(counts).toHaveClass(/\bsr\b/);
+    await page.getByRole("link", { name: "Settings", exact: true }).click();
+    await expect(
+      page.getByRole("heading", { level: 1, name: "Settings" }),
+    ).toBeVisible();
+    await expect(page.locator("main")).toContainText(
+      "Semantic search: available.",
+    );
+    release();
+    await settled;
+    await expect(page.locator("main #meaning-heading")).toHaveCount(0);
+  } finally {
+    release();
+    if (started) await settled;
+  }
+});
+
+test("r3: a chosen view mismatch explains the server evidence without download advice or query upload", async ({
+  page,
+}) => {
+  await localPackage(page);
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    await new LocalStore().setPreferences({
+      view: "jve1:" + "f".repeat(64),
+      useAiAssistance: false,
+    });
+  });
+  const uploads: string[] = [];
+  await page.route("**/api/v1/search**", (route) => {
+    uploads.push(route.request().url());
+    return route.abort();
+  });
+  await page.goto("/search?q=se&lang=en");
+  await expect(page.locator("main h2")).toHaveText([
+    "Definitions",
+    "Lojban words",
+  ]);
+  const notice = page
+    .locator("main > .notice")
+    .filter({ hasText: "Known-word ordering" });
+  await expect(notice).toContainText("server view");
+  await expect(notice).toContainText("chosen view");
+  await expect(notice).toContainText("Definitions comes first");
+  await expect(notice).not.toContainText(/download/i);
+  expect(uploads).toEqual([]);
+});
+
+test("r3: turning meaning search off persists separately from consent and other AI choices", async ({
+  page,
+}) => {
+  const state = await meaningService(page);
+  await page.goto("/search?q=book&lang=en");
+  await group(page, "Similar in meaning")
+    .getByRole("button", { name: "Allow meaning search" })
+    .click();
+  await expect(
+    group(page, "Similar in meaning").locator("article"),
+  ).toHaveCount(1);
+  const preferences = () =>
+    page.evaluate(async () => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      return new LocalStore().preferences();
+    });
+  const before = await preferences();
+  await page
+    .getByRole("button", { name: "Turn off meaning search", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Turn on meaning search", exact: true }),
+  ).toBeVisible();
+  for (const query of ["book", "travel"]) {
+    await page.goto("/search?" + new URLSearchParams({ q: query, lang: "en" }));
+    await expect(
+      page.getByRole("button", { name: "Turn on meaning search", exact: true }),
+    ).toBeVisible();
+    await expect(group(page, "Similar in meaning")).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: "Allow meaning search" }),
+    ).toHaveCount(0);
+    await page.reload();
+    await expect(
+      page.getByRole("button", { name: "Turn on meaning search", exact: true }),
+    ).toBeVisible();
+    await expect(group(page, "Similar in meaning")).toHaveCount(0);
+  }
+  expect(state.calls).toHaveLength(1);
+  const after = await preferences();
+  expect(after.useAiAssistance).toBe(before.useAiAssistance);
+  expect(after.aiConsents).toEqual(before.aiConsents);
+  expect((after as any).useMeaningSearch).toBe(false);
+  await page
+    .getByRole("button", { name: "Turn on meaning search", exact: true })
+    .click();
+  await expect(
+    group(page, "Similar in meaning").locator("article"),
+  ).toHaveCount(1);
+  expect(state.calls).toHaveLength(2);
+  expect(((await preferences()) as any).useMeaningSearch).toBe(true);
+});
+
+test("r3: count announcements follow displayed order without a second visible status line", async ({
+  page,
+}) => {
+  await localPackage(page);
+  for (const [query, message] of [
+    ["book", "20 definition results. 0 Lojban results."],
+    ["se", "20 Lojban results. 20 definition results."],
+  ]) {
+    await page.goto("/search?" + new URLSearchParams({ q: query, lang: "en" }));
+    const counts = page.locator("main .count-line .count");
+    await expect(counts).toHaveText(message);
+    await expect(counts).toHaveClass(/\bsr\b/);
+    expect(
+      await counts.evaluate(
+        (node) =>
+          getComputedStyle(node).clipPath !== "none" ||
+          getComputedStyle(node).clip !== "auto",
+      ),
+    ).toBe(true);
+    const statuses = await page
+      .locator("main section[aria-labelledby] > .count")
+      .allTextContents();
+    for (const status of statuses) expect(message).not.toContain(status);
+  }
+});
+
+test("r3: meaning settles independently while a lexical expansion is held", async ({
+  page,
+}) => {
+  await meaningService(page, 21);
+  await localPackage(page);
+  await page.goto("/search?q=se&lang=en");
+  const meaning = group(page, "Similar in meaning");
+  await meaning.getByRole("button", { name: "Allow meaning search" }).click();
+  await expect(meaning.locator("article")).toHaveCount(20);
+  let release!: () => void;
+  const waiting = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let started = false;
+  await page.route("**/api/v1/search/semantic", async (route) => {
+    started = true;
+    await waiting;
+    return route.fallback();
+  });
+  try {
+    await page.reload();
+    await expect.poll(() => started).toBe(true);
+    const counts = page.locator("main .count-line .count");
+    await expect(counts).toHaveText(
+      "20 Lojban results. 20 definition results.",
+    );
+    await page.evaluate(() => {
+      const original = Worker.prototype.postMessage;
+      Worker.prototype.postMessage = function (message: any) {
+        if (message.options?.offset > 0) {
+          (window as any).heldLexical = true;
+          (window as any).continueLexical = () => original.call(this, message);
+        } else original.call(this, message);
+      };
+    });
+    const words = group(page, "Lojban words");
+    await words.getByRole("button", { name: "Show more", exact: true }).click();
+    await expect
+      .poll(() => page.evaluate(() => (window as any).heldLexical))
+      .toBe(true);
+    release();
+    await expect(meaning.locator("article")).toHaveCount(20);
+    await expect(counts).toHaveText("20 meaning results.");
+    await expect(words.locator("article")).toHaveCount(20);
+    await page.evaluate(() => (window as any).continueLexical());
+    await expect(words.locator("article")).toHaveCount(40);
+    await expect(counts).toHaveText(
+      "40 Lojban results. 20 definition results.",
+    );
+    await expect(words.locator("article .hw").nth(20)).toBeFocused();
+  } finally {
+    release();
+  }
 });

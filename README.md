@@ -74,12 +74,22 @@ Delivered records leave the list but keep their receipts in retained history. Wi
 
 The search page uses one box and separate Lojban word, definition, and optional meaning groups.
 Each group has its own pages and show all action. Known complete dictionary spellings put word matches first. Other queries put definitions first.
-Version 2 packages carry optional view-bound eligibility evidence for that order. Older packages keep Definitions first and ask for a refresh.
+Pause periods, commas, and the `h` apostrophe alias count as the same complete dictionary spellings.
+
+Version 2 packages store their ordering view once, with a status per entry. Older packages without evidence ask for a refresh.
+A chosen view that differs from the package view keeps Definitions first and explains that limit without asking for another download.
+
 Meaning search uses inline consent for the named provider and scope. It stays absent when AI is off or the service is unavailable.
 Pending and failed indexing remain visible beside meaning results. The meaning snapshot and view stay visible in local mode.
 Back restores saved meaning results without another provider request. A failed matched-definition read retries without repeating inference.
-A visible notice explains meaning uploads and offers an off control. Each completed action announces one result count and preserves keyboard focus.
+
+A visible notice explains meaning uploads. Its off control saves a lasting search preference and keeps consent and other AI choices.
+The reader can turn meaning search on again beside search. Lexical counts and controls do not wait for meaning requests or definition reads.
+
+One screen-reader count region announces lexical groups in displayed order, then meaning results separately. Group counts stay visible without a second status line.
+Each expansion preserves keyboard focus.
 Downloaded search packages permit local search without a request for each query. Version 2 packages carry authors, notes, and rafsi for result rows.
+
 Local and server search share TypeScript morphology and match ranking. Compound cmavo match exact component sequences, contiguous runs, and ordered subsequences.
 For example, `i seri'a bo`, `ise ri'abo`, and `iseri'abo` find the same compound. `i bo` also finds `iseri'abo`.
 

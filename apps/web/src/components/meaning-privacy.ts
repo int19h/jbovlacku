@@ -15,6 +15,7 @@ export const meaningSearchTask = "meaning-search";
 export function meaningSearchEnabled(app: App): boolean {
   return (
     app.session.preferences.useAiAssistance !== false &&
+    app.session.preferences.useMeaningSearch !== false &&
     app.session.preferences.aiConsents.some(
       (consent) =>
         consent.tasks.includes(meaningSearchTask) &&
@@ -32,47 +33,50 @@ export function meaningPrivacy(app: App, local: boolean): HTMLElement {
   let saving = false;
   const refresh = () => {
     node.replaceChildren();
+    const enabled = app.session.preferences.useMeaningSearch !== false;
     const remembered = app.session.preferences.aiConsents.some((consent) =>
       consent.tasks.includes(meaningSearchTask),
     );
-    if (meaningSearchEnabled(app) || remembered) {
+    if (!enabled || meaningSearchEnabled(app) || remembered) {
       node.append(
         p(
-          meaningSearchEnabled(app)
-            ? "Meaning search sends each query to the dictionary server and provider. This needs applicable consent and an available profile."
-            : "Meaning search sends queries only with applicable consent. Older consent is saved in this browser.",
+          !enabled
+            ? local
+              ? "Meaning search is off. Queries stay in this browser."
+              : "Meaning search is off. Word and definition searches remain available."
+            : meaningSearchEnabled(app)
+              ? "Meaning search sends each query to the dictionary server and provider. This needs applicable consent and an available profile."
+              : "Meaning search sends queries only with applicable consent. Older consent is saved in this browser.",
           "meta",
         ),
         (() => {
-          const off = button("Turn off meaning search", async () => {
-            if (saving) return;
-            const restoreFocus = node.contains(document.activeElement);
-            saving = true;
-            off.disabled = true;
-            try {
-              await app.session.setPreferences({
-                aiConsents: app.session.preferences.aiConsents
-                  .map((consent) => ({
-                    ...consent,
-                    tasks: consent.tasks.filter(
-                      (task) => task !== meaningSearchTask,
-                    ),
-                  }))
-                  .filter((consent) => consent.tasks.length > 0),
-              });
-              navigate(location.pathname + location.search, { replace: true });
-            } catch (error) {
-              failure = `The saved consent is unchanged. This browser did not save the change. ${describe(error)}`;
-              app.announce(failure);
-            } finally {
-              saving = false;
-              if (node.isConnected) {
-                refresh();
-                if (restoreFocus)
-                  node.querySelector<HTMLElement>("button")?.focus();
+          const off = button(
+            enabled ? "Turn off meaning search" : "Turn on meaning search",
+            async () => {
+              if (saving) return;
+              const restoreFocus = node.contains(document.activeElement);
+              saving = true;
+              off.disabled = true;
+              try {
+                await app.session.setPreferences({
+                  useMeaningSearch: !enabled,
+                });
+                navigate(location.pathname + location.search, {
+                  replace: true,
+                });
+              } catch (error) {
+                failure = `The saved meaning search choice is unchanged. This browser did not save the change. ${describe(error)}`;
+                app.announce(failure);
+              } finally {
+                saving = false;
+                if (node.isConnected) {
+                  refresh();
+                  if (restoreFocus)
+                    node.querySelector<HTMLElement>("button")?.focus();
+                }
               }
-            }
-          });
+            },
+          );
           off.disabled = saving;
           return off;
         })(),

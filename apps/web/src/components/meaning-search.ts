@@ -100,7 +100,12 @@ export async function meaningSearchGroup(
     summary: (message: string) => void;
   },
 ) {
-  if (app.session.preferences.useAiAssistance === false) return;
+  if (
+    !context.live() ||
+    app.session.preferences.useAiAssistance === false ||
+    app.session.preferences.useMeaningSearch === false
+  )
+    return;
   const group = el("section", { "aria-labelledby": "meaning-heading" });
   group.hidden = true;
   host.append(group);
@@ -108,7 +113,10 @@ export async function meaningSearchGroup(
   const signal = AbortSignal.any([context.signal, canceled.signal]);
   const live = () => context.live() && !signal.aborted;
   const unsubscribe = app.session.subscribe(() => {
-    if (app.session.preferences.useAiAssistance === false) {
+    if (
+      app.session.preferences.useAiAssistance === false ||
+      app.session.preferences.useMeaningSearch === false
+    ) {
       canceled.abort();
       group.remove();
       expansion.summary("");
@@ -167,6 +175,7 @@ export async function meaningSearchGroup(
       });
       server = `${selfPeer.label} (${capabilities.server_id})`;
     }
+    if (!live()) return;
     const status = el("p", { class: "count", tabindex: "-1" });
     const body = el("div");
     group.append(
@@ -251,8 +260,10 @@ export async function meaningSearchGroup(
             } satisfies SavedMeaning,
           });
         const refresh = () => {
+          group.setAttribute("aria-busy", String(loading));
           setStatus(
             `${displayed.size} meaning ${displayed.size === 1 ? "result" : "results"} shown${offset > displayed.size ? `, ${offset - displayed.size} unavailable` : ""}.`,
+            `${displayed.size} meaning ${displayed.size === 1 ? "result" : "results"}${offset > displayed.size ? `, ${offset - displayed.size} unavailable` : ""}.`,
           );
           controls.replaceChildren();
           if (offset < result.hits.length) {
