@@ -43,4 +43,4 @@ Keep third-party notices with redistributed artifacts. Use the [dependency guide
 
 Follow the human partner's exact VM access and agent-session instructions supplied to this session.
 This file does not replace or restate those instructions.
-Use native harness subagents for assigned implementation and review work.
+Run assigned implementation and review sessions as those instructions describe.
