@@ -1,6 +1,11 @@
 import { test, expect, type Page } from "@playwright/test";
 import { corePath, fixture } from "./helpers.ts";
 
+test.afterEach(async ({ page }) => {
+  // Remove handlers before page closure without waiting for held requests.
+  await page.unrouteAll({ behavior: "ignoreErrors" });
+});
+
 const group = (page: Page, name: string) =>
   page.getByRole("region", { name, exact: true });
 async function localPackage(page: Page) {
