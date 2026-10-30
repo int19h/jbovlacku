@@ -1,6 +1,6 @@
 # Jbovlacku web frontend
 
-This specification defines target behavior for the web app and both server adapters.
+This specification defines target behavior for the web app and Node server.
 The [README](../README.md) describes the implemented scope.
 The [repository specification](format.md) defines signed events, structured content, identity continuity, and ranking.
 Its field names and authority rules take precedence over illustrative interface copy here.
@@ -21,19 +21,18 @@ Public trust is visible and inspectable. It does not become a required account-c
 ## 2. Shared application and hosting design
 
 The browser contains the interface, signer, local drafts, local search, and shared format core.
-The project ships two server adapters: a standalone server and a Cloudflare Workers service. Both expose the same dictionary API.
-Neither the dictionary format nor the standalone server requires a Cloudflare account.
+The project runs the dictionary API on a single Node.js host.
 
 The application uses a Rust core with native and WebAssembly builds, plus a shared TypeScript HTTP service layer.
 The Rust core contains canonical records, signatures, causal state, and ranking.
 A shared TypeScript package provides word recognition and deterministic word builders.
-The browser and Workers consume its WebAssembly build. The CLI can use the native build.
-Thin host adapters supply storage, transaction coordination, queues, secrets, clocks, and outbound HTTP.
+The browser and Node server consume its WebAssembly build. The CLI can use the native build.
+The Node service supplies storage, transaction coordination, queues, secrets, clocks, and outbound HTTP.
 The implementer must establish dependency licenses and runtime compatibility before reusing jbotci code.
 
 Behavioral compatibility does not grant permission to copy a dependency. Preserve the license of every reused component.
 
-The standalone adapter runs on a supported Node.js release and ships as a Docker image, plus a direct installation package.
+The server runs on a supported Node.js release and ships as a Docker image, plus a direct installation package.
 It serves the web assets and API, stores immutable content on a persistent volume, and uses local SQLite for indexes and receipts.
 The operator supplies a data directory, listen address, public origin, peers, selected view, and optional inference configuration.
 A single-instance deployment needs no Redis, object-storage service, or cloud database.
@@ -44,14 +43,12 @@ A backup captures immutable objects, the receipt journal, configuration, and a c
 Shutdown stops admission, completes or rolls back local transactions, and checkpoints pending jobs for restart.
 Health endpoints distinguish process liveness from readiness after migrations and state recovery.
 
-The Cloudflare adapter uses Workers Static Assets, R2 content storage, and D1 rebuildable indexes.
-A Durable Object with SQLite storage coordinates admission receipts and the current snapshot pointer.
-Neither adapter holds contributor signing keys. An operator key can sign service statements and derived-artifact manifests.
-R2 or local storage can deduplicate bodies independently of the Git carrier's inline representation.
+The server holds no contributor signing keys. An operator key can sign service statements and derived-artifact manifests.
+Local storage can deduplicate bodies independently of the Git carrier's inline representation.
 
 Envelope objects use representation hashes. Each snapshot maps event IDs to the exact envelope variants committed by its manifest.
 
-Both adapters use the same admission, snapshot-building, import, peer-sync, and inference job logic.
+The service layer implements admission, snapshot-building, import, peer-sync, and inference jobs.
 The job store persists inputs, checkpoints, cancellation requests, and outcomes. Retries reuse immutable input IDs.
 A builder writes all new immutable objects before it advances the snapshot pointer.
 Failed builds leave the preceding complete snapshot current. Search and word responses never mix snapshot versions silently.
@@ -60,16 +57,15 @@ Indexes can lag accepted writes. The API exposes accepted and materialized curso
 Durable receipt journals survive an index rebuild. Local arrival order never becomes dictionary chronology.
 
 Peer lists remain operator choices. Scheduled jobs exchange canonical records and selected optional derived artifacts.
-Native Git publication is an optional mirror job. Standard Workers cannot run a native Git process.
-The standalone host can run that mirror locally. Workers can send its canonical snapshot to a separate mirror process.
+Native Git publication is an optional mirror job. The Node host can run that mirror locally.
 
 A mirror that shares its source storage is not an independent replica.
 
 Static hosting supports reading, local signing, drafts, and deterministic word builders.
 Persistent shared submissions require a writable peer or file export. The app remains usable with AI and semantic search disabled.
-Long calculations use bounded jobs and explicit resource errors. Moving a job to another adapter never changes the signed format.
+Long calculations use bounded jobs and explicit resource errors. Job execution never changes the signed format.
 
-### Host service contracts
+### Service contracts
 
 | Port                  | Required behavior                                                                                |
 | --------------------- | ------------------------------------------------------------------------------------------------ |
@@ -81,10 +77,9 @@ Long calculations use bounded jobs and explicit resource errors. Moving a job to
 | Vector index          | Search one named embedding profile and expose its coverage.                                      |
 | Provider adapter      | Make bounded inference requests with server-held provider credentials.                           |
 
-The standalone vector backend can scan retained vectors exactly or use a bundled local index.
-Workers can use Vectorize or another configured backend. Backend indexes are disposable, host-specific accelerators.
+The vector backend can scan retained vectors exactly or use a bundled local index. Backend indexes are disposable accelerators.
 The portable vector artifacts remain available independently of that backend. A cloud index is never the only retained vector copy.
-The release tests exchange snapshots and vector artifacts between both adapters and compare their logical results.
+The release tests exchange snapshots and vector artifacts between independent Node servers and compare their logical results.
 
 ## 3. Interface structure and appearance
 
@@ -244,21 +239,9 @@ Initialization has a separate 5,000 millisecond limit. Failure to initialize rep
 Task deadline expiry, active cancellation, and worker errors stop that worker. A later task can start a replacement.
 Queued cancellation removes that task. Server shutdown settles all requests and stops idle and active workers.
 
-Cloudflare scans at most 1,000,000 work units or 8,192 rows per chunk, plus the last bounded candidate.
-One isolate admits two active pattern scans and eight waiting requests across all scanner instances, before compiling any matcher.
-Several [Durable Objects can share an isolate and its memory](https://developers.cloudflare.com/durable-objects/platform/pricing/#compute-billing).
-Completion, failure, and cancellation release their admission slots. Cancellation frees a matcher even while its D1 read remains pending.
-
-After each chunk, Cloudflare performs a read-only D1 `SELECT 1`.
-A loose 5,000 millisecond elapsed guard excludes time between the start and completion of each D1 read.
-[Hosted clocks advance after I/O](https://developers.cloudflare.com/workers/runtime-apis/performance/).
-The excluded interval can also contain CPU time that the hosted clock did not yet report. This guard is not a CPU measurement.
-The compiled-work bounds remain the primary safety limit, independently of clocks and I/O latency.
-Hosted D1 latency adds to response time and has no separate response deadline here.
-
-On either server host, excess pattern requests return HTTP 503 with `search_busy` and `Retry-After: 1`.
+On the server, excess pattern requests return HTTP 503 with `search_busy` and `Retry-After: 1`.
 The message reads “Pattern search is busy. Try again shortly.” A shorter pattern does not remove this temporary admission limit.
-Neither host returns partial results after a limit failure.
+The server returns no partial results after a limit failure.
 
 Both local and server search split the query with the TypeScript text segmenter in `packages/morphology`.
 Each search index derives a component array for every headword that parses entirely as two or more cmavo.
@@ -1382,7 +1365,7 @@ The response uses the same language, view, snapshot, receipt, eligibility, and r
 Search cursors include the group and literal mode. A cursor from another mode returns HTTP 400 with `bad_cursor`.
 `pattern_invalid` returns HTTP 400, and `pattern_timeout` returns HTTP 422.
 An excess pattern request returns HTTP 503 with `search_busy` and `Retry-After: 1`.
-These errors return no partial hits. Both hosts enforce the shared compiled-work limits and their documented execution limits.
+These errors return no partial hits. The server enforces the shared compiled-work limits and its documented execution limits.
 
 The POST /events body contains exactly `envelope` and `body`. Canonicalize the enclosed body and compare its hash and byte length before acceptance.
 Transport whitespace outside canonical objects does not alter signed bytes. The server preserves canonical signed meaning and never changes a field to make a signature pass.
@@ -1736,7 +1719,7 @@ The app can reconstruct them from authenticated publications and flag disagreeme
 
 ## 12. Admission, privacy, and rendering
 
-The Worker applies limits before expensive signature work and separates anonymous network quotas from key-based quotas.
+The server applies limits before expensive signature work and separates anonymous network quotas from key-based quotas.
 A new key does not bypass every network limit. A trusted key does not bypass parser or signature rules.
 The operator publishes local refusal reasons and an appeal or contact path when it offers one.
 Rate limits never rewrite valid records or become a claim about linguistic quality.
@@ -1834,11 +1817,6 @@ Reference software licenses do not establish rights in all dictionary content.
 [JWE](https://www.rfc-editor.org/rfc/rfc7516) and its [password-based algorithm](https://www.rfc-editor.org/rfc/rfc7518#section-4.8) define the selected encrypted container.
 [WebAuthn PRF](https://www.w3.org/TR/webauthn-3/#prf-extension) supports the optional unlock direction, with origin and implementation limits.
 [WebKit's storage policy](https://webkit.org/blog/14403/updates-to-storage-policy/) and the [Storage Standard](https://storage.spec.whatwg.org/) explain why local storage needs export paths.
-
-The hosting design uses [Workers Static Assets](https://developers.cloudflare.com/workers/static-assets/), [R2](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/), and [D1](https://developers.cloudflare.com/d1/worker-api/).
-Its coordination state uses [Durable Object storage](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/).
-[Workers compatibility documentation](https://developers.cloudflare.com/workers/configuration/compatibility-flags/) identifies the native-process limitation.
-These services are selected components, not evidence that an implementation already exists.
 
 ## 16. Semantic search and optional AI
 
@@ -1960,7 +1938,7 @@ An undo record survives draft reload and mode changes.
 
 ### Optional service API
 
-The common API adds the following endpoints. Both standalone and Workers hosts implement identical contracts when they advertise each capability.
+The API adds the following endpoints. The server implements each contract when it advertises that capability.
 
 | Endpoint                   | Contract                                                                                |
 | -------------------------- | --------------------------------------------------------------------------------------- |
@@ -2272,7 +2250,7 @@ Release scenarios must cover these additional cases:
 5. Reuse shared vectors only with matching content, input recipe, vector profile, and accepted producer.
 6. Reconcile repeated Lensisku batches without fabricating edits from missing fields or changed aggregate scores.
 7. Report partial cross-post outcomes without duplicate creates or rollback of signed jvc records.
-8. Run the standalone Docker service with no Cloudflare credentials and exchange records with the Workers service.
+8. Run independent Node services, including the Docker package, and exchange records with the same logical results.
 9. Render Latin, zbalermorna, circled places, and mathematical symbols with the selected font stacks at narrow widths.
 10. Show account evidence and its age without claiming historical signatures or recoverable jvc keys.
 11. Retire and restore a linked author's import, then carry its status through a certified replacement claim.

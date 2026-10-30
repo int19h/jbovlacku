@@ -84,16 +84,6 @@ test("Node assistance defaults to direct loopback and requires explicit proxy tr
   );
 });
 
-test("Worker local provenance and explicit edge trust ignore spoofed client headers", () => {
-  const identify = (inferenceModule as any).workerClientNetwork;
-  assert.equal(typeof identify, "function");
-  assert.equal(identify("2001:db8::1", true, false, false), "");
-  assert.equal(identify("2001:db8::1", true, true, false), "2001:db8:0:0::/64");
-  assert.equal(identify("2001:db8::1", false, true, false), "");
-  assert.equal(identify("spoofed", true, true, true), "local");
-  assert.equal(identify("192.0.2.1", true, false, true), "local");
-});
-
 test("answer checks see exact text while log and correction copies redact secrets", async () => {
   const requests: any[] = [];
   const text = "x1 is a risk-assessment of x2 for task-specific purpose x3.";
@@ -156,7 +146,6 @@ test("defaults reserve all twelve bounded answers and their correction histories
   assert.equal(turns, 12);
   assert.equal(log.answers, 12);
 });
-
 
 test("known secrets in an otherwise valid answer cannot enter a proposal or correction", async () => {
   const requests: any[] = [];

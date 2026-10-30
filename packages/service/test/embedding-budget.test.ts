@@ -1,3 +1,4 @@
+import { waitForAssistance } from "./fixtures/assistance-work.ts";
 import assert from "node:assert/strict";
 import { before, test } from "node:test";
 import { readFile } from "node:fs/promises";
@@ -110,19 +111,15 @@ function store(initial: AssistanceBudgetSnapshot | null = null) {
   return result;
 }
 function fixture(provider = config(), budgetStore = store()) {
-  const background: Promise<unknown>[] = [];
   const service = new AssistanceService(
     {
       provider,
       budgetStore,
-      waitUntil: (work) => {
-        background.push(work);
-      },
     },
     "embedding-test",
     async () => [],
   );
-  return { service, budgetStore, background };
+  return { service, budgetStore };
 }
 const query = (network = "192.0.2.1") => ({ kind: "query" as const, network });
 const rejectCode = (code: string) => (failure: any) =>
@@ -362,7 +359,7 @@ test("generation, query, and indexing race for the same remaining server allowan
   provider.dailyBudgetUsd = provider.hourlyBudgetUsd;
   provider.networkHourlyBudgetUsd = provider.hourlyBudgetUsd;
   provider.networkDailyBudgetUsd = provider.hourlyBudgetUsd;
-  const { service, background, budgetStore } = fixture(provider);
+  const { service, budgetStore } = fixture(provider);
   const started = await generation(service);
   assert.equal(started.status, 202);
   let refused = 0;
@@ -380,7 +377,7 @@ test("generation, query, and indexing race for the same remaining server allowan
   assert.equal(entries(budgetStore).length, 2);
   gate.resolve();
   const results = await Promise.all(work);
-  await Promise.all(background);
+  await waitForAssistance(service);
   assert.equal(results.filter(Boolean).length, 1);
   assert.equal(dispatches, 2);
 });
@@ -520,7 +517,7 @@ test("caller departure detaches the response while provider work settles once", 
   const caller = new AbortController();
   let calls = 0;
   let providerSignal: AbortSignal | null | undefined;
-  const { service, budgetStore, background } = fixture(
+  const { service, budgetStore } = fixture(
     config({
       fetch: async (_url, init) => {
         calls++;
@@ -538,7 +535,7 @@ test("caller departure detaches the response while provider work settles once", 
   assert.equal(entries(budgetStore)[0].active, true);
   assert.equal(entries(budgetStore)[0].reservedUsd, quote);
   gate.resolve();
-  await Promise.all(background);
+  await waitForAssistance(service);
   assert.equal(calls, 1);
   assert.equal(entries(budgetStore)[0].reservedUsd, 0);
   assert.equal(entries(budgetStore)[0].settledUsd, 0.000009);
@@ -547,7 +544,7 @@ test("caller departure detaches the response while provider work settles once", 
 test("a transport that ignores abort keeps its shared execution slot until it ends", async () => {
   const gate = deferred<void>();
   let calls = 0;
-  const { service, budgetStore, background } = fixture(
+  const { service, budgetStore } = fixture(
     config({
       concurrency: 1,
       timeoutMs: 30,
@@ -562,7 +559,10 @@ test("a transport that ignores abort keeps its shared execution slot until it en
     service.embed(input, query()),
     rejectCode("embedding_timeout"),
   );
-  await Promise.all(background);
+  await until(async () => {
+    const [operation] = await service.embeddingOperations();
+    return operation.state === "timed_out" && !operation.active;
+  });
   const [status] = await service.embeddingOperations();
   assert.equal(status.state, "timed_out");
   assert.equal(status.transportPending, true);
@@ -591,7 +591,7 @@ test("a transport that ignores abort keeps its shared execution slot until it en
 test("generation occupies the same execution slots as embedding", async () => {
   const gate = deferred<void>();
   let calls = 0;
-  const { service, background } = fixture(
+  const { service } = fixture(
     config({
       concurrency: 1,
       fetch: async () => {
@@ -608,7 +608,7 @@ test("generation occupies the same execution slots as embedding", async () => {
     rejectCode("embedding_busy"),
   );
   gate.resolve();
-  await Promise.all(background);
+  await waitForAssistance(service);
   assert.equal(calls, 1);
 });
 
@@ -793,7 +793,7 @@ for (const blockedSave of ["retry", "reservation"] as const) {
     const durable = store();
     const entered = deferred<void>();
     const release = deferred<void>();
-    const background: Promise<unknown>[] = [];
+
     const caller = new AbortController();
     const savedAfterAbort: AssistanceBudgetSnapshot[] = [];
     let saves = 0;
@@ -822,9 +822,6 @@ for (const blockedSave of ["retry", "reservation"] as const) {
           },
         }),
         budgetStore,
-        waitUntil: (work) => {
-          background.push(work);
-        },
       },
       "embedding-test",
       async () => [],
@@ -860,7 +857,7 @@ for (const blockedSave of ["retry", "reservation"] as const) {
       assert.equal(failure.operation, undefined);
     }
     release.resolve();
-    await Promise.all(background);
+    await waitForAssistance(service);
     if (blockedSave === "retry")
       assert.ok(
         savedAfterAbort.every((snapshot) =>
@@ -1195,19 +1192,16 @@ test("invalid embedding settings leave Node generation and browser consent profi
       turns++;
       return Response.json(completion());
     };
-    const work: Promise<unknown>[] = [];
+
     const instance = new AssistanceService(
       {
         ...options,
-        waitUntil: (promise) => {
-          work.push(promise);
-        },
       },
       "test",
       async () => [],
     );
     assert.equal((await generation(instance)).status, 202);
-    await Promise.all(work);
+    await waitForAssistance(instance);
     assert.equal(turns, 1);
     await assert.rejects(
       instance.embed(input, { kind: "probe" }),
@@ -1241,7 +1235,7 @@ test("every admitted embedding failure names its own operation, including shared
   const reason = new AssistanceError(499, "caller_left", "The caller left.");
   const gate = deferred<void>();
   let calls = 0;
-  const { service, background } = fixture(
+  const { service } = fixture(
     config({
       fetch: async () => {
         calls++;
@@ -1272,5 +1266,5 @@ test("every admitted embedding failure names its own operation, including shared
     );
   }
   gate.resolve();
-  await Promise.all(background);
+  await waitForAssistance(service);
 });

@@ -136,17 +136,6 @@ export function nodeAssistanceIdentityAvailable(
     return false;
   }
 }
-export function workerClientNetwork(
-  address: string | null,
-  hasMetadata: boolean,
-  trustEdge: boolean,
-  local: boolean,
-): string {
-  if (local) return "local";
-  return trustEdge && hasMetadata && address
-    ? normalizeClientNetwork(address)
-    : "";
-}
 export interface ProviderConfig {
   baseUrl: string;
   model: string;

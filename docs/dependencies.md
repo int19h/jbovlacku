@@ -8,7 +8,7 @@ The [third-party notices](third-party-notices.md) retain component versions, dec
 ## Rust and WebAssembly
 
 `Cargo.lock` pins the resolved Rust packages. `rust-toolchain.toml` selects Rust 1.99.0 and the `wasm32-unknown-unknown` target.
-The browser and server adapters load generated `jvc-runtime` WebAssembly and its JavaScript bindings.
+The browser and Node server load generated `jvc-runtime` WebAssembly and its JavaScript bindings.
 `wasm-bindgen` and `wasm-bindgen-cli` must both use version 0.2.105.
 The generated bindings live in `packages/core/generated`. The build regenerates this ignored directory.
 
@@ -87,7 +87,6 @@ The root manifest selects these direct npm packages:
 
 | Package                     | Version      | Declared license  | Purpose                                               |
 | --------------------------- | ------------ | ----------------- | ----------------------------------------------------- |
-| `@cloudflare/workers-types` | 5.20261011.1 | MIT OR Apache-2.0 | Worker type declarations.                             |
 | `@playwright/test`          | 1.58.2       | Apache-2.0        | Browser tests.                                        |
 | `@types/node`               | 24.10.1      | MIT               | Node.js type declarations.                            |
 | `esbuild`                   | 0.28.1       | MIT               | Standalone server bundle.                             |
@@ -97,7 +96,6 @@ The root manifest selects these direct npm packages:
 | `tsx`                       | 4.20.6       | MIT               | TypeScript execution for local development and tests. |
 | `typescript`                | 5.9.3        | Apache-2.0        | Type analysis.                                        |
 | `vite`                      | 7.3.7        | MIT               | Browser development and bundle.                       |
-| `wrangler`                  | 4.149.0      | MIT OR Apache-2.0 | Local Worker development.                             |
 
 Keep upstream legal comments in generated bundles. Keep the full notices with packaged server and browser artifacts.
 The container base retains its own Node.js and operating-system notices. These application notices do not replace them.
