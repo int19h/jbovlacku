@@ -384,7 +384,11 @@ export function richField(label: string, options: RichFieldOptions) {
       restoringDelete = false;
     }
   }
-  function settleDeleteRecovery(stage: DeleteRecovery, commit: boolean) {
+  function settleDeleteRecovery(
+    stage: DeleteRecovery,
+    commit: boolean,
+    selection = stage.selection,
+  ) {
     if (deleteRecovery !== stage || stage.settling || view.isDestroyed) return;
     stage.settling = true;
     clearTimeout(stage.timer);
@@ -393,11 +397,17 @@ export function richField(label: string, options: RichFieldOptions) {
     deleteRecovery = null;
     if (view.state !== stage.state) return;
     if (commit && stage.transaction) view.dispatch(stage.transaction);
-    else if (!stage.selection.eq(view.state.selection))
-      view.dispatch(view.state.tr.setSelection(stage.selection));
+    else if (!selection.eq(view.state.selection))
+      view.dispatch(view.state.tr.setSelection(selection));
   }
-  function prepareDeletion(type: RichDeleteType, input?: InputEvent) {
-    const selection = readNativeSelection() ?? view.state.selection;
+  function prepareDeletion(
+    type: RichDeleteType,
+    input?: InputEvent,
+    incomingSelection?: Selection | null,
+    incomingRange?: RichDeleteRange | null,
+  ) {
+    const selection =
+      incomingSelection ?? readNativeSelection() ?? view.state.selection;
     let transaction: Transaction | null = null;
     const dispatch = (tr: Transaction) => {
       transaction = tr;
@@ -414,7 +424,8 @@ export function richField(label: string, options: RichFieldOptions) {
         view.state.tr.setSelection(selection),
         type,
         dispatch,
-        deletionRange(view, input) ??
+        incomingRange ??
+          deletionRange(view, input) ??
           (selection.empty ? deletionMotion(view, type) : null),
       );
     return { transaction, selection };
@@ -625,9 +636,15 @@ export function richField(label: string, options: RichFieldOptions) {
         if (event.isComposing || event.keyCode === 229) return false;
         const type = deletionKey(event);
         if (!type) return false;
-        if (deleteRecovery) settleDeleteRecovery(deleteRecovery, false);
+        const selection = readNativeSelection();
+        if (deleteRecovery)
+          settleDeleteRecovery(
+            deleteRecovery,
+            false,
+            selection ?? deleteRecovery.selection,
+          );
         event.preventDefault();
-        const { transaction } = prepareDeletion(type);
+        const { transaction } = prepareDeletion(type, undefined, selection);
         if (transaction) view.dispatch(transaction);
         return true;
       },
@@ -646,9 +663,10 @@ export function richField(label: string, options: RichFieldOptions) {
         return true;
       },
       cut(view, event) {
-        if (deleteRecovery) settleDeleteRecovery(deleteRecovery, false);
-        event.preventDefault();
         const selection = readNativeSelection() ?? view.state.selection;
+        if (deleteRecovery)
+          settleDeleteRecovery(deleteRecovery, false, selection);
+        event.preventDefault();
         if (selection.empty || !event.clipboardData) return true;
         const { dom, text } = view.serializeForClipboard(selection.content());
         event.clipboardData.clearData();
@@ -695,7 +713,21 @@ export function richField(label: string, options: RichFieldOptions) {
       },
       beforeinput(view, event) {
         const input = event as InputEvent;
-        if (deleteRecovery) settleDeleteRecovery(deleteRecovery, false);
+        // Read incoming DOM points before an older stage rebuilds their nodes.
+        const incomingSelection = deleteRecovery
+          ? isRichDeleteType(input.inputType)
+            ? readNativeSelection()
+            : insertionSelection(view, input)
+          : null;
+        const incomingRange = deleteRecovery
+          ? deletionRange(view, input)
+          : null;
+        if (deleteRecovery)
+          settleDeleteRecovery(
+            deleteRecovery,
+            false,
+            incomingSelection ?? deleteRecovery.selection,
+          );
         if (
           input.inputType === "deleteCompositionText" &&
           (input.isComposing || view.composing)
@@ -717,7 +749,12 @@ export function richField(label: string, options: RichFieldOptions) {
           }
         }
         if (isRichDeleteType(input.inputType)) {
-          const prepared = prepareDeletion(input.inputType, input);
+          const prepared = prepareDeletion(
+            input.inputType,
+            input,
+            incomingSelection,
+            incomingRange,
+          );
           if (input.cancelable) {
             input.preventDefault();
             if (prepared.transaction) view.dispatch(prepared.transaction);
@@ -734,7 +771,8 @@ export function richField(label: string, options: RichFieldOptions) {
           return true;
         }
         if (!input.cancelable && input.inputType === "insertCompositionText") {
-          const selection = insertionSelection(view, input);
+          const selection =
+            incomingSelection ?? insertionSelection(view, input);
           if (selection)
             nativeEdit = {
               doc: view.state.doc,
@@ -750,7 +788,7 @@ export function richField(label: string, options: RichFieldOptions) {
           view.composing
         )
           return false;
-        const selection = insertionSelection(view, input);
+        const selection = incomingSelection ?? insertionSelection(view, input);
         if (!selection) return false;
         input.preventDefault();
         if (!selection.eq(view.state.selection))
