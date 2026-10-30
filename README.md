@@ -298,7 +298,7 @@ The assistance tests bind delayed capability responses to held requests and cove
 
 The private attempt log offers Markdown and JSON export. Signed publications omit AI logs.
 The Node server offers operator-controlled assistance, off by default, with server-held keys and bounded private jobs.
-They reserve costs before admission and enforce server and network spending limits that survive a restart.
+It reserves costs before admission and enforces server and network spending limits that survive a restart.
 IPv6 limits also count /48 prefixes. The Node server stores spending ledgers in SQLite.
 The host service also admits bounded embedding batches through the same spending ledger and execution slots.
 Caller cancellation during embedding admission prevents dispatch and removes any unsent reservation.
