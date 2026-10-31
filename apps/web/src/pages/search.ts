@@ -18,6 +18,7 @@ import { isPatternQuery } from "../../../../packages/search/src/index.ts";
  */
 import {
   el,
+  icon,
   link,
   p,
   text,
@@ -283,7 +284,7 @@ export async function searchPage(
         fillLanguages();
       })
       .catch(() => {});
-  countLine.before(meaningPrivacy(app, !!cached, language, context));
+  countLine.before(meaningPrivacy(app, language, context));
   if (cached && !isPatternQuery(query)) {
     const chosen = getPreferredView();
     let missingEvidence = false;
@@ -310,6 +311,17 @@ export async function searchPage(
       );
   }
 
+  const provenanceBody = el("div", {
+    class: "body",
+    style: "overflow-wrap:anywhere",
+  });
+  const provenance = el(
+    "details",
+    { class: "disclosure small" },
+    el("summary", {}, icon("chevron", "chev"), "Search source and snapshot"),
+    provenanceBody,
+  );
+  if (query || cached) results.before(provenance);
   if (!query) {
     count.textContent = "Type a word or a meaning to search.";
     if (app.session.preferences.searchMode === "local" && !cached) {
@@ -319,11 +331,8 @@ export async function searchPage(
       );
       results.append(note);
     } else if (cached)
-      results.append(
-        p(
-          `Local search package from snapshot ${cached.snapshot.slice(7, 19)}….`,
-          "meta",
-        ),
+      provenanceBody.append(
+        p(`Local search package from snapshot ${cached.snapshot}.`, "meta"),
       );
     missing.append(
       p("Missing a word for this?"),
@@ -332,14 +341,18 @@ export async function searchPage(
     return;
   }
   results.setAttribute("aria-busy", "true");
-  const remoteSource = p(`Searched on ${selfPeer.label}.`, "meta");
+  const remoteSource = p(
+    `Search sends this query to ${selfPeer.label}.`,
+    "meta",
+  );
+  remoteSource.hidden = true;
   if (!cached) results.before(remoteSource);
   let disclosed =
     app.session.preferences.remoteSearchDisclosed ||
     disclosedSearchSessions.has(app.session);
   const discloseRemote = async () => {
     if (disclosed) return;
-    remoteSource.textContent = `Search sends this query to ${selfPeer.label}.`;
+    remoteSource.hidden = false;
     // Let the visible statement reach the screen before the first query leaves.
     await new Promise<void>((resolve) =>
       requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
@@ -388,10 +401,9 @@ export async function searchPage(
     const label = key === "lojban" ? "Lojban words" : "Definitions";
     const heading = el("h2", {
       id: `search-${key}`,
-      class: "section",
       text: label,
     });
-    const status = el("p", {
+    const status = el("span", {
       class: "count",
       text: "Searching…",
       tabindex: "-1",
@@ -400,9 +412,8 @@ export async function searchPage(
     const end = el("div", { class: "end-line" });
     const node = el(
       "section",
-      { "aria-labelledby": heading.id },
-      heading,
-      status,
+      { class: "result-group", "aria-labelledby": heading.id },
+      el("div", { class: "result-group-heading" }, heading, status),
       rows,
       end,
     );
@@ -447,13 +458,6 @@ export async function searchPage(
     };
     rememberState({ dictionarySearch: state });
   };
-  const provenance = el(
-    "details",
-    { class: "disclosure small" },
-    el("summary", { text: "Search source and snapshot" }),
-    el("div", { class: "body", style: "overflow-wrap:anywhere" }),
-  );
-  results.before(provenance);
   const appendHits = (key: SearchGroup, hits: SearchHit[]) => {
     const group = groups[key];
     group.loaded = true;
@@ -510,21 +514,24 @@ export async function searchPage(
     if (count.textContent !== message) count.textContent = message;
   };
   const refresh = () => {
-    provenance
-      .querySelector(".body")!
-      .replaceChildren(
-        p(
-          cached
-            ? `Source: the downloaded ${languageName(language)} package in this browser.`
-            : `Source: ${location.host || "this server"}.`,
-          "meta",
-        ),
-        p(`Snapshot: ${snapshot || "unknown"}`, "meta"),
-        p(
-          `View: ${cached ? "not evaluated in the local index" : (view ?? "unknown")}`,
-          "meta",
-        ),
-      );
+    provenanceBody.replaceChildren(
+      p(
+        cached
+          ? `Source: the downloaded ${languageName(language)} package in this browser.`
+          : `Searched on ${selfPeer.label}.`,
+        "meta",
+      ),
+      p(
+        cached
+          ? `Local search package from snapshot ${snapshot}.`
+          : `Snapshot: ${snapshot || "unknown"}`,
+        "meta",
+      ),
+      p(
+        `View: ${cached ? "not evaluated in the local index" : (view ?? "unknown")}`,
+        "meta",
+      ),
+    );
     segmentationNote.hidden = segmentation !== "limited";
     const ordered = orderedGroups();
     // Keep the DOM order equal to the reading and keyboard order.
@@ -544,7 +551,7 @@ export async function searchPage(
         ? group.failed
           ? "Results are unavailable."
           : "Searching…"
-        : `${group.hits.length}${remaining === null ? " or more" : ""} ${key === "lojban" ? "Lojban" : "definition"} ${group.hits.length === 1 && remaining !== null ? "result" : "results"} shown.`;
+        : `· ${group.hits.length}${remaining === null ? "+" : cached && remaining > 0 ? ` of ${group.total}` : ""}`;
       if (group.status.textContent !== statusText)
         group.status.textContent = statusText;
       group.end.replaceChildren();
@@ -699,7 +706,6 @@ export async function searchPage(
           "Search pagination returned no matches for this group. Start a new search to retry.",
         );
       }
-      remoteSource.textContent = `Searched on ${selfPeer.label}.`;
       snapshot = page.snapshot;
       view = page.view;
       group.next = page.next;
@@ -783,6 +789,8 @@ export async function searchPage(
   }
   if (!context.live()) return;
   results.setAttribute("aria-busy", "false");
+  if (Object.values(groups).some((group) => group.loaded))
+    remoteSource.hidden = true;
   refresh();
   for (const group of Object.values(groups)) {
     if (
@@ -813,7 +821,7 @@ export async function searchPage(
     ),
     retired,
   );
-  if (cached)
+  if (cached && includeRetired)
     missing.append(
       p(
         "Local results include every retained publication. Their current status is unavailable in this index.",

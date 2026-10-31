@@ -408,6 +408,38 @@ details.disclosure > .body {
 }
 
 /* Search rows */
+.meaning-privacy,
+.meaning-consent-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+.meaning-privacy .btn {
+  font-size: inherit;
+}
+.meaning-consent-actions {
+  margin-top: 8px;
+}
+.result-group {
+  margin-top: 12px;
+}
+.result-group + .result-group {
+  margin-top: 20px;
+}
+.result-group-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px;
+  margin-bottom: 6px;
+  color: var(--ink3);
+  font-size: 13px;
+}
+.result-group-heading h2 {
+  font-size: inherit;
+  font-weight: 600;
+}
 .count-line {
   display: flex;
   flex-wrap: wrap;

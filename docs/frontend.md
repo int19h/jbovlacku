@@ -155,10 +155,15 @@ A remote search mode remains available for large languages or limited devices. S
 Before its first remote query, the app states that queries reach the named server.
 A change of mode does not silently upload previously local query history.
 Local mode keeps word and definition queries in the browser. Consented meaning search still sends each new query to the server and provider.
-The search page states this beside the box while meaning search is on and offers “Turn off meaning search”.
+After the reader allows meaning search, the line beside the box reads “Meaning search on · Turn off”.
+Before the reader makes a meaning-search choice, the line is absent.
+The Turn off control keeps the accessible name “Turn off meaning search”.
 That action saves a lasting search preference, separate from provider consent and the general AI preference.
 While it is off, new queries and reloads show no meaning consent or results and send no meaning request.
-“Turn on meaning search” restores that search preference. Applicable provider consent is still required.
+After an explicit off choice, “Meaning search off · Turn on” offers to restore that search preference when a query profile is available.
+The Turn on control keeps the accessible name “Turn on meaning search”. Applicable provider consent is still required.
+The closed Search source and snapshot disclosure contains “Local search package from snapshot…” or “Searched on…”.
+The first remote-upload notice stays visible before the request. Segmentation limits remain visible outside the disclosure.
 
 Search normalization affects lookup only. It never rewrites signed spellings or definition text.
 Use NFC, case folding, and explicit apostrophe aliases in search indexes.
@@ -389,23 +394,28 @@ Older packages without that evidence cannot establish known words. A visible not
 Evidence for a different selected view also cannot establish known words. The notice names its server-view limit and says that Definitions comes first.
 It offers remote search for the chosen view without asking for another download. No local query reaches a server to resolve missing evidence.
 Local hits still include every retained publication. Ordering evidence does not provide complete current publication statuses.
+The note about that status limit appears only when retired results are on.
 Pattern queries show only Lojban words.
 
 Similar in meaning uses `POST /search/semantic` after one inline consent in the search page, without a modal.
-The disclosure names the server, provider, task, and fields sent. It covers this query and future search queries.
-Remembered consent applies only to that provider and scope, under section 16. The consent box offers a lasting off choice. Declining keeps ordinary search available.
+The prompt reads “Find similar meanings too? Your search text goes to [server] and [provider].” Its two visible buttons are Allow and Not now.
+A closed Details disclosure names the server, provider, task, profile, and fields sent. The reader can open it before Allow.
+It explains that consent covers this query and future search queries. Details also contains the lasting “Turn off meaning search” choice.
+Remembered consent applies only to that provider and scope, under section 16. Declining keeps ordinary search available.
 “Not now” stops meaning search for this page, including a pending consent save. It keeps stored provider consent for later pages.
 Either off control blocks a pending Allow action before its save finishes. A failed off save keeps consent and off retry available.
 The reader must press Allow again before that canceled acceptance can start meaning search.
+A failed off save always announces the failure. After Not now, the group keeps its page-decline text while the announcement explains the failed save.
 When AI assistance is off, or the server lacks `features.semantic_search` and a `query_available` profile, this group is absent.
 An absent group leaves no gap. Pending or failed indexing appears as a coverage note beside meaning results.
 
-In local mode, meaning search reads a server snapshot that can differ from the downloaded lexical package. Its snapshot and view stay visible beside meaning results.
+In local mode, meaning search reads a server snapshot that can differ from the downloaded lexical package.
+The meaning group ends with a closed Search source disclosure. It contains the server, provider, snapshot, view, profile ID, and profile limits.
 
 Back restores the saved meaning response, displayed rows, snapshot, view, profile, and expansion count without another inference request.
 Restoration requires the same query, language, view choice, and remembered provider and scope consent.
 If incomplete lexical history requires newer remote lexical results, saved meaning results still keep their saved snapshot.
-The meaning group shows that separate snapshot and view. Back never starts another inference request to align those snapshots.
+The meaning group's Search source disclosure shows that separate snapshot and view. Back never starts another inference request to align those snapshots.
 A fresh reload checks current capabilities, profile, and consent instead of restoring the saved meaning group.
 Similarity never becomes an editorial score.
 
@@ -417,7 +427,8 @@ One screen-reader-only count region announces settled lexical counts in displaye
 Local counts state the full total and the shown count when rows remain hidden, including at the browser limit.
 Lexical counts, expansions, Add it, and the retired filter never wait for meaning requests or matched definition reads.
 Each settled meaning update includes the last settled lexical counts before its meaning count, including while a lexical expansion waits.
-Each consent action, retry, or expansion announces its own settled results once. Group statuses remain visible ordinary text without a second visible copy.
+Each consent action, retry, or expansion announces its own settled results once.
+Each group shows its count beside its heading. Group statuses remain visible ordinary text without a second visible copy.
 After expansion, focus moves to the first new row. A failed or empty expansion keeps focus on its retry, remaining control, or group status.
 A failed meaning definition read offers Retry reading for that definition. This retry retains successful rows and sends no inference request.
 A rafsi lookup identifies the related word, for example “cku ← cukta,” and exposes competing assignments when present.

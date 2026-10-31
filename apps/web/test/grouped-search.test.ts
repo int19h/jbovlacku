@@ -1,6 +1,20 @@
 import { test, expect, type Page } from "@playwright/test";
 import { corePath, fixture } from "./helpers.ts";
 
+test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: "ignoreErrors" });
+});
+
+async function openMeaningDetails(page: Page) {
+  const details = group(page, "Similar in meaning")
+    .locator("details")
+    .filter({
+      has: page.getByText("Details", { exact: true }),
+    });
+  if (!(await details.evaluate((node) => (node as HTMLDetailsElement).open)))
+    await details.locator("summary").click();
+}
+
 const group = (page: Page, name: string) =>
   page.getByRole("region", { name, exact: true });
 async function localPackage(page: Page) {
@@ -64,7 +78,7 @@ test("one local box orders known Lojban and English queries and keeps group page
   const definitions = group(page, "Definitions");
   await expect(words.locator("article")).toHaveCount(20);
   await expect(definitions.locator("article")).toHaveCount(20);
-  await expect(words.locator(".count")).toHaveText("20 Lojban results shown.");
+  await expect(words.locator(".count")).toHaveText("· 20 of 46");
   await expect(page.locator("main [aria-live=polite]")).toHaveCount(1);
   await words.getByRole("button", { name: "Show more", exact: true }).focus();
   await page.keyboard.press("Enter");
@@ -401,9 +415,7 @@ test("meaning results have separate pagination and recover after a 503 without c
   await expect(meaning.locator("article")).toHaveCount(20);
   await meaning.getByRole("button", { name: "Show more", exact: true }).click();
   await expect(meaning.locator("article")).toHaveCount(25);
-  await expect(meaning.locator(".count")).toHaveText(
-    "25 meaning results shown.",
-  );
+  await expect(meaning.locator(".count")).toHaveText("· 25");
   await page.goto("/search?q=travel&lang=en");
   await expect(meaning.locator("article")).toHaveCount(20);
   await meaning.getByRole("button", { name: "show all", exact: true }).click();
@@ -644,6 +656,14 @@ test("r2: meaning consent names dictionary fields and local privacy follows cons
   const meaning = group(page, "Similar in meaning");
   const notice = meaning.getByRole("group", { name: "Meaning search consent" });
   await expect(notice).toBeVisible();
+  await expect(notice.locator(":scope > p")).toHaveText(
+    `Find similar meanings too? Your search text goes to ${new URL(page.url()).host} (browser-test) and Synthetic Embedding Provider.`,
+  );
+  await expect(notice.getByRole("button")).toHaveText(["Allow", "Not now"]);
+  await expect(page.locator(".meaning-privacy")).toBeHidden();
+  await expect(notice.locator("details")).not.toHaveAttribute("open", "");
+  expect(state.calls).toHaveLength(0);
+  await openMeaningDetails(page);
   for (const field of [
     "search query",
     "definition language",
@@ -655,9 +675,7 @@ test("r2: meaning consent names dictionary fields and local privacy follows cons
     await expect(notice).toContainText(field);
   await meaning.getByRole("button", { name: "Allow meaning search" }).click();
   await expect(meaning.locator("article")).toHaveCount(1);
-  await expect(page.locator("main")).toContainText(
-    "Meaning search sends each query",
-  );
+  await expect(page.locator("main")).toContainText("Meaning search on");
   const off = page.getByRole("button", {
     name: "Turn off meaning search",
     exact: true,
@@ -672,8 +690,11 @@ test("r2: meaning consent names dictionary fields and local privacy follows cons
   ).toBeVisible();
   expect(state.calls).toHaveLength(1);
   await page.goto("/search");
-  await expect(page.locator("main")).toContainText(
-    "Queries stay in this browser.",
+  await expect(
+    page.getByRole("button", { name: "Turn on meaning search", exact: true }),
+  ).toBeVisible();
+  await expect(page.locator(".meaning-privacy")).toContainText(
+    "Meaning search off",
   );
 });
 
@@ -691,9 +712,7 @@ test("r2: local empty page and Settings disclose remembered meaning uploads", as
   await expect(page.locator("main")).not.toContainText(
     "Queries stay in this browser.",
   );
-  await expect(page.locator("main")).toContainText(
-    "Meaning search sends each query",
-  );
+  await expect(page.locator("main")).toContainText("Meaning search on");
   await page.goto("/preferences");
   await expect(page.locator("main")).not.toContainText(
     "queries stay in this browser",
@@ -853,8 +872,9 @@ test("r2: pending singular and a different local meaning snapshot stay visible",
   await meaning.getByRole("button", { name: "Allow meaning search" }).click();
   await expect(meaning.locator("article")).toHaveCount(1);
   await expect(meaning).toContainText("1 is pending indexing.");
+  await meaning.getByText("Search source", { exact: true }).click();
   await expect(
-    meaning.locator("p.meta").filter({ hasText: "Meaning snapshot:" }),
+    meaning.locator("details p").filter({ hasText: "Meaning snapshot:" }),
   ).toBeVisible();
   await expect(meaning).toContainText(state.calls[0].snapshot);
   expect(state.calls[0].snapshot).not.toBe("sha256:" + "a".repeat(64));
@@ -1465,8 +1485,9 @@ test("r3: count announcements follow displayed order without a second visible st
       ),
     ).toBe(true);
     const statuses = await page
-      .locator("main section[aria-labelledby] > .count")
+      .locator("main .result-group-heading > .count")
       .allTextContents();
+    expect(statuses).toHaveLength(2);
     for (const status of statuses) expect(message).not.toContain(status);
   }
 });
@@ -1543,6 +1564,7 @@ test("r4: the consent box saves the off choice before any meaning request", asyn
       const { LocalStore } = await import(String("/src/data/store.ts"));
       return new LocalStore().preferences();
     });
+  await openMeaningDetails(page);
   const before = await preferences();
   await expect(
     consent.getByRole("button", {
@@ -1771,6 +1793,7 @@ test("r4: a failed consent-box off save keeps consent and retry usable", async (
     name: "Meaning search consent",
     exact: true,
   });
+  await openMeaningDetails(page);
   const off = consent.getByRole("button", {
     name: "Turn off meaning search",
     exact: true,
@@ -2011,6 +2034,7 @@ for (const control of ["consent", "privacy"] as const) {
         .getByRole("button", { name: "Allow meaning search" })
         .click();
       await expect.poll(() => meaningWrites(page)).toEqual(["allow"]);
+      if (control === "consent") await openMeaningDetails(page);
       const off =
         control === "consent"
           ? consent.getByRole("button", {
@@ -2083,6 +2107,7 @@ for (const control of ["consent", "privacy"] as const) {
     const allow = consent.getByRole("button", { name: "Allow meaning search" });
     await allow.click();
     await expect.poll(() => meaningWrites(page)).toEqual(["allow"]);
+    if (control === "consent") await openMeaningDetails(page);
     const off =
       control === "consent"
         ? consent.getByRole("button", {
@@ -2123,6 +2148,7 @@ test("r5: pending off blocks Allow and its failure cannot replace Not now", asyn
   const state = await meaningService(page);
   await page.goto("/search?q=book&lang=en");
   const meaning = group(page, "Similar in meaning");
+  await openMeaningDetails(page);
   await holdMeaningWrites(page);
   await meaning
     .getByRole("button", { name: "Turn off meaning search", exact: true })
@@ -2138,12 +2164,16 @@ test("r5: pending off blocks Allow and its failure cannot replace Not now", asyn
   await expect(meaning).not.toContainText(
     "Synthetic delayed preference failure.",
   );
+  await expect(page.locator("div.status[role=status]")).toContainText(
+    "The saved meaning search choice is unchanged. Synthetic delayed preference failure.",
+  );
   expect(await meaningDispatches(page)).toBe(0);
   expect(state.calls).toHaveLength(0);
   await meaning.getByRole("button", { name: "Enable meaning search" }).click();
   await expect(
     meaning.getByRole("button", { name: "Allow meaning search" }),
   ).toBeEnabled();
+  await openMeaningDetails(page);
   await expect(
     meaning.getByRole("button", {
       name: "Turn off meaning search",
@@ -2198,4 +2228,154 @@ test("r5: pending privacy off blocks an initial request after profile discovery"
   } finally {
     release();
   }
+});
+
+for (const colorScheme of ["light", "dark"] as const)
+  test(`compact consent and meaning source fit at 360px in ${colorScheme} mode`, async ({
+    page,
+  }) => {
+    const state = await meaningService(page);
+    await page.setViewportSize({ width: 360, height: 780 });
+    await page.emulateMedia({ colorScheme });
+    await page.goto("/search?q=book&lang=en");
+    const meaning = group(page, "Similar in meaning");
+    const consent = meaning.getByRole("group", {
+      name: "Meaning search consent",
+    });
+    await expect(consent.getByRole("button")).toHaveText(["Allow", "Not now"]);
+    await expect(consent.locator(":scope > p")).toContainText(
+      "Find similar meanings too? Your search text goes to",
+    );
+    const details = consent.locator("details");
+    const summary = details.locator("summary");
+    await expect(
+      details.getByText(`Profile: ${state.profile}`, { exact: true }),
+    ).toBeHidden();
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
+    await page.screenshot({
+      path: test.info().outputPath(`consent-compact-${colorScheme}.png`),
+      fullPage: true,
+    });
+    await summary.focus();
+    await page.keyboard.press("Enter");
+    await expect(details).toHaveAttribute("open", "");
+    await expect(details).toContainText("Server:");
+    await expect(details).toContainText(`Provider: ${state.provider}.`);
+    await expect(details).toContainText(
+      "Dictionary fields sent: search query, definition language, snapshot, view, profile, and result limit of 100.",
+    );
+    await expect(
+      details.getByText(`Profile: ${state.profile}`, { exact: true }),
+    ).toBeVisible();
+    await page.keyboard.press("Tab");
+    await expect(
+      details.getByRole("button", { name: "Turn off meaning search" }),
+    ).toBeFocused();
+    expect(state.calls).toHaveLength(0);
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
+    await page.screenshot({
+      path: test.info().outputPath(`consent-${colorScheme}.png`),
+      fullPage: true,
+    });
+    await summary.focus();
+    await page.keyboard.press("Enter");
+    await expect(details).not.toHaveAttribute("open", "");
+    await page.keyboard.press("Shift+Tab");
+    await expect(
+      consent.getByRole("button", { name: "Not now", exact: true }),
+    ).toBeFocused();
+    await page.keyboard.press("Shift+Tab");
+    await expect(
+      consent.getByRole("button", { name: "Allow meaning search" }),
+    ).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(meaning.locator("article")).toHaveCount(1);
+    await expect(meaning.locator("article .hw")).toBeFocused();
+    await expect(page.locator(".meaning-privacy")).toHaveText(
+      "Meaning search on·Turn off",
+    );
+    const source = meaning.locator("details").filter({
+      has: page.getByText("Search source", { exact: true }),
+    });
+    await expect(source.locator("summary")).toHaveText("Search source");
+    expect(
+      await source.evaluate(
+        (node) => node.parentElement?.lastElementChild === node,
+      ),
+    ).toBe(true);
+    await expect(
+      source.getByText(`Profile: ${state.profile}`, { exact: true }),
+    ).toBeHidden();
+    await source.locator("summary").focus();
+    await page.keyboard.press("Enter");
+    await expect(
+      source.getByText(`Profile: ${state.profile}`, { exact: true }),
+    ).toBeVisible();
+    await expect(source).toContainText(
+      `Meaning snapshot: ${state.calls[0].snapshot}. View: ${state.calls[0].view}.`,
+    );
+    const headings = await page
+      .locator(".result-group-heading")
+      .evaluateAll((nodes) =>
+        nodes.map((node) => ({
+          size: getComputedStyle(node.querySelector("h2")!).fontSize,
+          weight: getComputedStyle(node.querySelector("h2")!).fontWeight,
+          aligned:
+            Math.abs(
+              node.children[0].getBoundingClientRect().top -
+                node.children[1].getBoundingClientRect().top,
+            ) < 5,
+        })),
+      );
+    expect(headings).toEqual(
+      Array(3).fill({ size: "13px", weight: "600", aligned: true }),
+    );
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
+    await page.screenshot({
+      path: test.info().outputPath(`source-${colorScheme}.png`),
+      fullPage: true,
+    });
+    expect(state.calls).toHaveLength(1);
+  });
+
+test("local source notices stay in their disclosure and the retired note follows the filter", async ({
+  page,
+}) => {
+  await localPackage(page);
+  await page.goto("/search?q=se&lang=en");
+  const source = page.locator("details").filter({
+    has: page.getByText("Search source and snapshot", { exact: true }),
+  });
+  const packageNote = source.getByText(/^Local search package from snapshot/);
+  await expect(group(page, "Search results")).toHaveAttribute(
+    "aria-busy",
+    "false",
+  );
+  await expect(packageNote).toBeHidden();
+  await expect(
+    page.getByText(/^Local results include every retained publication/),
+  ).toHaveCount(0);
+  await source.locator("summary").click();
+  await expect(packageNote).toContainText("sha256:" + "a".repeat(64));
+  await expect(packageNote).toBeVisible();
+  await page.goto("/search?q=se&lang=en&retired=1");
+  await expect(
+    page.getByText(/^Local results include every retained publication/),
+  ).toBeVisible();
+  await page.goto("/search?lang=en");
+  await expect(packageNote).toBeHidden();
+  await source.locator("summary").click();
+  await expect(packageNote).toBeVisible();
 });

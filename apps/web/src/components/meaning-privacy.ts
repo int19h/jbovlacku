@@ -64,14 +64,13 @@ export function meaningSearchEnabled(app: App): boolean {
   );
 }
 
-/** Keep the upload notice beside search, including the empty search page. */
+/** Keep the saved meaning choice beside search, including the empty page. */
 export function meaningPrivacy(
   app: App,
-  local: boolean,
   language: string,
   context: RenderContext,
 ): HTMLElement {
-  const node = el("div", { class: "meta" });
+  const node = el("div", { class: "meaning-privacy meta" });
   let failure = "";
   let saving = false;
   let available = false;
@@ -102,29 +101,23 @@ export function meaningPrivacy(
   };
   const refresh = () => {
     node.replaceChildren();
+    node.hidden = true;
     if (app.session.preferences.useAiAssistance === false) return;
     const enabled = app.session.preferences.useMeaningSearch !== false;
     const remembered = app.session.preferences.aiConsents.some((consent) =>
       consent.tasks.includes(meaningSearchTask),
     );
     if (!enabled || meaningSearchEnabled(app) || remembered) {
+      node.hidden = false;
       node.append(
-        p(
-          !enabled
-            ? local
-              ? "Meaning search is off. Queries stay in this browser."
-              : "Meaning search is off. Word and definition searches remain available."
-            : meaningSearchEnabled(app)
-              ? "Meaning search sends each query to the dictionary server and provider. This needs applicable consent and an available profile."
-              : "Meaning search sends queries only with applicable consent. Older consent is saved in this browser.",
-          "meta",
-        ),
+        el("span", { text: `Meaning search ${enabled ? "on" : "off"}` }),
       );
       if (enabled || available)
         node.append(
+          el("span", { text: "·", "aria-hidden": "true" }),
           (() => {
             const off = button(
-              enabled ? "Turn off meaning search" : "Turn on meaning search",
+              enabled ? "Turn off" : "Turn on",
               async () => {
                 if (saving) return;
                 const restoreFocus = node.contains(document.activeElement);
@@ -152,18 +145,18 @@ export function meaningPrivacy(
                   }
                 }
               },
+              {
+                class: "btn btn-quiet",
+                "aria-label": enabled
+                  ? "Turn off meaning search"
+                  : "Turn on meaning search",
+              },
             );
             off.disabled = saving;
             return off;
           })(),
         );
-    } else if (local)
-      node.append(
-        p(
-          "Queries stay in this browser. Meaning search sends queries only after you allow it.",
-          "meta",
-        ),
-      );
+    }
     if (failure) node.append(p(failure, "notice"));
     void discover();
   };

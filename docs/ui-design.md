@@ -161,9 +161,12 @@ Each group shows its count once. One screen-reader-only region announces concise
 Local counts state the full total and the shown count when rows remain hidden. Each settled meaning update includes the last settled lexical counts before its meaning count.
 The active view appears in the footer. Local or remote search mode lives in Settings.
 The first remote request discloses the named server. Switching modes never uploads local query history silently.
-While meaning search is on, a visible note beside search names its query upload and offers “Turn off meaning search”.
+After the reader allows meaning search, the line beside search reads “Meaning search on · Turn off”.
+Before the reader makes a meaning-search choice, this line is absent and leaves no gap.
 Local mode keeps word and definition searches in the browser, while consented meaning search uses the server.
-The off choice persists separately from consent and other AI choices. “Turn on meaning search” remains beside search when AI and a query profile are available.
+The off choice persists separately from consent and other AI choices.
+After an explicit off choice, the line reads “Meaning search off · Turn on” when AI and a query profile are available.
+The controls keep the accessible names “Turn off meaning search” and “Turn on meaning search”.
 
 Each row has three content lines, separated from the next row by a thin rule and 16px vertical padding.
 The first line shows the linked headword, italic rafsi, type, and selma'o for cmavo.
@@ -175,14 +178,25 @@ The importer signer remains inspectable separately. A shared display name never 
 
 Search order follows exact headword, exact gloss, exact component sequence, contiguous sequence, headword prefix, gloss prefix, ordered subsequence, and token matches.
 One search box has no mode switch. Visible headings divide results into Lojban words, Definitions, and Similar in meaning.
+Group headings use 13px text, weight 600, and ink3. The count appears beside the heading on the same line.
+The first group has 12px of space above it. Later groups have 20px.
 Lojban words includes headword, segmented, pattern, and rafsi matches. Definitions includes gloss and text matches.
 When every space-separated query word has an exact normalized headword, Lojban words comes first. Otherwise, Definitions comes first.
 The eligible language index must hold each complete spelling. Pause periods, commas, and the `h` apostrophe alias use that same spelling.
 Cmavo segments alone cannot establish a known word.
 Pattern queries show only Lojban words. Each group keeps its own pagination and “show all” action.
 Meaning search needs one inline consent under the frontend's provider and scope rules.
+The prompt reads “Find similar meanings too? Your search text goes to [server] and [provider].”
+Allow and Not now appear below that sentence.
+A closed Details disclosure names the server, provider, task, profile, fields sent, and duration of consent.
+The reader can open it before Allow.
+Details also explains the off choices and contains “Turn off meaning search”. Opening it sends no query.
 When AI is off or meaning search is unavailable, that group is absent and leaves no gap.
-The meaning group shows its own server snapshot and view when lexical results use a local package.
+The meaning group ends with a closed Search source disclosure. It contains the server, provider, snapshot, view, profile ID, and profile limits.
+These details keep the meaning source distinct when lexical results use a local package.
+The existing Search source and snapshot disclosure contains “Local search package from snapshot…” or “Searched on…”.
+The first remote-upload disclosure and segmentation limits remain visible outside it.
+The note about retained local publications and unavailable current statuses appears only when retired results are on.
 Individual cards follow in query order for words outside exact or contiguous compound spans, with repeated identities grouped.
 Subsequence matches keep those cards. A one-word query shows its exact word and prefix family before compounds that contain it.
 Case and acute headword stress marks do not change the order.
