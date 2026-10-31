@@ -126,6 +126,8 @@ export interface VectorStore {
   profile(id: string): Promise<EmbeddingProfile>;
   stage(id: string, after: string | null, page: DocumentPage): Promise<void>;
   coverage(id: string, language?: string): Promise<IndexCoverage>;
+  /** Report missing vectors independently of batch state and retry deadlines. */
+  needsEmbedding(id: string): Promise<boolean>;
   summary(id: string): Promise<IndexSummary>;
   compatibility(profile: string): Promise<string | null>;
   suspend(profile: string, reason: string): Promise<void>;

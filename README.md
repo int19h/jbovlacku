@@ -334,41 +334,62 @@ Recipe inputs preserve literal imported markers and mathematics. They exclude to
 The codecs encode unit vectors as little-endian float32.
 They reject invalid dimensions, nonfinite values, incorrect byte lengths, and vectors outside the unit norm tolerance.
 Only provider output receives normalization.
+
 The Node host stores vectors and exact event, envelope, body, input, and extraction bindings in a separate SQLite database.
 Its [operator command](docs/semantic-search.md) prepares eligible definitions in bounded pages and resumes fresh indexing through the shared embedding budget.
 Equal inputs share a vector under the same complete profile. Distinct publications retain their own associations.
+
 The job saves each operation link before dispatch. Interrupted sent batches need an explicit linked retry and keep their earlier charges.
 Saved claim positions avoid scans of completed inputs. Active batches reserve vector capacity before provider admission.
 Over-limit inputs retain their exclusion reasons while the remaining generation can complete.
+
 HTTP 429 responses use bounded backoff that respects `Retry-After` and retains each earlier charge.
 The saved profile cooldown survives restart and has a one-hour cap. Operators can clear it without changing batches or charges.
 Known usage remains available even when a returned model or vector is invalid.
 Mocked tests cover partial progress, restart, failures, retirement, atomic publication, rollback, and explicit removal of current pointers.
+
 The Node host serves meaning searches from compatible published vectors with exact event bindings in the requested snapshot and view.
 New definitions remain pending while unchanged definitions stay searchable. Optional background indexing uses the same host budgets without stopping dictionary reads.
+
+Stale event bindings count as pending. Background indexing rebuilds them after an extraction change, even within the same snapshot.
+The preceding generation serves still-valid hits until the replacement publishes. Unchanged input bytes reuse stored vectors without another embedding call.
+Matching associations with input errors or failed provider attempts still count as failed.
+When every valid input has a stored vector, `input_limit` errors trigger no provider probe and keep their failed counts.
+
 Background jobs retry transient failures with bounded backoff and linked retries. They preserve earlier charges and wait for provider cooldowns and budget windows.
 Paid or unknown probe failures receive three retries, then a one-hour cooldown. Their counts and deadlines survive server restarts.
+
 Exhausted batches split into individual inputs. Failing inputs wait one hour while healthy inputs and newer snapshots proceed.
 Input holds preserve retry counts, prior batch links, and deadlines across restarts and snapshots. Due inputs return without a new snapshot.
 An unsettled earlier transport does not restart a completed pass. Other ready inputs and newer snapshots can still proceed.
+
 Oversized requests split before dispatch. Permanent refusals use long cooldowns and log only state changes. Operator CLI recovery remains manual.
+
 Cold coverage yields between bounded metadata pages. Concurrent requests share coverage work, and partial coverage stays cached until index progress changes.
 Ordinary generation and public profile reads do not scan parked inputs. Operator diagnostics yield between pages of at most 128 holds.
+
 Generation retirement yields between bounded deletion transactions and resumes interrupted cleanup.
 Operators can unpublish and retire an idle background generation, including a suspended profile, without retaining its background pointer.
+
 Each client network can hold at most one scan worker. Empty or absent networks share that same limit.
 The API rejects malformed language tags and retains the required coverage fields.
 `GET /embedding-profiles` reports coverage and query availability. `POST /search/semantic` returns definition events with cosine distances.
+
 Two worker threads scan bounded vector pages and keep only the requested best results. Lexical reads remain available during inference and scans.
+
 The persistent query cache stores complete profile hashes, exact input hashes, and vectors. Concurrent cache misses share one computation.
 Cache hits require no provider request or spending reservation. Each search still filters the selected view and excludes inert definitions.
+
 Public reference probes detect model drift before new query computations. A detected mismatch suspends that profile, including its cached queries.
 Cancellation stops the caller's wait. Admitted embedding work still settles and can fill the shared cache without a replacement request.
+
 Offline browser meaning search remains unfinished. An unconfigured host reports meaning search as unavailable.
+
 A discarded result returns a clear status. Spending failures distinguish pending costs, timed limits, and requests that cannot fit.
 The default spending share admits every enabled operation at each reasoning effort, with decision reports enabled or disabled.
 Each task uses an output cap based on recorded prompt tests. An explicit operator limit replaces the automatic caps.
 Every output limit stays at or below 20,480 tokens, including explicit limits and decision reports.
+
 Mocked providers cover the request and correction loop. These tests do not establish live model accuracy.
 The [development guide](docs/development.md#optional-ai-assistance) gives the configuration and retention limits.
 

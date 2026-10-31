@@ -116,13 +116,11 @@ export class BackgroundSemanticIndexer {
           )
         : null;
     const dueInputs = schedule !== null && schedule <= this.now();
-    if (
-      (!job || job.state === "completed") &&
-      !dueInputs &&
-      this.options.needed &&
-      !(await this.options.needed())
-    )
-      return;
+    const needed =
+      !job || job.state === "completed"
+        ? await this.options.needed?.()
+        : undefined;
+    if (!dueInputs && needed === false) return;
     try {
       let source =
         job?.source_done && job.state !== "completed"
@@ -133,7 +131,8 @@ export class BackgroundSemanticIndexer {
             );
       if (this.stop.signal.aborted) return;
       if (!job || job.state === "completed") {
-        if (source!.context.snapshot === (job ?? current).snapshot) {
+        // Changed extraction can require fresh associations for the same snapshot.
+        if (source!.context.snapshot === (job ?? current).snapshot && !needed) {
           if (!job || !dueInputs) return;
           await store.resumeBackground(job.id);
           job = await store.generation(job.id, true);
@@ -160,9 +159,8 @@ export class BackgroundSemanticIndexer {
         await this.defer(await store.generation(job.id, true), undefined);
         return;
       }
-      const coverage = await store.coverage(job.id);
       if (
-        (coverage.pending || coverage.failed) &&
+        (await store.needsEmbedding(job.id)) &&
         (await store.references(current.id)).length
       )
         await this.options.probe(current, profile);
