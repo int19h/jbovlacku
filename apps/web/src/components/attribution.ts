@@ -1,3 +1,5 @@
+import { sourceDate } from "../lib/source-date.ts";
+export { sourceDate } from "../lib/source-date.ts";
 /**
  * Author attribution. Native authors link to their signing identity. Imported
  * authors link to source evidence without impersonating a signing identity.
@@ -83,26 +85,6 @@ interface LegacyShape {
   record?: { kind?: string; id?: string | number };
   snapshot?: string;
   locator?: string;
-}
-export function sourceDate(body: DefinitionBody | null): string | null {
-  const legacy = body?.legacy as LegacyShape | null;
-  if (!legacy) return null;
-  const dates = legacy.attribution?.dates ?? {};
-  const candidates = [
-    dates.created_at,
-    dates.created,
-    dates.updated_at,
-    dates.updated,
-  ];
-  for (const value of candidates) {
-    if (typeof value !== "string") continue;
-    const parsed = Date.parse(value);
-    if (Number.isFinite(parsed)) {
-      const date = new Date(parsed);
-      return `${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][date.getUTCMonth()]} ${date.getUTCFullYear()}`;
-    }
-  }
-  return null;
 }
 /** Author line for a definition: imported source author with evidence, or the signing identity. */
 export function attribution(

@@ -1,4 +1,4 @@
-This importer prepares signed proposals from pinned local Lensisku JSON captures and SQL snapshots. A proposal contains literal definitions, an import selection, and a view. An import selection lists the exact publications that the view accepts.
+This importer prepares signed proposals from pinned local Lensisku JSON captures and SQL snapshots. A proposal contains attributed definitions, rafsi claims, an import selection, and a view. An import selection lists the exact publications that the view accepts.
 
 ## REST captures
 
@@ -8,12 +8,12 @@ The importer signs the extraction with the supplied disposable key. Numeric auth
 
 Authored strings and source number tokens remain in `legacy.original`. Source fields with endpoint placeholders remain unknown in the lexical digest. This recipe marks `official_rafsi`, `experimental_rafsi`, `rafsi`, `gloss_keywords`, and `place_keywords` unavailable in the pinned listing.
 
-REST extraction `lensisku-list-literal-v2` omits derived, display, and viewer-specific fields from new publications.
-The omitted fields include `embedding`, `similarity`, `can_edit`, `user_vote`, `comment_count`, `has_image`, `sound_url`, `langrealname`, and `username`.
+REST extraction `lensisku-list-fidelity-v3` omits derived, display, and viewer-specific fields from new publications.
+The omitted fields include `embedding`, `similarity`, `can_edit`, `user_vote`, `comment_count`, `has_image`, `sound_url`, `langrealname`.
 It also omits `metadata`, `processed_text`, `canonical_word`, and `cached_*` fields.
 The legacy limitations name those fields. Their exact values remain in the archived capture.
 The extraction keeps source scores, authored restrictions, dates, and numeric account evidence.
-Joined user names do not become author names.
+Joined usernames supply display names with separate source references. They never establish numeric source authorship.
 
 New observations retain an archive reference and exact field coverage instead of another copy of the raw row.
 Earlier signed publications and observations remain unchanged.
@@ -39,7 +39,7 @@ The tests use the operating system's temporary directory by default. Set `JVC_TE
 
 Create an external file that contains a disposable seed as 64 lowercase hexadecimal digits. Create a roots file that contains the operator's explicit array of identity allocations, or `[]`. Keep the seed outside the output directory.
 
-The manifest names `source`, `url`, `retrieved_at`, `sha256`, `extraction`, `recipe`, and `unavailable_fields`. Use `extraction: "lensisku-list-literal-v2"` and `recipe: "lensisku-definitions-list-v1"`. The optional `expected_rows` field makes the row count mandatory.
+The manifest names `source`, `url`, `retrieved_at`, `sha256`, `extraction`, `recipe`, and `unavailable_fields`. Use `extraction: "lensisku-list-fidelity-v3"` and `recipe: "lensisku-definitions-list-v1"`. The optional `expected_rows` field makes the row count mandatory.
 
 For this local example, put the disposable seed and roots files in `.cache/import-input`.
 The output goes into a separate directory. These paths are examples, not capture provenance.
@@ -109,8 +109,10 @@ Both commands share one `journal.sqlite`, keyed by the source origin and numeric
 Their extraction identifiers remain distinct. A snapshot type does not create a second source identity.
 Numeric account evidence uses that same origin.
 Each imported body retains authored source fields, available version rows, keyword indices, dates, and separate word-level and definition-level rafsi.
-Derived vectors and caches remain only in the source archive. Each body records their omission in its legacy limitations.
-Literal text receives no inferred place frame. Rafsi evidence creates no automatic rafsi claims.
+Derived vectors and caches remain only in the source archive, except for cached usernames retained as separate display evidence.
+Each body records these limits. The numeric definition author still comes from `definitions.userid`.
+Explicit x-place forms receive a context frame, without a fixed arity claim. Known official and experimental rafsi produce separate imported claims.
+Each claim names its source field and remains unreviewed without an automatic endorsement.
 
 The sanitized SQL dump contains no aggregate definition scores or individual votes.
 Keyword-placement scores remain separate source evidence.
@@ -222,4 +224,38 @@ Without the flag, a new directory retains the core's default limit.
 `JVC_VIEW` overrides the saved view. `JVC_STATE_TRAVERSAL_LIMIT` overrides the saved traversal limit.
 
 The loader requires exclusive local access. It is not an online import endpoint.
-Source account management, cross-post marker reconciliation, and inferred place conversion remain outside this importer.
+Source account management, cross-post marker reconciliation, and model-assisted place conversion remain outside this importer.
+
+
+## Places, rafsi, and attribution
+
+Extraction versions `lensisku-list-fidelity-v3` and `lensisku-sql-fidelity-v3` use the `explicit-x-places-v1` conversion recipe.
+The [format specification](../../docs/format.md#placeholder-conversion-during-import) defines its supported forms and limits.
+The importer preserves exact source strings and records each converted span with Unicode scalar offsets.
+It declares observed indices in a context frame. It does not infer a complete place list.
+Notes, etymology, examples, source history, equations, component variables, and quoted relations remain literal.
+
+Known `official_rafsi` and `experimental_rafsi` tokens create separate `rafsi.publish` records under the importer's key.
+SQL official claims cite `valsi.rafsi` with a word record. Experimental claims cite `definitions.rafsi` with a definition record.
+REST claims cite the corresponding field of their source definition.
+The importer selects these claims with their definitions and retains exact envelopes for repeat imports.
+A removed source assignment leaves its old claim retained but outside the current import selection.
+The existing definition gate still applies. A claim needs an active eligible definition for its word.
+Both kinds start active and unreviewed. Publication supplies no endorsement or ranking privilege.
+A token present in both fields retains separate source claims for the same pair.
+
+SQL `cached_username` and REST `username` supply names for display only.
+The pinned [Lensisku cache migration](https://github.com/lojban/lensisku/blob/38eb956ad81138b52a4ac1d2f77589548e49cde9/migrations/V156__cached_glosswords_pipe_separator.sql#L61-L79) joins names through `definitions.userid`.
+Source references identify those fields. SQL bodies retain the lookup separately from numeric account evidence.
+A username alone never supplies an account number or author controls.
+SQL `time` supplies the source timestamp as its original seconds string.
+The browser uses that timestamp before `created_at`, which can date a later database migration.
+Unknown dates stay absent. The Source disclosure keeps each original date label.
+
+The proposal's `fidelity` report counts fully converted, partly converted, and untouched selected definitions.
+A fully converted definition contains converted places and no remaining recognized variable patterns in its main text.
+A partly converted definition contains both. An untouched definition contains no converted places.
+The report also counts unconverted patterns, named definitions, and selected rafsi claims by source field.
+These counts describe the selected output, including publications reused from an earlier extraction.
+A routine repeat import does not rewrite old signed bodies to apply new software.
+Use an explicitly authorized new proposal when the operator needs a fresh extraction.

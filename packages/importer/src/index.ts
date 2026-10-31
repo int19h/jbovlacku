@@ -1,3 +1,12 @@
+import { convertPlaces } from "./places.ts";
+import {
+  displayUsername,
+  originalField,
+  importedRafsiClaims,
+  rafsiClaimKey,
+  emptyFidelity,
+  countFidelity,
+} from "./fidelity.ts";
 import { randomBytes } from "node:crypto";
 import {
   canonicalize,
@@ -17,7 +26,7 @@ import {
   type SourceValue,
 } from "./source-json.ts";
 
-export const EXTRACTION = "lensisku-list-literal-v2";
+export const EXTRACTION = "lensisku-list-fidelity-v3";
 const FIELDS = [
   "word",
   "language",
@@ -86,6 +95,7 @@ export interface Journal {
   head: string | null;
   entries: Record<string, Entry>;
   views: Carrier[];
+  rafsi_claims?: Carrier[];
   /** Last durable run read by this proposal. It prevents stale writes. */
   ledger_run?: number;
 }
@@ -102,6 +112,7 @@ export interface ImportResult {
   selection: { hash: string; canonical: string; ids: string[] };
   view: Carrier;
   report: {
+    fidelity: ReturnType<typeof emptyFidelity>;
     source_rows: number;
     added: number;
     revised: number;
@@ -252,7 +263,6 @@ const OMITTED_FIELDS = new Set([
   "has_image",
   "sound_url",
   "langrealname",
-  "username",
   "metadata",
   "canonical_word",
   "processed_text",
@@ -308,7 +318,12 @@ function definition(
     Number.isSafeInteger(Number(filteredAuthor))
       ? Number(filteredAuthor)
       : null);
-  const username = null;
+  const username = displayUsername(row.username);
+  const original = retainedOriginal(row) as Record<string, any>;
+  const converted = convertPlaces(
+    stringOrNull(row.definition),
+    originalField(original, "definition").pointer,
+  );
   const kind = sourceKind(row, manifest);
   const classification =
     (
@@ -329,13 +344,14 @@ function definition(
     "other",
   ]);
   const limitations = [
+    "Only the main definition receives place annotations. Notes, etymology, examples, and source history remain literal.",
     "This capture does not supply authenticated individual votes or historical edit coverage.",
-    "Place structure and unindexed place keywords remain literal source data.",
+    "Explicit x-place forms use a context frame. Unindexed place keywords remain source evidence.",
     "The source capture does not include a rights statement. Rights remain unknown.",
     `Unavailable endpoint fields: ${manifest.unavailable_fields.join(", ")}.`,
-    "Rafsi authority stays in its original source fields. This extraction does not publish rafsi claims.",
-    "The extraction omits embedding, similarity, can_edit, user_vote, comment_count, has_image, sound_url, langrealname, username, metadata, cached_*, canonical_word, and processed_text. These derived, display, and viewer values remain in the exact source archive.",
-    "Joined user names do not establish author names. Numeric source account evidence remains separate.",
+    "Known official and experimental rafsi produce separate unreviewed imported claims.",
+    "The extraction omits embedding, similarity, can_edit, user_vote, comment_count, has_image, sound_url, langrealname, metadata, cached_*, canonical_word, and processed_text. These derived, display, and viewer values remain in the exact source archive.",
+    "Joined usernames supply display evidence only. An explicit numeric author or capture filter supplies account evidence.",
   ];
   const omittedFields = [
     "notes",
@@ -369,8 +385,8 @@ function definition(
   return {
     word: { language: "jbo", spelling: spelling.normalize("NFC") },
     language: "en",
-    text: literal(stringOrNull(row.definition)),
-    frame: null,
+    text: converted.text,
+    frame: converted.frame,
     operands: [],
     glosses: [],
     notes: literal(stringOrNull(row.notes)),
@@ -392,6 +408,14 @@ function definition(
     labels: [],
     sources: [
       sourceReference(manifest, locator, prior?.carrier.envelope.id ?? null),
+      ...(username
+        ? [
+            {
+              ...sourceReference(manifest, `${locator}/username`),
+              label: "Joined Lensisku username for display only",
+            },
+          ]
+        : []),
     ],
     license: {
       expression: "unknown",
@@ -407,7 +431,7 @@ function definition(
       extraction: manifest.extraction,
       record: { kind: "definition", id },
       locator,
-      original: retainedOriginal(row),
+      original,
       attribution: {
         author: username,
         editor: null,
@@ -425,15 +449,7 @@ function definition(
               },
         dates,
       },
-      conversion: {
-        method: "literal",
-        tool: "jbovlacku-lensisku-import",
-        version: manifest.extraction,
-        model: null,
-        review: "unreviewed",
-        mappings: [],
-        warnings: [],
-      },
+      conversion: converted.conversion,
       limitations,
     },
   };
@@ -477,7 +493,7 @@ export function importCapture(options: ImportOptions): ImportResult {
     throw new Error("The journal belongs to another source or importer.");
   const retained = Object.values(journal.entries)
     .flatMap((entry) => entry.versions.map((version) => version.carrier))
-    .concat(journal.views);
+    .concat(journal.views, journal.rafsi_claims ?? []);
   const retainedIds = new Set<string>();
   for (const carrier of retained) {
     const admitted = prepareAdmission(utf8(canonical(carrier)));
@@ -512,6 +528,13 @@ export function importCapture(options: ImportOptions): ImportResult {
         );
     }
   }
+  for (const claim of journal.rafsi_claims ?? [])
+    if (
+      claim.envelope.header.action.kind !== "rafsi.publish" ||
+      claim.envelope.header.action.origin !== "import" ||
+      claim.body.legacy?.source !== manifest.source
+    )
+      throw new Error("The journal contains an invalid imported rafsi claim.");
   const retainedPrevious = retained.flatMap(
     (carrier) => carrier.envelope.header.previous,
   );
@@ -575,6 +598,7 @@ export function importCapture(options: ImportOptions): ImportResult {
   )
     throw new Error("The source row count does not match the manifest.");
   const report: ImportResult["report"] = {
+    fidelity: emptyFidelity(),
     source_rows: parsed.definitions.length,
     added: 0,
     revised: 0,
@@ -677,7 +701,7 @@ export function importCapture(options: ImportOptions): ImportResult {
         )!;
         const original = encodeOriginal(row) as Record<string, unknown>;
         if (
-          ["user_id", "created_at", "updated_at"].some(
+          ["user_id", "username", "created_at", "updated_at"].some(
             (field) =>
               Object.hasOwn(original, field) &&
               !same(
@@ -815,9 +839,35 @@ export function importCapture(options: ImportOptions): ImportResult {
     report.notices.push(
       "Rows absent from this capture remain selected. Absence does not prove source deletion.",
     );
-  const ids = Object.values(journal.entries)
-    .map((entry) => entry.selected)
-    .sort();
+  const ids: string[] = [];
+  const claims = new Set<string>();
+  const byAuthority = {
+    official: new Set<string>(),
+    experimental: new Set<string>(),
+  };
+  for (const entry of Object.values(journal.entries)) {
+    const version = entry.versions.find(
+      (item) => item.carrier.envelope.id === entry.selected,
+    )!;
+    ids.push(entry.selected);
+    countFidelity(report.fidelity, version.carrier);
+    for (const claim of importedRafsiClaims(version.carrier, version.lexical)) {
+      journal.rafsi_claims ??= [];
+      let carrier = journal.rafsi_claims.find(
+        (item) => rafsiClaimKey(item.body) === claim.key,
+      );
+      if (!carrier) {
+        carrier = sign(claim.action, claim.body);
+        journal.rafsi_claims.push(carrier);
+      }
+      claims.add(carrier.envelope.id);
+      byAuthority[claim.authority].add(carrier.envelope.id);
+    }
+  }
+  report.fidelity.official_rafsi_claims = byAuthority.official.size;
+  report.fidelity.experimental_rafsi_claims = byAuthority.experimental.size;
+  ids.push(...claims);
+  ids.sort();
   const prepared = prepareSelection(utf8(canonical(ids)));
   const selection = {
     hash: prepared.hash,
@@ -829,7 +879,7 @@ export function importCapture(options: ImportOptions): ImportResult {
   );
   const viewBody = {
     name: "Pinned Lensisku import",
-    description: [["Literal extraction of a pinned local Lensisku capture."]],
+    description: [["Attributed extraction of a pinned local Lensisku capture."]],
     roots,
     rafsi_threshold: { numerator: 1, denominator: 1 },
     H: { numerator: 3, denominator: 1 },
@@ -863,7 +913,7 @@ export function importCapture(options: ImportOptions): ImportResult {
   }
   const carriers = Object.values(journal.entries)
     .flatMap((entry) => entry.versions.map((version) => version.carrier))
-    .concat(journal.views)
+    .concat(journal.views, journal.rafsi_claims ?? [])
     .sort((a, b) => a.envelope.id.localeCompare(b.envelope.id));
   return { journal, carriers, selection, view, report };
 }

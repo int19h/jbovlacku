@@ -645,7 +645,9 @@ The probe verifies real runtime WebAssembly, blocked JavaScript evaluation, bloc
 `operations` totals those file reads and writes. It excludes directory operations, links, file syncs, and metadata access.
 `JVC_IO_REPORT` selects an output report file. Its disposable database is removed when the measurement finishes.
 The importer tests use pinned JSON captures and a small SQL fixture with source provenance.
-Inferred place conversion and automatic rafsi publication remain unfinished.
+The importer converts supported explicit x-place forms and publishes known official and experimental rafsi as separate imported claims.
+Its tests cover source spans, attribution display, repeat envelopes, and the definition gate.
+Model-assisted conversion remains unfinished.
 Use disposable contributor keys and synthetic account evidence. Do not use real contributor keys or change a Lensisku account.
 Read imported SQL as data. Do not execute an import dump against a service database.
 Use mocked providers before real inference tests.

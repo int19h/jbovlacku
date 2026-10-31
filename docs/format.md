@@ -1790,6 +1790,8 @@ If the normalized spelling fails the word rules, retain the row in the source ar
 Keep exact SQL place indices when available. Preserve missing API indices as unassigned legacy keywords.
 
 Keep older word-level rafsi and newer definition-level rafsi as distinct source evidence for separate word-level claims.
+Official and experimental source fields produce separate imported claims. Each rationale and legacy object identifies its source field.
+Both kinds start active and unreviewed, without an importer-created blessing. A source official marker grants no ranking privilege.
 An importer does not infer authenticated individual votes from aggregate scores.
 The initial jbovlaste import lacks change history. Lensisku history does not retroactively reconstruct it.
 
@@ -1874,6 +1876,22 @@ The importer first preserves the exact source text in legacy.original and produc
 A deterministic conversion pass recognizes a versioned set of explicit x-place forms, including x_1, x_{1}, and their supported math delimiters.
 It never assigns place order from the appearance order of component variables such as g_1 or m_4.
 Foreign quotations, component equivalences, nested relations, and ambiguous math remain literal unless an explicit mapping resolves them.
+
+The `explicit-x-places-v1` recipe annotates only the main definition text.
+It recognizes lowercase `x_N` and `x_{N}`, where N uses ASCII digits without leading zeros and ranges from 1 through 65,535.
+Supported matching delimiters are `$...$`, `$$...$$`, `\(...\)`, and `\[...\]`.
+A delimited expression must contain one supported form, with optional surrounding whitespace.
+A converted span includes its math delimiters and their internal whitespace.
+
+Adjacent letters, digits, underscores, braces, or exponent notation prevent a conversion within a larger expression.
+Equations, component variables, ordinary bracketed relations, code, and quotations remain literal.
+
+Quoted text includes paired straight or typographic double quotes, guillemets, backticks, and Lojban `lu` or `lo'u` quotations.
+Single quoted forms also remain literal when their quotes do not belong to adjacent words.
+A `zo` quotation keeps its next token literal. After `zoi` or `la'o`, the rest stays literal because the recipe does not parse their delimiters.
+
+The recipe leaves notes, etymology, examples, and source history literal.
+It records unresolved variable patterns as warnings. Its annotations remain unreviewed importer claims.
 
 A conservative mapping can declare observed indices in a context frame without claiming a fixed final arity.
 A fixed frame requires evidence that the declared list is complete. The importer records that evidence or its review decision.

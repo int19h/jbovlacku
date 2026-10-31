@@ -1,3 +1,10 @@
+import { convertPlaces } from "./places.ts";
+import {
+  displayUsername,
+  importedRafsiClaims,
+  emptyFidelity,
+  countFidelity,
+} from "./fidelity.ts";
 import { DatabaseSync } from "node:sqlite";
 import { randomBytes, randomUUID } from "node:crypto";
 import {
@@ -37,7 +44,7 @@ import {
   type ImportSizeEstimate,
 } from "./import-estimate.ts";
 
-export const SQL_EXTRACTION = "lensisku-sql-literal-v2";
+export const SQL_EXTRACTION = "lensisku-sql-fidelity-v3";
 export const SQL_SOURCE = "https://lensisku.lojban.org";
 export const SQL_ACCOUNT_ORIGIN = "https://lensisku.lojban.org";
 export interface SqlManifest {
@@ -58,6 +65,7 @@ interface Unresolved {
   reason: string;
 }
 export interface SqlReport {
+  fidelity: ReturnType<typeof emptyFidelity>;
   source_rows: number;
   added: number;
   revised: number;
@@ -319,7 +327,11 @@ function originalRow(row: CopyRow): Row {
   for (let i = 0; i < row.columns.length; i++) {
     const key = row.columns[i];
     const value = row.values[i];
-    if (omittedColumn(key)) continue;
+    if (
+      omittedColumn(key) &&
+      !(row.table === "definitions" && key === "cached_username")
+    )
+      continue;
     if (value === null) result[key] = null;
     else if (numeric.has(key)) {
       if (!/^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$/.test(value))
@@ -346,6 +358,7 @@ function originalRow(row: CopyRow): Row {
 
 function report(): SqlReport {
   return {
+    fidelity: emptyFidelity(),
     source_rows: 0,
     added: 0,
     revised: 0,
@@ -727,7 +740,11 @@ function extract(
     event: null,
     locator,
   };
-  const username = null;
+  const username = displayUsername(row.cached_username);
+  const converted = convertPlaces(
+    text(row.definition),
+    "/definitions/definition",
+  );
   const account = row.userid === null ? null : integer(row.userid, false);
   const rawKind = kind.replace(/^(experimental|obsolete) /, "");
   const mapped =
@@ -752,18 +769,19 @@ function extract(
   ]);
   const mappedKind = supported.has(mapped) ? mapped : "other";
   const limitations = [
+    "Only the main definition receives place annotations. Notes, etymology, examples, and source history remain literal.",
     "This SQL file omits definition aggregate scores and authenticated individual votes. Keyword best-place scores remain distinct source evidence.",
     "Available version rows identify editors. They do not establish original authors or complete historical coverage.",
-    "Text remains literal. Exact SQL place keyword indices remain source evidence without an inferred frame.",
-    "Word-level rafsi and definition-level rafsi remain distinct source evidence. This extraction publishes no rafsi claims.",
+    "Explicit x-place forms use a context frame. SQL keyword indices remain source evidence without a fixed arity claim.",
+    "Official word-level and experimental definition-level rafsi produce separate unreviewed imported claims.",
     "The source contains no rights statement. Rights remain unknown.",
     "The exact source remains at the verified external archive path. Keep that file and the original manifest available.",
-    "Derived source columns are excluded from published rows: embedding, metadata (including processed_text), cached_*, canonical_word, and cached_decomposition. Their exact values remain in the source archive. Cached usernames do not establish source author names.",
+    "Derived source columns are excluded from published rows: embedding, metadata (including processed_text), cached_*, canonical_word, and cached_decomposition. Their exact values remain in the source archive. Cached usernames supply display evidence only. Numeric author evidence comes from definitions.userid.",
     ...manifest.notes,
   ];
   if (mappedKind !== kind)
     limitations.push(`Source classification ${kind} maps to ${mappedKind}.`);
-  const warnings: string[] = [];
+  const warnings: string[] = [...converted.conversion.warnings];
   for (const field of ["official_rafsi", "experimental_rafsi"] as const) {
     const value = lexical[field];
     if (
@@ -782,8 +800,8 @@ function extract(
   const body: Row = {
     word: { language: "jbo", spelling: spelling.normalize("NFC") },
     language: definitionLanguage,
-    text: literal(text(row.definition)),
-    frame: null,
+    text: converted.text,
+    frame: converted.frame,
     operands: [],
     examples: [],
     glosses: [],
@@ -823,7 +841,18 @@ function extract(
       ...(rawKind === "non-canonical lujvo" ? ["non-canonical"] : []),
       ...(rawKind === "zei-lujvo" ? ["zei-lujvo"] : []),
     ].sort(),
-    sources: [source],
+    sources: [
+      source,
+      ...(username
+        ? [
+            {
+              ...source,
+              label: "Cached Lensisku username for display only",
+              locator: `${locator}/cached_username`,
+            },
+          ]
+        : []),
+    ],
     license: {
       expression: "unknown",
       url: null,
@@ -840,6 +869,18 @@ function extract(
       locator,
       original: {
         definitions: retainedRow(row),
+        ...(username
+          ? {
+              username_lookup: {
+                username,
+                evidence: {
+                  kind: "username-lookup",
+                  source: { ...source, locator: `${locator}/cached_username` },
+                },
+                purpose: "display-only",
+              },
+            }
+          : {}),
         valsi: retainedRow(word),
         valsitypes: type,
         languages: lang,
@@ -866,20 +907,15 @@ function extract(
                 evidence: { kind: "source-id", source },
               },
         dates: {
+          ...(row.time?.$source_number !== undefined
+            ? { time: row.time.$source_number }
+            : {}),
           ...(typeof row.created_at === "string"
             ? { created_at: row.created_at }
             : {}),
         },
       },
-      conversion: {
-        method: "literal",
-        tool: "jbovlacku-lensisku-import",
-        version: manifest.extraction,
-        model: null,
-        review: "unreviewed",
-        mappings: [],
-        warnings,
-      },
+      conversion: { ...converted.conversion, warnings },
       limitations,
     },
   };
@@ -1152,7 +1188,7 @@ function publishView(
 ): string {
   const body = {
     name: "Pinned Lensisku SQL import",
-    description: [["Literal extraction from the pinned local SQL snapshot."]],
+    description: [["Attributed extraction from the pinned local SQL snapshot."]],
     roots: [...options.roots].sort((a, b) =>
       a.identity.localeCompare(b.identity),
     ),
@@ -1212,7 +1248,7 @@ async function exportProposal(
   try {
     for (const row of db
       .prepare(
-        "SELECT event,carrier FROM versions UNION ALL SELECT event,carrier FROM views ORDER BY event",
+        "SELECT event,carrier FROM versions UNION ALL SELECT event,carrier FROM views UNION ALL SELECT event,carrier FROM rafsi_claims ORDER BY event",
       )
       .iterate())
       await handle.write(`${row.carrier}\n`);
@@ -1365,10 +1401,11 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
       definitionRows: number,
       newPublications: number,
       reuseCommitted = false,
+      newRafsiClaims = 0,
     ) => {
       const retained = journal!
         .prepare(
-          "SELECT COUNT(*) AS count,COALESCE(SUM(length(CAST(carrier AS BLOB))+1),0) AS bytes FROM (SELECT carrier FROM versions UNION ALL SELECT carrier FROM views)",
+          "SELECT COUNT(*) AS count,COALESCE(SUM(length(CAST(carrier AS BLOB))+1),0) AS bytes FROM (SELECT carrier FROM versions UNION ALL SELECT carrier FROM views UNION ALL SELECT carrier FROM rafsi_claims)",
         )
         .get()!;
       const oldCarriers = await stat(join(output, "carriers.jsonl")).catch(
@@ -1382,6 +1419,7 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
         stage_bytes: stageBytes,
         definition_rows: definitionRows,
         new_publication_count: newPublications,
+        new_rafsi_claim_count: newRafsiClaims,
         existing_journal_bytes: (await stat(journalPath)).size,
         retained_carrier_bytes: Number(retained.bytes),
         retained_carrier_count: Number(retained.count),
@@ -1636,27 +1674,53 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
       ).count,
     );
     let newPublications = 0;
+    const newClaims = new Set<string>();
     for (const group of stage
       .prepare(
         "SELECT DISTINCT source_id FROM rows WHERE table_name='definitions' ORDER BY source_id",
       )
       .iterate()) {
       try {
-        if (
-          !planDefinition(
-            stage,
-            journal,
-            group.source_id as number,
-            manifest,
-            report(),
-          ).reuse
-        )
-          newPublications++;
+        const planned = planDefinition(
+          stage,
+          journal,
+          group.source_id as number,
+          manifest,
+          report(),
+        );
+        if (!planned.reuse) newPublications++;
+        const retainedVersion = planned.reuse
+          ? journal
+              .prepare("SELECT carrier,lexical FROM versions WHERE event=?")
+              .get(planned.reuse.event)
+          : undefined;
+        const selectedBody = retainedVersion
+          ? JSON.parse(retainedVersion.carrier as string)
+          : { body: planned.body };
+        const selectedLexical = retainedVersion
+          ? JSON.parse(retainedVersion.lexical as string)
+          : planned.lexical;
+        for (const claim of importedRafsiClaims(
+          selectedBody as Carrier,
+          selectedLexical,
+        ))
+          if (
+            !journal
+              .prepare("SELECT 1 FROM rafsi_claims WHERE claim_key=?")
+              .get(claim.key)
+          )
+            newClaims.add(claim.key);
       } catch (error) {
         if (!(error instanceof SourceRowError)) throw error;
       }
     }
-    await estimateSize(stageBytes, definitionRows, newPublications);
+    await estimateSize(
+      stageBytes,
+      definitionRows,
+      newPublications,
+      false,
+      newClaims.size,
+    );
     result.source_rows = result.table_rows.definitions ?? 0;
     const currentStat = await stat(sourcePath);
     if (
@@ -1807,10 +1871,48 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
         result.notices.push(
           "Absent source rows remain selected. Absence does not prove source deletion.",
         );
-      const ids = journal
-        .prepare("SELECT selected FROM entries ORDER BY selected")
-        .all()
-        .map((row) => row.selected as string);
+      const ids: string[] = [];
+      const claims = new Set<string>();
+      const byAuthority = {
+        official: new Set<string>(),
+        experimental: new Set<string>(),
+      };
+      for (const selected of journal
+        .prepare(
+          "SELECT versions.carrier,versions.lexical FROM entries JOIN versions ON entries.selected=versions.event ORDER BY entries.record",
+        )
+        .iterate()) {
+        const definition = JSON.parse(selected.carrier as string) as Carrier;
+        ids.push(definition.envelope.id);
+        countFidelity(result.fidelity, definition);
+        for (const claim of importedRafsiClaims(
+          definition,
+          JSON.parse(selected.lexical as string),
+        )) {
+          let retained = journal
+            .prepare("SELECT event FROM rafsi_claims WHERE claim_key=?")
+            .get(claim.key);
+          if (!retained) {
+            const carrier = sign(
+              journal,
+              options.seed,
+              claim.action,
+              claim.body,
+              options.checkExisting,
+            );
+            journal
+              .prepare("INSERT INTO rafsi_claims VALUES(?,?,?)")
+              .run(carrier.envelope.id, claim.key, canonical(carrier));
+            retained = { event: carrier.envelope.id };
+          }
+          claims.add(retained.event as string);
+          byAuthority[claim.authority].add(retained.event as string);
+        }
+      }
+      result.fidelity.official_rafsi_claims = byAuthority.official.size;
+      result.fidelity.experimental_rafsi_claims = byAuthority.experimental.size;
+      ids.push(...claims);
+      ids.sort();
       const selection = prepareSelection(utf8(canonical(ids)));
       const view = publishView(
         journal,

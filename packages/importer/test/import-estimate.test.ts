@@ -226,3 +226,25 @@ test("invalid byte counts and arithmetic overflow fail before a budget claim", (
     /carrier count/,
   );
 });
+
+test("official rafsi growth enters the proposal and loaded copy estimates", () => {
+  const input = {
+    stage_bytes: 1024,
+    definition_rows: 1,
+    new_publication_count: 1,
+  };
+  const definitions = estimateImportArtifacts(input);
+  const claims = estimateImportArtifacts({
+    ...input,
+    new_rafsi_claim_count: 3,
+  });
+  assert.equal(
+    claims.components.carrier_bytes - definitions.components.carrier_bytes,
+    3 * 6144,
+  );
+  assert.ok(
+    claims.components.loaded_copy_bytes >
+      definitions.components.loaded_copy_bytes,
+  );
+  assert.ok(claims.estimated_total_bytes > definitions.estimated_total_bytes);
+});

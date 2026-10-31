@@ -1,3 +1,4 @@
+import { rafsiClaimKey } from "./fidelity.ts";
 import {
   access,
   link,
@@ -211,7 +212,7 @@ async function commitJournal(
       );
       for (const row of db
         .prepare(
-          "SELECT event,carrier FROM versions UNION ALL SELECT event,carrier FROM views",
+          "SELECT event,carrier FROM versions UNION ALL SELECT event,carrier FROM views UNION ALL SELECT event,carrier FROM rafsi_claims",
         )
         .iterate())
         if (retained.get(row.event as string) !== row.carrier)
@@ -263,6 +264,11 @@ async function commitJournal(
             );
           }
         }
+        for (const claim of legacyJournal.rafsi_claims ?? [])
+          if (retained.get(claim.envelope.id) !== canonical(claim))
+            throw new Error(
+              "The migration omits or changes a retained rafsi claim.",
+            );
         for (const view of legacyJournal.views)
           if (retained.get(view.envelope.id) !== canonical(view))
             throw new Error(
@@ -324,6 +330,12 @@ async function commitJournal(
           );
         }
       }
+      for (const claim of result.journal.rafsi_claims ?? [])
+        db.prepare("INSERT OR IGNORE INTO rafsi_claims VALUES(?,?,?)").run(
+          claim.envelope.id,
+          rafsiClaimKey(claim.body),
+          canonical(claim),
+        );
       for (const view of result.journal.views)
         db.prepare("INSERT OR IGNORE INTO views VALUES(?,?,?)").run(
           view.envelope.id,

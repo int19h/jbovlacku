@@ -3,6 +3,7 @@ export interface ImportSizeInput {
   definition_rows: number;
   /** Staged definitions that need a new signed publication. */
   new_publication_count?: number;
+  new_rafsi_claim_count?: number;
   existing_journal_bytes?: number;
   retained_carrier_bytes?: number;
   retained_carrier_count?: number;
@@ -90,7 +91,13 @@ export function estimateImportArtifacts(
   );
   if (budget === 0) throw new Error("budget_bytes must be positive.");
   // Normal imports reserve one view in addition to the planned definitions.
-  const newCount = input.check_existing ? 0 : sum(publications, 1);
+  const newCount = input.check_existing
+    ? 0
+    : sum(
+        publications,
+        size(input.new_rafsi_claim_count ?? 0, "new_rafsi_claim_count"),
+        1,
+      );
   const newCarriers = size(newCount * 6144, "New carrier bytes");
   const carrierBytes = sum(retained, newCarriers);
   // Version rows repeat carrier and lexical data. Each run also appends observations.
