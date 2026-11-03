@@ -1786,3 +1786,72 @@ test("SQL publications retain specific unresolved conversion warnings", async ()
       ),
     );
 });
+
+test("invalid retained SQL rafsi leave only their omitted journal row unresolved", async () => {
+  for (const field of ["official_rafsi", "experimental_rafsi"] as const) {
+    const input = await setup();
+    await importSqlSnapshot(input);
+    const db = new DatabaseSync(join(input.output, "journal.sqlite"));
+    let original: string;
+    let selected: string;
+    try {
+      const version = db
+        .prepare("SELECT * FROM versions WHERE record=4")
+        .get()!;
+      const lexical = JSON.parse(version.lexical as string);
+      lexical[field] = { known: ["már"] };
+      const encoded = canonical(lexical);
+      db.prepare("UPDATE versions SET lexical=?,digest=? WHERE event=?").run(
+        encoded,
+        contentHash(utf8(encoded)),
+        version.event as string,
+      );
+      db.prepare("UPDATE entries SET baseline=? WHERE record=4").run(encoded);
+      original = version.carrier as string;
+      selected = version.event as string;
+    } finally {
+      db.close();
+    }
+    let definitions = false;
+    const omitted = Buffer.from(
+      fixture
+        .toString()
+        .split("\r\n")
+        .filter((line) => {
+          if (line.startsWith("COPY "))
+            definitions = line.startsWith("COPY public.definitions ");
+          if (line === "\\.") definitions = false;
+          return !definitions || line.split("\t")[3] !== "4";
+        })
+        .join("\r\n"),
+    );
+    await updateSource(input, omitted);
+    const manifest = JSON.parse(await readFile(input.manifestPath, "utf8"));
+    manifest.expected_rows.definitions = 3;
+    await writeFile(input.manifestPath, canonical(manifest));
+    const result = await importSqlSnapshot(input);
+    assert.equal(result.report.reused, 3);
+    assert.deepEqual(
+      result.report.unresolved.map((issue) => issue.record),
+      [4],
+    );
+    assert.ok(
+      result.report.notices.some(
+        (notice) =>
+          notice.includes("Retained definition 4:") && notice.includes("már"),
+      ),
+    );
+    assert.ok(
+      (await carriers(input.output)).some(
+        (carrier) => canonical(carrier) === original,
+      ),
+    );
+    const selection = JSON.parse(
+      await readFile(join(input.output, "import-selection.json"), "utf8"),
+    );
+    assert.ok(selection.includes(selected));
+    assert.equal(result.report.fidelity.official_rafsi_claims, 3);
+    assert.equal(result.report.fidelity.experimental_rafsi_claims, 0);
+    assert.ok(result.size_estimate);
+  }
+});

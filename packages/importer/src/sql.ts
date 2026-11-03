@@ -1711,6 +1711,9 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
         for (const claim of importedRafsiClaims(
           selectedBody as Carrier,
           selectedLexical,
+          (reason) => {
+            throw new SourceRowError(reason);
+          },
         ))
           if (
             !journal
@@ -1896,6 +1899,19 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
         for (const claim of importedRafsiClaims(
           definition,
           JSON.parse(selected.lexical as string),
+          (reason) => {
+            const legacy = definition.body.legacy;
+            result.notices.push(
+              `Retained definition ${legacy.record.id}: ${reason}`,
+            );
+            if (
+              !result.unresolved.some(
+                (issue) =>
+                  issue.record === legacy.record.id && issue.reason === reason,
+              )
+            )
+              unresolved(result, legacy.record.id, legacy.locator, reason);
+          },
         )) {
           let retained = journal
             .prepare("SELECT event FROM rafsi_claims WHERE claim_key=?")

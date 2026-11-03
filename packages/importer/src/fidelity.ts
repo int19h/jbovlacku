@@ -60,7 +60,16 @@ export function rafsiClaimKey(body: Record<string, any>): string {
 }
 
 /** Each source field retains its own claim and source record. */
-export function importedRafsiClaims(definition: Carrier, lexical: Lexical) {
+export function importedRafsiClaims(
+  definition: Carrier,
+  lexical: Lexical,
+  onInvalid: (reason: string) => void,
+) {
+  const invalid = invalidSourceRafsi(lexical);
+  if (invalid) {
+    onInvalid(invalid);
+    return [];
+  }
   const original = definition.body.legacy.original;
   const legacy = definition.body.legacy;
   const sql = legacy.extraction.startsWith("lensisku-sql-");

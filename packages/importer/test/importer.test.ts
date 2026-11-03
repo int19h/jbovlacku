@@ -1365,3 +1365,34 @@ test("REST publications retain source edit time and specific unresolved warnings
       ),
     );
 });
+
+test("invalid retained rafsi leave only their omitted journal row unresolved", () => {
+  for (const field of ["official_rafsi", "experimental_rafsi"] as const) {
+    const first = capture([{ ...rows()[0], [field]: "már" }]);
+    const entry = first.journal.entries["4"];
+    const version = entry.versions[0];
+    version.lexical[field] = entry.baseline[field] = { known: ["már"] };
+    version.digest = contentHash(utf8(canonical(version.lexical)));
+    const original = canonical(version.carrier);
+    const second = capture([rows()[1]], first.journal);
+    assert.equal(second.report.added, 1);
+    assert.equal(second.report.incomplete, true);
+    assert.deepEqual(
+      second.report.unresolved.map((issue) => issue.record),
+      [4],
+    );
+    assert.ok(
+      second.report.notices.some(
+        (notice) =>
+          notice.includes("Retained definition 4:") && notice.includes("már"),
+      ),
+    );
+    assert.ok(second.selection.ids.includes(entry.selected));
+    assert.equal(
+      canonical(second.journal.entries["4"].versions[0].carrier),
+      original,
+    );
+    assert.equal(second.report.fidelity.official_rafsi_claims, 0);
+    assert.equal(second.report.fidelity.experimental_rafsi_claims, 0);
+  }
+});

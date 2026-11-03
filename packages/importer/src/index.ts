@@ -868,7 +868,23 @@ export function importCapture(options: ImportOptions): ImportResult {
     )!;
     ids.push(entry.selected);
     countFidelity(report.fidelity, version.carrier);
-    for (const claim of importedRafsiClaims(version.carrier, version.lexical)) {
+    for (const claim of importedRafsiClaims(
+      version.carrier,
+      version.lexical,
+      (reason) => {
+        const legacy = version.carrier.body.legacy;
+        report.notices.push(
+          `Retained definition ${legacy.record.id}: ${reason}`,
+        );
+        if (
+          !report.unresolved.some(
+            (issue) =>
+              issue.record === legacy.record.id && issue.reason === reason,
+          )
+        )
+          unresolved(legacy.record.id, legacy.locator, reason);
+      },
+    )) {
       journal.rafsi_claims ??= [];
       let carrier = journal.rafsi_claims.find(
         (item) => rafsiClaimKey(item.body) === claim.key,
