@@ -142,7 +142,7 @@ test("word diagnostics open by keyboard below definitions", async ({
 test("reading language lists show names and hide the test tag", async ({
   page,
 }) => {
-  const tags = ["en", "jbo", "tlh", "tpi", "art-x-guaspi", "test"];
+  const tags = ["en", "jbo", "tlh", "tpi", "art-guaspi", "test"];
   await page.route("**/api/v1/manifest", async (route) => {
     const response = await route.fetch();
     const json = await response.json();
@@ -243,6 +243,11 @@ test("reading language lists show names and hide the test tag", async ({
       tabs.getByRole("link", { name: new RegExp(`^${name} `) }),
     ).toBeVisible();
   await expect(tabs.getByRole("link", { name: /^test / })).toHaveCount(0);
+  await page.goto(`/word/${encodeURIComponent(synthetic.id)}?lang=test`);
+  await expect(tabs.getByRole("link", { name: /^test / })).toHaveAttribute(
+    "aria-current",
+    "true",
+  );
   expect(
     (await (await page.request.get("/api/v1/manifest")).json()).packages,
   ).toEqual(before);
@@ -305,4 +310,37 @@ test("a zero reviewer count has a neutral score disclosure label", async ({
   await expect(
     page.locator("details.judgment-details summary"),
   ).not.toContainText("0 reviewers");
+});
+
+test("the active hidden language stays selected in search and Settings", async ({
+  page,
+}) => {
+  const requested: string[] = [];
+  await page.route("**/api/v1/search?**", (route) => {
+    requested.push(
+      new URL(route.request().url()).searchParams.get("language") ?? "",
+    );
+    return route.fallback();
+  });
+  await page.goto("/search?q=book&lang=test");
+  const language = page.getByRole("combobox", {
+    name: "Definition language",
+    exact: true,
+  });
+  await expect(language).toHaveValue("test");
+  await expect(language.locator("option:checked")).toHaveText("test");
+  await expect.poll(() => requested.length).toBeGreaterThanOrEqual(2);
+  expect(requested.every((tag) => tag === "test")).toBe(true);
+  await page.goto("/about");
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    await new LocalStore().setPreferences({ definitionLanguage: "test" });
+  });
+  await page.reload();
+  await page.goto("/preferences");
+  await expect(
+    page.getByLabel("Definition language", { exact: true }),
+  ).toHaveValue("test");
+  await page.goto("/search");
+  await expect(language).toHaveValue("test");
 });

@@ -189,6 +189,7 @@ const readingLanguageNames: Record<string, string> = {
   jbo: "Lojban",
   tlh: "Klingon",
   tpi: "Tok Pisin",
+  "art-guaspi": "Guaspi",
   "art-x-guaspi": "Guaspi",
 };
 export const listedLanguage = (tag: string) => tag.toLowerCase() !== "test";

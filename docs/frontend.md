@@ -157,7 +157,9 @@ A change of mode does not silently upload previously local query history.
 Local mode keeps word and definition queries in the browser. Consented meaning search still sends each new query to the server and provider.
 When remembered consent matches the current provider, scope, task, and fields, the line beside the box reads “Meaning search on · Turn off”.
 Before the reader makes a meaning-search choice, the line is absent.
-An older consent that does not match keeps “Meaning search needs consent · Turn off”. This keeps the lasting off action available before renewed consent.
+If the current provider is known but saved consent does not match, the line reads “Meaning search needs consent · Turn off”. This keeps the lasting off action available before renewed consent.
+With saved consent and AI assistance on, an unknown or unavailable provider keeps the neutral “Meaning search · Turn off” line.
+A later refresh retries failed discovery.
 The Turn off control keeps the accessible name “Turn off meaning search”.
 That action saves a lasting search preference, separate from provider consent and the general AI preference.
 While it is off, new queries and reloads show no meaning consent or results and send no meaning request.
@@ -431,7 +433,8 @@ Local counts state the full total and the shown count when rows remain hidden, i
 Lexical counts, expansions, Add it, and the retired filter never wait for meaning requests or matched definition reads.
 Each settled meaning update includes the last settled lexical counts before its meaning count, including while a lexical expansion waits.
 Each consent action, retry, or expansion announces its own settled results once.
-Search cards put judgment controls at the right end of their attribution row. They have no reviewer disclosure or visible reviewer count.
+Search cards put judgment controls at the right end of their attribution row.
+Meaning results keep “Matched definition” inside the attribution, before the judgment controls. They have no reviewer disclosure or visible reviewer count.
 Each group shows its count beside its heading. Group statuses remain visible ordinary text without a second visible copy.
 Each count has the full count sentence as its accessible name. It uses the same wording as the live announcement.
 After expansion, focus moves to the first new row. A failed or empty expansion keeps focus on its retry, remaining control, or group status.
@@ -444,7 +447,7 @@ A rejected or deprecated result remains available through an explicit filter and
 A word page groups definitions by language. Each publication retains its own frame and attribution.
 Ranking selects a presentation layer, not one universal meaning. The UI does not call a lower-ranked sense false because another sense exists.
 The full definition block shows notes, etymology, glosses, places, examples, sources, parent revisions, and history.
-Reading language lists show names instead of raw tags, including Lojban, Klingon, Tok Pisin, and Guaspi. The lists omit the test tag.
+Reading language lists show names instead of raw tags, including Lojban, Klingon, Tok Pisin, and Guaspi. The lists omit the test tag unless it is the active language.
 Language tabs show counts. Each block includes a permanent revision link, reviewer disclosure, place strip, and “Revise” action.
 A proposed revision includes a notice and “Compare.” A place strip without descriptions offers “Add descriptions.”
 After the definitions, offer “Add a definition,” “Add a translation,” and related word links.

@@ -93,6 +93,8 @@ export function meaningPrivacy(
     )
       return;
     discovering = true;
+    available = false;
+    current = null;
     try {
       const options = { signal: context.signal };
       const capabilities = await getCapabilities(options);
@@ -113,10 +115,11 @@ export function meaningPrivacy(
     } catch {
       available = false;
     } finally {
-      if (context.live()) refresh();
+      discovering = false;
+      if (context.live()) refresh(false);
     }
   };
-  const refresh = () => {
+  const refresh = (retryDiscovery = true) => {
     node.replaceChildren();
     node.hidden = true;
     if (app.session.preferences.useAiAssistance === false) return;
@@ -134,7 +137,9 @@ export function meaningPrivacy(
             ? "Meaning search off"
             : applicable
               ? "Meaning search on"
-              : "Meaning search needs consent",
+              : current
+                ? "Meaning search needs consent"
+                : "Meaning search",
         }),
       );
       if (enabled || available)
@@ -184,7 +189,7 @@ export function meaningPrivacy(
         );
     }
     if (failure) node.append(p(failure, "notice"));
-    void discover();
+    if (retryDiscovery) void discover();
   };
   refresh();
   const unsubscribe = app.session.subscribe(() => {

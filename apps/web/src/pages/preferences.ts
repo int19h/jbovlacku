@@ -59,7 +59,7 @@ export async function preferencesPage(
   if (!context.live()) return;
   const languageField = field("Definition language", {
     options: [...languages]
-      .filter(listedLanguage)
+      .filter((tag) => tag === prefs.definitionLanguage || listedLanguage(tag))
       .sort()
       .map((tag) => ({ value: tag, label: languageName(tag) })),
     value: prefs.definitionLanguage,

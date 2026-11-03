@@ -270,7 +270,9 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
     }),
   );
   // Language tabs.
-  const languages = [...byLanguage.keys()].filter(listedLanguage).sort();
+  const languages = [...byLanguage.keys()]
+    .filter((tag) => tag === requestedLanguage || listedLanguage(tag))
+    .sort();
   const active = languages.includes(requestedLanguage)
     ? requestedLanguage
     : "all";

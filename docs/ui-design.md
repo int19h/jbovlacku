@@ -173,6 +173,7 @@ Each row has three content lines, separated from the next row by a thin rule and
 The first line shows the linked headword, italic rafsi, type, and selma'o for cmavo.
 The second line shows definition text, place markers, and highlighted query matches.
 The third line shows author attribution, month and year, optional “notes,” and matching alternatives. The judgment control stays at its right end.
+Meaning results keep “Matched definition” inside the attribution, before the judgment control.
 Search cards have no reviewer disclosure or visible reviewer count. Score availability remains accessible on the judgment value.
 “notes” opens that definition's notes. “also:” links to another matching definition and its author.
 Native authors link to their signing identity. Imported authors link to source-account evidence when available, without impersonating a signing identity.
@@ -193,6 +194,7 @@ The prompt reads “Find similar meanings too? Your search text goes to [server]
 Allow and Not now appear below that sentence.
 A closed Details disclosure names the server, provider, task, profile, fields sent, and duration of consent.
 The reader can open it before Allow.
+An unknown or unavailable provider keeps the neutral “Meaning search · Turn off” line for saved consent.
 Details also explains the off choices and contains “Turn off meaning search”. Opening it sends no query.
 When AI is off or meaning search is unavailable, that group is absent and leaves no gap.
 The meaning group ends with a closed Search source disclosure. It contains the server, provider, snapshot, view, profile ID, and profile limits.
@@ -218,7 +220,7 @@ The word surface corresponds to `/word/<word-id>?lang=en`.
 Its heading shows the 44px headword, Crisa rendering beside it, type, and accessible copy control.
 A lujvo composition line shows source words, component rafsi, and descriptive glosses when known.
 The rafsi line shows assignments or “none yet,” with “claim one.” Language tabs show definition counts.
-Reading language lists use readable names, including Lojban, Klingon, Tok Pisin, and Guaspi. They omit the test tag.
+Reading language lists use readable names, including Lojban, Klingon, Tok Pisin, and Guaspi. They omit the test tag unless it is the active language.
 
 Each definition block shows 21px prose, glosses, author, date, permanent event link, and judgment controls.
 “N reviewers” opens reviewer identities, units, and influence-route details under the actual selected view. A zero count uses “Score details” instead.

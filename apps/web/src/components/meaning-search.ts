@@ -315,9 +315,8 @@ export async function meaningSearchGroup(
             routes.definition(hit.definitions[0]),
             { class: "meta" },
           );
-          const metadata = row.querySelector(".line3");
-          if (metadata)
-            metadata.insertBefore(permanent, metadata.querySelector(".spacer"));
+          const metadata = row.querySelector(".hit-attribution");
+          if (metadata) metadata.append(permanent);
           else row.append(permanent);
           return row;
         };

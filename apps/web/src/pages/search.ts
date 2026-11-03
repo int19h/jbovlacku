@@ -206,7 +206,9 @@ export async function searchPage(
   for (const key of packageKeys) languages.add(key);
   const fillLanguages = () => {
     languageSelect.replaceChildren();
-    for (const tag of [...languages].filter(listedLanguage).sort())
+    for (const tag of [...languages]
+      .filter((tag) => tag === language || listedLanguage(tag))
+      .sort())
       languageSelect.append(
         el("option", {
           value: tag,

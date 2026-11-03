@@ -83,14 +83,15 @@ Pending and failed indexing remain visible beside meaning results. Search source
 Back restores saved meaning results without another provider request. A failed matched-definition read retries without repeating inference.
 
 With consent for the current provider, scope, task, and fields, “Meaning search on · Turn off” appears beside search. Before a meaning-search choice, that line is absent.
-An older consent shows “Meaning search needs consent · Turn off”. The line and consent details offer a lasting off choice. That choice keeps consent and other AI choices.
+Consent for a different known provider or scope shows “Meaning search needs consent · Turn off”.
+An unknown or unavailable provider keeps the neutral “Meaning search · Turn off” line for saved consent. The line and consent details offer a lasting off choice. That choice keeps consent and other AI choices.
 When AI and a query profile are available, the on control returns beside search. Lexical counts and controls do not wait for meaning requests or definition reads.
 Source metadata stays in Search source and snapshot. The first upload notice stays outside it before the request. The local status-limit note appears only when retired results are on.
 
 One screen-reader count region announces lexical groups in displayed order. Local counts include the full total and the shown count when rows remain hidden.
 A settled meaning update includes those lexical counts before its meaning count. Smaller group headings show their counts on the same line.
 Each expansion preserves keyboard focus. Search cards keep votes beside attribution and omit reviewer disclosures.
-Word pages fold snapshot and view IDs and the local score comparison into Source and scores. Reading language lists show names and omit the test tag.
+Word pages fold snapshot and view IDs and the local score comparison into Source and scores. Reading language lists show names and omit the test tag unless it is active.
 Downloaded search packages permit local search without a request for each query. Version 2 packages carry authors, notes, and rafsi for result rows.
 
 Local and server search share TypeScript morphology and match ranking. Compound cmavo match exact component sequences, contiguous runs, and ordered subsequences.

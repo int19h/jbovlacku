@@ -2545,3 +2545,137 @@ test("an incomplete remembered field list does not show meaning search on", asyn
   );
   expect(state.calls).toHaveLength(1);
 });
+
+for (const width of [360, 1024])
+  test(`meaning matched definition stays in attribution at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await meaningService(page);
+    await page.goto("/search?q=book&lang=en");
+    const meaning = group(page, "Similar in meaning");
+    await meaning.getByRole("button", { name: "Allow meaning search" }).click();
+    const row = meaning.locator("article").first();
+    const matched = row.getByRole("link", {
+      name: "Matched definition",
+      exact: true,
+    });
+    await expect(
+      row
+        .locator(".hit-attribution")
+        .getByRole("link", { name: "Matched definition", exact: true }),
+    ).toBeVisible();
+    await expect(row.locator(".line3 > *")).toHaveCount(2);
+    const geometry = await matched.evaluate((node) => {
+      const attribution = node.closest(".hit-attribution")!;
+      const votes = attribution.nextElementSibling!;
+      const link = node.getBoundingClientRect();
+      const author = attribution.getBoundingClientRect();
+      const judgment = votes.getBoundingClientRect();
+      return {
+        inside: link.top >= author.top && link.bottom <= author.bottom,
+        top: Math.abs(author.top - judgment.top),
+        beforeVotes: Boolean(
+          node.compareDocumentPosition(votes) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+        ),
+        fits: document.documentElement.scrollWidth <= innerWidth,
+      };
+    });
+    expect(geometry).toMatchObject({
+      inside: true,
+      beforeVotes: true,
+      fits: true,
+    });
+    expect(geometry.top).toBeLessThan(2);
+    await matched.focus();
+    await page.keyboard.press("Tab");
+    await expect(
+      row.getByRole("button", { name: "Endorse", exact: true }),
+    ).toBeFocused();
+  });
+
+test("unknown privacy discovery keeps off available beside consented meaning results and retries after failure", async ({
+  page,
+}) => {
+  await meaningService(page);
+  await page.goto("/search?q=book&lang=en");
+  const meaning = group(page, "Similar in meaning");
+  await meaning.getByRole("button", { name: "Allow meaning search" }).click();
+  await expect(page.locator(".meaning-privacy")).toContainText(
+    "Meaning search on",
+  );
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let requests = 0;
+  let failed = false;
+  await page.route("**/api/v1/capabilities", async (route) => {
+    requests++;
+    if (requests !== 1) return route.fallback();
+    await held;
+    await route.fulfill({
+      status: 503,
+      json: { message: "Synthetic privacy discovery failure." },
+    });
+    failed = true;
+  });
+  await page.evaluate(async () => {
+    const { navigate } = await import(String("/src/app/router.ts"));
+    navigate("/search?q=travel&lang=en");
+  });
+  await expect(meaning.locator("article")).toHaveCount(1);
+  const privacy = page.locator(".meaning-privacy");
+  await expect(privacy.locator("span").first()).toHaveText("Meaning search");
+  await expect(
+    privacy.getByRole("button", {
+      name: "Turn off meaning search",
+      exact: true,
+    }),
+  ).toBeVisible();
+  release();
+  await expect.poll(() => failed).toBe(true);
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      ),
+  );
+  await expect(privacy.locator("span").first()).toHaveText("Meaning search");
+  await holdMeaningWrites(page);
+  await privacy
+    .getByRole("button", { name: "Turn off meaning search", exact: true })
+    .click();
+  await expect.poll(() => meaningWrites(page)).toEqual(["off"]);
+  await releaseMeaningWrite(page, 0, true);
+  await expect(privacy).toContainText("Meaning search on");
+  await expect(meaning.locator("article")).toHaveCount(1);
+  expect(requests).toBeGreaterThan(2);
+});
+
+test("stored meaning consent on a server without meaning search keeps a neutral off action", async ({
+  page,
+}) => {
+  const state = await meaningService(page);
+  await page.goto("/search?q=book&lang=en");
+  await group(page, "Similar in meaning")
+    .getByRole("button", { name: "Allow meaning search" })
+    .click();
+  await expect(page.locator(".meaning-privacy")).toContainText(
+    "Meaning search on",
+  );
+  state.enabled = false;
+  await page.goto("/search?q=travel&lang=en");
+  await expect(
+    page.getByRole("region", { name: "Search results", exact: true }),
+  ).toHaveAttribute("aria-busy", "false");
+  await expect(group(page, "Similar in meaning")).toBeHidden();
+  const privacy = page.locator(".meaning-privacy");
+  await expect(privacy.locator("span").first()).toHaveText("Meaning search");
+  await privacy
+    .getByRole("button", { name: "Turn off meaning search", exact: true })
+    .click();
+  await expect(privacy).toContainText("Meaning search off");
+  expect(state.calls).toHaveLength(1);
+});
