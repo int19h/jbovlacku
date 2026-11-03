@@ -14,6 +14,7 @@ import { MAX_PROFILE_COOLDOWN_MS } from "./vector-store.ts";
 import type {
   BackgroundRecovery,
   IndexBatch,
+  IndexBatchLimits,
   IndexGeneration,
   VectorStore,
   VectorAssociation,
@@ -694,6 +695,36 @@ export class SqlVectorStore implements VectorStore {
       return fail("semantic_profile", "The generation profile is unavailable.");
     return parseProfile(profile.value as Uint8Array);
   }
+  async storedProfile(identity: string): Promise<EmbeddingProfile> {
+    const row = this.sql.exec(
+      "SELECT value FROM semantic_profiles WHERE id=?",
+      identity,
+    )[0];
+    if (!row)
+      return fail(
+        "semantic_profile",
+        "The stored embedding profile is unavailable.",
+      );
+    const profile = parseProfile(row.value as Uint8Array);
+    if (profileId(profile) !== identity)
+      return fail(
+        "semantic_profile",
+        "The stored embedding profile identity differs.",
+      );
+    return profile;
+  }
+  async reusableInputs(id: string): Promise<number> {
+    const generation = this.active(id);
+    return Number(
+      this.sql.exec(
+        `SELECT COUNT(DISTINCT a.input) AS count FROM semantic_associations a
+      JOIN semantic_vectors v ON v.profile=? AND v.input=a.input
+      WHERE a.generation=? AND a.error IS NULL`,
+        generation.profile,
+        id,
+      )[0].count,
+    );
+  }
   async stage(
     id: string,
     after: string | null,
@@ -1001,7 +1032,21 @@ export class SqlVectorStore implements VectorStore {
   async claim(
     id: string,
     background?: { now: number; pending(operation: string): boolean },
+    limits: IndexBatchLimits = { batchSize: 8, batchBytes: 32768 },
   ): Promise<IndexBatch | null> {
+    if (
+      !Number.isInteger(limits.batchSize) ||
+      limits.batchSize < 1 ||
+      limits.batchSize > 128 ||
+      !Number.isInteger(limits.batchBytes) ||
+      limits.batchBytes < 1 ||
+      limits.batchBytes > 524288
+    )
+      throw new SemanticError(
+        400,
+        "semantic_limit",
+        "The indexing batch limits are invalid.",
+      );
     return this.sql.transaction(() => {
       const generation = this.active(id);
       this.compatible(generation.profile);
@@ -1037,6 +1082,7 @@ export class SqlVectorStore implements VectorStore {
         );
         previous = null;
       }
+      // Keep linked retry inputs together. New limits apply only to fresh claims.
       if (previous === null) {
         const cursor = String(
           this.sql.exec(
@@ -1044,20 +1090,35 @@ export class SqlVectorStore implements VectorStore {
             id,
           )[0].claim_cursor,
         );
-        inputs = this.sql
-          .exec(
-            `SELECT DISTINCT a.input FROM semantic_associations a
-          LEFT JOIN semantic_vectors v ON v.profile=? AND v.input=a.input
+        const candidates = this.sql.exec(
+          `SELECT DISTINCT a.input,length(i.bytes) AS input_bytes FROM semantic_associations a
+          JOIN semantic_inputs i ON i.profile=?1 AND i.input=a.input
+          LEFT JOIN semantic_vectors v ON v.profile=?1 AND v.input=a.input
           LEFT JOIN semantic_batch_inputs b ON b.generation=a.generation AND b.input=a.input
           WHERE a.generation=? AND a.input>? AND a.error IS NULL AND v.input IS NULL AND b.input IS NULL
           ${background ? "AND NOT EXISTS(SELECT 1 FROM semantic_background_inputs h WHERE h.profile=? AND h.input=a.input)" : ""}
-          ORDER BY a.input LIMIT 8`,
-            generation.profile,
-            id,
-            cursor,
-            ...(background ? [generation.profile] : []),
-          )
-          .map((row) => String(row.input));
+          ORDER BY a.input LIMIT ${limits.batchSize}`,
+          generation.profile,
+          id,
+          cursor,
+          ...(background ? [generation.profile] : []),
+        );
+        let inputBytes = 0;
+        for (const row of candidates) {
+          const bytes = Number(row.input_bytes);
+          // Advance the seek cursor only through the prefix that fits.
+          if (inputBytes + bytes > limits.batchBytes) {
+            if (!inputs.length)
+              throw new SemanticError(
+                400,
+                "semantic_limit",
+                "An input exceeds the indexing batch byte limit.",
+              );
+            break;
+          }
+          inputs.push(String(row.input));
+          inputBytes += bytes;
+        }
       }
       if (!inputs.length && background) {
         const held = this.heldCandidates(

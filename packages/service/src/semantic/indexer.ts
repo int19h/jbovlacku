@@ -10,6 +10,11 @@ import type { IndexBatch, VectorStore } from "./vector-store.ts";
 export type IndexEmbedder = Pick<AssistanceService, "embed"> &
   Partial<Pick<AssistanceService, "embeddingOperationPending">>;
 
+export interface IndexConcurrencyChange {
+  concurrency: number;
+  reason: "embedding_rate_limited" | "embedding_timeout" | "success";
+}
+
 export interface IndexBackoff {
   /** Zero waits for a saved profile cooldown. One through three name retry rounds. */
   attempt: number;
@@ -86,6 +91,11 @@ export class SemanticIndexer {
     id: string,
     options: {
       concurrency?: number;
+      operator?: boolean;
+      batchSize?: number;
+      batchBytes?: number;
+      adaptive?: boolean;
+      onConcurrencyChange?: (event: IndexConcurrencyChange) => void;
       /** The background host schedules its own durable retries. The CLI keeps the default. */
       automaticRetries?: boolean;
       background?: boolean;
@@ -97,18 +107,27 @@ export class SemanticIndexer {
     } = {},
   ) {
     const concurrency = options.concurrency ?? 2;
+    const batchSize = options.batchSize ?? 8;
+    const batchBytes = options.batchBytes ?? 32768;
     const maximum = options.maxBatches ?? Number.MAX_SAFE_INTEGER;
     if (
       !Number.isInteger(concurrency) ||
       concurrency < 1 ||
-      concurrency > 4 ||
+      concurrency > (options.operator ? 32 : 4) ||
+      !Number.isInteger(batchSize) ||
+      batchSize < 1 ||
+      batchSize > (options.operator ? 128 : 8) ||
+      !Number.isInteger(batchBytes) ||
+      batchBytes < 1 ||
+      batchBytes > (options.operator ? 524288 : 32768) ||
+      (options.adaptive === true && !options.operator) ||
       !Number.isSafeInteger(maximum) ||
       maximum < 1
     )
       throw new SemanticError(
         400,
         "semantic_limit",
-        "Use one through four workers and a positive batch limit.",
+        "The indexing worker or batch limits are invalid.",
       );
     if (this.running.has(id))
       throw new SemanticError(
@@ -138,6 +157,16 @@ export class SemanticIndexer {
           "semantic_profile",
           "The indexing adapter does not match the complete profile.",
         );
+      let activeConcurrency = concurrency;
+      let successes = 0;
+      const changeConcurrency = (
+        next: number,
+        reason: IndexConcurrencyChange["reason"],
+      ) => {
+        if (next === activeConcurrency) return;
+        activeConcurrency = next;
+        options.onConcurrencyChange?.({ concurrency: next, reason });
+      };
       let claims = 0;
       let waited = 0;
       const waitForCooldown = async (attempt: number, batches: number) => {
@@ -174,16 +203,17 @@ export class SemanticIndexer {
         let halted = false;
         let stopCode: string | undefined;
         const retries: string[] = [];
+        let exhausted = false;
         const worker = async () => {
-          while (claims < maximum && !halted && !options.signal?.aborted) {
+          if (claims < maximum && !halted && !options.signal?.aborted) {
             // A different generation can receive a rate limit while this job runs.
             const cooldown = await this.store.retryAfter(identity);
             if ((cooldown ?? 0) > this.clock.now()) {
               halted = true;
               await this.store.pause(id, stopCode ?? "embedding_rate_limited");
-              break;
+              return;
             }
-            if (claims >= maximum || halted || options.signal?.aborted) break;
+            if (claims >= maximum || halted || options.signal?.aborted) return;
             claims++;
             const batch = await this.store.claim(
               id,
@@ -195,8 +225,10 @@ export class SemanticIndexer {
                       false,
                   }
                 : undefined,
+              { batchSize, batchBytes },
             );
             if (!batch) {
+              exhausted = true;
               claims--;
               const generation = await this.store.generation(id);
               if (
@@ -206,12 +238,12 @@ export class SemanticIndexer {
                 halted = true;
                 stopCode = generation.error ?? "index_paused";
               }
-              break;
+              return;
             }
             if (options.signal?.aborted) {
               await this.store.fail(batch.id, "index_paused");
               await this.store.pause(id, "index_paused");
-              break;
+              return;
             }
             let usage: EmbeddingUsage | undefined;
             let operation: string | null = null;
@@ -220,7 +252,7 @@ export class SemanticIndexer {
               if (options.signal?.aborted) {
                 await this.store.fail(batch.id, "index_paused");
                 await this.store.pause(id, "index_paused");
-                break;
+                return;
               }
               // Do not detach provider settlement when an operator pauses or exits.
               const result = await this.assistance.embed(
@@ -239,6 +271,18 @@ export class SemanticIndexer {
                 result.vectors,
                 result.usage,
               );
+              if (
+                options.operator &&
+                options.adaptive &&
+                !halted &&
+                ++successes >= 8
+              ) {
+                successes = 0;
+                changeConcurrency(
+                  Math.min(concurrency, activeConcurrency + 1),
+                  "success",
+                );
+              }
             } catch (failure) {
               halted = true;
               const code =
@@ -252,6 +296,17 @@ export class SemanticIndexer {
                   ? failure.retryAfterMs
                   : undefined;
               const rateLimited = code === "embedding_rate_limited";
+              if (
+                options.operator &&
+                options.adaptive &&
+                (rateLimited || code === "embedding_timeout")
+              ) {
+                successes = 0;
+                changeConcurrency(
+                  Math.max(1, Math.floor(activeConcurrency / 2)),
+                  code as "embedding_rate_limited" | "embedding_timeout",
+                );
+              }
               if (rateLimited) retries.push(batch.id);
               else stopCode = code;
               if (
@@ -294,15 +349,34 @@ export class SemanticIndexer {
               )
                 stopCode ??= generation.error;
               await this.store.pause(id, stopCode ?? code);
-              break;
+              return;
             }
           }
         };
-        const results = await Promise.allSettled(
-          Array.from({ length: concurrency }, worker),
-        );
-        const failed = results.find((result) => result.status === "rejected");
-        if (failed?.status === "rejected") throw failed.reason;
+        const pending = new Set<Promise<void>>();
+        let workerFailure: unknown;
+        let workerRejected = false;
+        while (true) {
+          while (
+            !halted &&
+            !exhausted &&
+            !options.signal?.aborted &&
+            claims < maximum &&
+            pending.size < activeConcurrency
+          ) {
+            const task = worker()
+              .catch((failure) => {
+                workerRejected = true;
+                workerFailure = failure;
+                halted = true;
+              })
+              .finally(() => pending.delete(task));
+            pending.add(task);
+          }
+          if (!pending.size) break;
+          await Promise.race(pending);
+        }
+        if (workerRejected) throw workerFailure;
         if (
           options.automaticRetries === false ||
           !retries.length ||
