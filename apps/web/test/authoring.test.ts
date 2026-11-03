@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { setRichNodes, typeRichText, expectRichText } from "./rich-helpers.ts";
 import { test, expect, type Page } from "@playwright/test";
 import {
@@ -28,10 +29,11 @@ const meaningBox = (page: Page) =>
 test("a first-time contributor writes a short literal definition and publishes it with an endorsement", async ({
   page,
 }) => {
+  const meaning = `A disposable test meaning without places. ${randomUUID()}`;
   await createIdentity(page);
   await page.getByRole("link", { name: "Add a word" }).click();
   await expect(page).toHaveTitle("Add a word: Meaning · jbovlacku");
-  await meaningBox(page).fill("A disposable test meaning without places.");
+  await meaningBox(page).fill(meaning);
   await expect(page.getByText("Saved in this browser")).toBeVisible();
   await page.getByRole("button", { name: "New word" }).click();
   await page.getByRole("radio", { name: /^gismu/ }).check();
@@ -106,9 +108,9 @@ test("a first-time contributor writes a short literal definition and publishes i
   await expect(page.locator("#app > [role=status]")).toContainText(
     "Published brodu with your endorsement.",
   );
-  // The definition is found by its text, so other publications of the word do not matter.
+  // Each execution publishes unique text, including across projects and repeats.
   const first = page.locator("article.definition", {
-    hasText: "A disposable test meaning without places.",
+    hasText: meaning,
   });
   await expect(first).toHaveCount(1);
   await expect(first.getByRole("button", { name: "Endorse" })).toHaveAttribute(
